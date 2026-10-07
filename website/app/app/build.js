@@ -2898,7 +2898,8 @@ const Build = (() => {
     g.setAttribute('role','dialog');g.setAttribute('aria-modal','true');g.setAttribute('aria-label','Station presets');
     g.innerHTML = '<div class="refit-guide-box station-build-box"><div class="station-build-heading"><div><span class="station-build-eyebrow">BUILD MODE / STATION PRESETS</span><h2>A place for your work</h2></div><button class="bb sm" data-workflow-close>BACK TO BUILD</button></div>' +
       '<p class="station-build-intro">Pick a station for the kind of work you do, then make it yours. Every station includes your workstation and all five essentials.</p>' +
-      '<div class="station-build-scroll">' + PRESET_GROUPS.map(([id, label, blurb]) => '<section class="station-build-section" data-build-section="' + id + '"><div class="station-build-section-head"><h3>' + label + '</h3><p>' + esc(blurb) + '</p></div><div class="station-build-grid" aria-label="' + esc(label.toLowerCase()) + '"></div></section>').join('') + '</div>' +
+      '<div class="station-build-scroll">' + PRESET_GROUPS.map(([id, label, blurb]) => '<section class="station-build-section" data-build-section="' + id + '"><div class="station-build-section-head"><h3>' + label + '</h3><p>' + esc(blurb) + '</p></div><div class="station-build-grid" aria-label="' + esc(label.toLowerCase()) + '"></div></section>').join('') +
+      (typeof BuildShare !== 'undefined' ? '<section class="station-build-section" data-build-section="shared"><div class="station-build-section-head"><h3>SHARED BUILDS</h3><p>Save this layout as a file to share, or open one someone sent you. Only rooms, furniture and conveyors travel.</p><span class="station-build-share-keys"><button class="bb sm" type="button" data-export-build>EXPORT THIS STATION</button><button class="bb sm" type="button" data-import-build>IMPORT A BUILD…</button><input type="file" accept=".json,application/json" hidden data-import-file></span></div><div class="station-build-grid" aria-label="shared builds"></div></section>' : '') + '</div>' +
       '<div class="station-build-footer"><div class="station-build-status" role="status">Select a preset to see what it builds.</div>' +
       '<div class="station-build-actions"><button class="bb" data-restore-build>RESTORE PREVIOUS</button><button class="bb refit-primary" data-use-build disabled>CHOOSE A PRESET</button></div><small class="station-build-note">Applying replaces rooms, props and conveyors. Your current layout is backed up; agents and conversations stay.</small></div></div>';
     g.style.setProperty('--station-build-scale', typeof U.uiZoom === 'function' ? U.uiZoom() : 1);
@@ -2915,11 +2916,10 @@ const Build = (() => {
     let selected = null, armed = false;
     const backupButton = g.querySelector('[data-restore-build]');
     try { backupButton.disabled = !localStorage.getItem(backupKey); } catch (_) { backupButton.disabled = true; }
-    for (const item of StationTemplates.catalog) {
-      const grid = g.querySelector('[data-build-section="' + (item.group === 'work' ? 'work' : 'look') + '"] .station-build-grid');
+    // one card per build — a preset, or a build file opened in SHARED BUILDS (item.file holds its text; preview() its copy)
+    const addCard = (item, doc, grid, preview) => {
       const button = document.createElement('button'); button.className = 'bb station-build-card';
       button.type = 'button'; button.dataset.stationBuild = item.id; button.setAttribute('aria-pressed','false');
-      const doc = StationTemplates.build(item.id, WorldModel, PropSprites);
       const bays = doc.props.filter(p=>p.t==='bay').length;
       button.innerHTML = '<div class="station-build-art"><canvas width="460" height="280" aria-hidden="true"></canvas><span class="station-build-check" aria-hidden="true">✓</span></div><div class="station-build-copy"><div class="station-build-meta"><span>' + item.rooms + (item.rooms === 1 ? ' ROOM' : ' ROOMS') + '</span>' + (bays ? '<span>'+bays+'-STEP LINE</span>' : '') + '</div><b>' + esc(item.name) + '</b><small>' + esc(item.description) + '</small></div>';
       const bounds = WorldModel.create(doc).bounds(), ctx = button.querySelector('canvas').getContext('2d');
@@ -2937,15 +2937,24 @@ const Build = (() => {
       button.onclick = () => {
         selected=item;armed=false;apply.disabled=false;apply.textContent='USE '+item.name;
         for(const b of g.querySelectorAll('[data-station-build]'))b.setAttribute('aria-pressed',b===button?'true':'false');
-        status.innerHTML=presetPreviewHTML(item, doc);
+        status.innerHTML=preview();
       };
       grid.appendChild(button);
+      return button;
+    };
+    for (const item of StationTemplates.catalog) {
+      const doc = StationTemplates.build(item.id, WorldModel, PropSprites);
+      addCard(item, doc, g.querySelector('[data-build-section="' + (item.group === 'work' ? 'work' : 'look') + '"] .station-build-grid'), () => presetPreviewHTML(item, doc));
     }
+    wireSharedBuilds(g, status, addCard);
     apply.onclick = () => {
       if(!selected)return;
       if(!armed){armed=true;apply.textContent='CONFIRM — USE '+selected.name;status.textContent='Replace the current rooms, props, and conveyors with '+selected.name+'? Agents and conversations remain. Click again to apply.';return;}
       try {
-        const doc=StationTemplates.build(selected.id,WorldModel,PropSprites,station.doc()._nid+100);
+        // a shared build is re-read against the live floor's ids at the moment it lands (the same headroom a preset gets)
+        let doc;
+        if(selected.file){const r=BuildShare.readBuild(selected.file,WorldModel,station.doc()._nid+100);if(!r.ok)throw Error(r.message);doc=r.doc;}
+        else doc=StationTemplates.build(selected.id,WorldModel,PropSprites,station.doc()._nid+100);
         localStorage.setItem(backupKey,JSON.stringify(station.serialize()));
         const result=station.replaceLayout(doc);if(!result.ok)throw Error(result.msg||result.error);
         fitCamera();closeP();sfx('click');
@@ -2961,6 +2970,52 @@ const Build = (() => {
         if(!result.ok){localStorage.setItem(backupKey,originalBackup);throw Error(result.msg||result.error);}
         fitCamera();closeP();
       }catch(e){status.textContent='Could not restore the previous layout: '+e.message;}
+    };
+  }
+
+  /* SHARED BUILDS (community builds phase 1, 2026-10-07). EXPORT writes this floor's LAYOUT to a file — BuildShare strips
+     the crew's desks, step instructions, Inbox folders and limits, connections and made props. IMPORT reads a file back
+     through the SAME cleaner and shows it as a card, so it lands through the presets' own confirm, backup and one-step
+     undo. Nothing is fetched or sent anywhere: a build travels however the Commander chooses to pass the file on. */
+  function sharedBuildCopy(name, stats, dropped, lead) {
+    const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+    const left = ['Crew, step instructions, project folders and connections stay with the station that made it.'];
+    if (dropped.made) left.push(n(dropped.made, 'made prop was', 'made props were') + ' left out: made props belong to the station that paid for them.');
+    if (stats.lines) left.push('Its ' + (stats.lines === 1 ? 'line arrives' : 'lines arrive') + ' wired but unstaffed, with no step instructions.');
+    return '<span>' + lead + '<b>' + esc(name) + '</b> · ' + n(stats.rooms, 'room', 'rooms') + ' · ' + n(stats.props, 'prop', 'props') + '</span>'
+      + '<span class="station-build-need">' + left.map(esc).join(' ') + '</span>';
+  }
+  function wireSharedBuilds(g, status, addCard) {
+    const exp = g.querySelector('[data-export-build]'), imp = g.querySelector('[data-import-build]'), fileIn = g.querySelector('[data-import-file]');
+    const grid = g.querySelector('[data-build-section="shared"] .station-build-grid');
+    if (!exp || !imp || !fileIn || !grid) return;
+    exp.onclick = () => {
+      const r = BuildShare.exportBuild(station.serialize(), WorldModel, { name: station.doc().meta.name });
+      if (r.error) { status.textContent = 'This station could not be exported.'; sfx('bad'); return; }
+      const url = URL.createObjectURL(new Blob([r.text], { type: 'application/json' }));
+      const a = document.createElement('a'); a.href = url; a.download = r.filename;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+      status.innerHTML = sharedBuildCopy(r.filename, r.stats, r.dropped, 'Downloading ');
+      sfx('click');
+    };
+    imp.onclick = () => fileIn.click();
+    fileIn.onchange = () => {
+      const f = fileIn.files && fileIn.files[0]; fileIn.value = '';
+      if (!f) return;
+      if (f.size > BuildShare.MAX_BYTES) { status.textContent = 'That file is too large to be a station build.'; sfx('bad'); return; }
+      const reader = new FileReader();
+      reader.onerror = () => { status.textContent = 'That file could not be read.'; sfx('bad'); };
+      reader.onload = () => {
+        const text = String(reader.result || '');
+        const r = BuildShare.readBuild(text, WorldModel, station.doc()._nid + 100);
+        if (!r.ok) { status.textContent = r.message; sfx('bad'); return; }
+        // one opened build at a time: a second file replaces the first card
+        for (const old of grid.querySelectorAll('[data-station-build]')) old.remove();
+        const item = { id: 'shared-file', name: r.name, rooms: r.stats.rooms, description: f.name, file: text };
+        const button = addCard(item, r.doc, grid, () => sharedBuildCopy(r.name, r.stats, r.dropped, ''));
+        button.click(); button.scrollIntoView({ block: 'nearest' }); button.focus();
+      };
+      reader.readAsText(f);
     };
   }
 

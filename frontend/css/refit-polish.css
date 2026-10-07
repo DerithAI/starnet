@@ -206,6 +206,7 @@
 .station-build-section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 10px; }
 .station-build-section-head h3 { margin: 0; font-size: 13px; font-weight: 400; letter-spacing: 1.5px; color: var(--ph); }
 .refit-overlay .station-build-section-head p { margin: 0; font-size: 13px; line-height: 1.35; color: var(--ph-dim); }
+.station-build-share-keys { display: flex; flex-wrap: wrap; gap: 8px; flex-basis: 100%; margin-top: 6px; }
 .refit-overlay .station-build-status { display: flex; flex-direction: column; gap: 4px; }
 .station-build-flow { color: var(--ph-bright); letter-spacing: .3px; }
 .station-build-flow i { font-style: normal; color: var(--ph-dim); }
