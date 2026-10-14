@@ -14,6 +14,32 @@
      a second handwritten starter. sync-website-app generates this document from
      WorldModel.starterDoc(); --check rejects drift from the current product factory. */
   var DEMO_STATION = {"schema":"starnet.station","version":2,"_nid":10,"meta":{"name":"STARNET STATION","createdAt":0,"tier":0,"spawnRoomId":"r1","trunkRoomId":"r1"},"rooms":{"r1":{"id":"r1","kind":"hab","name":"HOME","rects":[{"x1":0,"y1":0,"x2":17,"y2":10}],"floorStyle":"hull","floorMat":"resin","wallStyle":null,"wallMat":"panelled","hullStyle":"bone","hullMat":null,"tier":0,"floorPaint":{}}},"order":["r1"],"props":[{"id":"p2","t":"desk","x":8,"y":1,"w":2,"h":1,"block":true},{"id":"p3","t":"war_intelcab","x":1,"y":0,"w":1,"h":2,"block":true},{"id":"p4","t":"gigs_servercart","x":1,"y":9,"w":1,"h":1,"block":true},{"id":"p5","t":"comms_dish","x":14,"y":0,"w":2,"h":2,"block":true},{"id":"p6","t":"workbench","x":3,"y":1,"w":2,"h":1,"block":true},{"id":"p7","t":"studio","x":14,"y":8,"w":2,"h":2,"block":true},{"id":"p8","t":"plant","x":0,"y":0,"w":1,"h":1,"block":false},{"id":"p9","t":"plant","x":17,"y":0,"w":1,"h":1,"block":false}],"belts":{},"edges":[]}; // GENERATED STARTER
+  var CREW_SCENE = (function(){
+    var belts = [];
+    for (var x = 1; x <= 16; x++) belts.push(x + ',6');
+    var crew = function(id, name, color, skin, role, purpose){
+      return { id: id, name: name, color: color, skin: skin, role: 'specialist', model: null, personaId: 'worker-homie',
+               purpose: purpose, docs: { identity: name + ' — ' + role + '.', purpose: purpose, manual: '', context: '' },
+               createdAt: 1700000000000 };
+    };
+    return {
+      belts: belts,
+      props: [
+        { id: 'p20', t: 'intake', x: 0, y: 6, w: 1, h: 1, block: true },
+        { id: 'p21', t: 'bay', x: 5, y: 7, w: 1, h: 1, block: true, agentId: 'scout', role: 'RESEARCH' },
+        { id: 'p22', t: 'bay', x: 11, y: 7, w: 1, h: 1, block: true, agentId: 'quill', role: 'WRITER' },
+        { id: 'p23', t: 'outbox', x: 17, y: 6, w: 1, h: 1, block: true },
+        { id: 'p24', t: 'desk', x: 5, y: 1, w: 2, h: 1, block: true, agentId: 'scout' },
+        { id: 'p25', t: 'desk', x: 11, y: 1, w: 2, h: 1, block: true, agentId: 'quill' },
+        { id: 'p26', t: 'desk', x: 8, y: 9, w: 2, h: 1, block: true, agentId: 'forge' }
+      ],
+      agents: [
+        crew('scout', 'SCOUT', '#7fd6a4', 'astronaut', 'researcher', 'Find sources and pull the facts.'),
+        crew('quill', 'QUILL', '#e8b85c', 'robot', 'writer', 'Turn research into a clean brief.'),
+        crew('forge', 'FORGE', '#e07a5f', 'crthead', 'builder', 'Write and run the code.')
+      ]
+    };
+  })();
   var DEMO_REV_KEY = 'starnet.website.demo.rev';
   var DEMO_REV = 'starter-c54335278c0daa68';
   try {
@@ -22,6 +48,15 @@
       demoSave.station = DEMO_STATION;
       var demoDesk = demoSave.station.props.find(function(p){ return p.t === 'desk'; });
       if (demoDesk) demoDesk.agentId = demoSave.agent.id;
+      /* THE CREW SCENE (2026-10-14): the homepage shows agents WORKING, not an empty starter.
+         The room, its materials and all eight starter props stay generated from the product
+         factory above; this only ADDS a crew and one conveyor line on the open floor:
+         INBOX → SCOUT's bay → QUILL's bay → OUTBOX along y=6, plus a second desk for FORGE.
+         The homepage (hero-demo.js) then drives these bodies through the app's own event bus. */
+      CREW_SCENE.props.forEach(function(p){ demoSave.station.props.push(p); });
+      CREW_SCENE.belts.forEach(function(b){ demoSave.station.belts[b] = 'E'; });
+      demoSave.station._nid = 40;
+      demoSave.agents = CREW_SCENE.agents;
       SEED['starnet.save'] = JSON.stringify(demoSave);
     }
 
@@ -29,9 +64,9 @@
        its captured save once per demo revision so returning visitors cannot stay pinned to an
        obsolete localStorage snapshot forever. Stamp the marker last: a partial/quota failure
        retries on the next load instead of falsely claiming the upgrade landed. */
-    if (localStorage.getItem(DEMO_REV_KEY) !== DEMO_REV) {
+    if (localStorage.getItem(DEMO_REV_KEY) !== DEMO_REV + '+crew1') {
       Object.keys(SEED).forEach(function(k){ localStorage.setItem(k, SEED[k]); });
-      localStorage.setItem(DEMO_REV_KEY, DEMO_REV);
+      localStorage.setItem(DEMO_REV_KEY, DEMO_REV + '+crew1');
     }
   } catch (e) {}
   /* Once the floor is up, mark the bridge deliberately paused (a real World API):
@@ -50,6 +85,13 @@
         /* The app's composition camera includes the tall wall and hull skirt.
            A bare canvas fit can crop the wall at the top of this wider viewport. */
         try { World.frameReviewRoom('r1'); } catch (e) {}
+        /* The homepage replay (station-demo.js) lives in the parent page. The app's globals are
+           top-level consts — invisible on window — and the /app/* CSP forbids eval, so this is
+           the one doorway: emit onto the app's OWN bus, nothing else. */
+        window.StarnetDemoBridge = {
+          crew: function(){ try { return App.agents().length; } catch (e) { return 0; } },
+          emit: function(name, payload){ U.bus.emit(name, payload); }
+        };
       }
     } catch (e) {}
   }, 500);
