@@ -18,10 +18,23 @@
 <meta property="og:image:height" content="630">
 <link rel="canonical" href="https://starnetos.com/">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="preload" href="app/assets/sprites/blank/rot_south.png" as="image" fetchpriority="high">
 <link rel="stylesheet" href="styles.css?v=20260924-home-rules">
-<link rel="stylesheet" href="home.css?v=20261014-harness">
+<link rel="stylesheet" href="home.css?v=20261014-crew1">
 </head>
 <body class="home">
+
+<!-- CRT overlays -->
+<div class="crt-scan" aria-hidden="true"></div>
+<div class="crt-vignette" aria-hidden="true"></div>
+<div class="crt-flicker" aria-hidden="true"></div>
+<div class="scroll-prog" aria-hidden="true"><span></span></div>
+
+<!-- HUD corner ticks -->
+<div class="tick tick-tl" aria-hidden="true"></div>
+<div class="tick tick-tr" aria-hidden="true"></div>
+<div class="tick tick-bl" aria-hidden="true"></div>
+<div class="tick tick-br" aria-hidden="true"></div>
 
 <header class="topbar" id="topbar">
   <a class="brand" href="#top" aria-label="StarNet home"><img src="assets/starnet-logo-small.png" alt="StarNet" width="355" height="60"></a>
@@ -40,235 +53,243 @@
 
 <main id="top">
 
-  <!-- ===== hero: say what it is ===== -->
+  <!-- ===== hero ===== -->
   <section class="hero">
-    <div class="wrap hero-grid">
-      <div class="hero-copy">
-        <p class="eyebrow">Local-first AI agent harness &middot; open source</p>
-        <h1 class="hero-title">The agent harness you can watch work.</h1>
-        <p class="hero-sub">StarNet runs your AI agents on your own machine &mdash; the model loop, real tools, multi-agent workflows, schedules, budgets and memory. Every agent also gets a body in a pixel-art station, so what the harness is doing is never hidden in a log.</p>
-        <div class="cta-row">
-          <a id="cta-download" class="btn btn-primary" href="#download">Download</a>
-          <a class="btn" href="docs/getting-started.html">Get started</a>
-        </div>
-        <p class="hero-meta"><span id="ver-badge">v0.13.1</span> &middot; MIT open source &middot; Windows + macOS &middot; bring your own keys</p>
+    <canvas class="starfield" aria-hidden="true"></canvas>
+    <div class="grid-floor" aria-hidden="true"><div></div></div>
+    <div class="horizon" aria-hidden="true"></div>
+    <div class="ember" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <div class="hero-eyebrow"><span class="pip" aria-hidden="true"></span>LOCAL-FIRST AI AGENT HARNESS</div>
+      <img class="hero-logo" src="assets/starnet-logo-glow.png" alt="StarNet" width="1200" height="240">
+      <h1 class="tagline">The agent harness you can watch work.<span class="cursor" aria-hidden="true"></span></h1>
+      <p class="subline">StarNet runs your AI agents on your own machine &mdash; real tools, multi-agent workflows, schedules, budgets and memory &mdash; and gives every agent a body in a living pixel-art station, so you can see exactly what the harness is doing.</p>
+      <div class="cta-row">
+        <a id="cta-download" class="btn btn-primary btn-hot" href="#download">[ DOWNLOAD ]</a>
+        <a class="btn" href="docs/getting-started.html">[ GET STARTED ]</a>
       </div>
-      <ul class="hero-facts" aria-label="What the harness does">
-        <li><b>Runs agents</b><span>A real model call, real tool calls, real files written &mdash; on localhost.</span></li>
-        <li><b>Routes work</b><span>Conveyor belts compile into a routing plan between agents.</span></li>
-        <li><b>Runs unattended</b><span>Routines, channels and autonomy start work while you&rsquo;re away.</span></li>
-        <li><b>Stays in budget</b><span>Per-job budgets and hard caps, enforced against a real ledger.</span></li>
-      </ul>
+      <div class="hero-meta"><span id="ver-badge">v0.13.1</span> &middot; MIT open source &middot; Windows + macOS &middot; bring your own keys</div>
     </div>
+    <a class="hero-scroll" href="#station" aria-label="Scroll to the station">WATCH IT WORK<span></span></a>
   </section>
 
-  <!-- ===== watch it work: the real renderer, driven by harness events ===== -->
-  <section id="station" class="section watch">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">Watch it work</p>
-        <h2>Every sprite is a run. Every crate is a job.</h2>
-        <p class="sec-lead">Pick a system. The station below is StarNet&rsquo;s own renderer reacting to harness events; the trace beside it is the same events as text.</p>
-      </div>
+  <!-- ===== watch it work: the real renderer replaying harness events (station-demo.js) ===== -->
+  <section id="station" class="section section-wide">
+    <div class="section-head">
+      <span class="section-no">01</span>
+      <h2 data-scramble>WATCH IT WORK</h2>
+      <span class="section-tag">// every sprite is a real run</span>
+    </div>
+    <p class="big-lead" data-reveal>StarNet is the harness: it runs the model loop, the tools, the routing and the schedules on your machine. The station is how you watch it &mdash; an agent at a lit desk is a live run, a crate on a belt is a job moving between agents.</p>
 
-      <div class="console" data-demo>
+    <div class="monitor-stage">
+      <figure class="bezel live monitor crew-monitor" data-demo>
+        <span class="mon-corner c1" aria-hidden="true"></span><span class="mon-corner c2" aria-hidden="true"></span>
+        <span class="mon-corner c3" aria-hidden="true"></span><span class="mon-corner c4" aria-hidden="true"></span>
+        <div class="mon-bar" aria-hidden="true"><span class="rec"></span>CREW STATION<span class="mon-bar-r">REPLAY &middot; HARNESS EVENTS</span></div>
         <div class="demo-tabs" role="tablist" aria-label="Harness systems">
-          <button class="demo-tab" role="tab" aria-selected="true" data-chapter="delegate"><span class="n">01</span>Delegation</button>
-          <button class="demo-tab" role="tab" aria-selected="false" tabindex="-1" data-chapter="flow"><span class="n">02</span>Workflows</button>
-          <button class="demo-tab" role="tab" aria-selected="false" tabindex="-1" data-chapter="tools"><span class="n">03</span>Tools</button>
-          <button class="demo-tab" role="tab" aria-selected="false" tabindex="-1" data-chapter="away"><span class="n">04</span>Schedules &amp; channels</button>
-          <button class="demo-tab" role="tab" aria-selected="false" tabindex="-1" data-chapter="ledger"><span class="n">05</span>Models &amp; budgets</button>
+          <button class="ctab" role="tab" aria-selected="true" data-chapter="delegate"><span class="ct-n">01</span><span class="ct-t">Delegation</span><span class="ct-bar" aria-hidden="true"></span></button>
+          <button class="ctab" role="tab" aria-selected="false" tabindex="-1" data-chapter="flow"><span class="ct-n">02</span><span class="ct-t">Workflows</span><span class="ct-bar" aria-hidden="true"></span></button>
+          <button class="ctab" role="tab" aria-selected="false" tabindex="-1" data-chapter="tools"><span class="ct-n">03</span><span class="ct-t">Tools</span><span class="ct-bar" aria-hidden="true"></span></button>
+          <button class="ctab" role="tab" aria-selected="false" tabindex="-1" data-chapter="away"><span class="ct-n">04</span><span class="ct-t">Schedules &amp; channels</span><span class="ct-bar" aria-hidden="true"></span></button>
+          <button class="ctab" role="tab" aria-selected="false" tabindex="-1" data-chapter="ledger"><span class="ct-n">05</span><span class="ct-t">Models &amp; budgets</span><span class="ct-bar" aria-hidden="true"></span></button>
         </div>
-
         <div class="demo-body">
-          <figure class="stage">
-            <div class="stage-clip">
-              <iframe id="crew-app" src="app/embed.htm?v=20261014-crew1" scrolling="no" loading="lazy" tabindex="-1" title="StarNet station renderer playing a scripted replay"></iframe>
-            </div>
-            <figcaption>Actual StarNet renderer &middot; current source build &middot; scripted replay &mdash; no model is running on this page.</figcaption>
-          </figure>
-
+          <div class="stage-clip">
+            <iframe id="crew-app" src="app/embed.htm?v=20261014-crew1" scrolling="no" loading="lazy" tabindex="-1" title="StarNet station renderer playing a scripted replay"></iframe>
+          </div>
           <div class="trace" aria-live="off">
             <div class="trace-head">
               <h3 data-ch-title>Delegation</h3>
-              <p data-ch-copy>The overseer hands work to a specialist with <code>team.dispatch</code>. The worker runs on its own, with its own tools, and reports back.</p>
+              <p data-ch-copy>The overseer hands work to a specialist with <code>team.dispatch</code>. The worker runs on its own, with its own tools, and the result comes back to the lead.</p>
             </div>
             <ol class="trace-log" data-trace></ol>
-            <a class="trace-link" data-ch-link href="docs/agents.html">How delegation works &rarr;</a>
+            <a class="trace-link" data-ch-link href="docs/agents.html">How crews work &rarr;</a>
           </div>
         </div>
+        <figcaption><strong>YOUR CREW, AT WORK</strong><span>Actual StarNet renderer &middot; current source build<br>Scripted replay of harness events &mdash; no model is running on this page.</span></figcaption>
+      </figure>
+    </div>
+
+    <ul class="truths" data-reveal="stagger">
+      <li><span class="t-k">PLACED GEAR = REAL CAPABILITY</span><p>A signal dish grants web, a cabinet grants files, a workbench grants a terminal. Place one and the whole crew draws on it.</p></li>
+      <li><span class="t-k">EVERY BAY = ANOTHER AGENT</span><p>Each one runs its own work in parallel. You direct from COMMS &mdash; they think, browse, build files, and deliver.</p></li>
+      <li><span class="t-k">THE FLOOR IS HONEST</span><p>An agent at a lit desk means a live run. The timer on screen is the real one.</p></li>
+    </ul>
+  </section>
+
+  <!-- ===== manifesto ===== -->
+  <section id="honest" class="manifesto" aria-label="Truthful telemetry">
+    <p class="mf-kicker">// TRUTHFUL TELEMETRY</p>
+    <p class="mf-line" data-scrub>If it looks like an agent is working, it is.</p>
+    <ul class="mf-proofs" data-reveal="stagger">
+      <li><b>01</b> Every run is a real model call with real tools.</li>
+      <li><b>02</b> Every cent lands in a ledger you can read.</li>
+      <li><b>03</b> The station never shows state the harness can't prove.</li>
+    </ul>
+  </section>
+
+  <!-- ===== a harness first ===== -->
+  <section id="harness" class="section section-wide">
+    <div class="section-head">
+      <span class="section-no">02</span>
+      <h2 data-scramble>A HARNESS FIRST</h2>
+      <span class="section-tag">// the station is its readout</span>
+    </div>
+    <p class="big-lead" data-reveal>StarNet is the runtime, not a skin over someone else&rsquo;s. One local process runs every agent, tool call and route &mdash; the pixel world only draws what that process can prove.</p>
+
+    <div class="stack" data-reveal>
+      <div class="layer">
+        <div class="layer-k">WORK COMES IN FROM</div>
+        <ul class="chips"><li>COMMS chat</li><li>Telegram</li><li>Discord</li><li>Slack</li><li>Matrix</li><li>Signal</li><li>Routines</li><li>Autonomy</li></ul>
+      </div>
+      <div class="layer layer-core">
+        <div class="layer-k">THE HARNESS <span>runs on your machine</span></div>
+        <ul class="core-grid">
+          <li><b>AGENT LOOP</b>Model call, tool calls, streamed reply &mdash; per agent, in parallel.</li>
+          <li><b>TOOL RUNTIME</b>Web, files, shell, a real browser and MCP connectors, behind approvals.</li>
+          <li><b>ROUTER</b>Belts, filters, splitters and joiners compile into a routing plan.</li>
+          <li><b>DELEGATION</b>Leads dispatch workers; each worker runs with its own tools.</li>
+          <li><b>SCHEDULER</b>Routines and autonomy start runs while you&rsquo;re away.</li>
+          <li><b>BUDGETS &amp; LEDGER</b>Per-job budgets plus hard per-run, agent, day and global caps.</li>
+          <li><b>MEMORY</b>Per-agent notes and a station profile you can read, edit or forget.</li>
+          <li><b>LOCAL STORAGE</b>Station, transcripts, memory and ledger stay in your workspace.</li>
+        </ul>
+      </div>
+      <div class="layer">
+        <div class="layer-k">IT REACHES OUT TO</div>
+        <ul class="chips"><li>Your model provider (BYOK)</li><li>Local models via Ollama</li><li>The web &mdash; only with web tools granted</li><li>Connected services</li></ul>
       </div>
     </div>
   </section>
 
-  <!-- ===== what the harness is ===== -->
-  <section id="harness" class="section">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">Under the station</p>
-        <h2>A harness first. The station is its readout.</h2>
-        <p class="sec-lead">StarNet is the runtime, not a skin over someone else&rsquo;s. One local process runs every agent, tool call and route &mdash; the pixel world only draws what that process can prove.</p>
+  <!-- ===== provider marquee ===== -->
+  <div class="marquee" aria-label="Supported model providers">
+    <div class="mq-label">BRING YOUR OWN MODEL</div>
+    <div class="mq-track">
+      <div class="mq-row">
+        <span>OpenRouter</span><span>Anthropic</span><span>OpenAI</span><span>ChatGPT sign-in</span><span>Gemini</span><span>Grok</span><span>xAI</span><span>Kimi</span><span>Groq</span><span>Mistral</span><span>DeepSeek</span><span>Together</span><span>Fireworks</span><span>Perplexity</span><span>Cerebras</span><span>Ollama &middot; local</span><span>Any OpenAI-compatible endpoint</span>
       </div>
-
-      <div class="stack" data-reveal>
-        <div class="layer">
-          <div class="layer-k">Work comes in from</div>
-          <ul class="chips"><li>COMMS chat</li><li>Telegram</li><li>Discord</li><li>Slack</li><li>Matrix</li><li>Signal</li><li>Routines</li><li>Autonomy</li></ul>
-        </div>
-        <div class="layer layer-core">
-          <div class="layer-k">The harness <span>runs on your machine</span></div>
-          <ul class="core-grid">
-            <li><b>Agent loop</b>Model call, tool calls, streamed reply &mdash; per agent, in parallel.</li>
-            <li><b>Tool runtime</b>Web, files, shell, a real browser and MCP connectors, behind approvals.</li>
-            <li><b>Router</b>Belts, filters, splitters and joiners compile into a routing plan.</li>
-            <li><b>Delegation</b>Leads dispatch workers; each worker runs with its own tools.</li>
-            <li><b>Scheduler</b>Routines and autonomy start runs while you&rsquo;re away.</li>
-            <li><b>Budgets &amp; ledger</b>Per-job budgets plus hard per-run, agent, day and global caps.</li>
-            <li><b>Memory</b>Per-agent notes and a station profile you can read, edit or forget.</li>
-            <li><b>Local storage</b>Station, transcripts, memory and ledger stay in your workspace.</li>
-          </ul>
-        </div>
-        <div class="layer">
-          <div class="layer-k">It reaches out to</div>
-          <ul class="chips"><li>Your model provider (BYOK)</li><li>Local models via Ollama</li><li>The web &mdash; only with web tools granted</li><li>Connected services</li></ul>
-        </div>
-      </div>
-
-      <div class="readout" data-reveal>
-        <h3>How to read the floor</h3>
-        <dl>
-          <div><dt>Agent seated at a lit desk, RUN timer counting</dt><dd>A live model run. The timer is the run&rsquo;s real clock.</dd></div>
-          <div><dt>Crate riding a belt</dt><dd>A work item the router is moving to the next agent&rsquo;s bay.</dd></div>
-          <div><dt>Gear pulses green or red</dt><dd>A tool call that gear grants just returned &mdash; succeeded or failed.</dd></div>
-          <div><dt>A box flies between agents</dt><dd>Delegation: the lead dispatched work and the worker&rsquo;s run started.</dd></div>
-        </dl>
-        <p class="readout-note">If it looks like an agent is working, it is. The station never shows state the harness can&rsquo;t prove.</p>
+      <div class="mq-row" aria-hidden="true">
+        <span>OpenRouter</span><span>Anthropic</span><span>OpenAI</span><span>ChatGPT sign-in</span><span>Gemini</span><span>Grok</span><span>xAI</span><span>Kimi</span><span>Groq</span><span>Mistral</span><span>DeepSeek</span><span>Together</span><span>Fireworks</span><span>Perplexity</span><span>Cerebras</span><span>Ollama &middot; local</span><span>Any OpenAI-compatible endpoint</span>
       </div>
     </div>
-  </section>
-
-  <!-- ===== providers ===== -->
-  <section class="section providers" aria-label="Supported model providers">
-    <div class="wrap">
-      <p class="eyebrow">Bring your own model</p>
-      <ul class="prov-list">
-        <li>OpenRouter</li><li>Anthropic</li><li>OpenAI</li><li>ChatGPT sign-in</li><li>Gemini</li><li>Grok</li><li>xAI</li><li>Kimi</li><li>Groq</li><li>Mistral</li><li>DeepSeek</li><li>Together</li><li>Fireworks</li><li>Perplexity</li><li>Cerebras</li><li>Ollama &middot; local</li><li>Any OpenAI-compatible endpoint</li>
-      </ul>
-    </div>
-  </section>
+  </div>
 
   <!-- ===== download ===== -->
   <section id="download" class="section">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">Download</p>
-        <h2>Install it. Connect a model. Send a task.</h2>
-        <p class="sec-lead dl-sub">Choose the installer for your computer. Current stable version: <span class="ver">v0.13.1</span>. See what changed in the <a id="rel-page" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">release notes</a>. The station replay and docs follow current source build, which may include features coming in the next release.</p>
-      </div>
-      <div class="dl-grid" data-reveal>
-        <article class="dl-card" data-os="windows">
-          <div class="dl-os">Windows</div>
-          <div class="dl-req">Windows 10 / 11 &middot; 64-bit</div>
-          <a class="btn btn-primary dl-btn" data-asset="x64-setup.exe" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">.exe installer</a>
-          <div class="dl-note">Open the installer and follow its steps. If SmartScreen warns, inspect the publisher before proceeding.</div>
-        </article>
-        <article class="dl-card" data-os="mac-arm">
-          <div class="dl-os">macOS &middot; Apple Silicon</div>
-          <div class="dl-req">M1 or later</div>
-          <a class="btn btn-primary dl-btn" data-asset="aarch64.dmg" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">.dmg</a>
-          <div class="dl-note">Open the disk image and drag StarNet into Applications. If macOS reports a trust failure, contact support.</div>
-        </article>
-        <article class="dl-card" data-os="mac-intel">
-          <div class="dl-os">macOS &middot; Intel</div>
-          <div class="dl-req">Intel-based Macs</div>
-          <a class="btn btn-primary dl-btn" data-asset="x64.dmg" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">.dmg</a>
-          <div class="dl-note">Not sure which Mac you have? Apple menu &rarr; About This Mac &mdash; "Intel" means this one. Stop and report any Gatekeeper trust failure.</div>
-        </article>
-      </div>
-      <div class="source-run" data-reveal>
-        <div class="source-run-head">Prefer to run from source? Node 18+ is all you need.</div>
-        <pre><code id="src-cmd">git clone https://github.com/androoAGI/starnet.git
-cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
-        <button class="btn btn-small" type="button" data-copy="#src-cmd">Copy</button>
-        <div class="source-run-note">Opens the station at <code>http://localhost:8787</code>. Same app, same harness, no installer &mdash; keys stay in a local file instead of the OS keychain.</div>
-      </div>
-      <p class="dl-honesty">Need help installing? Follow the <a href="docs/getting-started.html">quickstart</a> or open <a href="docs/troubleshooting.html">troubleshooting</a>. Public installers support Windows and macOS; Linux is not currently a supported public target.</p>
+    <div class="section-head">
+      <span class="section-no">03</span>
+      <h2 data-scramble>BOOT YOUR STATION</h2>
+      <span class="section-tag">// three steps, about five minutes</span>
     </div>
+    <ol class="boot-steps" data-reveal="stagger">
+      <li><span>01</span>Install StarNet</li>
+      <li><span>02</span>Connect a model</li>
+      <li><span>03</span>Send your first task</li>
+    </ol>
+    <p class="dl-sub" data-reveal>Choose the installer for your computer. Current stable version: <span class="ver">v0.13.1</span>. See what changed in the <a id="rel-page" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">release notes</a>. The station replay and docs follow current source, which may include features coming in the next release.</p>
+    <div class="dl-grid" data-reveal="stagger">
+      <article class="dl-card" data-os="windows">
+        <div class="dl-os">WINDOWS</div>
+        <div class="dl-req">Windows 10 / 11 &middot; 64-bit</div>
+        <a class="btn btn-primary dl-btn" data-asset="x64-setup.exe" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">[ .EXE INSTALLER ]</a>
+        <div class="dl-note">Open the installer and follow its steps. If SmartScreen warns, inspect the publisher before proceeding.</div>
+      </article>
+      <article class="dl-card" data-os="mac-arm">
+        <div class="dl-os">MACOS &middot; APPLE SILICON</div>
+        <div class="dl-req">M1 or later</div>
+        <a class="btn btn-primary dl-btn" data-asset="aarch64.dmg" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">[ .DMG ]</a>
+        <div class="dl-note">Open the disk image and drag StarNet into Applications. If macOS reports a trust failure, contact support.</div>
+      </article>
+      <article class="dl-card" data-os="mac-intel">
+        <div class="dl-os">MACOS &middot; INTEL</div>
+        <div class="dl-req">Intel-based Macs</div>
+        <a class="btn btn-primary dl-btn" data-asset="x64.dmg" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">[ .DMG ]</a>
+        <div class="dl-note">Not sure which Mac you have? Apple menu &rarr; About This Mac &mdash; "Intel" means this one. Stop and report any Gatekeeper trust failure.</div>
+      </article>
+    </div>
+    <div class="source-run" data-reveal>
+      <div class="source-run-head">// prefer to run from source? node 18+ is all you need</div>
+      <pre><code id="src-cmd">git clone https://github.com/androoAGI/starnet.git
+cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
+      <button class="btn btn-small" type="button" data-copy="#src-cmd">[ COPY ]</button>
+      <div class="source-run-note">Opens the station at <code>http://localhost:8787</code>. Same app, same sidecar, no installer &mdash; keys stay in a local file instead of the OS keychain.</div>
+    </div>
+    <p class="dl-honesty">Need help installing? Follow the <a href="docs/getting-started.html">quickstart</a> or open <a href="docs/troubleshooting.html">troubleshooting</a>. Public installers support Windows and macOS; Linux is not currently a supported public target.</p>
   </section>
 
   <!-- ===== docs ===== -->
   <section id="docs" class="section">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">Docs &amp; help</p>
-        <h2>Find your next step.</h2>
-      </div>
-      <div class="doc-paths" data-reveal>
-        <a href="docs/getting-started.html"><span class="eyebrow">First visit</span><h3>Get up and running</h3><p>Install StarNet, connect a model, and send your first task.</p><span class="go">Start here &rarr;</span></a>
-        <a href="docs/index.html"><span class="eyebrow">The handbook</span><h3>Guides and reference</h3><p>Organized around what you want to do: crews, workflows, tools, schedules.</p><span class="go">Browse documentation &rarr;</span></a>
-        <a href="docs/help.html"><span class="eyebrow">Need a hand?</span><h3>Get unstuck</h3><p>Find an answer, troubleshoot a problem, or contact support.</p><span class="go">Open the help center &rarr;</span></a>
-      </div>
+    <div class="section-head">
+      <span class="section-no">04</span>
+      <h2 data-scramble>DOCS &amp; HELP</h2>
     </div>
+    <div class="site-doc-paths" data-reveal="stagger">
+    <a href="docs/getting-started.html"><span class="eyebrow">FIRST VISIT</span><h3>Get up and running</h3><p>Install StarNet, connect a model, and send your first task.</p><span>Start here &rarr;</span></a>
+    <a href="docs/index.html"><span class="eyebrow">THE HANDBOOK</span><h3>Find your next step</h3><p>Guides and reference organized around what you want to do.</p><span>Browse documentation &rarr;</span></a>
+    <a href="docs/help.html"><span class="eyebrow">NEED A HAND?</span><h3>Get unstuck</h3><p>Find an answer, troubleshoot a problem, or contact support.</p><span>Open the help center &rarr;</span></a>
+  </div>
   </section>
 
   <!-- ===== FAQ ===== -->
   <section id="faq" class="section">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">FAQ</p>
-        <h2>Questions people ask first.</h2>
-      </div>
-      <div class="faq">
-        <details>
-          <summary>Is StarNet a harness or a visualizer for one?</summary>
-          <p>A harness. StarNet&rsquo;s own local process runs the agent loop, executes tools, routes work between agents, schedules runs, enforces budgets and keeps memory. The pixel station is how it shows you that work &mdash; it isn&rsquo;t sitting on top of another agent framework.</p>
-        </details>
-        <details>
-          <summary>Is StarNet free?</summary>
-          <p>The software is MIT-licensed open source and free to run. Model usage costs whatever your provider charges &mdash; you bring your own API key (or OAuth account), and StarNet shows you real cost per run. No markup, no subscription required to use your own keys.<span data-pricing-link hidden> If you'd rather not manage keys at all, <a href="pricing.html">StarNet Credits</a> are an optional managed plan &mdash; never required.</span></p>
-        </details>
-        <details>
-          <summary>Is the work actually real?</summary>
-          <p>Yes &mdash; that's the whole point. Every agent run is a real model call with real tools; files get written, browsers get driven, and the ledger records real cost. The station never renders state the harness can't prove. If it looks like an agent is working, it is.</p>
-        </details>
-        <details>
-          <summary>Do I have to build conveyor belts to use it?</summary>
-          <p>No. Chatting with an agent from COMMS needs no belts at all. Belts are for real jobs &mdash; work with several parts, or work that should flow through several agents on its own, especially while you're away. The <a href="docs/guides/conveyors.html">conveyor guide</a> shows the whole idea in five minutes, and the <a href="docs/guides/first-line.html">LINES tool</a> drops a finished line in one click.</p>
-        </details>
-        <details>
-          <summary>Where does my data live?</summary>
-          <p>On your machine. Station state, transcripts, memory, and ledgers live in your local StarNet workspace. Requests go to your model provider only when an agent runs, and to the wider network only when you explicitly grant a network tool or connector.</p>
-        </details>
-        <details>
-          <summary>What do I need to start?</summary>
-          <p>A Windows or macOS machine and one model provider: an OpenRouter API key works everywhere, a ChatGPT, Grok, or Kimi sign-in needs no key at all, and Ollama runs free and fully local. That's it &mdash; full power from minute one, nothing gated behind progression.</p>
-        </details>
-        <details>
-          <summary>Can it spend money without me noticing?</summary>
-          <p>No. Every conveyor line has a per-job budget ($2.00 unless you raise it, $50 ceiling) and an optional per-day cap; the BUDGET panel adds hard per-run, per-agent, per-day, and global caps the sidecar enforces against the real ledger. Autonomy is limited to a number of unattended jobs per day you choose. Use Stop in COMMS to interrupt the current task.</p>
-        </details>
-        <details>
-          <summary>Why does my OS warn me during install?</summary>
-          <p>SmartScreen can still warn while an Authenticode certificate builds reputation; inspect the publisher before proceeding. A public Mac DMG is required to pass Apple notarization, so a Gatekeeper trust failure should be reported rather than bypassed. Release checks do not prove that an installer works on your computer. The <a href="docs/troubleshooting.html">troubleshooting guide</a> explains both cases.</p>
-        </details>
-      </div>
+    <div class="section-head">
+      <span class="section-no">05</span>
+      <h2 data-scramble>FAQ</h2>
+    </div>
+    <div class="faq" data-reveal="stagger">
+      <details>
+        <summary>Is StarNet a harness or a visualizer for one?</summary>
+        <p>A harness. StarNet&rsquo;s own local process runs the agent loop, executes tools, routes work between agents, schedules runs, enforces budgets and keeps memory. The pixel station is how it shows you that work &mdash; it isn&rsquo;t sitting on top of another agent framework.</p>
+      </details>
+      <details>
+        <summary>Is StarNet free?</summary>
+        <p>The software is MIT-licensed open source and free to run. Model usage costs whatever your provider charges &mdash; you bring your own API key (or OAuth account), and StarNet shows you real cost per run. No markup, no subscription required to use your own keys.<span data-pricing-link hidden> If you'd rather not manage keys at all, <a href="pricing.html">StarNet Credits</a> are an optional managed plan &mdash; never required.</span></p>
+      </details>
+      <details>
+        <summary>Is the work actually real?</summary>
+        <p>Yes &mdash; that's the whole point. Every agent run is a real model call with real tools; files get written, browsers get driven, and the ledger records real cost. The station never renders state the harness can't prove. If it looks like an agent is working, it is.</p>
+      </details>
+      <details>
+        <summary>Do I have to build conveyor belts to use it?</summary>
+        <p>No. Chatting with an agent from COMMS needs no belts at all. Belts are for real jobs &mdash; work with several parts, or work that should flow through several agents on its own, especially while you're away. The <a href="docs/guides/conveyors.html">conveyor guide</a> shows the whole idea in five minutes, and the <a href="docs/guides/first-line.html">LINES tool</a> drops a finished line in one click.</p>
+      </details>
+      <details>
+        <summary>Where does my data live?</summary>
+        <p>On your machine. Station state, transcripts, memory, and ledgers live in your local StarNet workspace. Requests go to your model provider only when an agent runs, and to the wider network only when you explicitly grant a network tool or connector.</p>
+      </details>
+      <details>
+        <summary>What do I need to start?</summary>
+        <p>A Windows or macOS machine and one model provider: an OpenRouter API key works everywhere, a ChatGPT, Grok, or Kimi sign-in needs no key at all, and Ollama runs free and fully local. That's it &mdash; full power from minute one, nothing gated behind progression.</p>
+      </details>
+      <details>
+        <summary>Can it spend money without me noticing?</summary>
+        <p>No. Every conveyor line has a per-job budget ($2.00 unless you raise it, $50 ceiling) and an optional per-day cap; the BUDGET panel adds hard per-run, per-agent, per-day, and global caps the sidecar enforces against the real ledger. Autonomy is limited to a number of unattended jobs per day you choose. Use Stop in COMMS to interrupt the current task.</p>
+      </details>
+      <details>
+        <summary>Why does my OS warn me during install?</summary>
+        <p>SmartScreen can still warn while an Authenticode certificate builds reputation; inspect the publisher before proceeding. A public Mac DMG is required to pass Apple notarization, so a Gatekeeper trust failure should be reported rather than bypassed. Release checks do not prove that an installer works on your computer. The <a href="docs/troubleshooting.html">troubleshooting guide</a> explains both cases.</p>
+      </details>
     </div>
   </section>
 
   <!-- ===== final call ===== -->
   <section class="finale" aria-label="Get StarNet">
-    <div class="wrap">
-      <h2>Give your agents a place to work.</h2>
+    <div class="grid-floor" aria-hidden="true"><div></div></div>
+    <div class="finale-inner" data-reveal>
+      <p class="mf-kicker">// YOUR CREW IS WAITING</p>
+      <h2 class="finale-title">Boot the station.</h2>
       <div class="cta-row">
-        <a class="btn btn-primary" href="#download">Download</a>
-        <a class="btn" href="docs/index.html">Read the docs</a>
+        <a class="btn btn-primary btn-hot" href="#download">[ DOWNLOAD ]</a>
+        <a class="btn" href="docs/index.html">[ READ THE DOCS ]</a>
       </div>
     </div>
   </section>
 
 </main>
 
-<a class="to-top" href="#top" aria-label="Back to top">&uarr; Top</a>
+<a class="to-top" href="#top" aria-label="Back to top">&uarr; TOP</a>
 
 <footer class="footer">
   <div class="footer-line">STARNET &middot; a living station of AI agents, doing real work in the dark</div>
@@ -287,7 +308,9 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
   </div>
   <div class="footer-fine">MIT license &middot; <span id="ver-foot">v0.13.1</span> &middot; &copy; <span id="year">2026</span> StarNet &middot; no telemetry, no tracking &mdash; <a href="legal/privacy.html">we collect nothing</a></div>
 </footer>
+
 <script src="site.js?v=20260913-brand-nav"></script>
 <script src="station-demo.js?v=20261014-crew1"></script>
+<script src="home.js?v=20261014-crew1"></script>
 </body>
 </html>

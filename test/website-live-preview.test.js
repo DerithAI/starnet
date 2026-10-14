@@ -20,7 +20,8 @@ const demo = read('website', 'app', 'demo-boot.js');
 A.ok(/<iframe id="crew-app" src="app\/embed\.htm\?v=20261014-crew1"/.test(html),
   'the homepage embeds the dashboard-upload-safe app document, cache-busted for the crew scene');
 A.ok(/station-demo\.js\?v=20261014-crew1/.test(html), 'the homepage loads the replay driver');
-A.eq(/live-preview\.js|home\.js/.test(html), false, 'the retired starter-crop and starfield/console scripts are gone');
+A.eq(/live-preview\.js/.test(html), false, 'the retired starter-preview crop script is gone');
+A.eq(/sch-flow|cp-crew|data-term=/.test(html), false, 'the retired SVG capability schematics are gone (the replay chapters replace them)');
 A.ok(/scripted replay/.test(html) && /no model is running on this page/.test(html),
   'the console says plainly that it is a scripted replay and no model runs');
 A.ok(/id="station"/.test(html), 'the generator-owned PRODUCT nav link (#station) still lands on the console');
@@ -35,6 +36,8 @@ A.ok(/IntersectionObserver/.test(js) && /visibilitychange/.test(js), 'the replay
 A.ok(/aspect-ratio:var\(--stage-aspect/.test(css) && /scale\(var\(--k/.test(css), 'the stage crop consumes the driver geometry');
 
 // ---- demo-boot: starter room + crew, bridge is emit-only ----
+A.ok(/World\.setFrameCap\(1000 \/ 30\)/.test(demo),
+  'the embed caps its own draw rate: an iframe is never focused, so the 5 fps blur pace would otherwise apply');
 A.ok(/window\.StarnetDemoBridge = \{\s*crew: function\(\)[\s\S]*?emit: function\(name, payload\)\{ U\.bus\.emit\(name, payload\); \}\s*\};/.test(demo),
   'the bridge exposes exactly a crew count and an emit onto the app bus');
 

@@ -85,6 +85,11 @@
         /* The app's composition camera includes the tall wall and hull skirt.
            A bare canvas fit can crop the wall at the top of this wider viewport. */
         try { World.frameReviewRoom('r1'); } catch (e) {}
+        /* RENDER PACING draws an unfocused page every 200 ms (5 fps) to save power. An embed is
+           NEVER focused (pointer-events:none in the homepage), so the replay crawled at 5 fps.
+           A caller cap is the app's own override and wins over the blur rate: draw at the same
+           30 fps the desktop app uses while focused. */
+        try { World.setFrameCap(1000 / 30); } catch (e) {}
         /* The homepage replay (station-demo.js) lives in the parent page. The app's globals are
            top-level consts — invisible on window — and the /app/* CSP forbids eval, so this is
            the one doorway: emit onto the app's OWN bus, nothing else. */
