@@ -17,9 +17,15 @@ const html = read('website', 'index.html');
 const demo = read('website', 'app', 'demo-boot.js');
 
 // ---- the page: one embed, cache-busted, honestly captioned ----
-A.ok(/<iframe id="crew-app" src="app\/embed\.htm\?v=20261014-crew1"/.test(html),
+A.ok(/<iframe id="crew-app" data-src="app\/embed\.htm\?v=20261014-crew2"/.test(html),
   'the homepage embeds the dashboard-upload-safe app document, cache-busted for the crew scene');
-A.ok(/station-demo\.js\?v=20261014-crew1/.test(html), 'the homepage loads the replay driver');
+A.ok(/station-demo\.js\?v=20261014-crew2/.test(html), 'the homepage loads the replay driver');
+A.ok(/class="stage-clip" style="background-image:url\(assets\/crew-station\.webp\)"/.test(html) && fs.existsSync(path.join(ROOT, 'website', 'assets', 'crew-station.webp')),
+  'a real frame of the crew room holds the window while the app boots');
+A.ok(/frame\.src = frame\.getAttribute\('data-src'\)/.test(js) && /max-width:760px/.test(js),
+  'desktops load the live app; phones keep the still frame instead of the full renderer');
+A.ok(/\.stage-clip iframe\{ opacity:0;/.test(css) && /\.stage-clip\.live iframe\{ opacity:1; \}/.test(css) && /classList\.add\('live'\)/.test(js),
+  'the live station fades in over the poster only once the crew is on the floor');
 A.eq(/live-preview\.js/.test(html), false, 'the retired starter-preview crop script is gone');
 A.eq(/sch-flow|cp-crew|data-term=/.test(html), false, 'the retired SVG capability schematics are gone (the replay chapters replace them)');
 A.ok(/scripted replay/.test(html) && /no model is running on this page/.test(html),
@@ -36,6 +42,8 @@ A.ok(/IntersectionObserver/.test(js) && /visibilitychange/.test(js), 'the replay
 A.ok(/aspect-ratio:var\(--stage-aspect/.test(css) && /scale\(var\(--k/.test(css), 'the stage crop consumes the driver geometry');
 
 // ---- demo-boot: starter room + crew, bridge is emit-only ----
+A.ok(/function scopeTextures\(\)/.test(demo) && /ROOM_PROPS = \/\^\(desk\|war_intelcab\|gigs_servercart\|comms_dish\|workbench\|studio\|plant\|intake\|bay\|outbox\)/.test(demo),
+  'the embed downloads only the textures this room draws (the full catalogue was ~240 MB)');
 A.ok(/World\.setFrameCap\(1000 \/ 30\)/.test(demo),
   'the embed caps its own draw rate: an iframe is never focused, so the 5 fps blur pace would otherwise apply');
 A.ok(/window\.StarnetDemoBridge = \{\s*crew: function\(\)[\s\S]*?emit: function\(name, payload\)\{ U\.bus\.emit\(name, payload\); \}\s*\};/.test(demo),

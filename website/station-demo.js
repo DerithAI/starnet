@@ -10,6 +10,10 @@
   var root = document.querySelector('[data-demo]');
   var frame = document.getElementById('crew-app');
   if (!root || !frame) return;
+  /* Phones get the poster, never the app: the full renderer is a desktop-weight program (tens of MB of
+     art plus the whole app), so on a small touch screen the still frame stays and the trace runs alone. */
+  var still = !!(window.matchMedia && window.matchMedia('(max-width:760px), (hover:none) and (pointer:coarse)').matches);
+  if (!still && frame.getAttribute('data-src')) frame.src = frame.getAttribute('data-src');
   var clip = root.querySelector('.stage-clip');
   var log = root.querySelector('[data-trace]');
   var tabs = Array.prototype.slice.call(root.querySelectorAll('[data-chapter]'));
@@ -239,13 +243,14 @@
   /* boot: wait for the embedded app to reach the live floor with its crew, then start */
   select(0);
   (function wait(){
-    var w = ready();
+    var w = still ? { emit: function(){} } : ready();
     if (!w) { setTimeout(wait, 300); return; }
     app = w;
     setTimeout(function(){
+      if (!still) clip.classList.add('live');
       started = true;
       if (visible) { tokenTimer = setInterval(tokens, 220); play(current < 0 ? 0 : current); }
-    }, 1200);
+    }, still ? 0 : 1200);
   })();
   window.__starnetDemo = { play: play, state: function(){ return { ready: !!app, started: started, visible: visible, chapter: ORDER[current], live: Object.keys(live) }; } };
 })();
