@@ -260,24 +260,6 @@
   .trace-log li{ grid-template-columns:38px 56px 1fr; gap:6px; }
 }
 
-/* ---------- 02 a harness first ---------- */
-.stack{ border:1px solid var(--line); background:rgba(8,6,4,.7); box-shadow:0 30px 90px rgba(0,0,0,.45); position:relative; }
-.stack::before{ content:'STARNET HARNESS'; position:absolute; top:-9px; left:16px; padding:0 8px; background:var(--bg); font-size:14px; letter-spacing:3px; color:var(--amber-d); }
-.layer{ display:grid; grid-template-columns:230px 1fr; gap:24px; align-items:center; padding:20px 24px; }
-.layer + .layer{ border-top:1px solid var(--line); }
-.layer-k{ font-size:18px; letter-spacing:2.5px; color:var(--amber-d); }
-.layer-k span{ display:block; margin-top:4px; font:13px system-ui,sans-serif; letter-spacing:0; color:rgba(236,224,207,.45); }
-.layer-core{ background:linear-gradient(90deg, rgba(255,157,47,.08), transparent 60%); box-shadow:inset 2px 0 0 var(--amber); align-items:start; padding-top:26px; padding-bottom:26px; }
-.layer-core .layer-k{ font-size:24px; color:#ffe2b0; text-shadow:0 0 12px rgba(255,157,47,.5); }
-.chips{ display:flex; flex-wrap:wrap; gap:8px; list-style:none; margin:0; padding:0; }
-.chips li{ padding:5px 12px; border:1px solid var(--line); background:var(--panel); font-size:18px; letter-spacing:1px; color:rgba(236,224,207,.75); }
-.core-grid{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; list-style:none; margin:0; padding:0; background:var(--line); border:1px solid var(--line); }
-.core-grid li{ padding:16px; background:#0c0a07; font:14px/1.65 system-ui,sans-serif; color:#bfc1b6; transition:background .2s; }
-.core-grid li:hover{ background:#120e0a; }
-.core-grid b{ display:block; margin-bottom:6px; font:400 20px 'VT323',monospace; letter-spacing:1.5px; color:var(--amber-b); text-shadow:0 0 10px rgba(255,157,47,.35); }
-@media (max-width:1000px){ .core-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
-@media (max-width:760px){ .layer{ grid-template-columns:1fr; gap:12px; padding:18px 16px; } }
-@media (max-width:520px){ .core-grid{ grid-template-columns:1fr; } }
 @media (prefers-reduced-motion: reduce){ .trace-log li{ animation:none; } }
 
 /* ---------- reduced motion: a still, complete frame ---------- */
