@@ -272,3 +272,28 @@
   .truths li::after{ width:100%; }
   .mq-track{ transform:none; }
 }
+
+/* ---------- one StarNet voice (2026-10-14, Andrew: "that ugly basic font doesn't suit") ----------
+   Every reading surface on the homepage speaks VT323 — the station's own face — instead of the
+   system sans the later patch rules spread in. VT323 sets ~25% smaller than a sans at the same px,
+   so each size is lifted to keep the line lengths and legibility the sans had. */
+.home .big-lead{ font:400 clamp(24px,2.7vw,33px)/1.3 'VT323',monospace; letter-spacing:.5px; }
+.home .subline{ font:400 clamp(19px,2vw,22px)/1.4 'VT323',monospace; letter-spacing:.5px; color:#d9cfbf; max-width:640px; }
+.home .truths p, .home .mf-proofs li{ font:400 19px/1.4 'VT323',monospace; letter-spacing:.4px; color:#cfc6b6; }
+.home .trace-head p{ font:400 19px/1.35 'VT323',monospace; letter-spacing:.4px; color:#d2c9b9; }
+.home .bezel.live figcaption span{ font:400 16px/1.35 'VT323',monospace; letter-spacing:.8px; }
+.home .section-tag, .home .mf-kicker{ font:400 16px 'VT323',monospace; letter-spacing:2px; }
+.home .dl-sub{ font:400 20px/1.45 'VT323',monospace; letter-spacing:.4px; color:#cfc6b6; }
+.home .dl-note, .home .source-run-note, .home .dl-honesty{ font:400 17px/1.4 'VT323',monospace; letter-spacing:.4px; color:rgba(236,224,207,.6); }
+.home .faq details p{ font:400 19px/1.5 'VT323',monospace; letter-spacing:.4px; color:#cfc6b6; }
+.home .site-doc-paths .eyebrow{ font:400 15px 'VT323',monospace; letter-spacing:3px; }
+.home .site-doc-paths h3{ font:400 26px/1.15 'VT323',monospace; letter-spacing:1.5px; color:var(--amber-b); text-shadow:0 0 10px rgba(255,157,47,.35); margin:14px 0 10px; }
+.home .site-doc-paths p{ font:400 18px/1.4 'VT323',monospace; letter-spacing:.4px; color:#cfc6b6; }
+.home .site-doc-paths > a > span:last-child{ font:400 18px 'VT323',monospace; letter-spacing:1.5px; }
+.home .footer-line{ font:400 17px/1.5 'VT323',monospace; letter-spacing:1px; color:rgba(236,224,207,.6); }
+.home .footer-links a{ font:400 16px 'VT323',monospace; letter-spacing:1.5px; }
+.home .footer-fine{ font:400 15px/1.5 'VT323',monospace; letter-spacing:.8px; color:rgba(236,224,207,.45); }
+@media (max-width:620px){
+  .home .big-lead{ font-size:23px; }
+  .home .truths p, .home .mf-proofs li, .home .faq details p, .home .trace-head p{ font-size:18px; }
+}
