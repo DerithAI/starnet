@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "c5d8023cc828607ef580a41956f14807a0b83951",
+    "sourceCommit": "39e9f8997c361d3bc4ea944453fec6a74d9e644a",
     "pathSetSha256": "213a4211bc1a66001a9f827b197c1b7aff1194373527f28d43c7ea6f2ebd706c",
     "files": [
       {
@@ -1643,8 +1643,8 @@
       },
       {
         "path": "frontend/css/pipglass.css",
-        "bytes": 77133,
-        "sha256": "d5431699168aea805a67f7a96c0e74c7d47392d30813d305b6912fe9b3699abc"
+        "bytes": 94523,
+        "sha256": "bad326a25f5ac6152aa13ef8f9156874feabf96cd6d4e20d2eaa5ca05ee39f15"
       },
       {
         "path": "frontend/css/plugins.css",
@@ -1808,8 +1808,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 98802,
-        "sha256": "ca1af29c33717bdab27ec0238e0b8da785eb12f8723db4c00386c6cf3f02774d"
+        "bytes": 98798,
+        "sha256": "e989adbfd63a711fd5b1cb7396e7aff2f232cb1d56c8e2fe80d28932b96143be"
       },
       {
         "path": "frontend/js/arcade.js",
