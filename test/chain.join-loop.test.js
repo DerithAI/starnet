@@ -185,6 +185,13 @@ function rig(floor, script, opts) {
     A.eq(res.text, 'published', 'the publisher has the last word');
     A.ok(/\[LOOP — pass 1 of 3/.test(R.log[0].text), 'the re-entry handoff names the pass');
     A.ok(/\[LOOP — pass 3 of 3/.test(R.log[4].text), 'and counts up to max');
+    // token-burn audit 2026-10-17: hops no longer replay the line's transcript, so the loop-back turn itself carries the work
+    A.eq(R.log[2].agentId, 'drafter');
+    // (the fixture's drafter names its output after the pass it was handed: its first draft is 'draft v2')
+    A.ok(R.log[2].text.indexOf('THE WORK UNDER REVIEW') >= 0 && R.log[2].text.indexOf('draft v2') >= 0 && R.log[2].text.indexOf('needs work 1') >= 0,
+      'a loop-back shows the writer the draft the reviewer judged AND the review: ' + R.log[2].text.slice(-300));
+    A.ok(R.log[2].text.indexOf('draft v2') < R.log[2].text.indexOf('needs work 1'), 'the work under review comes before the review');
+    A.ok(R.log[4].text.indexOf('draft v3') >= 0 && R.log[4].text.indexOf('draft v2') < 0, 'each pass shows the LATEST draft under review, never a stale one');
     A.eq(R.log[6].agentId, 'publisher');
     A.ok(!/\[LOOP/.test(R.log[6].text), 'the done-lane handoff carries no loop marker');
     A.eq(res.hops.length, 7, 'seven hops bought — more than the 6-stage cap, because loop passes are bounded by max, not by the stage cap');

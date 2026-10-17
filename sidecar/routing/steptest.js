@@ -212,7 +212,7 @@ function makeStepTest(o) {
     if (step && step.loop) {
       gateDecided = true;
       loopKey = step.loop; n = W.iter[step.loop] || 0;
-      const d = loopDecision(step, ctx, n, W.visited, raw);
+      const d = loopDecision(step, ctx, n, W.visited, raw, W.handed);
       target = asNode(d.target); text = d.text; again = d.again; exhausted = d.exhausted;
       if (d.again) open[step.loop] = true; else delete open[step.loop];
       looping = Object.keys(open).length > 0;
@@ -332,6 +332,7 @@ function makeStepTest(o) {
       }
       if (err) { finish(s, 'failed', err); return; }
       W.cur = job.agentId; W.curDock = job.dockId || null; W.out = output;
+      W.handed = String(job.input == null ? '' : job.input);   // what this step was handed: a loop-back shows it (chain.js loopDecision)
 
       const nx = resolveNext(s, null, false);
       const afterHop = s.hops.length - 1;

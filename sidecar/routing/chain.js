@@ -94,14 +94,24 @@ function effectiveLimits(raw, fallback, poolCap) {
      no when                 -> every pass goes back;
    and in every case MAX PASSES ends it on DONE. A `when` still unmet when the passes ran out marks the
    done-lane handoff EXHAUSTED so the downstream stage knows nobody approved it. `n` = passes already taken
-   round this gate; `text` = the output about to be handed on (returned annotated). Pure: mutates nothing. */
-function loopDecision(step, ctx, n, visited, text) {
+   round this gate; `text` = the output about to be handed on (returned annotated). Pure: mutates nothing.
+   `reviewed` (token-burn audit 2026-10-17) = what the reviewing stage was HANDED. The writer used to see its own draft on a
+   loop-back only because the resume seed replayed the line's whole transcript into every hop; hops no longer take that
+   seed, so a loop-back turn carries the work under review itself, clipped, ahead of the review. */
+const REVIEWED_HEAD = 12000, REVIEWED_TAIL = 4000;
+function clipReviewed(s) {
+  if (s.length <= REVIEWED_HEAD + REVIEWED_TAIL) return s;
+  return s.slice(0, REVIEWED_HEAD) + '\n[… ' + (s.length - REVIEWED_HEAD - REVIEWED_TAIL) + ' characters of the work omitted …]\n' + s.slice(-REVIEWED_TAIL);
+}
+function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);
   const wants = !step.when ? true : byVerdict ? (ctx.verdict !== String(step.when).toLowerCase()) : (ctx.tag === step.when);
   const again = step.backTo && n < step.max && wants;
   if (again) {
+    const draft = (typeof reviewed === 'string' && reviewed.trim()) ? reviewed : '';
     return { again: true, target: step.backTo, exhausted: false,
-      text: '[LOOP — pass ' + (n + 1) + ' of ' + step.max + ' round the gate at ' + step.loop + ']\n' + text };
+      text: '[LOOP — pass ' + (n + 1) + ' of ' + step.max + ' round the gate at ' + step.loop + ']\n'
+        + (draft ? 'THE WORK UNDER REVIEW (what the reviewer was handed):\n' + clipReviewed(draft) + '\n\nREVIEW:\n' : '') + text };
   }
   // spent (or the verdict passed): leave on the done lane — an APPROVED crate leaves without its VERDICT line (R1: the line is the
   // gate's control signal; it never ships as part of the work). An exhausted crate keeps it: the reviewer's last word is evidence.
@@ -479,6 +489,7 @@ function makeChainRunner(o) {
        ones named as missing (it used to return the first branch's answer and strand the rest at the barrier). */
     let fan = null;
     let fromTile = null, via = null, loopHops = 0;
+    let lastHanded = String(originalText || '');   // what the stage that just ran was handed (a loop-back shows it the work under review)
     // inside a loop pass every hop is a re-visit by design (the body runs again); `looping` is raised at a
     // re-entry and lowered when the gate lets the crate out on its done lane
     let looping = false;
@@ -597,7 +608,7 @@ function makeChainRunner(o) {
         if (step && step.loop) {
           // THE ONE LOOP RULE — loopDecision (module level) holds it; the step-through test reads the same one
           const n = iter[step.loop] || 0;
-          const d = loopDecision(step, ctx, n, visited, out.text);
+          const d = loopDecision(step, ctx, n, visited, out.text, lastHanded);
           target = asNode(d.target); out.text = d.text;
           if (d.again) { iter[step.loop] = n + 1; loopHop = true; openLoops.add(step.loop); looping = true; fromTile = null; }
           else { openLoops.delete(step.loop); looping = openLoops.size > 0; if (d.exhausted) out.loopExhausted = true; }
@@ -739,6 +750,7 @@ function makeChainRunner(o) {
       call.ceilingUsd = Math.max(0, lim.maxUsd - spent);
       if (target.dockId) { call.dockId = target.dockId; call.fromDock = entryBranch ? null : cur.dockId; }
       if (lineId) call.lineId = lineId;   // LINE WATCH (additive): the host stamps the hop's run row with its line
+      lastHanded = entryBranch ? String(originalText || '') : hopPart ? String(hopPart.text || '') : String(out.text || '');
       try { r = await runAgent(call); }
       catch (e) { r = { error: (e && e.message) || String(e || 'stage failed') }; }
       r = r || {};
