@@ -236,6 +236,19 @@ async function rejects(promise, msg) { try { await promise; A.ok(false, msg + ' 
     A.ok(t2.indexOf('node_modules/leftpad') < 0 && t2.indexOf('.git/HEAD') < 0 && t2.indexOf('.git/objects') < 0, 'its contents (and .git internals) are not walked');
     A.ok(t2.indexOf('sub/b.txt') >= 0, 'ordinary folders are still expanded');
     A.ok((await listTool.run({ path: 'node_modules', recursive: true }, ctx)).content.indexOf('leftpad/index.js') >= 0, 'listing the folder by path still looks inside');
+    // listing a SUBFOLDER: the hint must name a path that resolves where the folder really is (not relative to the listed folder)
+    fsx.mkdirSync(px.join(base, 'proj', 'node_modules', 'lodash'), { recursive: true }); fsx.writeFileSync(px.join(base, 'proj', 'node_modules', 'lodash', 'lodash.js'), 'x');
+    const sub = (await listTool.run({ path: 'proj', recursive: true }, ctx)).content;
+    const hinted = /fs\.list \{"path":("[^"]+")\}/.exec(sub);
+    A.ok(hinted && JSON.parse(hinted[1]) === 'proj/node_modules', 'a subfolder listing hints the full path: ' + (hinted && hinted[1]));
+    A.ok((await listTool.run({ path: JSON.parse(hinted[1]), recursive: true }, ctx)).content.indexOf('lodash/lodash.js') >= 0, 'following the hint really looks inside (never a false "(empty)")');
+    // the CHARACTER budget alone (well under 500 entries) cuts a listing of long names, and says so
+    fsx.mkdirSync(px.join(base, 'long'), { recursive: true });
+    for (let i = 0; i < 200; i++) fsx.writeFileSync(px.join(base, 'long', 'n' + String(i).padStart(3, '0') + '_' + 'x'.repeat(140) + '.txt'), '');
+    const longList = await listTool.run({ path: 'long', recursive: true }, ctx);
+    const longLines = longList.content.split('\n');
+    A.ok(longLines.length < 200 && /…\[truncated at \d+ entries/.test(longList.content), 'the 16k character budget cuts a long-name listing below the entry cap, with the note (' + longLines.length + ' lines)');
+    A.ok(longList.content.length > 15000 && longList.content.length <= 16000 + 400, 'and stops at the budget (' + longList.content.length + ' chars)');
     for (let i = 0; i < 520; i++) fsx.writeFileSync(px.join(base, 'sub', 'f' + String(i).padStart(4, '0') + '.txt'), '');
     const big = await listTool.run({ recursive: true }, ctx);
     A.ok(/…\[truncated at \d+ entries — list one subdirectory/.test(big.content) && /\(truncated\)$/.test(big.summary), 'a huge tree ends on a truncation note that says how to continue');
