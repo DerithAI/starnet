@@ -6803,7 +6803,7 @@ const cronDriver = makeCronDriver({
      same caps, same per-hop crates as a channel message — only the way a hop is executed differs (a routine has
      no chat transcript; its hops ride the routine's own stream so the session shows the whole line). */
   advanceChain: (o) => chainRunner.advance({
-    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, signal: o.signal,
+    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, ask: o.ask, signal: o.signal,
     runId: o.runId, streamId: o.streamId || undefined,   // the fire's own stream ('cron-<runId>'): a SEND TO hand-off reads back exactly this fire's runs
     // the entry run's reconciled spend: MAX_CHAIN_USD bounds the WHOLE chain, and stage one is part of the
     // chain (2026-08-10 audit — the entry run rode outside its own line's $ ceiling on every path).
@@ -16235,7 +16235,7 @@ async function handleCronRun(req, res) {
       try {
         const line = await chainRunner.advance({
           agentId: job.agentId, dockId: job.dockId ? (router.dockOf(job.agentId, job.dockId) || undefined) : undefined,
-          text: state.buf, originalText: assembledPrompt, signal: ac.signal,   // contextFrom + directive, as the scheduled fire hands it (hops no longer replay the stream)
+          text: state.buf, originalText: assembledPrompt, ask: String(job.prompt || ''), signal: ac.signal,   // contextFrom + directive, as the scheduled fire hands it (hops no longer replay the stream)
           // the fire's own stream, exactly as the scheduled fire passes it: a SEND TO hand-off reads back THIS run's rows (the
           // every-step-ended-done check and the files it made) — without it Run Now handed on half-finished work the schedule refuses
           runId, streamId: 'cron-' + runId,

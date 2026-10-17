@@ -366,6 +366,24 @@ function rig(floor, script, opts) {
     }
   }
 
+  /* ---- SEND TO carries the routine's own directive (token-burn audit 2026-10-17): a contextFrom routine hands its line the
+          ASSEMBLED prompt (untrusted context + directive) as originalText so stages can read it, and the plain directive as
+          `ask`; the shipped record (what SEND TO hands the next line, cut at 4k downstream) must be the ask. ---- */
+  {
+    const shippedRecs = [];
+    const R = rig(loopFloor({ maxIter: 1 }), { publisher: { text: 'published', usd: 0.01 } }, { lastStage: () => true, onShipped: r => shippedRecs.push(r) });
+    const assembled = '<untrusted_routine_context>' + 'digest line. '.repeat(400) + '</untrusted_routine_context>\n\n## ROUTINE DIRECTIVE\nwrite a post';
+    await R.c.advance({ agentId: 'publisher', text: 'published', originalText: assembled, ask: 'write a post', lineId: R.lineId, runId: 'ask1' });
+    await new Promise(r => setImmediate(r));
+    A.ok(shippedRecs.length === 1, 'the job ships (' + shippedRecs.length + ')');
+    A.eq(shippedRecs[0] && shippedRecs[0].originalText, 'write a post', 'the SEND TO record carries the routine directive, never its context block');
+    const plain = [];
+    const R2 = rig(loopFloor({ maxIter: 1 }), { publisher: { text: 'published', usd: 0.01 } }, { lastStage: () => true, onShipped: r => plain.push(r) });
+    await R2.c.advance({ agentId: 'publisher', text: 'published', originalText: 'write a post', lineId: R2.lineId, runId: 'ask2' });
+    await new Promise(r => setImmediate(r));
+    A.eq(plain[0] && plain[0].originalText, 'write a post', 'with no separate ask the record keeps originalText (every other caller unchanged)');
+  }
+
   /* ---- loopDecision's WORK UNDER REVIEW block, at the seam the runner and the step test share (token-burn audit 2026-10-17) ---- */
   {
     const { loopDecision } = require('../sidecar/routing/chain.js');

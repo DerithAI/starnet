@@ -417,7 +417,7 @@ function makeChainRunner(o) {
     let ships = false;
     try { ships = !!(lastStage && (out.dockId ? lastStage(out.agentId, out.dockId) : lastStage(out.agentId))); } catch (e) { failNote('chain.onShipped.lastStage', e); ships = false; }
     if (!ships) return;
-    const rec = { lineId, entryRunId: (s.runId != null && String(s.runId)) || null, agentId: out.agentId, dockId: out.dockId || null, outboxId: out.outboxId || null, text: String(out.text), originalText: String(s.originalText != null ? s.originalText : (s.text || '')),
+    const rec = { lineId, entryRunId: (s.runId != null && String(s.runId)) || null, agentId: out.agentId, dockId: out.dockId || null, outboxId: out.outboxId || null, text: String(out.text), originalText: String(s.ask != null ? s.ask : s.originalText != null ? s.originalText : (s.text || '')),   // SEND TO carries the routine's own directive, never its untrusted context block
       usd: ((typeof s.entryUsd === 'number' && isFinite(s.entryUsd) && s.entryUsd > 0) ? s.entryUsd : 0) + (out.usd || 0),
       streamId: (s.streamId != null && String(s.streamId)) || null, since: (typeof s.since === 'number' && isFinite(s.since)) ? s.since : null };
     // a PARTIAL joined job still reaches the host — the receipt refuses it and SEND TO says why on the next line — never as clean
@@ -628,7 +628,7 @@ function makeChainRunner(o) {
              at all = every branch works the whole job, and each is told why. */
           let texts = null, partsInfo = null;
           if (step.divide && br.length > 1) {
-            const parts = Pipeline.divideJob(out.text, br.length) || Pipeline.divideJob(originalText, br.length);
+            const parts = Pipeline.divideJob(out.text, br.length) || Pipeline.divideJob(s.ask != null ? String(s.ask) : originalText, br.length);
             if (parts) { br.length = parts.length; texts = parts.map((p, i) => Pipeline.partTurn(out.text, p, i, parts.length)); partsInfo = parts.map((p, i) => ({ text: p, i, k: parts.length })); out.divided = parts.length; }
             else { const note = '(This job was meant to be split between ' + br.length + ' agents, but the step before the splitter gave no numbered parts — so every branch has the whole job.)\n\n'; texts = br.map(() => note + out.text); out.divided = 0; }
           }
