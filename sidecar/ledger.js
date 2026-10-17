@@ -107,6 +107,7 @@
       const entry = {
         runId: str(e.runId), agentId: str(e.agentId),
         turns: num(e.turns), usd: num(e.usd), tokens: num(e.tokens),
+        ...(num(e.cachedTokens) > 0 ? { cachedTokens: num(e.cachedTokens) } : {}),   // (additive) the cache-served part of `tokens`' input
         model: modelName(e.model),
         unmetered: !!e.unmetered,
         ts: num(e.ts) || clock.now()

@@ -1157,6 +1157,9 @@
     let refundsUsed = 0;
 
     let spentUsd = 0, turns = 0, spentTokens = 0;
+    // the part of spentTokens' input the provider served from its prompt cache (token-burn audit 2026-10-17): `tokens`
+    // counts a cache read at full weight, so without this a run row could never show whether caching worked
+    let spentCachedTokens = 0;
     const unpricedUsage = [];
     let unpricedTokens = 0;          // tokens reconciled at $0 on a model nothing could price (feeds maxUnpricedTokens)
     let unpricedFlagged = false;     // agent.cost carries unpriced:true ONCE per run — the first turn it happens
@@ -1391,6 +1394,7 @@
       const c = cost.reconcile(u, modelId);
       spentUsd += c.usd || 0;
       spentTokens += (c.tokensIn || 0) + (c.tokensOut || 0);
+      spentCachedTokens += Math.min(c.cachedTokens || 0, c.tokensIn || 0);
       noteUnpriced(modelId, c);
       noteSubscription(modelId, u, c);
       emit('agent.cost', {
@@ -1458,7 +1462,7 @@
       emit('agent.run.end', endPayload);
       const tail = messages[messages.length - 1];
       const terminalText = tail && tail.role === 'assistant' && !tail.tool_calls ? String(tail.content == null ? '' : tail.content) : '';
-      const out = { reason, messages, text: terminalText, usd: spentUsd, turns, tokens: spentTokens, model, unpricedUsage: unpricedUsage.slice() };
+      const out = { reason, messages, text: terminalText, usd: spentUsd, turns, tokens: spentTokens, cachedTokens: spentCachedTokens, model, unpricedUsage: unpricedUsage.slice() };
       if (cut) out.finishReason = cut;
       if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; }
       if (endPayload.unpricedModel) {
@@ -2182,6 +2186,7 @@
       const final = cost ? cost.reconcile(usage, model) : { usd: 0, tokensIn: 0, tokensOut: 0, reasoningTokens: 0, cachedTokens: 0 };
       spentUsd += final.usd || 0;
       spentTokens += (final.tokensIn || 0) + (final.tokensOut || 0);
+      spentCachedTokens += Math.min(final.cachedTokens || 0, final.tokensIn || 0);
       noteUnpriced(model, final);
       noteSubscription(model, usage, final);
       noteReading(usage);   // the usage anchor for the next fold decision (real count + the ruler on this same request)
