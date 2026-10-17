@@ -16235,7 +16235,7 @@ async function handleCronRun(req, res) {
       try {
         const line = await chainRunner.advance({
           agentId: job.agentId, dockId: job.dockId ? (router.dockOf(job.agentId, job.dockId) || undefined) : undefined,
-          text: state.buf, originalText: String(job.prompt || ''), signal: ac.signal,
+          text: state.buf, originalText: assembledPrompt, signal: ac.signal,   // contextFrom + directive, as the scheduled fire hands it (hops no longer replay the stream)
           // the fire's own stream, exactly as the scheduled fire passes it: a SEND TO hand-off reads back THIS run's rows (the
           // every-step-ended-done check and the files it made) — without it Run Now handed on half-finished work the schedule refuses
           runId, streamId: 'cron-' + runId,

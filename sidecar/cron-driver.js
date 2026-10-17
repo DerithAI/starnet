@@ -553,7 +553,9 @@
           // hops ride the ROUTINE'S OWN stream so its session reads as one multi-stage job, and each hop renews
           // the lease — a line that outran the heartbeat would be declared a zombie and re-fired mid-work.
           Promise.resolve(advanceChain({
-            agentId: job.agentId, dockId: job.dockId || undefined, text: state.buf, originalText: String(job.prompt || ''),
+            // the ASSEMBLED prompt (contextFrom output + directive): hops no longer replay the stream, so a downstream stage
+            // sees the routine's upstream context only if the handoff's "original request" carries it (token-burn audit 2026-10-17)
+            agentId: job.agentId, dockId: job.dockId || undefined, text: state.buf, originalText: assembledPrompt,
             signal: ac.signal, runId: runId, streamId: 'cron-' + runId, key: key, model: model, provider: provider,
             // the entry run's reconciled spend: the chain's $ ceiling covers the WHOLE line, stage one
             // included (2026-08-10 audit — the entry run rode outside its own line's cap on every path).
