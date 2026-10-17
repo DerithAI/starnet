@@ -10698,6 +10698,7 @@ const Chat = (() => {
         res = await Harness.chat({
           system: sys, messages: [{ role: 'user', content: prompt }], agentId: nx, isTask: true,
           signal: seed.signal, streamId: ws.id,
+          resumeSeed: false,   // the handoff already carries the request + upstream output; never re-send this session's tool traffic to every stage
           placed: (typeof World !== 'undefined' && World.heroCaps) ? World.heroCaps(nx) : [],
           stationPlaced: (typeof World !== 'undefined' && World.stationCaps) ? World.stationCaps() : [],
           onRunId: id => { hopRunId = id; },
