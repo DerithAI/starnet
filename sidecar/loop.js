@@ -558,15 +558,21 @@
   // A check is a command whose whole job is to PASS or FAIL. `git status`, `ls`, `cat` are not evidence.
   // (token-burn audit 2026-10-17: `node tests\x.js`, `node tests.js`, `node --check f.js` and `git apply --check x.patch` ran
   // and passed on real night shifts, yet re-armed the nudge — 11 of 15 short verify-on-stop fires bought a turn for nothing.)
-  const VOS_CHECK_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|lint|typecheck|check)|\b(pytest|tox|jest|vitest|mocha|ava|tsc|eslint|ruff|mypy|flake8|rubocop|clippy|gradle|mvn|make)\b|\b(cargo|go|dotnet|swift)\s+(test|build|vet)\b|\bnode\s+[^|;&]*\btests?\b|\bnode\s+(--check|-c)\b|\bgit\s+apply\s+(--check|--stat\s+--check)\b/i;
+  const VOS_CHECK_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|lint|typecheck|check)|\b(pytest|tox|jest|vitest|mocha|ava|tsc|eslint|ruff|mypy|flake8|rubocop|clippy|gradle|mvn|make)\b|\b(cargo|go|dotnet|swift)\s+(test|build|vet)\b|\bnode\s+[^|;&]*\btests?\b|\bnode\s+--check\b/i;
+  const VOS_NODE_C_RE = /\bnode\s+-c(?=\s|$)/;   // case-sensitive: `node -c` is --check, `node -C <condition>` is not a check
+  // `git apply --check` proves a PATCH applies — it vouches for .patch/.diff files only, never for code written beside them
+  const VOS_PATCH_CHECK_RE = /\bgit\s+apply\s+(--check|--stat\s+--check)\b/i;
+  const VOS_PATCH_PATH_RE = /\.(patch|diff)$/i;
   // a night shift's manifest is bookkeeping the host reads, not code: writing it last must not re-arm the nudge
   const VOS_MANIFEST_NAME = new Set(['deliverable.json']);
+  // extension-less dotfiles with nothing to run (a .babelrc / .eslintrc / .prettierrc IS config that a check would exercise)
+  const VOS_INERT_DOTFILE = new Set(['.gitignore', '.gitattributes', '.gitkeep', '.dockerignore', '.npmignore', '.editorconfig', '.nvmrc', '.node-version', '.python-version', '.env']);
   function vosIsCodePath(p) {
     const s = String(p == null ? '' : p).trim();
     if (!s) return false;
     const base = s.split(/[\\/]/).pop() || '';
     if (VOS_MANIFEST_NAME.has(base.toLowerCase())) return false;
-    if (base.charAt(0) === '.' && base.indexOf('.', 1) < 0) return false;   // an extension-less dotfile (.gitignore, .env) has nothing to run
+    if (VOS_INERT_DOTFILE.has(base.toLowerCase()) || /^\.env\./i.test(base)) return false;
     const dot = base.lastIndexOf('.');
     if (dot <= 0) return !VOS_PROSE_NAME.has(base.toLowerCase());   // extension-less: only prose NAMES are exempt
     const ext = base.slice(dot + 1).toLowerCase();
@@ -581,8 +587,14 @@
   }
   function vosIsCheckCommand(args) {
     if (!args || typeof args !== 'object') return false;
-    const cmd = args.command || args.cmd || args.script || '';
-    return VOS_CHECK_RE.test(String(cmd));
+    const cmd = String(args.command || args.cmd || args.script || '');
+    return VOS_CHECK_RE.test(cmd) || VOS_NODE_C_RE.test(cmd) || VOS_PATCH_CHECK_RE.test(cmd);
+  }
+  // a check that ONLY proves a patch applies (no other check in the same command) clears the patch files, not the code
+  function vosIsPatchOnlyCheck(args) {
+    if (!args || typeof args !== 'object') return false;
+    const cmd = String(args.command || args.cmd || args.script || '');
+    return VOS_PATCH_CHECK_RE.test(cmd) && !VOS_CHECK_RE.test(cmd) && !VOS_NODE_C_RE.test(cmd);
   }
 
   // A tool invocation may itself succeed while the command it ran proves failure (shell/MCP command
@@ -2628,7 +2640,11 @@
           if (!okById[c.id]) continue;
           const k = vosKey(c.name);
           if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) {
-            if (vosCheckPassed(c, resultById[c.id])) { vosUnverified.clear(); vosFailedCheck = ''; }
+            if (vosCheckPassed(c, resultById[c.id])) {
+              if (k === 'shell_exec' && vosIsPatchOnlyCheck(c.args)) { for (const p of Array.from(vosUnverified)) if (VOS_PATCH_PATH_RE.test(p)) vosUnverified.delete(p); }
+              else vosUnverified.clear();
+              vosFailedCheck = '';
+            }
             // `summarize` is shadowed in this scope by the compaction summarizer (o.summarize) — use clip().
             else if (vosUnverified.size) vosFailedCheck = clip(k === 'shell_exec' ? ((c.args && (c.args.command || c.args.cmd || c.args.script)) || k) : ((c.args && c.args.cmd) || k), 80);
             continue;
@@ -2746,5 +2762,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { waitsOnPeers, parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, memorySaveClaim, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze, turnAllowances, parkForTurnBudget, evictStaleScreenshots, isScreenCapture } };
+  return { runAgentLoop, _internals: { waitsOnPeers, parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, memorySaveClaim, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosIsPatchOnlyCheck, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze, turnAllowances, parkForTurnBudget, evictStaleScreenshots, isScreenCapture } };
 });

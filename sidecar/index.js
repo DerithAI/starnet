@@ -16357,7 +16357,9 @@ function workshopPrompt(runId, item, ctx) {
     + '- Whatever the format: ZERO SETUP on their end — self-contained, one-click openable, no external files or build step; a script ships with its single run command in "howToUse".\n'
     + '- Put every file for this deliverable UNDER the folder "' + dir + '/" in your workspace (use fs.write with paths like "' + dir + '/<file>").\n'
     + '- Do the actual work with your real tools (web search/read, files, memory). Ground factual claims in what the tools return.\n'
-    + '- You CANNOT run commands or tests here, so do not claim anything was tested — list what a human still needs to verify.\n'
+    // (token-burn audit 2026-10-17: was "You CANNOT run commands or tests here" — false whenever the bay holds a terminal, and
+    // the act then wrote its report first and verify-on-stop bought a second pass to check it; same wording as the act prompt)
+    + '- If you have a shell, CHECK the work BEFORE you write the manifest (a patch: `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved; list what a human still needs to verify.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + ((item && item.id) || '') + '",\n'
     + '    "title": "<short name>", "kind": "tool|fix|draft|doc|patch|other",\n'
@@ -16617,7 +16619,8 @@ function implementPrompt(runId, source, ctx) {
         : '- There is no blessed project to patch here, so build the working artifact itself: the script, the tool, the\n'
          + '  file that does the job. ZERO SETUP — self-contained, one-click openable or one command to run.\n')
     + '- Write every file for this build UNDER "' + dir + '/" (use paths like "' + dir + '/<file>").\n'
-    + '- Do the real work with your tools. You CANNOT run commands or tests here, so never claim anything was tested —\n'
+    + '- Do the real work with your tools. If you have a shell, CHECK the work BEFORE you write the manifest (a patch:\n'
+    + '  `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved;\n'
     + '  list what a human still needs to check.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + String(c.backlogId || '') + '",\n'
