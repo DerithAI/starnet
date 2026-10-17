@@ -2067,6 +2067,7 @@
                 agentId: h.agentId, lineId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 streamId: canonicalStreamId || undefined, parallelBranch: !!h.parallel,   // the whole line shares one canonical transcript; a PARALLEL branch hop skips its one-turn-at-a-time queue (chain.js runBatch)
+                resumeSeed: false,   // THIS dock's own history rides `hist` above; never the whole line stream's transcript (runOnceCore seed)
                 initialTaint: 'upstream agent output',
                 untrustedEntry: lineEntryUntrusted || undefined,   // a hop of a payload-started line stays under the taint lock
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,

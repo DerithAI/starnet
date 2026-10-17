@@ -13395,6 +13395,7 @@ async function stepTestRunDock(h) {
       reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
       messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
       runId, trigger: 'event', streamId: h.streamId,
+      resumeSeed: false,   // every step shares one steptest stream: a step (or a NEEDS CHANGES re-run / rewind) must not inherit the others' turns
       lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId,   // LINE WATCH: the row records the step's line + bay (run.start names its crate)
       initialTaint: h.entry ? null : 'upstream agent output',
       surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
@@ -19487,7 +19488,6 @@ async function handleRun(req, res) {
       quotedOwnerInput,   // learning-only: skips the durable learning passes at run end, latches nothing
       ownerDirective: ownerWording,   // the Commander typed this directive at their own station (not a recipe template)
       retryUserRunId: body && body.retryUserRunId,
-      resumeSeed: (body && body.resumeSeed === false) ? false : undefined,   // a browser work-line hop (see runOnceCore's seed)
       surface: 'interactive', prompt: promptConsent, pathPrompt: promptPathTrust, summon: summonRequest,   // team.summon → live summonAgent() round-trip; pathPrompt → NS-5 "work in <root>?" bless
       loginPrompt: askHuman,   // attended browser login: browser.login's two consent asks ride the same fail-closed permission.prompt channel
       // the Commander is AT the station (COMMS): this run may drive the shared, signed-in station browser
@@ -19689,7 +19689,7 @@ async function runOnce(o) {
       // Refresh ordinary queued chat after the preceding turn has persisted.
       // Preserve the new user message (including attachments); checkpoint and
       // group histories retain their own provider-valid assembly contracts.
-      if (queued && !o.recovery && !o.groupTools && !o.parentRunId
+      if (queued && o.resumeSeed !== false && !o.recovery && !o.groupTools && !o.parentRunId
         && (o.messages || []).at(-1)?.role === 'user') {
         o = { ...o, messages: (o.messages || []).filter(m => m.role === 'system')
           .concat(transcriptStore.reconstruct(o.streamId, { limit: 100 }), o.messages.slice(-1)) };

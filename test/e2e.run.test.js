@@ -339,16 +339,6 @@ function boot(port, env, attemptsLeft) {
     const seeded = JSON.stringify((lastReq && lastReq.messages) || []);
     A.ok(seeded.indexOf('alpha-token-42') >= 0, 'H1.2: run B (empty history) seeded the prior turn from the transcript');
     A.ok(seeded.indexOf('what was it') >= 0, 'run B still carries its own new directive last');
-    // token-burn audit 2026-10-17: a work-line hop (resumeSeed:false) is ONE handoff turn on a shared stream; its
-    // handoff carries the upstream output, so it must NOT be seeded with earlier stages' transcript.
-    {
-      const r = await fetch(B + '/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B },
-        body: JSON.stringify({ key: 'sk-or-v1-e2e-fake', model: 'test/model', agentId: 'e2e', streamId: 's1', resumeSeed: false, messages: [{ role: 'user', content: 'PIPELINE HANDOFF stage two' }] }) });
-      const rd = r.body.getReader(); while (true) { const { done } = await rd.read(); if (done) break; }
-      const hopReq = JSON.stringify((mock.requests[mock.requests.length - 1] || {}).messages || []);
-      A.ok(hopReq.indexOf('PIPELINE HANDOFF stage two') >= 0, 'the hop carries its own handoff');
-      A.ok(hopReq.indexOf('alpha-token-42') < 0 && hopReq.indexOf('what was it') < 0, 'a resumeSeed:false hop is NOT seeded with the stream\'s earlier turns');
-    }
 
     // H3.2: the RUNS history rows carry their streamId — the join that lets a row open its transcript.
     const runsJson = await (await fetch(B + '/api/runs?agent=e2e&limit=20', { headers: { 'X-StarNet-Token': token, Origin: B } })).json();
