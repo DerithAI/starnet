@@ -1110,3 +1110,83 @@ body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-runs { text-t
   body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog::after,
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search label::after { animation: none; }
 }
+
+/* ============================================================
+   PIP-BOY DOCK (Andrew 10-17, the bottom menu after the rail: of three docks rendered at his settings, "A without the
+   >"). The SESSIONS tab strip, mirrored onto the dock, and the dock's menus in the rail's terminal language. Chrome only:
+   the deck's stacking (app.css, locked by dock-focus-seams) and the menus' widths (mobile reachability) are untouched.
+     · CREW / WORK / BUILD / SYSTEM hang from one rule (end ticks); the open group's tab is boxed below it, the rule
+       bending down around it; a group with a window open keeps its gold underline
+     · a menu is one matte 2px terminal box: rows rest on hairlines, the lit row is drawn by four viewfinder corners,
+       an open window's row keeps a gold edge, every icon sits in a square well
+     · the alert chip is a square gold block, the widget + a square key, and CTX the crew card's segmented meter
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #screen-game #bottombar { column-gap: 0; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar > #wr-bot { margin-left: 14px; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar > #term-strip { margin-left: 8px; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar > .bb-group { align-self: flex-start; margin-top: 4px; border-top: 1px solid var(--pip-line); }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar > .bb-group[data-group="crew"] { background: linear-gradient(var(--pip-line), var(--pip-line)) left top / 1px 7px no-repeat; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar > .bb-group[data-group="system"] { background: linear-gradient(var(--pip-line), var(--pip-line)) right top / 1px 7px no-repeat; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar > .bb-group.open { border-top-color: transparent; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-group > .bb-grp {
+  height: 34px; padding: 0 16px; border: 1px solid transparent; border-top: 0; border-radius: 0;
+  background: none; box-shadow: none; text-shadow: none; letter-spacing: 2px; color: var(--ph);
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-group > .bb-grp:is(:hover, :focus-visible) { color: var(--ph-bright); background: rgba(var(--ph-rgb), .05); }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-group.open > .bb-grp {
+  margin-top: -1px; height: 35px; border-color: var(--ph); border-top: 0; color: var(--ph-bright);
+  background: linear-gradient(to top, rgba(var(--ph-rgb), .14), rgba(var(--ph-rgb), .02)); box-shadow: none; text-shadow: 0 0 6px rgba(var(--ph-rgb), .45);
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-group.has-active > .bb-grp { box-shadow: inset 0 -2px 0 var(--gold); }
+@media (max-width: 720px) {
+  body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-group > .bb-grp { padding-inline: 9px; letter-spacing: 1px; }
+}
+
+/* ---- the menus ---- */
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu {
+  border-radius: 2px; border-color: rgba(var(--ph-rgb), .5); padding: 6px; gap: 0;
+  background: linear-gradient(var(--panel), var(--panel)), var(--bg); box-shadow: 0 12px 34px rgba(0, 0, 0, .6);
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb { border-radius: 2px; min-height: 54px; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb + .bb:not(:hover):not(:focus-visible):not(.active) { box-shadow: 0 -1px 0 rgba(var(--ph-rgb), .1); }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb:is(:hover, :focus-visible, .active) {
+  border-color: transparent; color: var(--ph-bright); box-shadow: none;
+  background:
+    linear-gradient(var(--ph-bright), var(--ph-bright)) left top / 9px 1px no-repeat border-box,
+    linear-gradient(var(--ph-bright), var(--ph-bright)) left top / 1px 9px no-repeat border-box,
+    linear-gradient(var(--ph-bright), var(--ph-bright)) right top / 9px 1px no-repeat border-box,
+    linear-gradient(var(--ph-bright), var(--ph-bright)) right top / 1px 9px no-repeat border-box,
+    linear-gradient(var(--ph-bright), var(--ph-bright)) left bottom / 9px 1px no-repeat border-box,
+    linear-gradient(var(--ph-bright), var(--ph-bright)) left bottom / 1px 9px no-repeat border-box,
+    linear-gradient(var(--ph-bright), var(--ph-bright)) right bottom / 9px 1px no-repeat border-box,
+    linear-gradient(var(--ph-bright), var(--ph-bright)) right bottom / 1px 9px no-repeat border-box,
+    rgba(var(--ph-rgb), .085);
+}
+/* a window from this row is open: a gold edge on its left, lit or not */
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb.active { box-shadow: inset 2px 0 0 var(--gold); }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb .bb-tx b { letter-spacing: 2px; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb .bb-tx small { font-size: 14px; color: var(--cg-mute); }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb:is(:hover, :focus-visible) .bb-tx small { color: var(--text); }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb-i {
+  width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; opacity: 1; color: var(--ph);
+  border: 1px solid rgba(var(--ph-rgb), .24); border-radius: 2px; background: rgba(0, 0, 0, .3); box-shadow: inset 0 2px 6px rgba(0, 0, 0, .45);
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb:is(:hover, :focus-visible) .bb-i { color: var(--ph-bright); border-color: rgba(var(--ph-rgb), .5); }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb > .badge { border-radius: 2px; }
+
+/* ---- the alert chip, the widget +, CTX ---- */
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-grp-badge {
+  top: -7px; right: -7px; min-width: 19px; height: 19px; padding: 0 4px; border-radius: 2px;
+  font-size: 15px; line-height: 19px; box-shadow: 0 0 0 2px rgba(0, 0, 0, .7);
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .widget-rail .wg-add {
+  width: 32px; height: 30px; border-radius: 2px; border: 1px solid rgba(var(--ph-rgb), .32); background: rgba(0, 0, 0, .22); color: var(--ph); box-shadow: none;
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .widget-rail .wg-add:is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .1); }
+/* CTX: the crew card's segmented meter, filled by the same real fraction (stationui ctxTick → --ctx-fill), in its level's colour */
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells {
+  width: 88px; height: 8px; border-radius: 0; box-shadow: none;
+  background: linear-gradient(90deg, currentColor calc(var(--ctx-fill, 0) * 100%), color-mix(in srgb, currentColor 22%, transparent) 0);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px); mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px);
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge :is(.ctx-lbl, .ctx-num, .ctx-cap) { letter-spacing: 1.8px; }
