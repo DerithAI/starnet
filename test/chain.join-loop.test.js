@@ -324,6 +324,9 @@ function rig(floor, script, opts) {
     A.eq(fixerTurn.agentId, 'fixer');
     A.ok(/\[LOOP — escalated: 2 passes round the gate at 12,4 without VERDICT: approved — handed to the escalation lane\]/.test(fixerTurn.text),
       'the fixer\'s handoff says exactly why it has the crate');
+    // token-burn audit 2026-10-17: hops no longer replay the line, so the fixer is handed the work itself, not only the notes on it
+    A.ok(fixerTurn.text.indexOf('THE WORK UNDER REVIEW') >= 0 && fixerTurn.text.indexOf('another draft') >= 0 && fixerTurn.text.indexOf('still bad 2') >= 0,
+      'the fixer gets the last draft AND the review: ' + fixerTurn.text.slice(-260));
   }
   /* the SAME floor with the verdict PASSING never touches the fixer */
   {
@@ -361,6 +364,24 @@ function rig(floor, script, opts) {
     } else {
       A.ok(true, 'visited-esc fallback floor did not compile as intended — covered by the runner guard');
     }
+  }
+
+  /* ---- loopDecision's WORK UNDER REVIEW block, at the seam the runner and the step test share (token-burn audit 2026-10-17) ---- */
+  {
+    const { loopDecision } = require('../sidecar/routing/chain.js');
+    const gate = (o) => Object.assign({ loop: '12,4', backTo: 'drafter', max: 2, when: 'approved', next: 'publisher' }, o || {});
+    const ctxRevise = { verdict: 'revise' };
+    const back = loopDecision(gate(), ctxRevise, 0, {}, 'notes\nVERDICT: revise', 'DRAFT-1');
+    A.ok(back.again && /^\[LOOP — pass 1 of 2[^\n]*\]\nTHE WORK UNDER REVIEW[^\n]*\nDRAFT-1\n\nREVIEW:\nnotes/.test(back.text), 'a loop-back: marker, then the work under review, then the review');
+    const self = loopDecision(gate(), ctxRevise, 0, {}, 'notes\nVERDICT: revise', '');
+    A.ok(self.again && self.text.indexOf('THE WORK UNDER REVIEW') < 0, 'no reviewed text (a self-loop) -> no block, never a nested loop turn');
+    const exNext = loopDecision(gate(), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exNext.exhausted && exNext.text.indexOf('DRAFT-3') >= 0, 'an exhausted crate going to a downstream dock carries the unapproved work');
+    const exOut = loopDecision(gate({ next: null }), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exOut.exhausted && exOut.text.indexOf('DRAFT-3') < 0 && exOut.text.indexOf('still bad') >= 0, 'an exhausted crate that ships straight out keeps the reviewer\'s word only');
+    const big = 'x'.repeat(30000);
+    const clipped = loopDecision(gate(), ctxRevise, 0, {}, 'notes', big);
+    A.ok(clipped.text.length < 17000 && /characters of the work omitted/.test(clipped.text), 'a huge draft is clipped (head + tail), never the whole thing');
   }
 
   A.report('chain.join-loop');
