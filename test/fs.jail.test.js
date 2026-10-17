@@ -226,6 +226,20 @@ async function rejects(promise, msg) { try { await promise; A.ok(false, msg + ' 
     await writeTool.run({ path: 'sub/b.txt', content: '2' }, ctx);
     const tree = await listTool.run({ recursive: true }, ctx);
     A.ok(tree.content.indexOf('sub/') >= 0 && tree.content.indexOf('sub/b.txt') >= 0, 'recursive list shows the nested tree');
+    // token-burn audit 2026-10-17: dependency/VCS/cache folders are LISTED but not expanded; a huge tree ends on a usable note
+    const base = (await _internals.resolveInside('ag4', '.')).abs;
+    const fsx = require('fs'), px = require('path');
+    fsx.mkdirSync(px.join(base, 'node_modules', 'leftpad'), { recursive: true }); fsx.writeFileSync(px.join(base, 'node_modules', 'leftpad', 'index.js'), 'x');
+    fsx.mkdirSync(px.join(base, '.git', 'objects'), { recursive: true }); fsx.writeFileSync(px.join(base, '.git', 'HEAD'), 'ref');
+    const t2 = (await listTool.run({ recursive: true }, ctx)).content;
+    A.ok(/^node_modules\/ +\[not expanded — fs\.list \{"path":"node_modules"\} to look inside\]$/m.test(t2), 'node_modules is listed, marked not expanded, with how to look inside');
+    A.ok(t2.indexOf('node_modules/leftpad') < 0 && t2.indexOf('.git/HEAD') < 0 && t2.indexOf('.git/objects') < 0, 'its contents (and .git internals) are not walked');
+    A.ok(t2.indexOf('sub/b.txt') >= 0, 'ordinary folders are still expanded');
+    A.ok((await listTool.run({ path: 'node_modules', recursive: true }, ctx)).content.indexOf('leftpad/index.js') >= 0, 'listing the folder by path still looks inside');
+    for (let i = 0; i < 520; i++) fsx.writeFileSync(px.join(base, 'sub', 'f' + String(i).padStart(4, '0') + '.txt'), '');
+    const big = await listTool.run({ recursive: true }, ctx);
+    A.ok(/…\[truncated at \d+ entries — list one subdirectory/.test(big.content) && /\(truncated\)$/.test(big.summary), 'a huge tree ends on a truncation note that says how to continue');
+    A.ok(big.content.length <= 16000 + 400, 'a recursive listing stays inside its character budget (' + big.content.length + ')');
   }
 
   // ---- two concurrent agents writing the SAME relative path do NOT collide (per-agent jail roots) ----
