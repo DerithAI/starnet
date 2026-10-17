@@ -143,6 +143,10 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     await call({ messages: [sys, { role: 'user', content: 'turn one' }], promptCacheKey: 'agent|stream-1' });                            // 6
     await collect(makeCodexProvider({ fetch: f, token: jwt('acct-B') }), { model: 'gpt-5.5', cacheSystemPrefix: stable, tools, messages: [sys, { role: 'user', content: 'turn one' }] });   // 7
     await collect(makeCodexProvider({ fetch: f, token: 'not-a-jwt' }), { model: 'gpt-5.5', messages: [sys, { role: 'user', content: 'hi' }] });   // 8
+    // a stale cacheSystemPrefix the instructions do NOT start with is ignored: the route falls back to the whole instructions
+    const other = { role: 'system', content: 'Another prompt entirely.' };
+    await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: stable });   // 9
+    await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: '' });       // 10
     const keys = seen.map(s => s.body.prompt_cache_key);
     A.ok(keys.every(k => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(k)), 'every request names a uuid-shaped route (an unreadable token still gets one)');
     A.eq(keys[1], keys[0], 'the route holds as the conversation grows');
@@ -152,6 +156,7 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.ok(keys[5] !== keys[0], 'a different model gets a different route');
     A.ok(keys[6] !== keys[0], 'an explicit req.promptCacheKey wins over the derived route');
     A.ok(keys[7] !== keys[0], 'another ChatGPT account never shares the route');
+    A.ok(keys[9] !== keys[0] && keys[9] === keys[10], 'a cacheSystemPrefix the instructions do not start with is ignored (route = the whole instructions)');
     A.ok(seen.every(s => s.headers['session_id'] === s.body.prompt_cache_key), 'the session_id header (the half the backend honors) carries the route on every request');
     A.eq(_internals.tokenAccount(jwt('acct-A')), 'acct-A', 'the account is read from the token claim');
     A.eq(_internals.tokenAccount('ACCESS'), '', 'a non-JWT token yields no account (and no throw)');

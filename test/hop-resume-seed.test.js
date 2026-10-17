@@ -24,8 +24,8 @@ A.ok(/if \(queued && o\.resumeSeed !== false && !o\.recovery/.test(idx), 'a queu
 
 // the runners: two cron / Run Now line drivers + the step test (index.js), and the channel / trigger / SEND TO hub (hub.js)
 A.eq(count(idx, 'resumeSeed: false,'), 3, 'index.js: both line drivers and the step-test runner opt their hops out');
-A.ok(/streamId: o\.streamId, parallelBranch: !!h\.parallel,[^\n]*\n\s*resumeSeed: false,/.test(idx), 'the routine line driver (stream = the fire) opts out');
-A.ok(/streamId: 'cron-' \+ runId, parallelBranch: !!h\.parallel,[^\n]*\n\s*resumeSeed: false,/.test(idx), 'the scheduled cron line driver opts out');
+A.ok(/streamId: o\.streamId, parallelBranch: !!h\.parallel,[^\n]*\n\s*resumeSeed: false,/.test(idx), 'the scheduled fire line driver (cron-driver advanceChain, stream = the fire) opts out');
+A.ok(/streamId: 'cron-' \+ runId, parallelBranch: !!h\.parallel,[^\n]*\n\s*resumeSeed: false,/.test(idx), 'the Run Now line driver opts out');
 A.ok(/streamId: h\.streamId,\n\s*resumeSeed: false,/.test(idx), 'the step-test runner opts out (one stream shared by every step)');
 A.eq(count(hub, 'resumeSeed: false,'), 1, 'hub.js: the channel / trigger / SEND TO hop opts out (its dock history rides `hist`)');
 A.ok(/streamId: canonicalStreamId \|\| undefined, parallelBranch: !!h\.parallel,[^\n]*\n\s*resumeSeed: false,/.test(hub), 'the hub hop opt-out sits on the hop runOnce');
