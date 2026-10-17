@@ -118,6 +118,31 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.eq(captured.body.include, ['reasoning.encrypted_content'], 'reasoning carry-over requested when thinking is on');
   }
 
+  // C1a. PROMPT-CACHE ROUTING (token-burn audit 2026-10-17): with no routing key the Codex backend served 0 cached
+  //      tokens on every turn (measured live), so every request names one. It must be STABLE for the same prefix
+  //      (turns of a run, the next message, aux passes) and DIFFERENT for a different prefix; the session_id
+  //      header carries the same value; an explicit req.promptCacheKey wins.
+  {
+    const seen = [];
+    const f = async (_url, init) => { seen.push({ body: JSON.parse(init.body), headers: init.headers }); return new Response(['data: [DONE]', ''].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }); };
+    const p = makeCodexProvider({ fetch: f, token: 'ACCESS' });
+    const tools = [{ type: 'function', function: { name: 'fs_read', parameters: { type: 'object' } } }];
+    const sys = { role: 'system', content: 'You are the overseer.' };
+    await collect(p, { model: 'gpt-5.5', messages: [sys, { role: 'user', content: 'turn one' }], tools });
+    await collect(p, { model: 'gpt-5.5', messages: [sys, { role: 'user', content: 'turn one' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'turn two' }], tools });
+    await collect(p, { model: 'gpt-5.5', messages: [{ role: 'system', content: 'You are a worker.' }, { role: 'user', content: 'turn one' }], tools });
+    await collect(p, { model: 'gpt-5.4', messages: [sys, { role: 'user', content: 'turn one' }], tools });
+    await collect(p, { model: 'gpt-5.5', messages: [sys, { role: 'user', content: 'turn one' }], tools, promptCacheKey: 'agent|stream-1' });
+    const keys = seen.map(s => s.body.prompt_cache_key);
+    A.ok(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(keys[0]), 'every request names a uuid-shaped prompt_cache_key');
+    A.eq(keys[1], keys[0], 'the same prefix keeps its key as the conversation grows (the turns share one warm cache)');
+    A.ok(keys[2] !== keys[0], 'a different system prompt gets a different key');
+    A.ok(keys[3] !== keys[0], 'a different model gets a different key');
+    A.ok(keys[4] !== keys[0], 'an explicit req.promptCacheKey wins over the derived one');
+    A.ok(seen.every(s => s.headers['session_id'] === s.body.prompt_cache_key), 'the session_id header carries the same routing key (Codex CLI parity)');
+    A.ok(seen.every(s => s.body.prompt_cache_key.indexOf('overseer') < 0), 'the key carries no prompt content');
+  }
+
   // C1b. Codex effort aliases clamp to the backend scale; reasoning-off skips encrypted reasoning carry-over.
   {
     const bodies = [];

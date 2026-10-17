@@ -168,6 +168,35 @@
     }
     return out.length ? out : null;
   }
+  /* PROMPT-CACHE ROUTING (2026-10-17, token-burn audit). The Codex backend only serves a cached prefix when the
+     request names a routing key: measured live on a 21k-token StarNet request, four identical-prefix calls with
+     no key read 0 cached tokens EVERY time, while the same calls carrying prompt_cache_key (what the Codex CLI
+     sends) read 20,864 of 21,043 (99%) from the second call on. Without it every turn of every run was billed as
+     fresh input against the ChatGPT plan. The key is derived from the byte-stable prefix (model + instructions +
+     tool names), so the turns of a run, the next message of a conversation, and every run or aux pass sharing a
+     system prompt all route to the same warm cache; a different prefix gets a different key, so unrelated
+     prompts never pile onto one route. req.promptCacheKey, when a caller has a better identity, wins. Not a
+     secret and carries no content: a 128-bit hash in uuid shape. */
+  function hash128(s) {
+    let h1 = 1779033703, h2 = 3144134277, h3 = 1013904242, h4 = 2773480762;
+    for (let i = 0; i < s.length; i++) {
+      const k = s.charCodeAt(i);
+      h1 = h2 ^ Math.imul(h1 ^ k, 597399067); h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ k, 951274213); h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+    }
+    h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067); h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+    h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213); h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+    h1 ^= (h2 ^ h3 ^ h4); h2 ^= h1; h3 ^= h1; h4 ^= h1;
+    return [h1, h2, h3, h4].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('');
+  }
+  function promptCacheKey(req, body) {
+    const explicit = req && typeof req.promptCacheKey === 'string' ? req.promptCacheKey.trim() : '';
+    const seed = explicit ? 'key\n' + explicit
+      : 'prefix\n' + body.model + '\n' + body.instructions + '\n' + (body.tools || []).map(t => t.name).join(',');
+    const h = hash128(seed);
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20, 32);
+  }
+
   const DEFAULT_REASONING_EFFORT = 'low';
   function normalizeCodexReasoningEffort(value) {
     const key = String(value || DEFAULT_REASONING_EFFORT).trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -208,6 +237,7 @@
       if (effort !== 'none') body.include = ['reasoning.encrypted_content'];
       const tools = toResponsesTools(req.tools);
       if (tools) { body.tools = tools; body.tool_choice = 'auto'; body.parallel_tool_calls = true; }
+      body.prompt_cache_key = promptCacheKey(req, body);
       return body;
     }
 
@@ -388,7 +418,9 @@
               'Content-Type': 'application/json',
               'Accept': 'text/event-stream',
               'OpenAI-Beta': 'responses=experimental',
-              'originator': 'codex_cli_rs'
+              'originator': 'codex_cli_rs',
+              // the Codex CLI pairs its cache key with this header; same value, same route (see PROMPT-CACHE ROUTING)
+              ...(body.prompt_cache_key ? { 'session_id': body.prompt_cache_key } : {})
             },
             body: JSON.stringify(body),
             signal: guard.signal
@@ -563,5 +595,5 @@
     };
   }
 
-  return { makeCodexProvider, STATIC_MODELS, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, liveModelIds, liveDefaultModel, memoLiveModelIds, _internals: { messagesToInput, extractInstructions, toResponsesTools, normalizeUsage, normalizeCodexReasoningEffort } };
+  return { makeCodexProvider, STATIC_MODELS, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, liveModelIds, liveDefaultModel, memoLiveModelIds, _internals: { messagesToInput, extractInstructions, toResponsesTools, normalizeUsage, normalizeCodexReasoningEffort, promptCacheKey } };
 });
