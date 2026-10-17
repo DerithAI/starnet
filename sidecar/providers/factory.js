@@ -173,6 +173,8 @@
         staticModels: profile.staticModels,
         // prices.js family for endpoints whose /models carries no pricing (null = stays honestly unpriced)
         priceFamily: (typeof profile.priceFamily === 'string') ? profile.priceFamily : null,
+        // an endpoint that relays to OpenRouter (the managed proxy) takes OpenRouter's cache breakpoints verbatim
+        cacheControl: profile.explicitCache === 'openrouter' ? openrouter.applyCacheControl : null,
         // Local runtimes may need to load a model before returning headers. Hosted providers retain the
         // shared 30s connect ceiling; only profiles that prove a different need override it.
         connectTimeoutMs: wire.connectTimeoutMs,

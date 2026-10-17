@@ -181,6 +181,10 @@
       // Our own proxy records which harness run spent each debit (POST /v1/chat/completions reads this header).
       // ONLY this profile names one: a run id is never sent to a third-party provider.
       runIdHeader: 'x-starnet-run-id',
+      // The proxy forwards the body to OpenRouter untouched, so a Claude pick caches exactly like a direct OpenRouter key:
+      // the same cache_control breakpoints (openrouter.applyCacheControl; Claude ids only). Without them every managed
+      // Claude call re-billed the whole prompt as fresh input on the user's credits (token-burn audit 2026-10-17).
+      explicitCache: 'openrouter',
       order: 15
     },
     {
