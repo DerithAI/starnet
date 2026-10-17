@@ -556,11 +556,17 @@
     return false;
   }
   // A check is a command whose whole job is to PASS or FAIL. `git status`, `ls`, `cat` are not evidence.
-  const VOS_CHECK_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|lint|typecheck|check)|\b(pytest|tox|jest|vitest|mocha|ava|tsc|eslint|ruff|mypy|flake8|rubocop|clippy|gradle|mvn|make)\b|\b(cargo|go|dotnet|swift)\s+(test|build|vet)\b|\bnode\s+[^|;&]*\btest\b/i;
+  // (token-burn audit 2026-10-17: `node tests\x.js`, `node tests.js`, `node --check f.js` and `git apply --check x.patch` ran
+  // and passed on real night shifts, yet re-armed the nudge — 11 of 15 short verify-on-stop fires bought a turn for nothing.)
+  const VOS_CHECK_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|lint|typecheck|check)|\b(pytest|tox|jest|vitest|mocha|ava|tsc|eslint|ruff|mypy|flake8|rubocop|clippy|gradle|mvn|make)\b|\b(cargo|go|dotnet|swift)\s+(test|build|vet)\b|\bnode\s+[^|;&]*\btests?\b|\bnode\s+(--check|-c)\b|\bgit\s+apply\s+(--check|--stat\s+--check)\b/i;
+  // a night shift's manifest is bookkeeping the host reads, not code: writing it last must not re-arm the nudge
+  const VOS_MANIFEST_NAME = new Set(['deliverable.json']);
   function vosIsCodePath(p) {
     const s = String(p == null ? '' : p).trim();
     if (!s) return false;
     const base = s.split(/[\\/]/).pop() || '';
+    if (VOS_MANIFEST_NAME.has(base.toLowerCase())) return false;
+    if (base.charAt(0) === '.' && base.indexOf('.', 1) < 0) return false;   // an extension-less dotfile (.gitignore, .env) has nothing to run
     const dot = base.lastIndexOf('.');
     if (dot <= 0) return !VOS_PROSE_NAME.has(base.toLowerCase());   // extension-less: only prose NAMES are exempt
     const ext = base.slice(dot + 1).toLowerCase();

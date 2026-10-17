@@ -149,6 +149,17 @@ async function run(o) {
     A.eq(vosIsCheckCommand({ command: 'cargo test' }), true, 'cargo test is a check');
     A.eq(vosIsCheckCommand({ command: 'ls -la' }), false, 'ls is not a check');
     A.eq(vosIsCheckCommand({ command: 'cat package.json' }), false, 'reading a file is not a check');
+    // token-burn audit 2026-10-17: checks real night shifts ran and passed, which still re-armed the nudge
+    A.eq(vosIsCheckCommand({ command: 'node tests\\smoke.js' }), true, 'node tests\\x.js is a check');
+    A.eq(vosIsCheckCommand({ command: 'node tests.js' }), true, 'node tests.js is a check');
+    A.eq(vosIsCheckCommand({ command: 'node --check src/app.js' }), true, 'node --check is a syntax check');
+    A.eq(vosIsCheckCommand({ command: 'git apply --check workshop/run/change.patch' }), true, 'git apply --check proves a patch applies');
+    A.eq(vosIsCheckCommand({ command: 'git apply workshop/run/change.patch' }), false, '...but applying it is not a check');
+    A.eq(vosIsCheckCommand({ command: 'node server.js' }), false, 'running a server is not a check');
+    A.eq(vosIsCodePath('workshop/run-1/deliverable.json'), false, 'a night-shift manifest is bookkeeping, not code');
+    A.eq(vosIsCodePath('src/config.json'), true, '...while any other .json still counts');
+    A.eq(vosIsCodePath('.gitignore'), false, 'an extension-less dotfile has nothing to run');
+    A.eq(vosIsCodePath('.eslintrc.js'), true, '...a dotfile WITH a code extension is still code');
     A.eq(vosKey('fs.write'), 'fs_write', 'dotted registry names and underscored wire names collapse to one key');
     A.eq(vosExternalRole('mcp__parity_fixture_eval__fixture_action'), 'mutate', 'an external action arms read-back enforcement');
     A.eq(vosExternalRole('mcp__parity_fixture_eval__fixture_verify_file'), 'observe', 'an external verifier is classified as read-back');
