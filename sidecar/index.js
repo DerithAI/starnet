@@ -5002,6 +5002,9 @@ function oauthPrimaryStatus(pid) {
 // forwarded to open browser EventSources (the station HUD). The bot token / OR key are NEVER placed on a
 // payload — nothing to leak here — and redact() runs before validate() as a second backstop.
 const sse = makeSseHub({ epoch: crypto.randomUUID() });
+// THE LIVE FEED (GET /api/observe, sidecar/observer.js): every non-internal run's events + its approvals, for a watching
+// terminal. Its own hub — the page never subscribes here, so nothing the page already receives is counted twice.
+const observer = require('./observer.js').makeObserver({ redact, epoch: crypto.randomUUID() });
 // Full-payload channel logging is opt-in (STARNET_DEBUG_CHANNELS=1): every COMMS/workitem/queue event
 // otherwise printed a whole JSON line to stdout on normal operation. Default = event name only.
 const DEBUG_CHANNEL_LOGS = String(process.env.STARNET_DEBUG_CHANNELS || '') === '1';
@@ -11672,6 +11675,7 @@ const ROUTES = [
   { m: 'GET', rx: GENERIC_CHANNEL_RX.status, h: (req, res, gm) => handleGenericChannelStatus(req, res, gm[1]) },
   { m: 'POST', rx: GENERIC_CHANNEL_RX.ownerPair, h: (req, res, gm) => handleChannelOwnerPair(req, res, gm[1]) },
   { m: 'GET', qsplit: '/api/channels/events', h: handleChannelEvents },   // path match: the SSE url carries ?cursor= + a ?ticket= (header-less EventSource)
+  { m: 'GET', qsplit: '/api/observe', h: (req, res) => require('./observer.js').serveObserver(observer.hub, req, res) },   // the terminal's live feed (header auth; sidecar/observer.js)
   { m: 'POST', exact: '/api/routing', h: handleRouting },
   { m: 'GET', qsplit: '/api/routing/chain', h: handleRoutingChain },   // qsplit, not exact: `exact` compares the FULL url and this route always carries a query
   // PROOF (guided workflow Phase 4): GET is the inert feature probe; POST runs ONE real, labeled sample
@@ -19149,6 +19153,12 @@ async function handleRun(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req, 2 << 20, res)); }
   catch (e) { if (res.headersSent) return; res.writeHead(400); return res.end('bad json'); }   // over-limit already answered 413
+  // A TERMINAL has no persona of its own to send (the page composes one): `rosterSystem:true` with no system runs the agent
+  // as its roster entry defines it. Opt-in, so every caller that sends (or deliberately omits) a system is unchanged.
+  if (body && typeof body === 'object' && !body.system && body.rosterSystem === true) {
+    const rec = agentRoster.get(String(body.agentId || 'agent'));
+    if (rec && rec.system) body.system = rec.system;
+  }
   const { model, system, messages = [], agentId = 'agent', isTask = false, provider, fallbackModels, fallbackProviders } = body || {};
   const recurring = !!(body && body.recurring);   // the browser's mint detector saw this task SHAPE before → salience boost for reflection
   // REASON-ONLY SELF-TALK (retitle / goal-judge / pitch / autopilot): the caller composed a complete strict-format
@@ -19318,7 +19328,7 @@ async function handleRun(req, res) {
        ended run — it would outlive every run that could ever clear it. */
     const detached = !!(by && by.detached && by.signal);
     const say = detached ? chanEmit : emit;
-    let askId = '', announced = false;
+    let askId = '', announced = false, answeredVia = '';
     if (detached && pendingByRun.get(runId) !== pending) pendingByRun.set(runId, pending);   // the turn already ended: reopen its answer slot
     const sessionOver = (d) => (detached && leadOver && d === 'session') ? 'once' : d;
     return makeConsentWait({
@@ -19338,12 +19348,16 @@ async function handleRun(req, res) {
         // saw this lead's stream, or reloaded since, files the ask under that conversation and answers with this runId)
         if (detached) Object.assign(row, { background: true, runId, streamId: streamId || '' });
         say('permission.prompt', row);
+        observer.publish('permission.prompt', row, { runId, agentId, streamId: streamId || '' });   // a watching terminal sees the ask too
         // STARNET REMOTE: index the prompt so a paired phone can answer it too. A phone answer resolves the same
         // finisher and then tells this run's page (permission.response on its own stream), so the floor stops
         // waiting on a question somebody already answered elsewhere.
         const orig = pending.get(promptId);
         if (orig) { orig.askRow = row; if (detached) orig.detached = true; }   // the snapshot + the page-closed note read these
         if (orig && fields && fields.fresh) orig.freshConsent = true;   // handleConsent: a "full" here approves this call only
+        // an answer from the TERMINAL (POST /api/consent { via:'terminal' }) settles a card the page still shows: tell the page
+        // on this run's own stream, the way a phone answer does, so the desk never keeps live keys on a settled ask
+        if (orig) orig.announce = (decision) => { announced = true; answeredVia = 'terminal'; try { say('permission.response', { promptId, decision, via: 'terminal' }); } catch (e) { failNote('consent.terminalResponse', e); } };
         // the card's INSPECT FULL REQUEST (GET /api/consent/args): the whole redacted request, kept on the pending entry in
         // server memory only — never in the event or the run record — and gone the moment the prompt settles
         if (orig && fields && fields.argsFull && typeof fields.argsFull.text === 'string') orig.consentArgs = { tool: row.tool, text: fields.argsFull.text, truncated: !!fields.argsFull.truncated };
@@ -19358,6 +19372,13 @@ async function handleRun(req, res) {
     }).ask().then((v) => {
       if (untrack) untrack();
       v = sessionOver(v);   // a "session" answer after this run ended: its session is over, so this call only
+      // a watching terminal learns the ask is settled, whoever answered it (desk, phone, terminal) or if nobody did
+      if (askId) {
+        const settled = { promptId: askId, decision: typeof v === 'string' ? (/^(once|session|always|full)$/.test(v) ? v : 'deny') : (v && v.__clarify ? 'once' : 'deny') };
+        if (answeredVia) settled.via = answeredVia;
+        if (v === 'timeout') settled.expired = true;
+        observer.publish('permission.response', settled, { runId, agentId });
+      }
       if (detached) {
         // a desk answer (POST /api/consent) settles it on one page: tell every other page and surface on the station bus
         if (!announced && askId) {
@@ -19979,13 +20000,19 @@ async function runOnceCore(o) {
   // decision stands). redact() still runs over the view as a second backstop. Re-using the name `emit` means
   // every existing emit(...) call site below tees automatically, with no per-site change.
   const rawEmit = o.emit;
-  const emit = o.broadcast
+  const emitBase = o.broadcast
     ? (name, payload) => {
         try { rawEmit(name, payload); } catch (_) {}
         const view = runTeeView(name, payload);
         if (view) { try { sse.broadcast(name, redact(view)); } catch (_) {} }
       }
     : rawEmit;
+  // …and EVERY run but reason-only self-talk also reaches a watching terminal (GET /api/observe): the run's own sink
+  // runs first and unchanged; with nobody watching the tee is one size() check (sidecar/observer.js)
+  const emit = internal ? emitBase : observer.tee(emitBase, {
+    runId, agentId, streamId: o.streamId || '', surface: o.surface || '', trigger, lineId: workflowLine || '', dockId: o.dockId || '',
+    prompt: () => require('./observer.js').lastUserText(messages)
+  });
 
   // A LINE BUDGET applies before the FIRST stage as well as between hops. Samples, channel messages and
   // routines all reach this host-derived origin; checking only chain.advance let every new job buy its
@@ -23472,6 +23499,8 @@ async function handleConsent(req, res) {
     if (!persisted) decision = 'deny';
   }
   if (finish) finish(decision);
+  // answered from the terminal: the page that shows this card is told on the run's own stream (askHuman's announce)
+  if (finish && body.via === 'terminal' && typeof finish.announce === 'function') finish.announce(decision);
   /* GONE (soak 10-15): the station holds no such ask any more — answered on another surface, expired, withdrawn, or lost to
      a restart. Said apart from a refusal (additive), so a surface that still shows its keys lets it go and says it is no
      longer waiting, instead of "try again" on a key nothing can answer. Never said while the ask still waits under another
@@ -23495,6 +23524,7 @@ async function handleConsentAnswer(req, res) {
   const pend = pendingByRun.get(body.runId);
   const finish = pend && pend.get(body.promptId);
   if (finish && text) finish({ __clarify: true, text });
+  if (finish && text && body.via === 'terminal' && typeof finish.announce === 'function') finish.announce('once');   // the desk's question card lets go
   if(body.receipt === true) return respondJson(res,200,{ok:!!(finish && text)});
   res.writeHead(200); res.end('ok');
 }
