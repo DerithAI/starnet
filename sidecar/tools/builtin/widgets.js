@@ -115,6 +115,24 @@
         + 'Include sourceUrl when the app supplies a link to the source. If you cannot read it, call widget.set with the same id/version and error explaining why, preserving the last reading. '
         + 'A chat reply alone does not update the widget.';
     }
+    /* THE WIDGET'S OWN UPDATE RUN (releases#6, 2026-10-17). A refresh is sent to the agent open in COMMS on the
+       widget's own conversation ('widget-' + id, frontend/app/widgets.js openWidgetTask); a scheduled update is a
+       routine whose job meta names the widget. widget.get/widget.set ride the NOTEBOOK prop (memory), which an
+       interactive run holds only while one is placed and the MEMORY switch is on, so the refresh demanded a tool the
+       run did not have and the agent searched for it until stopped. The host grants the two widget tools to the run
+       whose purpose IS a configured widget, and to no other run. Returns that widget's id, or null. */
+    function updateRunOf(run) {
+      run = run || {};
+      const stream = String(run.streamId || '');
+      const id = String(run.widgetId || (stream.indexOf('widget-') === 0 ? stream.slice(7) : ''));
+      if (!ID_RE.test(id)) return null;
+      return listOf().some(w => w.id === id && w.config) ? id : null;
+    }
+    // ...and that run reads and publishes its OWN widget only: the host stamps the id on the tool ctx (widgetScope).
+    function assertScope(id, ctx) {
+      const own = ctx && ctx.widgetScope ? String(ctx.widgetScope) : '';
+      if (own && id !== own) throw new Error('This run updates widget "' + own + '" only; it cannot read or publish widget "' + id + '".');
+    }
 
     const setTool = {
       // NO consent gate: a widget record is a sandboxed local write to the station's OWN chrome
@@ -154,6 +172,7 @@
         const id = args && String(args.id || '').toLowerCase().trim();
         // error paths THROW — the registry turns a throw into an isError result the model can react to.
         if (!ID_RE.test(id)) throw new Error('id must be 1-24 chars of lowercase letters/digits/dashes, e.g. "app-revenue"');
+        assertScope(id, ctx);
         const aid = (ctx && ctx.agentId) || 'agent';
 
         if (args.clear === true) {
@@ -226,11 +245,11 @@
       name: 'widget.get', capability: 'memory', scope: 'read', requiresConsent: false,
       description: 'Read the latest user-owned definition and refresh instructions for a saved widget. Call before a scheduled update; if removed, stop without fetching data or recreating it.',
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
-      run: async args => ({ content: instruction(String(args && args.id || '')), summary: 'widget definition' })
+      run: async (args, ctx) => { const id = String(args && args.id || ''); assertScope(id, ctx); return { content: instruction(id), summary: 'widget definition' }; }
     };
 
     return {
-      setTool, getTool, configure, remove, instruction,
+      setTool, getTool, configure, remove, instruction, updateRunOf,
       list: listOf,   // the GET /api/widgets read surface (host route) — same records, no reshaping
       register(reg) { reg.register(setTool); reg.register(getTool); return reg; }
     };

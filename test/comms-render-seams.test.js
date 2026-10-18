@@ -41,7 +41,7 @@ const { makeStationControlTools } = require('../sidecar/tools/builtin/station-co
   const rc = /function foldChipResult\(chip, ev\) \{[\s\S]*?\n  \}/.exec(chat);
   A.ok(rc && /TaskIntent\.isGateHeld\(ev\)/.test(rc[0]), 'the chip result fold (live rail and group rail) reads the held stamp');
   A.ok(/function resolveChip\(ev, fallbackName\) \{[\s\S]{0,500}foldChipResult\(chip, ev\);/.test(chat), 'the live rail folds results through it');
-  A.ok(rc && /classList\.add\(heldCall \? 'held' : ev\.isError \? 'err' : 'ok'\)/.test(rc[0]), 'a held call draws the neutral .held chip, never .err');
+  A.ok(rc && /classList\.add\(heldCall \? 'held' : deniedCall \? 'denied' : ev\.isError \? 'err' : 'ok'\)/.test(rc[0]), 'a held call draws the neutral .held chip, never .err');
   A.ok(rc && /heldCall \? 'not run yet'/.test(rc[0]) && !/heldCall \? '✗'/.test(rc[0]), 'its stat reads "not run yet", never ✗ failed');
   A.ok(/U\.bus\.emit\('agent\.tool_result', \{[^\n]*held: !!\(typeof TaskIntent !== 'undefined' && TaskIntent\.isGateHeld && TaskIntent\.isGateHeld\(ev\)\)/.test(chat), 'the bus copy carries held for the world');
   A.ok(/if \(tgt && !p\.held\) PropSprites\.pulseProp/.test(read('frontend/app/world.js')), 'the world never pulses a prop red for a call that did not run');
@@ -75,7 +75,7 @@ const { makeStationControlTools } = require('../sidecar/tools/builtin/station-co
   // the run's telemetry lines under a resolved presence card read "not run yet" for it, never "failed" in red
   {
     const tr = /function telemetryRun\(entry, role, skipTools\) \{[\s\S]*?\n  \}/.exec(chat);
-    A.ok(tr && /const held = typeof TaskIntent !== 'undefined' && TaskIntent\.isGateHeld && TaskIntent\.isGateHeld\(t\);/.test(tr[0]) && /\(held \? ' held' : t\.isError \? ' err' : ''\)/.test(tr[0]) && /held \? 'not run yet' : t\.isError \? 'failed' : 'ok'/.test(tr[0]), 'a held call\'s telemetry line reads "not run yet", never "failed"');
+    A.ok(tr && /const held = typeof TaskIntent !== 'undefined' && TaskIntent\.isGateHeld && TaskIntent\.isGateHeld\(t\);/.test(tr[0]) && /\(held \? ' held' : denied \? ' denied' : t\.isError \? ' err' : ''\)/.test(tr[0]) && /held \? 'not run yet' : denied \? 'denied' : t\.isError \? 'failed' : 'ok'/.test(tr[0]), 'a held call\'s telemetry line reads "not run yet", never "failed"');
   }
   // the PHONE live view (rc review 2026-10-14: it drew ✕ for a held call): the station sends held, and the phone app draws it
   const host = read('sidecar/remote/host.js'), phone = read('relay/app/app.js');
@@ -101,6 +101,55 @@ const { makeStationControlTools } = require('../sidecar/tools/builtin/station-co
   A.eq(Policy.canMutate(unsettled, ctl, { args: { action: 'nope.nothing' } }).ok, false, 'an unknown action is held');
   A.eq(Policy.canMutate(unsettled, reg.get('station.power'), { args: { action: 'group.add', args: {} } }).ok, false, 'station.power (an escalation) still waits for brief_proceed');
   A.ok(/TaskBriefPolicy\.canMutate\(taskBriefState\.brief, liveTool, c\)/.test(idx), 'the host gate hands the call to canMutate, so an action-aware exemption sees the action');
+}
+
+/* ---------- A1. an approval not given reads "denied", never "failed" (releases#9, 2026-10-17) ----------
+   Deny on an approval card: the call did not run, the agent carries on, the run ends done (test/e2e.run-truth-1017.test.js
+   proves that against the real sidecar). COMMS drew the red ✗ chip and the run's history said "↳ fs_write · 54ms · failed",
+   the same as a real error. Executed here: the real foldChipResult + telemetryRun from chat.js on a minimal DOM. */
+{
+  const vm = require('vm');
+  const chat = read('frontend/app/chat.js');
+  const grab = (re, what) => { const m = re.exec(chat); A.ok(!!m, 'chat.js has ' + what); return m ? m[0] : ''; };
+  const src = [
+    grab(/const deniedResult = ev => [^\n]*\n/, 'the denied-result predicate'),
+    grab(/function foldChipResult\(chip, ev\) \{[\s\S]*?\n  \}/, 'foldChipResult'),
+    grab(/function runCallCount\(entry\) \{[\s\S]*?\n  \}/, 'runCallCount'),
+    grab(/function telemetryRun\(entry, role, skipTools\) \{[\s\S]*?\n  \}/, 'telemetryRun')
+  ].join('\n');
+  const el = () => {
+    const cls = new Set(), kids = [];
+    return { className: '', textContent: '', title: '', kids, cls, querySelector: () => null,
+      classList: { add: c => cls.add(c), remove: c => cls.delete(c), contains: c => cls.has(c) },
+      appendChild: k => { kids.push(k); return k; } };
+  };
+  const chip = () => { const c = el(), parts = { '.tc-glyph': el(), '.tc-stat': el(), '.tc-detail': el() }; c.querySelector = s => parts[s] || null; c.parts = parts; return c; };
+  const ctx = { document: { createElement: el }, TaskIntent, fmtMs: ms => ms + 'ms', cap: s => String(s) };
+  vm.createContext(ctx);
+  vm.runInContext(src + '\nthis.fold = foldChipResult; this.tele = telemetryRun;', ctx);
+  const fold = ev => { const c = chip(); ctx.fold(c, ev); return { cls: Array.from(c.cls), glyph: c.parts['.tc-glyph'].textContent, stat: c.parts['.tc-stat'].textContent, res: c.parts['.tc-detail'].kids[0] }; };
+
+  const denied = fold({ isError: true, summary: 'denied', ms: 54 });
+  A.eq(denied.cls.join(','), 'denied', 'a denied call draws the neutral .denied chip, never .err');
+  A.eq([denied.glyph, denied.stat], ['▸', 'denied'], 'its glyph is the not-run ▸ and its stat says "denied" (no red ✗, no duration of a failure)');
+  A.eq([denied.res.className, denied.res.textContent], ['tc-d-res denied', 'denied · not run'], 'its detail says it did not run, without the ✗');
+  const failed = fold({ isError: true, summary: 'error', ms: 54 });
+  A.eq([failed.cls.join(','), failed.glyph, failed.stat, failed.res.className], ['err', '✗', '54ms', 'tc-d-res err'], 'a real failure still draws the red ✗');
+  const ok = fold({ isError: false, summary: 'wrote 1 file', ms: 9 });
+  A.eq([ok.cls.join(','), ok.glyph], ['ok', '✓'], 'a success is unchanged');
+  const held = fold({ isError: true, summary: TaskIntent.GATE_HELD });
+  A.eq([held.cls.join(','), held.stat], ['held', 'not run yet'], 'a held call is unchanged');
+  A.eq(fold({ isError: false, summary: 'denied' }).cls.join(','), 'ok', 'only an errored result can read as denied');
+
+  const wrap = ctx.tele({ agentId: 'agent', toolTrace: [
+    { name: 'fs_write', ms: 54, ok: false, isError: true, summary: 'denied' },
+    { name: 'fs_read', ms: 3, ok: false, isError: true, summary: 'error' }] }, 'LEAD', false);
+  const lines = wrap.kids.slice(1);
+  A.eq(lines.map(l => l.textContent), ['↳ fs_write · 54ms · denied', '↳ fs_read · 3ms · failed'], 'the run\'s history says "denied" for the Deny and "failed" only for the real error');
+  A.eq(lines.map(l => l.className), ['rt-tool denied', 'rt-tool err'], 'and only the real error is drawn red');
+
+  A.ok(/c\.reason === 'denied'\) return errResult\('consent denied for ' \+ call\.name \+ ': the Commander said no on the approval card[^\n]*'denied'\);/.test(read('sidecar/tools/registry.js')), 'the summary it keys on is the consent broker\'s own answer to a Deny on the card');
+  A.ok(/\.tool-chip\.denied \.tc-glyph,\s*\n\.tool-chip\.denied \.tc-stat \{ color: var\(--ph-dim\); \}/.test(read('frontend/css/comms.css')) && /\.tool-chip \.tc-d-res\.denied \{ color: var\(--ph-dim\); \}/.test(read('frontend/css/comms.css')), 'the denied chip is plain dim phosphor (no red)');
 }
 
 /* ---------- A2. the LIVE reply (chat.js streamingAgent, executed) never shows a choice marker, and keeps every prose line ---------- */
