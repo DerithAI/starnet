@@ -1255,3 +1255,4 @@ test/walk-consistency-1014.test.js
 test/delegated-ledger-first-read.test.js
 test/visible-text-caps.test.js
 test/abilities-switch-scope.test.js
+test/loop-unapproved-truth.test.js
