@@ -255,7 +255,11 @@ const byClass = (root, c) => all(root).filter(e => e._cls && e._cls.has(c));
     'a card that waits on you is framed in gold all round (a 2px left edge drew one device pixel at TEXT SIZE 90), and the frame leaves with the answer');
   A.ok(/text-transform: uppercase;\s*color: var\(--ph-bright\); border: 1px solid rgba\(var\(--ph-rgb\), \.4\);/.test(pipCards),
     'a plain key reads in the BRIGHT phosphor: in a red theme the phosphor is the fault colour\'s twin and ALWAYS read as a second DENY');
-  A.ok(/\.consent-btn:is\(\.primary, \.ws-openit, \.ws-primary, \.consent-confirm\),[\s\S]{0,400}\{\s*color: var\(--gold\); border-color: rgba\(var\(--gold-rgb\), \.75\);/.test(pipCards), 'the lit key is the NEEDS YOU key\'s gold');
+  A.ok(/\.consent-btn:not\(\.thumb\):is\(\.primary, \.ws-openit, \.ws-primary, \.consent-confirm\),[\s\S]{0,400}\{\s*color: var\(--gold\); border-color: rgba\(var\(--gold-rgb\), \.75\);/.test(pipCards), 'the lit key is the NEEDS YOU key\'s gold');
+  A.ok(!/\.cmsg\.consent(?:, \.dg-inspect)?\) \.consent-btn(?!:not\(\.thumb\))/.test(pipCards),
+    'the RATE row\'s thumbs (a turn-in\'s .consent-btn.thumb.primary) keep their own slim look: no card key rule reaches them');
+  A.ok(/\.tc-shortcut\[aria-pressed=true\],\s*body[^{]*\.gc-q-choice:is\(\[aria-pressed=true\], \.chosen\) \{\s*color: var\(--ph-bright\); border-color: var\(--ph\);/.test(pipCards),
+    'a picked answer stays visibly pressed over the card key');
   A.ok(/#comms-presence:not\(\.resolved\) \.cp-dot,[\s\S]{0,200}font-size: 0; color: transparent; text-shadow: none; animation: none;/.test(pipCards) && /@keyframes pip-meter-cp /.test(pipCards),
     'the working line drops the blinking block caret for the CREW rail\'s calm meter');
   A.ok(/#comms-presence:not\(\.resolved\) :is\(\.cp-verb, \.cp-tool, \.cp-time\) \{ font-size: 15px;/.test(pipCards), 'the working line reads at 15px (its tool name and time were 12px and dim)');
