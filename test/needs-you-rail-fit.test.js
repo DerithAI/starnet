@@ -63,19 +63,21 @@ const block = sel => {
   return glass.slice(at, glass.indexOf('}', at));
 };
 const px = (src, re, what) => { const m = re.exec(src); A.ok(!!m, what + ' (update the layout below if this moved)'); return m ? m.slice(1).map(Number) : [NaN]; };
-// (10-15, Andrew's pick "ONE PANEL") every wait is a row inside one framed panel: the section has no side margin, the panel
-// has side margins and a 1px edge, the rows have side padding and no edge of their own, and a portrait column leads each row
+// (10-17, Andrew's pick "C · ALERT CARDS") every wait is its own card: the section has no side margin, the list has side
+// margins and no edge of its own, each card carries the 1px edge the old panel had (so the ask line's column is as wide as
+// it was) and side padding, and a portrait column leads each card under its header strip
 const needs = block('body.glass-demo:not(.hud-mode) #left .ws-needs');
 const list = block('body.glass-demo:not(.hud-mode) #left .ws-needs .ny-list');
 const item = block('body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item');
 const what = block('body.glass-demo:not(.hud-mode) #left .ws-needs .ny-what');
 const [needsMx] = px(needs, /margin: \d+px (\d+)(?:px)? \d+px;/, 'the section keeps its side margins');
-const [listMx] = px(list, /margin: \d+(?:px)? (\d+)px \d+px;/, 'the panel keeps its side margins');
-const [listBorder] = px(list, /border: (\d+)px solid /, 'the panel keeps its 1px edge');
-const [listPx] = px(list, /padding: (\d+)(?:px)?;/, 'the panel keeps its padding');
-const [itemMx] = px(item, /margin: (\d+)(?:px)?;/, 'a row keeps its margins');
-const [, itemPside] = px(item, /padding: (\d+)px (\d+)px;/, 'a row keeps its side padding');
-const [itemBorder] = px(item, /border: (\d+)(?:px)?;/, 'a row has no edge of its own');
+const [listMx] = px(list, /margin: \d+(?:px)? (\d+)px \d+px;/, 'the list keeps its side margins');
+const [listBorder] = px(list, /border: (\d+)(?:px)?;/, 'the list has no edge of its own (each card carries it)');
+const [listPx] = px(list, /padding: (\d+)(?:px)?;/, 'the list keeps its padding');
+const [itemMx] = px(item, /margin: (\d+)(?:px)?;/, 'a card keeps its margins');
+const [, itemPside] = px(item, /padding: (\d+)(?:px)? (\d+)px(?: \d+px)?;/, 'a card keeps its side padding');
+const [itemBorder] = px(item, /border: (\d+)px solid /, 'a card keeps its 1px edge');
+A.eq(listBorder + itemBorder, 1, 'one 1px edge stands between the rail and a card\'s padding (moved from the panel onto each card): the ask line\'s column did not narrow');
 const [lampCol] = px(item, /grid-template-columns: (\d+)px minmax\(0, 1fr\);/, 'a row keeps its portrait column');
 const [colGap] = px(item, /column-gap: (\d+)px;/, 'a row keeps its column gap');
 const itemPl = itemPside, itemPr = itemPside;
@@ -164,6 +166,12 @@ A.ok(/min-width: max-content;/.test(keyEach) && /flex-wrap: wrap;/.test(keysRule
 const keyWidth = label => label.length * (keyFont * EM + keySpacing) + 2 * keyPx + 2 * keyEdge;
 const keysSideBySide = labels => labels.reduce((s, l) => s + keyWidth(l), 0) + keyGap * (labels.length - 1) <= lineWidth();
 const keyRowsHeight = labels => keysSideBySide(labels) ? keyH : labels.length * keyH + (labels.length - 1) * keyGap;
+/* ---- a card's header strip (Andrew 10-17, "C · ALERT CARDS"): what the wait is · how long, above the portrait and the lines.
+   Measured live 10-17: 26px (5px + 4px padding, a 14px / 1.15 line, its 1px rule), then a 7px gap ---- */
+const stripRule = block('body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-strip');
+A.ok(/margin: 0 -10px 7px;/.test(stripRule) && /padding: 5px 10px 4px;/.test(stripRule) && /font-size: 14px; line-height: 1\.15;/.test(stripRule) && /border-bottom: 1px solid /.test(stripRule),
+  'the header strip keeps the metrics the cards are laid out with (5px + 4px padding, a 14px / 1.15 line, a 1px rule, a 7px gap)');
+const STRIP = 5 + 4 + Math.round(14 * 1.15) + 1 + 7;
 
 const doc = { activeElement: null, hidden: false };
 /* the section, laid out as the browser stacks it, so the REAL fitRows runs on every render (its fold key, each row's hidden
@@ -187,8 +195,10 @@ const host = { hidden: false, rows: [], buttons: [], more: null, listeners: {}, 
       const whatEl = box(text, () => hidden), labels = [...inner.matchAll(/class="ny-key\b[^"]*"[^>]*>([^<]*)</g)].map(k => k[1]);
       return { dataset: dataset(m[1]), text, querySelector: sel => sel === '.ny-age' ? ageEl : sel === '.ny-what' ? whatEl : null,
         get hidden() { return hidden; }, set hidden(v) { fitRuns++; hidden = !!v; },
-        // 8px padding, the 22px name line, the ask line, and (when it has keys) a 6px gap and its key rows (keyRows, below)
-        height: () => 16 + 22 + 3 + Math.min(linesOf(text), clamp) * Math.round(fontPx * lineH) + (labels.length ? 6 + keyRowsHeight(labels) : 0) };
+        // (measured live 10-17) the card's two 1px edges, its header strip and the strip's 7px gap, a 3px row gap, the 22px name
+        // line, a 3px row gap, the ask line, and (when it has keys) a 3px row gap, the keys' 6px margin and its key rows
+        // (keyRows, below), then the card's 10px foot
+        height: () => 2 * itemBorder + STRIP + 3 + 22 + 3 + Math.min(linesOf(text), clamp) * Math.round(fontPx * lineH) + (labels.length ? 3 + 6 + keyRowsHeight(labels) : 0) + 10 };
     });
     const mm = /<button type="button" class="ny-more"([^>]*)>([^<]*)<\/button>/.exec(h);
     this.more = mm ? { dataset: dataset(mm[1]), hidden: / hidden/.test(mm[1]), textContent: mm[2] } : null;
@@ -282,8 +292,8 @@ A.ok(!keysSideBySide(['Approve once', 'Deny']), '…and stack on the 200px rail 
    course" kept 219px. The line is laid out here with the CSS flex algorithm (Flexbox §9.7, one line) from the REAL rules —
    each item's flex, min-width and type, the line's gap, the container query that takes the place out of the line on a
    narrow row — and VT323's own advance, on every rail at every TEXT SIZE:
-   - a name stays on one line whenever it, its time and the gaps fit the line (the place takes only what is left, "…");
-   - the time is never pushed out of the row (a name wraps first, only when it and its time alone overflow the line). */
+   - a name stays on one line whenever it and the gap fit the line (the place takes only what is left, "…");
+   - (10-17) the time is no longer in this line: it sits in the card's header strip, at its right end, whole. */
 {
   const topRule = sel => { const m = new RegExp('^' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\{([^}]*)\\}', 'm').exec(glass); A.ok(!!m, 'pipglass.css still has `' + sel + ' {` at the top level'); return m ? m[1] : ''; };
   const P = 'body.glass-demo:not(.hud-mode) #left .ws-needs ';
@@ -337,13 +347,19 @@ A.ok(!keysSideBySide(['Approve once', 'Deny']), '…and stack on the 200px rail 
     }
     return { sizes: target, used: target.reduce((s, x) => s + x, 0) + gaps };
   }
-  const whoF = flexOf(whoRule, 'the name'), whereF = flexOf(whereRule, 'the place'), ageF = flexOf(ageRule, 'the time');
+  // (10-17, "C · ALERT CARDS") the time moved up into the card's header strip, beside what the wait is: the name line is the
+  // name and its place, and the strip says how long (its own rule, read from the stylesheet; the rows below carry it there)
+  const whoF = flexOf(whoRule, 'the name'), whereF = flexOf(whereRule, 'the place');
+  A.ok(/<div class="ny-strip"><span class="ny-kind">[^<]*<\/span><span class="ny-age">/.test(NY._internals.html([{ key: 'ask:t', kind: 'question', who: 'NOVA', aid: 'agent', what: 'Which tier?', where: 'General', since: Date.now() - 120000, p: { promptId: 't', tool: 'brief.ask' } }], Date.now()))
+    && !/<div class="ny-line">[^]*?<span class="ny-age">[^]*?<\/div>/.test(NY._internals.html([{ key: 'ask:t', kind: 'question', who: 'NOVA', aid: 'agent', what: 'Which tier?', where: 'General', since: Date.now() - 120000, p: { promptId: 't', tool: 'brief.ask' } }], Date.now())),
+    'a card\'s time sits in its header strip, beside what the wait is, never in its name line');
+  A.ok(/flex: none;/.test(ageRule) && /margin-left: auto;/.test(ageRule), 'the strip keeps its time at its right end, whole');
   const ROWS = [
-    { what: 'MISS FORTUNE beside a build session\'s long place', names: 'MISS FORTUNE', place: 'in ⚒ Speedrun timer with checkpoint splits + test course', age: '2h' },
-    { what: 'a group of five beside its long title', names: 'ULTRON, CYPHER', more: 3, place: 'in Scout the speedrun community for course ideas and leaderboards', age: '' },
-    { what: 'ULTRON beside "General"', names: 'ULTRON', place: 'in General', age: '13d' }
+    { what: 'MISS FORTUNE beside a build session\'s long place', names: 'MISS FORTUNE', place: 'in ⚒ Speedrun timer with checkpoint splits + test course' },
+    { what: 'a group of five beside its long title', names: 'ULTRON, CYPHER', more: 3, place: 'in Scout the speedrun community for course ideas and leaderboards' },
+    { what: 'ULTRON beside "General"', names: 'ULTRON', place: 'in General' }
   ];
-  const wrapped = [], pushed = [], placeWide = [], tooNarrow = new Set();
+  const wrapped = [], placeWide = [], tooNarrow = new Set();
   let placeShown = 0, oneLineAt400 = 0;
   for (const rail of RAILS) for (const zoom of ZOOMS) for (const r of ROWS) {
     layout = { rail, zoom, bar: 0, laid: true };
@@ -351,32 +367,27 @@ A.ok(!keysSideBySide(['Approve once', 'Deny']), '…and stack on the 200px rail 
     const nb = nameBox(r.names, r.more);
     const who = Object.assign({ min: minOfRule(whoRule) }, whoF, nb);
     const where = Object.assign({ min: minOfRule(whereRule), maxC: r.place.length * perWhere, minC: r.place.length * perWhere }, whereF);
-    const age = Object.assign({ min: minOfRule(ageRule), maxC: r.age.length * perAge, minC: r.age.length * perAge }, ageF);
-    const items = placeIn ? [who, where, age] : [who, age], out = flexLine(avail, items);
+    const items = placeIn ? [who, where] : [who], out = flexLine(avail, items);
     const at = rail.name + ' @' + zoom + '%: ' + r.what;
-    const roomForName = nb.maxC + (items.length - 1) * gap + age.maxC <= avail + 0.01;
+    const roomForName = nb.maxC + (items.length - 1) * gap <= avail + 0.01;
     if (roomForName && out.sizes[0] < nb.maxC - 0.01) wrapped.push(at + ' — the name gets ' + out.sizes[0].toFixed(1) + 'px of the ' + nb.maxC.toFixed(1) + ' it needs, the place ' + (placeIn ? out.sizes[1].toFixed(1) : 'none'));
-    // (where not even the name's longest word, its time and the gap fit — the 200px rail at X-LARGE and up — no flex rule
-    // can keep the time in the line: counted below, not this rule's to fix)
-    const roomForWord = nb.minC + (items.length - 1) * gap + age.maxC <= avail + 0.01;
-    if (r.age && !roomForWord) tooNarrow.add(rail.name + ' @' + zoom + '%');
-    else if (r.age && out.used > avail + 0.01) pushed.push(at + ' — the line needs ' + out.used.toFixed(1) + 'px of ' + avail.toFixed(1) + ': its time is pushed out of the row');
+    // (where not even the name's longest word fits the line — the 200px rail at X-LARGE and up — it breaks: not this rule's to fix)
+    if (nb.minC > avail + 0.01) tooNarrow.add(rail.name + ' @' + zoom + '%');
     if (placeIn) {
       placeShown++;
-      if (out.sizes[1] > Math.max(0, avail - (out.sizes[0] + 2 * gap + out.sizes[2])) + 0.01) placeWide.push(at + ' — the place takes more than the name and the time leave');
+      if (out.sizes[1] > Math.max(0, avail - (out.sizes[0] + gap)) + 0.01) placeWide.push(at + ' — the place takes more than the name leaves');
       if (rail.px === dragMax && zoom === 90 && roomForName) oneLineAt400++;
     }
   }
   A.ok(placeShown > 10 && oneLineAt400 === ROWS.length, '(the place is in the line on the wide rails: ' + placeShown + ' layouts, all three rows at Andrew\'s 400px rail at 90%)');
-  A.eq(wrapped.slice(0, 4), [], 'a name stays on one line wherever it, its time and the gaps fit the line: the place gives up its room first (' + wrapped.length + ' wrapped)');
-  A.eq(pushed.slice(0, 4), [], 'the time is never pushed out of the row: a name too long for the line beside its time wraps at a space instead (' + pushed.length + ' pushed out)');
-  if (tooNarrow.size) console.log('NOTE: not even a name\'s longest word and its time fit one line at ' + [...tooNarrow].join(', ') + ' (unchanged by this rule)');
-  A.eq(placeWide.slice(0, 4), [], 'the place takes only the room the name and the time leave, and shows the rest as "…" (' + placeWide.length + ')');
+  A.eq(wrapped.slice(0, 4), [], 'a name stays on one line wherever it and the gap fit the line: the place gives up its room first (' + wrapped.length + ' wrapped)');
+  if (tooNarrow.size) console.log('NOTE: not even a name\'s longest word fits one line at ' + [...tooNarrow].join(', ') + ' (unchanged by this rule)');
+  A.eq(placeWide.slice(0, 4), [], 'the place takes only the room the name leaves, and shows the rest as "…" (' + placeWide.length + ')');
   // Andrew's rail, the review's two cases, named
   layout = { rail: RAILS.find(r => r.px === dragMax), zoom: 90, bar: 0, laid: true };
   for (const r of ROWS.slice(0, 2)) {
     const nb = nameBox(r.names, r.more);
-    const out = flexLine(lineWidth(), [Object.assign({ min: minOfRule(whoRule) }, whoF, nb), Object.assign({ min: minOfRule(whereRule), maxC: r.place.length * perWhere, minC: r.place.length * perWhere }, whereF), Object.assign({ min: minOfRule(ageRule), maxC: r.age.length * perAge, minC: r.age.length * perAge }, ageF)]);
+    const out = flexLine(lineWidth(), [Object.assign({ min: minOfRule(whoRule) }, whoF, nb), Object.assign({ min: minOfRule(whereRule), maxC: r.place.length * perWhere, minC: r.place.length * perWhere }, whereF)]);
     A.ok(out.sizes[0] >= nb.maxC - 0.01 && out.sizes[1] < r.place.length * perWhere, 'Andrew\'s 400px rail at 90%: ' + r.what + ' — the name on one line (' + out.sizes[0].toFixed(1) + ' of ' + nb.maxC.toFixed(1) + 'px), the place cut to ' + out.sizes[1].toFixed(1) + 'px with "…"');
   }
 }

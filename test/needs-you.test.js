@@ -168,9 +168,10 @@ const shown = i => readAs(i, WHOLE), cut = i => readAs(i, CUT);
     A.ok(!/ny-review/.test(NY._internals.html([shown(wa)], Date.now())), '…and its row is not offered as the Review door: ' + Object.keys(w)[0]);
   }
   const glassCss = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'css', 'pipglass.css'), 'utf8');
-  A.ok(/\.ny-keys \{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; \}/.test(glassCss) && /\.ny-key \{\s*flex: 1 1 auto; min-width: 0; min-height: 34px; padding: 5px 8px; font: 15px\/1\.1 'VT323'/.test(glassCss) && !/\.ny-key\.ny-review \{ flex: 1 1 100%; \}/.test(glassCss)
-    && /\.ny-keys > \.ny-key \{ flex: 1 1 0; min-width: max-content; min-height: 34px; \}/.test(glassCss),
-    'a row has two keys, never three: they share its text column where both labels fit (the 232px rail at STANDARD) and stack, whole and 34px tall, where they do not (the 200px rail; test/needs-you-rail-fit.test.js lays both out)');
+  // (Andrew 10-17, NEEDS YOU "C · ALERT CARDS") the keys are label-sized terminal keys ending on the card's right edge
+  A.ok(/\.ny-keys \{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 6px; \}/.test(glassCss) && /\.ny-key \{\s*flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 9px; font: 15px\/1\.1 'VT323'/.test(glassCss) && !/\.ny-key\.ny-review \{ flex: 1 1 100%; \}/.test(glassCss)
+    && /\.ny-keys > \.ny-key \{ flex: 0 0 auto; min-width: max-content; min-height: 34px; \}/.test(glassCss),
+    'a row has two keys, never three: side by side at the card\'s right edge where both labels fit (the 232px rail at STANDARD), wrapped, each whole and 34px tall, where they do not (the 200px rail; test/needs-you-rail-fit.test.js lays both out)');
   // (two reviews 10-16) "in <where>" was display:none on every default rail (a 250px container query): approval rows never
   // said which conversation asks, keyboard focus fell to the page while an answer was on its way (the focus assertions below
   // run on a host with no CSS, so they never saw it), and build / STEP-IN / extension / loop / group rows had nothing to focus
