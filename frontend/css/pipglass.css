@@ -934,12 +934,13 @@ body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn:has(> 
    need to seriously touch it up"; of three directions rendered at his settings he picked C · TERMINAL CURSOR). The
    left rail's chrome only: no row, card or line changes size, so every fit model above still holds.
      · the rail's scrollbars are a 1px phosphor line with a block thumb (no OS arrow buttons)
-     · the CREW header keys are drawn icons in square keys; the search field is a > prompt with the station's caret
+     · the CREW header keys are drawn icons in square keys; the search field is a > prompt (the > only where you type:
+       Andrew kept the TRIMMED pass, no cursor on the selection, no blinking caret)
      · SESSIONS / PROJECTS is the Pip-Boy tab strip: one rule across the rail, the open tab boxed above it and open at
-       the bottom, carrying the > cursor; + NEW is a key on the rule
-     · a selected crew card or session is marked by four viewfinder corners (the CAM's own marks) over a faint tint, and
-       its name reads "> NAME"; a card or row that waits on you keeps its gold, corners included
-     · statuses and steps are tracked caps; a working agent carries the Pip-Boy segmented meter (indeterminate: busy,
+       the bottom; + NEW is a key on the rule
+     · a selected crew card or session is marked by four viewfinder corners (the CAM's own marks) over a faint tint; a
+       card or row that waits on you keeps its gold, corners included
+     · statuses and steps are tracked caps; a working agent carries a calm Pip-Boy segmented meter (indeterminate: busy,
        never a %), hidden while it waits on your OK
      · every shape is a 2px terminal box; NEEDS YOU sits on a gold rule that runs out to its count
    ============================================================ */
@@ -1000,15 +1001,6 @@ body.glass-demo:not(.hud-mode) #screen-game #left #crew .crew-row.asking:is(.sel
 body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row.attn.sel { border-color: rgba(var(--gold-rgb), .35); }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row:hover:not(.selected):not(.filtering):not(.asking),
 body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row:hover:not(.sel):not(.attn) { border-color: rgba(var(--ph-rgb), .18); background: rgba(var(--ph-rgb), .035); box-shadow: none; }
-/* the RobCo cursor: the selected agent and session read "> NAME" (the name's own font, size and baseline) */
-body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row:is(.selected, .filtering) .crew-nm::before,
-body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row.sel .ws-agent::before { content: '>\00a0'; color: var(--pip-mark); }
-/* …where the name has the room: on the narrowest rails (or a large TEXT SIZE) the corners alone mark it, so the cursor
-   never costs a name its last letters */
-body.glass-demo:not(.hud-mode) #screen-game #crew { container: pip-crew / inline-size; }
-body.glass-demo:not(.hud-mode) #screen-game #left #workstreams { container: pip-rows / inline-size; }
-@container pip-crew (max-width: 180px) { body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row:is(.selected, .filtering) .crew-nm::before { content: none; } }
-@container pip-rows (max-width: 190px) { body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row.sel .ws-agent::before { content: none; } }
 
 /* ---- crew readouts: status, live step and level in tracked caps ---- */
 body.glass-demo:not(.hud-mode) #screen-game #crew :is(.crew-status, .crew-step) { text-transform: uppercase; letter-spacing: 1.6px; }
@@ -1016,22 +1008,23 @@ body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-status
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-name .crew-room { text-transform: uppercase; letter-spacing: 1px; }
 /* a working agent: the Pip-Boy segmented meter under its status, a lit block stepping across it. Indeterminate (the row is
    working; how far along is never claimed), shown only on the row crewTick marks .working, and hidden while that agent
-   waits on your OK (it is not busy then). Under reduced motion the block rests lit at the start. */
+   waits on your OK (it is not busy then). Calm (Andrew kept the trimmed pass): a dim track, the block at 70%, a 4s
+   sweep. Under reduced motion the block rests lit at the start. */
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog {
   display: block; flex: 1 0 100%; height: 5px; margin-top: 7px; overflow: hidden; position: relative;
-  background: repeating-linear-gradient(90deg, rgba(var(--ph-rgb), .2) 0 7px, transparent 7px 9px);
+  background: repeating-linear-gradient(90deg, rgba(var(--ph-rgb), .12) 0 7px, transparent 7px 9px);
 }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog > div { display: none; }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog::after {
   content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 45px; transform: none; box-shadow: none;
-  background: repeating-linear-gradient(90deg, var(--ph) 0 7px, transparent 7px 9px);
-  animation: pip-meter 2.4s steps(38) infinite;
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--ph) 70%, transparent) 0 7px, transparent 7px 9px);
+  animation: pip-meter 4s steps(38) infinite;
 }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.asking .crew-prog { display: none; }
 @keyframes pip-meter { from { transform: translateX(-45px); } to { transform: translateX(297px); } }
 
 /* ---- SESSIONS / PROJECTS: the Pip-Boy tab strip. One rule runs across the rail (end ticks at both ends); the open tab is
-   boxed above it, open at the bottom, with the > cursor; + NEW / + ADD is a key standing on the rule ---- */
+   boxed above it, open at the bottom; + NEW / + ADD is a key standing on the rule ---- */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head {
   background: none; border: 0; box-shadow: none; padding: 14px 10px 0; gap: 0; align-items: flex-end; flex-wrap: nowrap;
 }
@@ -1050,7 +1043,6 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab.on {
   border-color: var(--ph); border-bottom-color: transparent; color: var(--ph-bright);
   background: linear-gradient(rgba(var(--ph-rgb), .13), rgba(var(--ph-rgb), .02)); text-shadow: 0 0 6px rgba(var(--ph-rgb), .45);
 }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab.on::before { content: '>\00a0'; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts {
   display: flex; align-items: center; align-self: stretch; gap: 6px; padding: 0 9px 5px 10px; border-bottom: 1px solid var(--pip-line);
   background: linear-gradient(var(--pip-line), var(--pip-line)) right bottom / 1px 7px no-repeat;
@@ -1061,8 +1053,7 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addp
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject):is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .12); }
 /* the strip on a narrow rail (the default 232px, the 200px laptop rail, any dragged width) — keyed to the rail's own width,
-   not the window's: tighter tabs and + NEW / + ADD as the square + key; on the narrowest the open tab drops its > (its box
-   still says which is open) */
+   not the window's: tighter tabs and + NEW / + ADD as the square + key, and on the narrowest tighter still */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs / inline-size; }
 @container pip-tabs (max-width: 330px) {
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 7px; letter-spacing: .6px; }
@@ -1074,24 +1065,16 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs
 }
 @container pip-tabs (max-width: 205px) {
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 5px; letter-spacing: .2px; }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab.on::before { content: none; }
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { flex-basis: 4px; }
 }
 
-/* ---- the search field is a prompt: a typed > in front, the station's caret (1s steps, never blinking out) while it is
-   empty and idle ---- */
+/* ---- the search field is a prompt: a typed > in front (no caret: the trimmed pass) ---- */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search label { position: relative; display: block; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search label::before {
   content: '>'; position: absolute; left: 11px; top: 0; bottom: 0; display: flex; align-items: center;
   font-size: 19px; line-height: 1; color: var(--ph); pointer-events: none; z-index: 1;
 }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search label::after {
-  content: ''; position: absolute; left: 26px; top: 50%; width: 9px; height: 2px; margin-top: 6px; background: var(--ph-bright);
-  pointer-events: none; animation: pip-caret 1s steps(1) infinite;
-}
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search label:is(:focus-within, :has(#ws-search:not(:placeholder-shown)))::after { display: none; }
-@keyframes pip-caret { 50% { opacity: .2; } }
-body.glass-demo:not(.hud-mode) #screen-game #left #ws-search { padding-left: 38px; border-radius: 2px; }
+body.glass-demo:not(.hud-mode) #screen-game #left #ws-search { padding-left: 30px; border-radius: 2px; }
 /* the agent finder under the CREW head speaks the same prompt: a typed >, the session search's field, a square close key */
 body.glass-demo:not(.hud-mode) #screen-game #left .crew-search-wrap { position: relative; gap: 6px; padding: 8px 10px; border-bottom-color: rgba(var(--ph-rgb), .2); }
 body.glass-demo:not(.hud-mode) #screen-game #left .crew-search-wrap::before {
@@ -1114,8 +1097,7 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-count { order: 3
 body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-runs { text-transform: uppercase; letter-spacing: 1.4px; }
 
 @media (prefers-reduced-motion: reduce) {
-  body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog::after,
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search label::after { animation: none; }
+  body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog::after { animation: none; }
 }
 
 /* ============================================================
