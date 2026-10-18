@@ -75,7 +75,7 @@ const [listMx] = px(list, /margin: \d+(?:px)? (\d+)px \d+px;/, 'the list keeps i
 const [listBorder] = px(list, /border: (\d+)(?:px)?;/, 'the list has no edge of its own (each card carries it)');
 const [listPx] = px(list, /padding: (\d+)(?:px)?;/, 'the list keeps its padding');
 const [itemMx] = px(item, /margin: (\d+)(?:px)?;/, 'a card keeps its margins');
-const [, itemPside] = px(item, /padding: (\d+)(?:px)? (\d+)px(?: \d+px)?;/, 'a card keeps its side padding');
+const [itemPt, itemPside, itemPb] = px(item, /padding: (\d+)(?:px)? (\d+)px (\d+)px;/, 'a card keeps its padding (its top is the header strip\'s)');
 const [itemBorder] = px(item, /border: (\d+)px solid /, 'a card keeps its 1px edge');
 A.eq(listBorder + itemBorder, 1, 'one 1px edge stands between the rail and a card\'s padding (moved from the panel onto each card): the ask line\'s column did not narrow');
 const [lampCol] = px(item, /grid-template-columns: (\d+)px minmax\(0, 1fr\);/, 'a row keeps its portrait column');
@@ -167,11 +167,13 @@ const keyWidth = label => label.length * (keyFont * EM + keySpacing) + 2 * keyPx
 const keysSideBySide = labels => labels.reduce((s, l) => s + keyWidth(l), 0) + keyGap * (labels.length - 1) <= lineWidth();
 const keyRowsHeight = labels => keysSideBySide(labels) ? keyH : labels.length * keyH + (labels.length - 1) * keyGap;
 /* ---- a card's header strip (Andrew 10-17, "C · ALERT CARDS"): what the wait is · how long, above the portrait and the lines.
-   Measured live 10-17: 26px (5px + 4px padding, a 14px / 1.15 line, its 1px rule), then a 7px gap ---- */
+   Its height is its padding, one line of its type and its 1px rule, then its gap (measured live 10-17: 28px + 9px) ---- */
 const stripRule = block('body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-strip');
-A.ok(/margin: 0 -10px 7px;/.test(stripRule) && /padding: 5px 10px 4px;/.test(stripRule) && /font-size: 14px; line-height: 1\.15;/.test(stripRule) && /border-bottom: 1px solid /.test(stripRule),
-  'the header strip keeps the metrics the cards are laid out with (5px + 4px padding, a 14px / 1.15 line, a 1px rule, a 7px gap)');
-const STRIP = 5 + 4 + Math.round(14 * 1.15) + 1 + 7;
+const [, , stripGap] = px(stripRule, /margin: (\d+)(?:px)? (-?\d+)px (\d+)px;/, 'the header strip keeps its gap');
+const [stripPt, , stripPb] = px(stripRule, /padding: (\d+)px (\d+)px (\d+)px;/, 'the header strip keeps its padding');
+const [stripFont, stripLh] = px(stripRule, /font-size: (\d+)px; line-height: (\d*\.?\d+);/, 'the header strip keeps its type');
+const [stripRuleW] = px(stripRule, /border-bottom: (\d+)px solid /, 'the header strip keeps its rule');
+const STRIP = stripPt + stripPb + Math.round(stripFont * stripLh) + stripRuleW + stripGap;
 
 const doc = { activeElement: null, hidden: false };
 /* the section, laid out as the browser stacks it, so the REAL fitRows runs on every render (its fold key, each row's hidden
@@ -197,8 +199,8 @@ const host = { hidden: false, rows: [], buttons: [], more: null, listeners: {}, 
         get hidden() { return hidden; }, set hidden(v) { fitRuns++; hidden = !!v; },
         // (measured live 10-17) the card's two 1px edges, its header strip and the strip's 7px gap, a 3px row gap, the 22px name
         // line, a 3px row gap, the ask line, and (when it has keys) a 3px row gap, the keys' 6px margin and its key rows
-        // (keyRows, below), then the card's 10px foot
-        height: () => 2 * itemBorder + STRIP + 3 + 22 + 3 + Math.min(linesOf(text), clamp) * Math.round(fontPx * lineH) + (labels.length ? 3 + 6 + keyRowsHeight(labels) : 0) + 10 };
+        // (keyRows, below), then the card's foot
+        height: () => 2 * itemBorder + itemPt + STRIP + 3 + 22 + 3 + Math.min(linesOf(text), clamp) * Math.round(fontPx * lineH) + (labels.length ? 3 + 6 + keyRowsHeight(labels) : 0) + itemPb };
     });
     const mm = /<button type="button" class="ny-more"([^>]*)>([^<]*)<\/button>/.exec(h);
     this.more = mm ? { dataset: dataset(mm[1]), hidden: / hidden/.test(mm[1]), textContent: mm[2] } : null;

@@ -361,10 +361,10 @@ const NeedsYou = (() => {
       + '<ul class="ny-list">' + shown.map(i => { const rv = reviewRow(i), keys = keysFor(i), color = colorOf(i.aid), place = ' — in ' + i.where; return '<li class="ny-item ' + i.kind + (rv ? ' ny-review' : '') + (placeSaid(i) ? ' ny-place-said' : '') + '" data-ny-key="' + esc(i.key) + '" data-ny-n="' + (i.n || 1) + '">'
         // the card's header strip (Andrew 10-17, "C · ALERT CARDS"): what this wait is, and how long it has waited
         + '<div class="ny-strip"><span class="ny-kind">' + esc(kindLabel(i)) + '</span><span class="ny-age">' + esc(age(i.since, now)) + '</span></div>'
-        // the CREW card, for a wait (Andrew 10-15: "premium"): the agent's portrait in its well with the gold lamp housed in
-        // its corner, then WHO (in the agent's colour) · where, the line (the ask first; two lines at most, the whole of it on
-        // hover), then keys only when there is more than Open
-        + '<span class="ny-face" aria-hidden="true"' + (i.aid ? ' data-ny-aid="' + esc(i.aid) + '"' : '') + '><img alt="" draggable="false" hidden><span class="ny-dot"></span></span>'
+        // the CREW card, for a wait (Andrew 10-15: "premium"): the agent's portrait in its well (no lamp: the strip's colour
+        // says what it is), then WHO (in the agent's colour) · where, the line (the ask first; two lines at most, the whole of
+        // it on hover), then keys only when there is more than Open
+        + '<span class="ny-face" aria-hidden="true"' + (i.aid ? ' data-ny-aid="' + esc(i.aid) + '"' : '') + '><img alt="" draggable="false" hidden></span>'
         // "in <where>" is the row's door for the keyboard and a screen reader on every rail (pipglass.css only hides it from
         // sight where the line has no room): its name says who, what, and where it lands
         + '<div class="ny-line">' + (i.who ? '<span class="ny-who"' + (color ? ' style="color:' + esc(color) + '"' : '') + '>' + (i.whoHtml || esc(i.who)) + '</span>' : '')
