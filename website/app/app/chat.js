@@ -422,8 +422,11 @@ const Chat = (() => {
         retry: { attempt: p.attempt, maxAttempts: p.maxAttempts, reason: String(p.reason || ''), delayMs: p.delayMs } };
     }
     if (name === 'agent.waiting') {
-      // a beat during the backoff keeps the retry it belongs to; any other phase means the retry already went out
+      // a beat during the backoff keeps the retry it belongs to; any other phase means the retry already went out.
+      // `note` = the sidecar's own facts about this wait, as the beat states them (#99: where Ollama has the model); a beat
+      // without one means there is none now, so it is never carried over from an earlier beat.
       return { model: String(p.model || (prev && prev.model) || ''), phase: String(p.phase || ''), sinceMs: p.sinceMs,
+        note: String(p.note || '').slice(0, 240),
         retry: (p.phase === 'retry_backoff' && prev && prev.retry) ? prev.retry : null };
     }
     if (name === 'agent.token') return p.delta ? null : prev;   // an empty delta shows the Commander nothing
@@ -457,6 +460,8 @@ const Chat = (() => {
     }
     if (n.phase === 'retry_backoff') return 'retry backoff' + (since >= 1000 ? ', ' + fmtElapsed(since) + ' so far' : '') + ' — ' + name;
     const dur = since >= 1000 ? ' for ' + fmtElapsed(since) : '';
+    // the sidecar's facts about the wait (#99, a local Ollama: prompt size, GPU/CPU share, window) follow the duration
+    if (n.note) return 'waiting' + dur + ' · ' + n.note + ' — ' + name;
     if (n.phase === 'connect') return 'connecting' + dur + ' to ' + name;   // (the model id is always LAST: renderPresence splits it off)
     return 'waiting' + dur + (n.phase === 'streaming' ? ' (stream open)' : '') + ' on ' + name;
   }
