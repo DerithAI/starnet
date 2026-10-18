@@ -20994,6 +20994,24 @@ async function runOnceCore(o) {
   const preAuthorityTools = resolved.tools.slice();
   resolved = enforceRunAuthority(resolved, registry, userControlAuthority);
   resolved = enforceEnabledToolsets(resolved, registry, unrestrictedHostNow() ? null : o.enabledToolsets);
+  /* THE WIDGET'S OWN UPDATE RUN PUBLISHES IT (releases#6). A widget refresh runs in that widget's conversation
+     ('widget-<id>'), a scheduled update as a routine whose job names the widget; both are told to publish with
+     widget.set, which otherwise rides the NOTEBOOK prop + MEMORY switch an interactive run often lacks (the agent
+     then searched for it until stopped). Host-derived from the stream id / the job's own meta, never from text, and
+     only for a widget the Commander configured: exactly widget.get + widget.set (no consent, no network), applied
+     after the narrowing above because a per-run list must not strip the one tool this run exists to call. */
+  {
+    const widgetJob = (trigger === 'schedule' && o.cronJobId) ? cronJobs.find(j => j && j.id === String(o.cronJobId)) : null;
+    if (widgetTools.updateRunOf({ streamId: o.streamId, widgetId: widgetJob && widgetJob.meta && widgetJob.meta.widgetId })) {
+      const grants = (CAP_REGISTRY.notebook || []).filter(g => g && /^widget\./.test(g.tool));
+      resolved = Object.assign({}, resolved, {
+        tools: resolved.tools.concat(grants.map(g => g.tool).filter(n => resolved.tools.indexOf(n) < 0)),
+        grants: resolved.grants.concat(grants.filter(g => !resolved.grants.some(x => x && x.tool === g.tool))),
+        approvalRules: Object.assign({}, resolved.approvalRules), networkCaps: Object.assign({}, resolved.networkCaps)
+      });
+      for (const g of grants) { resolved.approvalRules[g.tool] = { requiresConsent: false, scope: g.scope, network: false }; resolved.networkCaps[g.tool] = false; }
+    }
+  }
   /* WITHHELD COMMANDS, EXPLAINED (issue #77). The authority above removes workspace-process tools (shell.exec,
      verify.run, terminal.start …) from an ASK-mode non-interactive run even with a WORKBENCH placed — by design.
      Record which ones it removed (and the toolset switch would otherwise have allowed) so tool.search, the

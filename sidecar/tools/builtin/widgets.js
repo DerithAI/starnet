@@ -115,6 +115,19 @@
         + 'Include sourceUrl when the app supplies a link to the source. If you cannot read it, call widget.set with the same id/version and error explaining why, preserving the last reading. '
         + 'A chat reply alone does not update the widget.';
     }
+    /* THE WIDGET'S OWN UPDATE RUN (releases#6, 2026-10-17). A refresh is sent to the agent open in COMMS on the
+       widget's own conversation ('widget-' + id, frontend/app/widgets.js openWidgetTask); a scheduled update is a
+       routine whose job meta names the widget. widget.get/widget.set ride the NOTEBOOK prop (memory), which an
+       interactive run holds only while one is placed and the MEMORY switch is on, so the refresh demanded a tool the
+       run did not have and the agent searched for it until stopped. The host grants the two widget tools to the run
+       whose purpose IS a configured widget, and to no other run. Returns that widget's id, or null. */
+    function updateRunOf(run) {
+      run = run || {};
+      const stream = String(run.streamId || '');
+      const id = String(run.widgetId || (stream.indexOf('widget-') === 0 ? stream.slice(7) : ''));
+      if (!ID_RE.test(id)) return null;
+      return listOf().some(w => w.id === id && w.config) ? id : null;
+    }
 
     const setTool = {
       // NO consent gate: a widget record is a sandboxed local write to the station's OWN chrome
@@ -230,7 +243,7 @@
     };
 
     return {
-      setTool, getTool, configure, remove, instruction,
+      setTool, getTool, configure, remove, instruction, updateRunOf,
       list: listOf,   // the GET /api/widgets read surface (host route) — same records, no reshaping
       register(reg) { reg.register(setTool); reg.register(getTool); return reg; }
     };

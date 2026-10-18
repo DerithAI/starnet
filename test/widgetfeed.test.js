@@ -182,6 +182,29 @@ const rejects = async (p, label) => { try { await p; A.ok(false, label + ' (did 
     A.eq(t.list().find(w => w.id === 'trend').spark.length, 3, 'actual trend points are retained');
   }
 
+  /* ============================ 8. THE WIDGET'S OWN UPDATE RUN (releases#6) ============================ */
+  // the host grants widget.get/widget.set to the run whose purpose IS a configured widget: its own conversation
+  // ('widget-<id>', frontend/app/widgets.js openWidgetTask) or a routine whose job meta names it — never anything else
+  {
+    const { t } = make(); const source = { kind: 'agent', id: 'starnet', label: 'StarNet' };
+    await t.configure({ id: 'w-ai-spend', label: 'AI spend', request: 'total spend this month from the ledger', display: 'metric' }, source);
+    await run(t, { id: 'app-revenue', value: '$5' });   // an agent-fed readout: no user definition behind it
+    A.eq(t.updateRunOf({ streamId: 'widget-w-ai-spend' }), 'w-ai-spend', 'the widget\'s own conversation is its update run');
+    A.eq(t.updateRunOf({ streamId: 'cron-run1', widgetId: 'w-ai-spend' }), 'w-ai-spend', 'a routine whose job names the widget is its update run');
+    A.eq(t.updateRunOf({ streamId: 'ws_general' }), null, 'an ordinary conversation is not');
+    A.eq(t.updateRunOf({ streamId: 'widget-app-revenue' }), null, 'an agent-fed readout nobody configured grants nothing');
+    A.eq(t.updateRunOf({ streamId: 'widget-nope' }), null, 'an unknown widget grants nothing');
+    A.eq(t.updateRunOf({ streamId: 'widget-' }), null, 'a bare prefix grants nothing');
+    A.eq(t.updateRunOf({ streamId: 'widget-W/../x' }), null, 'a malformed id grants nothing');
+    A.eq(t.updateRunOf(null), null, 'no run facts grant nothing');
+    await t.remove('w-ai-spend');
+    A.eq(t.updateRunOf({ streamId: 'widget-w-ai-spend' }), null, 'a deleted widget\'s conversation grants nothing');
+    // the host wiring: after the run's narrowing, exactly the registry's widget grants, keyed by the stream / job meta
+    const idx = require('fs').readFileSync(require('path').join(__dirname, '../sidecar/index.js'), 'utf8');
+    const wire = /resolved = enforceEnabledToolsets\([^\n]*\n[\s\S]{0,900}?widgetTools\.updateRunOf\(\{ streamId: o\.streamId, widgetId: widgetJob && widgetJob\.meta && widgetJob\.meta\.widgetId \}\)[\s\S]{0,200}?\(CAP_REGISTRY\.notebook \|\| \[\]\)\.filter\(g => g && \/\^widget\\\.\/\.test\(g\.tool\)\)/.exec(idx);
+    A.ok(!!wire, 'runOnce grants exactly the notebook\'s widget.* rows to the widget\'s update run, after per-run narrowing');
+  }
+
   console.log('widgetfeed.test.js OK');
   // report() settles the assertion counter — the .catch below only fires on a THROWN error, so
   // without this a failed assertion still exits 0 and the gate scores it green.
