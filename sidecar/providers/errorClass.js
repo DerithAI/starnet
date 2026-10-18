@@ -9,7 +9,7 @@
 
    Reasons: auth · billing · rate_limit · quota_exhausted · overloaded · server_error · timeout ·
             context_overflow · output_cap · model_not_found · content_policy_blocked · format_error ·
-            tls_certificate · local_memory · local_error · endpoint_mismatch · unknown.
+            tls_certificate · local_memory · local_timeout · local_error · endpoint_mismatch · unknown.
 
    Priority pipeline: content/policy -> HTTP status (code+message consulted inside the ambiguous 400 branch)
    -> structured error-code (for errors with no HTTP status) -> message patterns -> transport -> a
@@ -64,6 +64,11 @@
     /* An adapter-proven local allocation failure (Ollama out of memory). Resending repeats the allocation, so no
        retry; a configured fallback OFF that local runtime may take over (the loop skips same-runtime entries). */
     local_memory:           { retryable: false, shouldRotateCredential: false, shouldFallback: true,  shouldCompress: false },
+    /* An adapter-proven LOADED, SILENT local model (#99): Ollama's native chat sent nothing for the whole connect ceiling
+       while /api/ps listed the model at every read and no other StarNet call was open on that server. A resend aborts
+       Ollama mid-request and repeats the same prompt on the same model, so no retry. No fallback either, exactly as
+       `timeout`: the turn ends with the adapter's placement sentence. A model NOT listed stays `timeout`. */
+    local_timeout:          { retryable: false, shouldRotateCredential: false, shouldFallback: false, shouldCompress: false },
     /* An adapter-proven WRONG SERVER behind the provider's URL (GH#111: the OLLAMA card pointed at LM Studio, which
        answers Ollama's /api/chat with a 200 "Unexpected endpoint or method"). The configuration is wrong, so a resend
        repeats it, and the adapter's own sentence (which server, which card speaks to it) is the fix. No fallback
@@ -315,6 +320,8 @@
     if (!status && isTlsFailure(err, low)) return 'tls_certificate';
     // The Ollama adapter proves the runtime and an explicit failed allocation, even when it returns 500.
     if (err && err.localModelMemory === true) return 'local_memory';
+    // The Ollama adapter proved the model sat loaded through a whole silent connect ceiling (openai-compatible.js).
+    if (err && err.localModelTimeout === true) return 'local_timeout';
     // The adapter proved the URL answers as a different kind of server (openai-compatible.js notOllamaError).
     if (err && err.endpointMismatch === true) return 'endpoint_mismatch';
     if (isLocalError(err, status, extractBody(err), low)) return 'local_error';

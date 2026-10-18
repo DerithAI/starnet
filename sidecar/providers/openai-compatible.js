@@ -512,11 +512,12 @@
     function waitProbe(body, onWait, self) {
       const promptTokens = ollamaNative.estimateTokens(body);
       const server = ollamaIsLoopback ? 'Ollama' : 'Ollama at ' + ollamaHost;
-      let timer = null, stopped = false, last = '';
+      let timer = null, stopped = false, last = '', missing = false;
       const arm = ms => { timer = setTimeout(read, ms); if (timer && typeof timer.unref === 'function') timer.unref(); };
       async function read() {
         timer = null;
         const ps = await ollamaStatus();
+        if (ps && !ollamaNative.psRow(ps, body.model)) missing = true;   // a read that did not list the model (see sawMissing)
         if (stopped) return;
         const others = otherOllamaCalls(nativeBase, self);
         const note = ollamaNative.placementFacts(ps, body.model, promptTokens, server)
@@ -526,7 +527,11 @@
         arm(waitNoteMs * 3);
       }
       arm(waitNoteMs);
-      return { stop() { stopped = true; if (timer) clearTimeout(timer); timer = null; } };
+      return {
+        stop() { stopped = true; if (timer) clearTimeout(timer); timer = null; },
+        // true once any read of this attempt answered without the model listed: it may have been loading during the wait
+        sawMissing() { return missing; }
+      };
     }
     // The window this model actually gets here: a pinned size, else min(its trained maximum, the ceiling).
     function usableWindow(modelMax) {
@@ -920,12 +925,21 @@
           if (isAbort(e, signal)) throw e;
           provider.runtime.stampRequestHost(e, native ? nativeBase : baseUrl);   // a TLS/socket cause names no host: say which one we dialled
           // Local Ollama silent past the connect ceiling: say where the model actually runs (one /api/ps read).
-          // Appended, so the message still reads "timed out" and classifies exactly as before.
+          // Appended, so the message still reads "timed out".
           if (native && e && e.timeout && e.phase === 'connect' && !e.ollamaPlacement) {
             e.ollamaPlacement = true;
-            e.message += ' — ' + ollamaNative.placementNote(await ollamaStatus(), body.model, ollamaNative.estimateTokens(body), ollamaIsLoopback ? 'on this computer' : 'at ' + ollamaHost);
+            const ps = await ollamaStatus();
+            e.message += ' — ' + ollamaNative.placementNote(ps, body.model, ollamaNative.estimateTokens(body), ollamaIsLoopback ? 'on this computer' : 'at ' + ollamaHost);
+            /* NO RE-SEND OF A LOADED MODEL'S SILENCE (#99 follow-up). Every re-send aborts Ollama mid-request and sends the
+               same prompt to the same model, so a CPU-spilled model that needs longer than the ceiling to answer a task
+               prompt got 7 sends and never finished. When /api/ps listed the model at every read of this attempt and no
+               other StarNet call is open on that server (none of ours it could have queued behind), the turn ends now
+               on errorClass `local_timeout` with the placement above. Still re-sent: a model missing from any read (a
+               load may have eaten the wait, or hung), an unreadable status, another StarNet call open there. */
+            if (ollamaNative.psRow(ps, body.model) && !(probe && probe.sawMissing()) && !otherOllamaCalls(nativeBase, wire.openCall).n) e.localModelTimeout = true;
           }
-          // a TLS rejection or a crash in our own request code cannot heal by re-sending: fail fast, unmarked
+          // a TLS rejection, a crash in our own request code or a loaded model's silence (above) cannot heal by re-sending:
+          // fail fast, unmarked
           if (!classifyApiError(e, { model: body.model }).retryable) throw e;
           if (attempt < retries) { waited += RETRY_DELAYS[attempt]; await delay(RETRY_DELAYS[attempt], signal); continue; }
           throw provider.runtime.markPreStreamRetriesExhausted(e, { attempts: attempt + 1, waitedMs: waited });
