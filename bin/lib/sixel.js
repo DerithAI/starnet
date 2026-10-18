@@ -116,6 +116,38 @@ function decodeSixel(str) {
   return { width, height, px };
 }
 
+/* brailleLogo(rows) → the same REAL wordmark as braille dots (2×4 a cell), for terminals that cannot draw images. The
+   logo is itself a dot matrix, so its dots map onto braille dots: each dot takes the BRIGHTEST master pixel it covers
+   (max, not mean — a thin dotted stroke must light its dot, never average away). Four rows ≈ 56 columns. */
+const BRAILLE_DOT = [[1, 8], [2, 16], [4, 32], [64, 128]];
+const brailleCache = new Map();
+function brailleLogo(rows, threshold) {
+  const r = Math.max(1, rows | 0), thr = threshold == null ? 0.5 : threshold;
+  const key = r + '@' + thr;
+  if (brailleCache.has(key)) return brailleCache.get(key);
+  const src = master();
+  const gh = r * 4, cols = Math.ceil(Math.round(gh * src.w / src.h) / 2), gw = cols * 2;
+  const lit = (x, y) => {
+    const sx0 = Math.floor(x * src.w / gw), sx1 = Math.max(sx0 + 1, Math.floor((x + 1) * src.w / gw));
+    const sy0 = Math.floor(y * src.h / gh), sy1 = Math.max(sy0 + 1, Math.floor((y + 1) * src.h / gh));
+    let mx = 0;
+    for (let yy = sy0; yy < sy1; yy++) for (let xx = sx0; xx < sx1; xx++) mx = Math.max(mx, src.px[yy * src.w + xx]);
+    return mx / 255 >= thr;
+  };
+  const lines = [];
+  for (let cy = 0; cy < r; cy++) {
+    let s = '';
+    for (let cx = 0; cx < cols; cx++) {
+      let bits = 0;
+      for (let k = 0; k < 4; k++) for (let c = 0; c < 2; c++) if (lit(cx * 2 + c, cy * 4 + k)) bits |= BRAILLE_DOT[k][c];
+      s += bits ? String.fromCharCode(0x2800 + bits) : ' ';
+    }
+    lines.push(s.replace(/\s+$/, ''));
+  }
+  brailleCache.set(key, lines);
+  return lines;
+}
+
 /* What the terminal said to the startup probe (CSI 16 t, CSI 14 t, DA1):
    { sixel: DA1 lists attribute 4, cellW/cellH: from the cell-size reply, else the window's pixel size ÷ its cells,
      replied: the terminal answered DA1 at all }. */
@@ -133,4 +165,4 @@ function parseTermReplies(buf, cols, rows) {
   return out;
 }
 
-module.exports = { logoSixel, decodeSixel, parseTermReplies, RAMP };
+module.exports = { logoSixel, brailleLogo, decodeSixel, parseTermReplies, RAMP };

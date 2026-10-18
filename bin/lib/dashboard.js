@@ -34,11 +34,9 @@ function runDashboard(station, opts) {
     focus: '', input: '', overlay: null, flash: null, scroll: 0, keyFlash: null, quitArmed: 0, quitNote: '',
     stationLabel: (station.mode === 'spawned' ? 'private station · ' : 'station · ') + client.base.replace(/^http:\/\//, ''),
     still: !!(env.STARNET_STILL === '1'),
-    // the block-letter logo uses only block and box-drawing glyphs, which every console font has; STARNET_LOGO=plain
-    // keeps to the one-line mark
-    // the REAL logo as an image where the terminal draws Sixel, else the text logo (STARNET_LOGO=text forces it, =plain
-    // keeps to the one-line mark)
-    logo: env.STARNET_LOGO === 'plain' ? 'plain' : 'full',
+    // the REAL logo: an image where the terminal draws Sixel, else the same logo as braille dots. STARNET_LOGO=dots skips
+    // the image, =ascii draws the drawn-letter version, =plain keeps to the one-line mark
+    logo: ['plain', 'ascii', 'dots'].indexOf(env.STARNET_LOGO) >= 0 ? env.STARNET_LOGO : 'full',
     logoImage: null
   };
   const mine = new Map();       // requests this terminal holds open: id -> { req, agentId, kind }
@@ -320,7 +318,7 @@ function runDashboard(station, opts) {
   // DA1, which every terminal answers, goes last and closes the probe.
   function probeTerminal(ms) {
     return new Promise(resolve => {
-      if (!inp.isTTY || !out.isTTY || env.STARNET_LOGO === 'text' || env.STARNET_LOGO === 'plain') return resolve({});
+      if (!inp.isTTY || !out.isTTY || ui.logo !== 'full') return resolve({});
       let buf = '', done = false, timer = null;
       const onData = d => { buf += String(d); if (/\x1b\[\?[\d;]*c/.test(buf)) finish(); };
       function finish() { if (done) return; done = true; clearTimeout(timer); inp.removeListener('data', onData); resolve(sixel.parseTermReplies(buf, out.columns || 80, out.rows || 24)); }
@@ -334,7 +332,7 @@ function runDashboard(station, opts) {
   // the image fits four rows of this terminal's cells and leaves the crew bar at least 44 columns beside it
   function buildImage() {
     image = null; ui.logoImage = null;
-    if (!term.sixel || !term.cellW || !term.cellH || ui.logo === 'plain') return;
+    if (!term.sixel || !term.cellW || !term.cellH || ui.logo !== 'full') return;
     const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 4, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
     if (r) { image = r; ui.logoImage = { cols: r.cols, rows: r.rows }; }
   }

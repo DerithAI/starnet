@@ -13,6 +13,7 @@
 const { fmtDur, fmtShort, costText } = require('./station-model.js');
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
+const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
 
 const BARS = '▁▂▃▄▅▆▇█';
 
@@ -193,7 +194,8 @@ function render(model, ui, size, now) {
   // where the terminal draws images, the REAL logo is an image the dashboard paints into these cells (ui.logoImage); the
   // screen here only keeps them blank and lays the counts and the crew bar beside them
   const img = ui.logoImage && ui.logoImage.cols > 0 ? ui.logoImage : null;
-  const word = !img && ui.logo !== 'plain' && logo && logo.word ? logo.word : null;
+  // without an image: the same real logo as braille dots (STARNET_LOGO=ascii keeps the drawn-letter version)
+  const word = img || ui.logo === 'plain' ? null : ui.logo === 'ascii' ? (logo && logo.word) || null : sixelLib.brailleLogo(4);
   const lw = img ? img.cols : word ? Math.max(...word.map(l => width(l))) : 0;
   const lrows = img ? img.rows : word ? word.length : 0;
   let y;
