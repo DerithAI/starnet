@@ -128,6 +128,11 @@
       if (!ID_RE.test(id)) return null;
       return listOf().some(w => w.id === id && w.config) ? id : null;
     }
+    // ...and that run reads and publishes its OWN widget only: the host stamps the id on the tool ctx (widgetScope).
+    function assertScope(id, ctx) {
+      const own = ctx && ctx.widgetScope ? String(ctx.widgetScope) : '';
+      if (own && id !== own) throw new Error('This run updates widget "' + own + '" only; it cannot read or publish widget "' + id + '".');
+    }
 
     const setTool = {
       // NO consent gate: a widget record is a sandboxed local write to the station's OWN chrome
@@ -167,6 +172,7 @@
         const id = args && String(args.id || '').toLowerCase().trim();
         // error paths THROW — the registry turns a throw into an isError result the model can react to.
         if (!ID_RE.test(id)) throw new Error('id must be 1-24 chars of lowercase letters/digits/dashes, e.g. "app-revenue"');
+        assertScope(id, ctx);
         const aid = (ctx && ctx.agentId) || 'agent';
 
         if (args.clear === true) {
@@ -239,7 +245,7 @@
       name: 'widget.get', capability: 'memory', scope: 'read', requiresConsent: false,
       description: 'Read the latest user-owned definition and refresh instructions for a saved widget. Call before a scheduled update; if removed, stop without fetching data or recreating it.',
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
-      run: async args => ({ content: instruction(String(args && args.id || '')), summary: 'widget definition' })
+      run: async (args, ctx) => { const id = String(args && args.id || ''); assertScope(id, ctx); return { content: instruction(id), summary: 'widget definition' }; }
     };
 
     return {

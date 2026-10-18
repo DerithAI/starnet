@@ -4,7 +4,8 @@
       on the widget's own conversation ('widget-<id>'), and tells it to publish with widget.set. widget.set rode only the
       NOTEBOOK prop + MEMORY switch, so a run without a placed notebook never held it: the agent searched for the tool for
       22 turns until stopped and the widget stayed empty. The run on a configured widget's own conversation now holds
-      widget.get + widget.set; a run on any other conversation still does not.
+      widget.get + widget.set, for that widget id only (another id is refused); a run on any other conversation still
+      holds neither.
 
    2. releases#7 (+ #9) — WHICH RUNS PROPOSE MEMORIES. A Deny does not end a run: the agent carries on and the run ends
       done, so it reached reflection like finished work and the reflector turned the refusal into a standing belief
@@ -46,7 +47,7 @@ function startMockProvider() {
         const lastTool = String((messages.slice(lastUser + 1).filter(m => m.role === 'tool').pop() || {}).content || '');
         const sys = String((messages[0] && messages[0].role === 'system' && messages[0].content) || '');
         const prompt = messages.map(m => (typeof m.content === 'string' ? m.content : '')).join('\n');
-        requests.push({ user, toolNames, aux: !parsed.tools || !parsed.tools.length });
+        requests.push({ user, toolNames, lastTool, aux: !parsed.tools || !parsed.tools.length });
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
         const call = (name, args) => {
           res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: name + '_' + requests.length, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }) + '\n\n');
@@ -71,6 +72,8 @@ function startMockProvider() {
           if (toolNames.indexOf('widget_set') < 0) say('NO_WIDGET_TOOL');
           else if (used.indexOf('widget_get') < 0) call('widget_get', { id: widgetId });
           else if (used.indexOf('widget_set') < 0) call('widget_set', { id: widgetId, version: 1, value: '$12.34', sub: 'this month' });
+          // then reaches for ANOTHER configured widget: the widget's own run may publish only its own id
+          else if (used.filter(n => n === 'widget_set').length === 1) call('widget_set', { id: 'w-other1017', version: 1, value: '$99' });
           else say('Published the AI spend widget.');
         } else if (/REPORTFILE/.test(user)) {
           if (used.indexOf('fs_write') < 0) call('fs_write', { path: 'report.md', content: '# Weekly report\n' });
@@ -132,6 +135,9 @@ async function runTo(B, H, body, onEvent) {
       const made = await (await fetch(B + '/api/widgets/configure', { method: 'POST', headers: H, body: JSON.stringify({
         id, label: 'AI spend', request: 'total spend this month from the ledger', display: 'metric', source: { kind: 'agent', id: 'starnet' } }) })).json();
       A.ok(made.widget && made.widget.config && made.widget.config.version === 1, 'Connected apps > StarNet > Create: the widget is configured (version 1)');
+      const second = await fetch(B + '/api/widgets/configure', { method: 'POST', headers: H, body: JSON.stringify({
+        id: 'w-other1017', label: 'Other', request: 'something else', display: 'metric', source: { kind: 'agent', id: 'starnet' } }) });
+      A.eq(second.status, 200, 'a second configured widget exists (the one this refresh must not touch)');
       const ask = await (await fetch(B + '/api/widgets/request', { method: 'POST', headers: H, body: JSON.stringify({ id }) })).json();
       A.ok(/Publish the result with widget\.set/.test(ask.prompt || ''), 'the refresh instruction tells the agent to publish with widget.set');
 
@@ -148,13 +154,18 @@ async function runTo(B, H, body, onEvent) {
       A.ok(ownReq.length > 0 && ownReq.every(r => r.toolNames.indexOf('widget_set') >= 0 && r.toolNames.indexOf('widget_get') >= 0), 'the refresh run on the widget\'s conversation advertises widget.get + widget.set');
       A.ok(!ownReq.some(r => r.toolNames.indexOf('notebook_write') >= 0), 'and only those two: no other notebook tool rides along');
       const results = own.events.filter(e => e.name === 'agent.tool_result').map(e => e.payload);
-      A.ok(results.length >= 2 && results.every(p => !p.isError), 'widget.get and widget.set both ran: ' + JSON.stringify(results.map(p => p.summary)));
+      A.ok(results.length === 3 && !results[0].isError && !results[1].isError, 'widget.get and widget.set both ran: ' + JSON.stringify(results.map(p => p.summary)));
+      A.ok(results[2] && results[2].isError === true, 'a widget.set naming ANOTHER widget from this run is refused');
+      const told = ownReq.map(r => r.lastTool).filter(t => /cannot read or publish widget/.test(t)).pop() || '';
+      A.ok(/This run updates widget "w-runtruth1017" only; it cannot read or publish widget "w-other1017"./.test(told), 'with a short clear error the agent reads: ' + told.slice(0, 140));
       A.eq(own.reason, 'done', 'the refresh run ends done (no tool hunt)');
       const list = await (await fetch(B + '/api/widgets', { headers: H })).json();
       const w = (list.widgets || []).find(x => x.id === id);
       A.ok(w && w.value === '$12.34' && w.sub === 'this month', 'the widget shows the published reading');
       A.eq(w && w.agentId, 'agent', 'attributed to the agent that actually published it');
       A.eq(w && w.runId, own.runId, 'and to the refresh run');
+      const other = (list.widgets || []).find(x => x.id === 'w-other1017');
+      A.ok(other && other.value === null && !other.updatedAt, 'the other widget was not touched');
     }
 
     /* ---------- 2. releases#7 (+ #9): which runs put proposals in MEMORY > Awaiting your decision ---------- */

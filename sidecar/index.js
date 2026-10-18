@@ -20999,10 +20999,13 @@ async function runOnceCore(o) {
      widget.set, which otherwise rides the NOTEBOOK prop + MEMORY switch an interactive run often lacks (the agent
      then searched for it until stopped). Host-derived from the stream id / the job's own meta, never from text, and
      only for a widget the Commander configured: exactly widget.get + widget.set (no consent, no network), applied
-     after the narrowing above because a per-run list must not strip the one tool this run exists to call. */
+     after the narrowing above because a per-run list must not strip the one tool this run exists to call. The run may
+     read and publish ITS OWN widget only (widgetScope on the tool ctx below; widgets.js refuses any other id). */
+  let widgetScope = '';
   {
     const widgetJob = (trigger === 'schedule' && o.cronJobId) ? cronJobs.find(j => j && j.id === String(o.cronJobId)) : null;
-    if (widgetTools.updateRunOf({ streamId: o.streamId, widgetId: widgetJob && widgetJob.meta && widgetJob.meta.widgetId })) {
+    widgetScope = widgetTools.updateRunOf({ streamId: o.streamId, widgetId: widgetJob && widgetJob.meta && widgetJob.meta.widgetId }) || '';
+    if (widgetScope) {
       const grants = (CAP_REGISTRY.notebook || []).filter(g => g && /^widget\./.test(g.tool));
       resolved = Object.assign({}, resolved, {
         tools: resolved.tools.concat(grants.map(g => g.tool).filter(n => resolved.tools.indexOf(n) < 0)),
@@ -21230,6 +21233,8 @@ async function runOnceCore(o) {
     // Host-minted routine identity for routine.notepad. Interactive/model-authored runs cannot name another
     // job: only the autonomous schedule path receives this context field.
     cronJobId: (surface === 'autonomous' && trigger === 'schedule') ? String(o.cronJobId || '') : '',
+    // Host-minted: a widget's own update run (its conversation or routine) reads and publishes that widget id only.
+    widgetScope,
     // tool.search explains what the direct-domain policy keeps off this run (resolved.deferred already excludes it)
     policyWithheld: directDomainTask ? {
       names: (resolved.tools || []).filter(directDomainWithheld),

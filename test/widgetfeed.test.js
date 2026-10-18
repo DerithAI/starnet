@@ -201,8 +201,28 @@ const rejects = async (p, label) => { try { await p; A.ok(false, label + ' (did 
     A.eq(t.updateRunOf({ streamId: 'widget-w-ai-spend' }), null, 'a deleted widget\'s conversation grants nothing');
     // the host wiring: after the run's narrowing, exactly the registry's widget grants, keyed by the stream / job meta
     const idx = require('fs').readFileSync(require('path').join(__dirname, '../sidecar/index.js'), 'utf8');
-    const wire = /resolved = enforceEnabledToolsets\([^\n]*\n[\s\S]{0,900}?widgetTools\.updateRunOf\(\{ streamId: o\.streamId, widgetId: widgetJob && widgetJob\.meta && widgetJob\.meta\.widgetId \}\)[\s\S]{0,200}?\(CAP_REGISTRY\.notebook \|\| \[\]\)\.filter\(g => g && \/\^widget\\\.\/\.test\(g\.tool\)\)/.exec(idx);
+    const wire = /resolved = enforceEnabledToolsets\([^\n]*\n[\s\S]{0,1300}?widgetTools\.updateRunOf\(\{ streamId: o\.streamId, widgetId: widgetJob && widgetJob\.meta && widgetJob\.meta\.widgetId \}\)[\s\S]{0,200}?\(CAP_REGISTRY\.notebook \|\| \[\]\)\.filter\(g => g && \/\^widget\\\.\/\.test\(g\.tool\)\)/.exec(idx);
     A.ok(!!wire, 'runOnce grants exactly the notebook\'s widget.* rows to the widget\'s update run, after per-run narrowing');
+    A.ok(/widgetScope = widgetTools\.updateRunOf\(/.test(idx) && /const capCtx = makeCapCtx\(resolved, Object\.assign\(\{[\s\S]{0,700}\n    widgetScope,\n/.test(idx), 'and stamps that widget id on the tool ctx (widgetScope)');
+  }
+  // the update run reads and publishes ITS OWN widget only; any other id is refused with a clear error
+  {
+    const { t } = make(); const source = { kind: 'agent', id: 'starnet', label: 'StarNet' };
+    await t.configure({ id: 'w-mine', label: 'Mine', request: 'mine', display: 'metric' }, source);
+    await t.configure({ id: 'w-other', label: 'Other', request: 'other', display: 'metric' }, source);
+    const scoped = { agentId: 'nova', runId: 'run_9', widgetScope: 'w-mine' };
+    A.ok((await t.getTool.run({ id: 'w-mine' }, scoped)).content.includes('version=1'), 'the scoped run reads its own widget');
+    await run(t, { id: 'w-mine', version: 1, value: '$7' }, scoped);
+    A.eq(t.list().find(w => w.id === 'w-mine').value, '$7', 'and publishes its own widget');
+    let msg = '';
+    try { await run(t, { id: 'w-other', version: 1, value: '$1' }, scoped); } catch (e) { msg = String(e.message); }
+    A.eq(msg, 'This run updates widget "w-mine" only; it cannot read or publish widget "w-other".', 'publishing another configured widget is refused, clearly');
+    A.eq(t.list().find(w => w.id === 'w-other').value, null, 'and the other widget is untouched');
+    await rejects(run(t, { id: 'brand-new', value: '1' }, scoped), 'creating a new agent-fed readout is refused too');
+    await rejects(run(t, { id: 'w-other', clear: true }, scoped), 'and clearing another id');
+    await rejects(t.getTool.run({ id: 'w-other' }, scoped), 'reading another widget\'s definition is refused');
+    await run(t, { id: 'w-other', version: 1, value: '$2' });   // no scope (an ordinary notebook grant): unchanged
+    A.eq(t.list().find(w => w.id === 'w-other').value, '$2', 'a run without a widget scope keeps the notebook grant\'s reach');
   }
 
   console.log('widgetfeed.test.js OK');
