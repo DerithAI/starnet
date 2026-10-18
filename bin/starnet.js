@@ -468,7 +468,7 @@ async function resolveStation(opts, env) {
 // ---- main --------------------------------------------------------------------------------------
 async function main() {
   let opts;
-  try { opts = core.parseArgs(process.argv.slice(2), process.env); }
+  try { opts = core.parseArgs(process.argv.slice(2), process.env, { tty: !!(process.stdin.isTTY && process.stdout.isTTY) }); }
   catch (e) { log('starnet: ' + e.message + '\n'); log(core.USAGE); return core.EXIT.USAGE; }
   if (opts.version) { let v = 'dev'; try { v = require(path.join(REPO, 'package.json')).version; } catch (_) {} process.stdout.write('starnet ' + v + '\n'); return 0; }
   if (opts.help) { process.stdout.write(core.USAGE + '\n'); return 0; }
@@ -488,12 +488,24 @@ async function main() {
     return 0;
   }
 
+  if (opts.cmd === 'dash' && !(process.stdin.isTTY && process.stdout.isTTY)) {
+    log('starnet: the dashboard needs an interactive terminal — for a pipe or a script use `starnet ls`, `starnet watch` or `starnet approve`');
+    return core.EXIT.USAGE;
+  }
   let station = null;
+  const io = { out: s => process.stdout.write(s), err: s => process.stderr.write(s), columns: process.stdout.columns || 100 };
   try {
-    if (opts.cmd === 'status' || opts.cmd === 'doctor') opts.noSpawn = true;   // a question never boots a station
+    // a question never boots a station, and an answer or a watch only means something on a station already running
+    if (['status', 'doctor', 'ls', 'approve', 'deny', 'watch', 'flow'].indexOf(opts.cmd) >= 0) opts.noSpawn = true;
     station = await resolveStation(opts, process.env);
     if (opts.cmd === 'status') return await statusCommand(opts, station);
     if (opts.cmd === 'doctor') return await doctorCommand(opts, station);
+    if (opts.cmd === 'dash') return await require('./lib/dashboard.js').runDashboard(station, {});
+    const sc = require('./lib/station-commands.js');
+    if (opts.cmd === 'ls') return await sc.lsCommand(opts, station, io);
+    if (opts.cmd === 'approve' || opts.cmd === 'deny') return await sc.answerCommand(opts, station, io);
+    if (opts.cmd === 'watch') return await sc.watchCommand(opts, station, io);
+    if (opts.cmd === 'flow') return await sc.flowCommand(opts, station, io);
     return await runCommand(opts, station);
   } catch (e) {
     const code = (e && e.exitCode) || core.EXIT.RUN_FAILED;

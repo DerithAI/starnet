@@ -17,7 +17,8 @@ const EXIT = Object.freeze({
   USAGE: 2,       // bad arguments
   STATION: 3,     // no station reachable / could not boot one / nothing runnable configured
   CANCELLED: 4,   // Ctrl-C or --timeout (POST /api/cancel was sent)
-  STOPPED: 5      // the run ended early for a reason that is not 'done': refusal, budget, max_iters, empty, clarifying
+  STOPPED: 5,     // the run ended early for a reason that is not 'done': refusal, budget, max_iters, empty, clarifying
+  NOTHING: 6      // approve/deny found no open ask to answer
 });
 
 const RUN_STOP_REASONS = Object.freeze(['done', 'max_iters', 'budget', 'cancelled', 'error', 'refusal', 'empty', 'clarifying']);
@@ -38,12 +39,19 @@ const USAGE = [
   'starnet — run StarNet agents from a terminal (no station UI required)',
   '',
   'Usage:',
+  '  starnet                              the live crew dashboard (needs a terminal; keys below)',
   '  starnet -p "<prompt>"                run one task and stream the answer to stdout',
   '  starnet run "<prompt>"               same as -p',
   '  starnet -p -                         read the prompt from stdin',
   '  starnet status                       is a station reachable? version, workspace, providers (names only)',
   '  starnet doctor                       the station\'s static diagnostics report (no live probes)',
   '  starnet init                         create the default workspace + one full-power agent (no run)',
+  '  starnet ls                           every agent: status, what it is doing now, open asks',
+  '  starnet approve [agent] [--session]  allow the oldest open ask (of that agent); deny [agent] refuses it',
+  '  starnet watch                        print the live events of the station, one line each (--json: one object each)',
+  '  starnet flow                         list workflows; flow run <name> "<text>" sends one job and waits',
+  '',
+  'Dashboard keys: tab/↑↓ switch agent · @name message · y/n/v answer an ask · /stop · /flow · /help · ctrl+c quit',
   '',
   'Run options:',
   '  --agent <id>       roster agent to run (default: "agent", else the first roster entry)',
@@ -63,20 +71,24 @@ const USAGE = [
   '  --no-spawn         never boot a station; fail (exit 3) if none is reachable',
   '  --spawn            always boot a private station for this run (never attach to a running one)',
   '',
-  'Exit codes: 0 done · 1 run failed · 2 usage · 3 no station / not configured · 4 cancelled · 5 stopped early',
+  'Exit codes: 0 done · 1 run failed · 2 usage · 3 no station / not configured · 4 cancelled · 5 stopped early · 6 nothing to answer',
   '',
   'Credentials are never taken on the command line. A spawned station reads them from the environment',
   '(STARNET_OPENROUTER_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, …) or from a ChatGPT/Codex sign-in already',
   'stored in the workspace; an attached station uses whatever it already has.'
 ].join('\n');
 
-function parseArgs(argv, env) {
+const STATION_COMMANDS = ['dash', 'ls', 'approve', 'deny', 'watch', 'flow'];
+
+function parseArgs(argv, env, ctx) {
   const args = Array.isArray(argv) ? argv.slice() : [];
   const e = env || {};
+  const c = ctx || {};
   const out = {
     cmd: '', prompt: '', promptFromStdin: false,
     agent: '', model: '', provider: '', json: false, cwd: '', timeoutSec: 0, yes: false,
-    port: 0, host: '', token: '', workspace: '', name: '', noSpawn: false, spawn: false, help: false, version: false
+    port: 0, host: '', token: '', workspace: '', name: '', noSpawn: false, spawn: false, help: false, version: false,
+    args: [], session: false
   };
   const takeValue = (flag, i) => {
     if (i + 1 >= args.length) throw new Error(flag + ' needs a value');
@@ -95,6 +107,7 @@ function parseArgs(argv, env) {
       i += 2; continue;
     }
     if ((m = /^--prompt=(.*)$/.exec(a))) { out.cmd = out.cmd || 'run'; out.prompt = m[1]; i++; continue; }
+    if (!out.cmd && STATION_COMMANDS.indexOf(a) >= 0) { out.cmd = a; i++; continue; }
     if (!out.cmd && (a === 'run' || a === 'status' || a === 'doctor' || a === 'init')) {
       out.cmd = a; i++;
       if (a === 'run' && i < args.length && args[i][0] !== '-') { out.prompt = args[i]; i++; }
@@ -127,15 +140,20 @@ function parseArgs(argv, env) {
     if ((v = flagVal('workspace')) !== undefined) { out.workspace = v; continue; }
     if ((v = flagVal('name')) !== undefined) { out.name = v; continue; }
     if (a === '--json') { out.json = true; i++; continue; }
+    if (a === '--session') { out.session = true; i++; continue; }
     if (a === '--yes' || a === '-y') { out.yes = true; i++; continue; }
     if (a === '--no-spawn') { out.noSpawn = true; i++; continue; }
     if (a === '--spawn') { out.spawn = true; i++; continue; }
     if (a[0] === '-') throw new Error('unknown option ' + a);
     // a bare word after `run "<prompt>"` or a stray positional
     if (out.cmd === 'run' && !out.prompt && !out.promptFromStdin) { out.prompt = a; i++; continue; }
+    if (STATION_COMMANDS.indexOf(out.cmd) >= 0) { out.args.push(a); i++; continue; }
     throw new Error('unexpected argument ' + JSON.stringify(a));
   }
-  if (!out.cmd && !out.help && !out.version) out.help = true;
+  // no command: the dashboard when a person is at a terminal, the usage text otherwise (a pipe, a script, CI)
+  if (!out.cmd && !out.help && !out.version) { if (c.tty) out.cmd = 'dash'; else out.help = true; }
+  if (out.cmd === 'flow' && out.args[0] === 'run' && out.args.length < 3) throw new Error('flow run needs a workflow and the job text: starnet flow run <name> "<text>"');
+  if ((out.cmd === 'approve' || out.cmd === 'deny') && out.args.length > 1) throw new Error(out.cmd + ' takes at most one agent');
   if (out.cmd === 'run' && !out.prompt && !out.promptFromStdin) throw new Error('run needs a prompt (starnet -p "…")');
   if (out.spawn && out.noSpawn) throw new Error('--spawn and --no-spawn contradict each other');
   // env fallbacks (flags win)
@@ -235,13 +253,22 @@ function pickAgent(runtime, want) {
   return { ok: true, agentId, name: rec ? rec.name : agentId, model, provider };
 }
 
+/* Task or talk? The station wires tools ONLY into a run marked isTask, and the page decides it with the shared
+   classifier (frontend/app/classify.js). A run sent without it got no tools at all, so a real model could only
+   answer in words. The terminal asks the same question the same way. priorAgentTurn: the agent's last reply, so a
+   bare "yes" to its offer to act is the task. */
+const Classify = require('../../frontend/app/classify.js');
+function isTaskText(text, priorAgentTurn) { return !!Classify.isTaskDirective(text, priorAgentTurn ? { priorAgentTurn } : undefined); }
+
 function buildRunBody(sel, prompt, opts) {
   const o = opts || {};
+  const text = String(prompt == null ? '' : prompt);
   const body = {
     model: sel.model,
     provider: sel.provider,
     agentId: sel.agentId,
-    messages: [{ role: 'user', content: String(prompt == null ? '' : prompt) }],
+    messages: [{ role: 'user', content: text }],
+    isTask: isTaskText(text),
     placed: HEADLESS_PLACED.map(p => Object.assign({}, p))
   };
   if (o.cwd) body.projectRoot = String(o.cwd);
@@ -466,8 +493,30 @@ function splitNdjson(buf) {
   return { lines, rest };
 }
 
+/* SSE splitter for the live feed (GET /api/observe): complete events out, the partial tail kept. Each event is
+   { id, data } where data is the joined `data:` lines; comment lines and `retry:` are dropped. */
+function splitSse(buf) {
+  const events = [];
+  let rest = String(buf || '').replace(/\r\n/g, '\n');
+  let cut;
+  while ((cut = rest.indexOf('\n\n')) >= 0) {
+    const block = rest.slice(0, cut);
+    rest = rest.slice(cut + 2);
+    let id = '', data = [];
+    for (const line of block.split('\n')) {
+      if (line.indexOf('data:') === 0) data.push(line.slice(5).replace(/^ /, ''));
+      else if (line.indexOf('id:') === 0) id = line.slice(3).trim();
+    }
+    if (data.length) events.push({ id, data: data.join('\n') });
+  }
+  return { events, rest };
+}
+
+// the conversation a terminal holds with one agent: its own stream, so the desk's sessions are never written into
+function cliStreamId(agentId) { return ('cli-' + String(agentId || 'agent').replace(/[^A-Za-z0-9_-]/g, '')).slice(0, 64); }
+
 module.exports = {
   EXIT, USAGE, DEFAULT_PORT, DEFAULT_AGENT_ID, HEADLESS_PLACED, RUN_STOP_REASONS,
   parseArgs, chooseStation, parseListeningPort, parseStartupLog, pickAgent, buildRunBody,
-  makeRunTracker, exitCodeForReason, bootstrapDocs, inferProvider, jsonResult, splitNdjson
+  makeRunTracker, exitCodeForReason, bootstrapDocs, inferProvider, jsonResult, splitNdjson, splitSse, cliStreamId, isTaskText
 };
