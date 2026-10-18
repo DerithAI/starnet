@@ -128,6 +128,19 @@
     };
   }
 
+  // what a cancel interrupted (record's `cancelledWhile`, loop.js #99): the model-call wait phase (the agent.waiting
+  // enum), how long it had lasted, the adapter's facts. Bounded at the persistence boundary; anything else is dropped.
+  const WAIT_PHASES = new Set(['connect', 'first_byte', 'streaming', 'retry_backoff']);
+  function cancelledWhileOf(v) {
+    if (!v || typeof v !== 'object' || !WAIT_PHASES.has(v.phase)) return null;
+    const out = { phase: v.phase };
+    const ms = Number(v.waitedMs);
+    if (Number.isFinite(ms) && ms >= 0) out.waitedMs = Math.round(ms);
+    const note = str(v.note).replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (note) out.note = note;
+    return out;
+  }
+
   // the page-closed note (record's `pageClosed`), bounded at the persistence boundary like every other host field
   function pageClosedOf(v) {
     if (!v || typeof v !== 'object') return null;
@@ -350,6 +363,10 @@
         // still open at that moment — the disconnect denied them, so none of them was granted. Set only by the host that
         // saw its stream close (index.js handleRun); present only on such a run, so every other row stays byte-identical.
         ...(pageClosedOf(e.pageClosed) ? { pageClosed: pageClosedOf(e.pageClosed) } : {}),
+        // CANCELLED WHILE (additive, #99, 2026-10-18): a cancelled run that was still WAITING on its model (no reply yet, a
+        // silent open stream, a retry backoff) names that wait — a bare `cancelled` read the same for a hung local model
+        // and a busy healthy run. Present only on such a cancelled run, so every other row stays byte-identical.
+        ...(e.reason === 'cancelled' && cancelledWhileOf(e.cancelledWhile) ? { cancelledWhile: cancelledWhileOf(e.cancelledWhile) } : {}),
         // SEND NOW LEDGER (additive, 0.13.5 live walk 2026-10-14): which of the page's tracked steering notes this run
         // read (applied) or ended without reading — so GET /api/run/steer still answers a page that lost its memory after
         // a station restart. Present only on a run that took a tracked note, so every other row stays byte-identical.

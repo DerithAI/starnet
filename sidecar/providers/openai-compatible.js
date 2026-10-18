@@ -487,6 +487,28 @@
       } catch (_) { return null; }
       finally { guard.disarm(); }
     }
+    /* WAIT TRUTH (#99, reported on a 6 GB GTX 1660: COMMS sat on Working for 45-712 s until the user cancelled). Ollama
+       sends no headers until its first token, so a model load or a long prompt read is one silent pending /api/chat. The
+       placement facts below used to surface only in the error thrown at the 300 s connect ceiling — which the ladder
+       retries, so the user cancelled first and never saw them. Now, once a native request has gone `waitNoteMs`
+       unanswered, /api/ps is read (then again every 3x that) and the facts go to the caller as they change. */
+    const waitNoteMs = Math.max(0, Math.floor(Number(opts.waitNoteMs) || 0));
+    function waitProbe(body, onWait) {
+      const promptTokens = ollamaNative.estimateTokens(body);
+      const server = ollamaIsLoopback ? 'Ollama' : 'Ollama at ' + ollamaHost;
+      let timer = null, stopped = false, last = '';
+      const arm = ms => { timer = setTimeout(read, ms); if (timer && typeof timer.unref === 'function') timer.unref(); };
+      async function read() {
+        timer = null;
+        const ps = await ollamaStatus();
+        if (stopped) return;
+        const note = ollamaNative.placementFacts(ps, body.model, promptTokens, server);
+        if (note !== last) { last = note; onWait({ phase: 'connect', note }); }
+        arm(waitNoteMs * 3);
+      }
+      arm(waitNoteMs);
+      return { stop() { stopped = true; if (timer) clearTimeout(timer); timer = null; } };
+    }
     // The window this model actually gets here: a pinned size, else min(its trained maximum, the ceiling).
     function usableWindow(modelMax) {
       if (pinnedCtx) return pinnedCtx;
@@ -551,7 +573,7 @@
       if (!nativeBorrowed || !nativeWire) { yield* wireStreamOnce(req); return; }
       let yielded = false;
       try {
-        for await (const ev of wireStreamOnce(req)) { yielded = true; yield ev; }
+        for await (const ev of wireStreamOnce(req)) { if (ev.type !== 'waiting') yielded = true; yield ev; }   // a wait note is not the turn's output
       } catch (e) {
         if (yielded || nativeWire || !e || e.endpointMismatch !== true) throw e;
         failNote('providers.openai_compatible.custom_not_ollama', 'the CUSTOM endpoint at ' + endpointHostPort + ' looked like Ollama but is not (' + (e.body && e.body.error && e.body.error.message) + '): the turn moves to its /v1 wire');
@@ -648,9 +670,27 @@
         const think =(background && facts && facts.supportsReasoning === true) ? false : undefined;
         wire = { native: true, modelMax, think, numCtx: ollamaNative.pickNumCtx(need, { pinned: pinnedCtx, ceiling: ctxCeiling, modelMax, floor: ollamaWindow(nativeBase, req.model) }) };
       }
+      // WAIT TRUTH (#99): while the native request is unanswered, its probe's notes are yielded as { type:'waiting' }
+      // events (not stream output: the loop shows them on the wait line). A note still queued when the answer lands is
+      // stale and dropped; once one was shown, the stream opening says so, so the line stops naming a pending request.
+      const waits = [];
+      let wake = null;
+      const rouse = () => { if (wake) { const f = wake; wake = null; f(); } };
+      const onWait = (wire && wire.native && waitNoteMs > 0) ? w => { waits.push(w); rouse(); } : null;
+      const pending = requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length), requestHeaders(req), wire, onWait);
+      let noted = false;
+      if (onWait) {
+        let settled = false;
+        pending.then(() => { settled = true; rouse(); }, () => { settled = true; rouse(); });
+        while (!settled) {
+          if (waits.length) { noted = true; yield Object.assign({ type: 'waiting' }, waits.shift()); continue; }
+          await new Promise(r => { wake = r; });
+        }
+      }
       let res;
-      try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length), requestHeaders(req), wire); }
+      try { res = await pending; }
       catch (e) { if (isAbort(e, req.signal)) return; throw e; }
+      if (noted) yield { type: 'waiting', phase: 'streaming', note: '' };
       // Native NDJSON is translated into the chat-completions chunk shape, so everything below parses one format.
       const translate = (wire && wire.native) ? ollamaNative.makeChunkTranslator() : null;
       const reader = timeouts.idleGuardedReader(res.body.getReader(), { signal: req.signal, url: res.url || baseUrl });
@@ -826,7 +866,7 @@
       return err;
     }
 
-    async function requestWithRetry(body, signal, maxRetries, wireHeaders, wire) {
+    async function requestWithRetry(body, signal, maxRetries, wireHeaders, wire, onWait) {
       // maxRetries: the loop may LOWER this ladder (req.preStreamRetries = 0 once it owns the pacing — provider.js).
       // `waited` is the backoff actually spent; the exhaustion marker reports it so the loop counts it, not repeats it.
       const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
@@ -840,6 +880,7 @@
         const guard = timeouts.connectGuard(signal, connectTimeoutMs);
         const native = !!(wire && wire.native && nativeWire);
         if (wire) wire.native = native;
+        const probe = (native && onWait) ? waitProbe(body, onWait) : null;   // WAIT TRUTH (#99): one per attempt
         try {
           res = await doFetch(native ? nativeBase + '/api/chat' : baseUrl + chatPath, {
             method: 'POST',
@@ -862,6 +903,7 @@
           throw provider.runtime.markPreStreamRetriesExhausted(e, { attempts: attempt + 1, waitedMs: waited });
         } finally {
           guard.disarm();
+          if (probe) probe.stop();
         }
         if (res.ok && res.body) {
           if (native) noteOllamaWindow(nativeBase, body.model, wire.numCtx);

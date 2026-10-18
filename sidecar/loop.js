@@ -1274,7 +1274,12 @@
        reaches for an ambient timer or time, so it stays deterministic; no ticker (or no clock) = no heartbeat,
        and every existing caller is byte-identical. */
     const waitTicker = (typeof o.waitTicker === 'function' && clock && typeof clock.now === 'function') ? o.waitTicker : null;
-    const NO_WAIT = { phase() {}, pause() {}, resume() {}, stop() {} };
+    const NO_WAIT = { phase() {}, note() {}, pause() {}, resume() {}, stop() {} };
+    /* WHAT A CANCEL INTERRUPTED (#99). A user who cancels a turn that never answered used to leave a run row saying only
+       `cancelled` — the same row as a cancel of a run that was busy and fine. The wait in progress when the signal
+       aborted (its phase, how long it had lasted on the injected clock, the adapter's note) is kept here and returned as
+       `cancelledWhile`, for the run record. A wait the Commander had already seen output in (paused) is not recorded. */
+    let abortedWait = null;
     function waitClock() {
       try { const t = Number(clock.now()); return isFinite(t) ? t : 0; }
       catch (e) { failNote('loop.wait.clock', e); return 0; }
@@ -1282,18 +1287,31 @@
     // One wait: `beatNow` emits a first heartbeat immediately (a retried attempt going out — see its call site).
     function startWaiting(phase, beatNow) {
       if (!waitTicker) return NO_WAIT;
-      const st = { phase, since: waitClock(), live: true, paused: false, disarm: null };
+      const st = { phase, since: waitClock(), live: true, paused: false, disarm: null, note: '' };
       const beat = () => {
         if (!st.live || st.paused || signal.aborted) return;
         // runs on the HOST's timer, outside the loop's own try blocks: a throwing emit must never escape into it
-        try { emit('agent.waiting', { agentId, runId, phase: st.phase, sinceMs: Math.max(0, Math.round(waitClock() - st.since)), model: String(model) }); }
+        try {
+          const payload = { agentId, runId, phase: st.phase, sinceMs: Math.max(0, Math.round(waitClock() - st.since)), model: String(model) };
+          if (st.note) payload.note = st.note;
+          emit('agent.waiting', payload);
+        }
         catch (e) { failNote('loop.wait.emit', e); }
       };
       try { const d = waitTicker(beat); st.disarm = (typeof d === 'function') ? d : null; }
       catch (e) { failNote('loop.wait.ticker', e); }
       if (beatNow) beat();
       return {
-        phase(p) { st.phase = p; },   // first_byte -> streaming keeps `since`: the wait began when the call went out
+        phase(p) { st.phase = p; st.note = ''; },   // first_byte -> streaming keeps `since`: the wait began when the call went out
+        /* The ADAPTER's own facts about this wait (a { type:'waiting' } stream event — openai-compatible's Ollama probe: no
+           headers yet, and where /api/ps says the model sits). Beats at once, so the line changes when the facts do, not
+           on the next tick; an empty note clears it. Never output: the wait is not over. */
+        note(p, text) {
+          if (!st.live) return;
+          if (p === 'connect' || p === 'first_byte' || p === 'streaming') st.phase = p;
+          st.note = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 240);
+          if (st.note) beat();
+        },
         // Visible output silences the heartbeat WITHOUT disarming it: the same stream can go quiet again (a sentence,
         // then minutes of streaming tool arguments the Commander cannot see), and that new silence must keep beating.
         pause() { st.paused = true; },
@@ -1306,6 +1324,10 @@
         stop() {
           if (!st.live) return;
           st.live = false;
+          if (signal.aborted && !st.paused) {
+            abortedWait = { phase: st.phase, waitedMs: Math.max(0, Math.round(waitClock() - st.since)) };
+            if (st.note) abortedWait.note = st.note;
+          }
           if (st.disarm) { try { st.disarm(); } catch (e) { failNote('loop.wait.disarm', e); } }
         }
       };
@@ -1463,6 +1485,7 @@
         out.subscriptionModel = endPayload.subscriptionModel; out.subscriptionTokens = endPayload.subscriptionTokens; out.subscriptionCapTokens = endPayload.subscriptionCapTokens;
         out.budgetNote = 'stopped: ' + endPayload.subscriptionTokens.toLocaleString('en-US') + ' subscription tokens on ' + endPayload.subscriptionModel + ' (cache re-reads count 1/10) reached the ' + endPayload.subscriptionCapTokens.toLocaleString('en-US') + '-token per-run ceiling (SETTINGS > APP & BACKUP > Runtime limits, or STARNET_MAX_SUBSCRIPTION_TOKENS)';
       }
+      if (reason === 'cancelled' && abortedWait) out.cancelledWhile = Object.assign({}, abortedWait);   // #99: what the cancel interrupted
       if (extra && extra.failureStage) out.failureStage = String(extra.failureStage).slice(0, 80);
       if (extra && extra.failureCode) out.failureCode = String(extra.failureCode).slice(0, 80);
       if (accUsed > 0) out.acceptanceNudges = accUsed;   // SOP: how many times the host sent the model back to its checks
@@ -1901,6 +1924,7 @@
           if (retriesUsed > 0) req.preStreamRetries = 0;              // the ladder owns pacing: one request per rung
           for await (const ev of provider.stream(req)) {
             if (signal.aborted) break;
+            if (ev.type === 'waiting') { waiting.note(ev.phase, ev.note); continue; }   // the adapter's wait facts, not stream output (#99)
             if (!sawStreamEvent) { sawStreamEvent = true; waiting.phase('streaming'); }
             if (ev.type === 'text') {
               const delta = String(ev.delta == null ? '' : ev.delta);
