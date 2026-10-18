@@ -109,6 +109,29 @@ function mockOllama(opts) {
     A.eq(s.psReads, readsAtCancel, 'no /api/ps probe fires after the cancel');
   }
 
+  // ---- 3a. a turn queued behind the host's own background call says so (live: the boot quest call was still open) ----
+  {
+    const s = mockOllama();
+    const base = 'http://127.0.0.1:11595/v1';
+    const bg = makeOpenAICompatibleProvider({ fetch: s.fetch, baseUrl: base, nativeOllama: true });
+    const turn = makeOpenAICompatibleProvider({ fetch: s.fetch, baseUrl: base, nativeOllama: true, waitNoteMs: 20 });
+    const bgRun = (async () => { for await (const e of bg.stream({ model: 'qwen3:8b', messages: [{ role: 'user', content: 'quest' }] })) void e; })();
+    await sleep(30);
+    const it = turn.stream({ model: 'qwen3:8b', messages: [{ role: 'user', content: 'hello' }], isTask: false })[Symbol.asyncIterator]();
+    const first = await Promise.race([it.next(), sleep(1500).then(() => ({ timedOut: true }))]);
+    A.ok(/ · 1 other StarNet call still open there \(background\)$/.test((first.value && first.value.note) || ''), 'the turn names the open background call: ' + (first.value && first.value.note));
+    s.release();
+    for (;;) { const n = await it.next(); if (n.done) break; }
+    await bgRun;
+    const s2 = mockOllama();
+    const lone = makeOpenAICompatibleProvider({ fetch: s2.fetch, baseUrl: base, nativeOllama: true, waitNoteMs: 20 });
+    const it2 = lone.stream({ model: 'qwen3:8b', messages: [{ role: 'user', content: 'again' }], isTask: false })[Symbol.asyncIterator]();
+    const again = await Promise.race([it2.next(), sleep(1500).then(() => ({ timedOut: true }))]);
+    A.ok(!/other StarNet call/.test((again.value && again.value.note) || 'x'), 'once those calls ended, nothing else is counted: ' + (again.value && again.value.note));
+    s2.release();
+    for (;;) { const n = await it2.next(); if (n.done) break; }
+  }
+
   // ---- 3b. the OLLAMA card itself carries the probe (registry waitNoteMs, SKYNET_OLLAMA_WAIT_NOTE_MS overrides) ----
   {
     const s = mockOllama();

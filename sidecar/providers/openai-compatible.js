@@ -128,6 +128,22 @@
     const id = String(model || '');
     if (numCtx > (m.get(id) || 0)) m.set(id, numCtx);
   }
+  /* The native Ollama calls this PROCESS has open, per server (native root -> Set of { background }): open from the moment
+     a stream starts until it ends. A local Ollama often serves one request at a time, and the host's own background calls
+     (quest refresh at boot, post-task reflection) run with no Commander watching; a Commander turn's wait note says how
+     many are open there (#99, live: the boot quest call was still open when the first "hello" went out). */
+  const ollamaOpen = new Map();
+  function openOllamaCall(endpoint, entry) {
+    let calls = ollamaOpen.get(endpoint);
+    if (!calls) { calls = new Set(); ollamaOpen.set(endpoint, calls); }
+    calls.add(entry);
+    return () => { calls.delete(entry); };
+  }
+  function otherOllamaCalls(endpoint, self) {
+    let n = 0, background = 0;
+    for (const e of ollamaOpen.get(endpoint) || []) if (e !== self) { n++; if (e.background) background++; }
+    return { n, background };
+  }
   // What an endpoint TOLD us at request time outranks every catalog and table, and a catalog reload never erases it.
   const learnedByEndpoint = new Map();   // endpoint -> Map(modelId -> levels)
   function rememberLearned(endpoint, id, levels) {
@@ -493,7 +509,7 @@
        retries, so the user cancelled first and never saw them. Now, once a native request has gone `waitNoteMs`
        unanswered, /api/ps is read (then again every 3x that) and the facts go to the caller as they change. */
     const waitNoteMs = Math.max(0, Math.floor(Number(opts.waitNoteMs) || 0));
-    function waitProbe(body, onWait) {
+    function waitProbe(body, onWait, self) {
       const promptTokens = ollamaNative.estimateTokens(body);
       const server = ollamaIsLoopback ? 'Ollama' : 'Ollama at ' + ollamaHost;
       let timer = null, stopped = false, last = '';
@@ -502,7 +518,10 @@
         timer = null;
         const ps = await ollamaStatus();
         if (stopped) return;
-        const note = ollamaNative.placementFacts(ps, body.model, promptTokens, server);
+        const others = otherOllamaCalls(nativeBase, self);
+        const note = ollamaNative.placementFacts(ps, body.model, promptTokens, server)
+          + (others.n ? ' · ' + others.n + ' other StarNet call' + (others.n === 1 ? '' : 's') + ' still open there'
+            + (others.background === others.n ? ' (background)' : others.background ? ' (' + others.background + ' background)' : '') : '');
         if (note !== last) { last = note; onWait({ phase: 'connect', note }); }
         arm(waitNoteMs * 3);
       }
@@ -562,7 +581,16 @@
 
     // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
     // the loop sees them; with no such tool this is the raw stream itself.
-    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+    function stream(req) { return toolschema.withRestoredArgKeys(countedOllamaCall(wireStream(req), req), req && req.tools); }
+    // Each native Ollama stream is one open call on its server (see ollamaOpen) until it ends, however it ends.
+    const openCalls = new WeakMap();   // req -> its ollamaOpen entry, so its own wait note never counts itself
+    async function* countedOllamaCall(inner, req) {
+      if (!nativeWire || !req || typeof req !== 'object') { yield* inner; return; }
+      const entry = { background: !(req.tools && req.tools.length) && typeof req.isTask !== 'boolean' };
+      openCalls.set(req, entry);
+      const close = openOllamaCall(nativeBase, entry);
+      try { yield* inner; } finally { close(); }
+    }
 
     /* A CUSTOM card's BORROWED native wire (GH#111 review): its URL only looked like Ollama, so a server that answers the
        native chat as a different server (notOllamaError, thrown on the FIRST native object, before this turn yielded
@@ -668,7 +696,7 @@
         // Ollama carries CUSTOM's 'medium', which maps to think:true). An explicit aux effort still rides.
         if (background && !req.reasoningEffort && facts && facts.supportsReasoning === true) delete body.reasoning_effort;
         const think =(background && facts && facts.supportsReasoning === true) ? false : undefined;
-        wire = { native: true, modelMax, think, numCtx: ollamaNative.pickNumCtx(need, { pinned: pinnedCtx, ceiling: ctxCeiling, modelMax, floor: ollamaWindow(nativeBase, req.model) }) };
+        wire = { native: true, modelMax, think, openCall: openCalls.get(req) || null, numCtx: ollamaNative.pickNumCtx(need, { pinned: pinnedCtx, ceiling: ctxCeiling, modelMax, floor: ollamaWindow(nativeBase, req.model) }) };
       }
       // WAIT TRUTH (#99): while the native request is unanswered, its probe's notes are yielded as { type:'waiting' }
       // events (not stream output: the loop shows them on the wait line). A note still queued when the answer lands is
@@ -880,7 +908,7 @@
         const guard = timeouts.connectGuard(signal, connectTimeoutMs);
         const native = !!(wire && wire.native && nativeWire);
         if (wire) wire.native = native;
-        const probe = (native && onWait) ? waitProbe(body, onWait) : null;   // WAIT TRUTH (#99): one per attempt
+        const probe = (native && onWait) ? waitProbe(body, onWait, wire.openCall) : null;   // WAIT TRUTH (#99): one per attempt
         try {
           res = await doFetch(native ? nativeBase + '/api/chat' : baseUrl + chatPath, {
             method: 'POST',
