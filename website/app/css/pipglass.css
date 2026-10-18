@@ -1322,7 +1322,7 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clari
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .task-conversation .tc-caption { color: var(--gold); letter-spacing: 1.6px; text-transform: uppercase; }
 
 /* 3. ONE key: the NEEDS YOU terminal key — 2px, matte, caps for a command; the lit one gold, a deny in the fault colour */
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:not(.thumb),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key,
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state :is(.gc-ok, .gc-copy),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice {
@@ -1333,37 +1333,37 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-questi
 /* (a plain key reads in the bright phosphor: in a red theme the phosphor itself is the fault colour's twin, and ALWAYS
    read as a second DENY) */
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-copy { margin-left: 0 !important; font-size: var(--sn-type-control, 16px) !important; min-height: 34px !important; padding: 5px 12px !important; }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:not(.thumb):hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key:hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state :is(.gc-ok, .gc-copy):hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice:hover:not(:disabled) {
   color: var(--ph-bright); border-color: rgba(var(--ph-rgb), .75); background: rgba(var(--ph-rgb), .1);
 }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:is(.primary, .ws-openit, .ws-primary, .consent-confirm),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:not(.thumb):is(.primary, .ws-openit, .ws-primary, .consent-confirm),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.primary,
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.lit,
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice.lit {
   color: var(--gold); border-color: rgba(var(--gold-rgb), .75); background: rgba(var(--gold-rgb), .1);
 }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:is(.primary, .ws-openit, .ws-primary, .consent-confirm):hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:not(.thumb):is(.primary, .ws-openit, .ws-primary, .consent-confirm):hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.primary:hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.lit:hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice.lit:hover:not(:disabled) {
   color: var(--gold); border-color: var(--gold); background: rgba(var(--gold-rgb), .2);
 }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn.deny,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:not(.thumb).deny,
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.deny,
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.deny {
   color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); background: color-mix(in srgb, var(--bad) 6%, transparent);
 }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn.deny:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:not(.thumb).deny:hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.deny:hover:not(:disabled),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.deny:hover:not(:disabled) {
   color: var(--bad); border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent);
 }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent) .consent-btn.danger { color: var(--warn); }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn.quiet { color: var(--text); background: transparent; }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent) .consent-btn.sel { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .2); opacity: 1; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent) .consent-btn:not(.thumb).danger { color: var(--warn); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:not(.thumb).quiet { color: var(--text); background: transparent; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent) .consent-btn:not(.thumb).sel { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .2); opacity: 1; }
 /* a question's ANSWERS keep their words as written (they are what you will be saying, not a command): squared and matte,
    full width, the suggested one lit gold */
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clarify-prompt] .consent-btn,
@@ -1375,6 +1375,11 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clari
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice.lit { color: var(--gold); }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clarify-prompt] .consent-btn.quiet { color: var(--text); }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .task-conversation .tc-actions .consent-btn { min-height: 34px; padding: 5px 12px; }
+/* a picked answer (pick-several, LET'S SHAPE THIS's starting point in your answer, a group pick) stays visibly pressed */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .task-conversation .consent-btn.tc-shortcut[aria-pressed=true],
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice:is([aria-pressed=true], .chosen) {
+  color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .2); opacity: 1;
+}
 
 /* 4. the WORKING line: the transcript's size (a 12px dim tool name and time), a 2px box, and the CREW rail's calm segmented
    meter where the blinking block caret was; it rests lit gold while the run waits on you */
