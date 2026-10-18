@@ -122,8 +122,10 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     const res = await R.c.advance({ agentId: 'writer', text: 'draft', originalText: 'go', lineId: R.lineId, runId: 'v3' });
     A.eq(res.stopped, null, 'ran to its end (' + res.stopped + ')');
     A.eq(res.hops.map(h => h.agentId).join(','), 'reviewer,writer,reviewer', 'silence = round again; approval = out');
-    // R1 (2026-09-27 audit): the approving review ships WITHOUT its VERDICT line — the line is the gate's control signal
-    A.ok(res.text === 'fine' && !res.loopExhausted, 'the delivered answer is the approving review, minus its VERDICT control line (' + JSON.stringify(res.text) + ')');
+    // R1 (2026-09-27 audit): what ships never carries the VERDICT line — the line is the gate's control signal. And (2026-10-18) an
+    // approval that did not restate the work ("fine") ships THE WORK IT APPROVED: the OUTBOX product is what the channel, the
+    // routine and SEND TO deliver, and a bare "fine" there was the line's whole result.
+    A.ok(res.text === 'draft' && !res.loopExhausted, 'the delivered answer is the approved work, never the bare approval (' + JSON.stringify(res.text) + ')');
   }
   /* when = revise: the mirror — round while the verdict is not "revise" */
   {
@@ -151,6 +153,57 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     const res = await R.c.advance({ agentId: 'writer', text: 'd', originalText: 'w', lineId: R.lineId, runId: 'v6' });
     A.eq(res.hops.map(h => h.agentId).join(','), 'reviewer,writer,reviewer,publisher');
     A.ok(res.loopExhausted && /while the output still read as code/.test(res.text), 'exhaustion mark names the tag');
+  }
+
+  /* ---- A TERSE APPROVAL HANDS ON THE WORK IT APPROVED (2026-10-18). Hops no longer replay the line's transcript (resumeSeed:false,
+          10-17), so a reviewer that approves without restating the work ("Looks good.") used to hand the next stage ONLY its
+          approval — a designer after researcher ▸ reviewer ▸ LOOP got no research — and a gate that ships straight out delivered
+          the approval as the line's result. A reviewer that DID restate the work (R1: its fixes become the work) is unchanged. ---- */
+  const RESEARCH = 'Three findings on rooftop solar:\n1. Installs grew 34% in 2025 (source: SEIA).\n2. Battery attach rates passed 50% in California.\n3. Permitting delays remain the top soft cost.';
+  const upstreamOf = (entry) => (entry.text.split('produced:\n')[1] || '').split('\n\nDo YOUR part')[0];
+  const outboxDone = { id: 'p6', t: 'outbox', x: 15, y: 3, w: 2, h: 2 };
+  {
+    const R = rig(loopFloor({ maxIter: 3, when: 'approved' }), {
+      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good.\nVERDICT: approved', usd: 0.01 }, publisher: { text: 'the design', usd: 0.01 }
+    });
+    const res = await R.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v7' });
+    A.eq(res.hops.map(h => h.agentId).join(','), 'reviewer,publisher', 'terse approval: approved on the first pass');
+    const handed = upstreamOf(R.log.find(l => l.agentId === 'publisher'));
+    A.ok(handed.indexOf(RESEARCH) >= 0, 'terse approval: the next stage is handed the work the reviewer approved (' + JSON.stringify(handed.slice(0, 120)) + ')');
+    A.ok(/\nREVIEW:\nLooks good\.$/.test(handed) && !/VERDICT/.test(handed), 'terse approval: ...with the approval notes after it, never the VERDICT line');
+    A.ok(!res.loopExhausted && !/exhausted/.test(handed), 'terse approval: nothing is marked exhausted');
+  }
+  {
+    const shippedRecs = [];
+    const R = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), {
+      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good.\nVERDICT: approved', usd: 0.01 }
+    }, { lastStage: (a) => a === 'reviewer', onShipped: (r) => shippedRecs.push(r) });
+    const res = await R.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v8' });
+    await new Promise(r => setImmediate(r));
+    A.eq(res.stopped, null, 'terse approval to the OUTBOX: ran to its end (' + res.stopped + ')');
+    A.eq(res.text, RESEARCH, 'terse approval to the OUTBOX: the line delivers the approved work, never the bare approval');
+    A.eq(shippedRecs.length === 1 && shippedRecs[0].text, RESEARCH, 'terse approval to the OUTBOX: SEND TO hands the next line the work too');
+  }
+  {
+    // a SHORT work (one line) beside an approval about as long as it: the reply still does not carry the work
+    const TWEET = 'Launch day: StarNet ships review gates.';
+    const R = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), {
+      writer: { text: TWEET, usd: 0.01 }, reviewer: { text: 'Great hook, ship it.\nVERDICT: approved', usd: 0.01 }
+    });
+    const res = await R.c.advance({ agentId: 'writer', text: TWEET, originalText: 'write a launch tweet', lineId: R.lineId, runId: 'v9' });
+    A.eq(res.text, TWEET, 'a short work approved tersely ships the work (' + JSON.stringify(res.text) + ')');
+  }
+  {
+    // the reviewer RESTATED the work with its fix applied (what the verdict brief asks for): its reply alone moves on, the work once
+    const FIXED = RESEARCH.replace('34%', '34 percent') + '\n\nNotes: spelled out one unit.';
+    const R = rig(loopFloor({ maxIter: 3, when: 'approved' }), {
+      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: FIXED + '\nVERDICT: approved', usd: 0.01 }, publisher: { text: 'the design', usd: 0.01 }
+    });
+    await R.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v10' });
+    A.eq(upstreamOf(R.log.find(l => l.agentId === 'publisher')), FIXED, 'restated approval: the next stage gets the reviewer\'s version alone, minus its VERDICT line (no second copy)');
+    const R2 = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), { writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: FIXED + '\nVERDICT: approved', usd: 0.01 } });
+    const res2 = await R2.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R2.lineId, runId: 'v11' });
+    A.eq(res2.text, FIXED, 'restated approval to the OUTBOX: the reviewer\'s version ships, as before');
   }
   A.report('loop-verdict');
 })();

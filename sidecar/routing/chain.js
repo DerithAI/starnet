@@ -98,27 +98,70 @@ function effectiveLimits(raw, fallback, poolCap) {
    round this gate; `text` = the output about to be handed on (returned annotated). Pure: mutates nothing.
    `reviewed` (token-burn audit 2026-10-17) = what the reviewing stage was HANDED. The writer used to see its own draft on a
    loop-back only because the resume seed replayed the line's whole transcript into every hop; hops no longer take that
-   seed, so a loop-back turn carries the work under review itself, clipped, ahead of the review. */
+   seed, so a loop-back turn carries the work under review itself, clipped, ahead of the review.
+   THE APPROVED WORK (2026-10-18): the same missing replay left a TERSE approval ("Looks good.") handing on nothing but itself — a
+   designer after researcher ▸ reviewer ▸ LOOP got no research, and a gate shipping straight out delivered the approval as the
+   result. An approving reply that does not carry the work (carriesWork) now hands on the work it approved: to a dock, framed
+   with the approval as its review; out of the line, the work alone. A reply that restated the work stays the work (R1). */
 const REVIEWED_HEAD = 12000, REVIEWED_TAIL = 4000;
 function clipReviewed(s) {
   if (s.length <= REVIEWED_HEAD + REVIEWED_TAIL) return s;
   return s.slice(0, REVIEWED_HEAD) + '\n[… ' + (s.length - REVIEWED_HEAD - REVIEWED_TAIL) + ' characters of the work omitted …]\n' + s.slice(-REVIEWED_TAIL);
 }
+const WORK_HEAD = 'THE WORK UNDER REVIEW (what the reviewer was handed):\n', REVIEW_HEAD = '\n\nREVIEW:\n';
+const FRAMED = /^\[LOOP — [^\n]*\]\nTHE WORK UNDER REVIEW \(what the reviewer was handed\):\n/;
+// a crate an earlier gate handed on in this frame carries its work inside: a later gate reviews that work, so frames never nest
+// and a frame never ships as a line's product
+function workOf(s) {
+  const m = FRAMED.exec(s);
+  if (!m) return s;
+  const cut = s.lastIndexOf(REVIEW_HEAD);
+  return cut >= m[0].length ? s.slice(m[0].length, cut) : s;
+}
+/* carriesWork(reply, work) -> did an APPROVING reply restate the work it passed? Restated = it keeps at least half of the work's
+   distinct three-word runs (a one- or two-word work: its words). Not "much shorter than the work": a one-line work and its
+   approval can be the same length. Pure; reads the first 64k characters of each. */
+const wordsOf = s => String(s).slice(0, 65536).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+function carriesWork(reply, work) {
+  const w = wordsOf(work);
+  if (!w.length) return true;
+  const k = Math.min(3, w.length);
+  const runs = a => { const g = new Set(); for (let i = 0; i + k <= a.length; i++) g.add(a.slice(i, i + k).join(' ')); return g; };
+  const want = runs(w), have = runs(wordsOf(reply));
+  let kept = 0;
+  for (const g of want) if (have.has(g)) kept++;
+  return kept * 2 >= want.size;
+}
 function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);
   const wants = !step.when ? true : byVerdict ? (ctx.verdict !== String(step.when).toLowerCase()) : (ctx.tag === step.when);
   const again = step.backTo && n < step.max && wants;
-  const draft = (typeof reviewed === 'string' && reviewed.trim()) ? reviewed : '';
-  const workBlock = draft ? 'THE WORK UNDER REVIEW (what the reviewer was handed):\n' + clipReviewed(draft) + '\n\nREVIEW:\n' : '';
+  const draft = (typeof reviewed === 'string' && reviewed.trim()) ? workOf(reviewed) : '';
+  const workBlock = draft ? WORK_HEAD + clipReviewed(draft) + REVIEW_HEAD : '';
   if (again) {
     return { again: true, target: step.backTo, exhausted: false,
       text: '[LOOP — pass ' + (n + 1) + ' of ' + step.max + ' round the gate at ' + step.loop + ']\n' + workBlock + text };
   }
   // spent (or the verdict passed): leave on the done lane — an APPROVED crate leaves without its VERDICT line (R1: the line is the
   // gate's control signal; it never ships as part of the work). An exhausted crate keeps it: the reviewer's last word is evidence.
-  // (a reply that is ONLY the verdict line keeps it: stripping it would hand on an empty crate, which the next hop refuses)
+  // (a reply that is ONLY the verdict line keeps it when no reviewed work rides with it: stripping it would hand on an empty crate,
+  // which the next hop refuses)
   const stripped = (byVerdict && !wants) ? Verdict.stripVerdict(text) : text;
   let target = step.next, out = (typeof stripped === 'string' && stripped.trim()) ? stripped : text, exhausted = false, why = '';
+  // the done-lane crate reaches a dock (directly, or past a JOINER: next = null, the dock in afterJoin.next) — else it ships out
+  const toDock = !!(step.next || (step.afterJoin && step.afterJoin.next));
+  if (byVerdict && !wants) {
+    // THE APPROVED WORK (above): an approval that did not restate the work hands on the work itself, unclipped — it is the product.
+    // (the frame never spells the verdict line out: that word is the gate's control signal, never part of what moves on — R1)
+    const work = draft ? Verdict.stripVerdict(draft) : '';
+    const notes = String(stripped == null ? '' : stripped).trim();
+    if (work.trim() && !carriesWork(notes, work)) {
+      out = (toDock && notes)
+        ? '[LOOP — ' + String(step.when).toLowerCase() + ' round the gate at ' + step.loop + ' — the reviewer passed the work on without restating it]\n'
+          + WORK_HEAD + work + REVIEW_HEAD + notes
+        : work;
+    }
+  }
   if (step.when && wants && n >= step.max) {
     exhausted = true;
     /* WHY, IN WORDS (GitHub #122): the job carries this as out.unapproved past the line — the OUTBOX product, SEND TO, SHIPPED and
@@ -143,7 +186,7 @@ function loopDecision(step, ctx, n, visited, text, reviewed) {
         + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
         + ' — leaving on DONE unapproved]\n'
         // a done lane that meets a JOINER compiles with next = null and the dock past it in afterJoin.next: that dock needs the work too
-        + ((step.next || (step.afterJoin && step.afterJoin.next)) ? workBlock : '') + text;
+        + (toDock ? workBlock : '') + text;
     }
   }
   return why ? { again: false, target, text: out, exhausted, why } : { again: false, target, text: out, exhausted };

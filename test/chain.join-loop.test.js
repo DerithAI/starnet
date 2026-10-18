@@ -405,6 +405,31 @@ function rig(floor, script, opts) {
     const big = 'x'.repeat(30000);
     const clipped = loopDecision(gate(), ctxRevise, 0, {}, 'notes', big);
     A.ok(clipped.text.length < 17000 && /characters of the work omitted/.test(clipped.text), 'a huge draft is clipped (head + tail), never the whole thing');
+
+    /* THE APPROVED WORK (2026-10-18): an approval that does not restate the work hands on the work it approved */
+    const ctxOk = { verdict: 'approved' };
+    const W = 'The draft: rooftop installs grew 34% in 2025, battery attach passed half, permits are the top soft cost.';
+    const okDock = loopDecision(gate(), ctxOk, 0, {}, 'Looks good.\nVERDICT: approved', W);
+    A.eq(okDock.text, '[LOOP — approved round the gate at 12,4 — the reviewer passed the work on without restating it]\nTHE WORK UNDER REVIEW (what the reviewer was handed):\n' + W + '\n\nREVIEW:\nLooks good.',
+      'a terse approval going to a dock: the work it approved, then the approval as its review (no VERDICT line)');
+    A.ok(!okDock.again && !okDock.exhausted && okDock.target === 'publisher', '...and it still leaves on the done lane, approved');
+    A.eq(loopDecision(gate({ next: null }), ctxOk, 0, {}, 'Looks good.\nVERDICT: approved', W).text, W, 'a terse approval that ships straight out delivers the work alone');
+    A.ok(/^\[LOOP — approved[^\n]*\]\nTHE WORK UNDER REVIEW[^\n]*\n/.test(loopDecision(gate({ next: null, afterJoin: { join: '14,8', expect: 2, next: 'synth' } }), ctxOk, 0, {}, 'Looks good.\nVERDICT: approved', W).text),
+      'past a JOINER that feeds a dock: framed for that dock');
+    A.eq(loopDecision(gate({ next: null, afterJoin: { join: '14,8', expect: 2, next: null } }), ctxOk, 0, {}, 'Looks good.\nVERDICT: approved', W).text, W,
+      'past a JOINER that ships straight out: the work alone (the joined product carries no frame)');
+    A.eq(loopDecision(gate(), ctxOk, 0, {}, 'VERDICT: approved', W).text, W, 'a reply that is only the verdict line hands on the work (no empty review)');
+    const restated = W.replace('34%', '34 percent') + '\n\nSpelled out one unit.';
+    A.eq(loopDecision(gate(), ctxOk, 0, {}, restated + '\nVERDICT: approved', W).text, restated, 'a reply that RESTATED the work is the work (R1) — no second copy');
+    A.eq(loopDecision(gate(), ctxOk, 0, {}, 'Looks good.\nVERDICT: approved', '').text, 'Looks good.', 'no reviewed text (a self-loop) -> the reply as before');
+    A.eq(loopDecision(gate({ next: null }), ctxOk, 0, {}, 'fine\nVERDICT: approved', okDock.text).text, W,
+      'two gates in a row, both terse: the second reviews the work inside the first one\'s frame — frames never nest or ship');
+    A.ok(loopDecision(gate(), ctxRevise, 0, {}, 'tighten it\nVERDICT: revise', okDock.text).text.indexOf('THE WORK UNDER REVIEW (what the reviewer was handed):\n' + W + '\n\nREVIEW:\ntighten it') > 0,
+      '...and a loop-back at the second gate shows the work, not the first gate\'s frame');
+    const longWork = Array.from({ length: 6000 }, (_, i) => 'w' + i).join(' ');
+    const okLong = loopDecision(gate({ next: null }), ctxOk, 0, {}, 'Ship it.\nVERDICT: approved', longWork);
+    A.eq(okLong.text, longWork, 'the approved work is the product: never clipped');
+    A.eq(loopDecision(gate({ when: 'code' }), { tag: 'general' }, 0, {}, 'tag reply', W).text, 'tag reply', 'a classifier-tag gate is untouched (no verdict, no approval)');
   }
 
   A.report('chain.join-loop');
