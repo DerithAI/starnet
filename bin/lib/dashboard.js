@@ -32,7 +32,10 @@ function runDashboard(station, opts) {
   const level = tui.colorLevel(env, !!out.isTTY);
   const ui = {
     focus: '', input: '', overlay: null, flash: null, scroll: 0, keyFlash: null, quitArmed: 0, quitNote: '',
-    stationLabel: (station.mode === 'spawned' ? 'private station · ' : 'station · ') + client.base.replace(/^http:\/\//, ''),
+    // which station this is, in words: the desktop app's own, a private one this terminal booted, or one at an address
+    stationLabel: station.mode === 'spawned' ? 'private station · port ' + client.base.replace(/^.*:/, '')
+      : station.workspace ? 'desktop station · port ' + client.base.replace(/^.*:/, '')
+        : 'station · ' + client.base.replace(/^http:\/\//, ''),
     still: !!(env.STARNET_STILL === '1'),
     // the REAL logo: an image where the terminal draws Sixel, else the same logo as braille dots. STARNET_LOGO=dots skips
     // the image, =ascii draws the drawn-letter version, =plain keeps to the one-line mark

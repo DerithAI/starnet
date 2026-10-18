@@ -35,6 +35,34 @@ function sourceOf(run) {
 function toolName(n) { const s = String(n || 'tool'); return /^[a-z]+_[a-z0-9_]+$/.test(s) ? s.replace('_', '.') : s; }
 // one line of a tool's arguments: pretty-printed JSON and newlines collapsed, then clipped
 function oneLine(s, n) { const t = String(s == null ? '' : s).replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim(); return n && t.length > n ? t.slice(0, n - 1) + '…' : t; }
+/* A tool line says the SALIENT argument (the file, the query, the url, the command), not the raw JSON: the station sends a
+   call's arguments as JSON cut at 240 characters, so `fs.write {"path":"notes.md","content":"# No…` buried the one word
+   that matters. Same digest as the desktop COMMS chip (frontend/app/chat.js argDigest): SCAN for complete "key": value
+   pairs (a value the cut halved has no closing quote and is never shown as whole), take the first salient key, else the
+   only pair, else the raw line. A hand-off names its workers. Display only: it never invents a value. */
+const ARG_KEYS = ['path', 'file', 'filename', 'query', 'q', 'url', 'pattern', 'name', 'target', 'title', 'command', 'cmd', 'text', 'id'];
+const ARG_PAIR = /"([A-Za-z0-9_.-]+)"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|(-?\d+(?:\.\d+)?|true|false))/g;
+function argDigest(args, tool, nameOf) {
+  const raw = String(args == null ? '' : args).trim();
+  if (!raw || raw === '{}') return '';   // a call with no arguments says nothing after its name
+  if (/^team[._]dispatch$/.test(String(tool || ''))) {
+    const ids = [...new Set([...raw.matchAll(/"agentId"\s*:\s*"([^"]+)"/g)].map(m => m[1]))];
+    let whole = true;
+    try { JSON.parse(raw); } catch (_) { whole = false; }
+    if (ids.length) return ids.map(id => (nameOf && nameOf(id)) || id).join(', ') + (whole ? '' : ' …') + (/"background"\s*:\s*true/.test(raw) ? ' · background' : '');
+  }
+  const pairs = new Map();
+  ARG_PAIR.lastIndex = 0;
+  let m;
+  while ((m = ARG_PAIR.exec(raw))) {
+    const v = m[2] !== undefined ? m[2] : m[3];
+    const clean = String(v).replace(/\\[nrt]/g, ' ').replace(/\\(.)/g, '$1').replace(/\s+/g, ' ').trim();
+    if (clean && !pairs.has(m[1])) pairs.set(m[1], clean);
+  }
+  for (const k of ARG_KEYS) if (pairs.get(k)) return pairs.get(k);
+  if (pairs.size === 1) return pairs.values().next().value;
+  return oneLine(raw);
+}
 
 function makeAgent(id, name, idx) {
   return {
@@ -178,7 +206,7 @@ function makeStation() {
         const a = agent(run.agentId);
         if (run.text) run.text.live = false;
         run.text = null;
-        const t = log(a, { k: 'tool', runId: run.runId, name: toolName(p.name), args: oneLine(p.argsSummary, 300), running: true, res: '', at: now });
+        const t = log(a, { k: 'tool', runId: run.runId, name: toolName(p.name), args: oneLine(argDigest(p.argsSummary, toolName(p.name), id => st.agents.has(String(id)) ? st.agents.get(String(id)).name : ''), 300), running: true, res: '', at: now });
         if (p.callId) run.tools.set(String(p.callId), t);
         a.now = t.name + (t.args ? ' ' + t.args : '');
         a.bucket += 3;
@@ -393,8 +421,9 @@ function usd(n) { return '$' + (Number(n) || 0).toFixed(2); }
 function costText(cost) {
   const c = cost || {};
   if (c.usd != null) return usd(c.usd) + ' today';
-  if (c.atLeast != null) return '≥' + usd(c.atLeast) + ' today';
+  // a floor of $0.00 says nothing: name the state instead (the desktop app's spend panel says which runs to settle)
+  if (c.atLeast != null) return c.atLeast > 0 ? '≥' + usd(c.atLeast) + ' today' : 'spend unsettled';
   return 'spend unknown';
 }
 
-module.exports = { makeStation, sourceOf, toolName, oneLine, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RECENT_MS };
+module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RECENT_MS };

@@ -66,7 +66,15 @@ function crew() {
   A.eq([astra.status.key, astra.status.since], ['working', T0], 'a live run = working, timed from its start');
   A.eq(m.logOf('astra')[0].k + ':' + m.logOf('astra')[0].source + ':' + m.logOf('astra')[0].text, 'start:desktop:fix the redirect', 'a desk run shows its asking prompt, said as from the app');
   m.apply('agent.tool_call', { runId: 'r1', agentId: 'astra', callId: 'c1', name: 'fs_read', argsSummary: '{"path":"auth.js"}' }, T0 + 100);
-  A.eq(m.rows(T0 + 200).find(r => r.id === 'astra').now, 'fs.read {"path":"auth.js"}', 'NOW is the tool it is running');
+  A.eq(m.rows(T0 + 200).find(r => r.id === 'astra').now, 'fs.read auth.js', 'NOW is the tool it is running, said by its salient argument (never the raw JSON)');
+  {
+    const { argDigest } = require('../bin/lib/station-model.js');
+    A.eq(argDigest('{"path":"notes.md","content":"# Notes\\n\\nFour comp', 'fs.write'), 'notes.md', 'a write cut mid-content still says its file');
+    A.eq(argDigest('{"command":"npm run test:fast","cwd":"C:/w"}', 'shell.exec'), 'npm run test:fast', 'a shell call says its command');
+    A.eq(argDigest('{"content":"a body the cut halved', 'fs.write'), '{"content":"a body the cut halved', 'a value the cut halved is never shown as whole: the raw line stays');
+    A.eq(argDigest('{"workers":[{"agentId":"astra","task":"x"},{"agentId":"cyp', 'team.dispatch', id => id === 'astra' ? 'ASTRA' : ''), 'ASTRA …', 'a hand-off names its workers, and marks the cut');
+    A.eq(argDigest('{}', 'brief.proceed'), '', 'no arguments, no words');
+  }
   m.apply('agent.tool_result', { runId: 'r1', agentId: 'astra', callId: 'c1', ok: true, ms: 12, summary: '212\nlines' }, T0 + 300);
   const tool = m.logOf('astra').find(e => e.k === 'tool');
   A.eq([tool.running, tool.ok, tool.res], [false, true, '212 lines'], 'the outcome lands on its call');
@@ -138,7 +146,9 @@ function crew() {
   m.applyBudget({ spentToday: null, atLeast: 0.25 });
   A.eq(costText(m.state.cost), '≥$0.25 today', 'an unsettled ledger reads as at least');
   m.applyBudget({ spentToday: null, atLeast: { today: 0, lifetime: 1.35, runs: 815 } });
-  A.eq(costText(m.state.cost), '≥$0.00 today', "the station's own floor shape ({ today, lifetime, runs }) reads as at least");
+  A.eq(costText(m.state.cost), 'spend unsettled', "the station's own floor shape ({ today, lifetime, runs }) at $0.00 names the state, never reads as $0");
+  m.applyBudget({ spentToday: null, atLeast: { today: 0.4, lifetime: 1.75, runs: 816 } });
+  A.eq(costText(m.state.cost), '≥$0.40 today', 'a floor above zero reads as at least');
   m.applyLines({ lines: [{ lineId: 'L9' }] }, [{ id: 'j9', line: 'L9', name: 'CRUCIBLE', status: 'delivered', startedAt: T0, endedAt: T0 + 1000, steps: 8 }]);
   A.eq(m.flows(T0 + 5 * 86400000).find(x => x.lineId === 'L9').state, 'done', 'a delivered job is the line succeeding');
   A.ok(/5d ago/.test(m.flows(T0 + 5 * 86400000 + 2000).find(x => x.lineId === 'L9').text), 'old jobs read in days');
@@ -181,8 +191,17 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(logo.word.every((l, i) => tui.toPlain(ascii[i]).indexOf(l.trim()) >= 0) && starCell && /logohi/.test(starCell[1]), 'STARNET_LOGO=ascii draws the drawn-letter version, the star in its A glinting');
   const crewRow = text.findIndex(l => /CREW /.test(l));
   A.ok(crewRow === 1 && text[crewRow].indexOf('CREW') > Math.max(...dots.map(l => l.length)) && /‹ ▲ ASTRA ›/.test(text[crewRow]) && /○ NOVA/.test(text[crewRow]), 'the crew is a bar of names beside the logo, the agent in COMMS marked: ' + text[crewRow]);
-  const nowRow = text.findIndex(l => /^NOW  /.test(l));
-  A.ok(nowRow === logo.word.length && /^NOW  ASTRA › asks: fs\.write/.test(text[nowRow]), 'a NOW line under the logo says what the busy ones are doing: ' + text[nowRow]);
+  A.ok(!text.some(l => /^NOW  /.test(l)), 'the ask on the card is not said again on a NOW line (the only busy agent is the one asking)');
+  {
+    const m2 = crew();
+    m2.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
+    m2.apply('permission.prompt', { runId: 'r1', agentId: 'astra', promptId: 'p1', tool: 'fs.write', argsSummary: 'auth.js (+2 −1)' }, T0 + 2);
+    m2.apply('agent.run.start', { runId: 'r2', agentId: 'cypher', trigger: 'schedule', surface: 'autonomous', prompt: 'nightly tests' }, T0);
+    m2.apply('agent.tool_call', { runId: 'r2', agentId: 'cypher', callId: 'c1', name: 'shell_exec', argsSummary: '{"command":"npm test"}' }, T0 + 5);
+    const t2 = screen(m2, {}, 110, 34, T0 + 3000).map(tui.toPlain);
+    const nowRow = t2.findIndex(l => /^NOW  /.test(l));
+    A.ok(nowRow === 4 && /^NOW  CYPHER › shell\.exec npm test/.test(t2[nowRow]) && !/ASTRA/.test(t2[nowRow]), 'a NOW line under the logo says what the other busy ones are doing: ' + t2[nowRow]);
+  }
   const commsRow = text.findIndex(l => /^── COMMS ▸ ASTRA /.test(l));
   A.ok(commsRow > 0 && commsRow <= 6, 'COMMS starts right under the header (row ' + commsRow + '), so it gets most of the screen');
   const compact = screen(m, {}, 70, 20, T0 + 3000).map(tui.toPlain);

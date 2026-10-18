@@ -258,6 +258,7 @@ function pickAgent(runtime, want) {
    answer in words. The terminal asks the same question the same way. priorAgentTurn: the agent's last reply, so a
    bare "yes" to its offer to act is the task. */
 const Classify = require('../../frontend/app/classify.js');
+const { argDigest } = require('./station-model.js');
 function isTaskText(text, priorAgentTurn) { return !!Classify.isTaskDirective(text, priorAgentTurn ? { priorAgentTurn } : undefined); }
 
 function buildRunBody(sel, prompt, opts) {
@@ -305,7 +306,8 @@ function makeRunTracker() {
         const rec = { callId: String(p.callId || ''), name: String(p.name || 'tool'), argsSummary: String(p.argsSummary || ''), ok: null, ms: null, summary: '' };
         st.toolCalls.push(rec);
         if (rec.callId) st.pendingTools.set(rec.callId, rec);
-        actions.push({ kind: 'tool', line: '⋯ ' + rec.name + (rec.argsSummary ? ' ' + rec.argsSummary : '') });
+        const said = argDigest(rec.argsSummary, rec.name);   // the salient argument, not the raw JSON (--json keeps it whole)
+        actions.push({ kind: 'tool', line: '⋯ ' + rec.name + (said ? ' ' + said : '') });
         break;
       }
       case 'agent.tool_result': {

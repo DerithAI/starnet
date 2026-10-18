@@ -7,7 +7,7 @@
 
 const http = require('node:http');
 const core = require('./cli-core.js');
-const { makeStation, sourceOf, fmtDur, costText, toolName, oneLine } = require('./station-model.js');
+const { makeStation, sourceOf, fmtDur, costText, toolName, oneLine, argDigest } = require('./station-model.js');
 const { clean, trunc } = require('./tui.js');
 
 function pad(s, n) { const t = trunc(clean(s), n); return t + ' '.repeat(Math.max(0, n - [...t].length)); }
@@ -115,7 +115,7 @@ function makeWatchFormatter(names) {
         text.set(p.runId, parts[parts.length - 1]);
         break;
       }
-      case 'agent.tool_call': flush(p.runId); out.push(head + '↳ ' + toolName(p.name) + (p.argsSummary ? ' ' + oneLine(clean(p.argsSummary), 160) : '')); break;
+      case 'agent.tool_call': { flush(p.runId); const said = argDigest(clean(p.argsSummary), toolName(p.name)); out.push(head + '↳ ' + toolName(p.name) + (said ? ' ' + oneLine(said, 160) : '')); break; }
       case 'agent.tool_result': out.push(head + '  ' + (p.ok && !p.isError ? 'ok' : 'FAIL') + ' ' + (Number(p.ms) || 0) + 'ms' + (p.summary ? ' · ' + trunc(clean(p.summary).replace(/\s+/g, ' '), 140) : '')); break;
       case 'permission.prompt': {
         let what = toolName(p.tool) + (p.argsSummary ? ' ' + oneLine(clean(p.argsSummary), 140) : '');

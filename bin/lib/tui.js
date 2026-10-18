@@ -220,7 +220,8 @@ function render(model, ui, size, now) {
   }
 
   // ---- NOW: what the busy ones are doing, one line (only while someone is) ------------------------------------------
-  const busy = rows.filter(r => r.status.key === 'needs').concat(rows.filter(r => r.status.key === 'working'));
+  // (the agent whose ask is on the card below is left out: the card already says what it waits on)
+  const busy = rows.filter(r => r.status.key === 'needs' && !(front && front.agentId === r.id)).concat(rows.filter(r => r.status.key === 'working'));
   if (busy.length) {
     let x = g.put(0, y, 'NOW  ', 'lbl b');
     for (const r of busy) {
@@ -412,7 +413,8 @@ const PALETTE = {
   a0: ['#6fe3ff', 81], a1: ['#ff7ad9', 212], a2: ['#a6ff4d', 155], a3: ['#b48cff', 141], a4: ['#ffd84d', 221], a5: ['#7aa8ff', 111],
   logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
 };
-const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 58], inv: ['#ff3b4e', 203] };
+// (256-color: the card sits on a near-black — the nearest palette brown, 58, is a loud olive)
+const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 234], inv: ['#ff3b4e', 203] };
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function sgr(style, level) {
   const parts = String(style || '').split(/\s+/).filter(Boolean);
