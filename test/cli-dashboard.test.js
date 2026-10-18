@@ -160,7 +160,13 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const text = rows.map(tui.toPlain);
   A.eq(rows.length, 34, 'one row per terminal line');
   A.ok(text.every(l => tui.width(l) <= 110), 'nothing is wider than the terminal');
-  A.ok(/STARNET/.test(text[0]) && /1 needs you/.test(text[0]), 'the header names the station and counts the asks');
+  A.ok(/[⠁-⣿]/.test(text.slice(0, 6).join('')) && /1 needs you/.test(text.slice(0, 8).join('\n')), 'a roomy terminal gets the dot-matrix StarNet mark, with the asks counted beside it or on the crew panel');
+  const logo = require('../bin/lib/logo.js');
+  A.ok(text.slice(0, 7).some(l => l.indexOf(logo.word.braille[5][2].trim()) >= 0), 'the mark is the generated cut of the brand wordmark (bin/lib/logo.js), not a redraw');
+  const compact = screen(m, {}, 110, 20, T0 + 3000).map(tui.toPlain);
+  A.ok(/S T A R N E T/.test(compact[0]) && /1 needs you/.test(compact[0]), 'a short terminal gets the one-line mark and the counts on it');
+  A.ok(!/[⠁-⣿]/.test(screen(m, { logo: 'plain' }, 110, 34, T0).map(tui.toPlain).join('')), 'STARNET_LOGO=plain never draws braille');
+  A.ok(text.some(l => /^┌─\[ CREW · 3 \]/.test(l)) && text.some(l => /^┌─\[ COMMS · ASTRA \]/.test(l)), 'crew and COMMS sit in titled station panels');
   A.ok(text.some(l => /◆ ASTRA .*▲ needs you/.test(l)), 'the crew row shows the ask');
   A.ok(text.some(l => /MODEL/.test(l) && /ACTIVITY/.test(l)), 'wide: MODEL and ACTIVITY columns');
   A.ok(text.some(l => /ASTRA asks/.test(l)) && text.some(l => /\[y\] allow once/.test(l)), 'the open ask is a card with its keys');
