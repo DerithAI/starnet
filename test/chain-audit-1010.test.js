@@ -122,6 +122,30 @@ const belt = (x, y, dir) => ({ x, y, dir });
     A.eq(timers.length, 0, 'the joiner never times out waiting for the reviewed branch');
   }
 
+  // 3d. (token-burn audit 2026-10-18) the same branch loop RUNS OUT of passes on a floor whose JOINER ships straight to the OUTBOX:
+  //     the joined product is what it always was (the exhausted branch's reviewer word, marked unapproved) — no draft is added to
+  //     a delivered answer. (A dock PAST the joiner gets the draft: pinned at the loopDecision seam in chain.join-loop.)
+  {
+    const s = WM.create(WM.starterDoc());
+    A.ok(LE.placeBlueprint(s, 'second_opinion', { x: 8, y: 5 }).ok, 'SECOND OPINION placed (3d)');
+    crew(s);
+    const b = s.props().filter(p => p.t === 'bay')[1];
+    A.ok(LE.run(s, b.id, 'addLoop', { around: b.id, max: 2 }, { near: { x: 8, y: 5 } }).ok, 'a review loop on one branch (3d)');
+    crew(s);
+    const plan = P.compileRoutingPlan(s.projectGeometry());
+    A.eq(plan.errors.length, 0, 'compiles clean (3d)');
+    const router = makeRouter(); router.setPlan(plan);
+    const timers = [];
+    const e = router.resolveDock({ tag: 'general' });
+    const out = await runnerFor(router, timers).advance({ agentId: e.agentId, dockId: e.dockId, text: 'entry out', lineId: router.lineOriginFor(e.agentId, e.dockId),
+      runAgent: async c => ({ text: /REVIEWER/.test((s.propById(c.dockId) || {}).role || '') ? 'needs more sources\nVERDICT: revise' : 'DRAFT by ' + c.dockId }) });
+    A.eq(out.stopped, null, 'the exhausted line still runs to its end (' + out.stopped + ')');
+    A.ok(out.loopExhausted && out.unapproved, 'and is marked unapproved (GitHub #122)');
+    A.ok(/JOINED OUTPUT — 2 of 2 branches delivered/.test(out.text), 'both branches reach the joiner (3d)');
+    A.ok(/leaving on DONE unapproved\]\nneeds more sources/.test(out.text) && !/THE WORK UNDER REVIEW/.test(out.text),
+      'JOINER→OUTBOX: the delivered product keeps the reviewer\'s word, unchanged from before: ' + out.text.slice(0, 300));
+  }
+
   // 3c. no COPY branch round a step a review loop sends work back to
   {
     const s = WM.create(WM.starterDoc());

@@ -363,6 +363,8 @@
     // classifier couldn't route a dead grok/kimi sign-in to its ⏼ RECONNECT door — users got the
     // keyed-provider "＋ Add a key" door for a keyless subscription sign-in.
     const errLabel = String(opts.label || 'openai-compatible');
+    // false = this endpoint's own ids may be vendor/model (CUSTOM, Ollama): no routed-catalog hint on a refused model (#126)
+    const routedIdHint = opts.routedIdHint !== false;
     const profileSupportsTools = (typeof opts.supportsTools === 'boolean') ? opts.supportsTools : null;
     /* PRICE FAMILY (2026-08-21). OpenAI's /v1/models — and every vendor that clones it — carries NO pricing
        block, so priceOf() returned null on openai/xai/groq/mistral/deepseek/together/fireworks and cost.js
@@ -919,10 +921,16 @@
         // line the user sees only the vendor's bare "invalid model ID" and has no path back (2026-08-25
         // stranded-user incident) — name the mismatch and the fix. Slash-native catalogs (together, fireworks,
         // groq) are safe: their ids resolve on their own endpoints, so this only fires on a real mismatch.
+        // An endpoint the Commander runs or names (CUSTOM: Hive, LiteLLM, vLLM…; Ollama) serves vendor/model ids NATIVELY:
+        // there that line was false and sent a Hive user to switch providers (#126). It names the id that was sent instead.
         if ((res.status === 400 || res.status === 404)
-          && /invalid model|is not a valid model|model .*(does not exist|not found)/i.test(String(detail))
-          && String(body.model || '').indexOf('/') > 0) {
-          detail += ' — "' + body.model + '" is a routed-catalog model id (vendor/model), but this provider calls the vendor API directly. Switch the provider in the model picker (STARNET or OPENROUTER for routed ids), or pick a model from this provider\'s own catalog.';
+          && /invalid model|is not a valid model|model .*(does not exist|not found)/i.test(String(detail))) {
+          const sent = String(body.model || '');
+          if (routedIdHint && sent.indexOf('/') > 0) {
+            detail += ' — "' + sent + '" is a routed-catalog model id (vendor/model), but this provider calls the vendor API directly. Switch the provider in the model picker (STARNET or OPENROUTER for routed ids), or pick a model from this provider\'s own catalog.';
+          } else if (!routedIdHint && sent && String(detail).indexOf(sent) < 0) {
+            detail += ' — the endpoint did not accept the model id "' + sent + '"; check the exact id in your endpoint\'s model list.';
+          }
         }
         const err = new Error(errLabel + ' http ' + res.status + ' - ' + detail);
         err.status = res.status;

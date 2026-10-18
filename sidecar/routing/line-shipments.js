@@ -132,6 +132,9 @@ function makeLineShipments(options) {
     // a PARTIAL joined job (a COPY branch failed or never reached the JOINER — chain.js out.partial) is never a clean product, even
     // when every run row that exists ended done: a hop refused before it ran writes none (runtime repair 2026-10-12)
     if (r.partial) return false;
+    // an UNAPPROVED job (a review loop used all its passes without the verdict it waits for — chain.js out.unapproved, GitHub #122) went
+    // on to its OUTBOX, but SHIPPED counts clean work: nobody approved it, so it mints no receipt (it is still delivered, and says so)
+    if (r.unapproved) return false;
     let current = null; try { current = ensure(); } catch (_) { current = null; }
     const key = keyOf(r);
     if (current && current.some(s => keyOf(s) === key)) return true;

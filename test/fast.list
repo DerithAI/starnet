@@ -185,6 +185,7 @@ test/desktop-lifecycle-preferences.test.js
 test/desktop-installed-cdp-forwarding.test.js
 test/cloudsavecore.test.js
 test/cloudsave-refusal.test.js
+test/growth-stale-save-recovery.test.js
 test/cloudsave-unknown.test.js
 test/save-quota-writethrough.test.js
 test/freshstart.test.js
@@ -285,6 +286,7 @@ test/autopilot-focus-veto.test.js
 test/apiauth.test.js
 test/peerowner.test.js
 test/provider-key-check.test.js
+test/custom-provider-model-id.test.js
 test/engine-credential.test.js
 test/engine-key-sync.test.js
 test/kimi-region.test.js
@@ -1256,3 +1258,8 @@ test/comms-render-seams.test.js
 test/markdown-everywhere.test.js
 test/walk-consistency-1014.test.js
 test/delegated-ledger-first-read.test.js
+test/visible-text-caps.test.js
+test/abilities-switch-scope.test.js
+test/loop-unapproved-truth.test.js
+test/build-paint-material.test.js
+test/routine-media.test.js

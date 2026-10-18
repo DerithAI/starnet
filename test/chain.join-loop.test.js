@@ -395,6 +395,11 @@ function rig(floor, script, opts) {
     A.ok(self.again && self.text.indexOf('THE WORK UNDER REVIEW') < 0, 'no reviewed text (a self-loop) -> no block, never a nested loop turn');
     const exNext = loopDecision(gate(), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
     A.ok(exNext.exhausted && exNext.text.indexOf('DRAFT-3') >= 0, 'an exhausted crate going to a downstream dock carries the unapproved work');
+    // a done lane that meets a JOINER: next is null and the dock past the joiner is afterJoin.next (frontend/app/pipeline.js)
+    const exJoinDock = loopDecision(gate({ next: null, afterJoin: { join: '14,8', expect: 2, next: 'synth' } }), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exJoinDock.exhausted && exJoinDock.text.indexOf('DRAFT-3') >= 0, 'an exhausted branch whose joiner feeds a dock carries the unapproved work for that dock');
+    const exJoinOut = loopDecision(gate({ next: null, afterJoin: { join: '14,8', expect: 2, next: null } }), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exJoinOut.exhausted && exJoinOut.text.indexOf('DRAFT-3') < 0, '...a joiner that ships straight out keeps the delivered product unchanged');
     const exOut = loopDecision(gate({ next: null }), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
     A.ok(exOut.exhausted && exOut.text.indexOf('DRAFT-3') < 0 && exOut.text.indexOf('still bad') >= 0, 'an exhausted crate that ships straight out keeps the reviewer\'s word only');
     const big = 'x'.repeat(30000);

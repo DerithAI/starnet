@@ -58,6 +58,8 @@ const CloudSave = (() => {
   // definitively holds no save; 'forbidden' (auth 401/403) and 'unreachable' (network/timeout/5xx) mean we
   // could not ask — states that must NEVER be presented to the boot path as "no save exists".
   let lastPullOutcome = 'unreachable';   // until a pull settles, we have proven nothing
+  // starnet-releases#4 Blocker 2: the catch-up a growthStale refusal asked for (resolves true once the re-synced save is queued)
+  let staleCatchUp = null;
 
   function now() { return Date.now(); }
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
@@ -116,6 +118,17 @@ const CloudSave = (() => {
       warnedStale = true;
       try { console.warn('[cloudsave] durable mirror has not synced; retrying with backoff. Local cache is intact.'); } catch (_) {}
     }
+  }
+
+  // GROWTH-STALE REFUSAL (starnet-releases#4 Blocker 2). The station refuses a save whose rating watermark
+  // (stationStats.ratingSyncAt) trails its rating ledger, so a stale tab cannot erase acknowledged XP. That refusal is
+  // right, and resending the same save can never pass it: only a rating catch-up advances the watermark. Ask XpStore for
+  // one; on success it persists a fresh save (App.persist -> push), and THAT save is what the next attempt sends. Nothing
+  // here touches the watermark, so the station's check still decides. Resolves true once the re-synced save is queued.
+  function requestRatingCatchUp() {
+    if (typeof XpStore === 'undefined' || !XpStore || typeof XpStore.catchUpRatings !== 'function') return null;
+    try { return Promise.resolve(XpStore.catchUpRatings()).then(r => !!r && !r.failed, () => false); }
+    catch (_) { return null; }
   }
 
   // (re)arm the backoff retry so a dropped push is never silently abandoned. Newest-wins: whatever is
@@ -182,6 +195,7 @@ const CloudSave = (() => {
             // the station file confirmed this page's newest save while the cache could not hold it
             if (!pending && docCacheFailed && doc === memoryDoc) cacheFailedConfirmed = true;
           }
+          staleCatchUp = (body.ok === false && body.growthStale === true) ? requestRatingCatchUp() : null;
           if (body.ok === false) throw new Error('save refused: ' + (body.error || (body.unreadable ? 'existing record unreadable' : body.stale ? 'stale write' : 'unknown')));
         }
         if (!body || body.ok !== true) throw new Error('save acknowledgement missing');
@@ -215,6 +229,10 @@ const CloudSave = (() => {
     // A rejected active write re-queues its document, and a newer push may also have arrived while it was in
     // flight. Force one final, confirmable write of that newest pending state before the installer advances.
     if (isSave(pending)) confirmed = await flush({ force: true }) === true;
+    // A growth-stale refusal asked for a rating catch-up: once it has queued the re-synced save, send that ONE time.
+    // A catch-up that fails leaves the refusal standing, and the install stays paused.
+    const catchUp = staleCatchUp; staleCatchUp = null;
+    if (!confirmed && catchUp && await catchUp && isSave(pending)) confirmed = await flush({ force: true }) === true;
     // A flush may have started while the forced write was awaited. Settle it too, and fail closed if any caller
     // queued an even newer document that has not begun its durable write yet.
     while (activeFlushes.size) {

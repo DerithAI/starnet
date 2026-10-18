@@ -86,14 +86,15 @@ function effectiveLimits(raw, fallback, poolCap) {
    (routing/steptest.js) runs one dock at a time on the SAME decisions, never a second dialect of them.
    advance() calls each exactly where its inline code used to sit; behaviour is byte-for-byte unchanged. */
 
-/* loopDecision(step, ctx, n, visited, text) -> { again, target, text, exhausted } — THE ONE LOOP RULE
+/* loopDecision(step, ctx, n, visited, text) -> { again, target, text, exhausted, why? } — THE ONE LOOP RULE
    (2026-08-22, matches the LOOP card word for word):
      when = a VERDICT word   -> the crate goes BACK while the reviewer's verdict is NOT that word
                                 (no verdict line = not that word); leaves on DONE the moment it is;
      when = a classifier tag -> goes back while the output still READS as that kind of work;
      no when                 -> every pass goes back;
    and in every case MAX PASSES ends it on DONE. A `when` still unmet when the passes ran out marks the
-   done-lane handoff EXHAUSTED so the downstream stage knows nobody approved it. `n` = passes already taken
+   done-lane handoff EXHAUSTED so the downstream stage knows nobody approved it (and `why` says so in words for the job's own
+   out.unapproved — GitHub #122). `n` = passes already taken
    round this gate; `text` = the output about to be handed on (returned annotated). Pure: mutates nothing.
    `reviewed` (token-burn audit 2026-10-17) = what the reviewing stage was HANDED. The writer used to see its own draft on a
    loop-back only because the resume seed replayed the line's whole transcript into every hop; hops no longer take that
@@ -117,9 +118,13 @@ function loopDecision(step, ctx, n, visited, text, reviewed) {
   // gate's control signal; it never ships as part of the work). An exhausted crate keeps it: the reviewer's last word is evidence.
   // (a reply that is ONLY the verdict line keeps it: stripping it would hand on an empty crate, which the next hop refuses)
   const stripped = (byVerdict && !wants) ? Verdict.stripVerdict(text) : text;
-  let target = step.next, out = (typeof stripped === 'string' && stripped.trim()) ? stripped : text, exhausted = false;
+  let target = step.next, out = (typeof stripped === 'string' && stripped.trim()) ? stripped : text, exhausted = false, why = '';
   if (step.when && wants && n >= step.max) {
     exhausted = true;
+    /* WHY, IN WORDS (GitHub #122): the job carries this as out.unapproved past the line — the OUTBOX product, SEND TO, SHIPPED and
+       the job record read it, so work nobody approved is never delivered downstream as if it were (the flow itself is unchanged) */
+    why = 'the review loop used all ' + n + ' pass' + (n === 1 ? '' : 'es')
+      + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when);
     /* THE ESCALATION LANE (2026-08-30): a gate with a third wired lane sends verdict-exhausted
        work THERE — a fresh dock (the fixer, the human-facing summarizer) instead of an apology
        stapled to the done lane. The escalated dock is a real stage: its output continues down
@@ -127,17 +132,21 @@ function loopDecision(step, ctx, n, visited, text, reviewed) {
        note stands, never a silent second run. */
     if (step.esc && !visited[nodeKey(step.esc)]) {
       target = step.esc;
+      why += ', so the work went to the escalation lane unapproved';
       out = '[LOOP — escalated: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
         + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
         + ' — handed to the escalation lane]\n' + workBlock + text;   // the fixer needs the work, not only the notes on it
     } else {
+      why += ', so the work went on unapproved';
       // a downstream dock gets the unapproved work with the notes; a crate that ships straight out keeps the reviewer's word
       out = '[LOOP — exhausted: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
         + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
-        + ' — leaving on DONE unapproved]\n' + (step.next ? workBlock : '') + text;
+        + ' — leaving on DONE unapproved]\n'
+        // a done lane that meets a JOINER compiles with next = null and the dock past it in afterJoin.next: that dock needs the work too
+        + ((step.next || (step.afterJoin && step.afterJoin.next)) ? workBlock : '') + text;
     }
   }
-  return { again: false, target, text: out, exhausted };
+  return why ? { again: false, target, text: out, exhausted, why } : { again: false, target, text: out, exhausted };
 }
 
 /* preHopRefusal({ visited, target, loopHop, hop, loopHops, lim, spent, dayLedger, lineId, text, cur }) -> the
@@ -405,7 +414,9 @@ function makeChainRunner(o) {
     if (s.lineId && out && out.stopped == null && !out.partial && out.outboxId && String(out.text || '').trim() && provenClean(s)) {
       say('workitem.delivered', withDock({ workitemId: newId(), finalQueueId: 'outbox', agentId: out.agentId,
         box: 'line-output', lineId: String(s.lineId), outboxId: out.outboxId,
-        entryRunId: s.runId ? String(s.runId) : null, workitemIds: evidence.workitemIds, ms: 0, ts: now() }, out.dockId));
+        entryRunId: s.runId ? String(s.runId) : null, workitemIds: evidence.workitemIds, ms: 0, ts: now(),
+        // (GitHub #122, additive like dockId) a review loop ran out of passes: the product is at the OUTBOX, but nobody approved it
+        ...(out.unapproved ? { unapproved: String(out.unapproved) } : {}) }, out.dockId));
     }
     if (onShipped) shipped(seed || {}, out);
     return out;
@@ -422,6 +433,9 @@ function makeChainRunner(o) {
       streamId: (s.streamId != null && String(s.streamId)) || null, since: (typeof s.since === 'number' && isFinite(s.since)) ? s.since : null };
     // a PARTIAL joined job still reaches the host — the receipt refuses it and SEND TO says why on the next line — never as clean
     if (out.partial) rec.partial = String(out.partial);
+    // an UNAPPROVED job (a review loop ran out of passes — out.unapproved, GitHub #122) still went on: SEND TO hands it on and says so,
+    // the receipt never counts it as clean SHIPPED work
+    if (out.unapproved) rec.unapproved = String(out.unapproved);
     /* SEND TO VERDICTS (conveyor-backend-04): the producing job's entry verdicts, carried only when the seed holds them as a literal
        true (the channel hub stamps them — it ran the job under them). Absent = the hand-off runs untrusted + withheld (handoff-runner). */
     if (s.entryTrusted === true) rec.entryTrusted = true;
@@ -614,7 +628,7 @@ function makeChainRunner(o) {
           const d = loopDecision(step, ctx, n, visited, out.text, selfLoop ? '' : lastHanded);
           target = asNode(d.target); out.text = d.text;
           if (d.again) { iter[step.loop] = n + 1; loopHop = true; openLoops.add(step.loop); looping = true; fromTile = null; }
-          else { openLoops.delete(step.loop); looping = openLoops.size > 0; if (d.exhausted) out.loopExhausted = true; }
+          else { openLoops.delete(step.loop); looping = openLoops.size > 0; if (d.exhausted) { out.loopExhausted = true; if (d.why) out.unapproved = (out.unapproved ? out.unapproved + '; ' : '') + d.why; } }
           // the gate let the work out onto a DONE lane that meets a JOINER: this branch parks there like any other
           if (!d.again && !target && step.afterJoin) step = step.afterJoin;
           else loopDone = true;

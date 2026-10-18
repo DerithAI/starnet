@@ -154,6 +154,8 @@
         // token death classifies to the ⏼ RECONNECT door, mirroring the pre-run oauthLabel() wrap. Keyed
         // openai-compatible providers keep the generic label (their recovery door is the key field either way).
         label: isDeviceOAuth ? (profile.name || profile.id) : undefined,
+        // the routed-catalog hint is for a VENDOR's own API; a user-run endpoint's ids are legitimately vendor/model (#126)
+        routedIdHint: id !== 'custom' && id !== 'ollama',
         key: isDeviceOAuth ? (opts.token || opts.key) : opts.key,
         baseUrl: opts.baseUrl || profile.baseUrl,
         chatPath: profile.chatPath,

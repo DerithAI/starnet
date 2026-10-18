@@ -255,7 +255,8 @@ function makeTriggerRunner(deps) {
     const usd = runs.reduce((a, r) => a + ((typeof r.usd === 'number' && isFinite(r.usd)) ? r.usd : 0), 0);
     if (workitemId) {
       const dep = bumpQueue(agentId, -1);
-      if (completed) emit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: now() - startedAt, ts: now() });
+      // (GitHub #122, additive) the line's review loop ran out of passes: delivered, said as unapproved
+      if (completed) emit('workitem.delivered', Object.assign({ workitemId, finalQueueId: 'outbox', agentId, box: '', ms: now() - startedAt, ts: now() }, lo.unapproved ? { unapproved: String(lo.unapproved) } : null));
       emit('queue.status', { queueId: agentId, depth: dep, maxCapacity: d.queueCap || 64, nextAdvanceAt: 0 });
     }
     let err = null;
@@ -271,6 +272,8 @@ function makeTriggerRunner(deps) {
       else err = 'the line did not reach its OUTBOX';
     }
     const outcome = { ok: completed, at: now(), streamId, runs: runs.length, usd, agentId: (lo && lo.agentId) || agentId || null, source: item.source || null };
+    // (GitHub #122, additive) reached the OUTBOX, but a review loop used all its passes without approving it — said, never read as clean
+    if (completed && lo && lo.unapproved) outcome.unapproved = String(lo.unapproved).slice(0, 300);
     patch(t.id, () => (err ? { lastOutcome: outcome, lastError: err.slice(0, 400), lastErrorAt: now() } : { lastOutcome: outcome, lastError: null, lastErrorAt: null }));
     return outcome;
   }

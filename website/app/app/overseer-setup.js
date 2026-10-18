@@ -43,7 +43,9 @@ window.OverseerSetup = (() => {
   function reflectModel(item, provider) {
     currentModel = { ...item, provider };
     if (el('ov-model-dialog')?.open) return;
-    el('ov-model-name').textContent = item.id ? ModelDock.labels.model(item) : 'Choose a model';
+    // an id with no display name of its own (typed, or a bare catalog row) shows verbatim — humanized it read as StarNet
+    // stripping the dashes from the id it would send (#126)
+    el('ov-model-name').textContent = !item.id ? 'Choose a model' : (!item.name || item.name === item.id) ? item.id : ModelDock.labels.model(item);
     el('ov-model-detail').textContent = item.id ? 'Change model or browse the catalog' : 'Browse the model catalog';
     renderReasoning();
   }
