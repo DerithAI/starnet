@@ -1253,4 +1253,5 @@ test/comms-render-seams.test.js
 test/markdown-everywhere.test.js
 test/walk-consistency-1014.test.js
 test/delegated-ledger-first-read.test.js
+test/visible-text-caps.test.js
 test/abilities-switch-scope.test.js
