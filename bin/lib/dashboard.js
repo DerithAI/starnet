@@ -20,6 +20,7 @@ const readline = require('node:readline');
 const core = require('./cli-core.js');
 const { makeStation } = require('./station-model.js');
 const tui = require('./tui.js');
+const sixel = require('./sixel.js');
 
 function runDashboard(station, opts) {
   const o = opts || {};
@@ -35,7 +36,10 @@ function runDashboard(station, opts) {
     still: !!(env.STARNET_STILL === '1'),
     // the block-letter logo uses only block and box-drawing glyphs, which every console font has; STARNET_LOGO=plain
     // keeps to the one-line mark
-    logo: env.STARNET_LOGO === 'plain' ? 'plain' : 'full'
+    // the REAL logo as an image where the terminal draws Sixel, else the text logo (STARNET_LOGO=text forces it, =plain
+    // keeps to the one-line mark)
+    logo: env.STARNET_LOGO === 'plain' ? 'plain' : 'full',
+    logoImage: null
   };
   const mine = new Map();       // requests this terminal holds open: id -> { req, agentId, kind }
   let feedReq = null, cursor = '', feedRetry = null, stopped = false;
@@ -256,7 +260,7 @@ function runDashboard(station, opts) {
   function onKey(str, key) {
     const k = key || {};
     if (k.ctrl && k.name === 'c') return quit(false);
-    if (k.ctrl && k.name === 'l') { prevRows = []; return paint(); }
+    if (k.ctrl && k.name === 'l') { redrawAll(); return; }
     ui.quitArmed = 0;
     if (k.name === 'escape') { ui.input = ''; ui.overlay = null; ui.scroll = 0; return paint(); }
     if (k.name === 'tab') { focusStep(k.shift ? -1 : 1); return paint(); }
@@ -266,7 +270,8 @@ function runDashboard(station, opts) {
     if (k.name === 'pagedown') { ui.scroll = Math.max(0, ui.scroll - 8); return paint(); }
     if (k.name === 'return' || k.name === 'enter') { const t = ui.input; ui.input = ''; submit(t); return paint(); }
     if (k.name === 'backspace') { ui.input = ui.input.slice(0, -1); return paint(); }
-    if (typeof str !== 'string' || !str || k.ctrl || k.meta) return;
+    if (k.sequence && /^\x1b\[[?\d;]*[ct]$/.test(k.sequence)) return;   // a late reply to the startup probe
+    if (typeof str !== 'string' || !str || k.ctrl || k.meta || str.charCodeAt(0) === 27) return;
     const ch = str.replace(/[\x00-\x1f\x7f]/g, '');
     if (!ch) return;
     ui.overlay = null;
@@ -287,10 +292,13 @@ function runDashboard(station, opts) {
     // the last column stays empty: a glyph there leaves the cursor in a pending wrap, so an erase after it ate the
     // character, and on consoles without a deferred wrap the bottom-right cell scrolls the whole screen
     const size = { cols: Math.max(20, (out.columns || 80) - 1), rows: out.rows || 24 };
-    const rows = tui.render(model, ui, size, t).map(segs => tui.toAnsi(segs, level));
+    const skip = ui.logoImage ? ui.logoImage.cols : 0, skipRows = ui.logoImage ? ui.logoImage.rows : 0;
+    const rows = tui.render(model, ui, size, t).map((segs, y) => tui.toAnsi(y < skipRows ? tui.sliceSegs(segs, skip) : segs, level));
     let s = '';
-    // every rendered row is padded to the full width, so no erase-to-end is needed (or wanted)
-    for (let y = 0; y < rows.length; y++) if (prevRows[y] !== rows[y]) s += '\x1b[' + (y + 1) + ';1H' + rows[y] + '\x1b[0m';
+    // every rendered row is padded to the full width, so no erase-to-end is needed (or wanted); a row beside the logo
+    // image starts to its right, so the image's cells are never written over
+    for (let y = 0; y < rows.length; y++) if (prevRows[y] !== rows[y]) s += '\x1b[' + (y + 1) + ';' + (y < skipRows ? skip + 1 : 1) + 'H' + rows[y] + '\x1b[0m';
+    if (image && !imageShown) { s += '\x1b[1;1H' + image.sixel; imageShown = true; }
     if (rows.length < prevRows.length) s += '\x1b[' + (rows.length + 1) + ';1H\x1b[J';
     prevRows = rows;
     if (s) try { out.write(s); } catch (_) {}
@@ -303,7 +311,33 @@ function runDashboard(station, opts) {
     inp.resume();
     out.on('resize', onResize);
   }
-  function onResize() { prevRows = []; try { out.write('\x1b[2J'); } catch (_) {} paint(); }
+  function redrawAll() { prevRows = []; imageShown = false; buildImage(); try { out.write('\x1b[2J'); } catch (_) {} paint(); }
+  function onResize() { redrawAll(); }
+
+  // ---- the real logo, as an image -----------------------------------------------------------------------------------
+  let term = {}, image = null, imageShown = false;
+  // ask the terminal (before the screen opens) whether it draws Sixel and how big a cell is. Replies arrive in order, so
+  // DA1, which every terminal answers, goes last and closes the probe.
+  function probeTerminal(ms) {
+    return new Promise(resolve => {
+      if (!inp.isTTY || !out.isTTY || env.STARNET_LOGO === 'text' || env.STARNET_LOGO === 'plain') return resolve({});
+      let buf = '', done = false, timer = null;
+      const onData = d => { buf += String(d); if (/\x1b\[\?[\d;]*c/.test(buf)) finish(); };
+      function finish() { if (done) return; done = true; clearTimeout(timer); inp.removeListener('data', onData); resolve(sixel.parseTermReplies(buf, out.columns || 80, out.rows || 24)); }
+      try { if (typeof inp.setRawMode === 'function') inp.setRawMode(true); } catch (e) { return resolve({ error: e.message }); }
+      timer = setTimeout(finish, ms);
+      inp.on('data', onData);
+      inp.resume();
+      try { out.write('\x1b[16t\x1b[14t\x1b[c'); } catch (e) { finish(); }
+    });
+  }
+  // the image fits four rows of this terminal's cells and leaves the crew bar at least 44 columns beside it
+  function buildImage() {
+    image = null; ui.logoImage = null;
+    if (!term.sixel || !term.cellW || !term.cellH || ui.logo === 'plain') return;
+    const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 4, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
+    if (r) { image = r; ui.logoImage = { cols: r.cols, rows: r.rows }; }
+  }
   function leaveScreen() {
     try { inp.removeListener('keypress', onKey); } catch (_) {}
     try { out.removeListener('resize', onResize); } catch (_) {}
@@ -328,6 +362,8 @@ function runDashboard(station, opts) {
   // ---- go ----------------------------------------------------------------------------------------------------
   (async () => {
     process.on('exit', onExit);
+    term = await probeTerminal(400);
+    buildImage();
     enterScreen();
     paint();
     const rt = await loadRoster();

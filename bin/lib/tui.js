@@ -190,16 +190,20 @@ function render(model, ui, size, now) {
   }
 
   // ---- header: the StarNet wordmark — thin outlined letters leaning forward, neon red — with the crew bar beside it -----
-  const word = ui.logo !== 'plain' && logo && logo.word ? logo.word : null;
-  const lw = word ? Math.max(...word.map(l => width(l))) : 0;
+  // where the terminal draws images, the REAL logo is an image the dashboard paints into these cells (ui.logoImage); the
+  // screen here only keeps them blank and lays the counts and the crew bar beside them
+  const img = ui.logoImage && ui.logoImage.cols > 0 ? ui.logoImage : null;
+  const word = !img && ui.logo !== 'plain' && logo && logo.word ? logo.word : null;
+  const lw = img ? img.cols : word ? Math.max(...word.map(l => width(l))) : 0;
+  const lrows = img ? img.rows : word ? word.length : 0;
   let y;
-  if (word && W - lw - 3 >= 44) {
-    putLogo(g, word);
+  if ((img || word) && W - lw - 3 >= 44) {
+    if (word) putLogo(g, word);
     const x0 = lw + 3;
     const xc = putCounts(0, x0);
     if (xc - x0 > 24) g.put(x0, 0, trunc(ui.stationLabel || '', xc - x0 - 3), 'dim');
-    drawBar(layoutBar(W - x0 - 5, word.length - 1), x0, 1);
-    y = word.length;
+    drawBar(layoutBar(W - x0 - 5, Math.max(1, lrows - 1)), x0, 1);
+    y = Math.max(2, lrows);
   } else if (word && H >= 22) {
     putLogo(g, word);
     putCounts(0, lw + 3);
@@ -438,6 +442,18 @@ function toAnsi(segs, level) {
   return s;
 }
 function toPlain(segs) { return segs.map(s => s[0]).join(''); }
+// the segments from cell `col` on (the cells left of it are the logo image's, never written over)
+function sliceSegs(segs, col) {
+  if (!col) return segs;
+  const out = [];
+  let x = 0;
+  for (const [t, style] of segs) {
+    let piece = '';
+    for (const ch of t) { const w = cpWidth(ch.codePointAt(0)); if (x >= col) piece += ch; x += w; }
+    if (piece) out.push([piece, style]);
+  }
+  return out;
+}
 
 // what the terminal can show: NO_COLOR wins, then 24-bit where the terminal says so, else 256
 function colorLevel(env, isTTY) {
@@ -447,4 +463,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines };

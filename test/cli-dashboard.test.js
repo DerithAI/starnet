@@ -211,4 +211,27 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(/▲ needs you · fs\.write \{ "path": "a" \}\s+\(starnet approve astra\)/.test(ask), 'watch: an ask on one line, with the command that answers it: ' + ask);
 }
 
+// ---- the real logo as an image (Sixel) ----------------------------------------------------------------------------
+{
+  const sx = require('../bin/lib/sixel.js');
+  const r = sx.logoSixel({ cellW: 10, cellH: 20, rows: 4, maxCols: 80 });
+  A.ok(r && r.rows === 4 && r.height === 78 && r.cols === Math.ceil(r.width / 10), 'the image fits four rows of 20 px cells: ' + JSON.stringify(r && { cols: r.cols, rows: r.rows, width: r.width, height: r.height }));
+  A.ok(/^\x1bP0;1;0q"1;1;\d+;\d+/.test(r.sixel) && r.sixel.endsWith('\x1b\\'), 'a DCS Sixel with transparent background and raster size');
+  const d = sx.decodeSixel(r.sixel);
+  let lit = 0; for (const v of d.px) if (v >= 0) lit++;
+  A.ok(d.width === r.width && d.height === r.height && lit / d.px.length > 0.05 && lit / d.px.length < 0.6, 'it decodes back to the wordmark: ' + (lit / d.px.length).toFixed(3) + ' of pixels lit');
+  const narrow = sx.logoSixel({ cellW: 10, cellH: 20, rows: 4, maxCols: 30 });
+  A.ok(narrow && narrow.rows < 4 && narrow.cols <= 30, 'a narrow terminal gets a shorter image that still fits');
+  A.eq(sx.logoSixel({ cellW: 10, cellH: 20, rows: 4, maxCols: 3 }), null, 'no room at all → no image (the text logo stands in)');
+  A.eq(sx.parseTermReplies('\x1b[6;20;10t\x1b[4;680;1200t\x1b[?61;4;6;7;14;21;22c', 120, 34), { sixel: true, cellW: 10, cellH: 20, replied: true }, "Windows Terminal's real reply: Sixel, 10×20 cells");
+  A.eq(sx.parseTermReplies('\x1b[?1;2c', 80, 24).sixel, false, 'a terminal without Sixel draws the text logo');
+  A.eq(sx.parseTermReplies('\x1b[4;680;1200t\x1b[?62;4c', 120, 34).cellH, 20, 'the cell size falls back to the window size ÷ its cells');
+  A.eq(tui.sliceSegs([['abc', 'x'], ['de', 'y']], 2), [['c', 'x'], ['de', 'y']], 'a row beside the image starts to its right');
+  const m = crew();
+  const img = screen(m, { logoImage: { cols: 58, rows: 4 } }, 120, 30, T0).map(tui.toPlain);
+  A.ok(img.slice(0, 4).every(l => l.slice(0, 58).trim() === ''), "the image's cells stay blank (the image is painted there, never written over)");
+  A.ok(/^CREW /.test(img[1].slice(61)), 'the crew bar sits beside the image: ' + img[1].slice(55, 90));
+  A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
+}
+
 A.report('cli-dashboard.test');
