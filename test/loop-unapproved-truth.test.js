@@ -197,5 +197,52 @@ async function publisherRun(script) {
     A.ok(/o\.unapproved \|\| \/LOOP — exhausted\/\.test\(said\)/.test(tool), 'station.test_line tells the lead the review loop never approved it');
   }
 
+  /* ---------- THE OUTBOX / WORKFLOWS cards say it (the panels' own functions, sliced and run over stubs — test/rc-final-seams' rig) ---------- */
+  {
+    const vm = require('node:vm');
+    const rd = p => read(p).replace(/\r\n/g, '\n');
+    const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const strip = h => String(h).replace(/<[^>]+>/g, '').replace(/&#39;/g, "'");
+    const load = (src, headers, globals, extra) => {
+      const body = headers.map(h => A.fnBody(src, h)).join('\n'), names = headers.map(h => /function (\w+)\(/.exec(h)[1]);
+      const ctx = vm.createContext(Object.assign({ esc, console, JSON, Math, Date, String, Object, Array, Promise, Number, isFinite }, globals));
+      return vm.runInContext((extra || '') + '\n' + body + '\n({ ' + names.join(', ') + ' })', ctx);
+    };
+    const LOOP = "const LOOP_NOTE = /^\\[LOOP — (exhausted|escalated): (\\d+) pass(?:es)? round the gate[^\\n]*\\]\\s*/gm;";
+    const why = 'the review loop used all 2 passes without VERDICT: approved, so the work went on unapproved';
+    const panel = rd('frontend/app/workflowpanel.js');
+    const tipLine = (/\n  const NOT_SHIPPED_RULE = [^\n]*\n/.exec(panel) || [''])[0];
+    const fns = load(panel, ['function jobResultHTML(mine, f)', 'function loopNotes(text)', 'function notShippedNote(mine)'], {
+      prop: () => null, nameOf: a => String(a).toUpperCase(), stepText: () => 'reply', stepOut: {}, H: { sampleHTML: () => '', plan: () => ({}) }, WL: () => null,
+      S: {}, exampleKept: () => false, notRightHTML: () => '', Pipeline: undefined, runEnd: r => r
+    }, LOOP + tipLine);
+    const runs = [{ runId: 'r1', agentId: 'publisher', reason: 'done', usd: 0.01 }];
+    const card = o => fns.jobResultHTML(Object.assign({ view: { ok: true, usd: 0.01 }, runs, output: 'published', stamp: 1, shipped: true }, o), null);
+    const un = card({ unapproved: why, shipped: false, shippedWhy: 'unapproved' });
+    A.ok(/✓ DELIVERED/.test(un) && strip(un).indexOf('⚠ The review loop used all 2 passes without VERDICT: approved, so the work went on unapproved.') >= 0,
+      'RUN ONE REAL JOB: delivered, and says in the loop note’s own line that nobody approved it — ' + strip(un).slice(0, 220));
+    A.ok(/unapproved: not counted in SHIPPED/.test(strip(un)) && /SHIPPED never counts unapproved work/.test(un), '…and why it is not in SHIPPED');
+    const noted = card({ unapproved: why, output: '[LOOP — exhausted: 2 passes round the gate at 12,4 without VERDICT: approved — leaving on DONE unapproved]\nthe draft' });
+    A.eq((noted.match(/class="wf-warnline"/g) || []).length, 1, 'a result that carries the loop’s own note says it once, not twice');
+    const clean = card({});
+    A.ok(!/unapproved/i.test(strip(clean)), 'a clean job’s card is unchanged');
+
+    const win = rd('frontend/app/windows/workflows.js');
+    const st = { propById: () => null };
+    const wf = load(win, ['function resultHTML(l, job)', 'function workOf(text)'], {
+      stationOf: () => st, S: { stepOut: {}, prev: {}, fix: null }, ReturnStore: undefined, secs: () => '1s', usd: () => '$0.01', NAME: a => a.toUpperCase(),
+      lineWord: () => 'LINE A', ago: () => 'now', styleKept: () => false, runningJob: () => null, fixHTML: () => '', P: () => null, Pipeline: undefined
+    }, LOOP);
+    const job = o => Object.assign({ id: 'job-aaaa1111', status: 'delivered', text: 'job', output: 'published', usd: 0.01, runs: [{ runId: 'r1', agentId: 'pub', reason: 'done', usd: 0.01 }], notes: [] }, o);
+    const wun = strip(wf.resultHTML({ key: 'L', steps: [] }, job({ unapproved: why })));
+    A.ok(/✓ DELIVERED/.test(wun) && wun.indexOf('⚠ The review loop used all 2 passes without VERDICT: approved, so the work went on unapproved.') >= 0, 'WORKFLOWS / the OUTBOX: the job record says it went on unapproved');
+    A.ok(!/unapproved/i.test(strip(wf.resultHTML({ key: 'L', steps: [] }, job({})))), '…and a clean record says nothing of it');
+    const fromUn = strip(wf.resultHTML({ key: 'L', steps: [] }, job({ from: { line: 'p1', jobId: null, name: 'A', unapproved: why }, handedIn: 'the draft' })));
+    A.ok(fromUn.indexOf('From LINE A — that line finished its part and sent its result on to this one. On LINE A, the review loop used all 2 passes without VERDICT: approved, so the work went on unapproved.') >= 0,
+      'the next line’s job says the work it was handed came unapproved — ' + fromUn.slice(0, 200));
+    A.ok(/\(lo\.unapproved \? ' · <span class="trg-warn" data-tip="' \+ esc\(lo\.unapproved\) \+ '">unapproved<\/span>' : ''\)/.test(panel), 'a trigger’s ✓ reached the OUTBOX says unapproved beside it');
+    A.ok(/unapproved: response && typeof response\.unapproved === 'string'/.test(rd('frontend/app/build.js')), 'the panel keeps the server’s unapproved mark');
+  }
+
   A.report('loop-unapproved-truth.test');
 })();

@@ -366,9 +366,12 @@ const WorkflowPanel = (() => {
   function notShippedNote(mine) {
     if (!mine || mine.shipped !== false) return '';
     const textOnly = mine.shippedWhy === 'no-proven-work';
-    const tip = NOT_SHIPPED_RULE + (textOnly ? 'No step of this job had a tool succeed or saved a file — it answered in text' : 'The station holds no SHIPPED receipt for this job')
+    // (GitHub #122) the server's other proven reason: a review loop used all its passes without approving this job
+    const unapproved = mine.shippedWhy === 'unapproved';
+    const tip = NOT_SHIPPED_RULE + (unapproved ? 'Its review loop used all its passes without an approval, and SHIPPED never counts unapproved work'
+      : textOnly ? 'No step of this job had a tool succeed or saved a file — it answered in text' : 'The station holds no SHIPPED receipt for this job')
       + ': it is delivered (the result is below), just not counted there';
-    return ' · <span class="wf-noship" data-tip="' + esc(tip) + '">' + (textOnly ? 'a text answer: ' : '') + 'not counted in SHIPPED</span>';
+    return ' · <span class="wf-noship" data-tip="' + esc(tip) + '">' + (unapproved ? 'unapproved: ' : textOnly ? 'a text answer: ' : '') + 'not counted in SHIPPED</span>';
   }
   /* WHAT EACH TODAY NUMBER COUNTS: RUNS counts stages; SHIPPED counts recorded productive OUTBOX jobs.
      Older runs without shipment receipts cannot prove a historic delivery total. Each tip names its scope. */
@@ -379,7 +382,7 @@ const WorkflowPanel = (() => {
     if (k === 'SHIPPED' && v === '?') return 'SHIPPED\nunknown right now: the saved shipment history can\'t be read. RUNS, FAILED and $ TODAY still count. Jobs that ship meanwhile are counted once it can be read again, unless the station restarts first';
     if (k === 'SHIPPED' && /\+$/.test(String(v))) return 'SHIPPED\nat least this many: some jobs that shipped today have no saved record (more than the history keeps, or they shipped while it could not be read), so the real number is higher';
     if (k === 'RUNS') return 'RUNS\nevery time a step of this line ran today: one job through a 3-step line is 3 runs';
-    if (k === 'SHIPPED') return 'SHIPPED\nrecorded jobs that reached the OUTBOX after a tool succeeded or a file was saved. Earlier deliveries without a saved shipment record are not included. Text-only answers still reach the OUTBOX, but do not count here';
+    if (k === 'SHIPPED') return 'SHIPPED\nrecorded jobs that reached the OUTBOX after a tool succeeded or a file was saved. Earlier deliveries without a saved shipment record are not included. Text-only answers still reach the OUTBOX, but do not count here, and neither does work a review loop sent on without an approval';
     if (k === 'FAILED') return 'FAILED\nstep runs that ended in an error, a refusal, a budget stop or too many turns';
     if (k === 'TESTS') return 'TESTS\nstep tests (TEST THIS STEP, STEP THROUGH): not jobs, but their cost is in $ TODAY';
     if (k === 'MEDIAN') return 'MEDIAN\nthe middle time of a step run today';
@@ -1264,7 +1267,9 @@ const WorkflowPanel = (() => {
     const title = t.kind === 'folder' ? ((t.config && t.config.path) || 'a folder') : (t.name ? '“' + t.name + '”' : '(unnamed)');
     const lo = t.lastOutcome;
     const last = t.running ? '<b class="wf-okc">running now</b>'
-      : t.lastFiredAt ? 'last fired <span class="lt-ago" data-at="' + esc(t.lastFiredAt) + '">' + esc(ago(t.lastFiredAt)) + '</span>' + (lo ? (lo.ok ? ' · <b class="wf-okc">✓ reached the OUTBOX</b>' + (lo.runs ? ' (' + lo.runs + ' run' + (lo.runs === 1 ? '' : 's') + ')' : '') : ' · <span class="trg-warn">✕ did not finish</span>') : '')
+      : t.lastFiredAt ? 'last fired <span class="lt-ago" data-at="' + esc(t.lastFiredAt) + '">' + esc(ago(t.lastFiredAt)) + '</span>' + (lo ? (lo.ok ? ' · <b class="wf-okc">✓ reached the OUTBOX</b>' + (lo.runs ? ' (' + lo.runs + ' run' + (lo.runs === 1 ? '' : 's') + ')' : '')
+        // (GitHub #122) reached it, but a review loop sent it on without an approval: said beside the ✓, the reason as its tip
+        + (lo.unapproved ? ' · <span class="trg-warn" data-tip="' + esc(lo.unapproved) + '">unapproved</span>' : '') : ' · <span class="trg-warn">✕ did not finish</span>') : '')
       : 'never fired';
     const state = !t.enabled ? 'paused' : blocked ? '<span class="trg-warn">waiting — ' + esc(t.blockedBy) + '</span>'
       : t.kind === 'folder' ? 'watching — each new file runs the whole line' : 'listening — each call runs the whole line';
@@ -2013,6 +2018,9 @@ const WorkflowPanel = (() => {
         : '<div class="wf-job-h"><b class="warn">⚠ FINISHED WITH A PROBLEM</b> · ' + runs.length + ' step' + (runs.length === 1 ? '' : 's') + (v.usd != null ? ' · $' + v.usd.toFixed(4) : '') + '</div><div class="wf-warnline">' + esc(badLine) + '</div>')
       + onward
       + ln.notes.map(t => '<div class="wf-warnline">⚠ ' + esc(t) + '</div>').join('')
+      // (GitHub #122) a review loop that ran out of passes before a later step (a publisher) leaves no note in the result: the server's own
+      // mark says it, in the same line the loop's note uses
+      + (v.ok && mine.unapproved && !ln.notes.length ? '<div class="wf-warnline">⚠ ' + esc(String(mine.unapproved).charAt(0).toUpperCase() + String(mine.unapproved).slice(1).replace(/[.\s]+$/, '') + '.') + '</div>' : '')
       + (v.ok || shown.trim() ? '<div class="wf-from"><span>' + (v.ok ? 'THE RESULT' : 'WHAT CAME OUT') + '</span></div><div class="wf-io out wf-job-out">' + esc(shown.trim() || '(the line delivered an empty reply)') + '</div>' : '')
       + (!v.ok ? '' : '<div class="wf-row">' + (S.exampleStamp === mine.stamp && exampleKept(mine) ? '<span class="wf-tag">★ STYLE KEPT</span>'
         : '<button type="button" class="bb sm" id="wf-keep-ex" data-tip="The step that wrote this result will match its format, length and tone every time: the result is added to that step’s instructions as its example, and the whole crew matches its style in similar work. UNDO takes it back.">★ KEEP THIS STYLE</button>') + '</div>')
