@@ -2672,8 +2672,21 @@ function cronIdentityFor(agentId) {
 }
 // GROWTH Tier 2: the dossier block a cron persona folds in, with the active goal-arc note appended (direction the
 // unattended run should work toward). Empty when both are empty → withDossier stays a no-op (the cron test invariant).
+/* CROSS-RUN CACHE (token-burn follow-up, 2026-10-17). This used to fold the WHOLE evidence pack into the persona —
+   topic counts, open threads, recent activity, verdict tallies and the TRACK RECORD's "X of N recent runs" — so every
+   server-composed system prompt (routine fires, line hops, night-shift beats, loops, workshop shifts, phone runs)
+   differed on every run: 321 of 321 same-agent hop pairs on a real station had different instructions, which moved the
+   Codex cache route and broke every provider's cached prefix between runs. The persona now carries only the STANDING
+   half (dossier + active goal: they change when the Commander changes them, not per run); the observed half rides the
+   run's <run_context> note (stationEvidenceNote, below — runOnceCore's `stationEvidence` option). */
 function dossierWithGoals() {
-  return commanderEvidenceContext('');
+  let goal = null; try { goal = commanderGoals.get() || null; } catch (e) { failNote('persona.goal', e); }
+  return CommanderContext.compose({ dossier: commanderDossier.get(), goal });
+}
+// The per-run half: the same bounded, provenance-labelled evidence block commanderEvidenceContext composes, minus the
+// dossier and goal the persona already carries. '' when the station has observed nothing (never an empty header).
+function stationEvidenceNote() {
+  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), { dossier: '', goal: null }));
 }
 function cronSystemFor(agentId) {
   const ident = cronIdentityFor(agentId);
@@ -5468,7 +5481,7 @@ async function tickOverseer() {
         const instruction = delegatedReportPrompt(members, waiting, review.followUp === true);
         try {
           await runOnceCoreCounted({ agentId: review.agentId, key, provider, baseUrl, model: ident.model,
-            system: ident.system || cronSystemFor(review.agentId), lead: true, isTask: true,
+            system: ident.system || cronSystemFor(review.agentId), stationEvidence: !ident.system, lead: true, isTask: true,
             syntheticTrigger: true,
             surface: 'autonomous', signal: reviewAbort.signal, streamId: parent.id, runId, parentRunId: members[0].runId,
             // the workers' text rides in `instruction`: any tainted worker hands its taint to the reviewing LEAD
@@ -6848,7 +6861,7 @@ const cronDriver = makeCronDriver({
         await runOnce({
           key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
           baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
-          system: cronSystemFor(h.agentId),
+          system: cronSystemFor(h.agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
           messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: o.runsLine === true ? router.lineOfAgent(o.agentId, o.dockId ? router.dockOf(o.agentId, o.dockId) : undefined) : null, isTask: true,
           ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
@@ -7233,7 +7246,7 @@ async function nightshiftChat(o) {
   try {
     await runOnce({
       key: key, model: model, provider: provider,
-      system: (o && o.system) || (ident.system && String(ident.system)) || cronSystemFor(agentId),
+      system: (o && o.system) || (ident.system && String(ident.system)) || cronSystemFor(agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: o.messages, agentId: agentId, isTask: false, emit: sink, signal: o && o.signal,
       runId: runId, streamId: 'nightshift-' + runId, surface: 'autonomous', trigger: 'nightshift', broadcast: !!(o && o.broadcast)
     });
@@ -8431,7 +8444,7 @@ async function runNightshiftActShift(opts) {
   let threw = null;
   try {
     await runOnce({
-      key, model, provider, system,
+      key, model, provider, system, stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId, isTask: true, emit: (typeof opts.emit === 'function' ? opts.emit : function () {}), signal: sig,
       runId, streamId: 'nightshift-act-' + runId, surface: 'autonomous', trigger: 'nightshift', broadcast: !!opts.broadcast,
@@ -16182,6 +16195,7 @@ async function handleCronRun(req, res) {
       key: key, model: model,
       system: cronSystemFor(job.agentId)
         + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : ''),
+      stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: assembledPrompt }],
       agentId: job.agentId, isTask: true, emit: teeEmit, signal: ac.signal,
       // streamId 'cron-'+runId matches the SCHEDULED fire (cron-driver.js): Run Now must persist its transcript
@@ -16275,7 +16289,7 @@ async function handleCronRun(req, res) {
               await runOnce({
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
                 baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
-                system: cronSystemFor(h.agentId),
+                system: cronSystemFor(h.agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
                 messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: job.runsLine === true ? router.lineOfAgent(job.agentId, job.dockId ? router.dockOf(job.agentId, job.dockId) : undefined) : null, isTask: true,
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
@@ -16502,7 +16516,7 @@ async function runWorkshopShift(agentId, opts) {
   let threw = null;
   try {
     await runOnce({
-      key: key, model: model, system: cronSystemFor(id),
+      key: key, model: model, system: cronSystemFor(id), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId: id, isTask: true, emit: emit, signal: signal,
       runId: runId, streamId: 'workshop-' + runId, surface: 'autonomous', trigger: 'schedule', provider: provider, broadcast: !!o.broadcast,
@@ -16726,7 +16740,7 @@ async function runImplementBuild(agentId, sourceRunId, opts) {
   let threw = null;
   try {
     await runOnce({
-      key: key, model: model, system: cronSystemFor(id), provider: provider,
+      key: key, model: model, system: cronSystemFor(id), provider: provider, stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId: id, isTask: true, emit: (typeof o.emit === 'function' ? o.emit : function () {}), signal: signal,
       runId: runId, streamId: 'workshop-' + runId, surface: 'autonomous', trigger: 'directive', broadcast: !!o.broadcast,
@@ -22582,11 +22596,20 @@ async function runOnceCore(o) {
      journeyBlock. */
   const taskDoctrine = taskBrief ? '\n\n' + TaskIntent.directive('') : '';                     // TaskIntent.directive(cx) = doctrine + '\n' + cx
   const taskBriefContext = taskBrief && String(taskContextBlock || '').trim() ? '\n\n' + String(taskContextBlock).trim() : '';
+  /* THE OBSERVED HALF OF A SERVER-COMPOSED PERSONA (cross-run cache, 2026-10-17; see dossierWithGoals). A routine fire,
+     line hop, night-shift beat, loop or workshop shift asks for it with `stationEvidence: true`: the topic counts, open
+     threads, recent activity and TRACK RECORD it used to carry in its system prompt ride this run's <run_context> note,
+     so that prompt (and the Codex cache route hashed from it) is byte-identical from one run to the next. A run with a
+     Task Brief already carries the same evidence inside its brief block, so it never gets a second copy. */
+  let stationEvidenceBlock = '';
+  if (o.stationEvidence === true && !internal && !taskBrief) {
+    try { const t = stationEvidenceNote(); if (t) stationEvidenceBlock = '\n\n' + t; } catch (e) { failNote('run.stationEvidence', e); }
+  }
   // the crew call is NOT a run-context block: it trails the Commander's words as its own <crew_call> note (below)
-  const perRunBlocks = runtimeSkillBlock + preloadedSkillBlock + taskBriefContext + awayBriefingNote + directDomainBlock + runtimeBlock;
+  const perRunBlocks = runtimeSkillBlock + preloadedSkillBlock + taskBriefContext + stationEvidenceBlock + awayBriefingNote + directDomainBlock + runtimeBlock;
   const taskSystem = stablePrefix
     ? FinishLine.append(cacheSystemPrefix + serviceKeysBlock + taskDoctrine + journeyBlock + deliverableNote, { isTask, internal, tools: resolved.tools })
-    : FinishLine.append(cacheSystemPrefix + runtimeSkillBlock
+    : FinishLine.append(cacheSystemPrefix + stationEvidenceBlock + runtimeSkillBlock
       + preloadedSkillBlock + serviceKeysBlock + taskIntentNote + awayBriefingNote + directDomainBlock + journeyBlock
       + deliverableNote + crewCallNote + runtimeBlock, { isTask, internal, tools: resolved.tools });
   const sys = internal

@@ -497,6 +497,9 @@
       try {
         p = runOnce({
           key: key, model: model, system: system, messages: messages,
+          // the persona carries only its standing half (dossier + goal); the host puts the station's observed evidence
+          // in this run's own context note, so the system prompt (and the provider's cached prefix) is the same every fire
+          stationEvidence: true,
           agentId: job.agentId, isTask: true, emit: sink, signal: ac.signal,
           // streamId 'cron-'+runId makes this run's transcript durable under a per-RUN named stream (runId is a
           // fresh newId() already in scope — determinism-clean). Without it the reply is buffered into `state.buf`
