@@ -141,7 +141,9 @@ function loopDecision(step, ctx, n, visited, text, reviewed) {
       // a downstream dock gets the unapproved work with the notes; a crate that ships straight out keeps the reviewer's word
       out = '[LOOP — exhausted: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
         + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
-        + ' — leaving on DONE unapproved]\n' + (step.next ? workBlock : '') + text;
+        + ' — leaving on DONE unapproved]\n'
+        // a done lane that meets a JOINER compiles with next = null and the dock past it in afterJoin.next: that dock needs the work too
+        + ((step.next || (step.afterJoin && step.afterJoin.next)) ? workBlock : '') + text;
     }
   }
   return why ? { again: false, target, text: out, exhausted, why } : { again: false, target, text: out, exhausted };
