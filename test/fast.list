@@ -1263,3 +1263,4 @@ test/abilities-switch-scope.test.js
 test/loop-unapproved-truth.test.js
 test/build-paint-material.test.js
 test/routine-media.test.js
+test/routine-images-grant.test.js

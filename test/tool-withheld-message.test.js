@@ -50,7 +50,7 @@ A.ok(/placing a WORKBENCH on the floor does not grant them/i.test(panel), 'it ki
 A.ok(/id="rt-term"/.test(panel), 'the CREATE form carries the terminal-grant control');
 A.ok(/id="rt-conn"/.test(panel), 'the CREATE form carries the connected-tools grant control');
 A.ok(/unattendedGrants: grants\.length \? grants : undefined/.test(panel), 'grants are sent ONLY when ticked (an untouched form posts the old body)');
-A.ok(/\['#rt-term', '#rt-conn'\]\.forEach/.test(panel), 'no grant is sticky across creates');
+A.ok(/\['#rt-term', '#rt-conn', '#rt-img'\]\.forEach/.test(panel), 'no grant is sticky across creates');
 A.ok(/mc-term-grant/.test(panel), 'a routine holding a standing grant is visibly badged on its row');
 A.ok(/connected tools/.test(panel), 'the connector grant is described in plain language, not as "MCP"');
 
@@ -94,7 +94,7 @@ A.ok(/hasOwnProperty\.call\(patch, 'unattendedGrants'\)\) next\.unattendedGrants
   'the PATCH path re-normalizes too (the EDITABLE loop copies raw values)');
 A.ok(/unattendedGrants: Array\.isArray\(job\.unattendedGrants\)/.test(driver), 'the scheduled tick passes the job grant into the run');
 A.ok(/unattendedGrants: Array\.isArray\(job\.unattendedGrants\)/.test(src), 'Run Now passes it too, so "test it now" exercises the real posture');
-A.ok(/const GRANTABLE_UNATTENDED = new Set\(\['workbench', 'connectors'\]\)/.test(policy), 'the authority owns a closed whitelist of grantable families');
+A.ok(/const GRANTABLE_UNATTENDED = new Set\(\['workbench', 'connectors', 'studio'\]\)/.test(policy), 'the authority owns a closed whitelist of grantable families');
 A.ok(/function isConnectorTool\(tool\) \{\s*return \/\^mcp:\/\.test/.test(policy), 'connector tools are identified by the mcp: capability prefix');
 A.ok(/connectorsGranted && isConnectorTool\(tool\)/.test(policy),
   'the connector grant is narrowed to REAL connectors — it never opens the external-unknown catch-all');
