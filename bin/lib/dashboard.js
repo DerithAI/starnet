@@ -32,7 +32,11 @@ function runDashboard(station, opts) {
   const ui = {
     focus: '', input: '', overlay: null, flash: null, scroll: 0, keyFlash: null, quitArmed: 0, quitNote: '',
     stationLabel: (station.mode === 'spawned' ? 'private station · ' : 'station · ') + client.base.replace(/^http:\/\//, ''),
-    still: !!(env.STARNET_STILL === '1')
+    still: !!(env.STARNET_STILL === '1'),
+    // the dot-matrix mark needs braille glyphs: Windows Terminal, VS Code and macOS/Linux terminals have them; the old
+    // Windows console's default font does not, so it gets the one-line mark (STARNET_LOGO=braille|plain overrides)
+    logo: (env.STARNET_LOGO === 'plain' || env.STARNET_LOGO === 'braille') ? env.STARNET_LOGO
+      : (process.platform === 'win32' && !env.WT_SESSION && !env.TERM_PROGRAM) ? 'plain' : 'braille'
   };
   const mine = new Map();       // requests this terminal holds open: id -> { req, agentId, kind }
   let feedReq = null, cursor = '', feedRetry = null, stopped = false;
