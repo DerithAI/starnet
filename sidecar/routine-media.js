@@ -17,6 +17,8 @@
         "MEDIA:" is read the same way: it is the reference harness's spelling and models carry it over.
      2. Otherwise the images the fire itself GENERATED (image_generate artifacts on its run rows), so a routine
         whose model forgot the convention still delivers the picture it paid for.
+   Neither applies to a chat the fire already sent its own files to with channel.send (possible under Full Access —
+   filesAlreadySent): the same picture must not arrive twice.
 
    THE WORDS GO FIRST and files follow (channel.send's law): a channel that cannot upload never swallows the
    message. A file that does not arrive is said out loud in the chat, naming where it is on the station.
@@ -52,6 +54,22 @@
     }
     if (!found) return { text: src, files: [] };
     return { text: kept.join('\n').replace(/\s+$/, ''), files: files };
+  }
+
+  /* filesAlreadySent(runs, target, chatId) -> true when the fire itself already put files into THIS chat with a
+     successful channel.send (possible under Full Access). Live 2026-10-18: the routine's prompt said "send it using
+     channel_send", the run did that AND wrote an ATTACH line, and the picture arrived twice. The tool's own summary
+     names where it went — "sent to <target>[ in N parts] with N file(s)" — so the check is per destination: a send
+     to another chat, a words-only send, or a refused one (ASK) leaves this delivery to carry the files. */
+  function filesAlreadySent(runs, target, chatId) {
+    const want = [String(target || ''), String(chatId || '')].filter(Boolean);
+    const id = String(chatId || '');
+    return (Array.isArray(runs) ? runs : []).some(r => r && (Array.isArray(r.toolTrace) ? r.toolTrace : []).some(t => {
+      if (!t || !/^channel[._]send$/.test(String(t.name || '')) || t.ok !== true || t.isError) return false;
+      const m = /^sent to (\S+?)(?: in \d+ parts)? with [1-9]\d* file/.exec(String(t.summary || ''));
+      if (!m) return false;
+      return want.indexOf(m[1]) >= 0 || (!!id && m[1].slice(-(id.length + 1)) === '|' + id);   // '<botId>|<chatId>' keys
+    }));
   }
 
   /* pickFiles({ named, runs, agentId }) -> { files:[{ path, agents:[agentId…] }], dropped:[path…] }
@@ -126,11 +144,14 @@
     const names = (Array.isArray(platforms) ? platforms : []).map(p => String(p || '').trim()).filter(Boolean);
     if (!names.length) return '';
     const where = names.filter((p, i) => names.indexOf(p) === i).join(' / ');
-    return '\n\n[DELIVERY] This routine\'s reply is sent to the Commander\'s ' + where + ' chat. To send a file you made '
-      + 'with it (an image, chart or document in your workspace), end the reply with one line per file: '
-      + 'ATTACH: <workspace-relative path> — up to ' + MAX_FILES + '; images arrive inline. Never say you cannot send '
-      + 'files, and do not call channel.send.';
+    // Live finding (haiku-4.5, 2026-10-18): told only the ATTACH format, the model still called channel.targets, found
+    // no listed chat and wrote "I cannot send the image to you" into a delivery that carried the image. So the note
+    // says up front that the STATION delivers, and rules out the lookup as well as the send.
+    return '\n\n[DELIVERY] The station sends this routine\'s reply to the Commander\'s ' + where + ' chat for you — do not '
+      + 'look up chat targets or call channel.send. To include a file you made (an image, chart or document in your '
+      + 'workspace), end the reply with one line per file: ATTACH: <workspace-relative path> — up to ' + MAX_FILES
+      + '; images arrive inline. Never write that the message or a file cannot be sent.';
   }
 
-  return { parseReply, pickFiles, sendFiles, missedNote, deliveryNote, MAX_FILES };
+  return { parseReply, pickFiles, filesAlreadySent, sendFiles, missedNote, deliveryNote, MAX_FILES };
 });

@@ -6726,10 +6726,9 @@ async function deliverCronResult(job, result) {
      else the images the fire generated (its run rows' artifacts — durable, so a retried delivery finds them too).
      Same approved target, same workspace jail as channel.send. A reply with no ATTACH line and no generated image
      delivers byte-identically to before. */
-  let chatBody = String(result.text || ''), chatText = text, attach = { files: [], dropped: [] }, named = [];
+  let chatBody = String(result.text || ''), chatText = text, attach = { files: [], dropped: [] }, named = [], runs = [];
   if (result.outcome !== 'failed') {
     const parsed = RoutineMedia.parseReply(result.text);
-    let runs = [];
     try { runs = runStore.list(null, { streamId: 'cron-' + result.runId, limit: 50 }) || []; } catch (_) { runs = []; }
     named = parsed.files;
     attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId });
@@ -6758,7 +6757,8 @@ async function deliverCronResult(job, result) {
     } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); continue; }
     // The words landed, so this target is delivered: a file that fails is told to the chat, never retried (a retry
     // would resend the message), and never silent — the Commander would be waiting for a picture that is not coming.
-    if (attach.files.length || (named.length && attach.dropped.length)) {
+    // A Full Access fire may already have put its own files here with channel.send — never the same picture twice.
+    if ((attach.files.length || (named.length && attach.dropped.length)) && !RoutineMedia.filesAlreadySent(runs, target, chatId)) {
       const files = await RoutineMedia.sendFiles(attach.files, {
         read: readChannelUpload,
         send: (item) => typeof live.adapter.sendMedia === 'function'
