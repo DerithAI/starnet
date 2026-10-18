@@ -1179,3 +1179,30 @@ body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells {
   -webkit-mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px); mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px);
 }
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge :is(.ctx-lbl, .ctx-num, .ctx-cap) { letter-spacing: 1.8px; }
+
+/* ============================================================
+   PIP-BOY COMMS CHROME (Andrew 10-17, after the rail and the dock: the trimmed register, option A). The conversation itself
+   is untouched — its language was settled with Andrew over six rounds (comms-convo.css) — only the chrome around it:
+     · the transcript's scrollbars are the rail's: a 1px phosphor line with a block thumb, no OS arrow buttons
+     · its keys and wells are 2px terminal boxes (the id bar's + / web keys, SEND, the tool row, copy, the rate thumbs)
+     · MY READ, the transcript's one rounded card, is squared
+     · the composer is a squared box and shows its > prompt (the markup always carried it; the glass layer hid it): the >
+       lives where you type
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #chat-panel :is(#chat-log, #gc-log, #chat-input) { scrollbar-width: auto; scrollbar-color: auto; }
+body.glass-demo:not(.hud-mode) #chat-panel ::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+body.glass-demo:not(.hud-mode) #chat-panel ::-webkit-scrollbar-track { background: linear-gradient(rgba(var(--ph-rgb), .24), rgba(var(--ph-rgb), .24)) 50% 0 / 1px 100% no-repeat; }
+body.glass-demo:not(.hud-mode) #chat-panel ::-webkit-scrollbar-thumb { background-color: var(--ph); background-clip: padding-box; border: solid transparent; border-width: 0 2px; border-radius: 0; min-height: 26px; }
+body.glass-demo:not(.hud-mode) #chat-panel ::-webkit-scrollbar-thumb:hover { background-color: var(--ph-bright); }
+body.glass-demo:not(.hud-mode) #chat-panel ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+body.glass-demo:not(.hud-mode) #chat-panel ::-webkit-scrollbar-corner { background: transparent; }
+body.glass-demo:not(.hud-mode) #chat-panel :is(#comms-browser, #gc-add-agents, #chat-send, #chat-attach, #model-dock-toggle, .voice-toggle, #chat-mic, .cmsg-copy, .comms-portrait, .consent-btn.thumb) { border-radius: 2px; }
+body.glass-demo:not(.hud-mode) #chat-panel :is(#comms-browser, #gc-add-agents, #chat-send) { border-color: rgba(var(--ph-rgb), .32); background: rgba(0, 0, 0, .22); box-shadow: none; }
+body.glass-demo:not(.hud-mode) #chat-panel :is(#comms-browser, #gc-add-agents, #chat-send):is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .1); }
+body.glass-demo:not(.hud-mode) #chat-panel .cmsg.tb-read { border-radius: 2px; }
+body.glass-demo:not(.hud-mode) #chat-panel #chat-inputrow { border-radius: 2px; }
+body.glass-demo:not(.hud-mode) #chat-panel .chat-editline .prompt {
+  display: flex; align-self: flex-start; align-items: center; height: 46px; padding: 0 0 0 12px; margin: 0;
+  font-size: 19px; line-height: 1; color: var(--ph); opacity: 1;
+}
+body.glass-demo:not(.hud-mode) #chat-panel .chat-editline #chat-input { padding-left: 8px; }
