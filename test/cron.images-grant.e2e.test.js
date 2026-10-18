@@ -75,8 +75,10 @@ async function startModel() {
   });
   try {
     await sidecar.start();
-    const bypass = await sidecar.json('GET', '/api/permissions/bypass');
-    A.ok(!(bypass.body && bypass.body.on === true), 'the station is in the default ASK posture (no Full Access)');
+    const perms = await sidecar.json('GET', '/api/permissions');
+    A.eq(perms.status, 200, 'the permissions read answers');
+    A.ok(perms.body && perms.body.masterBypass === false && perms.body.envFullAccess === false, 'the station is in the default ASK posture (no Full Access)');
+    A.ok(!JSON.stringify(perms.body.grants || []).includes('studio'), 'and holds no standing studio grant');
 
     async function routine(name, prompt, extra) {
       const r = await sidecar.json('POST', '/api/cron', Object.assign({ name, prompt, schedule: 'every 1h', agentId: 'agent', model: 'test/model', provider: 'openrouter' }, extra || {}));
