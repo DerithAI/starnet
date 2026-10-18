@@ -235,7 +235,8 @@ function makeStation() {
     const x = b || {};
     st.cost = {
       usd: (x.spentToday == null || !Number.isFinite(Number(x.spentToday))) ? null : Number(x.spentToday),
-      atLeast: Number.isFinite(Number(x.atLeast)) ? Number(x.atLeast) : null,
+      // an unsettled ledger reports its floor as { today, lifetime, runs } (older stations: a bare number)
+      atLeast: (x.atLeast && typeof x.atLeast === 'object') ? (Number.isFinite(Number(x.atLeast.today)) ? Number(x.atLeast.today) : null) : (Number.isFinite(Number(x.atLeast)) && x.atLeast !== null ? Number(x.atLeast) : null),
       cap: x.day && Number.isFinite(Number(x.day.cap)) && Number(x.day.cap) > 0 ? Number(x.day.cap) : null
     };
   }
@@ -354,7 +355,8 @@ function makeStation() {
         const r = live[0];
         text = r ? agent(r.agentId).name + ' · ' + fmtDur(now - r.startedAt) : 'running';
       } else if (job) {
-        state = job.status === 'done' ? 'done' : job.status;
+        // a job that reached its OUTBOX is the line's success, whichever word its record uses
+        state = (job.status === 'done' || job.status === 'delivered') ? 'done' : job.status;
         text = job.status + (job.endedAt ? ' · ' + ago(now - job.endedAt) : '');
       }
       out.push({ lineId: l.lineId, name: l.name || shortLine(l.lineId), state, text, job, runs: l.runs || 0, shipped: l.shipped || 0, steps: job ? job.steps || 0 : 0, agents: live.map(r => agent(r.agentId).name) });
@@ -382,7 +384,7 @@ function makeStation() {
 }
 
 function fmtDur(ms) { const s = Math.max(0, Math.floor(ms / 1000)); const m = Math.floor(s / 60), r = s % 60; return m ? m + 'm' + String(r).padStart(2, '0') + 's' : r + 's'; }
-function fmtShort(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return s >= 3600 ? Math.floor(s / 3600) + 'h' : s >= 60 ? Math.floor(s / 60) + 'm' : s + 's'; }
+function fmtShort(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return s >= 172800 ? Math.floor(s / 86400) + 'd' : s >= 3600 ? Math.floor(s / 3600) + 'h' : s >= 60 ? Math.floor(s / 60) + 'm' : s + 's'; }
 function ago(ms) { return fmtShort(ms) + ' ago'; }
 function shortLine(id) { return 'line ' + String(id || '').slice(0, 8); }
 function usd(n) { return '$' + (Number(n) || 0).toFixed(2); }

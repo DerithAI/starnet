@@ -137,6 +137,11 @@ function crew() {
   const m = crew();
   m.applyBudget({ spentToday: null, atLeast: 0.25 });
   A.eq(costText(m.state.cost), '≥$0.25 today', 'an unsettled ledger reads as at least');
+  m.applyBudget({ spentToday: null, atLeast: { today: 0, lifetime: 1.35, runs: 815 } });
+  A.eq(costText(m.state.cost), '≥$0.00 today', "the station's own floor shape ({ today, lifetime, runs }) reads as at least");
+  m.applyLines({ lines: [{ lineId: 'L9' }] }, [{ id: 'j9', line: 'L9', name: 'CRUCIBLE', status: 'delivered', startedAt: T0, endedAt: T0 + 1000, steps: 8 }]);
+  A.eq(m.flows(T0 + 5 * 86400000).find(x => x.lineId === 'L9').state, 'done', 'a delivered job is the line succeeding');
+  A.ok(/5d ago/.test(m.flows(T0 + 5 * 86400000 + 2000).find(x => x.lineId === 'L9').text), 'old jobs read in days');
   m.applyLines({ lines: [{ lineId: 'L1', runs: 3, shipped: 2 }] }, [{ id: 'j1', line: 'L1', name: 'RELEASE', status: 'done', startedAt: T0, endedAt: T0 + 60000, steps: 3 }]);
   m.apply('agent.run.start', { runId: 'rf', agentId: 'astra', trigger: 'event', lineId: 'L1' }, T0 + 70000);
   const f = m.flows(T0 + 75000)[0];

@@ -138,7 +138,7 @@ function watchCommand(opts, station, io) {
     const names = {};
     for (const a of ((rt.ok && rt.json && rt.json.agents) || [])) names[a.agentId] = String(a.name || a.agentId).toUpperCase();
     const fmt = makeWatchFormatter(names);
-    let cursor = '', stopped = false, req = null;
+    let cursor = '', stopped = false, req = null, seenReady = false;
     const finish = (code) => { if (stopped) return; stopped = true; try { if (req) req.destroy(); } catch (_) {} process.removeListener('SIGINT', onSig); resolve(code); };
     const onSig = () => finish(core.EXIT.OK);
     process.on('SIGINT', onSig);
@@ -159,7 +159,8 @@ function watchCommand(opts, station, io) {
           for (const ev of r.events) {
             if (ev.id) cursor = ev.id;
             let j = null; try { j = JSON.parse(ev.data); } catch (_) { continue; }
-            if (!j || !j.name) { if (j && j.stream === 'ready' && j.reset && cursor && opts.json) io.out(JSON.stringify({ name: 'feed.reset', ts: Date.now() }) + '\n'); continue; }
+            // a reset on a RE-connect means events were missed; the first connect has nothing to miss
+            if (!j || !j.name) { if (j && j.stream === 'ready') { if (j.reset && seenReady && opts.json) io.out(JSON.stringify({ name: 'feed.reset', ts: Date.now() }) + '\n'); seenReady = true; } continue; }
             if (opts.json) io.out(JSON.stringify({ name: j.name, ts: Date.now(), payload: j.payload }) + '\n');
             else for (const line of fmt(j, Date.now())) io.out(line + '\n');
           }
