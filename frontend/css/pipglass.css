@@ -1206,3 +1206,21 @@ body.glass-demo:not(.hud-mode) #chat-panel .chat-editline .prompt {
   font-size: 19px; line-height: 1; color: var(--ph); opacity: 1;
 }
 body.glass-demo:not(.hud-mode) #chat-panel .chat-editline #chat-input { padding-left: 8px; }
+
+/* ============================================================
+   PIP-BOY TOP BAR (Andrew 10-17: "go with A"). The bare readouts he picked on 10-02 keep their layout; they take the
+   rail's language: XP is the crew card / CTX segmented meter (7px cells, flat, filled by the same topbar.js width), the
+   level reads in caps like the crew cards (the text stays "Lv N": only the case is drawn), and the top rail's + is the
+   dock's square key (its empty-rail look included). The logo is untouched.
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #screen-game #topbar #tb-station .tb-xp {
+  width: 70px; min-width: 70px; height: 8px; border-radius: 0; box-shadow: none; background: rgba(var(--gold-rgb), .22);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px); mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px);
+}
+body.glass-demo:not(.hud-mode) #screen-game #topbar #tb-station .tb-xp::after { display: none; }
+body.glass-demo:not(.hud-mode) #screen-game #topbar #tb-station .tb-xp-fill { background: var(--gold); box-shadow: none; }
+body.glass-demo:not(.hud-mode) #screen-game #topbar #tb-station .tb-val { text-transform: uppercase; letter-spacing: 1.2px; }
+body.glass-demo:not(.hud-mode) #screen-game #topbar .widget-rail .wg-add {
+  width: 32px; height: 30px; border-radius: 2px; border: 1px solid rgba(var(--ph-rgb), .32); background: rgba(0, 0, 0, .22); color: var(--ph); box-shadow: none;
+}
+body.glass-demo:not(.hud-mode) #screen-game #topbar .widget-rail .wg-add:is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .1); }
