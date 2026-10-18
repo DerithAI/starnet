@@ -194,6 +194,8 @@ const Build = (() => {
   // SURFACE targets one surface at a time — the deck or the walls — so the palette stays two rows
   // instead of four. 'follow' wall colour = inherit the room's floor hue (the default).
   let paintTarget = 'floor', wallMat = 'plating', wallStyle = 'follow';
+  // a deck MATERIAL the Commander picked from the palette (not PLATE by default): only a picked one rides a brush drag (paintLaysDeck)
+  let matPicked = false;
   // the SHELL axis — a room's exterior, the surface you see from outside the station (WorldModel's
   // HULL_MATERIALS). 'follow' here means "the tone this material was drawn for", not "match the deck":
   // an exterior has no deck to match, and STATION's own follow-tone is the shell grey it always was.
@@ -1463,7 +1465,7 @@ const Build = (() => {
           // pick inherit the previous one's colour.
           if (shell) hullMat = mid;
           else if (walls) { wallMat = mid; if (def.suggest && styles[def.suggest]) wallStyle = def.suggest; }
-          else { mat = mid; if (def.suggest && styles[def.suggest]) style = def.suggest; }
+          else { mat = mid; matPicked = true; if (def.suggest && styles[def.suggest]) style = def.suggest; }
           renderPalette(); setHint(); sfx('click');
         };
         matGrid.appendChild(b);
@@ -5128,7 +5130,7 @@ const Build = (() => {
     } else if (tool === 'paint') {
       const id = station.roomAt(w.tx, w.ty);
       if (!id) { flashTip(ev, 'nothing to paint here'); return; }
-      drag = { mode: 'paint', roomId: id, start: w, cur: w, cells: new Set([w.tx + ',' + w.ty]), moved: false };
+      drag = { mode: 'paint', roomId: id, start: w, cur: w, cells: new Set([w.tx + ',' + w.ty]), moved: false, cx: ev.clientX, cy: ev.clientY };   // cx/cy: a jitter is not a brush stroke
     } else if (tool === 'reclaim') {
       drag = { mode: 'reclaim', start: w, cur: w, cells: new Set([w.tx + ',' + w.ty]), moved: false };
     } else { // room | hall
@@ -5175,6 +5177,7 @@ const Build = (() => {
       if ((drag.mode === 'handbelt' || drag.mode === 'handbranch') && cv.style.cursor !== 'crosshair') cv.style.cursor = 'crosshair';   // laying a belt aims (onUp restores)
       if(drag.mode==='grouppress'&&drag.moved&&slipped)drag.mode='groupmove';   // (a click on one member never moves the line one tile: wave 2, build-20)
       if(drag.mode==='boxpress'&&drag.moved)drag.mode='box';
+      if (drag.mode === 'paint' && slipped) drag.slipped = true;   // a brush stroke only once it has travelled CLICK_SLOP (paintDragged)
       if (drag.mode === 'paint' || drag.mode === 'reclaim') rasterTo(drag, w);   // accumulate every tile the brush crosses
       drag.cur = w;
     } else {
@@ -6461,7 +6464,7 @@ const Build = (() => {
       feedback(station.setHull(d.roomId, { style: hullStyle, mat: hullMat }), ev, 'shell re-clad');
       return;
     }
-    if (d.moved) {
+    if (!paintLaysDeck(d)) {
       const tiles = [...d.cells].map(k => { const p = k.split(','); return [+p[0], +p[1]]; });
       feedback(station.paintTiles(d.roomId, tiles, style), ev, 'painted');
     } else {
@@ -6470,6 +6473,15 @@ const Build = (() => {
       feedback(station.setDeck(d.roomId, { style, mat }), ev, 'deck laid');
     }
   }
+  /* THE BRUSH NEVER DROPS A PICKED MATERIAL (2026-10-17, Andrew: "when applying different textures like turf, it would keep the
+     default floor but change the hue only"). A deck material is a whole-room surface — the model has no per-tile material — and a
+     drag only ever painted the hue, so a material went missing two ways: a click that drifted across a tile seam (this press had
+     no CLICK_SLOP, unlike every other) became a brush stroke, and a deliberate stroke after picking TURF painted MEADOW tiles on
+     the old floor. Now a press under CLICK_SLOP is a click, and a stroke carrying a material the Commander picked that this room
+     does not have lays that deck as a click does. A stroke paints only the colour while the material is the room's own or none
+     was picked (the palette starts on PLATE, which never re-floors a room behind a colour stroke). */
+  const paintDragged = d => !!(d && d.moved && d.slipped);
+  const paintLaysDeck = d => paintTarget === 'floor' && (!paintDragged(d) || (matPicked && station.matOfRoom(d.roomId) !== mat));
   function commitReclaim(d, ev) {   // DELETE (tool id stays `reclaim`)
     // DRAG across tiles → clear every BELT crossed in ONE undo slot. A drag never removes rooms or
     // props (only single clicks do), so you can wipe a lane without fear of nuking the room under it.
@@ -9168,9 +9180,19 @@ const Build = (() => {
   }
   function drawGhost(t, now) {
     // paint brush: tint the crossed tiles with the chosen deck colour
-    if (drag && drag.mode === 'paint' && drag.moved) {
+    if (drag && drag.mode === 'paint' && paintDragged(drag)) {
       const base = station.FLOOR_STYLES[style] ? station.FLOOR_STYLES[style].base : '#888';
       ctx.globalAlpha = 0.55; ctx.fillStyle = base;
+      // a stroke that carries a new material lays the whole deck on release (paintLaysDeck): show the whole room, say the deck
+      const rm = paintLaysDeck(drag) && station.roomById(drag.roomId);
+      if (rm) {
+        for (const r of rm.rects) ctx.fillRect(r.x1 * t, r.y1 * t, (r.x2 - r.x1 + 1) * t, (r.y2 - r.y1 + 1) * t);
+        ctx.globalAlpha = 1;
+        const def = station.FLOOR_MATERIALS && station.FLOOR_MATERIALS[mat];
+        const bb = { x1: Math.min(...rm.rects.map(r => r.x1)), y1: Math.min(...rm.rects.map(r => r.y1)), x2: Math.max(...rm.rects.map(r => r.x2)), y2: Math.max(...rm.rects.map(r => r.y2)) };
+        ghostBadge(t, [((def && def.label) || 'NEW') + ' DECK', 'WHOLE ROOM'], true, bb);
+        return;
+      }
       let n = 0;
       for (const k of drag.cells) { const p = k.split(','); if (station.roomAt(+p[0], +p[1]) === drag.roomId) { ctx.fillRect(+p[0] * t, +p[1] * t, t, t); n++; } }
       ctx.globalAlpha = 1;
