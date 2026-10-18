@@ -22123,6 +22123,15 @@ async function runOnceCore(o) {
     return content;
   };
 
+  // #128: the shell shell.exec ACTUALLY runs for this agent — its effective execution backend (Full Power forces local,
+  // Safe Cell is Docker, Remote SSH is ssh), then this host's OS for local. Named on the [RUNTIME] Shell line and used
+  // for the service-key syntax; null when shell.exec is not on this task run (no line, no claim).
+  const shellRuntime = (() => {
+    if (!(isTask && resolved && Array.isArray(resolved.tools) && resolved.tools.indexOf('shell.exec') >= 0)) return null;
+    try { return { backend: executionEnvironment.backendIdFor(agentId), platform: process.platform }; }
+    catch (e) { failNote('runtime.shell-backend', e); return null; }
+  })();
+  const shellIsCmd = !!(shellRuntime && shellRuntime.backend === 'local' && shellRuntime.platform === 'win32');
   // tell the model, plainly + capability-driven, that it has real tools right now (so it never claims it can't act)
   const wireNames = toolDefs.map(d => d.function.name);
   // The deferred names the PARTIAL list may call usable: every deferred declaration except a connector server's
@@ -22153,7 +22162,7 @@ async function runOnceCore(o) {
     + 'Act with tools NOW and keep going until the task is done or genuinely blocked; if blocked, say so honestly and try a different path — NEVER invent output you did not produce. '
     + 'Always take the QUIETEST path that achieves the goal: (1) a DEDICATED tool for the target service'
     + (hasJukebox ? ' (e.g. spotify_play for Spotify)' : '') + ' — try it FIRST even if you are unsure it is connected; '
-    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs, PowerShell)' : '')
+    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs' + (shellIsCmd ? ', PowerShell' : '') + ')' : '')
     + (hasBrowserTools ? (hasShellExec ? ', and browser_* handles the web unseen' : ' — browser_* handles the web unseen') : '') + '; '
     + (hasBackgroundComputer ? 'For native apps, computer_use can discover exact windows and use background accessibility input without bringing them forward. Prefer its fresh element tokens and verify the result. ' : '')
     + (hasScreenTools
@@ -22393,7 +22402,7 @@ async function runOnceCore(o) {
   const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
     : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';
   const runtimeVersion = computeVersionSurface();
-  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now() });
+  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now(), shell: shellRuntime });
   // RUNTIME SKILL LIBRARY (skill-builder-gap): index the agent's own authored skills + preload any it invokes,
   // riding the same skill.view/skill.manage capability gate. Never breaks a run.
   try {
@@ -22509,7 +22518,8 @@ async function runOnceCore(o) {
     const canShell = kt.indexOf('shell.exec') >= 0;
     const canRequest = kt.indexOf('web_request') >= 0;
     if (canShell || canRequest) {
-      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: process.platform, notesFor: serviceKeysCatalog.notesFor });
+      // the key syntax follows the shell that runs (#128): %NAME% only for local cmd.exe; Docker/SSH run POSIX sh
+      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
       if (b) serviceKeysBlock = '\n\n' + b;
     }
   } catch (_) { serviceKeysBlock = ''; }

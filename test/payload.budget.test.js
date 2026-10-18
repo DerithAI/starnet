@@ -86,11 +86,18 @@ const HOST = '127.0.0.1';
    [ORCHESTRATION] seat line (station.control group.add, never team.dispatch) and the steer in team_dispatch / team_summon's
    descriptions are paid for by tightening the SPAWN and YOUR TEAM lines and team_dispatch's own wording — no budget moved.
    Measured: default 22,093 | fully 22,314 | crew 25,261 system chars; 61,334 / 61,334 / 66,164 tool bytes (review round:
-   the seat line quotes "add them into this chat", paid for by a shorter team.steer clause). */
+   the seat line quotes "add them into this chat", paid for by a shorter team.steer clause).
+   THE SHELL THAT RUNS 2026-10-17 (#128): shell_exec's description said "On Windows this uses cmd.exe; wrap PowerShell
+   cmdlets with …" on every machine, and Linux models tried powershell first. The description now names no shell (one
+   string for every agent and machine, so it cannot know) and points at a per-agent Shell line in [RUNTIME], which
+   follows the EFFECTIVE execution backend (local cmd.exe / /bin/sh, Docker or SSH sh). Measured on Windows (the longest
+   line, it carries the PowerShell wrapper): 61,331 -> 61,266 tool bytes, 22,092 / 22,313 / 25,260 -> 22,234 / 22,455 /
+   25,402 system chars (+142, all in the per-run note, never the cached prefix). Intended move: system budgets +142, tool
+   budgets -65, so each keeps its previous headroom. */
 const BUDGET = {
-  'default-new-install': { systemChars: 22140, tools: 79, toolBytes: 61350 },
-  'fully-granted-floor': { systemChars: 22360, tools: 79, toolBytes: 61350 },
-  'lead-with-crew': { systemChars: 25280, tools: 84, toolBytes: 66250 }
+  'default-new-install': { systemChars: 22282, tools: 79, toolBytes: 61285 },
+  'fully-granted-floor': { systemChars: 22502, tools: 79, toolBytes: 61285 },
+  'lead-with-crew': { systemChars: 25422, tools: 84, toolBytes: 66185 }
 };
 
 (async () => {

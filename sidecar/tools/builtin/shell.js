@@ -846,9 +846,12 @@
          carry what CHANGES A DECISION. The old version enumerated each refused command class; the guard
          already answers that at call time with the specific reason, and far more accurately than a
          remembered list — so it is stated once as a rule instead of itemised. Same for the Windows path
-         normalization note: it altered no choice the model makes. */
+         normalization note: it altered no choice the model makes.
+         #128 (2026-10-17): this string is shared by every agent on every machine, so it names no shell. Which one
+         runs (cmd.exe, /bin/sh, sh in Docker or over SSH) is per agent and lives on the [RUNTIME] Shell line
+         (runtimeinfo.js shellLine) — "On Windows this uses cmd.exe" here sent Linux models to powershell first. */
       description: 'Run a shell command in the current project folder when this session is project-scoped, otherwise in your private workspace; returns combined stdout/stderr + exit code. '
-        + 'Tests, builds, git, scripts — anything you would type in a terminal. On Windows this uses cmd.exe; wrap PowerShell cmdlets with `powershell -NoProfile -NonInteractive -Command "..."`. '
+        + 'Tests, builds, git, scripts — anything you would type in a terminal. Write it for the shell on the [RUNTIME] Shell line. '
         + 'Your working directory PERSISTS across calls (a `cd` carries over). Absolute and `..` paths are '
         + 'refused in cmd — pass cwd to run from a specific existing folder. Commands that would change the '
         + 'user\'s machine or screen are refused in restricted modes; Full Power may run any host command the '
