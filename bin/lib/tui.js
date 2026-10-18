@@ -110,6 +110,10 @@ const HELP = [
   ['ctrl+c', 'quit']
 ];
 
+// the wordmark in neon red; the star in its A gets a hotter glint
+function putLogo(g, word) {
+  word.forEach((l, r) => { let x = 0; for (const ch of l) { if (ch !== ' ') g.put(x, r, ch, ch === '✦' ? 'logohi b' : 'logo b'); x++; } });
+}
 function lampOf(s, pulse, blink) {
   if (s.key === 'working') return ['●', pulse ? 'ph b' : 'ph faint'];
   if (s.key === 'needs') return ['▲', blink ? 'am b' : 'am faint'];
@@ -190,14 +194,14 @@ function render(model, ui, size, now) {
   const lw = word ? Math.max(...word.map(l => width(l))) : 0;
   let y;
   if (word && W - lw - 3 >= 44) {
-    word.forEach((l, i) => g.put(0, i, l, 'logo b'));
+    putLogo(g, word);
     const x0 = lw + 3;
     const xc = putCounts(0, x0);
     if (xc - x0 > 24) g.put(x0, 0, trunc(ui.stationLabel || '', xc - x0 - 3), 'dim');
     drawBar(layoutBar(W - x0 - 5, word.length - 1), x0, 1);
     y = word.length;
   } else if (word && H >= 22) {
-    word.forEach((l, i) => g.put(0, i, l, 'logo b'));
+    putLogo(g, word);
     putCounts(0, lw + 3);
     y = word.length;
     y += drawBar(layoutBar(W - 5, narrow ? 3 : 2), 0, y);
@@ -400,7 +404,7 @@ const PALETTE = {
   fg: ['#d9d2d4', 252], hi: ['#ffffff', 231], dim: ['#7f666b', 95], rule: ['#7a1c28', 88], lbl: ['#ff4757', 203],
   ph: ['#ff3b4e', 203], am: ['#ffb43a', 214], ok: ['#5dffa8', 85], bad: ['#ff6b3d', 202],
   a0: ['#6fe3ff', 81], a1: ['#ff7ad9', 212], a2: ['#a6ff4d', 155], a3: ['#b48cff', 141], a4: ['#ffd84d', 221], a5: ['#7aa8ff', 111],
-  logo: ['#ff2e3e', 196], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
+  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
 };
 const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 58], inv: ['#ff3b4e', 203] };
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }

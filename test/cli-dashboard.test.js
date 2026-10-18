@@ -163,6 +163,8 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const logo = require('../bin/lib/logo.js');
   A.ok(logo.word.every((l, i) => text[i].indexOf(l.trim()) >= 0), 'the screen opens on the outlined STARNET wordmark from bin/lib/logo.js, four rows');
   A.ok(text.slice(0, 1).some(l => /1 needs you/.test(l)), 'the counts sit on the top row');
+  const starCell = rows.slice(0, 4).flat().find(([t]) => t.indexOf('✦') >= 0);
+  A.ok(starCell && /logohi/.test(starCell[1]), "the A carries the brand's four-point star, in its own glint");
   const crewRow = text.findIndex(l => /CREW /.test(l));
   A.ok(crewRow === 1 && text[crewRow].indexOf('CREW') > logo.word[1].length && /‹ ▲ ASTRA ›/.test(text[crewRow]) && /○ NOVA/.test(text[crewRow]), 'the crew is a bar of names beside the logo, the agent in COMMS marked: ' + text[crewRow]);
   const nowRow = text.findIndex(l => /^NOW  /.test(l));
