@@ -210,7 +210,7 @@ function channelBodyError(e) {
     : 'bad json';
 }
 const { MIME, CHANNEL_UPLOAD_MAX_BYTES, mimeForPath, safeDownloadName, isActiveDeliverable, parseRange, isTextDocument, documentViewHtml, DOC_VIEW_CSP, DOC_VIEW_MAX_BYTES } = require('./file-response.js');
-const { reflect, reflectSalient, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
+const { reflect, reflectSalient, refusedAction, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
 const FeedbackMemory = require('./feedbackmemory.js');   // THE COMMANDER'S TASTE: verdicts + corrections -> durable like/dislike memory
 const TasteRef = require('./tasteref.js');   // DESIGN ANCHOR: the rated run's real files / palette / fonts / image args / method, captured on a verdict
 const Failreview = require('./failreview.js');   // failure-review aux pass: PURE lesson producer for FAILED runs (reflect.js mold)
@@ -23294,6 +23294,7 @@ async function runOnceCore(o) {
     await captureTrustedLearning({ agentId, runId, projectRoot: o.projectRoot || '', input: trustedLearningInput, learningEvidence });
   }
   const _gateReflect = !!(o.reflect && memoryConfig.reflectEnabled && isTask && _auxDone && !_lineHop && reflectSalient(result.messages, o.recurring)
+      && !refusedAction(execution.toolTraceList())   // a run whose approval was not given proposes no memories (reflect.js refusedAction)
       && personalizationStore.read().enabled   // the personalization PAUSE never even offers the candidate (runReflection re-checks the same authority)
       && !reflectingNow.has(agentId) && (Date.now() - (lastReflectAt.get(agentId) || 0) >= memoryConfig.reflectCooldownMs));
   // failure-review: reflection's exact gate shape on the FAILURE side — o.reflect (real-work hosts only; delegated

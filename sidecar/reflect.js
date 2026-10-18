@@ -246,6 +246,16 @@
     return chars >= MIN_REFLECT_CHARS;                     // else the SAME real-exchange floor as before (no regression)
   }
 
+  /* A REFUSED ACTION IS NOT A LESSON (releases#7 / #9, 2026-10-17). A run in which an approval was not given (the
+     consent broker's one 'denied' summary: a Deny on the card, an unanswered card, an unattended default-deny) ends
+     'done' when the agent carries on without it, so it reached reflection like finished work, and the reflector read
+     the refusal as a standing preference ("The Commander never wants report files written") queued unmarked under
+     MEMORY > Awaiting your decision. Its work is not what was asked for, so reflection proposes nothing from it; the
+     Commander's own explicit statements still reach memory through trusted learning. Pure: the run's tool trace in. */
+  function refusedAction(toolTrace) {
+    return (Array.isArray(toolTrace) ? toolTrace : []).some(t => !!(t && t.isError && t.summary === 'denied'));
+  }
+
   // Map a Kept/Edited proposal into the §5.2 notebook record shape — so rank()/renderRecall AND the legacy
   // title/body readers (notebook.read, the dossier) all render it. `content` (the possibly user-edited belief)
   // mirrors into `body`; `title` is the kind label so a list of typed memories reads cleanly. Stats stay 0 —
@@ -324,5 +334,5 @@
     return false;
   }
 
-  return { reflect, buildPrompt, parse, worthReflecting, usedTools, reflectSalient, recordFromProposal, feedbackFor, highStakes, KIND_LABEL };
+  return { reflect, buildPrompt, parse, worthReflecting, usedTools, reflectSalient, refusedAction, recordFromProposal, feedbackFor, highStakes, KIND_LABEL };
 });
