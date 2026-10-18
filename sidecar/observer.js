@@ -127,7 +127,7 @@ function serveObserver(hub, req, res, opts) {
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no'
   });
-  try { res.write('retry: 3000\n\n'); } catch (_) {}
+  try { res.write('retry: 3000\n\n'); } catch (_) { return; }   // the watcher is already gone: nothing to register
   hub.add(res);
   let cursor = req.headers && req.headers['last-event-id'];
   if (!cursor) { try { cursor = new URL(req.url, 'http://localhost').searchParams.get('cursor'); } catch (_) { cursor = ''; } }

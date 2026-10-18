@@ -281,10 +281,13 @@ function runDashboard(station, opts) {
     if (stopped) return;
     const t = now();
     model.tick(t);
-    const size = { cols: out.columns || 80, rows: out.rows || 24 };
+    // the last column stays empty: a glyph there leaves the cursor in a pending wrap, so an erase after it ate the
+    // character, and on consoles without a deferred wrap the bottom-right cell scrolls the whole screen
+    const size = { cols: Math.max(20, (out.columns || 80) - 1), rows: out.rows || 24 };
     const rows = tui.render(model, ui, size, t).map(segs => tui.toAnsi(segs, level));
     let s = '';
-    for (let y = 0; y < rows.length; y++) if (prevRows[y] !== rows[y]) s += '\x1b[' + (y + 1) + ';1H' + rows[y] + '\x1b[0m\x1b[K';
+    // every rendered row is padded to the full width, so no erase-to-end is needed (or wanted)
+    for (let y = 0; y < rows.length; y++) if (prevRows[y] !== rows[y]) s += '\x1b[' + (y + 1) + ';1H' + rows[y] + '\x1b[0m';
     if (rows.length < prevRows.length) s += '\x1b[' + (rows.length + 1) + ';1H\x1b[J';
     prevRows = rows;
     if (s) try { out.write(s); } catch (_) {}

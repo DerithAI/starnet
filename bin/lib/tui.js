@@ -254,7 +254,7 @@ function paneRows(log, focusRow, W, now) {
     }
     let label = '', lc = '', tc = 'fg', text = e.text;
     if (e.k === 'you') { label = 'YOU'; lc = 'hi b'; tc = e.queued ? 'dim' : 'hi'; }
-    else if (e.k === 'start') { label = e.source === 'desktop' ? 'YOU·APP' : e.source.toUpperCase().slice(0, 7); lc = 'dim b'; tc = 'fg'; if (!text) text = '(' + e.source + ' run)'; }
+    else if (e.k === 'start') { label = e.source === 'desktop' ? 'YOU·APP' : e.source.toUpperCase().slice(0, 7); lc = 'dim b'; tc = 'fg'; if (!text) text = e.adopted ? '(a ' + e.source + ' run, already under way when this terminal attached)' : '(' + e.source + ' run)'; }
     else if (e.k === 'agent') { label = name; lc = ac; if (e.live) text += '▍'; }
     else if (e.k === 'ok') tc = 'ok';
     else if (e.k === 'bad') tc = 'bad';

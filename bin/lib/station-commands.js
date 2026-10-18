@@ -32,7 +32,7 @@ async function loadStation(client) {
 async function fillAskSummaries(client, model) {
   await Promise.all(model.state.prompts.filter(q => !q.summary && !q.question && q.runId).map(async q => {
     const r = await client.request('GET', '/api/consent/args?runId=' + encodeURIComponent(q.runId) + '&promptId=' + encodeURIComponent(q.promptId), null, { timeoutMs: 5000 });
-    if (r.ok && r.status === 200 && r.json && r.json.args) { q.summary = oneLine(r.json.args, 400); q.raw = String(r.json.args); }
+    if (r.ok && r.status === 200 && r.json && r.json.args) model.describePrompt(q.promptId, r.json.args);
   }));
 }
 

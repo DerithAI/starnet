@@ -101,6 +101,8 @@ function makeStation() {
       if (mine >= 0) { st.sent[mine].runId = runId; run.cli = true; if (st.sent[mine].entry) st.sent[mine].entry.queued = false; st.sent.splice(mine, 1); }
       else if (run.prompt || sourceOf(run) !== 'desktop') log(a, { k: 'start', runId, source: sourceOf(run), text: run.prompt, at: now });
     }
+    // a run already under way when the terminal attached: its start was never seen, so say only that it is running
+    if (via === 'snapshot' && !run.adoptedLogged) { run.adoptedLogged = true; log(a, { k: 'start', runId, source: sourceOf(run), text: '', adopted: true, at: now }); }
     if (!a.runs.has(runId)) { a.runs.add(runId); a.bucket += 1; }
     return run;
   }
@@ -129,7 +131,15 @@ function makeStation() {
     if (q.tool === 'brief.ask') { try { const j = JSON.parse(q.raw); q.question = { text: String(j.question || ''), options: Array.isArray(j.options) ? j.options.map(String).slice(0, 6) : [], recommended: String(j.recommended || '') }; } catch (_) { q.question = { text: oneLine(q.raw, 400), options: [], recommended: '' }; } }
     st.prompts.push(q);
     const a = agent(asker);
-    log(a, { k: 'ask', text: q.question ? 'asks: ' + q.question.text : 'asks: ' + q.tool + (q.summary ? ' ' + oneLine(q.summary, 160) : ''), at: now, promptId });
+    q.entry = log(a, { k: 'ask', text: askLine(q), at: now, promptId });
+  }
+  function askLine(q) { return q.question ? 'asks: ' + q.question.text : 'asks: ' + q.tool + (q.summary ? ' ' + oneLine(q.summary, 160) : ''); }
+  // an ask adopted from the snapshot arrives without its words; once the full request is read, the line says them
+  function describePrompt(promptId, args) {
+    const q = st.prompts.find(x => x.promptId === String(promptId));
+    if (!q || q.question) return;
+    q.summary = oneLine(args, 400); q.raw = String(args || '');
+    if (q.entry) q.entry.text = askLine(q);
   }
   function settlePrompt(p, now) {
     const promptId = String(p.promptId || '');
@@ -366,7 +376,7 @@ function makeStation() {
   }
 
   return {
-    state: st, agent, setRoster, apply, applySnapshot, applyBudget, applyLines, noteSeen, noteSent, sendFailed, seedHistory, tick,
+    state: st, agent, setRoster, apply, applySnapshot, describePrompt, applyBudget, applyLines, noteSeen, noteSent, sendFailed, seedHistory, tick,
     rows, header, flows, findAgent, findLine, statusOf, front: () => st.prompts[0] || null, logOf: (id) => (st.agents.get(String(id)) || { log: [] }).log
   };
 }
