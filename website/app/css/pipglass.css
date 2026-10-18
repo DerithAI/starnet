@@ -570,18 +570,22 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-head {
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-lamp { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-count { margin-left: auto; font-size: 16px; letter-spacing: .4px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--cg-mute); }
+/* (Andrew 10-17, of three rendered at his settings: "C is def the best") each wait is its own ALERT CARD on the rail's 10px
+   gutter: a 2px box edged in its colour (gold for a wait on you, the fault colour for something that broke) under a header
+   strip that names what it is and how long it has waited. The card's 1px edge is the panel's old edge moved onto each card,
+   so the ask line's column is exactly as wide as it was (the Approve once reading is unchanged at every rail and TEXT SIZE) */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-list {
-  display: flex; flex-direction: column; gap: 0; margin: 0 10px 6px; margin-right: max(0px, 10px - var(--ny-gutter, 0px)); padding: 0; list-style: none;
-  border: 1px solid rgba(var(--ph-rgb), .2); border-radius: 8px; overflow: hidden;
-  background: linear-gradient(165deg, rgba(var(--ph-rgb), .06), transparent 46%), color-mix(in srgb, var(--panel2) 70%, transparent);
-  box-shadow: inset 0 1px 0 rgba(var(--ph-bright-rgb), .05);
+  display: flex; flex-direction: column; gap: 8px; margin: 0 10px 6px; margin-right: max(0px, 10px - var(--ny-gutter, 0px)); padding: 0; list-style: none;
+  border: 0; border-radius: 0; overflow: visible; background: none; box-shadow: none;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item {
+  --ny-k: var(--gold-rgb);
   position: relative; display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 10px; row-gap: 3px; align-items: start;
-  margin: 0; padding: 8px 10px; border: 0; border-radius: 0; background: none; box-shadow: none; cursor: pointer;
-  transition: background var(--t-fast, .12s) ease;
+  margin: 0; padding: 0 10px 10px; border: 1px solid rgba(var(--ny-k), .45); border-radius: 2px; background: rgba(0, 0, 0, .28); box-shadow: none; cursor: pointer;
+  transition: background var(--t-fast, .12s) ease, border-color var(--t-fast, .12s) ease;
 }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item + .ny-item { border-top: 1px solid rgba(var(--ph-rgb), .1); }
+/* something broke (failed work, a failed routine): its card, header and lamp take the fault colour */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.failed, .routine) { --ny-k: var(--bad-rgb); }
 #left .ws-needs .ny-item[hidden], #left .ws-needs .ny-more[hidden] { display: none !important; }
 /* the name line on a narrow rail or a large TEXT SIZE: "in <where>" steps out of sight rather than leave a two-letter stub
    ("in DELIV…"); the name and the time always show. It is never display:none: it stays the row's door for the keyboard and
@@ -595,20 +599,27 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { container-type: inline
   }
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:has(> .ny-line > .ny-where:focus-visible) { outline: 2px solid var(--ph-bright); outline-offset: -2px; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) { background: rgba(var(--ph-rgb), .06); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) { border-color: rgba(var(--ny-k), .8); background: rgba(var(--ny-k), .06); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :not(.ny-face) { grid-column: 2; min-width: 0; }
+/* the header strip runs the card's full width, edge to edge, above the portrait and the lines: WHAT it is · how long */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-strip {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; margin: 0 -10px 7px; padding: 5px 10px 4px;
+  background: rgba(var(--ny-k), .14); border-bottom: 1px solid rgba(var(--ny-k), .35);
+  font-size: 14px; line-height: 1.15; letter-spacing: 2px; text-transform: uppercase; color: rgb(var(--ny-k));
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-kind { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* the small portrait well (the CREW card's, scaled to a row) with the figure the floor draws and the lamp in its corner */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face {
-  grid-column: 1; grid-row: 1 / span 2; align-self: start; position: relative; box-sizing: border-box; width: 30px; height: 38px;
+  grid-column: 1; grid-row: 2 / span 2; align-self: start; position: relative; box-sizing: border-box; width: 30px; height: 38px;
   display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
-  border-radius: 5px; border: 1px solid rgba(var(--ph-rgb), .22); background: rgba(0, 0, 0, .3); box-shadow: inset 0 2px 6px rgba(0, 0, 0, .45);
+  border-radius: 2px; border: 1px solid rgba(var(--ph-rgb), .22); background: rgba(0, 0, 0, .3); box-shadow: inset 0 2px 6px rgba(0, 0, 0, .45);
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face img { width: 26px; height: 34px; object-fit: contain; object-position: 50% 100%; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-dot {
   position: absolute; right: 2px; top: 2px; width: 7px; height: 7px; border-radius: 50%;
   background: var(--gold); box-shadow: var(--cg-lamp, 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3));
 }
-/* something broke (failed work, a failed routine): its lamp and its line say so; the row stays in the panel's voice */
+/* …and its lamp says so too */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.failed, .routine) .ny-dot { background: var(--bad); }
 /* line 1: AGENT (the row's headline, in its colour) · in <where> ........ time. The place gives up its room first (review
    10-16): it starts from nothing and takes only what the name and the time leave (flex-basis 0, then "…"), so a two-word
@@ -626,40 +637,42 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-what {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) .ny-what { color: var(--ph-bright); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-verb { color: var(--gold); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-verb { color: var(--cg-mute, var(--text)); }
 /* a station wait whose last words ARE the claim (a quest said done, loop results, STEP-IN, a failure) is shown whole;
    a build leads with its ask, and an agent's builds with their count ("23 builds to keep or discard · …"), so only the
    title may clamp */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:not(.approval, .question, .build) .ny-what { display: block; -webkit-line-clamp: none; overflow: visible; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.failed, .routine) .ny-what { color: var(--bad); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-age { flex: none; margin-left: auto; font-size: 15px; letter-spacing: .4px; font-variant-numeric: tabular-nums; color: var(--cg-mute, var(--text)); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-age { flex: none; margin-left: auto; font-size: 14px; letter-spacing: 1px; font-variant-numeric: tabular-nums; color: inherit; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where {
   flex: 1 1 0; min-width: 0; padding: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
   font: 15px 'VT323', monospace; letter-spacing: .4px; color: var(--cg-mute, var(--text)); background: none; border: 0; box-shadow: none; text-shadow: none;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where:is(:hover, :focus-visible) { color: var(--ph-bright); }
-/* (org g3 D1, final round) a row's two keys sit side by side wherever both labels fit the text column (Approve once · Deny
-   need ~141px: the 232px rail at STANDARD), with 8px sides, a 6px gap and the 15px label kept. A key is never narrower than
-   its label, so a narrower column (the 200px rail, a larger TEXT SIZE) stacks them, each full width, rather than clip a word */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* (org g3 D1, final round; Andrew 10-17 C) a row's keys are terminal keys sized to their label, set at the card's right edge,
+   side by side wherever they fit the text column (APPROVE ONCE · DENY need ~145px: the 232px rail at STANDARD), with 9px sides, a 6px
+   gap, the 15px label and the glass key's 34px. A key is never narrower than its label, so a narrower column (the 200px
+   rail, a larger TEXT SIZE) wraps them, each whole, rather than clip a word */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 6px; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key {
-  flex: 1 1 auto; min-width: 0; min-height: 34px; padding: 5px 8px; font: 15px/1.1 'VT323', monospace; letter-spacing: .2px; cursor: pointer; white-space: nowrap;
-  color: var(--ph); border: 1px solid rgba(var(--ph-rgb), .2); border-radius: 8px; text-shadow: none;
-  background: linear-gradient(125deg, rgba(var(--ph-bright-rgb), .09), rgba(var(--ph-rgb), .045) 48%, rgba(var(--ph-rgb), .015));
-  box-shadow: inset 0 1px 0 rgba(var(--ph-bright-rgb), .07);
+  flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 9px; font: 15px/1.1 'VT323', monospace; letter-spacing: .2px; text-transform: uppercase; cursor: pointer; white-space: nowrap;
+  color: var(--ph); border: 1px solid rgba(var(--ph-rgb), .4); border-radius: 2px; text-shadow: none;
+  background: rgba(0, 0, 0, .25); box-shadow: none;
 }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:hover:not(:disabled) { color: var(--ph-bright); border-color: rgba(var(--ph-rgb), .45); background: rgba(var(--ph-rgb), .1); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:hover:not(:disabled) { color: var(--ph-bright); border-color: rgba(var(--ph-rgb), .75); background: rgba(var(--ph-rgb), .1); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:focus-visible { outline: 2px solid var(--ph-bright); outline-offset: 2px; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.primary { color: var(--ph-bright); border-color: rgba(var(--gold-rgb), .55); background: linear-gradient(140deg, rgba(var(--gold-rgb), .15), rgba(var(--ph-rgb), .04)); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.deny { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: color-mix(in srgb, var(--bad) 5%, transparent); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.primary { color: var(--gold); border-color: rgba(var(--gold-rgb), .75); background: rgba(var(--gold-rgb), .1); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.primary:hover:not(:disabled) { color: var(--gold); border-color: var(--gold); background: rgba(var(--gold-rgb), .2); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.deny { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); background: color-mix(in srgb, var(--bad) 6%, transparent); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.quiet { color: var(--text); background: transparent; }
 /* org P02 (g3 D1, final round): a direct-chat ask is reviewed through its row (needsyou.js reviewRow) — the row lights like a door */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item.ny-review:hover .ny-what { color: var(--ph-bright); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:disabled { opacity: .55; cursor: default; }
-/* every key row spans the card's text column edge to edge (Andrew 10-15: "make sure buttons are aligned"): one key fills it,
-   two share it in equal halves, each never narrower than its label (a rail too narrow stacks them), each the glass key's
-   34px */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys > .ny-key { flex: 1 1 0; min-width: max-content; min-height: 34px; }
+/* every key in a row ends on the card's right edge, aligned card to card (Andrew 10-15: "make sure buttons are aligned"),
+   each its label's width (never narrower), each the glass key's 34px */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys > .ny-key { flex: 0 0 auto; min-width: max-content; min-height: 34px; }
+/* a build's door is its own session, named for the build its line already names: the place leaves sight there (it stays the
+   row's door for the keyboard and a screen reader, as on a narrow rail) */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item.ny-place-said .ny-where { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more {
   display: inline-flex; align-items: center; gap: 6px; width: auto; min-height: 0; padding: 4px 18px 2px; text-align: left; cursor: pointer;
   font: 15px 'VT323', monospace; letter-spacing: .4px; color: var(--ph); background: none; border: 0; box-shadow: none; text-shadow: none;
@@ -1098,12 +1111,10 @@ body.glass-demo:not(.hud-mode) #screen-game #left #crew-search-close {
 }
 body.glass-demo:not(.hud-mode) #screen-game #left #crew-search-close:is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .1); }
 
-/* ---- NEEDS YOU: the label on a gold rule that runs out to the count; the panel, faces and keys in 2px boxes ---- */
+/* ---- NEEDS YOU: the label on a gold rule that runs out to the count (its waits are the alert cards above) ---- */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-head::after { content: ''; order: 2; flex: 1 1 auto; height: 1px; background: rgba(var(--gold-rgb), .4); }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-title { order: 1; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-count { order: 3; margin-left: 0; color: var(--gold); }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-list { border-radius: 2px; border-color: rgba(var(--gold-rgb), .3); background: rgba(var(--gold-rgb), .03); box-shadow: none; }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs :is(.ny-face, .ny-key) { border-radius: 2px; }
 body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-runs { text-transform: uppercase; letter-spacing: 1.4px; }
 
 @media (prefers-reduced-motion: reduce) {

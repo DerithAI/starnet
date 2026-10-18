@@ -222,7 +222,8 @@ const NeedsYou = (() => {
     }
     for (const ws of Workstreams.list()) {
       if (!/^cron-/.test(String(ws.id)) || ws.lastRunOk !== false || !(Workstreams.unread && Workstreams.unread(ws))) continue;
-      out.push({ key: 'routine:' + ws.id, kind: 'routine', wsId: ws.id, who: nameOf(ws.agentId), aid: ws.agentId, what: 'routine "' + ((ws.automation && ws.automation.name) || ws.title || 'routine') + '" failed',
+      const name = (ws.automation && ws.automation.name) || ws.title || 'routine';
+      out.push({ key: 'routine:' + ws.id, kind: 'routine', wsId: ws.id, who: nameOf(ws.agentId), aid: ws.agentId, what: 'routine "' + name + '" failed', routineName: name,
         where: 'ROUTINES', since: Number(ws.lastActiveAt) || 0, routineId: (ws.automation && ws.automation.id) || '' });
     }
     blockingWaits(out, now);
@@ -312,11 +313,27 @@ const NeedsYou = (() => {
     return '';
   }
   // the row's line, the ask first so a clamp never cuts it: "wants to …", "asks …", "keep or discard · <build>",
-  // "23 builds to keep or discard · <the oldest build>"
+  // "23 builds to keep or discard · <the oldest build>". A failed routine's line is its name: its card's header already
+  // says ROUTINE FAILED (the whole sentence, 'routine "…" failed', stays its tip, its door's name and its bell row)
   function lineHtml(i) {
     if (i.rail) return '<span class="ny-verb">' + esc(i.rail.verb) + '</span> · ' + esc(i.rail.text);
+    if (i.kind === 'routine' && i.routineName) return esc(i.routineName);
     return (KIND[i.kind] ? '<span class="ny-verb">' + esc(KIND[i.kind]) + '</span> ' : '') + esc(i.what);
   }
+  /* (Andrew 10-17, of three rendered: "C is def the best") every wait is a card under a header strip that names WHAT it is,
+     in the station's own word for that kind (the line under it still says the ask whole), with how long it has waited at
+     the strip's end. A group says which of its waits it is; an agent's builds say how many; a worker says whether it
+     failed or was stopped, as its own line does. */
+  const KIND_LABEL = { approval: 'Approval', question: 'Question', asked: 'Question', stepin: 'Step-in', attest: 'Quest done?',
+    loop: 'Goal loop', extension: 'Extensions', routine: 'Routine failed' };
+  function kindLabel(i) {
+    if (i.kind === 'group') return /approval/.test(String(i.what)) ? 'Approval' : 'Question';
+    if (i.kind === 'build') return (i.n > 1 ? i.n + ' builds' : 'Build') + ' to review';
+    if (i.kind === 'failed') return /^failed\b/.test(String(i.what)) ? 'Work failed' : 'Work stopped';
+    return KIND_LABEL[i.kind] || 'Waiting';
+  }
+  // a build's door is its own session, named for the build its line already names: the card says that place once
+  const placeSaid = i => i.kind === 'build' && !!i.rail && String(i.where || '').indexOf(String(i.rail.text || '')) >= 0;
   /* (Andrew 10-15, second pass: "disgusting and cheap … we need it premium") one agent's builds waiting on keep/discard are
      ONE card, never 23 copies of the same line. It names the build its click opens (the oldest: the next decision) and
      its door is that build's own session, its age the oldest build's (none when no build has a time). Its count LEADS the
@@ -341,15 +358,17 @@ const NeedsYou = (() => {
     if (!list.length) return '';
     const rows = railRows(list), shown = expanded ? rows : rows.slice(0, SHOW), folded = list.length - waitsIn(shown);
     return '<div class="ny-head"><span class="ny-lamp" aria-hidden="true"></span><span class="ny-title">Needs you</span><span class="ny-count">' + list.length + '</span></div>'
-      + '<ul class="ny-list">' + shown.map(i => { const rv = reviewRow(i), keys = keysFor(i), color = colorOf(i.aid), place = ' — in ' + i.where; return '<li class="ny-item ' + i.kind + (rv ? ' ny-review' : '') + '" data-ny-key="' + esc(i.key) + '" data-ny-n="' + (i.n || 1) + '">'
+      + '<ul class="ny-list">' + shown.map(i => { const rv = reviewRow(i), keys = keysFor(i), color = colorOf(i.aid), place = ' — in ' + i.where; return '<li class="ny-item ' + i.kind + (rv ? ' ny-review' : '') + (placeSaid(i) ? ' ny-place-said' : '') + '" data-ny-key="' + esc(i.key) + '" data-ny-n="' + (i.n || 1) + '">'
+        // the card's header strip (Andrew 10-17, "C · ALERT CARDS"): what this wait is, and how long it has waited
+        + '<div class="ny-strip"><span class="ny-kind">' + esc(kindLabel(i)) + '</span><span class="ny-age">' + esc(age(i.since, now)) + '</span></div>'
         // the CREW card, for a wait (Andrew 10-15: "premium"): the agent's portrait in its well with the gold lamp housed in
-        // its corner, then WHO (in the agent's colour) · where · how long, the line (the ask first; two lines at most, the
-        // whole of it on hover), then keys only when there is more than Open
+        // its corner, then WHO (in the agent's colour) · where, the line (the ask first; two lines at most, the whole of it on
+        // hover), then keys only when there is more than Open
         + '<span class="ny-face" aria-hidden="true"' + (i.aid ? ' data-ny-aid="' + esc(i.aid) + '"' : '') + '><img alt="" draggable="false" hidden><span class="ny-dot"></span></span>'
         // "in <where>" is the row's door for the keyboard and a screen reader on every rail (pipglass.css only hides it from
         // sight where the line has no room): its name says who, what, and where it lands
         + '<div class="ny-line">' + (i.who ? '<span class="ny-who"' + (color ? ' style="color:' + esc(color) + '"' : '') + '>' + (i.whoHtml || esc(i.who)) + '</span>' : '')
-        + '<button type="button" class="ny-where" data-ny-act="open" data-ny-key="' + esc(i.key) + '" aria-label="' + esc((i.who ? i.who + ' ' : '') + lineOf(i) + place) + '"' + (rv ? ' data-tip="' + esc(REVIEW_TIP) + '"' : '') + '>in ' + esc(i.where) + '</button><span class="ny-age">' + esc(age(i.since, now)) + '</span></div>'
+        + '<button type="button" class="ny-where" data-ny-act="open" data-ny-key="' + esc(i.key) + '" aria-label="' + esc((i.who ? i.who + ' ' : '') + lineOf(i) + place) + '"' + (rv ? ' data-tip="' + esc(REVIEW_TIP) + '"' : '') + '>in ' + esc(i.where) + '</button></div>'
         + '<div class="ny-what" title="' + esc(i.what + (i.tip ? ' — ' + i.tip : '') + place + (rv ? ' — ' + REVIEW_TIP : '')) + '">' + lineHtml(i) + '</div>'
         + (keys ? '<div class="ny-keys">' + keys + '</div>' : '')
         + '</li>'; }).join('') + '</ul>'
