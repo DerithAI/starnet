@@ -435,7 +435,9 @@ async function resolveStation(opts, env) {
   else candidates.push({ source: 'default', port: core.DEFAULT_PORT });
   const desktopWs = desktopWorkspaces(env);
   const desktop = discoverDesktop(desktopWs);
-  if (desktop.port && !candidates.some(c => c.port === desktop.port)) candidates.push({ source: 'desktop', port: desktop.port });
+  // a NAMED port is that station or an error: the desktop is a candidate only when no port was named (a dead --port
+  // used to fall through to the desktop app's station, so `approve --port N` could answer asks on the wrong station)
+  if (!opts.port && desktop.port && !candidates.some(c => c.port === desktop.port)) candidates.push({ source: 'desktop', port: desktop.port });
   if (!opts.spawn) {
     for (const c of candidates) {
       const client = makeClient(host, c.port);

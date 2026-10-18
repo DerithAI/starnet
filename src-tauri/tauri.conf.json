@@ -62,6 +62,7 @@
       "../sidecar": "sidecar",
       "frontend-dist": "frontend",
       "../shared": "shared",
+      "../bin": "bin",
       "voice-deps/node_modules": "node_modules"
     }
   },

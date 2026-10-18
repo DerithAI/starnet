@@ -1,0 +1,6 @@
+#!/bin/sh
+# starnet — the StarNet command line. Beside an app that bundles node one folder up it runs on that node; otherwise on
+# node from PATH. Every argument passes through; the exit code is the CLI's own.
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$DIR/../node" ]; then exec "$DIR/../node" "$DIR/starnet.js" "$@"; fi
+exec node "$DIR/starnet.js" "$@"
