@@ -1802,8 +1802,12 @@
          and can have it answer both, or split the difference. One line naming what happened is the difference
          between "they repeated themselves" and "the earlier version is void". */
       const editLead = msg.edited ? '[the previous message was edited — this is the corrected version, treat it as replacing what came before]' : '';
-      const turnText = (editLead ? editLead + '\n' : '') + (replyLead ? replyLead + '\n\n' : '') + bodyText
+      // what the member actually asked, as the entry run reads it (voice transcript, quoted reply, attachment notes) minus
+      // the edit marker, which names a message a downstream stage never saw. A line's hops no longer replay the chat stream
+      // (resumeSeed:false), so this is the only place a stage meets e.g. a captionless voice note's words.
+      const lineAsk = (replyLead ? replyLead + '\n\n' : '') + bodyText
         + (mediaIngest.notes.length ? ((bodyText ? '\n' : '') + mediaIngest.notes.join('\n')) : '');
+      const turnText = (editLead ? editLead + '\n' : '') + lineAsk;
 
       // durable transcript: load prior turns, persist the new user turn, build the replay messages. The persisted
       // turn carries the media notes (with saved .attachments/ paths), so an agent in a LATER turn can still reach
@@ -2011,7 +2015,7 @@
          would be an unstoppable spend. The reply that finally leaves is the LAST stage's. */
       if (chain && !state.errMsg && !myRec.superseded && String(state.buf || '').trim()) {
         const line = await chain.advance({
-          agentId: agentId, dockId: dockId || undefined, text: state.buf, originalText: msg.text, runId: myRec.runId,
+          agentId: agentId, dockId: dockId || undefined, text: state.buf, originalText: lineAsk || msg.text, runId: myRec.runId,
           // the entry run's reconciled spend: the chain's $ ceiling covers the whole line, stage one included
           // (2026-08-10 audit). `line.usd` stays hop-only, so onLineOutcome's accounting is unchanged.
           entryUsd: state.usd || 0,
@@ -2067,6 +2071,7 @@
                 agentId: h.agentId, lineId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 streamId: canonicalStreamId || undefined, parallelBranch: !!h.parallel,   // the whole line shares one canonical transcript; a PARALLEL branch hop skips its one-turn-at-a-time queue (chain.js runBatch)
+                resumeSeed: false,   // THIS dock's own history rides `hist` above; never the whole line stream's transcript (runOnceCore seed)
                 initialTaint: 'upstream agent output',
                 untrustedEntry: lineEntryUntrusted || undefined,   // a hop of a payload-started line stays under the taint lock
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,

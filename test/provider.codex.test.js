@@ -118,6 +118,50 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.eq(captured.body.include, ['reasoning.encrypted_content'], 'reasoning carry-over requested when thinking is on');
   }
 
+  // C1a. PROMPT-CACHE ROUTING (token-burn audit 2026-10-17). Measured live: with no route the Codex backend served 0
+  //      cached tokens on every call, and the body prompt_cache_key ALONE also served 0 — the session_id HEADER is what
+  //      it honors. Every request names a route that is STABLE across the turns of a run (messages grow, a tool.search
+  //      reveal appends a tool, the per-conversation tail after cacheSystemPrefix differs) and DIFFERENT across model,
+  //      system prefix and ChatGPT account; an explicit req.promptCacheKey wins.
+  {
+    const seen = [];
+    const f = async (_url, init) => { seen.push({ body: JSON.parse(init.body), headers: init.headers }); return new Response(['data: [DONE]', ''].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }); };
+    const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const jwt = acct => b64({ alg: 'none' }) + '.' + b64({ 'https://api.openai.com/auth': { chatgpt_account_id: acct } }) + '.sig';
+    const p = makeCodexProvider({ fetch: f, token: jwt('acct-A') });
+    const tools = [{ type: 'function', function: { name: 'fs_read', parameters: { type: 'object' } } }];
+    const moreTools = tools.concat([{ type: 'function', function: { name: 'browser_resize', parameters: { type: 'object' } } }]);
+    const stable = 'You are the overseer. [HARNESS] tools...';
+    const sys = { role: 'system', content: stable + '\nconversation tail one' };
+    const call = (req) => collect(p, Object.assign({ model: 'gpt-5.5', cacheSystemPrefix: stable, tools }, req));
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }] });                                                              // 0
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'turn two' }] });   // 1
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }], tools: moreTools });                                            // 2
+    await call({ messages: [{ role: 'system', content: stable + '\nconversation tail two' }, { role: 'user', content: 'x' }] });        // 3
+    await call({ messages: [{ role: 'system', content: 'You are a worker.' }, { role: 'user', content: 'turn one' }], cacheSystemPrefix: '' });   // 4
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }], model: 'gpt-5.4' });                                            // 5
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }], promptCacheKey: 'agent|stream-1' });                            // 6
+    await collect(makeCodexProvider({ fetch: f, token: jwt('acct-B') }), { model: 'gpt-5.5', cacheSystemPrefix: stable, tools, messages: [sys, { role: 'user', content: 'turn one' }] });   // 7
+    await collect(makeCodexProvider({ fetch: f, token: 'not-a-jwt' }), { model: 'gpt-5.5', messages: [sys, { role: 'user', content: 'hi' }] });   // 8
+    // a stale cacheSystemPrefix the instructions do NOT start with is ignored: the route falls back to the whole instructions
+    const other = { role: 'system', content: 'Another prompt entirely.' };
+    await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: stable });   // 9
+    await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: '' });       // 10
+    const keys = seen.map(s => s.body.prompt_cache_key);
+    A.ok(keys.every(k => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(k)), 'every request names a uuid-shaped route (an unreadable token still gets one)');
+    A.eq(keys[1], keys[0], 'the route holds as the conversation grows');
+    A.eq(keys[2], keys[0], 'a tool.search reveal (one more tool) does not move the route');
+    A.eq(keys[3], keys[0], 'a different per-conversation tail after cacheSystemPrefix keeps the route');
+    A.ok(keys[4] !== keys[0], 'a different system prompt gets a different route');
+    A.ok(keys[5] !== keys[0], 'a different model gets a different route');
+    A.ok(keys[6] !== keys[0], 'an explicit req.promptCacheKey wins over the derived route');
+    A.ok(keys[7] !== keys[0], 'another ChatGPT account never shares the route');
+    A.ok(keys[9] !== keys[0] && keys[9] === keys[10], 'a cacheSystemPrefix the instructions do not start with is ignored (route = the whole instructions)');
+    A.ok(seen.every(s => s.headers['session_id'] === s.body.prompt_cache_key), 'the session_id header (the half the backend honors) carries the route on every request');
+    A.eq(_internals.tokenAccount(jwt('acct-A')), 'acct-A', 'the account is read from the token claim');
+    A.eq(_internals.tokenAccount('ACCESS'), '', 'a non-JWT token yields no account (and no throw)');
+  }
+
   // C1b. Codex effort aliases clamp to the backend scale; reasoning-off skips encrypted reasoning carry-over.
   {
     const bodies = [];

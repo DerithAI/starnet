@@ -630,7 +630,9 @@
     lines.push('- MATCH THE FORMAT TO THE ASK — build the SIMPLEST thing that fully serves it, never the most impressive: a question/research ask -> a short findings doc (answer first, sources after); a draft ask -> the draft file itself; a comparison/decision -> a short ranked write-up, recommendation on top. ONLY build an interactive SINGLE-FILE HTML tool (all CSS/JS inline, no build step, named index.html) when the ask genuinely needs interaction the Commander will use repeatedly — NEVER default to a dashboard unless the ask is literally to watch several changing numbers in one place.');
     lines.push('- Whatever the format: ZERO SETUP on their end — self-contained, one-click openable, no external files or build step; a script ships with its single run note in "howToUse".');
     lines.push('- Do the real work with your tools (web read/search, files). Ground factual claims in what the tools return. Write every file for this deliverable UNDER "' + dir + '/" (use paths like "' + dir + '/<file>").');
-    lines.push('- LOCAL ONLY: never send, publish, spend, or message. You cannot run commands or tests, so do not claim anything was tested — list what a human still needs to verify.');
+    // token-burn audit 2026-10-17: this used to say "You cannot run commands or tests" while shell_exec was wired, so the
+    // act wrote its report first and verify-on-stop then bought a second pass to check it (16 of 29 real shifts, ~18M tokens).
+    lines.push('- LOCAL ONLY: never send, publish, spend, or message. If you have a shell, CHECK the work BEFORE you write the manifest (a patch: `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved; list what a human still needs to verify.');
     lines.push('- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:');
     lines.push('  { "v": 1, "runId": "' + String(ctx.runId || '') + '", "agentId": "<your id>", "backlogId": "' + backlogId + '",');
     // 'patch' MUST be listed here: the PROJECT PATCH rule above tells the agent to set it, and the apply path

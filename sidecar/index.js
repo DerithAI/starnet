@@ -3754,7 +3754,7 @@ async function runBackgroundSkillReview(o) {
   finally {
     clearTimeout(timer);
     if (result && result.usd) {
-      try { ledger.record({ runId: reviewRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, model: model || '', unmetered }); } catch (_) {}   // model: the spend row names what it spent on, like every other aux row
+      try { ledger.record({ runId: reviewRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, cachedTokens: result.cachedTokens || 0, model: model || '', unmetered }); } catch (_) {}   // model: the spend row names what it spent on, like every other aux row
     }
   }
   // false asks verdictreview to retry: only a pass that failed before it changed the skillbase (a budget/turn-ceiling/
@@ -3813,7 +3813,7 @@ async function runSkillCurator(o) {
   finally {
     clearTimeout(timer);
     if (result && result.usd) {
-      try { ledger.record({ runId: curatorRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, model: model || '', unmetered }); } catch (_) {}
+      try { ledger.record({ runId: curatorRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, cachedTokens: result.cachedTokens || 0, model: model || '', unmetered }); } catch (_) {}
     }
   }
 }
@@ -6876,7 +6876,7 @@ const cronDriver = makeCronDriver({
      same caps, same per-hop crates as a channel message — only the way a hop is executed differs (a routine has
      no chat transcript; its hops ride the routine's own stream so the session shows the whole line). */
   advanceChain: (o) => chainRunner.advance({
-    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, signal: o.signal,
+    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, ask: o.ask, signal: o.signal,
     runId: o.runId, streamId: o.streamId || undefined,   // the fire's own stream ('cron-<runId>'): a SEND TO hand-off reads back exactly this fire's runs
     // the entry run's reconciled spend: MAX_CHAIN_USD bounds the WHOLE chain, and stage one is part of the
     // chain (2026-08-10 audit — the entry run rode outside its own line's $ ceiling on every path).
@@ -6925,6 +6925,7 @@ const cronDriver = makeCronDriver({
           messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: o.runsLine === true ? router.lineOfAgent(o.agentId, o.dockId ? router.dockOf(o.agentId, o.dockId) : undefined) : null, isTask: true,
           ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
+          resumeSeed: false,   // the handoff carries the upstream output: never re-send earlier stages' transcript (runOnceCore seed)
           surface: 'autonomous', trigger: 'schedule', reflect: true,
           station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
           lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
@@ -13476,6 +13477,7 @@ async function stepTestRunDock(h) {
       reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
       messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
       runId, trigger: 'event', streamId: h.streamId,
+      resumeSeed: false,   // every step shares one steptest stream: a step (or a NEEDS CHANGES re-run / rewind) must not inherit the others' turns
       lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId,   // LINE WATCH: the row records the step's line + bay (run.start names its crate)
       initialTaint: h.entry ? null : 'upstream agent output',
       surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
@@ -16316,7 +16318,7 @@ async function handleCronRun(req, res) {
       try {
         const line = await chainRunner.advance({
           agentId: job.agentId, dockId: job.dockId ? (router.dockOf(job.agentId, job.dockId) || undefined) : undefined,
-          text: state.buf, originalText: String(job.prompt || ''), signal: ac.signal,
+          text: state.buf, originalText: assembledPrompt, ask: String(job.prompt || ''), signal: ac.signal,   // contextFrom + directive, as the scheduled fire hands it (hops no longer replay the stream)
           // the fire's own stream, exactly as the scheduled fire passes it: a SEND TO hand-off reads back THIS run's rows (the
           // every-step-ended-done check and the files it made) — without it Run Now handed on half-finished work the schedule refuses
           runId, streamId: 'cron-' + runId,
@@ -16360,6 +16362,7 @@ async function handleCronRun(req, res) {
                 messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: job.runsLine === true ? router.lineOfAgent(job.agentId, job.dockId ? router.dockOf(job.agentId, job.dockId) : undefined) : null, isTask: true,
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
+                resumeSeed: false,   // the handoff carries the upstream output: never re-send earlier stages' transcript (runOnceCore seed)
                 surface: 'autonomous', trigger: 'schedule', broadcast: true, reflect: true,
                 station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
                 lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
@@ -16437,7 +16440,9 @@ function workshopPrompt(runId, item, ctx) {
     + '- Whatever the format: ZERO SETUP on their end — self-contained, one-click openable, no external files or build step; a script ships with its single run command in "howToUse".\n'
     + '- Put every file for this deliverable UNDER the folder "' + dir + '/" in your workspace (use fs.write with paths like "' + dir + '/<file>").\n'
     + '- Do the actual work with your real tools (web search/read, files, memory). Ground factual claims in what the tools return.\n'
-    + '- You CANNOT run commands or tests here, so do not claim anything was tested — list what a human still needs to verify.\n'
+    // (token-burn audit 2026-10-17: was "You CANNOT run commands or tests here" — false whenever the bay holds a terminal, and
+    // the act then wrote its report first and verify-on-stop bought a second pass to check it; same wording as the act prompt)
+    + '- If you have a shell, CHECK the work BEFORE you write the manifest (a patch: `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved; list what a human still needs to verify.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + ((item && item.id) || '') + '",\n'
     + '    "title": "<short name>", "kind": "tool|fix|draft|doc|patch|other",\n'
@@ -16697,7 +16702,8 @@ function implementPrompt(runId, source, ctx) {
         : '- There is no blessed project to patch here, so build the working artifact itself: the script, the tool, the\n'
          + '  file that does the job. ZERO SETUP — self-contained, one-click openable or one command to run.\n')
     + '- Write every file for this build UNDER "' + dir + '/" (use paths like "' + dir + '/<file>").\n'
-    + '- Do the real work with your tools. You CANNOT run commands or tests here, so never claim anything was tested —\n'
+    + '- Do the real work with your tools. If you have a shell, CHECK the work BEFORE you write the manifest (a patch:\n'
+    + '  `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved;\n'
     + '  list what a human still needs to check.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + String(c.backlogId || '') + '",\n'
@@ -19769,7 +19775,7 @@ async function runOnce(o) {
       // Refresh ordinary queued chat after the preceding turn has persisted.
       // Preserve the new user message (including attachments); checkpoint and
       // group histories retain their own provider-valid assembly contracts.
-      if (queued && !o.recovery && !o.groupTools && !o.parentRunId
+      if (queued && o.resumeSeed !== false && !o.recovery && !o.groupTools && !o.parentRunId
         && (o.messages || []).at(-1)?.role === 'user') {
         o = { ...o, messages: (o.messages || []).filter(m => m.role === 'system')
           .concat(transcriptStore.reconstruct(o.streamId, { limit: 100 }), o.messages.slice(-1)) };
@@ -22701,7 +22707,11 @@ async function runOnceCore(o) {
   }
   let convo = messages;
   try {
-    if (!o.recovery && !o.groupTools && !internal && streamId && Array.isArray(messages) && messages.filter(m => m && m.role !== 'system').length <= 1) {
+    /* A work-line HOP opts out (resumeSeed:false, token-burn audit 2026-10-17). It arrives as ONE handoff turn on the
+       line's shared stream, which already carries the original request and the upstream output — so this resume
+       seed re-sent every earlier stage's tool calls and results (another agent's work, as if it were this one's own
+       past turns) ahead of it, on every stage. Measured on a real station: line hops averaged 50k tokens a call. */
+    if (!o.recovery && !o.groupTools && !internal && o.resumeSeed !== false && streamId && Array.isArray(messages) && messages.filter(m => m && m.role !== 'system').length <= 1) {
       const seed = transcriptStore.reconstruct(streamId, { limit: 100 });
       if (seed.length) {
         // Keep the incoming turn (including attachment blocks), but not its older retry copy or
@@ -23228,7 +23238,8 @@ async function runOnceCore(o) {
     const finalUsd = effectiveRunUsd({ usd: (result && result.usd) || 0, mediaUsd, unmetered: runUnmetered, unpricedUsage: result && result.unpricedUsage, priceOf: provider && provider.priceOf });
     const finalTurns = (result && result.turns) || 0;
     const finalTokens = (result && result.tokens) || 0;
-    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0 }); } catch (_) {}
+    const finalCachedTokens = (result && result.cachedTokens) || 0;   // the cache-served part of finalTokens' input (additive on both rows)
+    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0 }); } catch (_) {}
     // managed-credit SETTLE: reconcile the reservation to the real spend — refund the unused headroom to the
     // account (billing.js caps finalUsd at the reservation). Inert/no-op unless this run actually reserved credit.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: finalUsd, tokens: finalTokens, turns: finalTurns, reason: (result && result.reason) || 'done' }); } catch (_) {} }
@@ -23246,7 +23257,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new

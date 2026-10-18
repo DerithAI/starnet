@@ -248,4 +248,16 @@ A.ok(!/worked on recently/i.test(cdNoAct) && !/CONTINUE THEIR WORK/i.test(cdNoAc
 const cd2Act = Autopilot.buildCandidateDirectiveV2({ beliefs: b2, activity: activityLines, eligible: eligAll });
 A.ok(/worked on recently/i.test(cd2Act) && /CONTINUE THEIR WORK/i.test(cd2Act), 'the V2 build directive also carries the recent-activity block + continue rule');
 
+// token-burn audit 2026-10-17: no night-shift build prompt claims the act CANNOT run commands (false whenever the bay has a
+// terminal: the act wrote its report first and verify-on-stop bought a second pass). All three say: if you have a shell, check first.
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const body = name => src.slice(src.indexOf('function ' + name), src.indexOf('function ' + name) + 6000);
+  for (const [label, text] of [['buildDoDirectiveV2', Autopilot.buildDoDirectiveV2({ title: 't' }, { runId: 'r' })], ['workshopPrompt', body('workshopPrompt')], ['implementPrompt', body('implementPrompt')]]) {
+    const prompt = text.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');   // source comments may quote the old line
+    A.ok(!/CANNOT run commands|cannot run commands/.test(prompt), label + ' never claims the act cannot run commands');
+    A.ok(/If you have a shell, CHECK the work BEFORE you write the manifest/.test(text), label + ' tells a shell-holding act to check before the manifest');
+  }
+}
+
 A.report('autopilot.test');

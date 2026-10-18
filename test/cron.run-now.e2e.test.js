@@ -250,6 +250,16 @@ async function readNdjson(res) {
       "a bay-bound Run Now runs in its computer-only bay room like the scheduled fire: no dish, no web tools");
     A.ok(sysOf(stage1).indexOf('YOUR STANDING BRIEF FOR THIS STATION:\nDig three primary sources and cite them.') >= 0,
       "stage one's system carries the dock's standing brief under the hub's exact section header");
+    /* A HOP IS NOT A RESUME (token-burn audit 2026-10-17). The downstream stage arrives as ONE handoff turn on the fire's
+       shared cron-<runId> stream; runOnceCore's resume seed used to prepend that stream's transcript — stage one's directive,
+       tool traffic and reply — as the writer's OWN past turns, on top of a handoff that already carries both. Recorded off the
+       REAL provider request of the writer's first call: one user turn, no replayed assistant/tool rows. */
+    const stage2 = mock.requests.slice(callsBefore).find(r =>
+      (r.messages || []).some(m => m.role === 'user' && /^PIPELINE HANDOFF — you are stage 2\b/.test(String(m.content || '').replace(/^[\s\S]*?(?=PIPELINE HANDOFF)/, ''))));
+    A.ok(stage2, "found the writer stage's recorded provider request");
+    const replayed = stage2 ? (stage2.messages || []).filter(m => m.role === 'assistant' || m.role === 'tool') : [];
+    A.eq(replayed.length, 0, 'the writer stage is NOT seeded with stage one\'s turns (its handoff already carries the upstream output)');
+    A.ok(stage2 && (stage2.messages || []).filter(m => m.role === 'user').length === 1, 'the writer stage carries exactly its one handoff turn');
 
     /* ---- A ROUTINE THAT DOES NOT BELONG TO THE LINE BUYS EXACTLY ONE RUN (2026-08-07, Andrew's ruling) ----
        THE MONEY CASE, on the real Run Now path and the same armed two-stage floor. Deciding "does this fire a

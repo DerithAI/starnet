@@ -302,6 +302,9 @@
         provider: str(e.provider).trim().slice(0, 60),
         reason: REASONS.has(e.reason) ? e.reason : 'done',     // clamp to the known enum (matches agent.run.end)
         turns: num(e.turns), tokens: num(e.tokens), usd: num(e.usd),
+        // (additive, token-burn audit 2026-10-17) how much of `tokens`' input the provider served from its prompt cache —
+        // `tokens` counts a cache read at full weight. Present only when > 0, so every other row stays byte-identical.
+        ...(num(e.cachedTokens) > 0 ? { cachedTokens: num(e.cachedTokens) } : {}),
         title: str(e.title).slice(0, TITLE_MAX),
         streamId: str(e.streamId),     // H3.2: the run's workstream — joins this outcome row to its transcript (GET /api/transcript?stream=)
         // Durable session-delivery envelope. The page bridge is best-effort (and multiple open pages may disagree
