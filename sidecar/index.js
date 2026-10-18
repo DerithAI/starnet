@@ -19999,20 +19999,19 @@ async function runOnceCore(o) {
   // live for autonomous runs without tool arguments ever leaving the sidecar); agent.token never (that noise
   // decision stands). redact() still runs over the view as a second backstop. Re-using the name `emit` means
   // every existing emit(...) call site below tees automatically, with no per-site change.
-  const rawEmit = o.emit;
-  const emitBase = o.broadcast
+  // EVERY run but reason-only self-talk also reaches a watching terminal (GET /api/observe): the run's own sink runs
+  // first and unchanged; with nobody watching the tee is one size() check (sidecar/observer.js)
+  const rawEmit = internal ? o.emit : observer.tee(o.emit, {
+    runId, agentId, streamId: o.streamId || '', surface: o.surface || '', trigger, lineId: workflowLine || '', dockId: o.dockId || '',
+    prompt: () => require('./observer.js').lastUserText(messages)
+  });
+  const emit = o.broadcast
     ? (name, payload) => {
         try { rawEmit(name, payload); } catch (_) {}
         const view = runTeeView(name, payload);
         if (view) { try { sse.broadcast(name, redact(view)); } catch (_) {} }
       }
     : rawEmit;
-  // …and EVERY run but reason-only self-talk also reaches a watching terminal (GET /api/observe): the run's own sink
-  // runs first and unchanged; with nobody watching the tee is one size() check (sidecar/observer.js)
-  const emit = internal ? emitBase : observer.tee(emitBase, {
-    runId, agentId, streamId: o.streamId || '', surface: o.surface || '', trigger, lineId: workflowLine || '', dockId: o.dockId || '',
-    prompt: () => require('./observer.js').lastUserText(messages)
-  });
 
   // A LINE BUDGET applies before the FIRST stage as well as between hops. Samples, channel messages and
   // routines all reach this host-derived origin; checking only chain.advance let every new job buy its
