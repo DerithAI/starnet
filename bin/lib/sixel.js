@@ -118,8 +118,19 @@ function decodeSixel(str) {
 
 /* brailleLogo(rows) → the same REAL wordmark as braille dots (2×4 a cell), for terminals that cannot draw images. The
    logo is itself a dot matrix, so its dots map onto braille dots: each dot takes the BRIGHTEST master pixel it covers
-   (max, not mean — a thin dotted stroke must light its dot, never average away). Four rows ≈ 56 columns. */
+   (max, not mean — a thin dotted stroke must light its dot, never average away). Four rows ≈ 56 columns.
+   Two things a plain grid gets wrong, both fixed here:
+   - a level stroke that falls on the line between two dot rows lights BOTH (the top edge read as a doubled, thick bar).
+     The wordmark's level strokes sit at STROKE_Y, so the dot rows are laid out to put each of them on a row's centre
+     (piecewise between them, never more than half a dot off) — every level stroke is one dot thick, as in the logo.
+   - the star in the A is ~6×7 dots: sampled, it smudges into a blob. Its pixels (STAR_BOX) are left out of the sample
+     and a drawn star (STAR_DOTS: long top spike, short bottom spike, leaning with the italic) goes in its place.
+   STROKE_Y and STAR_BOX are measured off logo-image.js (dev/cli-logo-image.cjs) — re-measure if the master changes. */
 const BRAILLE_DOT = [[1, 8], [2, 16], [4, 32], [64, 128]];
+const STROKE_Y = [6.3, 31.2, 45.3, 70.6, 87.5, 111];   // the master's level strokes, top edge to bottom edge (px)
+const STAR_BOX = { x0: 244, x1: 290, y0: 38, y1: 91, cx: 265, cy: 71 };   // the star's pixels in the master, and its centre
+const inStar = (x, y) => x >= STAR_BOX.x0 && x <= STAR_BOX.x1 && y >= STAR_BOX.y0 && y <= STAR_BOX.y1 && !(x < 250 && y < 56);   // (the A's own inner stroke dips into the box's top-left corner)
+const STAR_DOTS = ['....X..', '....X..', '...X...', '..X.X..', 'XX...XX', '..X.X..', '...X...', '..X....'];   // arms on row 4, centre column 3
 const brailleCache = new Map();
 function brailleLogo(rows, threshold) {
   const r = Math.max(1, rows | 0), thr = threshold == null ? 0.5 : threshold;
@@ -127,19 +138,43 @@ function brailleLogo(rows, threshold) {
   if (brailleCache.has(key)) return brailleCache.get(key);
   const src = master();
   const gh = r * 4, cols = Math.ceil(Math.round(gh * src.w / src.h) / 2), gw = cols * 2;
-  const lit = (x, y) => {
-    const sx0 = Math.floor(x * src.w / gw), sx1 = Math.max(sx0 + 1, Math.floor((x + 1) * src.w / gw));
-    const sy0 = Math.floor(y * src.h / gh), sy1 = Math.max(sy0 + 1, Math.floor((y + 1) * src.h / gh));
-    let mx = 0;
-    for (let yy = sy0; yy < sy1; yy++) for (let xx = sx0; xx < sx1; xx++) mx = Math.max(mx, src.px[yy * src.w + xx]);
-    return mx / 255 >= thr;
+  // dot row k → the master y at its centre: each level stroke on a row of its own, straight lines between
+  const span = STROKE_Y[STROKE_Y.length - 1] - STROKE_Y[0];
+  const rowOf = STROKE_Y.map(y => Math.round((y - STROKE_Y[0]) / span * (gh - 1)));
+  const snapped = rowOf.every((k, i) => i === 0 || k > rowOf[i - 1]);   // too few rows to give each stroke its own: plain grid
+  const rowY = k => {
+    if (!snapped) return (k + 0.5) * src.h / gh;
+    let i = 0;
+    while (i < rowOf.length - 2 && k > rowOf[i + 1]) i++;
+    return STROKE_Y[i] + (k - rowOf[i]) * (STROKE_Y[i + 1] - STROKE_Y[i]) / (rowOf[i + 1] - rowOf[i]);
   };
+  const star = gh >= 16;   // a drawn star needs 8 dot rows of room; smaller logos keep the sampled one
+  const on = new Uint8Array(gw * gh);
+  for (let y = 0; y < gh; y++) {
+    const sy0 = y === 0 ? 0 : Math.round((rowY(y - 1) + rowY(y)) / 2);
+    const sy1 = y === gh - 1 ? src.h : Math.max(sy0 + 1, Math.round((rowY(y) + rowY(y + 1)) / 2));
+    for (let x = 0; x < gw; x++) {
+      const sx0 = Math.floor(x * src.w / gw), sx1 = Math.max(sx0 + 1, Math.floor((x + 1) * src.w / gw));
+      let mx = 0;
+      for (let yy = Math.max(0, sy0); yy < Math.min(src.h, sy1); yy++) for (let xx = sx0; xx < sx1; xx++) {
+        if (star && inStar(xx, yy)) continue;
+        mx = Math.max(mx, src.px[yy * src.w + xx]);
+      }
+      if (mx / 255 >= thr) on[y * gw + x] = 1;
+    }
+  }
+  if (star) {
+    let cy = 0;
+    for (let k = 1; k < gh; k++) if (Math.abs(rowY(k) - STAR_BOX.cy) < Math.abs(rowY(cy) - STAR_BOX.cy)) cy = k;
+    const x0 = Math.round(STAR_BOX.cx * gw / src.w - 0.5) - 3, y0 = cy - 4;
+    STAR_DOTS.forEach((line, dy) => { for (let dx = 0; dx < line.length; dx++) if (line[dx] === 'X' && y0 + dy >= 0 && y0 + dy < gh) on[(y0 + dy) * gw + x0 + dx] = 1; });
+  }
   const lines = [];
   for (let cy = 0; cy < r; cy++) {
     let s = '';
     for (let cx = 0; cx < cols; cx++) {
       let bits = 0;
-      for (let k = 0; k < 4; k++) for (let c = 0; c < 2; c++) if (lit(cx * 2 + c, cy * 4 + k)) bits |= BRAILLE_DOT[k][c];
+      for (let k = 0; k < 4; k++) for (let c = 0; c < 2; c++) if (on[(cy * 4 + k) * gw + cx * 2 + c]) bits |= BRAILLE_DOT[k][c];
       s += bits ? String.fromCharCode(0x2800 + bits) : ' ';
     }
     lines.push(s.replace(/\s+$/, ''));
