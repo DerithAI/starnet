@@ -436,6 +436,7 @@ const { makeStationControlTools, cardFor: stationControlCard } = require('./tool
 const { makeRoutineTools } = require('./tools/builtin/routines.js'); // ROUTINES: agent-created StarNet cron jobs
 const { makeLoopTools } = require('./tools/builtin/loops.js');       // LOOPS: model-facing durable standing-objective controls
 const { makeCommsTools } = require('./tools/builtin/comms.js');      // COMMS: outbound reach — an agent messages a connected chat
+const RoutineMedia = require('./routine-media.js');                   // a chat-bound routine's delivery carries its files (ATTACH lines / generated images)
 const cronGuard = require('./cron-guard.js');                        // routine prompt-injection tripwire (pure, see file header)
 // Every child this file spawns gets the station-secret-free env by default (child-env.js, audit 2026-09-25 #13):
 // git in user repos, shell hooks, loop checks, the folder picker, fs.search's rg. An explicit `env` (the agent
@@ -6478,6 +6479,26 @@ const cronEmit = (name, payload) => { try { return cronEmitValidated(name, redac
    Shared by the autonomous notifier and the agent's channel.send tool: a second copy of this fan-out would
    eventually disagree about which adapter serves a channel, and the failure mode is a message going to the
    wrong platform or silently nowhere. */
+/* readChannelUpload(agentId, rel) -> { ok, buffer, name, mime } | { ok:false, error } — the JAIL PROOF for every file
+   that leaves the station for a chat: channel.send's `files` and a routine delivery's attachments (routine-media.js)
+   both read through it. resolveInside is the same proof the fs.* tools and user attachments use, so only a file
+   inside the agent's OWN workspace can go — `../` or an absolute path is a refusal, not a traversal. Never throws:
+   a miss is { ok:false, error } the caller reports honestly. */
+async function readChannelUpload(agentId, rel) {
+  try {
+    // resolveInside THROWS on a jail violation ('illegal path' / 'path escapes workspace') and otherwise
+    // answers { base, abs } — the catch below turns a violation into an honest refusal, never a traversal.
+    const r = await fsJail.resolveInside(String(agentId || ''), String(rel || ''), { scope: 'read' });
+    const abs = r && r.abs;
+    if (!abs) return { ok: false, error: 'that path is outside your workspace' };
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st || !st.isFile()) return { ok: false, error: 'not a file' };
+    if (st.size > CHANNEL_UPLOAD_MAX_BYTES) return { ok: false, error: 'file is ' + Math.round(st.size / (1024 * 1024)) + 'MB (limit ' + Math.round(CHANNEL_UPLOAD_MAX_BYTES / (1024 * 1024)) + 'MB)' };
+    const buffer = await fsp.readFile(abs);
+    if (!buffer.length) return { ok: false, error: 'file is empty' };
+    return { ok: true, buffer: buffer, name: path.basename(abs), mime: mimeForPath(abs) };
+  } catch (e) { return { ok: false, error: (e && e.message) || 'read failed' }; }
+}
 function liveChannelFor(channel) {
   /* The DEV channel is a REAL channel — it has a hub and a working send (it captures replies for
      GET/POST /api/dev/inbound) — it just has no bot server behind it, so it never appears in genericChannels.
@@ -6621,6 +6642,24 @@ function cronReturnsToSession(job) {
   return (mode === 'local' && !!job.attachToSession)
     || (mode === 'origin' && !origin.target && !(origin.channel && origin.chatId));
 }
+/* cronDeliveryNote(job) -> the [DELIVERY] paragraph a CHAT-bound routine's run carries (routine-media.js): how to
+   attach a file to the reply the station delivers. Resolved like deliverCronResult resolves targets, so only a routine
+   whose reply really goes to a chat is told — local and session routines compose the exact pre-note system. */
+function cronDeliveryNote(job) {
+  try {
+    const mode = String((job && job.deliver) || 'local').trim();
+    let recs = [];
+    if (mode === 'origin' && job.origin && job.origin.target) recs = [channelStore.getChatRecord(String(job.origin.target))];
+    else if (mode === 'origin' && job.origin && job.origin.channel && job.origin.chatId) recs = [job.origin];
+    else if (mode.indexOf('targets:') === 0) recs = mode.slice(8).split(',').map(s => s.trim()).filter(Boolean).slice(0, 16).map(t => channelStore.getChatRecord(t));
+    const names = recs.filter(Boolean).map(r => {
+      const base = String(r.channel || 'telegram').split(':')[0];
+      const desc = channelRegistry.get(base);
+      return (desc && desc.label) || base;
+    });
+    return RoutineMedia.deliveryNote(names);
+  } catch (e) { failNote('cron.deliveryNote', e); return ''; }
+}
 function cronPreflightConfig(job) {
   const mode = String((job && job.deliver) || 'local').trim();
   if (mode === 'local') {
@@ -6682,6 +6721,23 @@ async function deliverCronResult(job, result) {
     return out;
   }
   if (!targets.length) return { ok: true, skipped: true };
+  /* FILES RIDE THE CHAT DELIVERY (routine-media.js, 2026-10-18). An unattended run cannot channel.send (the exec
+     lockout), so this is the only way a routine's image or chart reaches the chat: the ATTACH lines its reply names,
+     else the images the fire generated (its run rows' artifacts — durable, so a retried delivery finds them too).
+     Same approved target, same workspace jail as channel.send. A reply with no ATTACH line and no generated image
+     delivers byte-identically to before. */
+  let chatBody = String(result.text || ''), chatText = text, attach = { files: [], dropped: [] }, named = [];
+  if (result.outcome !== 'failed') {
+    const parsed = RoutineMedia.parseReply(result.text);
+    let runs = [];
+    try { runs = runStore.list(null, { streamId: 'cron-' + result.runId, limit: 50 }) || []; } catch (_) { runs = []; }
+    named = parsed.files;
+    attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId });
+    if (named.length) {
+      chatBody = parsed.text;
+      chatText = '✦ ' + (job.name || 'Routine') + (parsed.text.trim() ? '\n\n' + parsed.text : '');
+    }
+  }
   let failed = 0, firstError = '';
   const deliveredTargets = new Set(Array.isArray(result.deliveredTargets) ? result.deliveredTargets : []);
   for (const target of Array.from(new Set(targets)).slice(0, 16)) {
@@ -6690,15 +6746,31 @@ async function deliverCronResult(job, result) {
     if (!rec) { failed++; firstError = firstError || 'unknown chat target ' + target; continue; }
     const channel = String(rec.channel || 'telegram'), live = liveChannelFor(channel);
     if (!(live && live.adapter)) { failed++; firstError = firstError || channel + ' is not connected'; continue; }
+    const chatId = String(rec.chatId || target), route = rec.threadId ? { threadId: rec.threadId } : undefined;
     try {
-      const sent = await live.adapter.send(String(rec.chatId || target), redact(text), rec.threadId ? { threadId: rec.threadId } : undefined);
+      const sent = await live.adapter.send(chatId, redact(chatText), route);
       if (sent && sent.ok === false) throw new Error(sent.error || 'send failed');
       deliveredTargets.add(target);
       if (job.attachToSession) {
         channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
-        channelStore.appendTurn(job.agentId, 'assistant', String(result.text || ''));
+        channelStore.appendTurn(job.agentId, 'assistant', chatBody);
       }
-    } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); }
+    } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); continue; }
+    // The words landed, so this target is delivered: a file that fails is told to the chat, never retried (a retry
+    // would resend the message), and never silent — the Commander would be waiting for a picture that is not coming.
+    if (attach.files.length || (named.length && attach.dropped.length)) {
+      const files = await RoutineMedia.sendFiles(attach.files, {
+        read: readChannelUpload,
+        send: (item) => typeof live.adapter.sendMedia === 'function'
+          ? live.adapter.sendMedia(chatId, item, route)
+          : Promise.resolve({ ok: false, error: channel + ' cannot carry files' })
+      });
+      for (const f of files.failed) console.warn('[cron] routine ' + job.id + ' file "' + f.path + '" not attached [' + channel + ']: ' + f.error);
+      const missed = files.failed.map(f => f.path).concat(named.length ? attach.dropped : []);
+      if (missed.length) {
+        try { await live.adapter.send(chatId, RoutineMedia.missedNote(missed), route); } catch (e) { failNote('cron.delivery.missedNote', e); }
+      }
+    }
   }
   return { ok: failed === 0, error: firstError || null, deliveredTargets: Array.from(deliveredTargets) };
 }
@@ -6799,6 +6871,7 @@ const cronDriver = makeCronDriver({
   // persona is a GETTER so each fire folds in the LIVE Commander dossier (it changes as the user edits it);
   // withDossier is a no-op when the dossier is empty, so this is byte-identical to CRON_PERSONA until one exists.
   persona: (agentId) => cronSystemFor(agentId),
+  deliveryNoteFor: (job) => cronDeliveryNote(job),   // a chat-bound routine is told how to ATTACH files to its delivered reply
   /* THE WORK LINE for a scheduled fire: run the stages drawn downstream of the routine's dock. Same executor,
      same caps, same per-hop crates as a channel message — only the way a hop is executed differs (a routine has
      no chat transcript; its hops ride the routine's own stream so the session shows the whole line). */
@@ -16188,7 +16261,8 @@ async function handleCronRun(req, res) {
     await runOnce({
       key: key, model: model,
       system: cronSystemFor(job.agentId)
-        + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : ''),
+        + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : '')
+        + cronDeliveryNote(job),   // the scheduled fire's own [DELIVERY] note (cron-driver deliveryNoteFor) — same posture
       messages: [{ role: 'user', content: assembledPrompt }],
       agentId: job.agentId, isTask: true, emit: teeEmit, signal: ac.signal,
       // streamId 'cron-'+runId matches the SCHEDULED fire (cron-driver.js): Run Now must persist its transcript
@@ -20841,25 +20915,8 @@ async function runOnceCore(o) {
       // stay just under the true ceiling: the transport may add its own prefix/footer to a chunk.
       return (isFinite(n) && n > 200) ? (n - 100) : 1900;
     },
-    /* OUTBOUND FILES (2026-07-29). readFile is the JAIL PROOF and it lives here, not in the tool: comms.js is
-       pure and must not learn about the filesystem. resolveInside is the same proof the fs.* tools and user
-       attachments use, so an agent can only attach something inside its OWN workspace — `../` or an absolute
-       path is a refusal, not a traversal. Never throws: a miss is { ok:false, error } the tool reports honestly. */
-    readFile: async (agentId, rel) => {
-      try {
-        // resolveInside THROWS on a jail violation ('illegal path' / 'path escapes workspace') and otherwise
-        // answers { base, abs } — the catch below turns a violation into an honest refusal, never a traversal.
-        const r = await fsJail.resolveInside(String(agentId || ''), String(rel || ''), { scope: 'read' });
-        const abs = r && r.abs;
-        if (!abs) return { ok: false, error: 'that path is outside your workspace' };
-        const st = await fsp.stat(abs).catch(() => null);
-        if (!st || !st.isFile()) return { ok: false, error: 'not a file' };
-        if (st.size > CHANNEL_UPLOAD_MAX_BYTES) return { ok: false, error: 'file is ' + Math.round(st.size / (1024 * 1024)) + 'MB (limit ' + Math.round(CHANNEL_UPLOAD_MAX_BYTES / (1024 * 1024)) + 'MB)' };
-        const buffer = await fsp.readFile(abs);
-        if (!buffer.length) return { ok: false, error: 'file is empty' };
-        return { ok: true, buffer: buffer, name: path.basename(abs), mime: mimeForPath(abs) };
-      } catch (e) { return { ok: false, error: (e && e.message) || 'read failed' }; }
-    },
+    // OUTBOUND FILES (2026-07-29): the jail proof lives in the host (readChannelUpload), never in the pure tool.
+    readFile: readChannelUpload,
     // Upload through the SAME target-key resolution sendTo uses, so an agent can attach a file exactly where it
     // may already send words — known-targets-only is unchanged by this feature.
     sendMediaTo: (target, item) => {

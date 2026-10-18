@@ -1259,3 +1259,4 @@ test/visible-text-caps.test.js
 test/abilities-switch-scope.test.js
 test/loop-unapproved-truth.test.js
 test/build-paint-material.test.js
+test/routine-media.test.js
