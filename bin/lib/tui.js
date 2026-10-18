@@ -110,20 +110,6 @@ const HELP = [
   ['ctrl+c', 'quit']
 ];
 
-// the wordmark's neon: a cyan→blue sweep across the letters, their ╗║╝ shadows a deep teal (Tron-style glow on black)
-const GRAD = ['g0', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7'];
-function putWordmark(g, x0, y0, lines, bold) {
-  const w = Math.max(...lines.map(l => width(l)));
-  lines.forEach((l, r) => {
-    let x = x0;
-    for (const ch of l) {
-      const style = ch === '█' ? GRAD[Math.min(7, Math.floor((x - x0) / Math.max(1, w) * 8))] + (bold ? ' b' : '') : ch === ' ' ? '' : 'gsh';
-      if (ch !== ' ') g.put(x, y0 + r, ch, style);
-      x++;
-    }
-  });
-  return w;
-}
 function lampOf(s, pulse, blink) {
   if (s.key === 'working') return ['●', pulse ? 'ph b' : 'ph faint'];
   if (s.key === 'needs') return ['▲', blink ? 'am b' : 'am faint'];
@@ -146,72 +132,82 @@ function render(model, ui, size, now) {
   const flows = model.flows(now);
   const front = model.front();
   const narrow = W < 80;
-  const starStyle = head.working ? (pulse ? 'brandhi b' : 'brand b') : 'brand';
 
-  // ---- the StarNet logo: the star cut from the icon master (it glows only while the crew works) + the block wordmark ----
-  const status = [];
-  if (head.feed !== 'live') status.push([feedWord(head.feed), 'am']);
-  status.push([(head.working ? '● ' : '○ ') + head.working + ' working', head.working ? 'ph b' : 'dim']);
-  status.push([(head.needs ? '▲ ' : '△ ') + head.needs + ' needs you', head.needs ? 'am b' : 'dim']);
-  status.push([costText(head.cost), 'dim']);
-  const big = ui.logo !== 'plain' && logo && logo.word && W >= 82 && H >= 26;
-  let y = 0;
-  if (big) {
-    logo.star.forEach((l, i) => g.put(0, i, l, starStyle));
-    const ww = putWordmark(g, 15, 0, logo.word, true);
-    const right = W - (15 + ww + 3);
-    if (right >= 24) {
-      g.putR(W - 1, 0, trunc(ui.stationLabel || '', right), 'dim');
-      status.forEach(([t, s], i) => g.putR(W - 1, 1 + i, trunc(t, right), s));
+  // the counts, longest form that fits: feed state + working + needs + spend → working + needs → needs alone
+  const working = [(head.working ? '● ' : '○ ') + head.working + ' working', head.working ? 'ph b' : 'dim'];
+  const needs = [(head.needs ? '▲ ' : '△ ') + head.needs + ' needs you', head.needs ? 'am b' : 'dim'];
+  const sep = [' · ', 'dim'];
+  const forms = [
+    (head.feed !== 'live' ? [[feedWord(head.feed), 'am'], sep] : []).concat([working, sep, needs, sep, [costText(head.cost), 'dim']]),
+    (head.feed !== 'live' ? [[feedWord(head.feed), 'am'], sep] : []).concat([working, sep, needs]),
+    [working, sep, needs],
+    [needs]
+  ];
+  function putCounts(y, xMin) {
+    for (const form of forms) {
+      const w = form.reduce((n, s) => n + width(s[0]), 0);
+      let x = W - w;
+      if (x < xMin) continue;
+      for (const [t, s] of form) x = g.put(x, y, t, s);
+      return W - w;
     }
-    y = 6;
-    if (right < 24) {   // no room beside the letters: one status line under them
-      let x = 0;
-      for (const [t, s] of [[ui.stationLabel || '', 'dim']].concat(status)) { if (x) x = g.put(x, y, '  ·  ', 'dim'); x = g.put(x, y, t, s); }
-      y++;
-    }
-  } else {
-    // the one-line mark (a short terminal): the star, and the word in the wordmark's own neon, letter-spaced
-    let x = g.put(0, 0, '✦ ', starStyle);
-    'STARNET'.split('').forEach((ch, i) => { x = g.put(x, 0, ch, GRAD[Math.min(7, i)] + ' b'); if (i < 6) x = g.put(x, 0, ' ', ''); });
-    const segs = narrow ? status.filter(([t]) => /needs|working/.test(t)).slice(0, 2) : status;
-    let xx = W;
-    for (let i = segs.length - 1; i >= 0; i--) { xx -= width(segs[i][0]); if (xx < x + 3) break; g.put(xx, 0, segs[i][0], segs[i][1]); if (i) { xx -= 3; g.put(xx, 0, ' · ', 'dim'); } }
-    if (!narrow && xx - x > 30) g.put(x + 3, 0, trunc(ui.stationLabel || '', xx - x - 6), 'dim');
-    y = 1;
+    return W;
   }
 
   // ---- CREW: one bar, left to right — the lamp says what each agent is doing, ‹ › marks the one in COMMS ----------------
-  const label = 'CREW ';
-  const items = rows.map(r => {
-    const [lamp, lc] = lampOf(r.status, pulse, blink);
-    return { r, lamp, lc, w: 2 + width(r.name) + (r.id === ui.focus ? 4 : 0) };
-  });
-  const barRows = narrow ? 3 : 2;
-  const lines = [[]];
-  let lx = width(label);
-  for (const it of items) {
-    if (lx + it.w + 2 > W) { if (lines.length >= barRows) break; lines.push([]); lx = width(label); }
-    lines[lines.length - 1].push(it); lx += it.w + 2;
+  const items = rows.map(r => { const [lamp, lc] = lampOf(r.status, pulse, blink); return { r, lamp, lc, w: 2 + width(r.name) + (r.id === ui.focus ? 4 : 0) }; });
+  function layoutBar(barW, maxRows) {
+    const lines = [[]];
+    let lx = 0;
+    for (const it of items) {
+      if (lx && lx + it.w > barW) { if (lines.length >= maxRows) break; lines.push([]); lx = 0; }
+      lines[lines.length - 1].push(it); lx += it.w + 2;
+    }
+    // the agent in COMMS is always on the bar: if it fell past the end, it takes the last place
+    if (items.length && !lines.flat().some(it => it.r.id === ui.focus)) { const f = items.find(it => it.r.id === ui.focus); const last = lines[lines.length - 1]; if (f && last.length) last[last.length - 1] = f; }
+    return { lines, hidden: items.length - lines.flat().length };
   }
-  const placed = lines.flat();
-  // the agent in COMMS is always on the bar: if it fell past the end, it takes the last place
-  if (items.length && !placed.some(it => it.r.id === ui.focus)) { const f = items.find(it => it.r.id === ui.focus); const last = lines[lines.length - 1]; if (f && last.length) last[last.length - 1] = f; }
-  const hidden = items.length - lines.flat().length;
-  lines.forEach((ln, i) => {
-    let x = i ? g.put(0, y, ' '.repeat(width(label)), '') : g.put(0, y, label, 'lbl b');
-    ln.forEach(it => {
-      const foc = it.r.id === ui.focus;
-      if (foc) x = g.put(x, y, '‹ ', 'ph b');
-      x = g.put(x, y, it.lamp + ' ', it.lc);
-      x = g.put(x, y, it.r.name, 'a' + it.r.color + (foc || it.r.status.key !== 'idle' ? ' b' : ''));
-      if (foc) { x = g.put(x, y, ' ›', 'ph b'); g.hl(y, x - it.w, x, 'sel'); }
-      x = g.put(x, y, '  ', '');
+  function drawBar(bar, x0, y0) {
+    bar.lines.forEach((ln, i) => {
+      let x = i ? x0 + 5 : g.put(x0, y0, 'CREW ', 'lbl b');
+      ln.forEach(it => {
+        const foc = it.r.id === ui.focus;
+        const start = x;
+        if (foc) x = g.put(x, y0 + i, '‹ ', 'ph b');
+        x = g.put(x, y0 + i, it.lamp + ' ', it.lc);
+        x = g.put(x, y0 + i, it.r.name, 'a' + it.r.color + (foc || it.r.status.key !== 'idle' ? ' b' : ''));
+        if (foc) { x = g.put(x, y0 + i, ' ›', 'ph b'); g.hl(y0 + i, start, x, 'sel'); }
+        x += 2;
+      });
+      if (i === bar.lines.length - 1 && bar.hidden > 0) g.put(Math.min(x, W - 4), y0 + i, '+' + bar.hidden, 'dim');
     });
-    if (i === lines.length - 1 && hidden > 0) g.put(Math.min(x, W - 4), y, '+' + hidden, 'dim');
-    y++;
-  });
-  if (!rows.length) { g.put(0, y - 1, label + 'no agents on the roster yet', 'dim'); }
+    if (!items.length) g.put(x0 + 5, y0, 'no agents on the roster yet', 'dim');
+    return Math.max(1, bar.lines.length);
+  }
+
+  // ---- header: the StarNet wordmark — thin outlined letters leaning forward, neon red — with the crew bar beside it -----
+  const word = ui.logo !== 'plain' && logo && logo.word ? logo.word : null;
+  const lw = word ? Math.max(...word.map(l => width(l))) : 0;
+  let y;
+  if (word && W - lw - 3 >= 44) {
+    word.forEach((l, i) => g.put(0, i, l, 'logo b'));
+    const x0 = lw + 3;
+    const xc = putCounts(0, x0);
+    if (xc - x0 > 24) g.put(x0, 0, trunc(ui.stationLabel || '', xc - x0 - 3), 'dim');
+    drawBar(layoutBar(W - x0 - 5, word.length - 1), x0, 1);
+    y = word.length;
+  } else if (word && H >= 22) {
+    word.forEach((l, i) => g.put(0, i, l, 'logo b'));
+    putCounts(0, lw + 3);
+    y = word.length;
+    y += drawBar(layoutBar(W - 5, narrow ? 3 : 2), 0, y);
+  } else {
+    let x = 0;
+    'STARNET'.split('').forEach((ch, i) => { x = g.put(x, 0, ch, 'logo b'); if (i < 6) x = g.put(x, 0, ' ', ''); });
+    const xc = putCounts(0, x + 3);
+    if (!narrow && xc - x > 30) g.put(x + 3, 0, trunc(ui.stationLabel || '', xc - x - 6), 'dim');
+    y = 1 + drawBar(layoutBar(W - 5, narrow ? 3 : 2), 0, 1);
+  }
 
   // ---- NOW: what the busy ones are doing, one line (only while someone is) ------------------------------------------
   const busy = rows.filter(r => r.status.key === 'needs').concat(rows.filter(r => r.status.key === 'working'));
@@ -401,14 +397,12 @@ function drawCard(g, lines, y0, W, blink) {
 // ---- styles → ANSI ------------------------------------------------------------------------------------------
 // level 0: no color (NO_COLOR) — bold/inverse only · level 2: 256 colors · level 3: 24-bit
 const PALETTE = {
-  fg: ['#9fd0e2', 152], hi: ['#e8fcff', 195], dim: ['#4b7385', 66], rule: ['#16708f', 31], lbl: ['#2ab3d4', 38],
-  ph: ['#3df2ff', 51], am: ['#ff9d2f', 208], ok: ['#5dffbf', 85], bad: ['#ff4f5e', 203],
-  a0: ['#3df2ff', 51], a1: ['#ff5fd2', 206], a2: ['#a6ff4d', 155], a3: ['#b48cff', 141], a4: ['#ffd84d', 221], a5: ['#5d9bff', 69],
-  brand: ['#ff9d2f', 208], brandhi: ['#ffc874', 222],   // the StarNet mark's own orange phosphor (website favicon #ff9d2f)
-  g0: ['#9ffbff', 159], g1: ['#6ff5ff', 123], g2: ['#3df2ff', 51], g3: ['#22dcff', 45], g4: ['#1cc2ff', 39], g5: ['#22a6ff', 33], g6: ['#3b8aff', 33], g7: ['#4f6dff', 63],
-  gsh: ['#0e6585', 24]
+  fg: ['#d9d2d4', 252], hi: ['#ffffff', 231], dim: ['#7f666b', 95], rule: ['#7a1c28', 88], lbl: ['#ff4757', 203],
+  ph: ['#ff3b4e', 203], am: ['#ffb43a', 214], ok: ['#5dffa8', 85], bad: ['#ff6b3d', 202],
+  a0: ['#6fe3ff', 81], a1: ['#ff7ad9', 212], a2: ['#a6ff4d', 155], a3: ['#b48cff', 141], a4: ['#ffd84d', 221], a5: ['#7aa8ff', 111],
+  logo: ['#ff2e3e', 196], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
 };
-const BG = { sel: ['#06303d', 23], card: ['#170e04', 52], inv: ['#3df2ff', 51] };
+const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 58], inv: ['#ff3b4e', 203] };
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function sgr(style, level) {
   const parts = String(style || '').split(/\s+/).filter(Boolean);
