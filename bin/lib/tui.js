@@ -195,7 +195,7 @@ function render(model, ui, size, now) {
   // screen here only keeps them blank and lays the counts and the crew bar beside them
   const img = ui.logoImage && ui.logoImage.cols > 0 ? ui.logoImage : null;
   // without an image: the same real logo as braille dots (STARNET_LOGO=ascii keeps the drawn-letter version)
-  const word = img || ui.logo === 'plain' ? null : ui.logo === 'ascii' ? (logo && logo.word) || null : sixelLib.brailleLogo(4);
+  const word = img || ui.logo === 'plain' ? null : ui.logo === 'ascii' ? (logo && logo.word) || null : sixelLib.brailleLogo();
   const lw = img ? img.cols : word ? Math.max(...word.map(l => width(l))) : 0;
   const lrows = img ? img.rows : word ? word.length : 0;
   let y;

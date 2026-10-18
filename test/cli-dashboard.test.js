@@ -161,17 +161,19 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.eq(rows.length, 34, 'one row per terminal line');
   A.ok(text.every(l => tui.width(l) <= 110), 'nothing is wider than the terminal');
   const logo = require('../bin/lib/logo.js');
-  const dots = require('../bin/lib/sixel.js').brailleLogo(4);
-  A.ok(dots.length === 4 && dots.every((l, i) => l.trim() && text[i].indexOf(l.trim()) === text[i].indexOf(l.trim()[0]) && text[i].indexOf(l.trim()) >= 0), 'without an image the screen opens on the REAL logo cut into braille dots, four rows');
-  A.ok(/[⠁-⣿]/.test(dots.join('')) && Math.max(...dots.map(l => l.length)) <= 60, 'the dot cut keeps the four-row size (≤ 60 columns)');
+  const dots = require('../bin/lib/sixel.js').brailleLogo();
+  A.ok(dots.length === 4 && dots.every((l, i) => l.trim() && text[i].indexOf(l.trim()) === text[i].indexOf(l.trim()[0]) && text[i].indexOf(l.trim()) >= 0), 'without an image the screen opens on the REAL logo drawn in braille dots, four rows');
+  A.ok(/[⠁-⣿]/.test(dots.join('')) && Math.max(...dots.map(l => l.length)) <= 56, 'the dot logo keeps the four-row size (56 columns)');
   {
-    // the cut back as a dot grid: dot[y][x], 16 rows
+    // the logo back as a dot grid: dot[y][x], 16 rows
     const BIT = [[1, 8], [2, 16], [4, 32], [64, 128]];
     const dot = Array.from({ length: 16 }, (_, y) => Array.from({ length: 112 }, (_, x) => { const ch = dots[y >> 2][x >> 1]; const b = ch ? ch.codePointAt(0) - 0x2800 : 0; return b > 0 && (b & BIT[y & 3][x & 1]) ? 1 : 0; }));
     const lit = y => dot[y].reduce((a, b) => a + b, 0);
-    A.ok(lit(0) > 60 && lit(0) >= 3 * lit(1), 'the top edge is ONE dot thick, as in the logo (a stroke between two dot rows used to light both): ' + lit(0) + ' vs ' + lit(1));
-    const STAR = ['....X..', '....X..', '...X...', '..X.X..', 'XX...XX', '..X.X..', '...X...', '..X....'];
-    A.ok(STAR.every((l, dy) => [...l].every((c, dx) => c !== 'X' || dot[5 + dy][34 + dx] === 1)) && [[8, 37], [9, 36], [9, 37], [9, 38], [10, 37]].every(([y, x]) => dot[y][x] === 0), "the A carries a drawn four-point star, hollow at its heart — never a sampled blob");
+    A.ok(lit(0) > 60 && lit(0) >= 3 * lit(1), 'the top edge is ONE dot thick, as in the logo (a sampled cut lit two rows for it): ' + lit(0) + ' vs ' + lit(1));
+    const STAR = ['...X...', '...X...', '..X.X..', '.XX.XX.', 'X.....X', '.XX.XX.', '..X.X..', '...X...'];
+    A.ok(STAR.every((l, dy) => [...l].every((c, dx) => (c === 'X') === (dot[5 + dy][34 + dx] === 1))), 'the A carries a drawn four-point star, hollow at its heart, nothing else in its box — never a sampled blob');
+    // the T's stems lean exactly as the wordmark does: one dot right for every two rows up, the pairs on the braille cells
+    A.ok([18, 22].every(base => [5, 6, 7, 8, 9, 10, 11, 12, 13, 14].every(y => dot[y][base + ((15 - y) >> 1)] === 1 && dot[y][base + ((15 - y) >> 1) - 1] === 0)), 'every upright leans one dot per two rows, so each braille row repeats the same pattern');
   }
   A.ok(text.slice(0, 1).some(l => /1 needs you/.test(l)), 'the counts sit on the top row');
   const ascii = screen(m, { logo: 'ascii' }, 110, 34, T0 + 3000);
