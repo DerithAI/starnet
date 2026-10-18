@@ -1287,3 +1287,154 @@ body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[dat
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-sig*="+"] { --half: 1; }
 /* NEEDS YOU's fold key */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-more { text-transform: uppercase; letter-spacing: 1.6px; }
+
+/* ============================================================
+   PIP-BOY COMMS CARDS (Andrew 10-18: "audit and polish the COMMS cards (approval, question, working, delegated) in the same
+   way"). Driven for real on a test station at his settings (approval, choice question, LET'S SHAPE THIS, the working line,
+   a delegated batch with a worker waiting on him, the group strip), the cards still wore the older language while
+   everything around them had moved to this pass's terminal register:
+     · five corner radii in one transcript (decision cards 5px, DELEGATED 10px, its keys 8px, the answer box 7px, the
+       working line 4px): every card is the 2px box
+     · a card that waits on you said so with a 2px gold left edge, which draws at ONE device pixel at TEXT SIZE 90 (Chrome
+       floors border widths) and read as the same line as its other edges: it is framed in gold all round now, the NEEDS
+       YOU card's own frame, and goes back to the quiet line once answered (data-live-ask leaves with the answer)
+     · three looks for the same APPROVE ONCE · DENY (NEEDS YOU's terminal keys, the approval card's glossy sentence-case
+       keys, the delegated row's 8px gradient keys): every command is the NEEDS YOU key — 2px, matte, caps, the lit one
+       gold, a deny in the fault colour. A question's ANSWERS keep their words as written, squared and matte
+     · the working line was the smallest, dimmest text in COMMS (a 12px dim tool name and time) behind a blinking block
+       caret: it reads at 15px in a 2px box, the CREW rail's calm segmented meter in place of the blink, one steady gold
+       lamp while the run waits on you (the rail hides its meter then too)
+     · DELEGATED's lamps were glossy and breathed: flat squares, steady (the row's clock ticks)
+     · LET'S SHAPE THIS said NOVA ASKS in red where the choice card says it in gold
+   ============================================================ */
+/* 1. every card is the 2px box (were 5px / 10px / 7px / 4px in one transcript) */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, #chat-log > .dg-line, #gc-questions .gc-question, #gc-states .gc-state) { border-radius: 2px; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .task-conversation :is(.tc-answer, .tc-sample, .tc-understanding) { border-radius: 2px; }
+
+/* 2. a card that waits on you is framed in gold all round, the NEEDS YOU card's own frame (a 2px gold left edge drew at one
+   device pixel at TEXT SIZE 90, indistinguishable from the other edges); answered, it goes back to the quiet line */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent { border: 1px solid rgba(var(--ph-rgb), .22); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-live-ask] {
+  border-color: rgba(var(--gold-rgb), .45);
+  background: linear-gradient(180deg, rgba(var(--gold-rgb), .06), rgba(var(--gold-rgb), .012) 55%), rgba(0, 0, 0, .28);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clarify-prompt] .cq-who,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .task-conversation .tc-caption { color: var(--gold); letter-spacing: 1.6px; text-transform: uppercase; }
+
+/* 3. ONE key: the NEEDS YOU terminal key — 2px, matte, caps for a command; the lit one gold, a deny in the fault colour */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state :is(.gc-ok, .gc-copy),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice {
+  min-height: 34px; padding: 5px 12px; border-radius: 2px; box-shadow: none; text-shadow: none;
+  font-family: 'VT323', monospace; line-height: 1.15; letter-spacing: .9px; text-transform: uppercase;
+  color: var(--ph-bright); border: 1px solid rgba(var(--ph-rgb), .4); background: rgba(0, 0, 0, .25);
+}
+/* (a plain key reads in the bright phosphor: in a red theme the phosphor itself is the fault colour's twin, and ALWAYS
+   read as a second DENY) */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-copy { margin-left: 0 !important; font-size: var(--sn-type-control, 16px) !important; min-height: 34px !important; padding: 5px 12px !important; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state :is(.gc-ok, .gc-copy):hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice:hover:not(:disabled) {
+  color: var(--ph-bright); border-color: rgba(var(--ph-rgb), .75); background: rgba(var(--ph-rgb), .1);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:is(.primary, .ws-openit, .ws-primary, .consent-confirm),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.primary,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.lit,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice.lit {
+  color: var(--gold); border-color: rgba(var(--gold-rgb), .75); background: rgba(var(--gold-rgb), .1);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn:is(.primary, .ws-openit, .ws-primary, .consent-confirm):hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.primary:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.lit:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice.lit:hover:not(:disabled) {
+  color: var(--gold); border-color: var(--gold); background: rgba(var(--gold-rgb), .2);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn.deny,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.deny,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.deny {
+  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); background: color-mix(in srgb, var(--bad) 6%, transparent);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn.deny:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log .dg-line .dg-key.deny:hover:not(:disabled),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-ok.deny:hover:not(:disabled) {
+  color: var(--bad); border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent) .consent-btn.danger { color: var(--warn); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent, .dg-inspect) .consent-btn.quiet { color: var(--text); background: transparent; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(.cmsg.turnin, .cmsg.nudge, .cmsg.consent) .consent-btn.sel { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .2); opacity: 1; }
+/* a question's ANSWERS keep their words as written (they are what you will be saying, not a command): squared and matte,
+   full width, the suggested one lit gold */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clarify-prompt] .consent-btn,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .task-conversation .consent-btn.tc-shortcut,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice {
+  text-transform: none; letter-spacing: .3px; text-align: left; padding: 6px 12px; color: var(--ph-bright);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clarify-prompt] .consent-btn.primary,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-question .gc-q-choice.lit { color: var(--gold); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .cmsg.consent[data-clarify-prompt] .consent-btn.quiet { color: var(--text); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .task-conversation .tc-actions .consent-btn { min-height: 34px; padding: 5px 12px; }
+
+/* 4. the WORKING line: the transcript's size (a 12px dim tool name and time), a 2px box, and the CREW rail's calm segmented
+   meter where the blinking block caret was; it rests lit gold while the run waits on you */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state:not(.hold) {
+  align-items: center; gap: 10px; min-height: 34px; padding: 6px 12px; border: 1px solid rgba(var(--ph-rgb), .22); border-radius: 2px;
+  background: rgba(0, 0, 0, .28); box-shadow: none; font-size: 15px; letter-spacing: .4px;
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence.paused:not(.resolved),
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state.hold {
+  border: 1px solid rgba(var(--gold-rgb), .45); border-radius: 2px; box-shadow: none;
+  background: linear-gradient(180deg, rgba(var(--gold-rgb), .06), rgba(var(--gold-rgb), .012) 55%), rgba(0, 0, 0, .28);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) :is(.cp-verb, .cp-tool, .cp-time) { font-size: 15px; text-shadow: none; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) .cp-verb { letter-spacing: 1.8px; color: var(--ph-bright); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) :is(.cp-tool, .cp-time) { color: var(--text); opacity: 1; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence.paused:not(.resolved) :is(.cp-verb, .cp-tool) { color: var(--gold); }
+/* the meter: six cells, a two-cell block stepping across (indeterminate: it says working, never how far along) */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) .cp-dot,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-dot {
+  position: relative; flex: 0 0 52px; width: 52px; height: 6px; overflow: hidden; align-self: center;
+  font-size: 0; color: transparent; text-shadow: none; animation: none; opacity: 1;
+  background: repeating-linear-gradient(90deg, rgba(var(--ph-rgb), .16) 0 7px, transparent 7px 9px);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) .cp-dot::after,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-dot::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 16px;
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--ph) 80%, transparent) 0 7px, transparent 7px 9px);
+  animation: pip-meter-cp 2.4s steps(8) infinite;
+}
+@keyframes pip-meter-cp { from { transform: translateX(-16px); } to { transform: translateX(56px); } }
+/* waiting on you (or failed) there is no work to show: the meter gives way to ONE steady lamp in the state's colour, as the
+   CREW rail hides its meter while an agent waits on your OK */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence.paused:not(.resolved) .cp-dot,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state:is(.hold, .bad) .gc-dot {
+  flex-basis: 7px; width: 7px; height: 7px; background: var(--gold);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state.bad .gc-dot { background: var(--bad); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence.paused:not(.resolved) .cp-dot::after,
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state:is(.hold, .bad) .gc-dot::after { content: none; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-verb { font-size: 15px; letter-spacing: 1.8px; text-shadow: none; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-what { font-size: 15px; text-shadow: none; }
+@media (prefers-reduced-motion: reduce) {
+  body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#comms-presence .cp-dot, #gc-states .gc-dot)::after { animation: none !important; transform: none; }
+}
+
+/* 5. DELEGATED: the family's frame (gold all round while a worker waits on you), flat steady lamps (were glossy and
+   breathing: the row's clock already ticks) */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line {
+  border: 1px solid rgba(var(--ph-rgb), .22); box-shadow: none; background: rgba(0, 0, 0, .28);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line:has(.dg-line-sum.waiting) {
+  border-color: rgba(var(--gold-rgb), .45);
+  background: linear-gradient(180deg, rgba(var(--gold-rgb), .06), rgba(var(--gold-rgb), .012) 55%), rgba(0, 0, 0, .28);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line .dg-line-list { border-top-color: rgba(var(--ph-rgb), .2); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line .dg-lamp { border-radius: 0; box-shadow: none; animation: none; opacity: 1; }
+/* working: lit but calm (the phosphor at 70%: in a red theme a full-strength phosphor lamp reads as the fault lamp) */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line .dg-lamp.working { background: color-mix(in srgb, var(--ph) 70%, transparent); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line .dg-line-text { text-transform: none; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line .dg-li-who { letter-spacing: 1.2px; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #chat-log > .dg-line .dg-inspect summary { color: var(--ph); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state.bad { border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
