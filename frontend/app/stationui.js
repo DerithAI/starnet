@@ -10322,13 +10322,28 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     return card;
   }
 
+  // THE PER-DETAIL CAP, SHOWN WHILE TYPING (releases#8). A detail holds Dossier.TEXT_CHARS characters: the editor's
+  // maxLength stopped typing — and clipped a paste — at that cap with nothing on screen saying so, while the briefing
+  // meter's "806 / 1600" read as room left. The count rides the editor in the dossier's own meter style and warns at
+  // the cap; maxLength reads the same constant the engine clips with, so the two can never drift apart.
+  const cdTextMax = () => (typeof Dossier !== 'undefined' && Dossier.TEXT_CHARS) || 280;
+  function cdCount(ta) {
+    const max = cdTextMax();
+    const c = mkEl('span', 'cd-brief-meter cd-count');
+    c.title = 'a detail holds up to ' + max + ' characters — add the rest as another detail';
+    c.sync = () => { const n = ta.value.length; c.textContent = n + ' / ' + max + ' chars'; c.classList.toggle('warn', n >= max); };
+    ta.addEventListener('input', c.sync); c.sync();
+    return c;
+  }
+
   // inline edit (mirrors the Memory Core editor): swap the body for a textarea + Save/Cancel.
   function cdEdit(card, txt, btns, dim, b) {
-    const ta = mkEl('textarea', 'cd-edit'); ta.value = b.text; ta.spellcheck = false; ta.maxLength = 280; ta.setAttribute('aria-label', 'Edit ' + dim.replace(/_/g, ' ') + ' detail');
+    const ta = mkEl('textarea', 'cd-edit'); ta.value = b.text; ta.spellcheck = false; ta.maxLength = cdTextMax(); ta.setAttribute('aria-label', 'Edit ' + dim.replace(/_/g, ' ') + ' detail');
     card.replaceChild(ta, txt); ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) {}
     btns.innerHTML = '';
     const save = mkEl('button', 'consent-btn'); save.textContent = 'Save'; btns.appendChild(save);
     const cancel = mkEl('button', 'consent-btn'); cancel.textContent = 'Cancel'; btns.appendChild(cancel);
+    btns.appendChild(cdCount(ta));
     let saving = false;
     save.onclick = () => { if (saving) return; const v = ta.value.trim(); if (!v) { ta.focus(); return; } saving = true; CDS().upsert(dim, { id: b.id, text: v }); sfx('click'); rerender('commander'); };
     cancel.onclick = () => rerender('commander');
@@ -10372,15 +10387,17 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // identical rows read as a bug. Covers BOTH entries: an inline chip tap and the plain "+ add".
       try { const sib = row.parentElement && row.parentElement.querySelector(':scope > .cd-starters'); if (sib) sib.style.display = 'none'; } catch (_) {}
       row.innerHTML = '';
-      const ta = mkEl('textarea', 'cd-edit'); ta.placeholder = 'What should your agents know?'; ta.spellcheck = false; ta.maxLength = 280; ta.setAttribute('aria-label', 'New ' + dim.replace(/_/g, ' ') + ' detail');
-      const chips = cdStarterChips(dim, s => { ta.value = s; ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) {} });
+      const ta = mkEl('textarea', 'cd-edit'); ta.placeholder = 'What should your agents know?'; ta.spellcheck = false; ta.maxLength = cdTextMax(); ta.setAttribute('aria-label', 'New ' + dim.replace(/_/g, ' ') + ' detail');
+      const count = cdCount(ta);
+      const chips = cdStarterChips(dim, s => { ta.value = s; count.sync(); ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) {} });
       if (chips) row.appendChild(chips);
       row.appendChild(ta);
-      if (starter) ta.value = starter;
+      if (starter) { ta.value = starter; count.sync(); }
       ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) {}
       const btns = mkEl('div', 'consent-btns cd-acts'); row.appendChild(btns);
       const save = mkEl('button', 'consent-btn'); save.textContent = 'Save'; btns.appendChild(save);
       const cancel = mkEl('button', 'consent-btn'); cancel.textContent = 'Cancel'; btns.appendChild(cancel);
+      btns.appendChild(count);
       let saving = false;
       save.onclick = () => { if (saving) return; const v = ta.value.trim(); if (!v) { ta.focus(); return; } saving = true; CDS().upsert(dim, { text: v, source: 'commander' }); sfx('click'); rerender('commander'); };
       cancel.onclick = () => rerender('commander');

@@ -4626,6 +4626,8 @@ const Build = (() => {
         // COUNTED IN SHIPPED? (rc walk #30) the server's own answer from the receipts the line's SHIPPED counts: true / false / null (unknown)
         shipped: response && typeof response.shipped === 'boolean' ? response.shipped : null,
         shippedWhy: response && response.shipped === false && typeof response.shippedWhy === 'string' ? response.shippedWhy : null,   // why not, only when the server proved it
+        // (GitHub #122) the server's own mark: a review loop used all its passes without an approval and sent the work on
+        unapproved: response && typeof response.unapproved === 'string' && response.unapproved ? response.unapproved : null,
         // SEND TO (conveyor-ui-01): the job's own link to the next line's job (sentTo), else the line's live SEND TOs — the panel says which
         sentTo: (response && response.sentTo && typeof response.sentTo === 'object') ? response.sentTo : null, onward: Array.isArray(response?.onwardDestinations) ? response.onwardDestinations : [] };
       finSig = ''; if (running) renderFinCard(); options.onUpdate?.(); sfx(view.ok ? 'chime' : 'bad');

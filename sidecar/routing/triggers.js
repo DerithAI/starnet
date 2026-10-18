@@ -54,10 +54,14 @@ function normalizeConfig(kind, c) {
 
 function normalizeOutcome(o) {
   if (!o || typeof o !== 'object') return null;
-  return {
+  const out = {
     ok: o.ok === true, at: num(o.at), streamId: str(o.streamId, 80) || null, runs: Math.max(0, Math.floor(num(o.runs) || 0)),
     usd: Math.max(0, num(o.usd) || 0), agentId: str(o.agentId, 40) || null, source: str(o.source, 200) || null
   };
+  // (additive, GitHub #122) it reached the OUTBOX, but a review loop used all its passes without approving it — kept only when said
+  const ua = out.ok ? str(o.unapproved, 300) : '';
+  if (ua) out.unapproved = ua;
+  return out;
 }
 
 /* normalizeTrigger(raw) -> a clean record or null (unknown kind / bad id / bad line). Never throws. */

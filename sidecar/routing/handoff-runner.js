@@ -126,7 +126,7 @@ function makeHandoffRunner(deps) {
       if (last && last.status === 'failed' && last.from && String(last.from.line) === String(item.fromLine) && last.error === String(error).slice(0, 400)) yj = J.again(last.id, at);
       if (!yj) {
         yj = J.start({ id: newJobId(), line: item.toLine, name: nameOf(plan, item.toLine) || item.toName, text: item.original, handedIn: item.output, streamId: '', at,
-          from: { line: item.fromLine, jobId: item.fromJobId, name: item.fromName } });
+          from: Object.assign({ line: item.fromLine, jobId: item.fromJobId, name: item.fromName }, item.unapproved ? { unapproved: item.unapproved } : null) });
         if (yj) J.finish(yj.id, { at, status: 'failed', usd: 0, output: '', runs: [], error });
       }
     }
@@ -162,6 +162,9 @@ function makeHandoffRunner(deps) {
       entryTrusted: r.entryTrusted === true && (!lin || lin.entryTrusted === true),
       hostPowerKept: r.hostPowerKept === true && (!lin || lin.hostPowerKept === true)
     };
+    /* an UNAPPROVED job (chain out.unapproved: a review loop used all its passes without the verdict it waits for, GitHub #122) IS handed
+       on — the LOOP sent it on, and SEND TO follows the line — but the frame the next line reads and its job record say nobody approved it */
+    if (r.unapproved) item.unapproved = String(r.unapproved).slice(0, 300);
     // a PARTIAL joined job (chain out.partial: a COPY branch failed or never reached the JOINER) is not handed on as a finished
     // result — said on the next line, like a job with a failed step (runtime repair 2026-10-12: a hop refused before it ran left
     // no run row, so the dispatch check below could not see it)
@@ -282,7 +285,7 @@ function makeHandoffRunner(deps) {
       }
       if (files.indexOf(file) < 0) files.push(file);
     }
-    const input = Pipeline.handoffInput({ fromName: item.fromName, original: item.original, output: item.output, files });
+    const input = Pipeline.handoffInput({ fromName: item.fromName, original: item.original, output: item.output, files, unapproved: item.unapproved });
 
     const startedAt = now(), streamId = newStream();
     lineage.set(streamId, { lines: item.lines.concat([item.toLine]), depth: item.depth, original: item.original,
@@ -291,7 +294,7 @@ function makeHandoffRunner(deps) {
     // the record keeps the job as it first arrived (`text`) and what the sending line delivered (`handedIn`) apart — never the
     // whole frame, which the record's 2000 characters would cut through what was delivered
     const yj = J.start({ id: newJobId(), line: item.toLine, name: nameOf(plan, item.toLine) || item.toName, text: item.original, handedIn: item.output, streamId, at: startedAt,
-      from: { line: item.fromLine, jobId: item.fromJobId, name: item.fromName } });
+      from: Object.assign({ line: item.fromLine, jobId: item.fromJobId, name: item.fromName }, item.unapproved ? { unapproved: item.unapproved } : null) });
     if (yj) item.startedJobId = yj.id;   // (a throw from here on finishes THIS record — pump)
     if (yj && item.fromJobId) J.link(item.fromJobId, { line: item.toLine, jobId: yj.id, name: item.toName });
 
@@ -327,7 +330,8 @@ function makeHandoffRunner(deps) {
     const usd = runs.reduce((a, x) => a + ((typeof x.usd === 'number' && isFinite(x.usd)) ? x.usd : 0), 0);
     if (workitemId) {
       const dep = bumpQueue(agentId, -1);
-      if (completed) emit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: now() - startedAt, ts: now() });
+      // (GitHub #122, additive) THIS line's own review loop ran out of passes: delivered, said as unapproved
+      if (completed) emit('workitem.delivered', Object.assign({ workitemId, finalQueueId: 'outbox', agentId, box: '', ms: now() - startedAt, ts: now() }, lo.unapproved ? { unapproved: String(lo.unapproved) } : null));
       emit('queue.status', { queueId: agentId, depth: dep, maxCapacity: d.queueCap || 64, nextAdvanceAt: 0 });
     }
     let err = '';
@@ -347,7 +351,7 @@ function makeHandoffRunner(deps) {
       else if (lo && lo.partial) err = 'the joiner sent on without every branch (' + lo.partial + ')';
       else err = 'the line did not reach its OUTBOX';
     }
-    if (yj) J.finish(yj.id, { at: now(), usd, output: s.current.replies.join(''), status: completed ? 'delivered' : stopped ? 'stopped' : runs.length ? 'problem' : 'failed', error: err,
+    if (yj) J.finish(yj.id, { at: now(), usd, output: s.current.replies.join(''), status: completed ? 'delivered' : stopped ? 'stopped' : runs.length ? 'problem' : 'failed', error: err, unapproved: (completed && lo.unapproved) ? String(lo.unapproved) : '',
       runs: runs.map(x => ({ runId: x.runId, agentId: x.agentId, dockId: x.dockId || null, reason: x.reason, usd: x.usd })) });
     return { ok: completed, streamId, jobId: yj ? yj.id : null, runs: runs.length, usd, error: err || null };
   }

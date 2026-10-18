@@ -12804,6 +12804,10 @@ async function runSampleJob(readArgs) {
     // a PARTIAL joined job (a COPY branch failed or never reached the JOINER — chain out.partial) is not delivered, even when every
     // run row that exists ended done: a hop refused before it ran writes none (runtime repair 2026-10-12)
     const partial = (sampleLineOutcome && sampleLineOutcome.partial) ? String(sampleLineOutcome.partial) : '';
+    /* UNAPPROVED (GitHub #122): a review loop on the line used all its passes without the verdict it waits for and sent the work on (the
+       LOOP card's rule — the job still reaches its OUTBOX, so it is still delivered). Its record, its crate, the answer and the SHIPPED note
+       say nobody approved it; the receipt (line-shipments) never counts it as clean SHIPPED work. */
+    const unapproved = (sampleLineOutcome && sampleLineOutcome.unapproved) ? String(sampleLineOutcome.unapproved) : '';
     const completed = onLine && runs.length > 0 && runs.every(r => r.reason === 'done')
       && !!sampleLineOutcome && !sampleLineOutcome.stopped && !partial
       && router.chainShipsToOutbox(sampleLineOutcome.agentId, sampleLineOutcome.dockId);
@@ -12822,7 +12826,7 @@ async function runSampleJob(readArgs) {
     if (jobId) {
       const stoppedJob = !!sampleInFlight.stopRequested;
       // (wave 2 repair) the station's own fault containment stopped it (stopCause 'fault'): said as that, never "you stopped this job"
-      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs,
+      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs, unapproved: completed ? unapproved : '',
         status: completed ? 'delivered' : stoppedJob ? 'stopped' : runs.length ? 'problem' : 'failed',
         error: completed ? '' : stoppedJob ? (sampleInFlight.stopCause === 'fault' ? 'the station hit an internal fault and stopped this job' : 'you stopped this job') :!onLine ? 'the job did not enter through this line' : (partial && runs.every(r => r.reason === 'done')) ? 'the joiner sent on without every branch (' + partial + ')' : runs.length ? 'a step did not finish cleanly' : (refusedSaid || firstWarn || 'no step ran') }));
       sampleInFlight.jobId = null;
@@ -12837,7 +12841,7 @@ async function runSampleJob(readArgs) {
     if (line && plan.sendTo) onward.onwardDestinations = Object.entries(plan.sendTo).filter(([outboxId, s]) => s && s.fromLine === line && !(sampleLineOutcome && sampleLineOutcome.outboxId && String(sampleLineOutcome.outboxId) !== outboxId)).map(([outboxId, s]) => ({ lineId: s.toLine, outboxId }));
     if (workitemId) {
       const d = bumpQueue(agentId, -1);
-      if (completed) chanEmit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true });
+      if (completed) chanEmit('workitem.delivered', Object.assign({ workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true }, unapproved ? { unapproved } : null));
       chanEmit('queue.status', { queueId: agentId, depth: d, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
     }
     if (!completed) {
@@ -12867,7 +12871,8 @@ async function runSampleJob(readArgs) {
       ok: true, sample: true, chatId: SAMPLE_CHAT, streamId: streamId,
       agentId: agentId || null, isTask: isTask, workitemId: workitemId || null,
       replies: sampleReplies.slice(), runs: runs, delivered: delivered, totalUsd: totalUsd, shipped
-    }, shippedWhy ? { shippedWhy } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
+    // (GitHub #122) an unapproved job is never a receipt: that is the reason, said before any other
+    }, (shipped === false && unapproved) ? { shippedWhy: 'unapproved' } : shippedWhy ? { shippedWhy } : null, unapproved ? { unapproved } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
   } finally {
     // a job whose route threw after it went out is never left "running"
     if (sampleInFlight && sampleInFlight.jobId) { try { lineJobsSet(LineJobs.finish(lineJobs, sampleInFlight.jobId, { at: Date.now(), status: 'failed', error: 'the station hit an error while the job was out' })); } catch (e) { failNote('linejobs.finish', e); } }

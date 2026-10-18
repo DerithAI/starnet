@@ -1171,6 +1171,9 @@ body.no-curve #stage-wrap::before { background: none; box-shadow: none; }
 .cd-meta { margin-top: 6px; font-size: 11px; color: var(--ph-dim); letter-spacing: 0.3px; }
 .cd-observed-tag { display: inline-block; margin-right: 6px; padding: 0 5px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink); background: var(--ph-dim); border-radius: 2px; vertical-align: 1px; }
 .cd-acts { margin-top: 8px; }
+/* the editor's per-detail count (releases#8): the briefing meter's own face, centred beside Save/Cancel, warn at the cap */
+.cd-acts > .cd-count { align-self: center; }
+.cd-count.warn { color: var(--warn); }
 /* guided starter chips (empty dims + the add editor): tap → the editor opens with the sentence started */
 .cd-starters { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 7px; }
 .cd-starter { font: inherit; font-size: 11px; letter-spacing: 0.4px; cursor: pointer; color: var(--ph-dim); background: transparent; border: 1px dashed var(--ph-faint); border-radius: 3px; padding: 2px 8px; }
