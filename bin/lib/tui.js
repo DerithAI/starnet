@@ -149,15 +149,16 @@ function render(model, ui, size, now) {
   const IW = W - 4;                       // inside a frame: │ + space each side
   const narrow = IW < 76;
 
-  // ---- the vertical budget: the logo only when the crew, flows and a readable COMMS still fit beneath it --------------
+  // ---- the vertical budget ------------------------------------------------------------------------------------------
   const flowsN = Math.min(flows.length, 4);
   const flowsH = flowsN ? 2 + flowsN * (narrow ? 2 : 1) : 0;
-  const crewNeed = 3 + Math.max(1, rows.length);
   const fixedBottom = 2;                  // prompt + key hints
   const commsMin = 2 + 6;
   const art = ui.logo !== 'plain' && logo && logo.word && logo.word.braille && logo.word.braille[5];
-  const bigLogo = !!art && W >= 90 && H - (7 + crewNeed + flowsH + commsMin + fixedBottom) >= 0;
-  const headerH = bigLogo ? 7 : 1;
+  // the mark wins over crew rows (the list scrolls, "+N more"): it shows from 90×30 up whenever five agents and a
+  // readable COMMS still fit under it; only a genuinely short terminal falls back to the one-line mark
+  const bigLogo = !!art && W >= 90 && H >= 30 && H - (6 + 3 + Math.min(Math.max(1, rows.length), 5) + flowsH + commsMin + fixedBottom) >= 0;
+  const headerH = bigLogo ? 6 : 1;
 
   // ---- header: the StarNet mark, cut from the real brand art; the star glows only while the crew works ------------------
   const summary = [];
