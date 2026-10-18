@@ -16275,10 +16275,9 @@ async function handleCronRun(req, res) {
   try {
     await runOnce({
       key: key, model: model,
-      system: cronSystemFor(job.agentId)
+      stationEvidence: true, system: cronSystemFor(job.agentId)   // the persona's observed half rides the run context (dossierWithGoals)
         + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : '')
         + cronDeliveryNote(job),   // the scheduled fire's own [DELIVERY] note (cron-driver deliveryNoteFor) — same posture
-      stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: assembledPrompt }],
       agentId: job.agentId, isTask: true, emit: teeEmit, signal: ac.signal,
       // streamId 'cron-'+runId matches the SCHEDULED fire (cron-driver.js): Run Now must persist its transcript
