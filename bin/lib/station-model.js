@@ -75,6 +75,8 @@ function makeStation() {
       a.name = String(r.name || r.agentId).toUpperCase().slice(0, 12);
       a.model = String(r.model || ''); a.provider = String(r.provider || ''); a.inRoster = true;
     }
+    // the hero is always aboard, even on a station whose roster file is empty (a bare `npm start` / headless station)
+    if (!sorted.some(r => r && r.agentId === 'agent')) agent('agent');
     const rosterIds = sorted.filter(r => r && r.agentId).map(r => String(r.agentId));
     st.order = rosterIds.concat(st.order.filter(id => rosterIds.indexOf(id) < 0));
   }
