@@ -1224,3 +1224,66 @@ body.glass-demo:not(.hud-mode) #screen-game #topbar .widget-rail .wg-add {
   width: 32px; height: 30px; border-radius: 2px; border: 1px solid rgba(var(--ph-rgb), .32); background: rgba(0, 0, 0, .22); color: var(--ph); box-shadow: none;
 }
 body.glass-demo:not(.hud-mode) #screen-game #topbar .widget-rail .wg-add:is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .1); }
+
+/* ============================================================
+   DASHBOARD POLISH (Andrew 10-17: "keep the menus as is, and focus mainly on the front facing dashboard … polish it and
+   make it perfect in the necessary areas"). A sweep of the dashboard at his settings found these; each is fixed in place:
+     · a toast was see-through (the 82% glass face over the rail: the session rows behind read through its text) and led
+       with a solid green keycap: now an opaque 2px readout card whose severity is its left edge and its glyph's colour
+     · the first-run dock hint wore the old glowing 2px ring: now the matte 2px card, GOT IT a terminal key
+     · CINEMA was the station view's last rounded glass pill: now the dock's square key
+     · the COMMS agent picker's ⌄ sat alone at the panel's far edge: it follows the name now
+     · the composer's effort chip ("· OFF") was a smaller, raised label beside the model name (the shrunken-chip law): it
+       takes the name's size and line, quieter by colour
+     · CTX lit a 1px sliver at 1%: it lights the cells its own count says (AsciiFX.barCells: whole cells, a half cell for
+       the remainder, and a nonzero context never reads empty — the honesty the old glyph bar had)
+     · NEEDS YOU's fold key reads in the rail's tracked caps
+   ============================================================ */
+/* toast */
+body.glass-demo:not(.hud-mode) #toast-stack .toast {
+  border: 1px solid rgba(var(--ph-rgb), .3); border-left: 2px solid var(--sev); border-radius: 2px;
+  background: linear-gradient(var(--panel2), var(--panel2)), var(--bg); box-shadow: 0 8px 22px rgba(0, 0, 0, .55);
+}
+body.glass-demo:not(.hud-mode) #toast-stack .toast-lamp { background: none; box-shadow: none; color: var(--sev); font-size: 15px; animation: none; }
+/* the first-run dock hint */
+body.glass-demo:not(.hud-mode) .nav-coach {
+  border: 1px solid rgba(var(--ph-rgb), .6); border-radius: 2px; box-shadow: 0 8px 22px rgba(0, 0, 0, .6);
+  background: linear-gradient(var(--panel2), var(--panel2)), var(--bg);
+}
+body.glass-demo:not(.hud-mode) .nav-coach-x {
+  border-radius: 2px; padding: 4px 10px; letter-spacing: 1.4px; color: var(--ph-bright);
+  border: 1px solid rgba(var(--ph-rgb), .6); background: rgba(var(--ph-rgb), .1);
+}
+body.glass-demo:not(.hud-mode) .nav-coach-x:is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .2); }
+body.glass-demo:not(.hud-mode) .nav-coach-arrow { text-shadow: none; }
+/* CINEMA */
+body.glass-demo:not(.hud-mode) #screen-game #stage-wrap .cam-cine {
+  border-radius: 2px; border-color: rgba(var(--ph-rgb), .32); background: rgba(0, 0, 0, .45); box-shadow: none; letter-spacing: 1.4px;
+}
+body.glass-demo:not(.hud-mode) #screen-game #stage-wrap .cam-cine:is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .12); }
+/* the COMMS agent picker: its ⌄ follows the name */
+body.glass-demo:not(.hud-mode) #chat-panel .gd-agent-toggle { justify-content: flex-start; gap: 8px; }
+/* the composer's effort chip: the model name's size and line, quieter by colour */
+body.glass-demo:not(.hud-mode) #chat-panel .model-dock-effort-chip { font-size: var(--sn-type-control) !important; line-height: 1; max-width: 76px; color: var(--cg-mute, var(--ph-dim)); }
+body.glass-demo:not(.hud-mode) #chat-panel .model-dock-model-name { line-height: 1; }
+/* CTX: the cells its own count lights (data-on = whole cells, a "+" in data-sig = the half cell after them) */
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells {
+  --on: 0; --half: 0;
+  background:
+    linear-gradient(currentColor, currentColor) 0 0 / calc(var(--on) * 9px) 100% no-repeat,
+    linear-gradient(color-mix(in srgb, currentColor 55%, transparent), color-mix(in srgb, currentColor 55%, transparent)) calc(var(--on) * 9px) 0 / calc(var(--half) * 7px) 100% no-repeat,
+    color-mix(in srgb, currentColor 22%, transparent);
+}
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="1"] { --on: 1; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="2"] { --on: 2; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="3"] { --on: 3; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="4"] { --on: 4; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="5"] { --on: 5; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="6"] { --on: 6; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="7"] { --on: 7; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="8"] { --on: 8; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="9"] { --on: 9; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-on="10"] { --on: 10; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge .ctx-cells[data-sig*="+"] { --half: 1; }
+/* NEEDS YOU's fold key */
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-more { text-transform: uppercase; letter-spacing: 1.6px; }
