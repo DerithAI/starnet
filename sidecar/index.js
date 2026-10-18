@@ -51,7 +51,7 @@ const { makeWorkspaceLease } = require('./workspace-lease.js');
 const { makeWorkspaceOwner, makeBootedAt, describeIdentity: describeOwnerIdentity } = require('./workspace-owner.js');
 const { makeProcessIdentity } = require('./process-identity.js');
 const { classifyWorkspace, workspaceCandidates } = require('./workspace-safety.js');
-const { inspectWorkspaceLineage, startFresh: startFreshWorkspace } = require('./workspace-lineage.js');
+const { inspectWorkspaceLineage, hasStationState, startFresh: startFreshWorkspace } = require('./workspace-lineage.js');
 const workspaceRecovery = require('./workspace-recovery.js');
 const { makeUpdatePreparation } = require('./update-preparation.js');
 const { makeAgentLifecycle } = require('./agent-lifecycle.js');
@@ -210,7 +210,7 @@ function channelBodyError(e) {
     : 'bad json';
 }
 const { MIME, CHANNEL_UPLOAD_MAX_BYTES, mimeForPath, safeDownloadName, isActiveDeliverable, parseRange, isTextDocument, documentViewHtml, DOC_VIEW_CSP, DOC_VIEW_MAX_BYTES } = require('./file-response.js');
-const { reflect, reflectSalient, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
+const { reflect, reflectSalient, refusedAction, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
 const FeedbackMemory = require('./feedbackmemory.js');   // THE COMMANDER'S TASTE: verdicts + corrections -> durable like/dislike memory
 const TasteRef = require('./tasteref.js');   // DESIGN ANCHOR: the rated run's real files / palette / fonts / image args / method, captured on a verdict
 const Failreview = require('./failreview.js');   // failure-review aux pass: PURE lesson producer for FAILED runs (reflect.js mold)
@@ -9932,6 +9932,10 @@ function questRefreshTick() {
   // calls a provider, stamps refresh state, or mints quests on its own. The explicit /refresh/run route does not
   // come through this function; a Commander pressing REFRESH QUESTS remains the authority for a manual cycle.
   if (!(commanderPosture.summary() || {}).enabled) return;
+  // NO STATION, NO LOOK (#123): background initiative plans for a station a Commander created. On a workspace the
+  // recovery gate reads as station-less (a fresh install before onboarding) this tick writes nothing — its stamp +
+  // 'skipped' note used to be the first files on disk. The manual /refresh/run route never comes through here.
+  if (!hasStationState({ fs, path, workspaceRoot: WORKSPACES })) return;
   // V3 §6 note: the readiness gate is applied INSIDE the cycle as dossier ADMISSIBILITY (a synced not-ready
   // verdict blanks the dossier out of the evidence, so a blitzed onboarding can't mint quests) — never here
   // at the tick, so the cadence still spends and the honest 'skipped' ledger semantics survive.
@@ -12801,6 +12805,10 @@ async function runSampleJob(readArgs) {
     // a PARTIAL joined job (a COPY branch failed or never reached the JOINER — chain out.partial) is not delivered, even when every
     // run row that exists ended done: a hop refused before it ran writes none (runtime repair 2026-10-12)
     const partial = (sampleLineOutcome && sampleLineOutcome.partial) ? String(sampleLineOutcome.partial) : '';
+    /* UNAPPROVED (GitHub #122): a review loop on the line used all its passes without the verdict it waits for and sent the work on (the
+       LOOP card's rule — the job still reaches its OUTBOX, so it is still delivered). Its record, its crate, the answer and the SHIPPED note
+       say nobody approved it; the receipt (line-shipments) never counts it as clean SHIPPED work. */
+    const unapproved = (sampleLineOutcome && sampleLineOutcome.unapproved) ? String(sampleLineOutcome.unapproved) : '';
     const completed = onLine && runs.length > 0 && runs.every(r => r.reason === 'done')
       && !!sampleLineOutcome && !sampleLineOutcome.stopped && !partial
       && router.chainShipsToOutbox(sampleLineOutcome.agentId, sampleLineOutcome.dockId);
@@ -12819,7 +12827,7 @@ async function runSampleJob(readArgs) {
     if (jobId) {
       const stoppedJob = !!sampleInFlight.stopRequested;
       // (wave 2 repair) the station's own fault containment stopped it (stopCause 'fault'): said as that, never "you stopped this job"
-      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs,
+      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs, unapproved: completed ? unapproved : '',
         status: completed ? 'delivered' : stoppedJob ? 'stopped' : runs.length ? 'problem' : 'failed',
         error: completed ? '' : stoppedJob ? (sampleInFlight.stopCause === 'fault' ? 'the station hit an internal fault and stopped this job' : 'you stopped this job') :!onLine ? 'the job did not enter through this line' : (partial && runs.every(r => r.reason === 'done')) ? 'the joiner sent on without every branch (' + partial + ')' : runs.length ? 'a step did not finish cleanly' : (refusedSaid || firstWarn || 'no step ran') }));
       sampleInFlight.jobId = null;
@@ -12834,7 +12842,7 @@ async function runSampleJob(readArgs) {
     if (line && plan.sendTo) onward.onwardDestinations = Object.entries(plan.sendTo).filter(([outboxId, s]) => s && s.fromLine === line && !(sampleLineOutcome && sampleLineOutcome.outboxId && String(sampleLineOutcome.outboxId) !== outboxId)).map(([outboxId, s]) => ({ lineId: s.toLine, outboxId }));
     if (workitemId) {
       const d = bumpQueue(agentId, -1);
-      if (completed) chanEmit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true });
+      if (completed) chanEmit('workitem.delivered', Object.assign({ workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true }, unapproved ? { unapproved } : null));
       chanEmit('queue.status', { queueId: agentId, depth: d, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
     }
     if (!completed) {
@@ -12864,7 +12872,8 @@ async function runSampleJob(readArgs) {
       ok: true, sample: true, chatId: SAMPLE_CHAT, streamId: streamId,
       agentId: agentId || null, isTask: isTask, workitemId: workitemId || null,
       replies: sampleReplies.slice(), runs: runs, delivered: delivered, totalUsd: totalUsd, shipped
-    }, shippedWhy ? { shippedWhy } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
+    // (GitHub #122) an unapproved job is never a receipt: that is the reason, said before any other
+    }, (shipped === false && unapproved) ? { shippedWhy: 'unapproved' } : shippedWhy ? { shippedWhy } : null, unapproved ? { unapproved } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
   } finally {
     // a job whose route threw after it went out is never left "running"
     if (sampleInFlight && sampleInFlight.jobId) { try { lineJobsSet(LineJobs.finish(lineJobs, sampleInFlight.jobId, { at: Date.now(), status: 'failed', error: 'the station hit an error while the job was out' })); } catch (e) { failNote('linejobs.finish', e); } }
@@ -21000,6 +21009,27 @@ async function runOnceCore(o) {
   const preAuthorityTools = resolved.tools.slice();
   resolved = enforceRunAuthority(resolved, registry, userControlAuthority);
   resolved = enforceEnabledToolsets(resolved, registry, unrestrictedHostNow() ? null : o.enabledToolsets);
+  /* THE WIDGET'S OWN UPDATE RUN PUBLISHES IT (releases#6). A widget refresh runs in that widget's conversation
+     ('widget-<id>'), a scheduled update as a routine whose job names the widget; both are told to publish with
+     widget.set, which otherwise rides the NOTEBOOK prop + MEMORY switch an interactive run often lacks (the agent
+     then searched for it until stopped). Host-derived from the stream id / the job's own meta, never from text, and
+     only for a widget the Commander configured: exactly widget.get + widget.set (no consent, no network), applied
+     after the narrowing above because a per-run list must not strip the one tool this run exists to call. The run may
+     read and publish ITS OWN widget only (widgetScope on the tool ctx below; widgets.js refuses any other id). */
+  let widgetScope = '';
+  {
+    const widgetJob = (trigger === 'schedule' && o.cronJobId) ? cronJobs.find(j => j && j.id === String(o.cronJobId)) : null;
+    widgetScope = widgetTools.updateRunOf({ streamId: o.streamId, widgetId: widgetJob && widgetJob.meta && widgetJob.meta.widgetId }) || '';
+    if (widgetScope) {
+      const grants = (CAP_REGISTRY.notebook || []).filter(g => g && /^widget\./.test(g.tool));
+      resolved = Object.assign({}, resolved, {
+        tools: resolved.tools.concat(grants.map(g => g.tool).filter(n => resolved.tools.indexOf(n) < 0)),
+        grants: resolved.grants.concat(grants.filter(g => !resolved.grants.some(x => x && x.tool === g.tool))),
+        approvalRules: Object.assign({}, resolved.approvalRules), networkCaps: Object.assign({}, resolved.networkCaps)
+      });
+      for (const g of grants) { resolved.approvalRules[g.tool] = { requiresConsent: false, scope: g.scope, network: false }; resolved.networkCaps[g.tool] = false; }
+    }
+  }
   /* WITHHELD COMMANDS, EXPLAINED (issue #77). The authority above removes workspace-process tools (shell.exec,
      verify.run, terminal.start …) from an ASK-mode non-interactive run even with a WORKBENCH placed — by design.
      Record which ones it removed (and the toolset switch would otherwise have allowed) so tool.search, the
@@ -21218,6 +21248,8 @@ async function runOnceCore(o) {
     // Host-minted routine identity for routine.notepad. Interactive/model-authored runs cannot name another
     // job: only the autonomous schedule path receives this context field.
     cronJobId: (surface === 'autonomous' && trigger === 'schedule') ? String(o.cronJobId || '') : '',
+    // Host-minted: a widget's own update run (its conversation or routine) reads and publishes that widget id only.
+    widgetScope,
     // tool.search explains what the direct-domain policy keeps off this run (resolved.deferred already excludes it)
     policyWithheld: directDomainTask ? {
       names: (resolved.tools || []).filter(directDomainWithheld),
@@ -22125,6 +22157,15 @@ async function runOnceCore(o) {
     return content;
   };
 
+  // #128: the shell shell.exec ACTUALLY runs for this agent — its effective execution backend (Full Power forces local,
+  // Safe Cell is Docker, Remote SSH is ssh), then this host's OS for local. Named on the [RUNTIME] Shell line and used
+  // for the service-key syntax; null when shell.exec is not on this task run (no line, no claim).
+  const shellRuntime = (() => {
+    if (!(isTask && resolved && Array.isArray(resolved.tools) && resolved.tools.indexOf('shell.exec') >= 0)) return null;
+    try { return { backend: executionEnvironment.backendIdFor(agentId), platform: process.platform }; }
+    catch (e) { failNote('runtime.shell-backend', e); return null; }
+  })();
+  const shellIsCmd = !!(shellRuntime && shellRuntime.backend === 'local' && shellRuntime.platform === 'win32');
   // tell the model, plainly + capability-driven, that it has real tools right now (so it never claims it can't act)
   const wireNames = toolDefs.map(d => d.function.name);
   // The deferred names the PARTIAL list may call usable: every deferred declaration except a connector server's
@@ -22155,7 +22196,7 @@ async function runOnceCore(o) {
     + 'Act with tools NOW and keep going until the task is done or genuinely blocked; if blocked, say so honestly and try a different path — NEVER invent output you did not produce. '
     + 'Always take the QUIETEST path that achieves the goal: (1) a DEDICATED tool for the target service'
     + (hasJukebox ? ' (e.g. spotify_play for Spotify)' : '') + ' — try it FIRST even if you are unsure it is connected; '
-    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs, PowerShell)' : '')
+    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs' + (shellIsCmd ? ', PowerShell' : '') + ')' : '')
     + (hasBrowserTools ? (hasShellExec ? ', and browser_* handles the web unseen' : ' — browser_* handles the web unseen') : '') + '; '
     + (hasBackgroundComputer ? 'For native apps, computer_use can discover exact windows and use background accessibility input without bringing them forward. Prefer its fresh element tokens and verify the result. ' : '')
     + (hasScreenTools
@@ -22395,7 +22436,7 @@ async function runOnceCore(o) {
   const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
     : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';
   const runtimeVersion = computeVersionSurface();
-  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now() });
+  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now(), shell: shellRuntime });
   // RUNTIME SKILL LIBRARY (skill-builder-gap): index the agent's own authored skills + preload any it invokes,
   // riding the same skill.view/skill.manage capability gate. Never breaks a run.
   try {
@@ -22511,7 +22552,8 @@ async function runOnceCore(o) {
     const canShell = kt.indexOf('shell.exec') >= 0;
     const canRequest = kt.indexOf('web_request') >= 0;
     if (canShell || canRequest) {
-      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: process.platform, notesFor: serviceKeysCatalog.notesFor });
+      // the key syntax follows the shell that runs (#128): %NAME% only for local cmd.exe; Docker/SSH run POSIX sh
+      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
       if (b) serviceKeysBlock = '\n\n' + b;
     }
   } catch (_) { serviceKeysBlock = ''; }
@@ -23287,6 +23329,7 @@ async function runOnceCore(o) {
     await captureTrustedLearning({ agentId, runId, projectRoot: o.projectRoot || '', input: trustedLearningInput, learningEvidence });
   }
   const _gateReflect = !!(o.reflect && memoryConfig.reflectEnabled && isTask && _auxDone && !_lineHop && reflectSalient(result.messages, o.recurring)
+      && !refusedAction(execution.toolTraceList())   // a run whose approval was not given proposes no memories (reflect.js refusedAction)
       && personalizationStore.read().enabled   // the personalization PAUSE never even offers the candidate (runReflection re-checks the same authority)
       && !reflectingNow.has(agentId) && (Date.now() - (lastReflectAt.get(agentId) || 0) >= memoryConfig.reflectCooldownMs));
   // failure-review: reflection's exact gate shape on the FAILURE side — o.reflect (real-work hosts only; delegated

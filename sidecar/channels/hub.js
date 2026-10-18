@@ -2090,9 +2090,10 @@
           // a throwing outcome hook is the HOST's bug (the trigger runner records every fire's truth through it): never
           // let it abort the reply, but never swallow it silently either — the failopen ledger names it
           // partial (additive): the JOINER sent on without every branch — the job is not clean, whatever its run rows say
+          // unapproved (additive, GitHub #122): a review loop ran out of passes and sent the work on — delivered, never approved
           // outboxId (additive, 2026-10-15): the OUTBOX this job landed in (chain.js out.outboxId) — the only one a SEND TO hand-off
           // ever leaves from, so the sample route names only ITS destination to station.test_line (absent = unknown)
-          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; if (line.partial) lo.partial = String(line.partial); if (line.outboxId) lo.outboxId = String(line.outboxId); onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
+          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; if (line.partial) lo.partial = String(line.partial); if (line.unapproved) lo.unapproved = String(line.unapproved); if (line.outboxId) lo.outboxId = String(line.outboxId); onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
         }
         if (!myRec.superseded && line.hops.length) {
           // the line's answer replaces the first stage's — and the floor/channel agree on who produced it

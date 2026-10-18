@@ -3203,20 +3203,26 @@ const Chat = (() => {
     autoscroll();
     return chip;
   }
+  /* AN APPROVAL NOT GIVEN IS NOT A FAILURE (releases#9, 2026-10-17). The consent broker answers a call nobody approved —
+     a Deny on its card, an unanswered card, an unattended default-deny — with the one summary 'denied' (tools/registry.js).
+     The call did not run and nothing broke: the agent carries on and the run ends on its own terms. It drew the red ✗ and
+     "failed" an error draws, so the Commander's own No read as a fault in COMMS and in the run's history. */
+  const deniedResult = ev => !!(ev && ev.isError && ev.summary === 'denied');
   // fold a tool RESULT into a chip (✓/✗ + duration + result summary). ev: { summary, isError, ms }
   function foldChipResult(chip, ev) {
     chip.classList.remove('pending');
     // A call the Task Brief gate HELD did not run and did not fail: the model settles the brief and makes it again (a new
     // chip). Neutral, never the red ✗ "failed" an error draws (rc walk 2026-10-14) — and never a ✓ either.
     const heldCall = typeof TaskIntent !== 'undefined' && TaskIntent.isGateHeld && TaskIntent.isGateHeld(ev);
-    chip.classList.add(heldCall ? 'held' : ev.isError ? 'err' : 'ok');
-    const glyph = chip.querySelector('.tc-glyph'); if (glyph) glyph.textContent = heldCall ? '▸' : ev.isError ? '✗' : '✓';
+    const deniedCall = !heldCall && deniedResult(ev);   // not approved, so not run: the same neutral, saying "denied"
+    chip.classList.add(heldCall ? 'held' : deniedCall ? 'denied' : ev.isError ? 'err' : 'ok');
+    const glyph = chip.querySelector('.tc-glyph'); if (glyph) glyph.textContent = (heldCall || deniedCall) ? '▸' : ev.isError ? '✗' : '✓';
     const stat = chip.querySelector('.tc-stat');
-    if (stat) stat.textContent = heldCall ? 'not run yet' : ev.ms ? fmtMs(ev.ms) : (ev.isError ? 'failed' : '');
+    if (stat) stat.textContent = heldCall ? 'not run yet' : deniedCall ? 'denied' : ev.ms ? fmtMs(ev.ms) : (ev.isError ? 'failed' : '');
     const detail = chip.querySelector('.tc-detail');
     if (detail) {
-      const dRes = document.createElement('div'); dRes.className = 'tc-d-res' + (heldCall ? ' held' : ev.isError ? ' err' : '');
-      dRes.textContent = heldCall ? cap(ev.summary) : (ev.isError ? '✗ ' : '✓ ') + cap(ev.summary || (ev.isError ? 'error' : 'ok'));
+      const dRes = document.createElement('div'); dRes.className = 'tc-d-res' + (heldCall ? ' held' : deniedCall ? ' denied' : ev.isError ? ' err' : '');
+      dRes.textContent = heldCall ? cap(ev.summary) : deniedCall ? 'denied · not run' : (ev.isError ? '✗ ' : '✓ ') + cap(ev.summary || (ev.isError ? 'error' : 'ok'));
       detail.appendChild(dRes);
     }
     return chip;
@@ -3666,8 +3672,9 @@ const Chat = (() => {
     for (const t of (skipTools ? [] : (Array.isArray(entry.toolTrace) ? entry.toolTrace : []))) {
       // a call the Task Brief held did not run: "not run yet", never "failed" (TaskIntent.GATE_HELD on its record)
       const held = typeof TaskIntent !== 'undefined' && TaskIntent.isGateHeld && TaskIntent.isGateHeld(t);
-      const line = document.createElement('div'); line.className = 'rt-tool' + (held ? ' held' : t.isError ? ' err' : '');
-      line.textContent = '↳ ' + String(t.name || 'unknown') + ' · ' + fmtMs(Math.max(0, Number(t.ms) || 0)) + ' · ' + (held ? 'not run yet' : t.isError ? 'failed' : 'ok');
+      const denied = !held && deniedResult(t);   // an approval not given: "denied", never "failed" (deniedResult above)
+      const line = document.createElement('div'); line.className = 'rt-tool' + (held ? ' held' : denied ? ' denied' : t.isError ? ' err' : '');
+      line.textContent = '↳ ' + String(t.name || 'unknown') + ' · ' + fmtMs(Math.max(0, Number(t.ms) || 0)) + ' · ' + (held ? 'not run yet' : denied ? 'denied' : t.isError ? 'failed' : 'ok');
       if (t.summary) line.title = String(t.summary);
       wrap.appendChild(line);
     }

@@ -34,6 +34,24 @@ try {
     fs.unlinkSync(path.join(current, f));
   }
 
+  // QUEST-REFRESH bookkeeping (#123, 2026-10-17): the quest-refresh boot look wrote these ~3 s after EVERY boot,
+  // station or not, and the `_station.*` evidence family read them as a prior station — open once, close once,
+  // Recovery Mode forever. The real `_station.*` / `_commander.*` records stay evidence.
+  const { hasStationState } = require('../sidecar/workspace-lineage.js');
+  for (const f of ['_station.questrefresh.json', '_station.questrefresh.json.bak']) fs.writeFileSync(path.join(current, f), '{"v":1,"state":{"lastCycleAt":1}}');
+  v = inspectWorkspaceLineage({ fs, path, workspaceRoot: current, candidateRoots: [legacy], snapshotsRoot: snapshots, platform: process.platform });
+  A.eq(v.priorInstallEvidence, false, 'quest-refresh bookkeeping (cadence stamp + skipped note) is not prior-station evidence');
+  A.eq(v.onboardingAllowed, true, 'a fresh install whose boot look stamped the quest refresh still onboards');
+  A.eq(hasStationState({ fs, path, workspaceRoot: current }), false, 'background writers read a bookkeeping-only workspace as station-less too');
+  for (const f of ['_station.quests.json', '_station.journey.json', '_commander.dossier.json', '_commander.goals.json', '_commander.autonomy.json']) {
+    fs.writeFileSync(path.join(current, f), '{}');
+    v = inspectWorkspaceLineage({ fs, path, workspaceRoot: current, candidateRoots: [legacy], snapshotsRoot: snapshots, platform: process.platform });
+    A.eq(v.priorInstallEvidence, true, f + ' (a real station record) is still prior-station evidence');
+    A.eq(hasStationState({ fs, path, workspaceRoot: current }), true, f + ' makes the workspace a station for background writers');
+    fs.unlinkSync(path.join(current, f));
+  }
+  for (const f of ['_station.questrefresh.json', '_station.questrefresh.json.bak']) fs.unlinkSync(path.join(current, f));
+
   fs.writeFileSync(path.join(current, 'future-cache-v2.json'), '{"cache":true}');
   v = inspectWorkspaceLineage({ fs, path, workspaceRoot: current, candidateRoots: [legacy], snapshotsRoot: snapshots, platform: process.platform });
   A.eq(v.priorInstallEvidence, false, 'unknown cache files cannot become prior-station evidence by denylist omission');
@@ -92,6 +110,7 @@ try {
   fs.writeFileSync(path.join(current, 'loops.json'), '{}');
   fs.writeFileSync(path.join(current, 'loops.halt.json'), '{}');         // infra (E-STOP bookkeeping): stays put
   fs.writeFileSync(path.join(current, 'liveprices.cache.json'), '{}');   // infra: stays put
+  fs.writeFileSync(path.join(current, '_station.questrefresh.json'), '{"v":1,"state":{"northStar":{"text":"old station"}}}');   // not evidence, but this station's
   fs.mkdirSync(legacy, { recursive: true });
   fs.writeFileSync(path.join(legacy, 'agent.save.json'), '{"version":5}');
   fs.mkdirSync(snapshots, { recursive: true });
@@ -103,6 +122,7 @@ try {
   A.ok(fresh.moved.includes('ledger.jsonl') && fresh.moved.includes('loops.json'), 'every current-workspace state file moved');
   A.eq(fresh.moved.includes('liveprices.cache.json'), false, 'infrastructure never moves');
   A.eq(fresh.moved.includes('loops.halt.json'), false, 'E-STOP bookkeeping is infrastructure and never moves');
+  A.ok(fresh.moved.includes('_station.questrefresh.json') && fs.existsSync(path.join(fresh.quarantine, '_station.questrefresh.json')), 'the old station\'s quest-refresh state (its north star) is quarantined with it, never left to steer the next station');
   A.eq(fs.existsSync(path.join(fresh.quarantine, 'ledger.jsonl')), true, 'moved files live on in quarantine (never deleted)');
   A.eq(fs.existsSync(path.join(current, 'ledger.jsonl')), false, 'the live workspace no longer holds the stale state');
   A.eq(fs.existsSync(path.join(current, 'liveprices.cache.json')), true, 'infrastructure files are untouched');

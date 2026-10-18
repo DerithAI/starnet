@@ -643,7 +643,8 @@
         const out = {
           line: L.name, status, cost: '$' + (Number(o.totalUsd) || 0).toFixed(2),
           steps: runs.map((x, i) => ({ step: i + 1, at: stepOf(x), ended: x.reason || 'unknown', usd: typeof x.usd === 'number' ? Math.round(x.usd * 1000) / 1000 : null })),
-          verdict: o.ok ? (/LOOP — exhausted/.test(said) ? 'The job reached the OUTBOX, but its review loop ran out of passes without an approval: the reviewer never said VERDICT: approved. Read what it delivered below; tighten the step it reviews or the reviewer\'s brief, or allow more passes.' : 'The job reached the OUTBOX: read what it delivered below and judge whether the line did the job well.')
+          // (GitHub #122) the route's own unapproved mark — a publisher after the loop leaves no LOOP note in what was said
+          verdict: o.ok ? ((o.unapproved || /LOOP — exhausted/.test(said)) ? 'The job reached the OUTBOX, but its review loop ran out of passes without an approval: the reviewer never said VERDICT: approved. Read what it delivered below; tighten the step it reviews or the reviewer\'s brief, or allow more passes.' : 'The job reached the OUTBOX: read what it delivered below and judge whether the line did the job well.')
             : o.stopped ? (o.stoppedBy === 'fault' ? 'The station hit an internal fault and stopped the job.' : 'The Commander stopped the job.') : String(o.error || 'The job did not finish').replace(/[.\s]*$/, '.') + ' Look at which step ended badly, fix the line, and test again.',
           jobId: o.jobId || null
         };

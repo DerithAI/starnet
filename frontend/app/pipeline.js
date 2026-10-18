@@ -2391,6 +2391,10 @@
        so far; the frame CLOSES with what this line does with it: its standing brief, or — with none — hand that work on as the
        result, corrected only where it falls short; the finished work itself, never a note on whether the job is done. */
     const parts = ['[HAND-OFF — ' + who + ' finished its part of this job and sent its result on to this line. That result is the work so far.]'];
+    /* NOT APPROVED (GitHub #122): the sending line's review loop used all its passes without the verdict it waits for and sent the work
+       on anyway (the LOOP card's rule) — the next line is told so, in the sending job's own words, never handed it as approved work */
+    const unapproved = String(x.unapproved == null ? '' : x.unapproved).replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '').slice(0, 300);
+    if (unapproved) parts.push('[NOT APPROVED — on ' + who + ', ' + unapproved + '.]');
     if (original) parts.push('THE JOB AS IT FIRST ARRIVED:\n' + original);
     parts.push('WHAT ' + who.toUpperCase() + ' DELIVERED:\n' + (output || '(no text came back)'));
     if (files.length) parts.push('FILES IT MADE (paths on this machine):\n' + files.map(f => '- ' + f).join('\n'));

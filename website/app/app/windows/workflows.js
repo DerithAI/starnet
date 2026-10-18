@@ -761,7 +761,9 @@ const WorkflowsWindow = (() => {
     // job's record keeps the job as it first arrived (`text`) and what the sending line handed in (`handedIn`) apart.
     const hin = !job.from ? null : (typeof job.handedIn === 'string' && job.handedIn) ? { original: job.text, output: job.handedIn }
       : (typeof Pipeline !== 'undefined' && Pipeline.parseHandoffInput) ? Pipeline.parseHandoffInput(job.text) : null;
-    const prov =(job.from ? '<p class="wfw-why wfw-from">' + (wasRefused ? esc(lineWord(job.from)) + ' tried to send its result on to this line — it was not sent on, so nothing ran here.' : 'From ' + esc(lineWord(job.from)) + ' — that line finished its part and sent its result on to this one.')
+    const prov =(job.from ? '<p class="wfw-why wfw-from">' + (wasRefused ? esc(lineWord(job.from)) + ' tried to send its result on to this line — it was not sent on, so nothing ran here.' : 'From ' + esc(lineWord(job.from)) + ' — that line finished its part and sent its result on to this one.'
+          // (GitHub #122) the work it handed in came out of a review loop that ran out of passes: nobody approved it
+          + (job.from.unapproved ? ' ' + esc(sentence('on ' + lineWord(job.from) + ', ' + job.from.unapproved, '')) : ''))
         + (job.from.jobId ? ' <button type="button" class="wf-link" data-job="' + esc(job.from.jobId) + '">OPEN ITS JOB</button>' : '') + '</p>' : '')
       + (job.sentTo ? (job.sentTo.refused ? '<p class="wfw-why wfw-sent warn">NOT sent on to ' + esc(lineWord(job.sentTo)) + ' — ' + esc(job.sentTo.refused) + '.'
           : '<p class="wfw-why wfw-sent">Sent on to ' + esc(lineWord(job.sentTo)) + ' — that line works on this result next.')
@@ -775,6 +777,9 @@ const WorkflowsWindow = (() => {
       + prov
       + (why ? '<p class="wfw-why">' + esc(why) + '</p>' : '')
       + work.notes.map(t => '<p class="wfw-why">⚠ ' + esc(t) + '</p>').join('')
+      // (GitHub #122) delivered, but its review loop used all its passes without an approval — the record's own mark, in the loop note's
+      // line, when the result itself carries no loop note (a step after the loop wrote it)
+      + (ok && job.unapproved && !work.notes.length ? '<p class="wfw-why">⚠ ' + esc(sentence(job.unapproved, '')) + '</p>' : '')
       // a handed-on job: the job as it first arrived (what the Commander asked), and what the sending line handed in beside it
       + (hin ? '<div class="wfw-you"><span class="wfw-k">The job</span><div class="wfw-quote">' + esc(hin.original || job.text) + '</div></div>'
           + '<details class="wf-more wfw-handedin"><summary>What ' + esc(lineWord(job.from)) + ' handed in</summary><div class="wf-io" data-md data-md-src="' + esc(hin.output || '(nothing)') + '">' + esc(hin.output || '(nothing)') + '</div></details>'

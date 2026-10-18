@@ -11,7 +11,13 @@
    sandboxed so the dev machine's real legacy roots never leak in as evidence), fire the exact quit-path
    E-STOP, restart the host, and require GET /api/lineage to say onboardingAllowed:true. This drives the
    real writers — any future stationless boot/halt write that re-enters STATE_EVIDENCE fails here, not on
-   a user's machine. NOT in test:fast (child-process boot). Run via `npm run test:http`. */
+   a user's machine. NOT in test:fast (child-process boot). Run via `npm run test:http`.
+
+   #123 (2026-10-17): the same class from a BOOT timer. The QUEST REFRESH boot look (3 s after listen) stamped
+   _station.questrefresh.json + .bak on a station-less workspace, which matched the `_station.*` evidence family.
+   This ratchet used to boot with SKYNET_QUEST_REFRESH=0, which hid it — so session 1 now runs with the quest
+   refresh ON and waits past its boot look before the quit: the tick must write nothing, and the restart must
+   still onboard. */
 'use strict';
 const A = require('./_assert.js');
 const { spawn } = require('child_process');
@@ -33,9 +39,11 @@ const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
   const baseEnv = Object.assign({}, process.env, {
     LOCALAPPDATA: appData, APPDATA: appData,
     HOME: sandbox, USERPROFILE: sandbox,
-    SKYNET_WORKSPACES: ws, SKYNET_LIVE_PRICES: '0', SKYNET_QUEST_REFRESH: '0',
+    SKYNET_WORKSPACES: ws, SKYNET_LIVE_PRICES: '0',
     SKYNET_OPENROUTER_KEY: '', STARNET_OPENROUTER_KEY: ''
   });
+  // the quest refresh stays ON (its default): its boot look is one of the stationless writers under test (#123)
+  delete baseEnv.SKYNET_QUEST_REFRESH; delete baseEnv.STARNET_QUEST_REFRESH;
   function boot(port, attemptsLeft) {
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [INDEX], {
@@ -69,6 +77,7 @@ const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
   try {
     // ---- SESSION 1: virgin workspace, the quit path fires the E-STOP (exactly what the Tauri shell does) ----
     let booted = await boot(9040 + (process.pid % 40), 20);
+    const bootedAt = Date.now();   // the listen banner: the quest-refresh boot look is armed 3 s after it
     child = booted.child; let port = booted.port;
     const B = () => 'http://' + HOST + ':' + port;
     let apiToken = await bootToken(B(), B());
@@ -82,6 +91,10 @@ const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
     const first = await j('GET', '/api/lineage');
     A.eq(first.status, 200, 'GET /api/lineage -> 200');
     A.eq(first.body.lineage.onboardingAllowed, true, 'a virgin workspace onboards');
+    // #123: let the quest-refresh boot look fire (3 s after listen) BEFORE the quit — the E-STOP must not mask it.
+    const lookDone = bootedAt + 4000;
+    if (Date.now() < lookDone) await new Promise(r => setTimeout(r, lookDone - Date.now()));
+    A.eq(fs.existsSync(path.join(ws, '_station.questrefresh.json')), false, 'the quest-refresh boot look writes nothing on a station-less workspace');
     const halt = await j('POST', '/api/halt', {});
     A.eq(halt.status, 200, 'quit-path E-STOP -> 200');
     A.eq(halt.body.nightshiftHaltPersisted, true, 'the E-STOP durably wrote its night-shift bookkeeping');

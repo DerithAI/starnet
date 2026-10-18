@@ -570,6 +570,7 @@ const Marketplace = (() => {
       else if (view === 'build') wireBuildForm(stage);
       else if (view === 'harnessImport') wireHarnessImport(stage);
       else wireLaunchForm(stage);
+      wireTaglineCount(stage);
       return;
     }
     if (tab === 'recipes' && hasRecipes()) syncRecipeFocus();
@@ -3605,6 +3606,21 @@ const Marketplace = (() => {
     });
     const nameIn = stage.querySelector('#mkt-r-name');
     if (nameIn) { nameIn.focus(); nameIn.setSelectionRange(nameIn.value.length, nameIn.value.length); }
+  }
+
+  /* THE TAGLINE CAP, SHOWN WHILE TYPING (releases#8). The one-line taglines (recipe, saved class, built class) stop at
+     their maxlength — typing halts and a paste is clipped — and nothing on screen said so. Each gets the summon NAME
+     bar's own live count (mkt-name-meta / mkt-name-count, warn colour at the cap), read from the input's real maxlength. */
+  function wireTaglineCount(stage) {
+    stage.querySelectorAll('#mkt-r-tag, #mkt-f-tag, #mkt-b-tag').forEach(input => {
+      const max = input.maxLength;
+      if (!(max > 0)) return;
+      const meta = document.createElement('span'); meta.className = 'mkt-name-meta';
+      const count = document.createElement('span'); count.className = 'mkt-name-count'; meta.appendChild(count);
+      const sync = () => { const n = input.value.length; count.textContent = n + ' / ' + max; count.classList.toggle('over', n >= max); };
+      input.addEventListener('input', sync); sync();
+      input.insertAdjacentElement('afterend', meta);
+    });
   }
 
   /* ---------- save / edit a specialty ---------- */
