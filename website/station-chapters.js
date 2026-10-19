@@ -49,7 +49,7 @@
         [17800, 'line', 'OUTBOX', 'brief.md delivered &middot; $0.06 of $2.00', 'ok']
       ] },
     tools: { title: 'Tools', link: ['docs/station.html', 'Explore capabilities'],
-      copy: 'Placed gear is capability for the whole crew: the dish grants web, the cabinet files, the workbench a shell. Every call pulses the gear that granted it &mdash; green when it worked, red when it didn&rsquo;t.',
+      copy: 'Placed gear is capability for every agent in its room: the dish grants web, the cabinet files, the workbench a shell. Every call pulses the gear that granted it &mdash; green when it worked, red when it didn&rsquo;t.',
       len: 11500, s: [
         [0, 'start', 'SCOUT', 'event'], [300, 'start', 'QUILL', 'event'], [600, 'start', 'FORGE', 'event'],
         [0, 'line', 'HARNESS', '3 runs in parallel', 'dim'],
