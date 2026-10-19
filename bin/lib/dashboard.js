@@ -539,13 +539,14 @@ function runDashboard(station, opts) {
       try { out.write('\x1b[16t\x1b[14t\x1b[c'); } catch (e) { finish(); }
     });
   }
-  // the image fits three rows of this terminal's cells and leaves the crew bar at least 44 columns beside it
+  // the image fits three rows of this terminal's cells, the wordmark drawn at 80% within them, and leaves the crew bar at
+  // least 44 columns beside it
   function buildImage() {
     image = null; ui.logoImage = null;
     // the camera feed at the foot of CREW is an image too: only where the terminal draws them
     ui.images = !!(term.sixel && term.cellW && term.cellH && ui.logo === 'full');
     if (!term.sixel || !term.cellW || !term.cellH || ui.logo !== 'full') return;
-    const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 3, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
+    const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 3, scale: 0.8, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
     if (r) { image = r; ui.logoImage = { cols: r.cols, rows: r.rows }; }
   }
   function leaveScreen() {

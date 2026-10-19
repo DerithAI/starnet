@@ -319,6 +319,14 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(d.width === r.width && d.height === r.height && lit / d.px.length > 0.05 && lit / d.px.length < 0.6, 'it decodes back to the wordmark: ' + (lit / d.px.length).toFixed(3) + ' of pixels lit');
   const narrow = sx.logoSixel({ cellW: 10, cellH: 20, rows: 4, maxCols: 30 });
   A.ok(narrow && narrow.rows < 4 && narrow.cols <= 30, 'a narrow terminal gets a shorter image that still fits');
+  {
+    // scale: the wordmark a bit smaller inside the same rows, centred top to bottom
+    const full = sx.logoSixel({ cellW: 10, cellH: 20, rows: 3 }), small = sx.logoSixel({ cellW: 10, cellH: 20, rows: 3, scale: 0.8 });
+    const inkRows = r => { const d = sx.decodeSixel(r.sixel); const ys = []; for (let y = 0; y < d.height; y++) for (let x = 0; x < d.width; x++) if (d.px[y * d.width + x] >= 0) { ys.push(y); break; } return { h: d.height, top: ys[0], bot: ys[ys.length - 1] }; };
+    const f = inkRows(full), s = inkRows(small);
+    A.ok(small.rows === 3 && small.height === full.height && s.h === f.h, 'scaled, the logo keeps its 3 rows (what sits beside it stays put)');
+    A.ok(small.cols < full.cols && (s.bot - s.top) < (f.bot - f.top) * 0.85 && s.top > 3 && (s.h - 1 - s.bot) > 3, 'and draws the wordmark ~80% the size, centred: ' + full.cols + '→' + small.cols + ' columns, ink rows ' + s.top + '–' + s.bot + ' of ' + s.h);
+  }
   A.eq(sx.logoSixel({ cellW: 10, cellH: 20, rows: 4, maxCols: 3 }), null, 'no room at all → no image (the text logo stands in)');
   A.eq(sx.parseTermReplies('\x1b[6;20;10t\x1b[4;680;1200t\x1b[?61;4;6;7;14;21;22c', 120, 34), { sixel: true, cellW: 10, cellH: 20, replied: true }, "Windows Terminal's real reply: Sixel, 10×20 cells");
   A.eq(sx.parseTermReplies('\x1b[?1;2c', 80, 24).sixel, false, 'a terminal without Sixel draws the text logo');

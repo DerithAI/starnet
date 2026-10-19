@@ -43,15 +43,19 @@ function resample(src, w, h) {
 const RAMP = [[70, 4, 14], [118, 8, 22], [170, 14, 32], [215, 24, 44], [255, 46, 62], [255, 104, 116], [255, 176, 184]];
 const FLOOR = 0.07;   // below this a pixel is background (transparent)
 
-/* logoSixel({ cellW, cellH, rows, maxCols }) → { sixel, cols, rows, width, height } or null when it cannot fit */
+/* logoSixel({ cellW, cellH, rows, maxCols, scale }) → { sixel, cols, rows, width, height } or null when it cannot fit.
+   scale (0..1, default 1) draws the wordmark that much smaller inside its rows, centred top to bottom; the image keeps the
+   rows' full height (transparent above and below), so whatever is laid out beside it stays where it was. */
 function logoSixel(opts) {
   const o = opts || {};
   const cellW = Math.max(4, o.cellW | 0), cellH = Math.max(8, o.cellH | 0);
+  const s = o.scale > 0 && o.scale < 1 ? o.scale : 1;
   const src = master();
   let rows = Math.max(1, o.rows | 0);
-  let height, width, cols;
+  let box, height, width, cols;
   for (;;) {
-    height = rows * cellH - 2;                               // a hair under the rows, so it never touches the next one
+    box = rows * cellH - 2;                                  // a hair under the rows, so it never touches the next one
+    height = Math.round(box * s);
     width = Math.round(height * src.w / src.h);
     cols = Math.ceil(width / cellW);
     if (!o.maxCols || cols <= o.maxCols || rows === 1) break;
@@ -59,13 +63,14 @@ function logoSixel(opts) {
   }
   if (o.maxCols && cols > o.maxCols) return null;
   const light = resample(src, width, height);
-  const idx = new Int16Array(width * height).fill(-1);
+  const top = Math.round((box - height) / 2);
+  const idx = new Int16Array(width * box).fill(-1);
   for (let i = 0; i < light.length; i++) {
     const v = light[i];
     if (v < FLOOR) continue;
-    idx[i] = Math.min(RAMP.length - 1, Math.floor((v - FLOOR) / (1 - FLOOR) * RAMP.length));
+    idx[i + top * width] = Math.min(RAMP.length - 1, Math.floor((v - FLOOR) / (1 - FLOOR) * RAMP.length));
   }
-  return { sixel: encodeSixel(idx, width, height, RAMP), cols, rows, width, height };
+  return { sixel: encodeSixel(idx, width, box, RAMP), cols, rows, width, height: box };
 }
 
 /* encodeSixel(idx, width, height, palette, { fill }) → a DCS Sixel string. idx: one palette index per pixel, -1 = no pixel.
