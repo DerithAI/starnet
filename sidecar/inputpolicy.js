@@ -64,7 +64,11 @@ function impactOfTool(tool) {
 // 'connectors' = the Commander's CONNECTED MCP servers (capability 'mcp:<connectorId>'). Deliberately NOT a
 // blanket external-unknown unlock: that impact class is also the FAIL-CLOSED default for any tool the host
 // cannot classify, so the grant is additionally narrowed to real connector tools by isConnectorTool below.
-const GRANTABLE_UNATTENDED = new Set(['workbench', 'connectors']);
+// 'studio' = image_generate (capability 'studio', scope write). Its impact class is NONE, so this gate already
+// offers it; the grant only answers the consent broker's "silence is not consent" for that one capability
+// (permissions.js studioAutonomy). It opens no host process and no outside account, and the image's spend still
+// books against the run's caps like any media call.
+const GRANTABLE_UNATTENDED = new Set(['workbench', 'connectors', 'studio']);
 
 // A tool projected from a configured MCP connector. sidecar/mcp/translate.js stamps every such def with
 // capability 'mcp:<sanitized connectorId>'; nothing else in the registry uses that prefix.

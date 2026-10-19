@@ -885,6 +885,7 @@ test/channels.forwarded-taint.test.js
 test/channels.workline-transcript.test.js
 test/line-hop-stop.test.js
 test/cross-surface-continuity.test.js
+test/channels.first-message-stream.test.js
 test/channels.outbox.test.js
 test/channels.commands.test.js
 test/channels.parity.test.js
@@ -1268,3 +1269,4 @@ test/abilities-switch-scope.test.js
 test/loop-unapproved-truth.test.js
 test/build-paint-material.test.js
 test/routine-media.test.js
+test/routine-images-grant.test.js

@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "34d6dbd6d8d1a6c577516fdc1bb2023a0732deb3",
+    "sourceCommit": "b4034274e1f4b24781ee4c97e2cd9e77aa0371ea",
     "pathSetSha256": "213a4211bc1a66001a9f827b197c1b7aff1194373527f28d43c7ea6f2ebd706c",
     "files": [
       {
@@ -173,8 +173,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 452099,
-        "sha256": "6abb534a163d54f614830972931218a7c7b3a36b81649fc80e1a905633e0dd3a"
+        "bytes": 451956,
+        "sha256": "b64ed6ef24f97fda87f7d8731ece1bbbe8701d2f0fdda39611ea790be7f06030"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -303,8 +303,8 @@
       },
       {
         "path": "frontend/app/backup.js",
-        "bytes": 15320,
-        "sha256": "e45ef7dc287254ef094f65f9bf6e9e287d05ddb2c2463169f05c45c5001c0ec9"
+        "bytes": 12326,
+        "sha256": "528f4c90d9b4b17438253ccded51e7773c9207e654ac30e596078577d1866855"
       },
       {
         "path": "frontend/app/beatcard.js",
@@ -313,8 +313,8 @@
       },
       {
         "path": "frontend/app/bootguard.js",
-        "bytes": 20371,
-        "sha256": "0fa65ac42e41528941f1919d96b2a1e28bc93901ee5d96221a2e10044929b4a1"
+        "bytes": 19054,
+        "sha256": "60c0d7282d0c8f752ac0f72130eab8a053b4696cbc08956d72a2b073b7099bcd"
       },
       {
         "path": "frontend/app/bottlestore.js",
@@ -343,8 +343,8 @@
       },
       {
         "path": "frontend/app/chat.js",
-        "bytes": 877255,
-        "sha256": "d00fff3f039a7b132bfd446c687018e9807e6fe39395e7faa08264b5fd495b42"
+        "bytes": 876573,
+        "sha256": "2a09998cf57ed898c10b099a5ae585a2178ebcec9daff8316409c8d01392559e"
       },
       {
         "path": "frontend/app/chatresize.js",
@@ -1183,8 +1183,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 929202,
-        "sha256": "93c16b0cf1f8f5eed484c8748fbb0458e7755d40920a4e04254547baa7b3fb46"
+        "bytes": 929083,
+        "sha256": "628e2a53ee647e1c1c72a8d8f876bc85b17f66398d188c3e00a1de44d8edf2fe"
       },
       {
         "path": "frontend/app/stepin.js",
@@ -1378,8 +1378,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 72008,
-        "sha256": "ffc4d198d96191da4d1aefa5a0dba81aa47c7e165f5b38806d9668d1e96ace07"
+        "bytes": 74783,
+        "sha256": "5a5b7f0f0f913aa14f5e9417617fd24a50e9434fa82c1af1882b38443cf5c614"
       },
       {
         "path": "frontend/app/windows/trophies.js",
@@ -1393,8 +1393,8 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 62883,
-        "sha256": "9c97afd30c99a07a6ccbc5c1b62b5f371091599351c31f2942c04b02fcd69176"
+        "bytes": 62121,
+        "sha256": "f06c9e28c853cab882bad2a69c8fb8a4b3bc19fda0886ead8fe89638e57d889d"
       },
       {
         "path": "frontend/app/workflowpanel.js",

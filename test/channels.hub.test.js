@@ -277,7 +277,7 @@ async function run() {
     // an UNBOUND chat still records the resolved agent (the notifier needs some chat for that agent)
     await hub.onInbound(dm('hello', '777'));
     A.eq(saves.length, 1, 'unbound chat -> binding persisted');
-    A.eq(saves[0], { chatId: '777', rec: { agentId: 'researcher', channel: 'telegram' } }, 'unbound chat records the resolved agent');
+    A.eq(saves[0], { chatId: '777', rec: { agentId: 'researcher', channel: 'telegram', streamId: 'channel_telegram_777' } }, 'unbound chat records the resolved agent (and its canonical stream, from the first message)');
   }
 
   /* ---- J4. WORK BELONGS TO A LINE (Andrew's ruling, 2026-08-07) ----
