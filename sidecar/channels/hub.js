@@ -653,7 +653,8 @@
       if (!bindChats) return null;
       try {
         const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
-        const bound = rec && String(rec.streamId || '');
+        // a string, always: a NEW chat has no record, and RegExp.test(undefined) tests "undefined" — a valid-looking id
+        const bound = rec ? String(rec.streamId || '') : '';
         if (/^[A-Za-z0-9_-]{1,64}$/.test(bound)) return bound;
       } catch (_) {}
       const base = ('channel_' + channel + '_' + String(chatId)).replace(/[^A-Za-z0-9_-]/g, '_');
