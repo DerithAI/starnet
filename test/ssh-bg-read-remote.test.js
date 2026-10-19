@@ -103,6 +103,29 @@ const env = makeEnvironmentManager({
       A.eq(r.ok, false, 'a missing job is not ok');
       A.eq(r.error, 'no such background process', 'and says so');
     }
+    // ---- 6. a fractional limit pages like the local backend (it enters shell arithmetic as an integer) ----
+    {
+      const r = await env.readBackground('agent', BG, { limit: 2.5 });
+      A.ok(r.ok, 'a fractional limit still reads: ' + (r.error || ''));
+      A.eq(r.lineNos, [N + 1, N + 2], 'limit 2.5 pages 2 lines, like slice()');
+    }
+    // ---- 7. a failed remote scan (or an ssh drop after the header) is an ERROR, never an ok empty page ----
+    {
+      const scripted = (stdout, code) => function () {
+        const h = {}, child = { pid: 9, stdin: { write() {}, end() {} }, stdout: { on: (ev, fn) => { if (ev === 'data') child._o = fn; } }, stderr: { on() {} },
+          on: (ev, fn) => { (h[ev] = h[ev] || []).push(fn); }, kill() {}, unref() {} };
+        setImmediate(() => { child._o(Buffer.from(stdout)); (h.exit || []).forEach(f => f(code)); (h.close || []).forEach(f => f(code)); });
+        return child;
+      };
+      const mk = (spawn) => makeEnvironmentManager({ spawn, fs, pathMod: path, root: tmp, env: {}, config: { backend: 'ssh', sshBin: 'ssh' },
+        sshConfig: () => ({ configured: true, host: 'box', user: 'u', port: 22, remoteRoot: '/r' }) });
+      const awkDied = await mk(scripted('starnet-page 500 0 300\n', 46)).readBackground('agent', BG, {});
+      A.eq(awkDied.ok, false, 'an awk failure after the header is not ok');
+      A.ok(/awk failed, exit 46/.test(awkDied.error), 'and names the failed scan: ' + awkDied.error);
+      const dropped = await mk(scripted('starnet-page 500 0 300\n301\tpartial\n', 255)).readBackground('agent', BG, {});
+      A.eq(dropped.ok, false, 'an ssh drop after the header is not ok');
+      A.ok(/ssh exit 255/.test(dropped.error), 'and names the ssh exit: ' + dropped.error);
+    }
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
   }

@@ -1175,20 +1175,26 @@
       /* COUNT, GREP AND PAGE ON THE REMOTE HOST. This used to `cat` the whole remote log into one string and page it
          here: unbounded RAM (a big log could crash the station), and once captures were bounded (output-capture.js)
          a grep could no longer see the dropped middle. Now only the requested page crosses the wire, line numbers
-         are the file's own, and grep matches the local backend (shellbg.read): case-insensitive, no offset = the
-         first match; without grep, no offset = the last `limit` lines. A line longer than LINE_MAX is cut, visibly. */
+         are the file's own, and paging follows the local backend (shellbg.read): grep is a literal substring match,
+         case-insensitive for ASCII letters (awk's tolower; the local backend also folds non-ASCII), no offset = the
+         first match; without grep, no offset = the last `limit` lines. A line longer than LINE_MAX is cut, visibly.
+         Both passes read ONE size snapshot of out + err, so a job still writing cannot shift lines between the count
+         and the page; a failed scan, a timeout or a cancel is an error, never an empty page. */
       return enqueue(aid, async function () {
         const row = target(aid), dir = remoteJobDir(row, bgId);
-        const limit = clamp(opts.limit || 200, 1, 1000), LINE_MAX = 4000;
+        const limit = Math.trunc(clamp(opts.limit || 200, 1, 1000)), LINE_MAX = 4000;   // an integer: it enters shell arithmetic
         const grep = opts.grep == null ? '' : String(opts.grep);
         const rawOffset = Number(opts.offset);
         const offsetArg = Number.isFinite(rawOffset) ? String(Math.max(-1e9, Math.min(1e9, Math.trunc(rawOffset)))) : '';
-        const files = quote(dir + '/out') + ' ' + quote(dir + '/err');
+        const outFile = quote(dir + '/out'), errFile = quote(dir + '/err');
         const match = 'p=="" || index(tolower($0),p)>0';
         const script = [
           'test -d ' + quote(dir) + ' || exit 44',
           'P=' + quote(grep) + '; export P',
-          "n=$(cat " + files + " 2>/dev/null | awk 'BEGIN{p=tolower(ENVIRON[\"P\"])} {t++} " + match + " {m++} END{printf \"%d %d\", t+0, m+0}')",
+          'sz() { if test -f "$1"; then wc -c < "$1" | tr -d " "; else echo 0; fi; }',
+          'so=$(sz ' + outFile + '); so=${so:-0}; se=$(sz ' + errFile + '); se=${se:-0}',
+          'rd() { if test "$so" -gt 0; then head -c "$so" ' + outFile + ' 2>/dev/null; fi; if test "$se" -gt 0; then head -c "$se" ' + errFile + ' 2>/dev/null; fi; return 0; }',
+          "n=$(rd | awk 'BEGIN{p=tolower(ENVIRON[\"P\"])} {t++} " + match + " {m++} END{printf \"%d %d\", t+0, m+0}') || exit 45",
           'set -- $n; t=${1:-0}; m=${2:-0}',
           'if test -n "$P"; then c=$m; else c=$t; fi',
           'o=' + quote(offsetArg),
@@ -1196,12 +1202,16 @@
           'test "$o" -lt 0 && o=0',
           'test "$o" -gt "$c" && o=$c',
           'printf "starnet-page %s %s %s\\n" "$t" "$m" "$o"',
-          "cat " + files + " 2>/dev/null | O=$o L=" + limit + " W=" + LINE_MAX + " awk 'BEGIN{p=tolower(ENVIRON[\"P\"]);o=ENVIRON[\"O\"]+0;l=ENVIRON[\"L\"]+0;w=ENVIRON[\"W\"]+0} "
-            + match + " {if(k>=o){s=$0; if(length(s)>w) s=substr(s,1,w) \" …[line cut at \" w \" characters]\"; print NR \"\\t\" s} k++; if(k>=o+l) exit}'",
+          "rd | O=$o L=" + limit + " W=" + LINE_MAX + " awk 'BEGIN{p=tolower(ENVIRON[\"P\"]);o=ENVIRON[\"O\"]+0;l=ENVIRON[\"L\"]+0;w=ENVIRON[\"W\"]+0} "
+            + match + " {if(k>=o){s=$0; if(length(s)>w) s=substr(s,1,w) \" …[line cut at \" w \" characters]\"; print NR \"\\t\" s} k++; if(k>=o+l) exit}' || exit 46",
           'exit 0'
         ].join('\n') + '\n';
         const result = await runSsh(row, script, { timeoutMs: 30000, maxBytes: 512000 });
         if (result.exitCode === 44) return { ok: false, error: 'no such background process' };
+        if (result.timedOut) return { ok: false, error: 'the remote log read did not finish within 30 s (a very large log): read it with shell.exec and grep/tail/sed on the remote host' };
+        if (result.aborted) return { ok: false, error: 'the remote log read was cancelled' };
+        if (result.exitCode === 45 || result.exitCode === 46) return { ok: false, error: 'the remote host could not scan the log (awk failed, exit ' + result.exitCode + ')' };
+        if (result.exitCode !== 0) return { ok: false, error: 'could not read the remote background output (ssh exit ' + result.exitCode + ')' };
         let total = 0, matched = 0, offset = 0, header = false;
         const lines = [], lineNos = [];
         for (const text of String(result.fullOut || result.out || '').split('\n')) {

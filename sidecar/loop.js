@@ -182,9 +182,17 @@
      room for a 300k one; instead every result is offered an equal share, anything smaller than its share keeps
      its full text and hands the surplus back to the ones that are actually large. In practice the small results
      — which are usually the answers — pass through untouched and only the genuinely huge ones give ground. */
-  function squeeze(content, budget, parkedPath) {
+  // elided (> 0, the registry's outputElided): the parked file is the command's kept head + tail, not its full output.
+  function squeeze(content, budget, parkedPath, elided) {
     if (typeof content !== 'string' || content.length <= budget) return content;
-    const note = parkedPath
+    const captureDropped = Number(elided) > 0 ? Number(elided) : 0;
+    const note = (parkedPath && captureDropped)
+      ? '\n\n[... elided by the per-TURN output cap: the tool calls in this turn returned more text together '
+        + 'than one turn may carry. THE KEPT FIRST AND LAST PARTS OF THIS OUTPUT WERE SAVED to ' + parkedPath + ' (the command\'s own '
+        + 'capture had already dropped ' + captureDropped + ' characters from its middle) — read that file to see what is missing here. '
+        + 'Do NOT repeat this call as-is; rerun with narrower output to see the dropped middle. Making fewer or narrower calls per turn '
+        + 'leaves more room for each. The end of the output follows ...]\n\n'
+      : parkedPath
       ? '\n\n[... elided by the per-TURN output cap: the tool calls in this turn returned more text together '
         + 'than one turn may carry. THE FULL OUTPUT OF THIS CALL WAS SAVED to ' + parkedPath + ' — read that file '
         + 'to see what is missing. Do NOT repeat this call. Making fewer or narrower calls per turn leaves more '
@@ -201,7 +209,7 @@
       // The marker must keep BOTH halves of the note's contract, however small the share: the parked-file
       // pointer AND the do-not-repeat instruction — dropping the prohibition (review pass) let the model
       // re-issue the same wide calls next turn, squeezed identically, burning turns with no feedback.
-      const short = '\n[elided by the per-TURN output cap — do not repeat this call' + (parkedPath ? '; full output saved to ' + parkedPath : '') + ']';
+      const short = '\n[elided by the per-TURN output cap — do not repeat this call' + (parkedPath ? (captureDropped ? '; kept first and last parts saved to ' : '; full output saved to ') + parkedPath : '') + ']';
       if (short.length >= budget) {
         const bare = '\n[elided — do not repeat this call]';
         return bare.length >= budget ? bare.slice(0, Math.max(0, budget)) : content.slice(0, budget - bare.length) + bare;
@@ -242,7 +250,7 @@
       const len = results[i].content.length;
       const give = allow.get(i);
       if (give >= len) continue;                       // fit inside its share — untouched
-      results[i] = Object.assign({}, results[i], { content: squeeze(results[i].content, give, results[i].parkedPath), turnClamped: true });
+      results[i] = Object.assign({}, results[i], { content: squeeze(results[i].content, give, results[i].parkedPath, results[i].outputElided), turnClamped: true });
     }
     return results;
   }

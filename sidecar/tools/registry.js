@@ -103,12 +103,19 @@
   // cap: a HOST budget (window-scaled). Under one the note is carved OUT of the cap — the figure is a share of the
   // model's window, so everything the model sees (head + note + tail) fits inside it. Without one (cap 0) the
   // module OUTPUT_MAX applies with the note ADDITIVE, byte-identical to before this lane.
-  function clampOutput(content, parkedPath, cap) {
+  // elided (> 0): the tool's own bounded capture (output-capture.js) had already dropped that many characters from the
+  // middle, so the parked file is the kept head + tail, not "the full output" — the note says so.
+  function clampOutput(content, parkedPath, cap, elided) {
     const hostCap = Number(cap) > 0 ? Math.floor(Number(cap)) : 0;
     const limit = hostCap || OUTPUT_MAX;
     if (typeof content !== 'string' || content.length <= limit) return content;
+    const captureDropped = Number(elided) > 0 ? Number(elided) : 0;
     // The note names a NEXT ACTION. "truncated" alone invites the model to run the identical call again.
-    const noteFor = (dropped) => parkedPath
+    const noteFor = (dropped) => (parkedPath && captureDropped)
+      ? '\n\n[... ' + dropped + ' characters elided here by the host output cap' + (hostCap ? ' (sized to this model\'s context window)' : '') + '. Full size: ' + content.length + ' characters / ' + utf8Bytes(content) + ' UTF-8 bytes. THE KEPT FIRST AND LAST PARTS OF THIS OUTPUT WERE SAVED to '
+        + parkedPath + ' (the command\'s own capture had already dropped ' + captureDropped + ' characters from its middle) — read that file (in ranges if it is large) to see the part elided here. '
+        + 'Repeating this call as-is would drop the same middle; rerun with narrower output to see it. The end of the output follows ...]\n\n'
+      : parkedPath
       ? '\n\n[... ' + dropped + ' characters elided here by the host output cap' + (hostCap ? ' (sized to this model\'s context window)' : '') + '. Full size: ' + content.length + ' characters / ' + utf8Bytes(content) + ' UTF-8 bytes. THE FULL OUTPUT WAS SAVED to '
         + parkedPath + ' — read that file (in ranges if it is large) to see the part that is missing, or search '
         + 'it. Do NOT repeat this call to recover it. The end of the output follows ...]\n\n'
@@ -603,6 +610,9 @@
         const fullBytes = typeof full === 'string' ? utf8Bytes(full) : null;
         const visible = full !== raw && typeof full === 'string' ? intrinsicReceipt(raw, full.length, fullBytes, parked, shaped ? out.fullContentElided : 0) : raw;
         const done = okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null, hostCap);
+        // A head+tail capture rides on as outputElided, so the per-turn squeeze and the per-run budget receipt never call it the full output.
+        const outputElided = shaped && Number(out.fullContentElided) > 0 ? Number(out.fullContentElided) : 0;
+        if (outputElided) { done.outputElided = outputElided; done.content = clampOutput(visible, parked, hostCap, outputElided); }
         // RELAYED TAINT (additive): a tool that hands back ANOTHER run's text (team.dispatch / team.subagents …)
         // reports that run's host-proven taint; the run host latches it on the ingesting run (see taint.relayedTaint).
         if (shaped && typeof out.taintedBy === 'string' && out.taintedBy) done.taintedBy = out.taintedBy.slice(0, 200);
@@ -644,9 +654,12 @@
         // A tool that gave up waiting AFTER its request left (an MCP call cancelled mid-flight) flags effectUnknown:
         // for anything not proven read-only the model is told the effect may have landed, same as a timeout.
         const unknownEffect = !!(e && e.effectUnknown === true) && !provenReadOnly(tool);
-        const failed = errResult(unknownEffect ? visibleError + EFFECT_UNKNOWN_NOTE : visibleError,
+        const failedText = unknownEffect ? visibleError + EFFECT_UNKNOWN_NOTE : visibleError;
+        const failed = errResult(failedText,
           thrownSummary || (unknownEffect && e.cancelled ? 'cancelled' : (e && e.precondition ? 'precondition' : 'error')),
           parked, fullError.length, fullErrorBytes, e && e.mutationReceipt, e && e.precondition, hostCap);
+        const errorElided = e && Number(e.fullContentElided) > 0 ? Number(e.fullContentElided) : 0;
+        if (errorElided) { failed.outputElided = errorElided; failed.content = clampOutput(preconditionFrame(failedText, failed.precondition), parked, hostCap, errorElided); }
         if (unknownEffect) failed.effectUnknown = true;
         // the HOST wrote this refusal (a URL guard, a path rule) — no outside bytes reached the model (taint observation)
         if (e && e.hostAuthored === true) failed.hostAuthored = true;

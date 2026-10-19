@@ -155,7 +155,35 @@ function streamingSpawn(chunks, code) {
       const whole = await reg.dispatch({ name: 'whole', args: {} }, park);
       A.ok(whole.content.endsWith('[full-output receipt: 90000 characters / 90000 UTF-8 bytes before truncation; saved once to .output/x-1.txt. Read that file in ranges; do not rerun the tool merely to recover output.]'),
         'a whole capture keeps the byte-identical full-output receipt');
+      A.eq(partial.outputElided, 12345, 'the registry result carries outputElided on to the loop and the run budget');
+      A.ok(!('outputElided' in whole), 'a whole capture adds no outputElided field');
+
+      // the HOST clamp (window-scaled) must not call the kept head + tail "the full output" either
+      reg.register({ name: 'bigpreview', schema: { type: 'object', properties: {} }, run: async () => ({ content: 'v'.repeat(70000), fullContent: 'p'.repeat(90000), fullContentElided: 777, summary: 'ok' }) });
+      const clamped = await reg.dispatch({ name: 'bigpreview', args: {} }, Object.assign({ outputMax: 20000 }, park));
+      A.ok(/THE KEPT FIRST AND LAST PARTS OF THIS OUTPUT WERE SAVED to \.output\/x-1\.txt \(the command's own capture had already dropped 777 characters/.test(clamped.content), 'the host clamp note says only the first and last parts were saved');
+      A.ok(!/THE FULL OUTPUT WAS SAVED/.test(clamped.content), 'the host clamp never says the full output was saved for an elided capture');
+      reg.register({ name: 'bigwhole', schema: { type: 'object', properties: {} }, run: async () => ({ content: 'v'.repeat(70000), fullContent: 'p'.repeat(90000), summary: 'ok' }) });
+      const clampedWhole = await reg.dispatch({ name: 'bigwhole', args: {} }, Object.assign({ outputMax: 20000 }, park));
+      A.ok(/THE FULL OUTPUT WAS SAVED to \.output\/x-1\.txt — read that file/.test(clampedWhole.content), 'a whole capture keeps the original clamp note');
     } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
+  }
+
+  // ---- 11. the per-TURN squeeze and the per-RUN budget receipt say the same ----
+  {
+    const { _internals: L } = require('../sidecar/loop.js');
+    const { makeRunExecutionState } = require('../sidecar/run-execution-state.js');
+    const long = 'q'.repeat(5000);
+    const sq = L.squeeze(long, 2000, '.output/x-1.txt', 9000);
+    A.ok(/THE KEPT FIRST AND LAST PARTS OF THIS OUTPUT WERE SAVED to \.output\/x-1\.txt/.test(sq) && !/THE FULL OUTPUT OF THIS CALL WAS SAVED/.test(sq), 'the turn squeeze says only the first and last parts were saved');
+    A.ok(/THE FULL OUTPUT OF THIS CALL WAS SAVED to \.output\/x-1\.txt/.test(L.squeeze(long, 2000, '.output/x-1.txt')), 'a whole capture keeps the original squeeze note');
+    A.ok(/kept first and last parts saved to \.output\/x-1\.txt\]$/.test(L.squeeze(long, 150, '.output/x-1.txt', 9000)), 'the short squeeze marker says it too');
+    A.ok(/full output saved to \.output\/x-1\.txt\]$/.test(L.squeeze(long, 150, '.output/x-1.txt')), 'and the short marker is unchanged for a whole capture');
+    const st = makeRunExecutionState({});
+    const base = { content: long, summary: 'exit 0', parkedPath: '.output/x-1.txt', outputChars: 8388700, outputBytes: 8388700 };
+    const bounded = st.boundToolResult(Object.assign({ outputElided: 9000 }, base), 0);
+    A.ok(/The kept first and last parts of this output \(8388700 characters/.test(bounded.content) && !/do not rerun it merely to recover output/.test(bounded.content), 'the run-budget receipt says only the first and last parts were saved');
+    A.ok(/The full 8388700-character \/ 8388700-byte UTF-8 output was saved/.test(st.boundToolResult(base, 0).content), 'and is unchanged for a whole capture');
   }
 
   A.report('output-capture.test');
