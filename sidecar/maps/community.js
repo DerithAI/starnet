@@ -24,6 +24,7 @@
 'use strict';
 
 const fmt = require('./maps-format.js');
+const { note } = require('../failopen.js');   // a swallowed error stays visible (tagged warn + counter)
 
 const INDEX_MAX = 2 * 1024 * 1024;
 const CACHE_MS = 5 * 60 * 1000;
@@ -60,7 +61,7 @@ function makeCommunityMaps(deps) {
     // a signed but OLDER gallery (a replayed copy, a stale cache) is refused: this station has read a newer one
     const highest = Number(seen[url]) || 0;
     if (out.serial < highest) throw new Error('the community gallery is older than one this station already read');
-    if (out.serial > highest) { seen[url] = out.serial; try { saveState({ serials: seen }); } catch (_) { /* the in-memory floor still holds */ } }
+    if (out.serial > highest) { seen[url] = out.serial; try { saveState({ serials: seen }); } catch (e) { note('community-maps.serial-save', e); } }   // a failed save: the in-memory floor still holds
     return { ok: true, serial: out.serial, maps: out.maps, base: url };
   }
   async function catalog(opts) {
