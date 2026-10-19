@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* dev/cli-glyphs-build.cjs — bake the ASCII glyphs the camera feed draws with into bin/lib/ascii-glyphs.js: each character
-   rendered in Consolas bold at the feed's cell size (4 × 7 px, 8 px type), kept as a coverage map (0-255 a pixel, for drawing
+   rendered in Consolas bold at the feed's cell size (3 × 6 px, 7 px type), kept as a coverage map (0-255 a pixel, for drawing
    it anti-aliased) and a shape mask (what the feed matches a cell's bright pixels against). The CLI ships no font renderer,
    so the shapes go in as data. Re-run only to change the cell size, the font or the character set. */
 'use strict';
@@ -8,10 +8,11 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 
-const CW = 4, CH = 7, FS = 8, FONT = 'Consolas';
+// usage: node dev/cli-glyphs-build.cjs [cw ch fontPx [out]] (defaults: the feed's own)
+const CW = Number(process.argv[2] || 3), CH = Number(process.argv[3] || 6), FS = Number(process.argv[4] || 7), FONT = 'Consolas';
 const SHAPES = ".,:;'-_=+*^/|()[]<>~";   // matched against a cell's shape
 const DENSE = ' .:-=+*#%@';              // a flat cell, by how bright it is
-const OUT = path.join(__dirname, '..', 'bin', 'lib', 'ascii-glyphs.js');
+const OUT = process.argv[5] || path.join(__dirname, '..', 'bin', 'lib', 'ascii-glyphs.js');
 const esc = c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c] || c);
 
 (async () => {

@@ -1,19 +1,22 @@
-/* bin/lib/camfeed.js — the station camera locked on the agent in COMMS, made of ASCII. A small room drawn from the app's own
-   art (the agent's real skin with its walk / type frames, its desk and chair, a plant and a rack), the camera easing after the
-   agent the way the station's camera lock does; each frame is put on StarNet's palette (lit reds on the wordmark's ramp, the
-   rest on the station's warm greys) and turned into ASCII: every 4 × 7 px cell becomes the glyph whose shape matches its
-   bright pixels (bin/lib/ascii-glyphs.js), drawn in their colour over a dimmed copy of the picture. A rim round the agent picks
-   it out and carries its state: red while it works, amber while it asks, green when done, grey idle, dark stopped. Kept dark,
-   fading into the panel's black at its edges, so it sits in the CREW panel rather than on it (LOOK).
+/* bin/lib/camfeed.js — the station camera locked on the agent in COMMS, made of ASCII. A small furnished room drawn from the
+   app's own art (the agent's real skin with its walk / sit / type frames; its desk and chair, a lounge couch, a coffee corner,
+   a bank of wall screens and a whiteboard, a rack and a console), the camera easing after the agent the way the station's
+   camera lock does. Each frame is put on StarNet's palette (lit reds on the wordmark's ramp, the rest on the station's warm
+   greys) and turned into ASCII: every 3 × 6 px cell becomes the glyph whose shape matches its bright pixels (bin/lib/ascii-glyphs.js),
+   drawn in their colour over a dimmed copy of the picture. Kept dark and fading into the panel's black at its edges, so it
+   sits in the CREW panel rather than on it (LOOK).
 
    What the agent does follows its real state:
-     idle / done   it wanders the floor, pausing; done shows its green rim a while first
-     working       it walks to its desk, sits on its chair, and types
-     needs you     it sits at its desk, still, rim pulsing amber
-     stopped       it sits at its desk, still, dark
+     idle        it goes about the room: coffee, the couch, the wall screens, the whiteboard, the rack, the console — a few
+                 seconds at each, never the same place twice running
+     working     it walks to its desk, sits on its chair and types; its monitor's red light falls on it and the floor round it
+     needs you   it sits at its desk, still; the monitor's light turns amber and pulses
+     done        it stands by its desk a moment (its light green), then goes back about the room
+     stopped     it sits at its desk in the dark
+   A thin rim in the state's colour picks the agent out while it works, asks, finishes or stops; idle it has none.
    makeCamFeed() → { setSkin(id, set), hasSkin(id), frame(id, key, now, still, box) → { key, sixel } | null, needs(id) → asset
-   paths it still lacks, add(path, png) }. frame() returns null until the agent's sprites are in (the card stays empty meanwhile). Pure
-   apart from the per-agent walk it keeps; no I/O (the dashboard fetches the assets and hands them in with add()). */
+   paths it still lacks, add(path, png) }. frame() returns null until the agent's sprites are in (the card stays empty
+   meanwhile). Pure apart from the per-agent walk it keeps; no I/O (the dashboard fetches the assets and hands them in). */
 'use strict';
 
 const png = require('./png.js');
@@ -52,7 +55,7 @@ const LOOK = Object.assign({
   redStrict: 2.0, redGamma: 1.15, redMax: 0.8,
   greyFloor: 0.04, bgScale: 0.62, bgGamma: 1.05, agentFloor: 0.16, agentScale: 1.0, agentGamma: 0.55,
   under: 0.26, skip: 0.17, liftBase: 112, liftSpan: 90, liftMax: 1.6,
-  vigX: 0.2, vigY: 0.24, rimK: 0.9
+  vigX: 0.2, vigY: 0.24, rimK: 0.6
 }, (() => { try { return JSON.parse(process.env.STARNET_FEED_LOOK || '{}'); } catch (_) { return {}; } })());
 
 // ---- glyphs ------------------------------------------------------------------------------------------------------
@@ -67,16 +70,30 @@ const REF_H = 160, Z0 = 1.5;
 const WALL = 60;
 const DESK = { x: 300, y: 70 };
 const SEAT = { x: 372, y: 198 };
-const PROPS = [['screens', 150, -6], ['plant', 228, 92], ['rack', 470, 24]];   // a bank of wall screens, a plant, a rack
-const AREA = { x0: 200, x1: 470, y0: 182, y1: 206 };   // it wanders near its own desk, so the station stays in shot
+const MONITOR = { x: 382, y: 92, r: 210 };   // the desk monitor: its light falls on everything within r
+// [furniture, x, y] (top-left, world px). The couch is a lounge on the left; the screens and whiteboard hang on the back wall
+// lit: a light source — its bright pixels glow on StarNet's red, as the station's screens do; the rest are surfaces (greys)
+const PROPS = [['screens', 150, -6, 'lit'], ['whiteboard', 480, -14], ['couch', -380, 118], ['coffee', 30, 120], ['crate', -26, 146],
+  ['plant', 232, 94], ['rack', 560, 96, 'lit'], ['console', 720, 52, 'lit'], ['boxes', 800, 140]];
+// where it goes when idle: where it stands (feet), how it holds itself there, how long
+const SPOTS = [
+  { name: 'coffee', at: [66, 202], pose: 'standN', dwell: [3500, 6500] },
+  { name: 'couch', at: [-200, 214], pose: 'sitS', dwell: [6000, 11000], over: 'couch' },
+  { name: 'screens', at: [292, 188], pose: 'standN', dwell: [3000, 5000] },
+  { name: 'whiteboard', at: [600, 186], pose: 'standN', dwell: [3500, 6000] },
+  { name: 'rack', at: [632, 204], pose: 'standN', dwell: [3000, 5000] },
+  { name: 'console', at: [756, 202], pose: 'standN', dwell: [3000, 5500] }
+];
 const SPEED = 70;   // world px a second
-const FURNITURE = ['desk', 'chair', 'screens', 'plant', 'rack'];
+const FURNITURE = ['desk', 'chair'].concat(PROPS.map(q => q[0]));
 
 function rnd(seed) { let s = 9; for (const c of String(seed)) s = (s * 31 + c.charCodeAt(0)) >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 
 // the frames a skin set needs (the first that exists of each list is used)
 const POSES = {
   stand: [['rot_south']],
+  standN: [['rot_north', 'rot_south']],
+  sitS: [['sit_south_4', 'rot_south']],
   walkE: [1, 2, 3, 4, 5, 6].map(n => ['walk_east_' + n, 'rot_east', 'rot_south']),
   walkW: [1, 2, 3, 4, 5, 6].map(n => ['walk_west_' + n, 'rot_west', 'rot_south']),
   type: [1, 2, 3, 4].map(n => ['type_north_' + n, 'sit_north_4', 'rot_north', 'rot_south'])
@@ -124,21 +141,33 @@ function makeCamFeed() {
   // the walk: where its state puts the agent, a step at a time
   function sim(id, key, now) {
     let s = sims.get(id);
-    if (!s) { s = { x: SEAT.x - 90, y: AREA.y1 - 8, tx: SEAT.x - 90, ty: AREA.y1 - 8, last: now, pauseUntil: now + 1200, rand: rnd(id), key, since: now, dir: 1, camX: null, camY: null }; sims.set(id, s); }
-    if (s.key !== key) { s.key = key; s.since = now; }
+    if (!s) {
+      const r = rnd(id), first = Math.floor(r() * SPOTS.length);
+      s = { x: SPOTS[first].at[0], y: SPOTS[first].at[1], tx: SPOTS[first].at[0], ty: SPOTS[first].at[1], last: now, rand: r, key, since: now, dir: 1, camX: null, camY: null, spot: first, dwellUntil: now + 2500, arrived: true };
+      sims.set(id, s);
+    }
+    if (s.key !== key) { s.key = key; s.since = now; if (key === 'done') s.spot = null; }
     const dt = Math.min(0.25, Math.max(0, (now - s.last) / 1000));
     s.last = now;
     const atDesk = key === 'working' || key === 'needs' || key === 'stopped';
-    if (atDesk) { s.tx = SEAT.x; s.ty = SEAT.y; }
-    else if (s.sat) { s.sat = false; s.pauseUntil = now + 700; s.tx = s.x; s.ty = s.y + 6; }   // it stands up first
-    else if (Math.hypot(s.tx - s.x, s.ty - s.y) < 1 && now > s.pauseUntil) {
-      s.tx = AREA.x0 + s.rand() * (AREA.x1 - AREA.x0); s.ty = AREA.y0 + s.rand() * (AREA.y1 - AREA.y0);
-      s.pauseUntil = now + 1800 + s.rand() * 4200;
+    if (atDesk) { s.tx = SEAT.x; s.ty = SEAT.y; s.spot = null; }
+    else if (s.sat) { s.sat = false; s.tx = s.x - 26; s.ty = s.y + 4; s.spot = null; s.dwellUntil = now + (key === 'done' ? 2600 : 600); s.arrived = false; }   // it stands up first
+    else if (s.arrived && now > s.dwellUntil) {
+      // the next place: any but the one it is at
+      let n = Math.floor(s.rand() * SPOTS.length);
+      if (n === s.spot) n = (n + 1 + Math.floor(s.rand() * (SPOTS.length - 1))) % SPOTS.length;
+      s.spot = n; s.tx = SPOTS[n].at[0]; s.ty = SPOTS[n].at[1]; s.arrived = false;
     }
     const dx = s.tx - s.x, dy = s.ty - s.y, dist = Math.hypot(dx, dy);
     if (dist > 0.5) { const m = Math.min(dist, SPEED * dt); s.x += dx / dist * m; s.y += dy / dist * m; if (Math.abs(dx) > 0.5) s.dir = dx > 0 ? 1 : -1; }
     s.walking = dist > 1;
+    if (!s.walking && !s.arrived && !atDesk) {
+      s.arrived = true;
+      const sp = s.spot != null ? SPOTS[s.spot] : null;
+      if (sp) s.dwellUntil = now + sp.dwell[0] + s.rand() * (sp.dwell[1] - sp.dwell[0]);
+    }
     s.sat = atDesk && dist <= 1;
+    s.at = !s.walking && !atDesk && s.spot != null ? SPOTS[s.spot] : null;   // where it is spending its time, if anywhere
     // the camera eases after the agent (its chest)
     const cx = s.x, cy = s.y - 60, ease = 1 - Math.exp(-dt / 0.28);
     if (s.camX == null) { s.camX = cx; s.camY = cy; } else { s.camX += (cx - s.camX) * ease; s.camY += (cy - s.camY) * ease; }
@@ -157,9 +186,10 @@ function makeCamFeed() {
     let p;
     if (s.sat) p = pose(set, 'type', key === 'working' && !still ? Math.floor(t / 160) : 0);
     else if (s.walking && !still) p = pose(set, s.dir > 0 ? 'walkE' : 'walkW', Math.floor(t / 100));
+    else if (s.at) p = pose(set, s.at.pose, 0) || pose(set, 'stand', 0);
     else p = pose(set, 'stand', 0);
     if (!p) return null;
-    const rimKey = key === 'working' ? 'w' : key === 'needs' ? (still || Math.floor(t / 450) % 2 === 0 ? 'n' : 'n2') : key === 'stopped' ? 's' : (key === 'done' && t - s.since < 8000) ? 'd' : 'i';
+    const rimKey = key === 'working' ? 'w' : key === 'needs' ? (still || Math.floor(t / 450) % 2 === 0 ? 'n' : 'n2') : key === 'stopped' ? 's' : (key === 'done' && t - s.since < 6000) ? 'd' : 'i';
     const camX = Math.round(s.camX * k), camY = Math.round(s.camY * k);
     const ox = Math.round(W / 2 - camX), oy = Math.round(H / 2 - camY);
     const rk = [p.path, Math.round(s.x), Math.round(s.y), camX, camY, rimKey, W, H].join('|');
@@ -167,46 +197,64 @@ function makeCamFeed() {
 
     // ---- compose the room ----
     const buf = new Uint8Array(W * H * 4);
-    const agent = new Uint8Array(W * H);
+    const agent = new Uint8Array(W * H);   // what each pixel belongs to: 0 the room, 1 the agent, 2 a light source, 3 a surface
     const fill = (x0, y0, x1, y1, c) => { for (let y = Math.max(0, y0); y < Math.min(H, y1); y++) for (let x = Math.max(0, x0); x < Math.min(W, x1); x++) { const i = (y * W + x) * 4; buf[i] = c[0]; buf[i + 1] = c[1]; buf[i + 2] = c[2]; buf[i + 3] = 255; } };
     fill(0, 0, W, H, [12, 12, 12]);
     const wy = Math.round(WALL * k) + oy;
     fill(0, 0, W, wy, LOOK.wall);
     fill(0, wy, W, wy + Math.max(1, Math.round(2 * k)), LOOK.trim);
     for (let y = wy + Math.round(18 * k); y < H; y += Math.max(6, Math.round(24 * k))) fill(0, y, W, y + 1, LOOK.floorLine);
-    const blit = (img, left, top, isAgent) => {
+    const blit = (img, left, top, kind) => {
       for (let y = 0; y < img.h; y++) {
         const yy = top + y; if (yy < 0 || yy >= H) continue;
         for (let x = 0; x < img.w; x++) {
           const xx = left + x; if (xx < 0 || xx >= W) continue;
           const si = (y * img.w + x) * 4; if (img.px[si + 3] < 128) continue;
           const di = (yy * W + xx) * 4; buf[di] = img.px[si]; buf[di + 1] = img.px[si + 1]; buf[di + 2] = img.px[si + 2];
-          agent[yy * W + xx] = isAgent ? 1 : 0;
+          agent[yy * W + xx] = kind;
         }
       }
     };
     const layers = [];
     const deskImg = scale(furnPath('desk'), assets.get(furnPath('desk')), Z);
-    layers.push({ y: DESK.y + deskImg.h / k - 8, draw: () => blit(deskImg, Math.round(DESK.x * k) + ox, Math.round(DESK.y * k) + oy, false) });
+    layers.push({ y: DESK.y + deskImg.h / k - 8, draw: () => blit(deskImg, Math.round(DESK.x * k) + ox, Math.round(DESK.y * k) + oy, 3) });
     const chairImg = scale(furnPath('chair'), assets.get(furnPath('chair')), Z);
-    layers.push({ y: SEAT.y - 1, draw: () => blit(chairImg, Math.round(SEAT.x * k - chairImg.w / 2) + ox, Math.round(SEAT.y * k - chairImg.h + 8 * k) + oy, false) });
-    for (const [n, x, y] of PROPS) { const im = scale(furnPath(n), assets.get(furnPath(n)), Z); layers.push({ y: y + im.h / k, draw: () => blit(im, Math.round(x * k) + ox, Math.round(y * k) + oy, false) }); }
+    layers.push({ y: SEAT.y - 1, draw: () => blit(chairImg, Math.round(SEAT.x * k - chairImg.w / 2) + ox, Math.round(SEAT.y * k - chairImg.h + 8 * k) + oy, 3) });
+    for (const [n, x, y, lit] of PROPS) { const im = scale(furnPath(n), assets.get(furnPath(n)), Z); layers.push({ y: y + im.h / k, draw: () => blit(im, Math.round(x * k) + ox, Math.round(y * k) + oy, lit ? 2 : 3) }); }
     const ag = scale(p.path, p.img, Z);
-    layers.push({ y: s.y, draw: () => blit(ag, Math.round(s.x * k - ag.w / 2) + ox, Math.round(s.y * k - ag.h + 23 * Z) + oy, true) });
+    const onCouch = s.at && s.at.over === 'couch';
+    layers.push({ y: onCouch ? 1e6 : s.y, draw: () => blit(ag, Math.round(s.x * k - ag.w / 2) + ox, Math.round(s.y * k - ag.h + 23 * Z) + oy, 1) });
     layers.sort((a, b) => a.y - b.y).forEach(l => l.draw());
 
-    // ---- StarNet palette + the agent's rim ----
-    const RIM = ({ w: [255, 70, 84], n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168], i: [150, 136, 140] }[rimKey]).map(v => v * LOOK.rimK);
+    // ---- the desk monitor's light: it falls on the floor, the desk and whoever is near, in its state's colour ----
+    const glow = { w: [96, 14, 20], n: [96, 64, 10], n2: [40, 26, 4], s: [0, 0, 0], d: [16, 70, 36], i: [34, 6, 8] }[rimKey];
+    const lightAt = new Float32Array(W * H);   // how much of the monitor's light reaches each pixel (0..1)
+    if (glow[0] + glow[1] + glow[2] > 0) {
+      const mx = Math.round(MONITOR.x * k) + ox, my = Math.round(MONITOR.y * k) + oy, R = MONITOR.r * k;
+      for (let y = Math.max(0, Math.floor(my - R)); y < Math.min(H, Math.ceil(my + R)); y++) for (let x = Math.max(0, Math.floor(mx - R)); x < Math.min(W, Math.ceil(mx + R)); x++) {
+        const d = Math.hypot(x - mx, (y - my) * 1.4) / R; if (d >= 1) continue;
+        lightAt[y * W + x] = (1 - d) * (1 - d);
+      }
+    }
+    // ---- StarNet palette + the agent's rim (none while idle) ----
+    const RIM = rimKey === 'i' ? null : ({ w: [255, 70, 84], n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168] }[rimKey]).map(v => v * LOOK.rimK);
     const col = new Float32Array(W * H * 3), light = new Float32Array(W * H);
     for (let i = 0; i < W * H; i++) {
       const r = buf[i * 4], g = buf[i * 4 + 1], b = buf[i * 4 + 2];
       const x = i % W, y = (i / W) | 0;
-      const inA = agent[i] === 1;
-      const rim = !inA && ((x > 0 && agent[i - 1]) || (x < W - 1 && agent[i + 1]) || (y > 0 && agent[i - W]) || (y < H - 1 && agent[i + W]));
+      const inA = agent[i] === 1;   // the agent itself
+      const rim = RIM && !inA && ((x > 0 && agent[i - 1] === 1) || (x < W - 1 && agent[i + 1] === 1) || (y > 0 && agent[i - W] === 1) || (y < H - 1 && agent[i + W] === 1));
       let c;
+      const kind = agent[i], mxc = Math.max(r, g, b), mnc = Math.min(r, g, b), lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255;
       if (rim) c = RIM;
-      else if (r > 70 && r > g * LOOK.redStrict && r > b * 1.6) c = ramp(RAMPS.red, Math.pow(Math.max(r, g, b) / 255, LOOK.redGamma) * LOOK.redMax);
-      else { const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255; c = inA ? ramp(RAMPS.grey, LOOK.agentFloor + LOOK.agentScale * Math.pow(lum, LOOK.agentGamma)) : ramp(RAMPS.grey, LOOK.greyFloor + LOOK.bgScale * Math.pow(lum, LOOK.bgGamma)); }
+      // a light source's lit pixels (its screens, its LEDs, whatever their colour in the art) glow on the station's red
+      else if (kind === 2 && mxc > 110 && mxc - mnc > 50) c = ramp(RAMPS.red, Math.pow(mxc / 255, LOOK.redGamma) * LOOK.redMax);
+      // the agent keeps its own reds; everything else — surfaces, the room, the rest of the agent — is the station's greys
+      else if (kind === 1 && r > 70 && r > g * LOOK.redStrict && r > b * 1.6) c = ramp(RAMPS.red, Math.pow(mxc / 255, LOOK.redGamma) * LOOK.redMax * 0.9);
+      else c = inA ? ramp(RAMPS.grey, LOOK.agentFloor + LOOK.agentScale * Math.pow(lum, LOOK.agentGamma)) : ramp(RAMPS.grey, LOOK.greyFloor + LOOK.bgScale * Math.pow(lum, LOOK.bgGamma));
+      // the monitor's light, in its state's colour, on the things it falls on (never the empty floor: a wash there bands)
+      const la = kind ? lightAt[i] * 1.6 : 0;
+      if (la > 0 && !rim) c = [Math.min(255, c[0] + glow[0] * la), Math.min(255, c[1] + glow[1] * la), Math.min(255, c[2] + glow[2] * la)];
       if (key === 'stopped' && inA) c = c.map(v => v * 0.45);
       col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
       light[i] = Math.max(c[0], c[1], c[2]) / 255;
