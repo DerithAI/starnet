@@ -182,16 +182,20 @@ function render(model, ui, size, now) {
   // FLOWS: the station's lines and their last job
   function drawFlows(x0, y) {
     let x = g.put(x0, y, 'FLOWS  ', 'lbl b');
-    for (const f of flows) {
-      if (x > W - 10) break;
+    flows.forEach((f, i) => {
       const run = f.state === 'running';
       const lamp = run ? '●' : f.state === 'done' ? '✓' : f.state === 'failed' || f.state === 'interrupted' ? '✗' : '○';
-      x = g.put(x, y, lamp + ' ', run ? (pulse ? 'ph b' : 'ph faint') : f.state === 'done' ? 'ok' : lamp === '✗' ? 'bad' : 'dim');
-      x = g.put(x, y, trunc(f.name, 26), run ? 'hi b' : 'fg');
       const tailText = run ? (f.agents.length ? ' › ' + f.agents[0] + ' ' : ' ') + f.text.replace(/^[A-Z0-9 ]+ · /, '') : ' ' + f.text.replace(/^(done|delivered) · /, '') + (f.shipped ? ' · ' + f.shipped + ' shipped' : '');
-      x = g.put(x, y, trunc(tailText, 30), run ? 'ph' : 'dim');
+      const name = trunc(f.name, 26), tl = trunc(tailText, 30);
+      // a flow is said whole or not at all (the first one shortens to fit): never cut off at the screen's edge
+      const room = W - x;
+      if (i && width(lamp + ' ' + name + tl) > room) { if (x < W) { const more = '+' + (flows.length - i); if (room >= width(more)) g.put(x, y, more, 'dim'); } x = W; return; }
+      if (x >= W - 8) return;
+      x = g.put(x, y, lamp + ' ', run ? (pulse ? 'ph b' : 'ph faint') : f.state === 'done' ? 'ok' : lamp === '✗' ? 'bad' : 'dim');
+      x = g.put(x, y, trunc(name, Math.max(4, W - x)), run ? 'hi b' : 'fg');
+      x = g.put(x, y, trunc(tl, Math.max(0, W - x)), run ? 'ph' : 'dim');
       x = g.put(x, y, '     ', '');
-    }
+    });
   }
 
   // ---- header: the StarNet wordmark, and beside it the station, the counts, NOW and FLOWS -------------------------

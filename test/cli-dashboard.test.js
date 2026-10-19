@@ -221,6 +221,14 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!/\x1b\[(38|48);/.test(rows.map(r => tui.toAnsi(r, 0)).join('')), 'NO_COLOR level emits no colors');
   const narrow = screen(m, {}, 60, 30, T0).map(tui.toPlain);
   A.ok(narrow.every(l => tui.width(l) <= 60) && narrow.some(l => /^╭─ COMMS ▸ ASTRA /.test(l)), 'narrow: still fits, COMMS framed');
+  {
+    const m3 = crew();
+    m3.applyLines({ lines: [{ lineId: 'L1' }, { lineId: 'L2', shipped: 19 }] }, [
+      { id: 'j1', line: 'L1', name: 'Venture Crucible', status: 'delivered', endedAt: T0 - 5 * 86400000, steps: 8 },
+      { id: 'j2', line: 'L2', name: 'RIFT / 98 Evolution', status: 'delivered', endedAt: T0 - 4 * 86400000, steps: 6 }]);
+    const fl = screen(m3, {}, 119, 30, T0).map(tui.toPlain).find(l => /FLOWS/.test(l));
+    A.ok(/Venture Crucible 5d ago +\+1\s*$/.test(fl) && !/RIFT/.test(fl), 'a flow that does not fit is counted, never cut off mid-word: ' + fl.slice(56));
+  }
   A.ok(/needs at least/.test(tui.toPlain(screen(m, {}, 40, 10, T0)[0])), 'a terminal too small says so');
   const help = screen(m, { overlay: { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' } }, 110, 34, T0).map(tui.toPlain);
   A.ok(help.some(l => /COMMANDS/.test(l)) && help.some(l => /\/flow run name text/.test(l)), '/help lists the commands');
