@@ -3,7 +3,8 @@
    agent the way the station's camera lock does; each frame is put on StarNet's palette (lit reds on the wordmark's ramp, the
    rest on the station's warm greys) and turned into ASCII: every 4 × 7 px cell becomes the glyph whose shape matches its
    bright pixels (bin/lib/ascii-glyphs.js), drawn in their colour over a dimmed copy of the picture. A rim round the agent picks
-   it out and carries its state: red while it works, amber while it asks, green when done, grey idle, dark stopped.
+   it out and carries its state: red while it works, amber while it asks, green when done, grey idle, dark stopped. Kept dark,
+   fading into the panel's black at its edges, so it sits in the CREW panel rather than on it (LOOK).
 
    What the agent does follows its real state:
      idle / done   it wanders the floor, pausing; done shows its green rim a while first
@@ -43,6 +44,17 @@ function nearest(r, g, b) {
   return LUT[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)];
 }
 
+/* THE LOOK: dark, so the feed sits IN the panel rather than on it — the room near black, only real light (screens, the
+   visor) on the red ramp, everything else in deep warm greys, the agent a little brighter than its room, and the picture
+   fading into the panel's own black at its edges. Overridable (STARNET_FEED_LOOK as JSON) for tuning. */
+const LOOK = Object.assign({
+  wall: [15, 11, 12], trim: [60, 15, 21], floorLine: [18, 13, 14],
+  redStrict: 2.0, redGamma: 1.15, redMax: 0.8,
+  greyFloor: 0.04, bgScale: 0.62, bgGamma: 1.05, agentFloor: 0.16, agentScale: 1.0, agentGamma: 0.55,
+  under: 0.26, skip: 0.17, liftBase: 112, liftSpan: 90, liftMax: 1.6,
+  vigX: 0.2, vigY: 0.24, rimK: 0.9
+}, (() => { try { return JSON.parse(process.env.STARNET_FEED_LOOK || '{}'); } catch (_) { return {}; } })());
+
 // ---- glyphs ------------------------------------------------------------------------------------------------------
 const CW = G.cw, CH = G.ch;
 const COV = {};
@@ -55,10 +67,10 @@ const REF_H = 160, Z0 = 1.5;
 const WALL = 60;
 const DESK = { x: 300, y: 70 };
 const SEAT = { x: 372, y: 198 };
-const PROPS = [['plant', 220, 90], ['rack', -60, 20]];
-const AREA = { x0: 30, x1: 520, y0: 182, y1: 206 };
+const PROPS = [['screens', 150, -6], ['plant', 228, 92], ['rack', 470, 24]];   // a bank of wall screens, a plant, a rack
+const AREA = { x0: 200, x1: 470, y0: 182, y1: 206 };   // it wanders near its own desk, so the station stays in shot
 const SPEED = 70;   // world px a second
-const FURNITURE = ['desk', 'chair', 'plant', 'rack'];
+const FURNITURE = ['desk', 'chair', 'screens', 'plant', 'rack'];
 
 function rnd(seed) { let s = 9; for (const c of String(seed)) s = (s * 31 + c.charCodeAt(0)) >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 
@@ -159,9 +171,9 @@ function makeCamFeed() {
     const fill = (x0, y0, x1, y1, c) => { for (let y = Math.max(0, y0); y < Math.min(H, y1); y++) for (let x = Math.max(0, x0); x < Math.min(W, x1); x++) { const i = (y * W + x) * 4; buf[i] = c[0]; buf[i + 1] = c[1]; buf[i + 2] = c[2]; buf[i + 3] = 255; } };
     fill(0, 0, W, H, [12, 12, 12]);
     const wy = Math.round(WALL * k) + oy;
-    fill(0, 0, W, wy, [26, 16, 18]);
-    fill(0, wy, W, wy + Math.max(2, Math.round(3 * k)), [122, 28, 40]);
-    for (let y = wy + Math.round(18 * k); y < H; y += Math.max(6, Math.round(24 * k))) fill(0, y, W, y + 1, [34, 22, 24]);
+    fill(0, 0, W, wy, LOOK.wall);
+    fill(0, wy, W, wy + Math.max(1, Math.round(2 * k)), LOOK.trim);
+    for (let y = wy + Math.round(18 * k); y < H; y += Math.max(6, Math.round(24 * k))) fill(0, y, W, y + 1, LOOK.floorLine);
     const blit = (img, left, top, isAgent) => {
       for (let y = 0; y < img.h; y++) {
         const yy = top + y; if (yy < 0 || yy >= H) continue;
@@ -184,17 +196,17 @@ function makeCamFeed() {
     layers.sort((a, b) => a.y - b.y).forEach(l => l.draw());
 
     // ---- StarNet palette + the agent's rim ----
-    const RIM = { w: [255, 70, 84], n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168], i: [184, 168, 172] }[rimKey];
+    const RIM = ({ w: [255, 70, 84], n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168], i: [150, 136, 140] }[rimKey]).map(v => v * LOOK.rimK);
     const col = new Float32Array(W * H * 3), light = new Float32Array(W * H);
     for (let i = 0; i < W * H; i++) {
       const r = buf[i * 4], g = buf[i * 4 + 1], b = buf[i * 4 + 2];
       const x = i % W, y = (i / W) | 0;
       const inA = agent[i] === 1;
-      const rim = !inA && ((x > 0 && agent[i - 1]) || (x < W - 1 && agent[i + 1]) || (y > 0 && agent[i - W]) || (y < H - 1 && agent[i + W]) || (x > 1 && agent[i - 2]) || (x < W - 2 && agent[i + 2]));
+      const rim = !inA && ((x > 0 && agent[i - 1]) || (x < W - 1 && agent[i + 1]) || (y > 0 && agent[i - W]) || (y < H - 1 && agent[i + W]));
       let c;
       if (rim) c = RIM;
-      else if (r > 60 && r > g * 1.5 && r > b * 1.3) c = ramp(RAMPS.red, Math.pow(Math.max(r, g, b) / 255, 0.9));
-      else { const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255; c = ramp(RAMPS.grey, 0.18 + 0.82 * Math.pow(lum, inA ? 0.5 : 0.8) * (inA ? 1 : 0.85)); }
+      else if (r > 70 && r > g * LOOK.redStrict && r > b * 1.6) c = ramp(RAMPS.red, Math.pow(Math.max(r, g, b) / 255, LOOK.redGamma) * LOOK.redMax);
+      else { const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255; c = inA ? ramp(RAMPS.grey, LOOK.agentFloor + LOOK.agentScale * Math.pow(lum, LOOK.agentGamma)) : ramp(RAMPS.grey, LOOK.greyFloor + LOOK.bgScale * Math.pow(lum, LOOK.bgGamma)); }
       if (key === 'stopped' && inA) c = c.map(v => v * 0.45);
       col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
       light[i] = Math.max(c[0], c[1], c[2]) / 255;
@@ -202,14 +214,14 @@ function makeCamFeed() {
 
     // ---- ASCII: under-layer dimmed, the matched glyph over it in its cell's bright colour ----
     const out = new Float32Array(W * H * 3);
-    for (let i = 0; i < W * H; i++) for (let q = 0; q < 3; q++) out[i * 3 + q] = 12 + (col[i * 3 + q] - 12) * 0.4;
+    for (let i = 0; i < W * H; i++) for (let q = 0; q < 3; q++) out[i * 3 + q] = 12 + (col[i * 3 + q] - 12) * LOOK.under;
     const cols = Math.floor(W / CW), rows = Math.floor(H / CH);
     const mask = new Uint8Array(CW * CH);
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
       let sum = 0;
       for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) sum += light[(r * CH + y) * W + c * CW + x];
       const mean = sum / (CW * CH);
-      if (mean < 0.12) continue;
+      if (mean < LOOK.skip) continue;
       let bn = 0, dn = 0; const bc = [0, 0, 0], dc = [0, 0, 0];
       for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
         const i = (r * CH + y) * W + c * CW + x, j = y * CW + x;
@@ -220,7 +232,7 @@ function makeCamFeed() {
       let gl;
       if ((Math.max(...bA) - Math.max(...dA)) / 255 < 0.1) gl = COV[DENSE[Math.max(1, Math.min(DENSE.length - 1, Math.round(mean * (DENSE.length - 1))))]];
       else { let bd = Infinity; for (const sh of SHAPES) { let d = 0; for (let j = 0; j < mask.length; j++) if (sh.mask[j] !== mask[j]) d++; if (d < bd) { bd = d; gl = sh.cov; } } }
-      const mx = Math.max(bA[0], bA[1], bA[2], 1), lift = Math.min(2.4, Math.max(1, (150 + 100 * mean) / mx));
+      const mx = Math.max(bA[0], bA[1], bA[2], 1), lift = Math.min(LOOK.liftMax, Math.max(1, (LOOK.liftBase + LOOK.liftSpan * mean) / mx));
       const gc = bA.map(v => Math.min(255, v * lift));
       for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
         const a = gl[y * CW + x] / 255; if (!a) continue;
@@ -228,10 +240,15 @@ function makeCamFeed() {
         for (let q = 0; q < 3; q++) out[i * 3 + q] = out[i * 3 + q] * (1 - a) + gc[q] * a;
       }
     }
-    // the camera's corner brackets
-    const L = Math.max(6, Math.round(10 * k));
-    const mark = (x, y) => { if (x >= 0 && x < W && y >= 0 && y < H) { const i = y * W + x; out[i * 3] = 122; out[i * 3 + 1] = 28; out[i * 3 + 2] = 40; } };
-    for (let d = 0; d < L; d++) { mark(1 + d, 1); mark(1, 1 + d); mark(W - 2 - d, 1); mark(W - 2, 1 + d); mark(1 + d, H - 2); mark(1, H - 2 - d); mark(W - 2 - d, H - 2); mark(W - 2, H - 2 - d); }
+    // the edges fade into the panel's own black: no box, the picture just gets darker toward its border
+    const ex = Math.max(1, W * LOOK.vigX), ey = Math.max(1, H * LOOK.vigY);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let v = Math.min(1, Math.min(x + 0.5, W - 0.5 - x) / ex, Math.min(y + 0.5, H - 0.5 - y) / ey);
+      v = v * v * (3 - 2 * v);
+      if (v >= 1) continue;
+      const i = (y * W + x) * 3;
+      for (let q = 0; q < 3; q++) out[i + q] = 12 + (out[i + q] - 12) * v;
+    }
     const idx = new Int16Array(W * H);
     for (let i = 0; i < W * H; i++) idx[i] = nearest(Math.round(out[i * 3]), Math.round(out[i * 3 + 1]), Math.round(out[i * 3 + 2]));
     const res = { key: rk, sixel: encodeSixel(idx, W, H, PALETTE) };

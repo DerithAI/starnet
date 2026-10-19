@@ -366,11 +366,11 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const typing = new Set(); for (let t = 9200; t < 10400; t += 100) typing.add(feed.frame('nova', 'working', T0 + t, false, box).key);
   A.ok(typing.size >= 3, 'seated, it types: its frames change (' + typing.size + ' looks in a second)');
   const used = f => { const d = sx.decodeSixel(f.sixel); const s = new Set(); for (const v of d.px) s.add(v); return [...s].map(i => cf.PALETTE[i]); };
-  A.ok(used(feed.frame('nova', 'working', T0 + 10500, true, box)).some(([r, g, b]) => r > 230 && g < 90 && b < 110), 'working: its rim is the station red');
+  A.ok(used(feed.frame('nova', 'working', T0 + 10500, true, box)).some(([r, g, b]) => r > 170 && g < r * 0.4 && b < r * 0.45), 'working: its rim is the station red');
   sim('needs', 10600, 300);
-  A.ok(used(feed.frame('nova', 'needs', T0 + 11000, true, box)).some(([r, g, b]) => r > 230 && g > 150 && b < 90), 'needs you: amber');
+  A.ok(used(feed.frame('nova', 'needs', T0 + 11000, true, box)).some(([r, g, b]) => r > 170 && g > r * 0.55 && g < r * 0.8 && b < 80), 'needs you: amber');
   const dn = sim('done', 11100, 4000);
-  A.ok(!dn.s.sat && used(feed.frame('nova', 'done', T0 + 15200, true, box)).some(([r, g, b]) => g > 200 && r < 140), 'done: it gets up, rimmed green');
+  A.ok(!dn.s.sat && used(feed.frame('nova', 'done', T0 + 15200, true, box)).some(([r, g, b]) => g > 150 && g > r * 1.8 && g > b * 1.2), 'done: it gets up, rimmed green');
   const st1 = feed.frame('nova', 'done', T0 + 20000, true, box).key, st2 = feed.frame('nova', 'done', T0 + 20000, true, box).key;
   A.eq(st1, st2, 'the same moment draws the same frame (cached, not redrawn)');
 
