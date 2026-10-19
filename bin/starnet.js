@@ -123,6 +123,7 @@ function makeClient(host, port) {
           const chunks = [];
           res.on('data', d => chunks.push(d));
           res.on('end', () => {
+            if (o.raw) return resolve({ ok: true, status: res.statusCode, buf: Buffer.concat(chunks) });   // bytes as sent (a sprite)
             const text = Buffer.concat(chunks).toString('utf8');
             let json = null; try { json = JSON.parse(text || 'null'); } catch (_) { json = null; }
             resolve({ ok: true, status: res.statusCode, json, text });

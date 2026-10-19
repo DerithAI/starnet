@@ -21,7 +21,7 @@ const core = require('./cli-core.js');
 const { makeStation } = require('./station-model.js');
 const tui = require('./tui.js');
 const sixel = require('./sixel.js');
-const trooper = require('./trooper.js');
+const camfeed = require('./camfeed.js');
 
 function runDashboard(station, opts) {
   const o = opts || {};
@@ -98,6 +98,36 @@ function runDashboard(station, opts) {
     await loadConversations().catch(() => false);
     for (const [id, list] of convs) if (list.length && !ui.streams[id]) ui.streams[id] = list[0].streamId;   // each agent's newest
     await Promise.all(model.state.order.slice(0, 16).map(id => loadStream(id, streamOf(id))));
+  }
+  /* THE CAMERA FEED's art is the app's own, read off the station: the skin table (/app/data-shim.js), the skin each agent
+     wears (GET /api/save), and the sprites and furniture the feed draws (/assets/...), fetched when an agent's feed first
+     needs them. An agent with no skin wears the default, as in the app. */
+  const feed = camfeed.makeCamFeed();
+  let skinTable = null;
+  const inFlight = new Set();
+  async function loadSkins() {
+    if (!ui.images) return;
+    if (!skinTable) {
+      const r = await get('/app/data-shim.js');
+      if (!(r.ok && r.status === 200)) return;
+      skinTable = camfeed.parseSkins(r.text);
+    }
+    const s = await get('/api/save', 30000);
+    const doc = s.ok && s.status === 200 && s.json ? (s.json.save || s.json.doc || s.json) : null;
+    const wearing = {};
+    for (const a of (doc && Array.isArray(doc.agents) ? doc.agents : [])) if (a && a.id) wearing[a.id] = String(a.skin || '');
+    for (const id of model.state.order) feed.setSkin(id, camfeed.setFor(id, wearing[id], skinTable));
+  }
+  function loadFeedAssets(id) {
+    for (const p of feed.needs(id)) {
+      if (inFlight.has(p)) continue;
+      inFlight.add(p);
+      client.request('GET', p, null, { raw: true, timeoutMs: 8000 }).then(r => {
+        feed.add(p, r.ok && r.status === 200 ? r.buf : null);
+        inFlight.delete(p);
+        if (!feed.needs(id).length) paint();
+      }, () => { inFlight.delete(p); });
+    }
   }
   function newConversation() {
     const a = model.state.agents.get(ui.focus);
@@ -454,9 +484,9 @@ function runDashboard(station, opts) {
     const size = { cols: Math.max(20, (out.columns || 80) - 1), rows: out.rows || 24 };
     const skip = ui.logoImage ? ui.logoImage.cols : 0, skipRows = ui.logoImage ? ui.logoImage.rows : 0;
     const screen = tui.render(model, ui, size, t);
-    const av = screen.avatar;   // where the trooper image goes, when the card is up
+    const av = screen.avatar;   // where the camera feed goes, when the card is up
     // every rendered row is padded to the full width, so no erase-to-end is needed (or wanted). A row beside the logo
-    // image starts to its right, a row beside the trooper is written either side of it: an image's cells are never
+    // image starts to its right, a row beside the feed is written either side of it: an image's cells are never
     // written over (that would erase it)
     const rows = screen.map((segs, y) => {
       if (y < skipRows) return '\x1b[' + (y + 1) + ';' + (skip + 1) + 'H' + tui.toAnsi(tui.sliceSegs(segs, skip), level);
@@ -469,11 +499,13 @@ function runDashboard(station, opts) {
     let s = '';
     for (let y = 0; y < rows.length; y++) if (prevRows[y] !== rows[y]) s += rows[y] + '\x1b[0m';
     if (image && !imageShown) { s += '\x1b[1;1H' + image.sixel; imageShown = true; }
-    // the trooper: drawn again only when what it looks like (or where) changes
+    // the camera feed: drawn again only when what it shows (or where) changes; until the agent's sprites are in, the
+    // card stays empty while they load
     if (av) {
-      const pic = trooper.sixel(av.look, { cellW: term.cellW, cellH: term.cellH, cols: av.cols, rows: av.rows });
-      const key = av.look.key + '@' + av.x + ',' + av.y + ',' + av.cols + 'x' + av.rows;
-      if (key !== avatarShown) { s += '\x1b[0m\x1b[' + (av.y + 1) + ';' + (av.x + 1) + 'H' + pic.sixel; avatarShown = key; }
+      const pic = feed.frame(av.id, av.key, t, ui.still, { cellW: term.cellW, cellH: term.cellH, cols: av.cols, rows: av.rows });
+      if (!pic) loadFeedAssets(av.id);
+      const key = pic ? pic.key + '@' + av.x + ',' + av.y : '';
+      if (pic && key !== avatarShown) { s += '\x1b[0m\x1b[' + (av.y + 1) + ';' + (av.x + 1) + 'H' + pic.sixel; avatarShown = key; }
     } else avatarShown = '';
     if (rows.length < prevRows.length) s += '\x1b[' + (rows.length + 1) + ';1H\x1b[J';
     prevRows = rows;
@@ -510,7 +542,7 @@ function runDashboard(station, opts) {
   // the image fits three rows of this terminal's cells and leaves the crew bar at least 44 columns beside it
   function buildImage() {
     image = null; ui.logoImage = null;
-    // the trooper at the foot of CREW is an image too: only where the terminal draws them
+    // the camera feed at the foot of CREW is an image too: only where the terminal draws them
     ui.images = !!(term.sixel && term.cellW && term.cellH && ui.logo === 'full');
     if (!term.sixel || !term.cellW || !term.cellH || ui.logo !== 'full') return;
     const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 3, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
@@ -552,6 +584,7 @@ function runDashboard(station, opts) {
     }
     await Promise.all([loadSnapshot(), loadBudget(), loadLines().catch(() => {})]);
     await loadHistory().catch(() => {});
+    loadSkins().then(paint, () => {});
     ui.focus = pickFocus() || ui.focus;
     connectFeed();
     paint();
@@ -559,7 +592,7 @@ function runDashboard(station, opts) {
     every(3000, loadSnapshot);
     every(10000, loadBudget);
     every(6000, () => loadLines().catch(() => {}));
-    every(20000, loadRoster);
+    every(20000, () => loadRoster().then(() => { if (ui.images && model.state.order.some(id => !feed.hasSkin(id))) return loadSkins(); }));
     timers.push(setInterval(paint, 100));   // the working spinner turns at 10 frames a second (paint writes only rows that changed)
   })().catch(e => { stop(0); process.stderr.write('starnet: ' + ((e && e.message) || e) + '\n'); });
   return exited;

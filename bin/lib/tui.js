@@ -15,7 +15,6 @@ const { fmtDur, fmtShort, costText, askInspect } = require('./station-model.js')
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
 const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
-const trooper = require('./trooper.js');   // the agent in COMMS as an armored trooper at its desk (pixel art)
 
 const BARS = '▁▂▃▄▅▆▇█';
 
@@ -235,12 +234,12 @@ function render(model, ui, size, now) {
     top = y;
   }
   const promptY = H - 2, hintY = H - 1, bot = promptY - 1;
-  let avatar = null;   // { x, y, cols, rows, look }: where the dashboard paints the trooper image
+  let avatar = null;   // { x, y, cols, rows, id, key }: where the dashboard paints the camera feed, of whom, doing what
 
   // ---- CREW: a framed list down the left — lamp, name, and a word for what it is doing — the one in COMMS marked; at its
-  // foot, where the terminal draws images and the list leaves room, the agent in COMMS as a trooper at its desk -----
+  // foot, where the terminal draws images and the list leaves room, the station camera locked on the agent in COMMS -
   const side = W >= 90 && rows.length > 0;
-  const sw = side ? 30 : 0;   // room for a name and its tag, and for the trooper at its foot
+  const sw = side ? 30 : 0;   // room for a name and its tag, and for the camera feed at its foot
   if (side) {
     const card = ui.images && focusRow && rows.length <= bot - top - 1 - AGENT_ROWS;
     const listBot = card ? bot - AGENT_ROWS : bot;
@@ -262,14 +261,18 @@ function render(model, ui, size, now) {
       if (foc) { g.put(1, yy, '▌', 'ph b'); g.hl(yy, 1, sw - 1, 'sel'); }
     });
     if (card) {
-      // the rule carries its name and what it is doing; under it, the figure, alive
+      // the rule carries its name and what it is doing, the camera's REC light at its end; under it, the feed
       g.put(0, listBot, '├' + '─'.repeat(sw - 2) + '┤', 'rule');
-      const [word, wc, said] = stateWords(focusRow.status, now, ui.still);
+      edgeR(g, sw - 2, listBot, [['●', ui.still || Math.floor(now / 600) % 2 === 0 ? 'ph b' : 'rule'], [' REC', 'dim']]);
+      const [said0, wc, said] = stateWords(focusRow.status, now, ui.still);
+      // the crew list's own word for an ask; a name too long for the word keeps the state's lamp alone (⠋ ▲ ✓ ■ ○)
+      let word = focusRow.status.key === 'needs' ? '▲ asks' : said0;
+      if (width(focusRow.name) > sw - 14 - width(word)) word = [...word][0];
       const more = focusRow.status.key === 'working' ? '' : said;   // how long it has worked is on its row in the list
-      const title = trunc(focusRow.name, Math.max(4, sw - 8 - width(word) - (more ? width(more) + 1 : 0)));
-      edgeL(g, 2, listBot, [[title, 'hi b'], ['  ', ''], [word, wc]].concat(more ? [[' ' + more, 'dim']] : []));
-      // the scene is an image the dashboard paints into these cells; the screen only says where, and what it shows
-      avatar = { x: 2, y: listBot + 1, cols: sw - 4, rows: AGENT_ROWS - 1, look: trooper.look(focusRow.status.key, now, ui.still) };
+      const title = trunc(focusRow.name, Math.max(4, sw - 14 - width(word) - (more ? width(more) + 1 : 0)));
+      edgeL(g, 2, listBot, [[title, 'hi b'], [' ', ''], [word, wc]].concat(more ? [[' ' + more, 'dim']] : []));
+      // the feed is an image the dashboard paints into these cells; the screen only says where, of whom, doing what
+      avatar = { x: 2, y: listBot + 1, cols: sw - 4, rows: AGENT_ROWS - 1, id: focusRow.id, key: focusRow.status.key };
     }
   }
 
