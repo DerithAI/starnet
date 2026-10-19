@@ -124,6 +124,8 @@ interactive host.</p>
 <h3 id="paste-the-key">1. Paste the key</h3>
 <p><b>CONNECT &rsaquo; ABILITIES &rarr; SAVED API CONNECTIONS &rarr; ADD A KEY</b>. Type the platform name (or pick it in CATALOG, which fills it in),
 paste your key, and save. StarNet stores it locally and shows only the last four characters, ever.</p>
+<p>Keep your keys in 1Password? Paste a reference like <code>op://vault/item/field</code> instead of the key. StarNet reads it
+with the 1Password CLI (<code>op</code>) when a run needs it and holds the value in memory only &mdash; it is never written to disk.</p>
 <p>Each key becomes a named environment variable — <code>Printify</code> becomes
 <code>PRINTIFY_API_KEY</code>. Adding the platform's <b>API docs URL</b> is worth the ten seconds: it rides
 into the agent's prompt, so it can look up the right endpoint instead of guessing.</p>
