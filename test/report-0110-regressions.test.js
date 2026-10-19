@@ -8,7 +8,7 @@ const backend = fs.readFileSync(require.resolve('../sidecar/index.js'), 'utf8');
 const chat = fs.readFileSync(require.resolve('../frontend/app/chat.js'), 'utf8');
 function extract(src, start, end) { return src.slice(src.indexOf(start), src.indexOf(end, src.indexOf(start))); }
 test('file approval preserves every mutation argument beyond the run summary cap', () => {
- const src = extract(backend, 'function consentSummary(call)', 'function throttleSearch');
+ const src = extract(backend, 'function consentSummary(call, where)', 'function throttleSearch');
  const ctx = { redact: require('../sidecar/context.js').redact }; vm.createContext(ctx); vm.runInContext(src, ctx);
  for (const name of ['fs.edit','fs.patch','fs.write','fs.append']) {
   const args = { path: 'sample.txt', find: 'old'.repeat(200), replace: 'new'.repeat(200), patch: '@@\n-old\n+new', content: '<script>literal</script>' + 'x'.repeat(5000) };

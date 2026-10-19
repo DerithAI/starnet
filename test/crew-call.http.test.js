@@ -4,6 +4,10 @@ const A = require('./_assert.js');
 const http = require('node:http');
 const {SidecarFixture} = require('./helpers/sidecar-fixture.js');
 const Pipeline = require('../frontend/app/pipeline.js');
+// The [CREW CALL] line is per-request, so it stays out of the cache-stable system prompt. It rides its own <crew_call>
+// host note right after the newest user message (review 2026-10-12: crew-call.js wants it LAST), which on this non-Claude
+// chat wire is the fenced CLOSING text of that user message. Read host text and the Commander's own words apart.
+const {hostText,userWords,text:wireText} = require('./helpers/host-notes.js');
 (async () => {
   const wire = [];
   const server = http.createServer((req,res) => {
@@ -48,14 +52,21 @@ const Pipeline = require('../frontend/app/pipeline.js');
       A.eq(r.status,200,label+' reaches the run route');
       A.eq(events.find(e=>e.name==='agent.run.end')?.payload.reason,'done',label+' run completes successfully');
       A.ok(!events.some(e=>e.name==='agent.run.error'),label+' run has no harness error');
-      const request=wire.slice(from).find(b=>(b.messages||[]).some(m=>m.role==='user' && m.content===text));
+      const request=wire.slice(from).find(b=>(b.messages||[]).some(m=>m.role==='user' && userWords(m)===text));
       A.ok(request,label+' reaches the actual provider');
       if (!request) continue;
       A.ok((request.tools||[]).some(t=>t.function.name==='team_dispatch'),label+' has real dispatch capability');
-      const system=request.messages.filter(m=>m.role==='system').map(m=>String(m.content)).join('\n');
+      const system=hostText(request.messages);
       const directive=(system.match(/\[CREW CALL\][^\n]*/)||[''])[0];
       A.eq([...directive.matchAll(/agentId:"([^"]+)"/g)].map(m=>m[1]),expected,label+' exact host targets: '+(directive||'absent'));
-      if (!expected.length) A.ok(request.messages.some(m=>m.role==='user' && m.content===text),'original '+label+' remains in user context');
+      const last=request.messages[request.messages.length-1];
+      A.ok(last?.role==='user' && userWords(last)===text,label+' request ends on the owner turn: '+JSON.stringify(last&&{role:last.role,content:userWords(last).slice(0,80)}));
+      if (!expected.length) A.ok(request.messages.some(m=>m.role==='user' && userWords(m)===text),'original '+label+' remains in user context');
+      else {
+        const newest=wireText([...request.messages].reverse().find(m=>m.role==='user').content);
+        A.ok(newest.indexOf(text)>=0 && newest.indexOf('[CREW CALL]')>newest.lastIndexOf(text) && /\n<\/crew_call>$/.test(newest),label+' the crew call trails the Commander\'s words: the last text of the newest user turn');
+        A.ok(request.messages[0].role==='system' && String(request.messages[0].content).indexOf('[CREW CALL]')<0,label+' the crew call stays out of the system prompt');
+      }
     }
   } finally {await fixture.dispose();await new Promise(r=>server.close(r));}
   A.report('crew-call.http');

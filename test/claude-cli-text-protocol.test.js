@@ -43,7 +43,7 @@ const result = () => ({ type: 'result', subtype: 'success', is_error: false, res
 async function turn(chunks, opts) {
   opts = opts || {};
   const f = fakeSpawn([init(opts.source || 'none'), start(opts.usage || { input_tokens: 100, output_tokens: 1 })].concat(chunks.map(delta), [result()]));
-  const p = makeClaudeCliProvider({ spawn: f.spawn, fs: fakeFs, bin: 'claude.exe', env: { PATH: '' }, platform: 'linux' });
+  const p = makeClaudeCliProvider({ spawn: f.spawn, fs: fakeFs, bin: 'claude.exe', env: { PATH: '', STARNET_CLAUDE_CLI_PERSIST: '0' }, platform: 'linux' });
   const ev = [];
   for await (const e of p.stream({ model: opts.model || 'claude-opus-5-5', messages: [{ role: 'user', content: 'go' }], tools: TOOLS })) ev.push(e);
   const calls = [];

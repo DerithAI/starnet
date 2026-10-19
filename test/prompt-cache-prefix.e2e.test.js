@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+const { runContextOf } = require('./helpers/host-notes.js');
 const text = content => typeof content === 'string' ? content : (content || []).map(p => p.text || '').join('');
 (async () => {
   const bodies = [];
@@ -35,23 +36,42 @@ const text = content => typeof content === 'string' ? content : (content || []).
       const [a,b]=bodies;
       assert.deepEqual(a.tools,b.tools,provider+': all tool definitions retained across runs');
       assert.ok(a.tools.length>20,provider+': task capability projection is present');
+      /* CACHE-STABLE PREFIX (lean-prompt 2026-10-12). This used to pin the per-run block INSIDE the system prompt (a
+         split "stable | volatile" system whose second half differed per run). That block now rides one <run_context>
+         note placed with the newest user message, so the system prompt itself is byte-identical across the
+         conversation's two messages (the second request replays the first exchange from the transcript). */
+      const systemOf=body=>body.system ? text(body.system) : text(body.messages[0].content);
+      const lastUser=body=>{for(let i=body.messages.length-1;i>=0;i--) if(body.messages[i].role==='user') return i; return -1;};
+      const noteOf=body=>{ // native Anthropic: inside the newest user turn; Claude on a chat wire: the user message before it; any other model: the newest user message's leading text
+        const i=lastUser(body);
+        if(body.system) return (body.messages[i].content.find(p=>String(p.text||'').startsWith('<run_context>'))||{}).text||'';
+        return runContextOf(body.messages);
+      };
       for(const body of bodies) {
-        const sys=body.system ? text(body.system) : text(body.messages[0].content);
-        assert.ok(sys.includes('Run id:'),provider+': truthful runtime identity retained');
+        const sys=systemOf(body), note=noteOf(body);
+        assert.ok(note.includes('Run id:'),provider+': truthful runtime identity retained (run-context note)');
+        assert.ok(!sys.includes('Run id:'),provider+': no run id in the system prompt');
         assert.ok(sys.includes('CACHE_PROOF_IDENTITY'),provider+': caller instructions retained');
         assert.ok(sys.includes('<capabilities_ground_truth>'),provider+': capability truth retained');
-        assert.ok(sys.includes('brief_proceed') || sys.includes('brief.proceed'),provider+': Task Brief control retained');
-        assert.ok(sys.length>20000,provider+': full task context was not shortened');
+        assert.ok(sys.includes('brief_proceed') || sys.includes('brief.proceed'),provider+': Task Brief control retained (its constant doctrine stays in the system prompt)');
+        assert.ok(note.includes('<task_brief id="tb_'),provider+': the brief itself (its id is the run\'s) rides the run-context note');
+        assert.ok(!sys.includes('<task_brief'),provider+': no per-run brief block in the system prompt');
+        assert.ok(sys.length+note.length>20000,provider+': full task context was not shortened');
+        assert.equal(lastUser(body),body.messages.length-1,provider+': the request ends on the user turn');
       }
+      assert.ok(b.messages.length>a.messages.length,provider+': the second message carries the first exchange as history');
+      assert.notEqual(noteOf(a),noteOf(b),provider+': each run receives fresh metadata');
       if(provider!=='custom') {
         const parts=body=>body.system||body.messages[0].content;
-        assert.equal(parts(a).length,2,provider+': distinct stable and volatile system blocks');
-        assert.deepEqual(parts(a)[0],parts(b)[0],provider+': stable cache anchor survives new run ID');
-        assert.notEqual(parts(a)[1].text,parts(b)[1].text,provider+': each run receives fresh metadata');
-        assert.ok(parts(a).every(p=>p.cache_control),provider+': stable and full context cached separately');
+        assert.deepEqual(parts(a),parts(b),provider+': the system prompt is BYTE-IDENTICAL across the two messages, cache markers included');
+        assert.ok(parts(a)[0].cache_control,provider+': the stable prefix carries a cache anchor');
+        if(provider==='anthropic') assert.ok(a.tools[a.tools.length-1].cache_control,'anthropic: the tool catalogue carries its own anchor');
         assert.ok((JSON.stringify(a).match(/cache_control/g)||[]).length<=4,provider+': marker limit respected');
+        assert.ok((JSON.stringify(b).match(/cache_control/g)||[]).length<=4,provider+': marker limit respected with history');
       } else {
+        assert.deepEqual(a.messages[0],b.messages[0],'custom: the system message is BYTE-IDENTICAL across the two messages');
         assert.equal(typeof a.messages[0].content,'string','generic provider keeps string system prompt');
+        for(const body of bodies) assert.equal(body.messages.filter(m=>m.role==='system').length,1,'custom: exactly ONE system message (the notes ride the newest user turn)');
         assert.ok(!JSON.stringify(a).includes('cacheSystemPrefix'),'internal cache hint does not leak to wire');
       }
     }

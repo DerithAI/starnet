@@ -132,7 +132,7 @@ const fc = require('../sidecar/fallbackchain.js');
 {
   const station = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'stationui.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'css', 'app.css'), 'utf8');
-  A.ok(/>Backup models </.test(station), 'MODELS section header present in SETTINGS');
+  A.ok(/>FALLBACK MODELS </.test(station) && !/>Backup models </.test(station), 'FALLBACK MODELS section header present in SETTINGS (org P04: not "backup")');
   A.ok(/function wireFallbackChain/.test(station) && /wireFallbackChain\(body\)/.test(station), 'wireFallbackChain builder present and called');
   A.ok(/id="fbc-list"/.test(station) && /id="fbc-add"/.test(station), 'ordered list + add-from-catalog picker present');
   A.ok(/data-act="up"/.test(station) && /data-act="dn"/.test(station) && /data-act="rm"/.test(station), 'reorder up/down + remove controls present');

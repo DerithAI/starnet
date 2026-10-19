@@ -1,0 +1,84 @@
+{
+  "source": "e3e6c2ad0599d00d50969cf15ad2236c1662bffd",
+  "comparedRoot": "bbe1aa1",
+  "scope": "Before-fix seeded browser request-reset and unreadable-retry evidence. Restart observation excluded because its first probe raced navigation; later after proof waits for a new page.",
+  "events": [
+    {
+      "mode": "network",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:35:37.524Z"
+    },
+    {
+      "mode": "unreadable",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:35:40.894Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:35:41.215Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:35:42.830Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:35:45.236Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:35:47.457Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:35:48.685Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:35:50.554Z"
+    }
+  ],
+  "initialHash": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "network": {
+    "screen": [
+      "screen-unreachable"
+    ],
+    "code": "RECOVERY CODE: SAVE-NET · SAVE REQUEST LOSTthe app loaded, but its saved-station request did not return. Send a screenshot of this code to support.",
+    "status": "＋ the station service isn't answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.",
+    "pull": "unreachable"
+  },
+  "healthStatus": 200,
+  "hashDuringNetworkGate": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "unreadableRetry": {
+    "screen": [
+      "screen-unreachable"
+    ],
+    "code": "RECOVERY CODE: SAVE-NET · SAVE REQUEST LOSTthe app loaded, but its saved-station request did not return. Send a screenshot of this code to support.",
+    "status": "＋ saved station still unreadable — retrying every 5s (attempt 1). Your save is untouched.",
+    "pull": "unreadable"
+  },
+  "hashDuringReadGate": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "recovered": {
+    "screen": [
+      "screen-game"
+    ],
+    "code": "",
+    "status": "＋ retrying…",
+    "pull": "save"
+  },
+  "recoveredAgent": "NOVA"
+}

@@ -18,7 +18,9 @@ const { spawn } = require('node:child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const FIXTURE = path.join(__dirname, 'fixtures', 'seed-workspace');
-const SCRATCH = process.env.SKYNET_LEND_SCRATCH || path.join(__dirname, '.scratch-builder-lend');
+// the scratch station lives under the gitignored .dogfood/ (like the other dev previews), so a run never leaves an
+// untracked save + mock log in dev/ for a broad `git add` to sweep into history
+const SCRATCH = process.env.SKYNET_LEND_SCRATCH || path.join(REPO, '.dogfood', 'builder-lend');
 const SIDECAR = path.join(REPO, 'sidecar', 'index.js');
 const PORT = String(process.env.SKYNET_PORT || '8931');
 const LOG = path.join(SCRATCH, 'mock-log.jsonl');

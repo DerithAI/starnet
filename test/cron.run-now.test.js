@@ -87,4 +87,14 @@ const driverSrc = fs.readFileSync(path.resolve(__dirname, '..', 'sidecar', 'cron
 A.ok(/job\.dockId \? resolveStation\(job\.agentId, job\.dockId\) : resolveStation\(job\.agentId\)/.test(driverSrc), 'the scheduled fire resolves the same bay station (cron-driver.js)');
 A.ok(/resolveStation:\s*\(agentId, dockId\)\s*=>\s*router\.stationFor\(agentId, dockId\)/.test(driverBlock), "the driver's resolveStation is router.stationFor — the seam Run Now calls directly");
 
+/* threads-backend-03: a run whose model went silent AFTER its tools ran must never be reported as "nothing was done"
+   (a file was written; "continue" may redo it). Run Now counts the tool calls it streams and hands the count to the
+   stop sentence (StopReason.incompleteRunMessage's extra.toolsRan). */
+A.ok(/name === 'agent\.tool_call'\) \{ state\.buf = ''; state\.toolsRan\+\+; \}/.test(runNowBlock), 'Run Now counts each tool call it streams');
+A.ok(/StopReason\.incompleteRunMessage\(terminalReason, \{ toolsRan: state\.toolsRan \|\| 0 \}\)/.test(runNowBlock), 'and its incomplete-run sentence knows whether tools ran');
+{
+  const StopReason = require('../sidecar/stop-reason.js');
+  A.ok(!/nothing was done/.test(StopReason.incompleteRunMessage('empty', { toolsRan: 2 })), 'an empty reply after tools never says nothing was done');
+}
+
 if (require.main === module) A.report('cron.run-now.test');

@@ -2,7 +2,8 @@
 'use strict';
 const A = require('./_assert.js');
 const { EventEmitter } = require('events');
-const { readBody, readBodyBuffer } = require('../sidecar/http-body.js');
+const http = require('http');
+const { readBody, readBodyBuffer, DRAIN_CEILING } = require('../sidecar/http-body.js');
 
 // a mock req that emits the given Buffer chunks then 'end' (an EventEmitter is enough for readBody).
 function mockReq(chunks) {
@@ -67,7 +68,39 @@ function mockReq(chunks) {
     A.ok(error && error.statusCode === 413 && error.tooLarge === true, 'overflow keeps the established 413 error shape');
     A.eq(writes[0].code, 413, 'overflow writes a clean 413 before closing the request');
     A.eq(JSON.parse(writes[1].body), { error: 'request body too large' }, 'overflow response is machine-readable JSON');
-    A.ok(req.destroyed, 'overflow stops consuming the hostile request');
+    A.ok(!req.destroyed, 'overflow DRAINS the rest instead of resetting the socket (a reset reads as "Failed to fetch")');
+  }
+
+  // ---- 7. a sender that keeps going far past the cap is still cut off ----
+  {
+    const req = mockReq([Buffer.from('12345'), Buffer.allocUnsafe(DRAIN_CEILING + 16)]);
+    let error = null;
+    try { await readBodyBuffer(req, 4); } catch (caught) { error = caught; }
+    await new Promise(r => setImmediate(r));
+    A.ok(error && error.tooLarge, 'the oversize still rejects');
+    A.ok(req.destroyed, 'past the drain ceiling the request is destroyed');
+  }
+
+  // ---- 8. a REAL client gets the answer for an oversized body (the 2026-10-15 "Failed to fetch" report) ----
+  {
+    const server = http.createServer(async (req, res) => {
+      try { await readBody(req, 1 << 16); res.writeHead(200); res.end('ok'); }
+      catch (e) { res.writeHead(e && e.tooLarge ? 413 : 400, { 'Content-Type': 'application/json' }); res.end('{"error":"too large"}'); }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const url = 'http://127.0.0.1:' + server.address().port + '/';
+    try {
+      for (const size of [70 * 1024, 1 << 20, 8 << 20]) {
+        let status = 0, thrown = '';
+        try { status = (await fetch(url, { method: 'POST', body: Buffer.alloc(size, 97) })).status; }
+        catch (e) { thrown = (e && e.cause && e.cause.code) || (e && e.message) || String(e); }
+        A.eq(status, 413, 'a ' + size + '-byte body over a 64 KB cap is ANSWERED 413, not reset' + (thrown ? ' (threw ' + thrown + ')' : ''));
+      }
+      A.eq((await fetch(url, { method: 'POST', body: 'small' })).status, 200, 'the same server still serves a normal body');
+    } finally {
+      server.closeAllConnections && server.closeAllConnections();
+      await new Promise(r => server.close(r));
+    }
   }
 
   A.report('readbody');

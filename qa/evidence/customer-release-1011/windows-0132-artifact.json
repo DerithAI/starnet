@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "inspectedAt": "2026-10-12T08:48:43.925Z",
+  "releaseSource": "54899e5ff3f2b002b457757916b3977818db6fc1",
+  "artifact": {
+    "at": "2026-10-12T08:47:03.623Z",
+    "release": "https://github.com/androoAGI/starnet-releases/releases/tag/v0.13.2",
+    "asset": "StarNet_0.13.2_x64-setup.exe",
+    "bytes": 457888688,
+    "sha256": "f8ce564ffe5d420efd1d8efb35c796d73bfd4baae00444c61a82bbc268371cdd",
+    "scope": "Downloaded official artifact for read-only selective inspection; installer not executed, no installed station accessed"
+  },
+  "authenticode": {
+    "status": "Valid",
+    "signer": "Andrew Sims",
+    "certificateThumbprint": "9D58F67122799D9BDE5F776DD8DE77F6767DEFA4",
+    "checkedAt": "2026-10-12T08:55:46.7327045Z",
+    "receiptSha256": "df3d5c5eb5efa24cd1f416ab9f05a959de57b26071b89036bdee956a02a22485"
+  },
+  "decoder": {
+    "name": "7-Zip",
+    "version": "16.04",
+    "sha256": "c7245e21a7553d9e52d434002a401c77a7ca7d0f245f2311b0ddf16f8f946c6f",
+    "listingNotes": [
+      "NSIS-3 Unicode BadCmd=13",
+      "15624-byte tail; listing and selected extraction returned exit0"
+    ]
+  },
+  "method": "Selected literal NSIS entries to bounded stdout buffers; no archived paths created and no installer/application code executed",
+  "files": [
+    {
+      "entry": "sidecar\\tools\\builtin\\shell.js",
+      "bytes": 90354,
+      "sha256": "c8907c1904cdeddfe1c950ff4741eb1669f8c697738368b590e153fa696e0a2a",
+      "sourceBytes": 89158,
+      "sourceSha256": "794cde0f88e1ca4c77dff336248896749ecf96f19f7783ba940d2262f52ef685",
+      "matchesReleasedGitBytes": false,
+      "matchesReleasedSourceAfterCRLFNormalization": true,
+      "stderr": ""
+    },
+    {
+      "entry": "sidecar\\index.js",
+      "bytes": 2007111,
+      "sha256": "3c30069c57d474c3fd8b9b2ea9aaab106dea79f41e8e2606ccc1a09be3d9921d",
+      "sourceBytes": 1980971,
+      "sourceSha256": "186bf0b63c93808aee27dc2165e1b09f3af3fb5357db89f87161309dddf9e1d2",
+      "matchesReleasedGitBytes": false,
+      "matchesReleasedSourceAfterCRLFNormalization": true,
+      "stderr": ""
+    },
+    {
+      "entry": "sidecar\\loop.js",
+      "bytes": 184069,
+      "sha256": "b01a325125cec7775d2968f7cf3bfd430774ec59957792ea79aca85517638099",
+      "sourceBytes": 181685,
+      "sourceSha256": "e30c363bb83d9107392eab9b4bd2ec44095400eda446d95ef40aa2bb5815dd13",
+      "matchesReleasedGitBytes": false,
+      "matchesReleasedSourceAfterCRLFNormalization": true,
+      "stderr": ""
+    }
+  ],
+  "conclusion": "The inspected public installer contains nonempty readable shell.js, index.js and loop.js matching released source after CRLF normalization.",
+  "limitations": [
+    "Customer installer identity, installed bytes/resource path and full error stack remain unavailable",
+    "These checks do not establish installed startup or customer recovery",
+    "This inspects three selected archive entries, not all installer contents or a resulting installation.",
+    "The NSIS decoder reported BadCmd=13 in listing metadata; selected extraction returned exit 0, expected lengths, and source matches."
+  ],
+  "retention": "Verified compressed download removed after selective extraction and receipt preservation; the three selected files remain private. No installed files changed."
+}

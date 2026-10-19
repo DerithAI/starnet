@@ -111,7 +111,7 @@ A.eq(setInitiativeCalls, [], 'two rough runs do not demote (below the streak bar
 fb('work_miss');
 A.eq(setInitiativeCalls, ['propose'], 'the third consecutive miss demotes the earned rung one step — applied through the same dial writer');
 A.eq(notices.length, 1, 'the demotion fired ONE explicit notice (never silent)');
-A.ok(/rough runs|earn it back/.test(notices[0].text), 'the notice is the honest "stepping back — earn it back" line');
+A.ok(/stepping back a rung/.test(notices[0].text) && !/leash|earn it back/.test(notices[0].text), 'the notice is the honest "stepping back a rung" line, never leash/earn-it-back talk (call #57)');
 A.eq(TrustStore._state().earned.initiative, undefined, 'stepping back TO the manual floor clears the earned record');
 fb('work_miss');
 A.eq(setInitiativeCalls.length, 1, 'further misses with NO earned rung never touch the dial (the manual posture is untouchable)');

@@ -72,7 +72,7 @@ async function driveShell(fixture, decision) {
       let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
       events.push(ev);
       if (ev.name === 'agent.run.start') runId = ev.payload.runId;
-      if (ev.name === 'permission.prompt') {
+      if (ev.name === 'permission.prompt' && decision !== 'unanswered') {
         await fixture.json('POST', '/api/consent', {
           runId, promptId: ev.payload.promptId, decision: decision || 'deny'
         });
@@ -108,6 +108,16 @@ async function driveShell(fixture, decision) {
     });
     A.ok(seeded.body && seeded.body.ok === true, 'DAVID starts in ASK mode');
 
+    // threads-backend-06 / sidecar-index-10: nobody answers the COMMS card. The consent timer fail-closes, but the model
+    // must read "timed out", never "denied" (it used to tell the Commander "since you declined…").
+    const before = provider.requests.length;
+    const unanswered = await driveShell(fixture, 'unanswered');
+    A.eq(unanswered.filter(e => e.name === 'permission.prompt').length, 1, 'ASK mode raises the shell card');
+    A.ok(unanswered.some(e => e.name === 'permission.response' && e.payload && e.payload.expired === true), 'the card is told the prompt expired');
+    const shellResult = provider.requests.slice(before).flatMap(req => req.messages || []).find(m => m && m.role === 'tool' && m.tool_call_id === 'shell_1');
+    A.ok(shellResult && /approval timed out/.test(String(shellResult.content)) && /not a refusal/.test(String(shellResult.content)),
+      'a COMMS approval nobody answered reaches the model as a timeout, not a denial: ' + JSON.stringify(shellResult && shellResult.content));
+
     const first = await driveShell(fixture, 'full');
     const firstDiag = JSON.stringify(first.map(e => ({ name: e.name, payload: e.payload })));
     A.eq(first.filter(e => e.name === 'permission.prompt').length, 1, 'ASK mode raises the first real shell permission card; events=' + firstDiag);
@@ -132,9 +142,13 @@ async function driveShell(fixture, decision) {
       'Full Power projects and executes the general host shell without a placed workbench');
     const latestRequests = provider.requests.slice(-3);
     const projected = new Set(latestRequests.flatMap(req => (req.tools || []).map(t => t && t.function && t.function.name).filter(Boolean)));
-    for (const name of ['shell_exec', 'fs_read', 'web_search', 'image_generate', 'spotify_search', 'team_dispatch']) {
+    // ORCHESTRATION family: DAVID is the only roster agent, so he leads with ZERO crew — the lean-prompt diet (2026-10-12)
+    // keeps team_summon advertised and defers the rest of the crew kit (granted, named in the prompt, tool_search finds it).
+    for (const name of ['shell_exec', 'fs_read', 'web_search', 'image_generate', 'spotify_search', 'team_summon']) {
       A.ok(projected.has(name), 'Full Power projects available capability family tool ' + name);
     }
+    A.ok(latestRequests.some(req => /These exist and you CAN use them: [^\n]*team_dispatch/.test(String(((req.messages || [])[0] || {}).content || ''))),
+      'Full Power still GRANTS team_dispatch to a crewless lead (deferred: named in the prompt, revealed by tool_search)');
 
     await fixture.restart();
     const afterRestart = await driveShell(fixture);

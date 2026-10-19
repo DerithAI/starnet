@@ -21,7 +21,9 @@ function makeEvaluationAccounting(options) {
   return {
     canContinue(caseSpent) { return !uncertain && spent + (Number(caseSpent) || 0) < (o.maxUsd || 0.40); },
     beforeRun({ runId }) {
-      if (uncertain || (!unmetered && !ledger.beginRun(runId, o.agentId, { provider: o.provider, model: o.model, runCapUsd: o.runCapUsd || 0.08 }))) {
+      // An unmetered provider bills nothing per call, so there is no unknown charge to hold a receipt for (runOnce skips it too).
+      // managed: the billing source the host knew (StarNet credits vs the Commander's own key); the ledger keeps only a boolean.
+      if (uncertain || (!unmetered && !ledger.beginRun(runId, o.agentId, { provider: o.provider, model: o.model, managed: o.managed, runCapUsd: o.runCapUsd || 0.08 }))) {
         uncertain = true;
         throw new Error('Evaluation dispatch could not be durably recorded.');
       }
@@ -35,14 +37,19 @@ function makeEvaluationAccounting(options) {
     onRun({ result, runId }) {
       if (unmetered) {
         const r = result || {};
-        // Booked like the run host books an unmetered run: the row counts the run and its tokens, the ledger keeps
-        // it out of metered dollars, and it never adds to this evaluation's dollar ceiling.
+        // Every outcome there (done, failed, timed out, cancelled) bills the Commander nothing per call, so none is
+        // unknown spend. Booked like the run host books an unmetered run: the row counts the run, its tokens and any
+        // provider-reported figure, the ledger keeps it out of metered dollars (so out of every USD cap), and it never
+        // adds to this evaluation's dollar ceiling.
         try { ledger.recordStrict({ runId, agentId: o.agentId, turns: count(r.turns), usd: count(r.usd), tokens: count(r.tokens), model: o.model, unmetered: true }); }
         catch (error) { uncertain = true; throw error; }
         finally { clearLive(runId); }
         return;
       }
-      if (!result || ['error', 'cancelled', 'runner-error'].includes(result.reason) || result.accountingIncomplete || !Number.isFinite(result.usd) || result.usd < 0 || !Number.isFinite(result.tokens) || result.tokens < 0 || (result.unpricedUsage || []).length) {
+      // A cancel that landed between provider calls is known spend: the runner says so only with a literal false
+      // (every attempt finished and was priced). A cancel mid-call leaves that attempt unaccounted, so it stays unknown.
+      const knownCancel = !!result && result.reason === 'cancelled' && result.accountingIncomplete === false;
+      if (!result || ['error', 'runner-error'].includes(result.reason) || (result.reason === 'cancelled' && !knownCancel) || result.accountingIncomplete || !Number.isFinite(result.usd) || result.usd < 0 || !Number.isFinite(result.tokens) || result.tokens < 0 || (result.unpricedUsage || []).length) {
         unknown(runId);
         // Keep the dispatch receipt for explicit settlement, now or after restart.
         throw new Error('Evaluation spend is incomplete; its dispatch receipt remains unsettled.');

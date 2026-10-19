@@ -209,8 +209,8 @@
     try {
       const r = await post('/api/cron/arm', { enabled: true });
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      notify('Routines are on: your apps refresh on schedule.');
-    } catch (_) { notify('Could not turn routines on — open WORK › AUTOMATE › SCHEDULES to check.', 'warn'); return; }
+      notify('Scheduling is on: your apps refresh on schedule.');
+    } catch (_) { notify('Could not turn scheduling on — open WORK › AUTOMATE › SCHEDULES to check.', 'warn'); return; }
     await load(); paintAll();
   }
   async function removeApp(id) {
@@ -263,7 +263,7 @@
       bar.className = 'app-bar';
       bar.innerHTML = '<div class="app-bar-row"><input class="apps-field app-change" maxlength="1500" autocomplete="off" aria-label="Describe a change to this app" placeholder="Describe a change — how it looks, what it shows, how it works">' +
         '<button class="apps-btn primary app-change-go" type="submit">CHANGE</button><button class="apps-btn app-refresh" type="button" hidden>⟳ REFRESH</button></div>' +
-        '<div class="app-bar-status"><span class="app-status" role="status"></span><button class="apps-btn app-auto-toggle" type="button" aria-expanded="false">AUTO-UPDATE</button><button class="apps-btn app-arm" type="button" hidden>TURN ON ROUTINES</button></div>' +
+        '<div class="app-bar-status"><span class="app-status" role="status"></span><button class="apps-btn app-auto-toggle" type="button" aria-expanded="false">AUTO-UPDATE</button><button class="apps-btn app-arm" type="button" hidden>▶ TURN SCHEDULING ON</button></div>' +
         // AUTO-UPDATE: how often, and what each update does — in the Commander's own words
         '<div class="app-auto" hidden>' +
           '<div class="app-auto-h">Update this app by itself</div>' +

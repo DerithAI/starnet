@@ -680,8 +680,8 @@
       "id": "ui/work/rt-arm",
       "kind": "ui",
       "area": "work",
-      "name": "▶ ENABLE SCHEDULING",
-      "purpose": "The ▶ ENABLE / ⏸ DISABLE SCHEDULING button: runtime one-click arm/disarm of the cron scheduler via POST /api/cron/arm.",
+      "name": "▶ TURN SCHEDULING ON",
+      "purpose": "The ▶ TURN SCHEDULING ON / ⏸ TURN SCHEDULING OFF button: runtime one-click arm/disarm of the cron scheduler via POST /api/cron/arm.",
       "promise": "The button reflects the authoritative GET /api/cron enabled flag; clicking it flips the live scheduler (no env edit/restart) and the badge updates to the armed/off truth.",
       "wiring": {
         "files": [
@@ -712,7 +712,7 @@
       "missing": false,
       "selector": "#rt-arm",
       "state": "work-routines",
-      "notes": "RE-PROVED live @HEAD 0a009ec2 (.uiatlas/work-probe/routines-evidence.txt): #rt-arm \"▶ ENABLE SCHEDULING\" -> click -> POST /api/cron/arm -> GET /api/cron enabled false->true, label -> \"⏸ DISABLE SCHEDULING\" (authoritative). cron.arm.test.js guards the route. AUDITED: button->route seam not journey-guarded (finding 7e02c493). COVERED + PROMOTED 2026-07-18 (HEAD 43936bd2): scripts/qa/work-console-journey.mjs JW-ROUTINES drives this seam — directly asserted live (26/26 green; negative-control proven by inverting the render/dispatch condition). audited→perfected."
+      "notes": "RE-PROVED live @HEAD 0a009ec2 (.uiatlas/work-probe/routines-evidence.txt): #rt-arm \"▶ ENABLE SCHEDULING\" -> click -> POST /api/cron/arm -> GET /api/cron enabled false->true, label -> \"⏸ DISABLE SCHEDULING\" (authoritative). cron.arm.test.js guards the route. AUDITED: button->route seam not journey-guarded (finding 7e02c493). COVERED + PROMOTED 2026-07-18 (HEAD 43936bd2): scripts/qa/work-console-journey.mjs JW-ROUTINES drives this seam — directly asserted live (26/26 green; negative-control proven by inverting the render/dispatch condition). audited→perfected. RENAMED 2026-10-14 (org P16): the key now reads \"▶ TURN SCHEDULING ON\" / \"⏸ TURN SCHEDULING OFF\" (the ENABLE / DISABLE SCHEDULING labels above are the 0a009ec2 history); same #rt-arm, same data-arm, same POST /api/cron/arm. JW-ROUTINES now asserts the new labels (arm-label-authoritative); not re-proved live since the rename."
     },
     {
       "id": "ui/work/rt-empty-cta",

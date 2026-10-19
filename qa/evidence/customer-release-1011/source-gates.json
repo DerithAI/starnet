@@ -12,7 +12,519 @@
       "logSha256": "952a4da57dfbb2adef3dcac94d4ed41bbfd7e2e5e7d6432aef3bd18c17516ddc",
       "scope": "Source gate on this candidate only; no installed/customer acceptance",
       "supersededByPendingSource": "1b03394db43c67cd79eb9b423e5c6e63f57868d1"
+    },
+    {
+      "candidate": "c0e1694147dc989c4f838c80ce998469b1444b8c",
+      "command": "npm run test:http",
+      "startedAt": "2026-10-12T04:04:47.7838020Z",
+      "observedCompletedAt": "2026-10-12T04:08:57.426Z",
+      "exitCode": 1,
+      "completedSteps": 4,
+      "failedStep": 5,
+      "manifestSteps": 211,
+      "failure": {
+        "test": "test/seam-audit-recovery.http.test.js:44",
+        "expected": "Isolated answer 1",
+        "actual": "Isolated answer 2",
+        "sourceRunId": "Matching requested first run; content counter mismatch under investigation"
+      },
+      "log": ".handoff/customer-c0-http.log",
+      "logSha256": "8685636851ebe737c1046c746ffd7fc4ec8e052d67c2a98125229f833b88ebf5",
+      "scope": "Failed source gate, not accepted for integration. No initial failure or assertion suppressed.",
+      "followUp": {
+        "fixtureIsolationCommit": "f912479f02ade7ece5c4ba37c2c992a42d251146",
+        "evidence": "quest-fixture-race.json",
+        "finding": "Controlled delayed foreground request reproduces quest-refresh consumption of the shared mock counter and the original assertion mismatch. Scoped fixture opt-out passes with original assertions.",
+        "limit": "Original failed run did not capture the extra request; its identity is not retrospectively established. No production quest behavior changed."
+      }
+    },
+    {
+      "candidate": "fbeb93bd7cfa35704bc4417874d447fea9e0f249",
+      "status": "CANCELLED",
+      "at": "2026-10-12T04:24:42.9714749Z",
+      "reason": "Intentional stop before a combined candidate adds reviewed conveyor repairs and deterministic quest-fixture isolation. Partial progress is not a green gate.",
+      "ownedRootPid": 63232,
+      "stoppedRunnerPid": 63908,
+      "command": "npm run test:fast",
+      "startedAt": "2026-10-12T04:14:51.6178989Z",
+      "exitCode": -1,
+      "log": ".handoff/customer-fbeb-fast.log",
+      "logSha256": "8f71c29b3ec1ed0333b426ed6baf767b31136839d24cdcda5afdc33f4a89b892",
+      "scope": "Intentional cancellation, not a product failure or a completed gate."
+    },
+    {
+      "candidate": "6f7361a721bbd932d14f23e5a28117e120b4ebf4",
+      "command": "npm run test:fast",
+      "startedAt": "2026-10-12T08:02:50.4556185Z",
+      "observedCompletedAt": "2026-10-12T08:11:44.476Z",
+      "exitCode": 1,
+      "log": ".handoff/customer-6f-fast.log",
+      "logSha256": "0b4b35263c1c9cc4e7660825c9c19966db9082ce2ac5bd9e9c1a20e5bb0dd971",
+      "manifestSteps": 1145,
+      "completedSteps": 598,
+      "failedStep": 599,
+      "failure": {
+        "test": "test/slag-known-error-kinds.test.js",
+        "detail": "local_model_memory missing from exhaustive post-mortem classification"
+      },
+      "scope": "Failed full source gate; unchanged-candidate diagnostic traversal below does not convert this into a pass.",
+      "diagnosticRemainders": [
+        {
+          "startedAt": "2026-10-12T08:13:34.3396707Z",
+          "observedCompletedAt": "2026-10-12T08:14:33.031Z",
+          "exitCode": 1,
+          "log": ".handoff/customer-6f-remaining-fast.log",
+          "logSha256": "f8bd9441e5600f6e3fdf049433385cf68e3bcd37a53b0ead3d47843e00cb14dc",
+          "firstOriginalStep": 600,
+          "lastOriginalStep": 751,
+          "failedOriginalStep": 751,
+          "test": "test/conveyor-choices.test.js",
+          "detail": "Unavailable step-test endpoint fallback and helper expectation",
+          "scope": "Diagnostic subset only, not a full gate"
+        },
+        {
+          "startedAt": "2026-10-12T08:15:10.7938408Z",
+          "observedCompletedAt": "2026-10-12T08:16:50.696Z",
+          "exitCode": 1,
+          "log": ".handoff/customer-6f-tail-fast.log",
+          "logSha256": "7d7c509f3012650faf65e75d37be99249d431f86a533a98874890e4862e88c70",
+          "firstOriginalStep": 752,
+          "lastOriginalStep": 922,
+          "failedOriginalStep": 922,
+          "test": "test/lint-gate-can-fail.js",
+          "detail": "Saved-station diagnosis test helper report compatibility",
+          "scope": "Diagnostic subset only, not a full gate"
+        },
+        {
+          "startedAt": "2026-10-12T08:17:24.6121282Z",
+          "observedCompletedAt": "2026-10-12T08:18:50.229Z",
+          "exitCode": 1,
+          "log": ".handoff/customer-6f-last-fast.log",
+          "logSha256": "5415f5edf6c03bb05081952865e8aa888319266b6fffefb65dbc51b880f9d63c",
+          "firstOriginalStep": 923,
+          "lastOriginalStep": 1018,
+          "failedOriginalStep": 1018,
+          "test": "test/remaster-physical-fit.test.js",
+          "detail": "Old lost-cache fallback assertion versus authored-pixel retention",
+          "scope": "Diagnostic subset only, not a full gate"
+        },
+        {
+          "startedAt": "2026-10-12T08:19:43.3109819Z",
+          "observedCompletedAt": "2026-10-12T08:20:42.978Z",
+          "exitCode": 1,
+          "log": ".handoff/customer-6f-final-diagnostic.log",
+          "logSha256": "1b4138c11ee70476a095c1beb31dc6869a4ea376e0e342dc97a99343d4dd8b93",
+          "firstOriginalStep": 1019,
+          "lastOriginalStep": 1110,
+          "failedOriginalStep": 1110,
+          "test": "test/conveyor-ease.test.js",
+          "detail": "SHIPPED tooltip expectation",
+          "scope": "Diagnostic subset only, not a full gate"
+        },
+        {
+          "startedAt": "2026-10-12T08:21:18.9385802Z",
+          "observedCompletedAt": "2026-10-12T08:21:37.653Z",
+          "exitCode": 0,
+          "log": ".handoff/customer-6f-last35-fast.log",
+          "logSha256": "c4eccc145f6ff41d722c2d259af91295874c6309d5ecccba0c17868de7bf4eef",
+          "firstOriginalStep": 1111,
+          "lastOriginalStep": 1145,
+          "failedOriginalStep": null,
+          "test": null,
+          "detail": null,
+          "scope": "Diagnostic subset only, not a full gate"
+        }
+      ],
+      "followUp": "Repairs returned to owning lanes; a new complete fast/HTTP/customer-journey gate is required on the final combined candidate."
+    },
+    {
+      "candidate": "845239d700929d12067dd506111ea275a81acab2",
+      "startedAt": "2026-10-12T09:37:27.532Z",
+      "finishedAt": "2026-10-12T09:37:32.407Z",
+      "steps": 1154,
+      "exitCode": 1,
+      "sourceUnchanged": true,
+      "error": null,
+      "logSha256": "9390f075a66993cff0957f0dde2661fcebe0bfecd0e47d4c8485acf4662ee599",
+      "command": "npm run test:fast",
+      "completedSteps": 28,
+      "failedStep": 29,
+      "manifestSteps": 1154,
+      "log": ".handoff/customer-845-fast.log",
+      "failure": {
+        "test": "test/report-0110-regressions.test.js",
+        "detail": "Source assertion required null after blocked skill review; current retry contract returns false. Reviewed behavioral replacement d9e37d4c9 queued then independently passed after merge."
+      },
+      "scope": "Failed full gate. Complete diagnostic traversal of the remainder does not convert it into a pass.",
+      "diagnosticRemainder": {
+        "candidate": "845239d700929d12067dd506111ea275a81acab2",
+        "startedAt": "2026-10-12T09:39:14.120Z",
+        "finishedAt": "2026-10-12T09:51:30.280Z",
+        "originalRange": [
+          30,
+          1154
+        ],
+        "testedSteps": 1125,
+        "failures": [
+          {
+            "originalStep": 586,
+            "test": "test/comms-deliverable-replay.test.js",
+            "exit": 1
+          },
+          {
+            "originalStep": 615,
+            "test": "test/notifications-useful.test.js",
+            "exit": 1
+          },
+          {
+            "originalStep": 616,
+            "test": "test/bell-settles.test.js",
+            "exit": 1
+          },
+          {
+            "originalStep": 653,
+            "test": "test/untrusted-taint.test.js",
+            "exit": 1
+          },
+          {
+            "originalStep": 834,
+            "test": "test/browser-workflow.test.js",
+            "exit": 1
+          },
+          {
+            "originalStep": 952,
+            "test": "test/failopen-ratchet.test.js",
+            "exit": 1
+          }
+        ],
+        "sourceUnchanged": true,
+        "fullGatePass": false,
+        "log": ".handoff/customer-845-remainder.log",
+        "logSha256": "1de50307903122701db57c8d50e9df70427ba840d415355759857d4ebf48abd5"
+      },
+      "followUp": "Three thread tests require extraction/acknowledgment updates and independent review found background sibling prompts never cleared (R19). Attachment trust/learned lookup and new silent catches are assigned to their owners. No assertions or ratchet limits weakened."
+    },
+    {
+      "candidate": "2c366fd8ffbf18a40cdec41db09986ac022aef6c",
+      "startedAt": "2026-10-12T09:55:31.062Z",
+      "finishedAt": "2026-10-12T10:19:57.591Z",
+      "testedSteps": 217,
+      "failures": [
+        {
+          "originalStep": 39,
+          "test": "test/failreview.e2e.test.js",
+          "exit": 1
+        },
+        {
+          "originalStep": 144,
+          "test": "test/routing.sample.e2e.test.js",
+          "exit": 1
+        },
+        {
+          "originalStep": 192,
+          "test": "test/payload.budget.test.js",
+          "exit": 1
+        }
+      ],
+      "sourceUnchanged": true,
+      "fullGatePass": false,
+      "scope": "Diagnostic serial manifest traversal, not the final-candidate acceptance gate.",
+      "command": "Serial diagnostic traversal of test/http.list",
+      "log": ".handoff/customer-2c-http-diagnostic.log",
+      "logSha256": "6b3afc4d5d45f28f26f1487d41f68e99126b2ef8b845045e925ed4345f5bec3d",
+      "followUp": [
+        {
+          "step": 39,
+          "kind": "stale semantic-only expectation",
+          "ownerCommit": "9e93b6cba",
+          "status": "Reviewed behavioral lexical/semantic fixture repair imported; owner87 assertions pass",
+          "integratedAt": "5227bb1178c6ba58c93d55065671a050b014089d"
+        },
+        {
+          "step": 144,
+          "kind": "wrong event identity in fixture",
+          "source": "dd74c386f671afe16a6a746061063aa4db2ada36",
+          "integratedAt": "5227bb1178c6ba58c93d55065671a050b014089d",
+          "status": "Exact-identity fixture imported; original assertions preserved; merged105 assertions pass"
+        },
+        {
+          "step": 192,
+          "kind": "tool schema payload exceeds existing budget",
+          "observedBytes": 66672,
+          "budgetBytes": 66250,
+          "status": "Description-only reduction imported; owner unchanged HTTP17 assertions pass at66238 bytes/84 tools. Full final gates pending.",
+          "integratedAt": "5227bb1178c6ba58c93d55065671a050b014089d"
+        }
+      ]
+    },
+    {
+      "candidate": "baa58078b5784670e4dd199549b8ac6b6b8b58f7",
+      "startedAt": "2026-10-12T10:53:45.580Z",
+      "finishedAt": "2026-10-12T10:56:55.366Z",
+      "steps": 1154,
+      "exitCode": 1,
+      "sourceUnchanged": true,
+      "error": null,
+      "logSha256": "70bed614fc4786c597e0db884e43e3f04bd918790065d0deab1f8ac764391d01",
+      "command": "npm run test:fast",
+      "manifestSteps": 1154,
+      "completedSteps": 310,
+      "failedStep": 311,
+      "log": ".handoff/customer-baa-fast.log",
+      "failure": {
+        "test": "test/voice-live-ui.test.js:316",
+        "expected": "one exact consent submission for the selected sibling prompt",
+        "actual": "no calls",
+        "cause": "Legacy extracted approvalCommand fixture omitted Chat; the current controller deliberately refuses submission without the shared confirmed-answer handler."
+      },
+      "followUp": {
+        "fix": "7dd049d134b61262baedca859f6cfb9e1671d327",
+        "evidence": "4a131151aaa189d643bd349af4fb576cf996d0b4",
+        "merge": "dd9b5da0f620563b9a3bd3a0ccffbe4dd11d54d3",
+        "productionChanged": false,
+        "testBlob": "98f72eebfa1591a87d33c8e93330e296e2e02d87",
+        "independentReview": "Exact production input identity and original fixture prefix preserved; real controller/Chat/Channels execution retains routing, sibling pause accounting and confirmation/refusal/duplicate/generation controls.",
+        "mergedFocusedResult": "test/voice-live-ui.test.js passed on Node22.23.0",
+        "evidencePath": "qa/evidence/thread-ux-1012/voice-fixture-verification.json"
+      },
+      "diagnosticRemainder": {
+        "candidate": "baa58078b5784670e4dd199549b8ac6b6b8b58f7",
+        "startedAt": "2026-10-12T10:58:02.960Z",
+        "finishedAt": "2026-10-12T11:07:37.614Z",
+        "firstOriginalStep": 312,
+        "testedSteps": 843,
+        "manifestSha256": "769aa27593427d5b15c2617d07579bce879f9b865ba3b226463d389a7af93667",
+        "failures": [],
+        "sourceUnchanged": true,
+        "fullGatePass": false,
+        "scope": "Unchanged-source diagnostic remainder after original full gate failure311; not final acceptance.",
+        "log": ".handoff/customer-baa-fast-diagnostic.log",
+        "logSha256": "92ba400212398a8fa7122b8ca0a1c5f26702e326528f3cd63132c7e83fd4b4e4"
+      },
+      "scope": "Failed complete gate plus unchanged-source remainder with no additional failure. This is not a full pass; the corrected candidate must restart complete gates."
+    },
+    {
+      "candidate": "ccd24082bedef13422740e011728ceecdfe59a38",
+      "startedAt": "2026-10-12T11:11:57.240Z",
+      "finishedAt": "2026-10-12T11:24:40.472Z",
+      "steps": 1154,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "error": null,
+      "logSha256": "13dd567fc5e41dc4a979c090b3c82887de4545e1b2e8a717efeb6a264c4ddea4",
+      "command": "npm run test:fast",
+      "log": ".handoff/customer-ccd-fast.log",
+      "scope": "Exact historical source gate; superseded by production repair f90409837a5a69faf32ca3bf2e918bed8c508d4a. No installed/customer acceptance."
+    },
+    {
+      "candidate": "ccd24082bedef13422740e011728ceecdfe59a38",
+      "startedAt": "2026-10-12T11:24:40.588Z",
+      "finishedAt": "2026-10-12T11:45:56.307Z",
+      "steps": 217,
+      "exitCode": 1,
+      "sourceUnchanged": true,
+      "error": null,
+      "logSha256": "7c04fb630e8200160ee7fe61e788e7fa218b13e1a058e837f7b3f215b44cf829",
+      "command": "npm run test:http",
+      "log": ".handoff/customer-ccd-http-first.log",
+      "failedStep": 184,
+      "failure": {
+        "test": "test/connector-storage-start-fresh.http.test.js",
+        "detail": "First startup exits73 WORKSPACE_OWNER_UNAVAILABLE; secondary crash-ledger open ENOSPC. Owner I/O syscall missing. Ordered focused replay passed without ENOSPC; original cause remains unresolved."
+      },
+      "scope": "Exact historical source gate; superseded by production repair f90409837a5a69faf32ca3bf2e918bed8c508d4a. No installed/customer acceptance."
+    },
+    {
+      "candidate": "ccd24082bedef13422740e011728ceecdfe59a38",
+      "startedAt": "2026-10-12T11:53:51.046Z",
+      "finishedAt": "2026-10-12T11:58:11.449Z",
+      "steps": 217,
+      "exitCode": 1,
+      "signal": null,
+      "error": null,
+      "sourceUnchanged": true,
+      "logSha256": "4c770ec0985a2768c88be3e2012fb2a2f98bc6851f6bf6181619257e245b1163",
+      "diskSamples": ".handoff/customer-ccd-http-second.disk-samples.json",
+      "minimumObservedAvailableBytes": 556920832,
+      "diskSamplingMs": 100,
+      "diskSamplesCount": 2385,
+      "originalFailedAttempt": ".handoff/customer-ccd-http-first.receipt.json",
+      "scope": "Exact historical source gate; superseded by production repair f90409837a5a69faf32ca3bf2e918bed8c508d4a. No installed/customer acceptance.",
+      "command": "npm run test:http",
+      "log": ".handoff/customer-ccd-http-second.log",
+      "failedStep": 49,
+      "failure": {
+        "test": "test/station-layout.e2e.test.mjs",
+        "detail": "Build edit loses pending state and reads unconfirmed with matching backend topology. Controlled real delayed artwork callback proves unintended publication; exact original callback unrecorded."
+      },
+      "followUp": {
+        "fix": "f90409837a5a69faf32ca3bf2e918bed8c508d4a",
+        "evidence": "qa/evidence/customer-release-1011/build-render-publication.json"
+      }
+    },
+    {
+      "candidate": "9350db92c0ed71814d69abc39483ed72b91332cc",
+      "startedAt": "2026-10-12T12:50:08.814Z",
+      "finishedAt": "2026-10-12T12:59:54.288Z",
+      "steps": 1154,
+      "exitCode": 1,
+      "commandExitCode": 1,
+      "signal": null,
+      "error": null,
+      "sourceUnchanged": true,
+      "logSha256": "c9f524e6698ddff621ef98a55f41b3b0f673aa0ef7273bb917a5666d91b80b5d",
+      "diskSamples": ".handoff/customer-9350-fast.disk-samples.json",
+      "minimumObservedAvailableBytes": 552857600,
+      "diskReserveMet": true,
+      "scope": "Full source gate failed before HTTP/campaign. Guard drained owned descendants and released lease. No installed/customer acceptance.",
+      "command": "npm run test:fast",
+      "log": ".handoff/customer-9350-fast.log",
+      "failedStep": 922,
+      "completedSteps": 921,
+      "failure": {
+        "test": "test/lint-gate-can-fail.js",
+        "detail": "Static helper-settlement lint mistakes node:assert/strict calls for counter assertions because the file imports _assert.fnBody. Existing assertions already throw; no inability to fail was demonstrated."
+      },
+      "followUp": {
+        "fix": "513cf8817a3515a5e147ebd28196344156848c0f",
+        "change": "Final strict assertion reads shared failure counter, preserving all original assertions and lint.",
+        "sourceReview": "worktree_audit accepted exact one-line diff; runtime controls pending.",
+        "runtimeControls": {
+          "candidate": "4e56787fda05c2bfdcc3a6127a293eeb7eafba4f",
+          "passed": 7,
+          "total": 7,
+          "receipt": ".handoff/refit-reporting-controls-4e56787fda05/receipt.json",
+          "scope": "Seven actual controls passed; original full failure remains retained."
+        }
+      }
+    },
+    {
+      "candidate": "4e56787fda05c2bfdcc3a6127a293eeb7eafba4f",
+      "label": "refit-reporting",
+      "startedAt": "2026-10-12T13:42:51.068Z",
+      "finishedAt": "2026-10-12T13:43:00.287Z",
+      "status": 0,
+      "signal": null,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "availableBytesAfter": 798695424,
+      "diskReserveMet": true,
+      "logSha256": "7f6add7c9aa9ebfa9305d64b4264d34749eef8e2077e6371da59771a59542c57",
+      "scope": "Historical focused source validation on exact 4e56787f; not a complete gate, deployment, installed-app or customer acceptance.",
+      "command": "node .handoff/check-refit-reporting-controls.cjs",
+      "controls": 7,
+      "log": ".handoff/customer-4e56787fda05-refit-reporting.log",
+      "receipt": ".handoff/customer-4e56787fda05-refit-reporting.receipt.json"
+    },
+    {
+      "candidate": "4e56787fda05c2bfdcc3a6127a293eeb7eafba4f",
+      "label": "website-docs",
+      "startedAt": "2026-10-12T13:43:00.372Z",
+      "finishedAt": "2026-10-12T13:43:00.661Z",
+      "status": 0,
+      "signal": null,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "availableBytesAfter": 798695424,
+      "diskReserveMet": true,
+      "logSha256": "bbe525f423172d4835607fef321295f622ef680f0bed608cebdb405abcfb1265",
+      "scope": "Historical focused source validation on exact 4e56787f; not a complete gate, deployment, installed-app or customer acceptance.",
+      "command": "node test/website-docs-navigation.test.js",
+      "assertions": 1375,
+      "checkedInternalLinks": 1134,
+      "log": ".handoff/customer-4e56787fda05-website-docs.log",
+      "receipt": ".handoff/customer-4e56787fda05-website-docs.receipt.json"
+    },
+    {
+      "candidate": "4e56787fda05c2bfdcc3a6127a293eeb7eafba4f",
+      "label": "website-stage",
+      "startedAt": "2026-10-12T13:43:00.736Z",
+      "finishedAt": "2026-10-12T13:43:01.428Z",
+      "status": 0,
+      "signal": null,
+      "exitCode": 0,
+      "sourceUnchanged": true,
+      "availableBytesAfter": 798654464,
+      "diskReserveMet": true,
+      "logSha256": "601e540d0f8ef5f16456633be2db38acd6573e3db30b94d0e7f22b812b88c165",
+      "scope": "Historical focused source validation on exact 4e56787f; not a complete gate, deployment, installed-app or customer acceptance.",
+      "command": "node scripts/stage-website-deploy.mjs --check",
+      "deployment": false,
+      "log": ".handoff/customer-4e56787fda05-website-stage.log",
+      "receipt": ".handoff/customer-4e56787fda05-website-stage.receipt.json"
+    },
+    {
+      "candidate": "4e56787fda05c2bfdcc3a6127a293eeb7eafba4f",
+      "startedAt": "2026-10-12T13:43:01.51Z",
+      "finishedAt": "2026-10-12T13:45:46.452Z",
+      "steps": 1154,
+      "exitCode": 1,
+      "commandExitCode": 1,
+      "signal": null,
+      "error": null,
+      "sourceUnchanged": true,
+      "fullVerdict": false,
+      "expectedMarker": "run-fast-tests: OK — 1154 step(s) green",
+      "completionMarkerCount": 0,
+      "logSha256": "cf7c05ce42ef75f402a037892eb13955a6194f152ec6a5cac679e34b199794e1",
+      "diskSamples": ".handoff/customer-4e56787f-fast-first.disk-samples.json",
+      "minimumObservedAvailableBytes": 0,
+      "diskReserveMet": false,
+      "scope": "Historical failed full source gate during measured volume exhaustion. No current-candidate, installed-app or customer acceptance.",
+      "command": "npm run test:fast",
+      "status": "FAIL",
+      "failedStep": 284,
+      "completedSteps": 283,
+      "log": ".handoff/customer-4e56787f-fast-first.log",
+      "receipt": ".handoff/customer-4e56787f-fast-first.receipt.json",
+      "archiveManifest": {
+        "path": ".handoff/customer-4e56787f-fast-first.archive.json",
+        "sha256": "0d6ceca5bd8facc42a42d47fbce412f9679b604ddaaa54ff5ef340d43ebf6163",
+        "receiptBytesPreserved": true,
+        "interpretation": "The original receipt diskSamples path is historical. Resolve all prior-attempt artifacts using this immutable mapping, never a live customer-final path."
+      },
+      "failure": {
+        "test": "test/browser-install.test.js",
+        "detail": "Full gate failed during measured volume exhaustion. Browser-install fixture emits at most3000 archive bytes plus six-byte executable and never launches Chrome. Its expected injected ENOSPC is distinct from measured zero free space; the raw printed error alone does not identify the failing filesystem operation or storage consumer. No customer/product failure cause inferred."
+      },
+      "disk": {
+        "sampleCount": 638,
+        "startAvailableBytes": 798736384,
+        "firstBelowReserveAt": "2026-10-12T13:45:19.605Z",
+        "firstBelowReserveBytes": 535175168,
+        "firstZeroAt": "2026-10-12T13:45:44.439Z",
+        "zeroSamples": 9,
+        "minimumAvailableBytes": 0,
+        "reserveBytes": 536870912,
+        "currentAvailableBytes": 811937792
+      },
+      "lease": {
+        "path": ".handoff/guardian-lease-1791812569852-30fa3f28",
+        "ownerPid": 35600,
+        "guard": {
+          "candidate": "4e56787fda05c2bfdcc3a6127a293eeb7eafba4f",
+          "leaseId": "c4801795-cdd0-4c68-adb5-1e4efc749ef4",
+          "guardPid": 60388,
+          "childPid": 61860,
+          "finishedAt": "2026-10-12T13:45:46.6676408Z",
+          "exitCode": 1,
+          "error": null,
+          "activeProcessesAtRelease": 0,
+          "lockReleased": true
+        },
+        "supervisorReceiptPresent": false,
+        "supervisorReceiptFailure": "ENOSPC while creating supervisor.receipt.json; preserve missing receipt rather than manufacturing a successful one",
+        "execSession": 49980,
+        "execExitCode": 1
+      },
+      "httpStarted": false,
+      "sourceCampaignStarted": false,
+      "followUp": {
+        "scope": "Restore substantial capacity, then reprepare and serialize complete gates for the new exact candidate. The prepared 4e-only retry is superseded and was never launched.",
+        "watchdog": "Owned-job disk cancellation now independently reviewed with ten pure controls; no live watchdog execution yet."
+      }
     }
   ],
-  "scope": "Historical source gates are revision-bound. The later provenance repair is not covered by this fast receipt. This file is not release readiness or installed/customer acceptance."
+  "scope": "Revision-bound source gates, including failures. Later evidence-only changes do not establish the cause of a failed run. These receipts do not establish installed/customer acceptance or release readiness.",
+  "updatedAt": "2026-10-12T15:43:53.330Z"
 }

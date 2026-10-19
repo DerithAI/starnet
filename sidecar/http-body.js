@@ -18,19 +18,30 @@ function payloadTooLarge(res) {
   return error;
 }
 
+/* Past the cap we stop BUFFERING but keep READING (discarding the bytes) so the client finishes its upload and
+   actually receives the answer. Destroying the request mid-upload reset the socket, and Chromium/WebView2 reported
+   that as a bare "TypeError: Failed to fetch" with no status — a channel CONNECT carrying a large agent prompt
+   read as a dead network, and the 413 (or the route's own error) never arrived (user report, 2026-10-15). A sender
+   that keeps going DRAIN_CEILING bytes past the cap is still cut off, so an endless upload cannot pin the socket. */
+const DRAIN_CEILING = 64 << 20;
+
 function readBodyBuffer(req, max, res) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let bytes = 0;
-    let over = false;
+    let over = false, cut = false;
     req.on('data', chunk => {
-      if (over) return;
+      if (over) {
+        bytes += chunk.length;
+        if (!cut && bytes > max + DRAIN_CEILING) { cut = true; try { req.destroy(); } catch (_) {} }
+        return;
+      }
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.length;
       if (bytes > max) {
         over = true;
+        chunks.length = 0;
         reject(payloadTooLarge(res));
-        try { req.destroy(); } catch (_) {}
         return;
       }
       chunks.push(buffer);
@@ -44,4 +55,4 @@ async function readBody(req, max, res) {
   return (await readBodyBuffer(req, max, res)).toString('utf8');
 }
 
-module.exports = { readBody, readBodyBuffer };
+module.exports = { readBody, readBodyBuffer, DRAIN_CEILING };

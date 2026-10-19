@@ -178,7 +178,7 @@ const inBox = (p, t) => t.x >= p.x - 1 && t.x <= p.x + p.w && t.y >= p.y - 1 && 
   const read = p => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
   const build = read('frontend/app/build.js'), world = read('frontend/app/world.js'), ghost = read('frontend/app/ghostline.js'), wm = read('frontend/app/worldmodel.js');
   A.ok(/RING_DOCK_T\[propType\] && !linkedFloor\(\)\) \{/.test(build), 'the "LEAVE 2 TILES" spacing tip is gone on a linked floor (machines may stand side by side)');
-  A.ok(/This belt is <b>loose<\/b> — it joins no two machines, so nothing rides it\./.test(build) && /This belt runs from <b>' \+ esc\(machineName\(l\.from\.prop\)\) \+ '<\/b> to <b>'/.test(build), 'the belt card names the link a belt is — or says it is loose');
+  A.ok(/This belt is <b>loose<\/b> — it joins no two machines, so nothing rides it\./.test(build) && /\(!tag\[i\] \? 'This belt runs' : [^\n]*\) \+ ' from <b>' \+ esc\(machineName\(c\.from\)\) \+ '<\/b> to <b>' \+ esc\(machineName\(c\.to\)\)/.test(build), 'the belt card names the link a belt is — or says it is loose');
   A.ok(/its belts stay, loose — nothing rides them until a machine stands where they end/.test(build), 'DELETE says the belts stay, loose');
   A.ok(/if \(Array\.isArray\(currentLinks\(\)\)\) return linkedPreview\(cand\);/.test(wm) && /const probe = makeStation\(clone\(doc\)\);/.test(wm), 'the placement ghost asks a DRY RUN of the real edit (a probe copy) on a linked floor');
   A.ok(/const src = routingPlan && routingPlan\.sources && routingPlan\.sources\[0\];/.test(world), 'unaddressed INBOX work spawns on the plan’s own feed mouth, never a loose belt beside the INBOX');

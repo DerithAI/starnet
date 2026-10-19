@@ -60,7 +60,7 @@ const NightDraftNudge = (() => {
     if (fired) return;
     try { if (Chat.beatBusy && Chat.beatBusy()) return; } catch (_) {}
     // the SHARED session ask budget (one-memory lane): "review?" is a proactive consent ask, so it spends the
-    // same bounded budget the spine's channels do. A spent budget just waits — the drafts are still on the desk,
+    // same bounded budget the spine's channels do. A spent budget just waits — the drafts are still in LAST REPORT,
     // the morning report still lists them, and the next session's quieter moment offers this again.
     try { if (Chat.askBudgetSpent && Chat.askBudgetSpent()) return; } catch (_) {}
 
@@ -69,7 +69,7 @@ const NightDraftNudge = (() => {
     stopPolling();
     const n = unseen.length;
     const newestAt = Number(unseen[0] && unseen[0].at) || Date.now();   // the mark to set once it's acknowledged
-    const body = '◈ while you were away, autonomy left ' + n + ' draft' + (n === 1 ? '' : 's') + ' on your desk — review?';
+    const body = '◈ while you were away, autonomy left ' + n + ' draft' + (n === 1 ? '' : 's') + ' in SETTINGS › AUTONOMY › LAST REPORT — review?';
     Chat.nudge(body, [{ label: 'review', value: 'go' }, { label: 'later', value: 'no', skip: true }], item => {
       // either choice ACKNOWLEDGES these drafts → mark them seen so neither this nudge nor the morning report
       // re-announces the same set. 'review' also opens the NIGHT SHIFT panel where the decision trail + report live.
@@ -78,7 +78,7 @@ const NightDraftNudge = (() => {
         try { if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('settings', 'autonomy'); } catch (_) {}
       }
     });
-    try { if (typeof World !== 'undefined' && World.say) World.say('◈ left ' + n + ' draft' + (n === 1 ? '' : 's') + ' on your desk'); } catch (_) {}
+    try { if (typeof World !== 'undefined' && World.say) World.say('◈ left ' + n + ' draft' + (n === 1 ? '' : 's') + ' in LAST REPORT'); } catch (_) {}
   }
 
   function stopPolling() { if (pollTimer) { try { clearInterval(pollTimer); } catch (_) {} pollTimer = 0; } }

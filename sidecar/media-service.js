@@ -310,10 +310,14 @@ function makeMediaService(options) {
     const style = String((args && args.style) || '').replace(/\s+/g, ' ').trim().slice(0, 500);
     const wantVoice = String((args && args.voice) || '').trim();
     const input = style ? ('Say the following in ' + style + ': ' + text) : text;
+    // only: try just that keyed provider (a reply pinned to it); noEdge: skip the Edge floor (a caller that
+    // already tried Edge in its own mapped voice must not try it again in Edge's default one)
+    const only = String((args && args.only) || '');
     const reasons = [];
     for (const provider of TTS_KEY_PROVIDERS) {
+      if (only && provider !== only) continue;
       const key = providerRuntimeKey(provider, '');
-      if (!key) continue;
+      if (!key) { if (only) reasons.push(provider + ': no key'); continue; }
       let result;
       try { result = await ttsSynthKeyed(provider, { model: TTS_DEFAULT_MODEL, voice: wantVoice || 'Umbriel', input, text, style, key }); }
       catch (error) { result = { ok: false, reason: (error && error.message) || String(error) }; }
@@ -322,41 +326,68 @@ function makeMediaService(options) {
       }
       reasons.push(provider + ': ' + ((result && result.reason) || 'failed'));
     }
-    if (edgetts.enabled()) {
+    const edgeFloor = !(args && args.noEdge);
+    if (edgeFloor && edgetts.enabled()) {
       const edgeVoice = /^[a-z]{2}-[A-Za-z]{2,8}-\w+$/.test(wantVoice) ? wantVoice : '';
       try {
         const buf = await edgetts.synth(text, edgeVoice ? { nowMs: now(), voice: edgeVoice } : { nowMs: now() });
         if (buf && buf.length) return { ok: true, buf, ext: 'mp3', mime: 'audio/mpeg', provider: 'edge' };
         reasons.push('edge: empty audio');
       } catch (error) { reasons.push('edge: ' + ((error && error.message) || error)); }
-    } else reasons.push('edge: disabled');
-    return { ok: false, reason: reasons.join('; ') || 'this station holds no voice-capable credential' };
+    } else if (edgeFloor) reasons.push('edge: disabled');
+    return { ok: false, reason: reasons.join('; ') || (edgeFloor ? 'this station holds no voice-capable credential' : 'no keyed voice provider') };
   }
-  /* The station's SPOKEN voice for a paired device (remote/voice.js `speak`): the same order the desk's own speaker
-     uses — the bundled offline engine in its default voice, then that voice's mapped Edge neural, then the keyed
-     ladder — so the companion on the desk and the desk itself sound like one station. Never throws. */
-  async function synthesizeStationVoice(text) {
+  /* The spoken voice for a paired device (remote/voice.js `speak`): always the built-in engine's DEFAULT voice
+     (am_onyx), then that voice's mapped Edge neural voice, then the keyed ladder. Voice picks (station and
+     per-agent) live in the desk page's storage (DECISIONS "Per-agent spoken voices") and `speak` carries no
+     agentId, so the companion does not follow them. Never throws.
+     opts.provider pins one reply to the engine that spoke its first sentence ('local-kokoro', 'edge', or a keyed
+     provider): later sentences try only that leg, so a reply never changes speaker or format halfway (the desk's
+     Live Voice pins the same way). The built-in engine answers once its model is READY, or while it is cold or
+     loading when its model is already on disk (a load of seconds, so every reply is the same speaker and an
+     offline station still speaks). A model that must still be DOWNLOADED (~326 MB) is never waited on: it starts
+     loading in the background and this reply goes to the next leg at once. A failed load is retried the same way. */
+  async function synthesizeStationVoice(text, opts) {
     const said = String(text || '').replace(/\s+/g, ' ').trim();
     if (!said) return { ok: false, reason: 'no text' };
+    const pin = String((opts && opts.provider) || '');
     const reasons = [];
     const voiceId = localVoice.defaultVoice();
-    let localReady = false;
-    try { localReady = !!localVoice.status().available; } catch (error) { reasons.push('local status: ' + ((error && error.message) || error)); }
-    if (localReady) {
-      try {
-        const buf = await localVoice.synthesize(said, { voice: voiceId, speed: 1 });
-        if (buf && buf.length) return { ok: true, buf, mime: 'audio/wav', provider: 'local-kokoro' };
-        reasons.push('local: empty audio');
-      } catch (error) { reasons.push('local: ' + ((error && error.message) || error)); }
+    let st = null;
+    try { st = localVoice.status() || null; } catch (error) { reasons.push('local status: ' + ((error && error.message) || error)); }
+    if (st && st.available && (!pin || pin === 'local-kokoro')) {
+      let onDisk = false;
+      if (st.tts === 'cold' || st.tts === 'loading') {
+        try { onDisk = typeof localVoice.ttsCached === 'function' && !!localVoice.ttsCached(); }
+        catch (error) { reasons.push('local cache: ' + ((error && error.message) || error)); }
+      }
+      if (st.tts === 'ready' || pin === 'local-kokoro' || onDisk) {
+        try {
+          const buf = await localVoice.synthesize(said, { voice: voiceId, speed: 1 });
+          if (buf && buf.length) return { ok: true, buf, mime: 'audio/wav', provider: 'local-kokoro' };
+          reasons.push('local: empty audio');
+        } catch (error) { reasons.push('local: ' + ((error && error.message) || error)); }
+      } else {
+        if (st.tts !== 'loading') {
+          Promise.resolve().then(() => localVoice.warm({ asr: false }))
+            .catch(error => logger.error('[local-voice] warm failed:', (error && error.message) || error));
+        }
+        reasons.push(st.tts === 'error' ? 'local: voice model failed to load' : 'local: voice model still loading');
+      }
     }
-    if (edgetts.enabled()) {
-      try {
-        const buf = await edgetts.synth(said, { voice: localVoice.edgeVoiceFor(voiceId), nowMs: now() });
-        if (buf && buf.length) return { ok: true, buf, mime: 'audio/mpeg', provider: 'edge' };
-        reasons.push('edge: empty audio');
-      } catch (error) { reasons.push('edge: ' + ((error && error.message) || error)); }
+    if (pin === 'local-kokoro') return { ok: false, reason: reasons.join('; ') || 'local: unavailable' };
+    if (!pin || pin === 'edge') {
+      if (edgetts.enabled()) {
+        try {
+          const buf = await edgetts.synth(said, { voice: localVoice.edgeVoiceFor(voiceId), nowMs: now() });
+          if (buf && buf.length) return { ok: true, buf, mime: 'audio/mpeg', provider: 'edge' };
+          reasons.push('edge: empty audio');
+        } catch (error) { reasons.push('edge: ' + ((error && error.message) || error)); }
+      } else reasons.push('edge: disabled');
+      if (pin === 'edge') return { ok: false, reason: reasons.join('; ') };
     }
-    const keyed = await synthesizeForAgent({ text: said });
+    // Edge already had its one try above, in the mapped voice: the keyed ladder runs without its own Edge floor
+    const keyed = await synthesizeForAgent(pin ? { text: said, noEdge: true, only: pin } : { text: said, noEdge: true });
     if (keyed.ok) return keyed;
     reasons.push(keyed.reason);
     return { ok: false, reason: reasons.join('; ') };

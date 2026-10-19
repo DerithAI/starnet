@@ -1,0 +1,286 @@
+{
+  "kind": "seeded-browser-acceptance",
+  "sourceCommit": "bff8c5030f8af7330498607e4096db731c61a348",
+  "verifiedAt": "2026-10-12T04:25:27.195Z",
+  "notes": [
+    "Real Chrome and public application interfaces; synthetic seeded station.",
+    "The four original scenarios were verified at sourceCommit. Later review found the separate completion-echo defect documented below; each additional scenario records its own source revision.",
+    "JOINER checks replay captured real-sidecar events through native U.bus and Conveyor handlers. They do not claim a live provider session in Chrome.",
+    "Source acceptance only; combined gates, installer and publication acceptance are separate."
+  ],
+  "stepPicker": {
+    "parallel": {
+      "off": "true",
+      "note": "TESTHow do you want to test it?WATCH IT · FREEa crate rides the belts; no agent runsSTEP THROUGH · REALpauses at every hand-off; nothing is deliveredRUN ONE REAL JOBend to end; the result lands in the OUTBOXSTEP THROUGH carries one crate at a time and cannot finish this parallel line. Use RUN ONE REAL JOB to test the whole line, or TRY THIS STEP on an individual BAY.Your test job runs through the line for real, end to end: real agents, real cost, and the result lands in the OUTBOX like any job.▶ RUN ONE REAL JOB",
+      "real": true,
+      "step": false
+    },
+    "serial": {
+      "off": null,
+      "step": true
+    },
+    "sameAgentSeparateLine": true,
+    "paint": [
+      {
+        "text": "WATCH IT · FREEa crate rides the belts; no agent runs",
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "rgba(255, 170, 51, 0.2)"
+      },
+      {
+        "text": "STEP THROUGH · REALpauses at every hand-off; nothing is deli",
+        "bg": "rgba(255, 170, 51, 0.13)",
+        "border": "rgb(255, 170, 51)"
+      },
+      {
+        "text": "RUN ONE REAL JOBend to end; the result lands in the OUTBOX",
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "rgba(255, 170, 51, 0.2)"
+      },
+      {
+        "text": "",
+        "bg": "rgba(0, 0, 0, 0.46)",
+        "border": "rgba(255, 170, 51, 0.2)"
+      },
+      {
+        "text": "PAUSE AT EVERY HANDOFF",
+        "bg": "rgba(255, 170, 51, 0.13)",
+        "border": "rgb(255, 170, 51)"
+      },
+      {
+        "text": "RUN TO THE END",
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "rgba(255, 170, 51, 0.2)"
+      },
+      {
+        "text": "▶ START STEP-THROUGH",
+        "bg": "rgba(255, 170, 51, 0.16)",
+        "border": "rgb(255, 170, 51)"
+      }
+    ],
+    "errors": []
+  },
+  "floorGestures": {
+    "proof": {
+      "drawn": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "circle": {
+        "ok": false,
+        "to": {
+          "id": "p68",
+          "t": "bay",
+          "x": 54,
+          "y": 12,
+          "w": 2,
+          "h": 2,
+          "agentId": "agent"
+        },
+        "why": "A CIRCLE — THAT BAY ALREADY HANDS WORK BACK TO THIS BAY · USE A LOOP TO SEND WORK BACK"
+      },
+      "refused": true,
+      "handoff": true,
+      "distinct": true,
+      "hotbar": [
+        "bay",
+        "intake",
+        "outbox",
+        "splitter",
+        "merger",
+        "joiner",
+        "filter",
+        "loop"
+      ],
+      "moved": true,
+      "undone": true,
+      "copy": true,
+      "sendRefused": true,
+      "reloadHandoff": true,
+      "blocking": []
+    },
+    "errors": []
+  },
+  "joinedProduct": {
+    "before": 0,
+    "after": 1,
+    "afterEcho": 1,
+    "products": [
+      {
+        "x": 47,
+        "y": 8,
+        "p": {
+          "outbound": true,
+          "box": "product",
+          "weight": 0,
+          "workitemId": "wi_55598c0f",
+          "agentId": "crew0",
+          "dockId": "p5",
+          "lineId": "p3"
+        }
+      }
+    ],
+    "errors": []
+  },
+  "overlappingJoinedProducts": {
+    "before": 1,
+    "after": 2,
+    "afterEcho": 2,
+    "products": [
+      {
+        "x": 47,
+        "y": 25,
+        "p": {
+          "outbound": true,
+          "box": "product",
+          "weight": 0,
+          "workitemId": "wi_ce346e1a",
+          "agentId": "other1",
+          "dockId": "p11",
+          "lineId": "p9"
+        }
+      },
+      {
+        "x": 47,
+        "y": 8,
+        "p": {
+          "outbound": true,
+          "box": "product",
+          "weight": 0,
+          "workitemId": "wi_42f8d1f8",
+          "agentId": "other0",
+          "dockId": "p5",
+          "lineId": "p3"
+        }
+      }
+    ],
+    "errors": []
+  },
+  "joinedCompletionEcho": {
+    "sourceCommit": "f88c461fb",
+    "rejectedSource": "61a4c3022",
+    "beforeFixAfterTerminal": 0,
+    "method": "Replay the same captured actual-sidecar SSE with each agent.run.end delivered twice immediately, before terminal authority.",
+    "before": 0,
+    "after": 1,
+    "afterEcho": 1,
+    "products": [
+      {
+        "x": 47,
+        "y": 8,
+        "p": {
+          "outbound": true,
+          "box": "product",
+          "weight": 0,
+          "workitemId": "wi_55598c0f",
+          "agentId": "crew0",
+          "dockId": "p5",
+          "lineId": "p3"
+        }
+      }
+    ],
+    "errors": []
+  },
+  "shipmentHistoryTooltip": {
+    "sourceCommit": "73ff656b4",
+    "fixture": "HTTP stats response: three recorded stage runs, zero recorded shipments; no inferred recording-start date",
+    "lineId": "p67",
+    "chip": "SHIPPED 0",
+    "tooltip": "SHIPPED\nrecorded jobs that reached the OUTBOX after a tool succeeded or a file was saved. Earlier deliveries without a saved shipment record are not included. Text-only answers still reach the OUTBOX, but do not count here",
+    "bounds": {
+      "x": 868.484375,
+      "y": 269.00567626953125,
+      "width": 345,
+      "height": 218.15625
+    },
+    "errors": []
+  },
+  "unavailableStepEndpoint": {
+    "sourceCommit": "8d8cc5e4a",
+    "rejectedSource": "67c3ad5f1",
+    "verifiedAt": "2026-10-12T08:20:44.919Z",
+    "method": "Actual seeded Chrome at port18971, with GET /api/routing/steptest explicitly intercepted as HTTP404 to model an older sidecar; a crewed TAKE TURNS line opens TEST with explicit step mode. No paid provider job was started.",
+    "before": {
+      "seam": false,
+      "view": "test",
+      "real": false,
+      "step": false,
+      "stepDisabled": null,
+      "text": "INBOX\nSend it a job\n▶ SEND IT DOWN THE LINE\n\nThe whole line works on it for real — real agents, real cost — and the result lands in the OUTBOX.\n\nOr start it automatically\n\nAny of these runs the whole line by itself. A direct COMMS message only runs the agent you message.\n\nA schedule\nnone yet\n⊕ ADD A SCHEDULE\nMANAGE\nA channel message\nnone connected\nCONNECT A CHANNEL ▸\nA file lands in a folder\nnone watched\n⊕ WATCH A FOLDER\nA webhook is called\nnone yet\n⊕ ADD A WEBHOOK\n\nNO FEED — nothing is wired to drop work on this floor yet.\n\nWorking folder\nTrusted project\nAgent workspace (default)\n\nAll workflow stages use this folder. Add trusted folders in Projects.\n\nOptional limits · LINE BUDGET",
+      "errors": []
+    },
+    "after": {
+      "seam": false,
+      "view": "test",
+      "real": true,
+      "step": false,
+      "stepDisabled": "true",
+      "text": "TEST\nHow do you want to test it?\nWATCH IT · FREE\na crate rides the belts; no agent runs\nSTEP THROUGH · REAL\npauses at every hand-off; nothing is delivered\nRUN ONE REAL JOB\nend to end; the result lands in the OUTBOX\n\nYour test job runs through the line for real, end to end: real agents, real cost, and the result lands in the OUTBOX like any job.\n\n▶ RUN ONE REAL JOB",
+      "errors": []
+    },
+    "watchButtonClickPassed": true,
+    "behavioralRegression": {
+      "before": {
+        "failures": 14,
+        "passes": 118
+      },
+      "after": {
+        "failures": 0,
+        "passes": 132
+      }
+    },
+    "supportedAndComplexLineRecheck": {
+      "parallel": {
+        "off": "true",
+        "note": "TESTHow do you want to test it?WATCH IT · FREEa crate rides the belts; no agent runsSTEP THROUGH · REALpauses at every hand-off; nothing is deliveredRUN ONE REAL JOBend to end; the result lands in the OUTBOXSTEP THROUGH carries one crate at a time and cannot finish this parallel line. Use RUN ONE REAL JOB to test the whole line, or TRY THIS STEP on an individual BAY.Your test job runs through the line for real, end to end: real agents, real cost, and the result lands in the OUTBOX like any job.▶ RUN ONE REAL JOB",
+        "real": true,
+        "step": false
+      },
+      "serial": {
+        "off": null,
+        "step": true
+      },
+      "sameAgentSeparateLine": true,
+      "paint": [
+        {
+          "text": "WATCH IT · FREEa crate rides the belts; no agent runs",
+          "bg": "rgba(0, 0, 0, 0)",
+          "border": "rgba(255, 170, 51, 0.2)"
+        },
+        {
+          "text": "STEP THROUGH · REALpauses at every hand-off; nothing is deli",
+          "bg": "rgba(255, 170, 51, 0.13)",
+          "border": "rgb(255, 170, 51)"
+        },
+        {
+          "text": "RUN ONE REAL JOBend to end; the result lands in the OUTBOX",
+          "bg": "rgba(0, 0, 0, 0)",
+          "border": "rgba(255, 170, 51, 0.2)"
+        },
+        {
+          "text": "",
+          "bg": "rgba(0, 0, 0, 0.46)",
+          "border": "rgba(255, 170, 51, 0.2)"
+        },
+        {
+          "text": "PAUSE AT EVERY HANDOFF",
+          "bg": "rgba(255, 170, 51, 0.13)",
+          "border": "rgb(255, 170, 51)"
+        },
+        {
+          "text": "RUN TO THE END",
+          "bg": "rgba(0, 0, 0, 0)",
+          "border": "rgba(255, 170, 51, 0.2)"
+        },
+        {
+          "text": "▶ START STEP-THROUGH",
+          "bg": "rgba(255, 170, 51, 0.16)",
+          "border": "rgb(255, 170, 51)"
+        }
+      ],
+      "errors": []
+    }
+  }
+}

@@ -116,6 +116,12 @@ A.ok(redact('Authorization: Bearer abcdef0123456789ABCDEF').indexOf('abcdef01234
 A.ok(redact('password=synthetic-canary-value').indexOf('synthetic-canary-value') < 0, 'generic password assignment redacted');
 A.ok(redact('client_secret: local-fixture-secret').indexOf('local-fixture-secret') < 0, 'generic client secret assignment redacted');
 A.ok(redact('https://local.test/cb?access_token=synthetic-query-token&mode=test').indexOf('synthetic-query-token') < 0, 'secret-like URL query assignment redacted');
+// Review memory-learning-03 follow-up: the password in a URL's user:pass@ part is a credential like `password=`.
+A.eq(redact('From now on use https://deploy:hunter2@ci.example.com for builds.'), 'From now on use https://deploy:[redacted-secret]@ci.example.com for builds.', 'URL password redacted; user name and host kept');
+A.eq(redact('redis://:fixture-pw@cache.local:6379/0'), 'redis://:[redacted-secret]@cache.local:6379/0', 'URL password with an empty user name redacted');
+A.ok(redact('proxy http://user:p@ssw0rd@proxy.corp.example:8080 set').indexOf('ssw0rd') < 0, 'a URL password holding @ is scrubbed whole');
+A.eq(redact('https://x-access-token:ghp_0123456789abcdefghijklmnopqrstuvwxyz12@github.com/o/r'), 'https://x-access-token:[redacted-key]@github.com/o/r', 'a vendor key in the password slot keeps its vendor tag');
+for (const s of ['open http://localhost:8787/api now', 'ssh://git@github.com/o/r.git', 'http://host:8080/x?to=me@example.com', 'mail me@example.com at 10:30']) A.eq(redact(s), s, 'a port, a bare user name or an email is not a URL password: ' + s);
 A.eq(redact({ password: 'synthetic-object-secret', mode: 'test' }), { password: '[redacted-secret]', mode: 'test' }, 'secret-named object fields redact structurally');
 A.eq(redact('just a normal sentence'), 'just a normal sentence', 'non-secrets untouched');
 const obj = { note: 'token sk-or-v1-deadbeefdeadbeef99', list: ['sk-ant-zzzzzzzzzzzzzzzz', 'safe'] };
@@ -432,6 +438,46 @@ A.ok(renderRecall([{ content: 'prefers reports', confirmation: 'user-confirmed' 
   A.eq(C.rank(pinnedPool, '', { now: 100, k: 12 }).length, 12, 'a queryless explicit-k rank is capped too');
   A.eq(C.rank(pinnedPool, 'deploy', { now: 100 }).length, 40, 'auto-recall (no k) still carries 8 ordinary + 32 bounded priority records');
   A.eq(C.rank(pinnedPool, 'deploy', { now: 100, k: 5, priorityMax: 32 }).length, 37, 'a caller that opts into the allowance (compaction) keeps it');
+}
+
+// Review memory-learning-04: ordinary top-k ranking is not an omission. A 60-note notebook used to end every run's
+// recall with "[52 matching saved memories omitted … Use notebook.read …]", so models called notebook.read on routine
+// turns. Ranking cuts are disclosed as "ranked lower"; the notebook.read pointer is kept for budget cuts only.
+{
+  const C = require('../sidecar/context.js');
+  const notes = Array.from({ length: 60 }, (_, i) => ({ id: 'n' + i, kind: 'fact', content: 'deploy note ' + i, createdAt: i }));
+  const routine = C.renderRecall(C.rank(notes, 'deploy', { now: 100 }));
+  A.ok(/\[52 more matching saved memories ranked lower\.\]/.test(routine.text), 'a ranking cut is disclosed as ranked lower: ' + routine.text.slice(-120));
+  A.ok(!/notebook\.read/.test(routine.text) && !/omitted/.test(routine.text), 'a ranking cut does not tell the model to call notebook.read');
+  A.eq(routine.omitted, 52, 'out.omitted still counts every record left out of the prompt');
+  A.eq(routine.notShown, 52, 'out.notShown counts the ranking cut on its own');
+  const imageOnly = C.renderRecall(C.rank(notes, '', { now: 100 }));
+  A.ok(/\[52 more saved memories ranked lower\.\]/.test(imageOnly.text), 'a turn with no words does not claim the memories matched: ' + imageOnly.text.slice(-80));
+  const tight = C.renderRecall(C.rank(notes, 'deploy', { now: 100 }), { limit: 40 });
+  A.ok(/omitted to fit the prompt/.test(tight.text) && /notebook\.read/.test(tight.text), 'a budget cut keeps the notebook.read pointer: ' + tight.text.slice(-200));
+  // Review memory-learning-10: standing priority is the owner's. A guest (withheld) run passes standing:false and gets
+  // ordinary relevance-gated recall: a zero-relevance standing note is not force-injected into the guest's prompt.
+  const stand = { id: 'andy', kind: 'profile', scope: 'global', confirmation: 'user-stated', content: 'I prefer to be called Andy.', createdAt: 1 };
+  const own = C.rank([stand], 'what is the weather in Lisbon', { now: 100 });
+  A.eq(own.map(r => r.id), ['andy'], 'an owner run keeps its standing preference with no word overlap');
+  A.eq(own.recallMeta.priority.length, 1, 'and gives it the priority slot');
+  A.eq(C.rank([stand], 'what is the weather in Lisbon', { now: 100, standing: false }).length, 0, 'a withheld run drops a zero-relevance standing preference');
+  const asked = C.rank([stand], 'what should I call Andy', { now: 100, standing: false });
+  A.ok(asked.length === 1 && asked.recallMeta.priority.length === 0, 'a relevant one can still be recalled, as an ordinary note');
+  // the compaction summarizer ranks the same notebook: a withheld run's fold must not carry the owner's standing
+  // notes into the summary the guest's model reads next (memory-learning-10 follow-up)
+  const prefs = [stand, Object.assign({}, stand, { id: 'elm', content: 'For all future tasks, deliver to the Elm Street office.' })];
+  A.ok(/Andy/.test(C.compactionMemoryBlock(prefs, 'what is the weather in Lisbon', { now: 100 })), 'an owner fold keeps its standing preferences');
+  A.eq(C.compactionMemoryBlock(prefs, 'what is the weather in Lisbon', { now: 100, standing: false }), '', 'a withheld fold carries no zero-relevance standing preference');
+  // the host half: rank's standing:false only helps if runOnceCore passes it for withheld runs (seam lock)
+  {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+    A.ok(/const standingOn = !\(o\.recovery \|\| tasteWithheld\b/.test(src), 'standing priority is off for withheld runs');
+    A.ok(/const ranked = rank\(recs\.concat\(standingRecs\), q, \{[^}]*\bstanding: standingOn\b/.test(src), 'live recall passes standing');
+    A.ok(/compactionMemoryBlock\(recs, transcript, \{[^}]*\bstanding: !\(tasteWithheld\b/.test(src), 'the fold memory block passes standing');
+  }
+  const summarizer = C.compactionMemoryBlock(notes, 'deploy', { now: 100, limit: 60 });
+  A.ok(summarizer.length > 0 && !/notebook\.read/.test(summarizer) && !/omitted|ranked lower/.test(summarizer), 'the tool-less summarizer gets no notice: ' + summarizer);
 }
 
 A.report('context.test');

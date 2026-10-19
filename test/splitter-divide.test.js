@@ -108,7 +108,8 @@ const routerFor = s => { const r = makeRouter(), plan = P.compileRoutingPlan(s.p
   const parts = branchTurns.map(l => (/YOUR PART \(\d of \d\):\n([^\n]*)/.exec(l.text) || [])[1]).sort();
   A.eq(parts, ['1. Research pricing', '2. Research reviews', '3. Research competitors'].sort(), 'each branch got a DIFFERENT part — together, all of them');
   A.ok(branchTurns.every(l => /YOUR PART \(\d of 3\)/.test(l.text) && /Do ONLY your part/.test(l.text)), 'each is told to do only its part');
-  A.ok(branchTurns.every(l => !/You are the LAST stage/.test(l.text)), 'and none is told it is the last stage (live 2026-10-10: that made each do the whole job)');
+  // (no LAST-stage check here: this runner wires no lastStage and these branches feed a bound ANALYST, so it could never fail —
+  //  the 2026-10-10 law "no divided branch is told it is the LAST stage" is pinned in test/chain-audit-1010.test.js section 4)
   A.ok(branchTurns.every(l => l.text.indexOf('YOUR PART') < l.text.indexOf('the whole request was')), 'its part comes first, the whole request only after, as context');
   const an = log.find(l => l.agentId === 'analyst');
   A.ok(an && /JOINED OUTPUT — 3 of 3 branches delivered/.test(an.text), 'the JOINER combined all three parts for the ANALYST');

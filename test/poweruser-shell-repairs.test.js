@@ -35,8 +35,8 @@ A.ok(/previews open safely inside StarNet/i.test(deliverables) && !/opaque-origi
 A.ok(/\.deliverables-toolbar/.test(style), 'PL-12: Deliverables toolbar has explicit themed layout');
 A.ok(/controls\.setAttribute\('aria-hidden', 'true'\)/.test(titlebar) && /b\.tabIndex = -1/.test(titlebar),
   'PL-14: duplicate web titlebar controls are removed from installed AX/tab order');
-A.ok(/\['active', 'IN PROGRESS \/ REVIEW'\]/.test(ui) && /running \+ ' RUNNING'/.test(ui) && /ready \+ ' READY TO REVIEW'/.test(ui),
-  'PL-15: task-board aggregate distinguishes running from review-ready work');
+A.ok(/\['active', 'IN PROGRESS'\]/.test(ui) && /running \+ ' RUNNING'/.test(ui) && /ready \+ ' READY TO OPEN'/.test(ui),
+  'PL-15: task-board aggregate distinguishes running from finished, ready-to-open work');
 A.ok(/e\.key === 'Escape'[\s\S]{0,180}cinema/.test(warroom),
   'PL-16: Escape exits Cinema without toggling it on');
 

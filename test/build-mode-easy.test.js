@@ -113,12 +113,12 @@ A.ok(/feel: \(\) => \(\{ landing: \[\.\.\.landings\.keys\(\)\], vanishing: vanis
 
 /* ---------- 6. many at once ---------- */
 const down = fn('onDown');
-A.ok(/if \(p && groupIds\.includes\(p\.id\)\) \{ drag=\{mode:'grouppress',propId:p\.id,start:w,cur:w,moved:false,add:ev\.shiftKey\};return; \}/.test(down)
+A.ok(/if \(p && groupIds\.includes\(p\.id\)\) \{ drag=\{mode:'grouppress',propId:p\.id,start:w,cur:w,moved:false,add:ev\.shiftKey,cx:ev\.clientX,cy:ev\.clientY\};return; \}/.test(down)   // (cx/cy: the group press keeps the click slop too — wave 2, build-20)
   && /if \(p\) \{ drag=\{mode:'selectpress',propId:p\.id,start:w,cur:w,moved:false,add:ev\.shiftKey,cx:ev\.clientX,cy:ev\.clientY,sel:p\.id===selectedPropId\};return; \}/.test(down),   // (cx/cy: THE HAND's click slop, 2026-10-11; sel: SELECT MOVES, 10-11)
   'pressing a member of the group grabs the group; pressing anything else grabs just it (Shift remembered)');
 A.ok(/drag = \{ mode: 'boxpress', start: w, cur: w, moved: false, add: ev\.shiftKey, roomId: station\.roomAt\(w\.tx, w\.ty\) \};/.test(down) && !/openRoomCard\(/.test(down),
   'a press on empty floor can become a box — the room card waits for the release, never opens on the press');
-A.ok(/if\(drag\.mode==='grouppress'&&drag\.moved\)drag\.mode='groupmove';/.test(build) && /if\(drag\.mode==='boxpress'&&drag\.moved\)drag\.mode='box';/.test(build), '…a press that moves becomes a group drag or a box');
+A.ok(/if\(drag\.mode==='grouppress'&&drag\.moved&&slipped\)drag\.mode='groupmove';/.test(build) && /if\(drag\.mode==='boxpress'&&drag\.moved\)drag\.mode='box';/.test(build), '…a press that moves becomes a group drag or a box');
 const up = fn('onUp') + fn('upCommit');   // (onUp hands the release to upCommit, then re-says the cursor)
 A.ok(/if \(d\.mode === 'selectpress' \|\| d\.mode === 'grouppress'\) return d\.add \? toggleInSelection\(d\.propId\) : onInspect\(/.test(up)
   && /if \(d\.mode === 'groupmove'\) return commitGroupMove\(d, ev\);/.test(up) && /if \(d\.mode === 'boxpress' \|\| d\.mode === 'roompress'\) return clickEmptyFloor\(d, ev\);/.test(up) && /if \(d\.mode === 'box'\) return commitBox\(d, ev\);/.test(up),
@@ -134,7 +134,7 @@ A.ok(/groupIds=\[\];selectedRoomId=null;selectedPropId=p\.id;renderSelection\(\)
   'inspecting one thing, or arming any tool, lets go of the group');
 const mg = fn('moveGroupBy');
 A.ok(/return station\.transact\(\(\) => \{/.test(mg) && /sort\(\(a, b\) => \(b\.x \* dx \+ b\.y \* dy\) - \(a\.x \* dx \+ a\.y \* dy\)\)/.test(mg)
-  && /if \(next\.length === pending\.length\) return last/.test(mg) && /error: 'LINK_LOST'/.test(mg),
+  && /if \(next\.length === pending\.length\) return last/.test(mg) && /if \(!r \|\| !r\.ok\) \{ next\.push\(id\); last = r; continue; \}/.test(mg) && !/r\.lost/.test(mg),   // (wave 2: a lost belt link is moveProp's own LINK_LOST refusal — it waits as a stuck member and `last` hands it back)
   'a group moves as ONE transact: front-first, members wait for each other, and a stuck member or a lost belt link puts it all back');
 A.ok(/!ids\.has\(q\.id\) && !propSpec\(q\.t\)\.flat && rectsMeet\(propRect\(q\), to\)/.test(fn('groupFit')), 'the drag ghost counts only things OUTSIDE the group as in the way');
 A.ok(/const fit = groupFit\(/.test(fn('refusalOf')) && /refusalOf\(res, ids, dx, dy\)/.test(fn('commitGroupMove')) && /refusalOf\(res, ids, dx, dy\)\.msg/.test(fn('nudgeGroup')),
@@ -246,6 +246,22 @@ A.ok(/^\.refit-toolset-buttons\.is-edit \{ grid-template-columns: repeat\(3,minm
   const sc = rd('website/docs/shortcuts.html'), gl = rd('website/docs/glossary.html');
   A.ok(!/<b>MOVE<\/b>/.test(sc) && /<b>SELECT<\/b> &mdash; click to select &middot; drag a machine onto another to belt them &middot; drag a selected piece onto open floor to move it/.test(sc) && !/Ten tools|, move, delete,/.test(gl),
     'the public shortcuts page and glossary no longer advertise the retired MOVE on key 4');
+  /* the layout count on the public pages is the shelf's own count (review docs-claims-07 follow-up: it drifted 19 vs 20 once);
+     a page may drop the number, but a number it states must be WorldModel.BLUEPRINTS.length */
+  const units = 'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen'.split(' ');
+  const tens = { twenty: 20, thirty: 30, forty: 40 };
+  const num = t => {
+    t = t.toLowerCase();
+    if (/^\d+$/.test(t)) return +t;
+    if (units.includes(t)) return units.indexOf(t);
+    const m = /^(twenty|thirty|forty)(?:-(one|two|three|four|five|six|seven|eight|nine))?$/.exec(t);
+    return m ? tens[m[1]] + (m[2] ? units.indexOf(m[2]) : 0) : null;
+  };
+  const shelf = require('../frontend/app/worldmodel.js').BLUEPRINTS.length;
+  for (const [page, src] of [['glossary.html', gl], ['help.html', rd('website/docs/help.html')]]) {
+    const said = [...src.matchAll(/\b([A-Za-z]+(?:-[a-z]+)?|\d+) (?:ready-made |finished )?layouts\b/g)].map(m => num(m[1])).filter(n => n !== null);
+    A.ok(said.every(n => n === shelf), page + ' states the shelf\'s own layout count (' + shelf + '), never a stale one: ' + JSON.stringify(said));
+  }
 }
 
 /* ---------- 7. the tabs show their things ---------- */
@@ -309,7 +325,7 @@ A.ok(/const res = pre && pre\.ok \? keepsHalls\(\(\) => station\.resizeRoom\(rm\
 A.ok(/if \(g\.kind === 'resize'\) return/.test(fn('placementReason')), 'a resize refusal says the room\'s own reason (never "Blocked by" a prop inside it)');
 A.ok(/station\.moveRoom\(rm\.id, dx, dy\)/.test(fn('nudgeRoom')) && /deleteSelectedRoom\(orientEv\(\)\)/.test(key) && /nudgeRoom\(RA\[0\] \* n, RA\[1\] \* n, orientEv\(\)\)/.test(key),
   'with a room selected the arrows nudge it (its contents ride) and Delete deletes it');
-A.ok(/press Delete again to delete/.test(fn('deleteSelectedRoom')) && /now - roomDelArmedAt > 2500/.test(fn('deleteSelectedRoom')), '…on the SECOND press (a room takes everything on it)');
+A.ok(/press Delete again to delete/.test(fn('deleteSelectedRoom')) && /now - roomDelArmedAt > \(cutArmFor\(rm\.id\) \? 6000 : 2500\)/.test(fn('deleteSelectedRoom')), '…on the SECOND press within 2.5 s (a room takes everything on it) — or anywhere in the 6 s window of a SEND TO cut warning for THIS room (final floor lane M15; repair: never a stale, unrelated warning’s)');
 A.ok(/on\.forEach\(p => vanishProp\(p\)\)/.test(fn('doDeleteRoom')), 'a deleted room\'s contents dissolve');
 const re = fn('runRoomEdit');
 A.ok(/StationBuilder\.planEdit\(station\.serialize\(\), req, env\)/.test(re) && /StationBuilder\.apply\(station, r\.plan, env\)/.test(re), 'FURNISH / CLEAR are the station builder\'s own planned edit, applied as planned (one undo)');

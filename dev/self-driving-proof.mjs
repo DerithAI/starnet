@@ -85,7 +85,7 @@ try {
     r = await ask('Hit the emergency stop — stop everything now.');
     const halt = await api('/api/halt');
     check('"hit the emergency stop" halts every subsystem', halt.halted === true && Object.values(halt.subsystems || {}).every(s => s.halted), stamp(r));
-    check('COMMS names the E-STOP and offers no TRY AGAIN', /stopped by the E-STOP this run pressed/.test(r.text) && !/TRY AGAIN/.test(r.text));
+    check('COMMS says this run paused all automation, names RESUME AUTOMATION, and offers no TRY AGAIN', /this run paused all automation/.test(r.text) && /RESUME AUTOMATION/.test(r.text) && !/TRY AGAIN/.test(r.text));
     await run(`window.dispatchEvent(new Event('focus')), true`); await sleep(1500);
     await run(`document.getElementById('automation-resume').click(), true`); await sleep(3000);
     check('RESUME AUTOMATION (the Commander) lifts it', (await api('/api/halt')).halted === false);

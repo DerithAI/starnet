@@ -51,4 +51,24 @@ function fakeAc() { let aborted = false; return { abort() { aborted = true; }, g
   A.notThrows(() => killAll(new Map(), new Map([['c', null]])), 'a null hub rec is tolerated');
 }
 
+/* ---- THE STATION'S OWN FAULT is not the Commander's E-STOP (wave 2 repair, conveyor-backend-08): the process-fault containment
+   marks the hub runs it is about to kill `faulted`, so the hub's notice, the step test and the hand-off records name the fault.
+   halted stays the one stop flag every consumer reads; faulted only picks the words. ---- */
+{
+  const { markFaulted } = require('../sidecar/halt.js');
+  const a = fakeAc();
+  const h1 = { abort: fakeAc(), superseded: false, halted: false };
+  const h2 = { abort: fakeAc(), superseded: false, halted: false };
+  const browser = new Map([['r1', a]]);
+  A.eq(markFaulted(new Map([['c1', h1]]), null, new Map([['c2', h2], ['c3', null]])), 2, 'marks every hub run of every map (null maps and recs tolerated)');
+  A.ok(h1.faulted === true && h2.faulted === true, 'each hub run carries faulted');
+  A.ok(!h1.abort.aborted && !h1.superseded && !h1.halted, 'marking alone stops nothing: the kill is still killAll');
+  A.eq(killAll(browser, new Map([['c1', h1]])), 2, 'then the ordinary kill');
+  A.ok(h1.halted === true && h1.superseded === true && h1.faulted === true, 'a fault-killed hub run is halted AND faulted');
+  const e = { abort: fakeAc(), superseded: false, halted: false };
+  killAll(null, new Map([['c', e]]));
+  A.ok(e.halted === true && !e.faulted, 'a plain E-STOP never marks a run faulted');
+  A.notThrows(() => markFaulted(), 'no maps -> no throw');
+}
+
 A.report('halt');

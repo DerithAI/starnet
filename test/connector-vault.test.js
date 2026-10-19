@@ -155,7 +155,18 @@ try {
   assert.throws(() => stuck.startFresh(stuckFile, [], { stamp: 'rollback-blocked' }), /did not fully restore/);
   assert.equal(fs.readFileSync(path.join(root, 'unreadable-rollback-blocked', 'rollback-blocked.json'), 'utf8'), stuckBytes, 'failed rollback preserves the original in recovery');
   assert.throws(() => make().load(stuckFile), /locked/, 'failed rollback stays locked across restart');
-  assert.throws(() => stuck.startFresh(stuckFile, [], { stamp: 'retry' }), /incomplete from a previous attempt/, 'retry cannot sweep an unfinished recovery aside');
+  // security-storage-04: a retry RESUMES the unfinished reset instead of refusing forever. While the disk still
+  // fails it fails again and stays locked; once the disk works, START FRESH finishes and the copies stay put.
+  assert.equal(make().lockReason, '', 'a fresh vault starts unlocked');
+  { const v = make(); assert.throws(() => v.load(stuckFile), /locked/); assert.equal(v.lockReason, 'reset-interrupted', 'the lock names the interrupted reset, not a damaged file'); }
+  assert.throws(() => stuck.startFresh(stuckFile, [], { stamp: 'retry' }), /START FRESH failed/, 'a retry on a still-failing disk fails again');
+  assert.ok(fs.existsSync(stuckFile + '.reset-pending'), 'and keeps the recovery marker');
+  assert.equal(fs.readFileSync(path.join(root, 'unreadable-rollback-blocked', 'rollback-blocked.json'), 'utf8'), stuckBytes, 'and the earlier recovery copy');
+  const finished = make().startFresh(stuckFile, [], { stamp: 'retry-ok' });
+  assert.deepEqual(finished.previous, [path.join(root, 'unreadable-rollback-blocked')], 'the finished reset reports where the earlier copies are');
+  assert.ok(!fs.existsSync(stuckFile + '.reset-pending'), 'a finished reset clears the marker');
+  assert.deepEqual(make().load(stuckFile), { version: 2, configs: [], oauth: { byId: {}, clients: {} } }, 'and opens as a new empty store');
+  assert.equal(fs.readFileSync(path.join(root, 'unreadable-rollback-blocked', 'rollback-blocked.json'), 'utf8'), stuckBytes, 'the earlier recovery copy is never touched');
   // A successful readback can be served from the page cache. Recovery files and their directory
   // entries must be flushed before the first original is removed; rollback has the same barrier.
   function tracedResetFs(recovery, { failFlush = () => false, failUnlink = () => false } = {}) {
@@ -257,6 +268,81 @@ try {
   fs.writeFileSync(interrupted + '.reset-pending', JSON.stringify({ movedTo: path.join(root, 'unreadable-interrupted') }));
   const restarted = make();
   assert.throws(() => restarted.load(interrupted), /locked/, 'unfinished recovery never looks like a new empty store');
-  assert.equal(restarted.lockReason, 'unreadable');
+  assert.equal(restarted.lockReason, 'reset-interrupted');
+  // security-storage-05: antivirus/backup holding the file at boot is not "damaged", and START FRESH is not the fix
+  {
+    const f = path.join(root, 'busy.json');
+    make().write(f, state);
+    const heldFs = code => Object.assign(Object.create(fs), { readFileSync(target, ...args) {
+      if (target === f) throw Object.assign(Error(code + ': resource busy or locked'), { code });
+      return fs.readFileSync(target, ...args);
+    } });
+    const held = make({ fs: heldFs('EBUSY') });
+    assert.throws(() => held.load(f), /locked/);
+    assert.equal(held.lockReason, 'busy', 'a file another program holds is locked as busy');
+    assert.deepEqual(held.lockDetail, { readCode: 'EBUSY' }, 'and keeps the read error for the message');
+    const msg = lockMessage('busy', '', held.lockDetail);
+    assert.match(msg, /could not read the saved file \(EBUSY\).*antivirus.*safe and unchanged.*Restart StarNet/, msg);
+    assert.doesNotMatch(msg, /damaged/, 'it is not called damaged');
+    // restart comes first; START FRESH stays a named exit for a file that is still locked after a restart (a
+    // persistent EPERM), so the vault never locks with no way out — and never steers to it before a restart
+    assert.match(msg, /Restart StarNet to try again\. If it is still locked after a restart, START FRESH/, msg);
+    { const v = make({ fs: heldFs('EPERM') }); assert.throws(() => v.load(f), /locked/); assert.equal(v.lockReason, 'busy', 'EPERM (Windows sharing/access denial) is busy too'); }
+    { const v = make({ fs: heldFs('EIO') }); assert.throws(() => v.load(f), /locked/); assert.equal(v.lockReason, 'unreadable', 'a disk I/O error stays unreadable'); }
+    { const v = make({ fs: heldFs('EACCES') }); assert.throws(() => v.load(f), /locked/); assert.equal(v.lockReason, 'unreadable', 'POSIX EACCES is not a passing hold (the credential-recovery fault hosts rely on it)'); }
+    assert.deepEqual(make().load(f), state, 'once the file is free the same store opens');
+  }
+  // security-storage-04: an interrupted reset says so, names the folder, and START FRESH finishes it.
+  assert.match(lockMessage('reset-interrupted', '', { movedTo: path.join(root, 'unreadable-x') }), /START FRESH was interrupted.*not deleted.*unreadable-x.*START FRESH to finish/);
+  assert.doesNotMatch(lockMessage('reset-interrupted'), /damaged|newer StarNet/, 'an interrupted reset is not called a damaged file');
+  // ...but only promises START FRESH finishes it when START FRESH can: a marker that cannot be checked gets the
+  // by-hand steps instead of a button that will always refuse
+  {
+    assert.match(restarted.lockDetail.unfinishable || '', /does not list the files it moved/, 'the lock knows the record cannot be checked');
+    const msg = lockMessage('reset-interrupted', '', restarted.lockDetail);
+    assert.match(msg, /cannot be finished automatically, because its record does not list the files it moved.*unreadable-interrupted.*restart StarNet/, msg);
+    assert.doesNotMatch(msg, /Press START FRESH to finish/, 'it does not promise a finish that START FRESH would refuse');
+  }
+  // a marker this build never writes (no sources list) cannot be checked: refuse, name the marker, change nothing
+  assert.throws(() => restarted.startFresh(interrupted, [], { stamp: 'no-sources' }), e => {
+    assert.match(e.message, /interrupted\.json\.reset-pending/, 'the refusal names the marker');
+    assert.match(e.message, /unreadable-interrupted/, 'and the recovery folder');
+    assert.doesNotMatch(e.message, /Restore the original files before retrying/, 'and never gives advice that cannot clear the marker');
+    return true;
+  });
+  assert.ok(fs.existsSync(interrupted + '.reset-pending') && !fs.existsSync(path.join(root, 'unreadable-no-sources')), 'a refused resume changes nothing');
+  // crash during the copy phase: every original still in place, the recovery folder only partly written
+  {
+    const f = path.join(root, 'crash-copy.json'), old = path.join(root, 'unreadable-crash-copy');
+    make().write(f, state);
+    const bytes = [f, f + '.bak'].map(p => fs.readFileSync(p));
+    fs.mkdirSync(old);
+    fs.writeFileSync(path.join(old, 'crash-copy.json'), 'partial');
+    fs.writeFileSync(f + '.reset-pending', JSON.stringify({ movedTo: old, sources: ['crash-copy.json', 'crash-copy.json.bak'] }));
+    const v = make();
+    assert.throws(() => v.load(f), /locked/);
+    assert.equal(v.lockReason, 'reset-interrupted');
+    assert.deepEqual(v.lockDetail, { movedTo: old }, 'the lock carries the folder for the message');
+    const r = v.startFresh(f, [], { stamp: 'crash-copy-2' });
+    const fresh = path.join(root, 'unreadable-crash-copy-2');
+    assert.equal(r.movedTo, fresh);
+    assert.deepEqual(r.previous, [old]);
+    assert.deepEqual([f, f + '.bak'].map(p => fs.readFileSync(path.join(fresh, path.basename(p)))), bytes, 'the originals are kept in the new folder');
+    assert.equal(fs.readFileSync(path.join(old, 'crash-copy.json'), 'utf8'), 'partial', 'the earlier folder is left as it was');
+    assert.ok(!fs.existsSync(f + '.reset-pending'), 'the marker is cleared');
+    assert.equal(v.locked, false);
+    assert.deepEqual(make().load(f), { version: 2, configs: [], oauth: { byId: {}, clients: {} } }, 'and the store opens empty after restart');
+  }
+  // a marker whose listed files are in neither place cannot be finished safely: refuse and name both paths
+  {
+    const f = path.join(root, 'lost.json'), old = path.join(root, 'unreadable-lost');
+    fs.writeFileSync(f + '.reset-pending', JSON.stringify({ movedTo: old, sources: ['lost.json'] }));
+    const v = make();
+    assert.throws(() => v.load(f), /locked/);
+    assert.match(v.lockDetail.unfinishable || '', /lost\.json is in neither/, 'the lock names the missing file');
+    assert.doesNotMatch(lockMessage('reset-interrupted', '', v.lockDetail), /Press START FRESH to finish/, 'and does not promise a finish');
+    assert.throws(() => make().startFresh(f, [], { stamp: 'lost-2' }), e => /lost\.json\.reset-pending/.test(e.message) && /unreadable-lost/.test(e.message));
+    assert.ok(fs.existsSync(f + '.reset-pending'), 'the marker stays, so the store stays locked');
+  }
   console.log('connector-vault: PASS (AES-GCM, restart, tampering, missing/wrong key + reasons, migration failure, recovery, removal, labelled fallback, durable START FRESH + fail-closed rollback)');
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

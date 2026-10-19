@@ -26,7 +26,7 @@ const ProfileStore = (() => {
 
   // fold a shipped work-item: tag it by its title (the same classifier the rest of the app uses).
   function onDelivered(payload) {
-    if (!ready() || profile.enabled === false) return;
+    if (!ready() || profile.enabled === false || (payload && payload.box === 'line-output')) return;
     const title = (payload && payload.title) || '';
     const tag = (typeof Classify !== 'undefined' && Classify.getTag) ? Classify.getTag(title) : 'general';
     Profile.observe(profile, { tag, weight: SHIP_WEIGHT }, now());

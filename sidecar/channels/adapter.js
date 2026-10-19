@@ -222,9 +222,11 @@
       // a reply to one of OUR messages is an address, and it is how a thread of follow-ups stays natural
       if (m.replyTo && String(m.replyTo.userName || '').trim().toLowerCase() === botUsername) return true;
       // a slash command with NO @suffix is aimed at whatever bot is listening; with a suffix it is aimed by name
-      // (and that name landed in `mentions` above, so a command for a DIFFERENT bot has already failed the check)
+      // (and that name landed in `mentions` above, so a command for a DIFFERENT bot has already failed the check).
+      // '-' is allowed because the Commander's own command names may carry one (/disk-usage); without it a group
+      // dropped such a command before the hub could recognise it (2026-10-18).
       const t = String(m.text == null ? '' : m.text);
-      if (/^\/[A-Za-z0-9_]+(\s|$)/.test(t)) return true;
+      if (/^\/[A-Za-z0-9_-]+(\s|$)/.test(t)) return true;
       return false;
     }
 

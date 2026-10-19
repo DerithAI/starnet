@@ -42,7 +42,7 @@ Machine readiness: NOT READY. NOT PRODUCT PERFECT.
 
 ## Remaining work
 
-- Installed data preservation and erase/restart acceptance, macOS checkpoint soak, and native cross-user security matrix. Issues [#107](https://github.com/androoAGI/starnet/issues/107), [#101](https://github.com/androoAGI/starnet/issues/101), [#91](https://github.com/androoAGI/starnet/issues/91).
+- Installed data preservation and erase/restart acceptance, macOS checkpoint soak, and the native security matrix. Issues [#107](https://github.com/androoAGI/starnet/issues/107), [#101](https://github.com/androoAGI/starnet/issues/101), [#91](https://github.com/androoAGI/starnet/issues/91).
 - Exact sanitized financial/provider incident reproduction; no refund or customer-recovery claim from source fixes alone. Issues [#53](https://github.com/androoAGI/starnet/issues/53), [#106](https://github.com/androoAGI/starnet/issues/106), [#98](https://github.com/androoAGI/starnet/issues/98), [#99](https://github.com/androoAGI/starnet/issues/99).
 - Original Etsy attachment and Telegram/delegation/Drive receipt chains. Issues [#104](https://github.com/androoAGI/starnet/issues/104), [#57](https://github.com/androoAGI/starnet/issues/57), [#28](https://github.com/androoAGI/starnet/issues/28).
 - Measured provider/CLI efficiency, PR103 reconciliation before duplication, and installed overnight WebView2 soak. Issues [#105](https://github.com/androoAGI/starnet/issues/105), [#68](https://github.com/androoAGI/starnet/issues/68), [#69](https://github.com/androoAGI/starnet/issues/69).

@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-12",
+  "scope": "Sanitized follow-up findings reported by focused owner chats and retrieved by release coordination. This is evidence reconciliation, not installed acceptance or customer recovery.",
+  "investigations": [
+    {
+      "id": "E08",
+      "canonical": "f2ac6356",
+      "owner": "Investigate Google Drive authorization block",
+      "source": "bbe1aa1066de6a65c5b06c59d99824e3bc3e0280",
+      "affectedSource": "e0a36dcd31787248b877aea01a6e53741012bc46",
+      "status": "open",
+      "sourceFix": "not established",
+      "installer": "unverified",
+      "customerRecovery": "unconfirmed",
+      "facts": [
+        "Original report says 0.13.1 and a newly created personal Google account; operating system is unstated.",
+        "Google displays a hard authorization block. The report describes refusal before successful callback/code exchange; no independent network capture proves callback absence.",
+        "Requested openid/userinfo.email/drive.readonly/drive.file scopes match source. EARLY_ACCESS permits the recognized service despite deferred release flags."
+      ],
+      "verification": {
+        "kind": "Synthetic in-memory source handler checks, both affected tag and coordinator snapshot",
+        "result": "PASS as reported by owner",
+        "covers": [
+          "scope and loopback parameters",
+          "PKCE/offline/account selection",
+          "no secret in authorization URL",
+          "state/access_denied/missing-code refusals",
+          "existing-grant preservation",
+          "partial scopes and missing-refresh refusal"
+        ],
+        "limits": [
+          "No real consent or live app acceptance",
+          "Current publisher client/audience/verification/enforcement state unavailable",
+          "Console read rendered an error; no setting changed"
+        ]
+      },
+      "next": [
+        "Read current exact-client publisher configuration and refusal code",
+        "Apply only demonstrated source/configuration/account remedy",
+        "Pin affected installer and observe real broad-Drive consent, bounded fixture search/read/export, restart and repeated read"
+      ],
+      "excludedSubstitutions": [
+        "Gmail app password",
+        "Selected Google files as proof of broad Drive recovery",
+        "removing drive.readonly without acknowledging lost capability"
+      ],
+      "sources": [
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth",
+        "https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration",
+        "https://support.google.com/cloud/answer/15549945"
+      ]
+    },
+    {
+      "id": "E23",
+      "canonical": "1d3ac09a",
+      "owner": "Investigate Mac web fetch failures",
+      "source": "a20ffa71fd04691805ea55c7d08165438dd7ac6f",
+      "status": "open",
+      "sourceFix": "not established",
+      "installer": "unverified",
+      "customerRecovery": "unconfirmed",
+      "facts": [
+        "Original October 3 email contains pasted run-level diagnostics, without attachment or expanded tool result.",
+        "The latest TLS entry predates the last completed run by many hours. Run-level tails cannot identify the failing page fetch.",
+        "The affected platform is Apple Silicon macOS. Windows fixture runtime matches reported Node v22.23.2 only."
+      ],
+      "verification": {
+        "kind": "Synthetic local socket and registered-tool probes; targeted source tests",
+        "runtime": {
+          "node": "22.23.2",
+          "platform": "Windows x64",
+          "openssl": "3.5.7",
+          "undici": "6.28.1"
+        },
+        "result": "123 targeted assertions passed as reported by owner",
+        "tests": [
+          "test/outbound-failure-diagnosability.test.js",
+          "test/web.ssrf.test.js",
+          "test/web.calm.test.js"
+        ],
+        "observations": [
+          [
+            "plain/gzip/deflate/Brotli",
+            "HTTP200/readable"
+          ],
+          [
+            "malformed gzip",
+            "HTTP200; terminated; cause Z_DATA_ERROR"
+          ],
+          [
+            "socket closes before headers",
+            "fetch failed; UND_ERR_SOCKET and host"
+          ],
+          [
+            "socket closes after headers",
+            "HTTP200; terminated; cause UND_ERR_SOCKET"
+          ],
+          [
+            "synthetic TLS alert50",
+            "fetch failed; ERR_SSL_TLSV1_ALERT_DECODE_ERROR and host"
+          ]
+        ],
+        "limits": [
+          "Synthetic alert reproduces an error signature, not the customer's cause",
+          "No TLS/SSRF protections weakened",
+          "No live-app, full-gate or Mac-installed acceptance"
+        ]
+      },
+      "demonstratedGap": "Body-read errors use the message terminated; current enrichment targets fetch failed only. Registered tool result therefore loses the cause code and host for post-header decode/socket failures.",
+      "next": [
+        "Obtain a fresh expanded tool failure with timestamp/destination/cause/status on the exact Mac installer",
+        "Compare the same URL on the same Mac/network and verify any demonstrated repair there"
+      ],
+      "distinctFrom": "051f8c3b DNS callback-shape incident",
+      "diagnosticRepair": {
+        "status": "source repaired and registered-tool checked",
+        "evidence": "web-body-diagnostics.json",
+        "customerCause": "not established"
+      }
+    }
+  ]
+}

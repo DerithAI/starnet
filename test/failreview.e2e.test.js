@@ -30,6 +30,7 @@
 'use strict';
 
 const A = require('./_assert.js');
+const { recallOf } = require('./helpers/host-notes.js');
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
@@ -103,7 +104,7 @@ function startMock() {
             reflection: sys.indexOf('reflecting right after finishing a task') >= 0,
             reasoning: body.reasoning || null,
             // the recalled-memory fence (if any) the MAIN run received — the proof that a stored lesson SURFACED
-            recall: messages.filter(m => m && m.role === 'system' && typeof m.content === 'string' && m.content.indexOf('<recalled-memory>') >= 0).map(m => m.content).join('\n')
+            recall: recallOf(messages)   // a system note, or (non-Claude chat wire) the newest user turn's leading text
           };
           state.calls.push(rec);
           if (rec.failReview) { sse(res, [{ content: LESSON_REPLY }], { prompt_tokens: 6, completion_tokens: 4, total_tokens: 10 }, 'stop'); return; }

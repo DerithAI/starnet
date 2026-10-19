@@ -3,10 +3,10 @@ fingerprint: e7b2ffcd
 slug: connector-sign-in-is-lost-after-credential-store
 title: Connector sign-in is lost after credential-store recovery
 surface: providers
-severity: P1
+severity: P2
 status: open
 found: 2026-10-11
-lane: memory-proof-1011
+lane: release-0135-prep
 fix:
 origin: customer
 report: support-2026-10-10-connector-credential-persistence
@@ -41,10 +41,12 @@ Investigation anchors: test/connector-vault.test.js and test/connector-storage-s
 
 ## Verdict
 
-_Filled in when the bug leaves the backlog: what was true, and why it is closed._
+Re-triaged P1 to P2 for the 0.13.5 cut: waiting on reporter data; not reproduced locally and no source defect is proven. Reopen at P1 when the reporter's data shows a defect. Andrew approved this disposition for the 0.13.5 cut (10-15).
 
 ## Regression
 
 
 
 ## Sibling coverage
+
+

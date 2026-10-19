@@ -16,6 +16,13 @@ function makeRouter(o) {
   let capsPlan = null;   // last WELL-FORMED posted plan, deployable or not — the CAPABILITY view only (see setPlan)
   let stationPlan = null;
   let rr = {};   // per-SPLITTER-tile round-robin counter so dispatch spreads work across lanes (matches the engine)
+  /* the counter-advancing pick the executor's walks take, carrying its own non-advancing READ (`peek`): Pipeline.chainStepDock's look
+     past a JOINER reads a splitter with it and never moves one (runtime repair 2026-10-12 — every arriving branch used to move it) */
+  function advancingPick() {
+    const pick = (k, n) => { const c = rr[k] || 0; rr[k] = (c + 1) % n; return c; };
+    pick.peek = (k, n) => (rr[k] || 0) % n;
+    return pick;
+  }
   const stationStore = o.stationStore || makeStationStore();
 
   // store a posted plan. null/empty clears it (no routing floor). A plan with BLOCKING errors is refused.
@@ -270,13 +277,13 @@ function makeRouter(o) {
   function chainStepDock(dockId, ctx) {
     const p = activePlan();
     if (!p || dockId == null) return null;
-    const pick = (k, n) => { const c = rr[k] || 0; rr[k] = (c + 1) % n; return c; };
-    return Pipeline.chainStepDock(p, String(dockId), ctx || {}, pick);
+    return Pipeline.chainStepDock(p, String(dockId), ctx || {}, advancingPick());
   }
   function chainPeekDock(dockId, ctx) {
     const p = activePlan();
     if (!p || dockId == null) return null;
-    return Pipeline.chainStepDock(p, String(dockId), ctx || {}, (k, n) => (rr[k] || 0) % n);
+    const peek = (k, n) => (rr[k] || 0) % n; peek.peek = peek;
+    return Pipeline.chainStepDock(p, String(dockId), ctx || {}, peek);
   }
   function fanSiblingsDock(dockId) {
     const p = activePlan();
@@ -289,8 +296,7 @@ function makeRouter(o) {
   function chainStep(agentId, ctx) {
     const p = activePlan();
     if (!p || !agentId || !Pipeline.chainStep) return null;
-    const pick = (k, n) => { const c = rr[k] || 0; rr[k] = (c + 1) % n; return c; };
-    return Pipeline.chainStep(p, agentId, ctx || {}, pick);
+    return Pipeline.chainStep(p, agentId, ctx || {}, advancingPick());
   }
   /* chainPeek(agentId, ctx) -> what chainStep WOULD answer right now, WITHOUT moving any splitter's round-robin
      counter (2026-09-22, the step-through test's PREVIEW). It reads the counter where it stands, so on an
@@ -298,7 +304,8 @@ function makeRouter(o) {
   function chainPeek(agentId, ctx) {
     const p = activePlan();
     if (!p || !agentId || !Pipeline.chainStep) return null;
-    return Pipeline.chainStep(p, agentId, ctx || {}, (k, n) => (rr[k] || 0) % n);
+    const peek = (k, n) => (rr[k] || 0) % n; peek.peek = peek;
+    return Pipeline.chainStep(p, agentId, ctx || {}, peek);
   }
   /* loopGateAfter(agentId, lineId) -> { when, max } when this dock's own lane meets a LOOP gate before any other
      dock (2026-08-22), else null. A PURE read of the same walk chainStep takes, on a no-op pick so the splitter

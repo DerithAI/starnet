@@ -130,7 +130,7 @@ const ReturnStore = (() => {
   // the copy a digest-dismiss should show (item #3): dismissing the beat is NOT discarding the work — every listed
   // run's crate is already pending in the OUTBOX and stays collectable there. One honest sentence the render site
   // (chat.js awayDigest, Lane B) drops next to the dismiss control so "dismiss" never reads as "lose it".
-  function outboxLine() { return 'the crate on the floor holds these until you review them.'; }
+  function outboxLine() { return 'they wait in TO REVIEW until you rate them.'; }
 
   // ---- the OUTBOX crate surface (world.js renders from these; clicking the chute reviews) ----
   function pendingCount() { return ready() ? Returns.pendingCount(state) : 0; }
@@ -190,14 +190,24 @@ const ReturnStore = (() => {
     Chat.awayReview(row, { onRated: resolve, openWork: openWork });
     return true;
   }
-  // rated (collected) — clear the crate
-  function resolve(runId) { if (ready() && runId) { state = Returns.resolve(state, runId); save(); } }
+  /* rated (collected) — clear the crate, then every OTHER surface that shows it repaints (org P14: a run waits in TWO places — DELIVERABLES ›
+     TO REVIEW and the delivered result in WORKFLOWS — so a rating in one must not leave the other still asking for it). `from` names the
+     caller, which repaints itself: TO REVIEW's own collected() fade would be cut short by a rebuild of its list. COMMS' away beats pass no
+     `from`, so both windows catch up. */
+  function resolve(runId, from) { if (ready() && runId) { state = Returns.resolve(state, runId); save(); changed(from, [runId]); } }
+  // `runIds` reaches WORKFLOWS so it repaints only when its delivered result shows the rate control for one of them: a full repaint
+  // there closes every open drawer (How each step did it, Last time …), so a rating elsewhere must not snap the one being read shut
+  function changed(from, runIds) {
+    if (from !== 'outbox') try { if (typeof OutboxView !== 'undefined' && OutboxView.refresh) OutboxView.refresh(); } catch (_) {}   // DELIVERABLES › TO REVIEW
+    if (from !== 'workflows') try { if (typeof WorkflowsWindow !== 'undefined' && WorkflowsWindow.refresh) WorkflowsWindow.refresh(runIds); } catch (_) {}   // the delivered result's rate control
+  }
   // TO REVIEW's CLEAR ALL — collect every listed crate in ONE save (the runs stay in the library; only the reminder goes)
   function resolveAll(runIds) {
     if (!ready() || !Array.isArray(runIds)) return;
     for (const id of runIds) if (id) state = Returns.resolve(state, id);
     save();
     try { if (typeof OutboxView !== 'undefined' && OutboxView.refresh) OutboxView.refresh(); } catch (_) {}   // DELIVERABLES › TO REVIEW
+    try { if (typeof WorkflowsWindow !== 'undefined' && WorkflowsWindow.refresh) WorkflowsWindow.refresh(runIds.filter(Boolean)); } catch (_) {}   // WORKFLOWS' rate control goes too (when it shows one of these)
   }
 
   /* foldRow(row) — PROOF crate (guided workflow Phase 4): fold ONE real finished-run row into the pending

@@ -267,7 +267,9 @@
   }
 
   /* ---------- the per-line numbers, as text ---------- */
-  const fmtUsd = n => '$' + ((+n || 0) >= 1 ? (+n).toFixed(2) : (+n || 0).toFixed(3));
+  /* ONE MONEY FORMAT (walk 10-14: TODAY read '$0.000' beside a '$0.0001' job): the station's canonical spend formatter (util.js
+     U.usd — sub-dime keeps 4 decimals, cents above) wherever it is loaded; the old 3-decimal form only where it is not (node). */
+  const fmtUsd = n => (typeof U !== 'undefined' && U && typeof U.usd === 'function') ? U.usd(+n || 0) : '$' + ((+n || 0) >= 1 ? (+n).toFixed(2) : (+n || 0).toFixed(3));
   const fmtDur = ms => ms == null ? '—' : ms < 1000 ? ms + 'ms' : ms < 60000 ? (Math.round(ms / 100) / 10) + 's' : (Math.round(ms / 6000) / 10) + 'm';
   /* the INBOX plate text — null when the server has not answered for this line:
        [0] the one-line plate that sits on the floor at rest (the counts you watch move);
@@ -276,18 +278,23 @@
      counts beside it are the LOCAL day — a $ cell that just said TODAY claimed a window it does not read. When the
      server says spendDay 'utc', the $ is labelled (UTC). */
   const utcDay = s => !!(s && s.spendDay === 'utc');
+  /* SHIPPED UNKNOWN (runtime audit 2026-10-12): the server answers shipped:null when the shipment history could not be read — an
+     unknown count, never a 0 ("(null | 0)" printed 0 SHIPPED, the very lie the server stopped telling). ? at rest, why on the glance. */
+  /* AT LEAST (runtime repair 2026-10-12): shippedAtLeast = the saved history may be missing jobs from today (more than it keeps, or
+     shipped while it could not be read) — the count is a lower bound, read N+. */
+  const shippedText = s => (s.shipped == null ? '?' : String(s.shipped | 0) + (s.shippedAtLeast ? '+' : ''));
   function plateLines(s) {
     if (!s || typeof s !== 'object') return null;
-    const a = (s.runs | 0) + ' RUN' + ((s.runs | 0) === 1 ? '' : 'S') + ((s.tests | 0) > 0 ? ' · ' + (s.tests | 0) + ' TEST' + ((s.tests | 0) === 1 ? '' : 'S') : '') + ' · ' + (s.shipped | 0) + ' SHIPPED · ' + (s.failed | 0) + ' FAILED';
+    const a = (s.runs | 0) + ' RUN' + ((s.runs | 0) === 1 ? '' : 'S') + ((s.tests | 0) > 0 ? ' · ' + (s.tests | 0) + ' TEST' + ((s.tests | 0) === 1 ? '' : 'S') : '') + ' · ' + shippedText(s) + ' SHIPPED · ' + (s.failed | 0) + ' FAILED';
     const day = utcDay(s) ? ' TODAY (UTC)' : ' TODAY';
     const b = fmtUsd(s.usdToday) + (s.capUsdPerDay != null ? ' / ' + fmtUsd(s.capUsdPerDay) : '') + day + (s.medianMs != null ? ' · ~' + fmtDur(s.medianMs) + '/RUN' : '');
-    return [a, b, 'TODAY · ' + a + ' · ' + b.replace(day, utcDay(s) ? ' (UTC DAY)' : '') + (s.capUsdPerDay == null ? ' · NO DAILY CAP' : '')];
+    return [a, b, 'TODAY · ' + a + ' · ' + b.replace(day, utcDay(s) ? ' (UTC DAY)' : '') + (s.capUsdPerDay == null ? ' · NO DAILY CAP' : '') + (s.shipped == null ? ' · SHIPMENT HISTORY UNREADABLE' : '')];
   }
   // the Workflow panel header row: labelled cells
   function statsRow(s) {
     if (!s || typeof s !== 'object') return null;
     return [
-      ['RUNS', String(s.runs | 0)], ['SHIPPED', String(s.shipped | 0)], ['FAILED', String(s.failed | 0)],
+      ['RUNS', String(s.runs | 0)], ['SHIPPED', shippedText(s)], ['FAILED', String(s.failed | 0)],
       // step tests are counted APART (they are not jobs) — shown only when there were some, since their $ is in $ TODAY
       ...((s.tests | 0) > 0 ? [['TESTS', String(s.tests | 0)]] : []),
       [utcDay(s) ? '$ TODAY (UTC)' : '$ TODAY', fmtUsd(s.usdToday) + (s.capUsdPerDay != null ? ' / ' + fmtUsd(s.capUsdPerDay) : ' · no cap')],

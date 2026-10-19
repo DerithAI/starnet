@@ -232,7 +232,9 @@ const GoalStore = (() => {
       // threads and recent activity are exactly what makes those milestones theirs rather than generic.
       const res = await Harness.chat({ system, messages: [{ role: 'user', content: directive }], agentId: 'agent', isTask: false, placed: [], internal: true, evidence: true });
       if (!res || res.error) return failed();
-      const texts = Goals.parseDecomposition(res.text, { redact: deps.redact });
+      // milestones read as plain words — the library's markdown → one line (no '**' / '`' typed at the Commander, none stored)
+      const plain = (typeof Deliverables !== 'undefined' && Deliverables.plainLine) ? Deliverables.plainLine : undefined;
+      const texts = Goals.parseDecomposition(res.text, { redact: deps.redact, plain });
       if (texts.length < MIN_PATH) return failed();   // under-decomposed / unusable — the confirm panel would drop it anyway
       delete decompFails[fp];
       cachedProposal = { fp, texts: texts.slice() };
@@ -378,8 +380,9 @@ const GoalStore = (() => {
     if (title.length < 4) return { ok: false, error: 'Tell StarNet a little about what you want to do first.' };
     if (typeof Harness === 'undefined' || !Harness.chat) return { ok: false, error: 'Planning is unavailable. You can still write your own plan below.' };
     try {
+      // keepEffort: the Commander asked for this plan and edits it — their reasoning effort, not the aux one
       const res = await Harness.chat({ system: deps.getSystem ? deps.getSystem() : '', agentId: 'agent',
-        isTask: false, placed: [], internal: true, evidence: true,
+        isTask: false, placed: [], internal: true, evidence: true, keepEffort: true,
         messages: [{ role: 'user', content: 'Help me shape this ambition into a small, editable starting plan: ' + title
           + '\nWhy it matters: ' + cleanNote(options.motivation, 500) + '\nConstraints: ' + cleanNote(options.constraints, 500)
           + '\nCurrent success idea: ' + cleanNote(options.successCondition, 500) + '\nCurrent steps: ' + cleanNote(options.steps, 1000)

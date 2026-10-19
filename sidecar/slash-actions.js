@@ -70,7 +70,10 @@ function makeSlashActions(deps) {
   function armedNote() {
     if (typeof cron.halted === 'function' && cron.halted()) return " Routines are STOPPED by the Commander's E-STOP, so nothing will fire — /cron on to resume them.";
     if (typeof cron.armed !== 'function') return '';
-    return cron.armed() ? '' : ' Routines are NOT armed right now, so nothing will fire — /cron on to arm them.';
+    if (cron.armed()) return '';
+    // the Commander turned scheduling OFF (org wire AUTO-P16-1): a save keeps it off — said as their choice, never as a fault
+    if (typeof cron.offByChoice === 'function' && cron.offByChoice()) return ' Scheduling is off (you turned it off), so nothing will fire — /cron on to turn it on.';
+    return ' Routines are NOT armed right now, so nothing will fire — /cron on to arm them.';
   }
 
   async function routineAction(args, ctx) {
@@ -150,8 +153,10 @@ function makeSlashActions(deps) {
         try { const p = cron.preview(schedule); if (p && p.ok !== false && p.localNext && p.localNext.length) local = p.localNext[0]; } catch (_) {}
         first = ', first fire ' + (local || j.nextRunAt);
       }
+      // ONE ARM RULE (org wire AUTO-P16-1): the host's save turned a never-set switch on — said as it happened
+      const nowOn = !!(r.scheduler && r.scheduler.armedNow);
       return say('Routine created: "' + (j.name || task.slice(0, 60)) + '" — ' + (j.scheduleDisplay || schedule)
-        + first + '.' + armedNote());
+        + first + '.' + (nowOn ? ' Scheduling is now on.' : '') + armedNote());
     }
 
     // NOTE: no `run` verb. Firing a routine on demand streams NDJSON through handleCronRun, which is welded to
@@ -228,17 +233,19 @@ function makeSlashActions(deps) {
       const st = await workshop.state(agentId);
       if (!st || st.ok === false) return fail('Could not read the away workshop: ' + String((st && st.error) || 'no answer') + '.');
       const items = (st.backlog || []).slice(0, MAX_LIST);
-      // Mark a row "waiting in OUTBOX" ONLY when its manifest still validates on disk — the same proof the
+      // A built item waits in the LIBRARY under NEEDS A DECISION (KEEP IT / DISCARD; deliverableRows' status 'pending'), never in
+      // TO REVIEW: that is the rating list for away runs and workflow jobs, with no keep/discard (org P12 wiring, 10-14).
+      // Mark a row "waiting" ONLY when its manifest still validates on disk — the same proof the
       // OUTBOX panel demands. Keying off builtRunId alone made the rows contradict this card's own count
       // (two rows claiming to wait, above a line saying one is waiting).
       const ready = Array.isArray(st.pendingIds) ? st.pendingIds.map(String) : null;
       const isReady = (it) => it && it.builtRunId && (ready ? ready.indexOf(String(it.builtRunId)) !== -1 : false);
       const lines = items.map((it, i) => (i + 1) + '. ' + String((it && (it.title || it.detail)) || '(untitled)').slice(0, 120)
-        + (isReady(it) ? '  [built — waiting in DELIVERABLES › TO REVIEW]'
+        + (isReady(it) ? '  [built — waiting in DELIVERABLES › NEEDS A DECISION]'
           : (it && it.builtRunId ? '  [was built, but its files are gone]' : '')));
       if (!items.length) lines.push('(nothing queued — /away <what to build> adds one)');
       if ((st.backlog || []).length > items.length) lines.push('… and ' + ((st.backlog || []).length - items.length) + ' more.');
-      if (st.pending) lines.push('' + st.pending + ' finished build' + (st.pending === 1 ? '' : 's') + ' waiting for your keep/discard — open MY WORK › DELIVERABLES (TO REVIEW).');
+      if (st.pending) lines.push('' + st.pending + ' finished build' + (st.pending === 1 ? '' : 's') + ' waiting for your KEEP IT or DISCARD — open MY WORK › DELIVERABLES (NEEDS A DECISION).');
       lines.push('Build while away: ' + (st.granted ? 'ON' : 'OFF') + '.');
       return card('Away workshop — ' + (st.backlog || []).length + ' queued', lines);
     }
@@ -266,7 +273,7 @@ function makeSlashActions(deps) {
           + (r.parked ? '. That item is now parked and will NOT be retried — /away <the same idea> to queue it again.' : '.'));
       }
       const title = (r.manifest && r.manifest.title) ? String(r.manifest.title).slice(0, 80) : '';
-      return say('Away shift built' + (title ? ' "' + title + '"' : ' a deliverable') + '. It waits in DELIVERABLES › TO REVIEW for keep or discard.');
+      return say('Away shift built' + (title ? ' "' + title + '"' : ' a deliverable') + '. It waits in MY WORK › DELIVERABLES (NEEDS A DECISION) for KEEP IT or DISCARD.');
     }
 
     // Anything else is the thing to build.

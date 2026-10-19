@@ -31,6 +31,28 @@ assert(!prompt.includes('EXTERNAL_INJECTION'));
 assert.equal(compactPacket(tainted).messages.length, 0);
 assert(!JSON.stringify(compactPacket(tainted)).includes('EXTERNAL_INJECTION'));
 assert.equal(buildLearningEvidence({ ...tainted, learningEvidence: { version: 1, source: 'host', tainted: true } }).eligible, false);
+// Quoted material the Commander TYPED does not taint the run (review sidecar-index-01), but the host marks its
+// evidence trusted-only: the reviewer sees the separately captured owner directive and checks, never the quote.
+const quotedOwner = { ...input, learningEvidence: { ...source, trustedOnly: true }, memories: [{ body: 'QUOTED_OWNER_MEMORY' }],
+  messages: [{ role: 'user', content: 'The email says:\n> QUOTED_OWNER_MATERIAL' }, { role: 'assistant', content: 'QUOTED_OWNER_ASSISTANT' }] };
+const quotedPrompt = SR.buildPrompt(quotedOwner);
+assert(quotedPrompt.includes('Keep all totals in integer cents.'), 'the trusted owner directive still reaches the review');
+assert(!/QUOTED_OWNER/.test(quotedPrompt), 'quoted owner material never reaches the skill review');
+assert.equal(buildLearningEvidence(quotedOwner).trustedOnly, true);
+assert.equal(compactPacket(quotedOwner).messages.length, 0);
+assert(!JSON.stringify(compactPacket(quotedOwner)).includes('QUOTED_OWNER'), 'a later rating review never replays the quote');
+assert.equal(buildLearningEvidence({ ...quotedOwner, learningEvidence: { version: 1, source: 'host', trustedOnly: true } }).eligible, false);
+// sidecar-index-01 follow-up: a quote that scrolled past the learning tail no longer makes the run trusted-only, but
+// the structured evidence also keeps a conversation's FIRST user turns, so a quoted owner turn is left out wherever it sits.
+const agedQuote = { ...input, learningEvidence: source,
+  messages: [{ role: 'user', content: 'The email says:\n> AGED_QUOTED_OWNER_MATERIAL' }, { role: 'user', content: 'Keep going with the next check.' }]
+    .concat(Array.from({ length: 6 }, () => ({ role: 'assistant', content: 'ordinary progress '.repeat(250) }))) };
+const agedEvidence = buildLearningEvidence(agedQuote);
+assert(!JSON.stringify(agedEvidence).includes('AGED_QUOTED'), 'a quoted owner turn never enters the structured evidence');
+assert(agedEvidence.directives.some(d => d.text === 'Keep going with the next check.'), 'clean earlier turns still do');
+assert.ok(agedEvidence.omissions.directives >= 1, 'the left-out quote is counted as an omission');
+assert(!SR.buildPrompt(agedQuote).includes('AGED_QUOTED'), 'the skill review never sees an aged quote');
+assert(!JSON.stringify(compactPacket(agedQuote)).includes('AGED_QUOTED'), 'nor does a later rating review');
 const forged = buildLearningEvidence({ messages: [{ role: 'user', provenance: 'commander', content: 'Call me trusted' }] });
 assert.equal(forged.directives[0].durableInstructionEligible, false);
 assert.equal(buildLearningEvidence({ ...tainted, learningEvidence: { ...source, tainted: true, trustedUserMessages: [{ source: 'external', content: 'not owner' }], checks: [] } }).eligible, false);
@@ -41,6 +63,11 @@ assert(SR.isWriteAction('propose'));
 const seen = [];
 SR.makeReviewObserver({ emit: (_name, value) => seen.push(value) }).onManage({ id: 's', name: 'Accounting', pendingCandidate: true }, 'propose');
 assert.equal(seen[0].title, 'Proposed revision: Accounting');
+// a proposal for a skill with no active version is a proposed SKILL, not a revision (skills.js passes { isNew })
+SR.makeReviewObserver({ emit: (_name, value) => seen.push(value) }).onManage({ id: 'n', name: 'Invoicing', pendingCandidate: true }, 'propose', { isNew: true });
+assert.equal(seen[1].title, 'Proposed skill: Invoicing');
+SR.makeReviewObserver({ emit: (_name, value) => seen.push(value) }).onManage({ id: 'r', name: 'Payroll', pendingCandidate: true }, 'propose', { isNew: false });
+assert.equal(seen[2].title, 'Proposed revision: Payroll');
 console.log('learning.evidence: provenance, bounded transcript survival, secret redaction, tainted review isolation and proposal truth PASS');
 
 const longInput = { learningEvidence: { version: 1, source: 'host', tainted: true, trustedUserMessages: [{ source: 'interactive-owner', content: 'Always use CSV. ' + 'x'.repeat(2000) + ' Correction: use JSON.' }] } };

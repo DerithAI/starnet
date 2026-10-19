@@ -41,7 +41,8 @@ function boot(code = renderSource, failProse = false) {
     imageDeliverableLine: (title, owner) => events.push(['image', title, owner]),
     mediaPlayerLine: (title, owner, kind) => events.push([kind, title, owner]),
     addUser: text => events.push(['user', text]), toolLine: text => events.push(['status', text]), trimMarkerLine() {},
-    row: () => ({ d: { classList: { add() {} } }, body: {} }),
+    goalStepOf: () => null, goalStepLine: goal => events.push(['goal-step', goal]),   // no goal-loop turns in this fixture (comms-system-register.test owns those)
+    row: () => ({ d: { classList: { add() {} } }, body: {} }), turnFileRefs: agentId => ({ agentId }),
     renderProse: (_body, text) => { if (failProse) throw new Error('render failed'); events.push(['reply', text]); },
     isBusy: () => false, offerTryAgain: () => events.push(['retry']), offerRetry: () => events.push(['retry']) });
   vm.runInContext(code, c); return { c, events };
@@ -85,7 +86,10 @@ for (const [label, mutated] of [
   const c = vm.createContext({ fileUrl: (title, owner, project) => { ticketed.push([title, owner, project]); return '/file/' + owner + '/' + title; },
     tauriCore: () => ({ invoke: (name, args) => { opened.push([name, args]); return Promise.resolve(); } }), window: { getSelection: () => '' } });
   const body = A.fnBody(src, 'function wireFileOpen(a, title, agentId, projectRoot)');
-  A.ok(body.length > 500 && body.length < 5000, 'file-opening closure is bounded'); vm.runInContext(body, c);
+  A.ok(body.length > 500 && body.length < 5000, 'file-opening closure is bounded');
+  // the link asks for the readable document view of a text deliverable (live walk 10-14): the same helper chat.js uses
+  vm.runInContext((/const TEXT_DOC_RE = [^\n]+;/.exec(src) || [''])[0] + '\n' + A.fnBody(src, 'function readableUrl(url, filePath)'), c);
+  vm.runInContext(body, c);
   c.wireFileOpen(a, 'out/report.md', 'vex'); c.activeWs = { agentId: 'someone-else' };
   for (const fn of handlers.pointerdown || []) fn({});
   for (const fn of handlers.click || []) fn({ preventDefault() {}, stopPropagation() {} });

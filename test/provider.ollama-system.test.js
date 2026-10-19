@@ -17,7 +17,9 @@ const history = [
 ];
 const original = JSON.stringify(history);
 const expectedSystem = history.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-const ordinaryRoles = history.filter(m => m.role !== 'system').map(m => m.role);
+// The history ends on a host nudge after assistant prose. Projecting that nudge into the leading system slot must
+// not leave the wire ending on assistant text (an assistant prefill: Opus 4.6+ and strict templates refuse it).
+const ordinaryRoles = history.filter(m => m.role !== 'system').map(m => m.role).concat('user');
 async function collect(p, req) { const events = []; for await (const e of p.stream(req)) events.push(e); return events; }
 
 (async () => {
@@ -48,6 +50,9 @@ async function collect(p, req) { const events = []; for await (const e of p.stre
       assert.equal(body.messages[0].content, expectedSystem, 'host policy and updates keep their order and system authority');
       assert.deepEqual(body.messages.slice(1).map(m => m.role), ordinaryRoles, 'user/assistant/tool sequence is unchanged');
       assert.ok(!body.messages[0].content.includes('USER_DATA') && !body.messages[0].content.includes('TOOL_DATA'), 'no user or tool bytes are promoted');
+      const tail = body.messages.at(-1);
+      assert.ok(!(tail.role === 'assistant' && !tail.tool_calls), 'the wire never ends on an assistant prefill');
+      assert.ok(!/USER_DATA|TOOL_DATA|HOST_/.test(String(tail.content)), 'the boundary turn carries no user, tool or host-policy text');
       assert.equal(body.messages.find(m => m.role === 'tool').content, history[4].content);
       assert.equal(body.messages.find(m => m.role === 'tool').tool_call_id, 'read-1');
       assert.equal(JSON.stringify(history), original, 'wire projection never rewrites durable history');
@@ -75,5 +80,8 @@ async function collect(p, req) { const events = []; for await (const e of p.stre
   assert.equal(N.leadingSystemMessages(none), none);
   const late = [history[2], history[0]];
   assert.deepEqual(N.leadingSystemMessages(late), [history[0], history[2]]);
+  // A request already ending on a user turn or a tool result gets no boundary turn.
+  const endsOnTool = [history[0], history[2], history[3], history[4], history[5]];
+  assert.deepEqual(N.leadingSystemMessages(endsOnTool).map(m => m.role), ['system', 'user', 'assistant', 'tool']);
   console.log('provider.ollama-system.test: OK (native + persistent compatible fallback; system provenance, order, tool pairing, multipart and unchanged generic wire)');
 })().catch(e => { console.error(e.stack || e); process.exitCode = 1; });

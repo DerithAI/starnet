@@ -463,9 +463,80 @@
     return list.slice(0, -1).join(', ') + ' or ' + list[list.length - 1];
   }
 
+  /* ---------- SEND TO, said the same way wherever a job is sent and wherever its result is read (2026-10-12, wave-2 repair) ----------
+     A SEND TO starts ANOTHER line's paid job (handoff-runner), so every key that sends a job — the panel's SEND IT DOWN THE LINE and
+     RUN ONE REAL JOB, the floor FINISH card's ③ RUN ONE REAL JOB — says it first, and every card that reads the result says what
+     became of it. One reading here, so the panel and the FINISH card can never promise different things.
+
+     sendRefusal(plan, outboxId, P, statsOf) -> null | { code:'NO_CREW' } | { code:'CAP', cap } — what the hand-off runner's preflight
+       would refuse the SEND TO on this OUTBOX for: a target line with no crewed entry dock, or one whose daily limit is spent
+       (statsOf(lineId) -> { usdToday, capUsdPerDay } | null, the LINE BUDGET ledger the floor reads — a spend not read yet says
+       nothing, never a guess). The compiled plan's dock layer, as trigger-runner crewedDocksOnLine asks it.
+     sendRefusalText(name, r) -> "LINE B has no agent on its first BAY yet" / "LINE B has spent its $1.00 daily limit".
+     onwardPromise(plan, lineKey, nOutboxes, P, { nameOf(outboxId)->name|null (null: that SEND TO is off), statsOf, mark(name) })
+       -> '' | the sentence a sending key adds: where a clean job is sent on, at whose cost — or, for a target that would refuse it
+       now, that nothing will be sent on and why. mark wraps each line name (the panel bolds it; the FINISH card leaves it plain).
+     onwardResult(sr, plan, P, lineName) -> null | { kind:'sent', name, jobId } | { kind:'refused', name, why }
+       | { kind:'sends', names } | { kind:'maybe', names } — what a delivered sample job's card says about the hand-off: the job's own
+       record (sentTo) when the runner wrote one; else only what the floor proves — 'sends' when every OUTBOX the job's last step
+       reaches sends on, nothing when none of them does, 'maybe' (said conditionally) when the job could have landed in either.
+       Names: the record's, else lineName(lineId) (World.lineName — the floor's one rule), through P.lineWord. */
+  function sendRefusal(plan, outboxId, P, statsOf) {
+    const rec = plan && plan.sendTo ? plan.sendTo[outboxId] : null, to = rec && rec.toLine;
+    if (!to || !P || !P.dockLayer) return null;
+    const L = P.dockLayer(plan), reach = L.reachDock || {}, agentOf = L.agentOfDock || {}, lineOf = L.lineOfDock || {};
+    if (!Object.keys(reach).some(d => reach[d] && agentOf[d] && lineOf[d] === to)) return { code: 'NO_CREW' };
+    const ls = typeof statsOf === 'function' ? statsOf(to) : null;
+    if (ls && ls.capUsdPerDay != null && +ls.capUsdPerDay > 0 && +ls.usdToday >= +ls.capUsdPerDay) return { code: 'CAP', cap: +ls.capUsdPerDay };
+    return null;
+  }
+  function sendRefusalText(name, r) {
+    if (!r) return '';
+    return r.code === 'CAP' ? name + ' has spent its $' + (+r.cap).toFixed(2) + ' daily limit' : name + ' has no agent on its first BAY yet';
+  }
+  function onwardPromise(plan, lineKey, nOutboxes, P, o) {
+    o = o || {};
+    const st = (plan && plan.sendTo) || {}, mark = typeof o.mark === 'function' ? o.mark : (n => n);
+    const sends = Object.keys(st).filter(k => st[k] && st[k].fromLine === lineKey)
+      .map(k => ({ k, name: typeof o.nameOf === 'function' ? o.nameOf(k) : null })).filter(x => x.name);
+    if (!sends.length) return '';
+    for (const x of sends) x.no = sendRefusal(plan, x.k, P, o.statsOf);
+    const open = sends.filter(x => !x.no), shut = sends.filter(x => x.no);
+    const list = xs => [...new Set(xs.map(x => x.name))].map(mark).join(' and ');
+    let out = '';
+    if (open.length) out += (sends.length >= (nOutboxes | 0) ? ' When it finishes cleanly it is sent on to ' : ' When it finishes cleanly in an OUTBOX that sends on, it goes on to ')
+      + list(open) + ': that line’s crew starts a job of its own on the result, at its own cost.';
+    for (const x of shut) out += ' Its SEND TO ' + mark(x.name) + ' is set, but nothing will be sent on: ' + sendRefusalText(mark(x.name), x.no) + '.';
+    return out;
+  }
+  function onwardResult(sr, plan, P, lineName) {
+    const v = sr && sr.view;
+    if (!v || !v.ok || !P || !P.lineWord) return null;
+    const word = e => P.lineWord(String((e && e.name) || '').trim() || (e && e.line != null && typeof lineName === 'function' ? lineName(String(e.line)) || '' : ''), 'another line');
+    if (sr.sentTo && typeof sr.sentTo === 'object')
+      return sr.sentTo.refused ? { kind: 'refused', name: word(sr.sentTo), why: String(sr.sentTo.refused) } : { kind: 'sent', name: word(sr.sentTo), jobId: sr.sentTo.jobId || null };
+    const onward = Array.isArray(sr.onward) ? sr.onward : [];
+    if (!onward.length) return null;
+    const st = (plan && plan.sendTo) || {}, sends = k => !!(st[k] && String(st[k].fromLine) === String(sr.key));
+    const names = ks => [...new Set(ks.map(k => word({ line: st[k].toLine })))];
+    const last = (sr.runs || [])[0], dock = last && last.dockId;
+    const reached = dock && plan && P.outboxesReached ? P.outboxesReached(plan, dock) : [];
+    if (reached.length) {
+      const on = reached.filter(sends);
+      if (!on.length) return null;   // every OUTBOX this job's last step reaches sends nowhere: nothing was handed on
+      return { kind: on.length === reached.length ? 'sends' : 'maybe', names: names(on) };
+    }
+    // where the job landed is not on the floor (its step is gone, or reaches no OUTBOX): one OUTBOX that sends is still certain
+    const ln = plan && Array.isArray(plan.lines) ? plan.lines.find(l => l && String(l.lineId) === String(sr.key)) : null;
+    const outs = ln && Array.isArray(ln.outboxes) ? ln.outboxes.map(String) : [];
+    if (outs.length === 1 && sends(outs[0])) return { kind: 'sends', names: names(outs) };
+    return { kind: 'maybe', names: [...new Set(onward.map(d => word({ line: d && d.lineId })))] };
+  }
+
   /* ---------- readiness: what is missing, blocking first ----------
      facts = { hasCompute(agentId, dockId)->bool, errors:[{code, propId, tile, warn}], labelOf(code)->string, briefOf(propId),
-               triggers (lineStarts), isCrew(agentId)->bool (optional: is this id on the crew roster?) }
+               triggers (lineStarts), isCrew(agentId)->bool (optional: is this id on the crew roster?),
+               stepName(propId)->string (optional: the BAY's NAME — a named step is said by it, BAY n (Fact checker), else by its role) }
      A BLOCKING item is one the harness would fail on: no INBOX, an uncrewed dock, a dock with no workstation
      (the compute gate stays shut), no route to an OUTBOX, a compiler error on this line — or a BLOCKING error
      ANYWHERE on the floor, because the router refuses the whole plan while one stands. A HINT is advice.
@@ -490,7 +561,7 @@
     let n = 0;
     for (const pid of flow.order) {
       n++;
-      const d = flow.docks[pid], lbl = 'BAY ' + n + (d.role ? ' (' + d.role + ')' : '');
+      const d = flow.docks[pid], nm = (f.stepName && f.stepName(pid)) || d.role, lbl = 'BAY ' + n + (nm ? ' (' + nm + ')' : '');
       if (!d.agentId) { blocking.push({ what: lbl + ' needs an agent', propId: pid }); continue; }
       // an id that is not on the crew still RUNS — on the station's default identity (runOnce identityFallback)
       if (f.isCrew && !f.isCrew(d.agentId)) hints.push({ what: lbl + '\'s agent "' + d.agentId + '" is not on the crew: its runs use the station\'s default identity. Assign a crew agent', propId: pid });
@@ -504,7 +575,8 @@
     // belts that already reach the OUTBOX once every bay is crewed are not a belt problem: the uncrewed bays' own
     // "needs an agent" items above are what is missing (sweep 2026-09-25)
     else if (!cyclic && !flow.outbox.reached && !(flow.outbox.reachedOnceCrewed && flow.order.some(pid => !flow.docks[pid].agentId))) blocking.push({ what: flow.outbox.propId ? 'connect the last step to the OUTBOX' : 'add an OUTBOX', propId: flow.outbox.propId });
-    // a line one job would run past its stage ceiling stops EVERY job part-way (chain.js preHopRefusal): not ready to run
+    // a line whose longest way runs past its stage ceiling stops a job that goes that way part-way (chain.js preHopRefusal): not
+    // ready to run — one key raises the ceiling to fit (a FILTER / TAKE TURNS line's short ways would finish: the words say so)
     if (flow.tooLong && !cyclic) blocking.push({ what: tooLongText(flow.tooLong), propId: flow.tooLong.propId, code: 'LINE_TOO_LONG' });
     const seenCodes = {};
     for (const e of (f.errors || [])) {
@@ -527,7 +599,7 @@
   function tooLongFix(tl) { const need = Math.max(0, ((tl && tl.stages) | 0) - 1); return need <= HOPS_CEILING ? need : null; }
   function tooLongText(tl) {
     const s = (tl && tl.stages) | 0, m = (tl && tl.maxHops) | 0;
-    return 'too long: one job runs ' + s + ' stages, the LINE BUDGET allows ' + (m + 1) + (tooLongFix(tl) == null ? ' — shorten the line' : '');
+    return 'too long: the longest way runs ' + s + ' stages, the LINE BUDGET allows ' + (m + 1) + (tooLongFix(tl) == null ? ' — shorten the line' : '');
   }
   function pillText(r) {
     if (r.ready) return 'READY TO RUN';
@@ -621,7 +693,7 @@
   const entryAgentsOf = flow => entryDocksOf(flow).map(p => flow.docks[p].agentId);
   const dockAgentsOf = flow => flow ? flow.order.map(p => flow.docks[p].agentId).filter(Boolean) : [];
   function lineStarts(flow, facts) {
-    const x = facts || {}, out = { schedules: [], channels: [], routines: [], chanRows: [], events: [], paused: [], offSchedules: [] };
+    const x = facts || {}, out = { schedules: [], channels: [], routines: [], chanRows: [], events: [], paused: [], offSchedules: [], held: [] };
     if (!flow) return out;
     const said = d => (x.human ? x.human(d) : String(d == null ? '' : d));
     // LINE TRIGGERS: only the ones the server reports enabled with nothing blocking them start the line; an enabled one
@@ -629,8 +701,15 @@
     if (x.lt) {
       const ev = lineEventTriggers(x.lt.triggers, x.lineKey);
       out.events = ev.sentences;
-      for (const t of ev.mine) if (t && t.enabled && t.blockedBy) out.paused.push((t.kind === 'folder' ? 'its folder trigger (' + ((t.config && t.config.path) || 'a folder') + ')'
-        : 'its webhook' + (t.name ? ' "' + t.name + '"' : '')) + ' is waiting: ' + t.blockedBy);
+      for (const t of ev.mine) if (t && t.enabled && t.blockedBy) {
+        out.paused.push((t.kind === 'folder' ? 'its folder trigger (' + ((t.config && t.config.path) || 'a folder') + ')'
+          : 'its webhook' + (t.name ? ' "' + t.name + '"' : '')) + ' is waiting: ' + t.blockedBy);
+        /* …and as the START it is, held with the server's own reason (org wire AUTO-P15-1): WORKFLOWS' STARTS line said 'by hand only'
+           for a line whose folder trigger the E-STOP or the day cap held. `held` = the trigger and channel starts the server holds back
+           (a routine held by the switch is offSchedules), each in the words of the start it is. */
+        out.held.push((t.kind === 'folder' ? 'when a file lands in ' + ((t.config && t.config.path) || 'its folder') : 'when its webhook' + (t.name ? ' "' + t.name + '"' : '') + ' is called')
+          + ' (waiting: ' + String(t.blockedBy).replace(/ · /g, ' — ') + ')');
+      }
     }
     if (x.cron && Array.isArray(x.cron.jobs)) {
       out.routines = lineRoutines(x.cron.jobs, dockAgentsOf(flow), entryAgentsOf(flow), entryDocksOf(flow));
@@ -651,7 +730,7 @@
       for (const c of out.chanRows) {
         if (c.feeds !== true) continue;
         if (c.connected) { if (out.channels.indexOf(c.label.split(' ')[0]) < 0) out.channels.push(c.label.split(' ')[0]); }
-        else out.paused.push('its ' + c.label + ' channel answers as its first step but is not connected');
+        else { out.paused.push('its ' + c.label + ' channel answers as its first step but is not connected'); out.held.push('when a ' + c.label.split(' ')[0] + ' message arrives (not connected)'); }
       }
     }
     return out;
@@ -732,5 +811,5 @@
   }
   return { ROLE, GENERIC, roleInfo, starters, defaultBrief, lineFlow, physicalOrder, neighbours, howItRuns, readiness, pillText, tooLongText, tooLongFix,
     costEstimate, channelFeeds, lineRoutines, lineEventTriggers, lineStarts, entryDocksOf, entryAgentsOf, dockAgentsOf, sentenceText,
-    triggerSig, rowPatch, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL, suggestLineFor };
+    triggerSig, rowPatch, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL, suggestLineFor, sendRefusal, sendRefusalText, onwardPromise, onwardResult };
 });

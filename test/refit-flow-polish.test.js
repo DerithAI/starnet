@@ -8,6 +8,7 @@ function fixture() {
   const s = {tool:'prop',buildGroup:'props',drag:null,dragPid:null,connectFrom:null,connectTo:null,dupe:null,hoverPropId:'placed',propType:'chair',propRot:0,propMir:0,
     hand:null,touchArm:null,dropPick:null,altHeld:false,HOTBAR:[],placingProp:()=>s.tool==='prop'||!!s.hand,setHand(){},toggleHand(){},flipCorner(){},pipette(){},floatHistory(){},   // THE HAND (2026-10-10)
     selBelts:null,setSelection(){},turnClip(){},cutSelected(){},holdClip(){},deleteGroup(){},   // THE HAND part 2 (2026-10-11)
+    HAND_PLAN_MODES:{handbelt:1,handbranch:1,beltreshape:1},flipPref:false,paintHandKeys(){},   // releaseDrag consumes R's corner flip of a hand drag (wave 2, build-10)
     edits:0,releases:0,closed:0,focused:false,selectedPropId:null,groupIds:[],selectedRoomId:null,
     root:{querySelectorAll:()=>[],querySelector:()=>null},
     window:{matchMedia:()=>({matches:false})}, BUILD_GROUPS:[['props','Props',['prop']],['workflow','Conveyors',['line','belt']]],

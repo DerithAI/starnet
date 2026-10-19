@@ -1,0 +1,56 @@
+{
+  "fixCommit": "7dd049d134b61262baedca859f6cfb9e1671d327",
+  "productionCandidate": "fcd8007ca473d52488986537e304370c37f7f9a0",
+  "reportedIntegrationCandidate": "baa58078b5784670e4dd199549b8ac6b6b8b58f7",
+  "date": "2026-10-12",
+  "scope": "Test-only repair in isolated thread-ux-review-1011. No production edits, runtime, full gates, trunk or coordinator changes.",
+  "before": {
+    "fixtureBlob": "3638649a997f25b7fd75cb07f1a30681a893e1c4",
+    "exactFixtureImportedIntoOwnTree": true,
+    "execution": "node test/voice-live-ui.test.js",
+    "result": "Assertion at line316: expected [[lead-run, worker-second, once]], observed []",
+    "log": ".dogfood/thread-ux-fix/voice-fixture-before.log"
+  },
+  "cause": [
+    "Fixture omitted Chat, so the current controller correctly took its cannot-submit branch rather than calling Harness directly.",
+    "It omitted approvalSubmissions and call state, assumed synchronous submission/settlement, and mocked consent with Array.push return value rather than an acknowledgement object.",
+    "The supported path is approvalCommand -> Chat.answerConsent -> awaited Harness.consent, followed by exact-prompt settlement only after ok."
+  ],
+  "identity": {
+    "voiceBlobInBothCandidates": "2db6eb80c14961dc8b692c655062acbcc3c093a2",
+    "channelsIdentical": true,
+    "actualChatSettlementBlockIdentical": true,
+    "existingTestPrefixPreserved": true,
+    "desktopWebsiteMirrorAssertRetained": true
+  },
+  "after": {
+    "fixtureBlob": "98f72eebfa1591a87d33c8e93330e296e2e02d87",
+    "result": "PASS",
+    "log": ".dogfood/thread-ux-fix/voice-fixture-after.log",
+    "checks": [
+      "All original approve/always/deny exact selected-run/prompt decisions.",
+      "Original sibling pausedAt=2000, elapsed=1000, final pausedMs=6000 at clock8000; clock injected in Chat context.",
+      "No response/clear/success before acknowledgement, duplicate in-flight command submits once.",
+      "Refused and rejected requests preserve both prompts and remain retryable; server-applied denial wins.",
+      "Stamped prompt run wins over newer channel run; unrelated conversation remains pending.",
+      "Questions and unrecognized speech never submit tool approvals.",
+      "Ended/replaced calls and same-call chat rebinding suppress late feedback.",
+      "A remote answer winning a failed local submission produces no false waiting speech."
+    ]
+  },
+  "focused": {
+    "voiceUi": "PASS",
+    "bellSettles": 34,
+    "notificationsUseful": 46,
+    "threadUxCases": 16,
+    "syntax": "PASS",
+    "diffCheck": "PASS"
+  },
+  "review": "Independent bounded read found no causal mistakes or blocking fixture gaps; no additional tests run by reviewer.",
+  "integrationNote": "The only modified test file preserves the complete prefix from the frozen integration candidate and replaces its stale appended approval block. If the append conflicts during merge, use this committed fixture while preserving any newer unrelated additions.",
+  "limits": [
+    "No new microphone/live-voice or installed acceptance claim.",
+    "Complete combined gates remain with release coordination.",
+    "Customer record082ee8e5 remains open; this failure was a fixture/API mismatch, not new evidence of a product defect."
+  ]
+}

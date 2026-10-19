@@ -19,6 +19,8 @@ const os = require('os');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
+// the run-context note is the leading text of the newest user message on a non-Claude chat wire: match the Commander's own words
+const { userWords } = require('./helpers/host-notes.js');
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
@@ -50,7 +52,7 @@ function startMockOpenRouter() {
           try { parsed = JSON.parse(body); requests.push(parsed); } catch (_) {}
           const msgs = (parsed && parsed.messages) || [];
           const lastUser = [...msgs].reverse().find(m => m && m.role === 'user');
-          const forwardedTask = lastUser && lastUser.content === FORWARDED_TASK;
+          const forwardedTask = lastUser && userWords(lastUser) === FORWARDED_TASK;
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
           if (forwardedTask && !msgs.some(m => m && m.role === 'tool' && m.tool_call_id === 'atlas_taint_probe')) {
             // Safe even if a regression dispatches it: echo only. The assertion requires the genuine taint refusal.
@@ -60,7 +62,7 @@ function startMockOpenRouter() {
             return;
           }
           res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: forwardedTask ? FORWARDED_ANSWER : 'answer' } }] }) + '\n\n');
-          if (gate.armed && lastUser && lastUser.content === gate.userText) {
+          if (gate.armed && lastUser && userWords(lastUser) === gate.userText) {
             gate.armed = false; gate.request = parsed;
             await new Promise(r => { gate._release = r; });
           }
@@ -191,7 +193,7 @@ async function waitUntil(fn, ms, label) { const deadline = Date.now() + ms; whil
     const wi1 = placed.payload.workitemId;
     A.ok(wi1 && typeof wi1 === 'string', 'run #1 got a workitemId on the belt');
     await waitUntil(() => !!llm.gate._release, 8000, 'the exact original task reaches the fixture gate');
-    A.ok(llm.gate.request.messages.some(m => m && m.role === 'user' && m.content === ORIGINAL_TASK), 'the gate holds the original task request');
+    A.ok(llm.gate.request.messages.some(m => m && m.role === 'user' && userWords(m) === ORIGINAL_TASK), 'the gate holds the original task request');
     const starts = () => sse.events.filter(e => e.name === 'agent.run.start' && e.payload && e.payload.agentId === 'tg_' + CHAT);
     const ends = () => sse.events.filter(e => e.name === 'agent.run.end' && e.payload && e.payload.agentId === 'tg_' + CHAT);
     await sse.waitFor(() => starts().length === 1, 5000, 'original run start');
@@ -222,7 +224,7 @@ async function waitUntil(fn, ms, label) { const deadline = Date.now() + ms; whil
     A.ok(placed2.payload.workitemId !== wi1, 'the supersede event names the old crate, not its replacement');
     const forwardedRequests = () => llm.requests.filter(r => {
       const last = [...(r.messages || [])].reverse().find(m => m && m.role === 'user');
-      return last && last.content === FORWARDED_TASK;
+      return last && userWords(last) === FORWARDED_TASK;
     });
     const probeResult = () => forwardedRequests().flatMap(r => r.messages || []).find(m => m && m.role === 'tool' && m.tool_call_id === 'atlas_taint_probe');
     await waitUntil(() => !!probeResult(), 12000, 'the forwarded run returns its taint refusal to the provider');

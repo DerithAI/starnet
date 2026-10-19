@@ -5,7 +5,7 @@
    into a fresh store so a SIDECAR RESTART does not wipe the dialogue. Pure + deterministic. */
 'use strict';
 const A = require('./_assert.js');
-const { makeTranscriptStore } = require('../sidecar/transcriptstore.js');
+const { makeTranscriptStore, projectConversation } = require('../sidecar/transcriptstore.js');
 
 // in-memory io mirroring the host's JSONL adapter (readAll + append).
 function memIo() {
@@ -269,5 +269,158 @@ const redact = (s) => String(s).replace(/sk-[A-Za-z0-9]{8,}/g, '[redacted]');
   for (let n = 0; n < 60; n++) s.append({ streamId: 'shared', role: 'assistant', content: 'answer B ' + n, sourceRunId: 'B' });
   A.eq(s.history('shared', { limit: 2, sourceRunId: 'A' }).map(r => r.content), ['request A', 'answer A'], 'run filter precedes limit in RAM history');
   A.eq(s.history('shared', { sourceRunId: 'missing' }).length, 0, 'unknown run never falls back to unrelated session turns');
+}
+
+// Dispatch conversation projection is durable independently of the bounded execution ledger.
+{
+  const io = memIo(); io.appendDurable = io.append;
+  let s = makeTranscriptStore({ io, clock, redact });
+  const common = { streamId: 'dispatch', agentId: 'worker', sourceRunId: 'original', dispatchState: 'pending' };
+  s.append({ streamId: 'dispatch', role: 'user', content: 'legacy question' });
+  s.appendStrict({ ...common, role: 'user', content: 'contracted machine instruction' });
+  s.appendNewStrict('dispatch', 'worker', [{ role: 'assistant', content: 'raw invalid' }], { sourceRunId: 'original', dispatchState: 'pending' });
+  s.appendNew('dispatch', 'worker', [{ role: 'assistant', content: 'repair evidence' }], { sourceRunId: 'repair', dispatchState: 'internal' });
+  A.eq(projectConversation(s.history('dispatch'), () => null).map(t => t.content), ['legacy question'], 'pending and internal turn markers suppress raw output even after run ledger eviction');
+  const full = 'accepted '.repeat(4000);
+  s.appendStrict({ ...common, role: 'assistant', content: full, dispatchState: 'final', dispatchPrompt: 'original request', dispatchReason: 'done', taint: 'web_fetch' });
+  s.append({ streamId: 'dispatch', role: 'assistant', content: 'legacy answer' });
+  s = makeTranscriptStore({ io, clock, redact });
+  const raw = s.history('dispatch');
+  A.eq(projectConversation(raw, () => null).map(t => t.content), ['legacy question', 'original request', full, 'legacy answer'], 'restart projection retains one full accepted answer and original prompt without execution ledger');
+  A.eq(projectConversation(raw, () => null).filter(t => t.dispatchState === 'final')[0].sourceRunId, 'original', 'final answer retains original dispatch identity');
+  A.eq(projectConversation(raw, () => null).find(t => t.dispatchState === 'final').taint, 'web_fetch', 'accepted projection retains untrusted-output provenance after restart');
+  A.ok(s.history('dispatch', { sourceRunId: 'repair' }).every(t => t.dispatchState === 'internal'), 'output-only repair append stamps exact run provenance and internal visibility');
+  A.ok(raw.some(t => t.content === 'raw invalid') && raw.some(t => t.content === 'repair evidence'), 'raw history retains original and repair evidence');
+  A.ok(!s.reconstruct('dispatch').some(t => t.content === full), 'display projection does not duplicate execution in reconstructed model context');
+  const withoutFinal = raw.filter(t => t.dispatchState !== 'final');
+  const recovered = projectConversation(withoutFinal, id => id === 'original' ? { deliveryPrompt: 'original request', dispatchDelivery: { state: 'final', reason: 'invalid-result', text: 'No completion accepted' } } : null);
+  A.eq(recovered.map(t => t.content), ['legacy question', 'original request', 'legacy answer'], 'failed final projection never substitutes the run envelope or raw output');
+  A.eq(projectConversation(withoutFinal, id => id === 'original' ? { dispatchDelivery: { state: 'final', reason: 'done', text: 'x'.repeat(24000) } } : null).filter(t => t.sourceRunId === 'original'), [], 'missing full projection never publishes a possibly truncated delivery preview');
+  A.eq(projectConversation([{ role: 'assistant', content: 'legacy' }], () => null), [{ role: 'assistant', content: 'legacy' }], 'legacy unmarked conversations keep their existing shape');
+}
+
+// A delegated run the sidecar stopped mid-way (never finalized) keeps its directive and says it was interrupted,
+// instead of the whole thread silently disappearing. Its raw partial output stays hidden.
+{
+  const rows = [
+    { streamId: 'research', agentId: 'ada', role: 'user', content: 'Find three JWST facts', from: 'nova', sourceRunId: 'w1', dispatchState: 'pending', ts: 10 },
+    { streamId: 'research', agentId: 'ada', role: 'assistant', content: 'PARTIAL RAW WORK', sourceRunId: 'w1', dispatchState: 'pending', ts: 11 },
+    { streamId: 'research', agentId: 'ada', role: 'assistant', content: 'MORE PARTIAL WORK', sourceRunId: 'w1', dispatchState: 'pending', ts: 12 }
+  ];
+  const interrupted = projectConversation(rows, id => id === 'w1' ? { runId: 'w1', reason: 'interrupted', error: 'interrupted: StarNet stopped before this run finished; it can be continued' } : null);
+  A.eq(interrupted.filter(t => !t.sys).map(t => t.content), ['Find three JWST facts'], 'an interrupted delegated run keeps its directive');
+  A.eq(interrupted[0] && interrupted[0].from, 'nova', 'the directive keeps who sent it');
+  const status = interrupted.filter(t => t.sys);
+  A.eq(status.length, 1, 'exactly one interrupted status line is shown');
+  A.ok(!!status[0] && status[0].error === true && status[0].sourceRunId === 'w1' && /interrupted/.test(status[0].content), 'the status line says the run was interrupted');
+  A.ok(!interrupted.some(t => /PARTIAL/.test(t.content)), 'raw partial output of an unaccepted run is never shown');
+  const noError = projectConversation(rows, () => ({ runId: 'w1', reason: 'interrupted' }));
+  A.ok(noError.some(t => t.sys && /no result was accepted/.test(t.content)), 'an interrupted run with no recorded reason still says no result was accepted');
+  A.eq(projectConversation(rows, () => ({ runId: 'w1', reason: 'done', dispatchDelivery: { state: 'pending' } })), [], 'a run still pending finalization stays hidden (its accepted answer may be in flight)');
+  A.eq(projectConversation(rows, () => null), [], 'a run with no record stays hidden');
+
+  // Every open re-merges the station's projection into the saved thread (desk: chat.js mergeCanonicalHistory; phone:
+  // remote/host.js mergeCanonical), and the result is saved. The interrupted line must stay ONE line however often the
+  // thread is opened, with or without a saved copy of the directive, and sit right under its directive.
+  const fs = require('node:fs'), path = require('node:path');
+  const mergeFrom = (file, header) => {
+    const body = A.fnBody(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), header);
+    A.ok(body.length > 0, file + ': its history merge was found');
+    return new Function('return (' + body + ')')();
+  };
+  const merges = [['desk', mergeFrom('frontend/app/chat.js', 'function mergeCanonicalHistory(local, turns)')],
+    ['phone', mergeFrom('sidecar/remote/host.js', 'function mergeCanonical(local, turns)')]];
+  for (const [surface, merge] of merges) {
+    for (const [label, start] of [['no saved copy', []], ['a saved directive', [{ role: 'user', content: 'Find three JWST facts', from: 'nova', ts: 10 }]]]) {
+      let saved = start;
+      for (let open = 1; open <= 4; open++) saved = JSON.parse(JSON.stringify(merge(saved, interrupted)));
+      const lines = saved.filter(t => t.sys && /interrupted/.test(t.content));
+      A.eq(lines.length, 1, surface + ', ' + label + ': four opens keep exactly one interrupted line');
+      A.eq(saved.map(t => t.content), ['Find three JWST facts', interrupted[1].content], surface + ', ' + label + ': the line sits under its directive');
+    }
+  }
+  // Once the run has an accepted answer the station stops sending the line, and the saved copy goes with it.
+  const healed = merges[0][1](merges[0][1]([], interrupted), [rows[0]]);
+  A.ok(!healed.some(t => t.sys), 'a saved interrupted line is not kept once the station no longer reports it');
+}
+
+// Full accepted output and the bounded execution preview have separate durability contracts.
+{
+  const { makeRunStore } = require('../sidecar/runstore.js');
+  const { finalizeDispatchDelivery } = require('../sidecar/dispatch-delivery.js');
+  const { isFinalDeliveryRow } = require('../sidecar/transcriptstore.js');
+  const hash = text => require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+  const runIo = memIo(), turnIo = memIo(); let failProjection = false, failPatch = false;
+  const appendRun = runIo.append; runIo.append = row => { if (failPatch && row.kind === 'dispatch-delivery') throw Error('patch failed'); appendRun(row); };
+  const appendTurn = turnIo.append; turnIo.appendDurable = row => { if (failProjection && row.dispatchState === 'final') throw Error('projection failed'); appendTurn(row); return row; };
+  let runStore = makeRunStore({ io: runIo, clock }), transcriptStore = makeTranscriptStore({ io: turnIo, clock });
+  const finalize = (id, text, extra) => finalizeDispatchDelivery({ runStore, transcriptStore, redact: text => text, hash }, id, { text, reason: 'done', repairRunId: 'repair', ...extra });
+  runStore.record({ runId: 'original', streamId: 'S', reason: 'done', usd: 0.2, dispatchDelivery: { state: 'pending' } });
+  runStore.record({ runId: 'repair', streamId: 'S', reason: 'done', usd: 0.1, dispatchDelivery: { state: 'internal' } });
+  const text = JSON.stringify({ answer: 'x'.repeat(250000) + 'TAIL' });
+  failProjection = true;
+  A.throws(() => finalize('original', text), 'projection append failure propagates before run finalization');
+  A.eq(runStore.latest('original').dispatchDelivery.state, 'pending', 'failed full projection cannot publish a final run preview');
+  A.eq(turnIo.lines.length, 0, 'failed full projection leaves no accepted display row');
+  runStore = makeRunStore({ io: runIo, clock }); transcriptStore = makeTranscriptStore({ io: turnIo, clock });
+  A.eq(runStore.latest('original').dispatchDelivery.state, 'pending', 'restart after projection failure retains truthful pending delivery');
+  failProjection = false; failPatch = true;
+  A.throws(() => finalize('original', text), 'run patch failure follows durable full projection');
+  A.eq(turnIo.lines.length, 1, 'first accepted full projection remains available after patch failure');
+  A.eq(turnIo.lines[0].content.length, text.length, 'accepted projection exceeds old 200k cap losslessly');
+  A.eq(turnIo.lines[0].textSha256, hash(text), 'projection carries full UTF-8 hash');
+  runStore = makeRunStore({ io: runIo, clock }); transcriptStore = makeTranscriptStore({ io: turnIo, clock });
+  transcriptStore.appendStrict({ streamId: 'S', sourceRunId: 'original', role: 'assistant', content: 'late raw row', dispatchState: 'pending' });
+  failPatch = false;
+  A.throws(() => finalize('original', text.slice(0, -3) + 'B"}'), 'different same-prefix answer cannot replace first accepted text after restart');
+  A.throws(() => finalize('original', text, { reason: 'error' }), 'same text cannot replace first accepted reason');
+  A.throws(() => finalize('original', text, { repairRunId: 'other' }), 'same text cannot replace first accepted repair identity');
+  const final = finalize('original', text);
+  A.eq(final.dispatchDelivery.textLength, text.length, 'run envelope carries complete character length');
+  A.eq(final.dispatchDelivery.textSha256, hash(text), 'run envelope carries complete content digest');
+  A.eq(final.dispatchDelivery.text.length, 24000, 'run envelope remains a bounded preview');
+  A.eq(finalize('original', text).dispatchDelivery, final.dispatchDelivery, 'identical finalization is idempotent');
+  A.eq(turnIo.lines.filter(t => t.dispatchState === 'final').length, 1, 'late raw rows and repeated finalization never duplicate accepted output');
+  A.eq(makeRunStore({ io: runIo, clock }).latest('original').dispatchDelivery, final.dispatchDelivery, 'complete integrity metadata survives run-store restart');
+  A.ok(Math.abs(runStore.all().reduce((sum, row) => sum + row.usd, 0) - 0.3) < 1e-9, 'retries and integrity metadata never duplicate spend');
+  A.throws(() => finalize('repair', text), 'internal repair cannot acquire independent delivery authority');
+  const unknown = makeTranscriptStore({ io: { readAll: () => [], append: () => {}, history: () => { throw Error('segment unavailable'); } }, clock });
+  A.throws(() => finalizeDispatchDelivery({ runStore, transcriptStore: unknown, redact: t => t, hash }, 'original', { text, reason: 'done', repairRunId: 'repair' }), 'unreadable prior acceptance cannot become a replaceable empty history');
+  const row = { streamId: 'S', sourceRunId: 'original', role: 'assistant', dispatchState: 'final', content: text, textLength: text.length, textSha256: hash(text) };
+  A.ok(isFinalDeliveryRow(row, hash), 'full accepted projection integrity verifies');
+  A.ok(!isFinalDeliveryRow({ ...row, dispatchReason: 'done', dispatchRepairRunId: 'repair' }, hash, { ...final.dispatchDelivery, textSha256: 'f'.repeat(64) }), 'full projection cannot disagree with finalized execution integrity');
+  const redactedStore = makeTranscriptStore({ io: memIo(), clock, redact: t => t.replace(/sensitive/g, '[redacted]') });
+  runStore.record({ runId: 'redacted', streamId: 'R', reason: 'done', dispatchDelivery: { state: 'pending' } });
+  const redacted = finalizeDispatchDelivery({ runStore, transcriptStore: redactedStore, redact: t => t.replace(/sensitive/g, '[redacted]'), hash }, 'redacted', { text: 'answer sensitive', reason: 'done' });
+  const redactedRow = redactedStore.history('R')[0];
+  A.eq(redactedRow.content, 'answer [redacted]', 'finalizer stores only redacted accepted text');
+  A.eq(redacted.dispatchDelivery.textLength, redactedRow.content.length, 'envelope length is computed after actual finalizer redaction');
+  A.eq(redacted.dispatchDelivery.textSha256, hash(redactedRow.content), 'envelope digest exactly matches redacted stored content');
+  A.ok(!isFinalDeliveryRow({ ...row, content: text.slice(0, 200000) }, hash), 'truncated modern projection fails integrity');
+  A.ok(!isFinalDeliveryRow({ ...row, content: text.slice(0, -3) + 'Z"}' }, hash), 'same-length corrupted tail fails integrity');
+  A.ok(!isFinalDeliveryRow({ ...row, textLength: undefined, textSha256: undefined, content: 'x'.repeat(200000) }, hash), 'historical cap-length legacy final is unproven');
+  A.eq(projectConversation([{ ...row, textLength: undefined, textSha256: undefined, content: 'x'.repeat(200000) }], () => null, hash), [], 'canonical read suppresses historical truncated final rows');
+  const max = 'x'.repeat(1048576);
+  const maxRow = transcriptStore.appendStrict({ ...row, content: max, textLength: max.length, textSha256: hash(max) });
+  A.eq(maxRow.content.length, 1048576, 'final output at supported maximum persists without truncation');
+  A.throws(() => transcriptStore.appendStrict({ ...row, content: max + 'x' }), 'unsupported final size is an explicit write failure, never a silently cropped answer');
+  const expanded = makeTranscriptStore({ io: memIo(), clock, redact: t => t + 'x' });
+  A.throws(() => expanded.appendStrict({ ...row, content: max }), 'redaction expansion over final storage bound fails explicitly');
+  const raw = transcriptStore.appendStrict({ streamId: 'S', sourceRunId: 'repair', dispatchState: 'internal', role: 'assistant', content: text });
+  A.eq(raw.content.length, 200000, 'ordinary raw execution transcript retains its existing cap');
+}
+
+{
+  const store = makeTranscriptStore({ io: memIo(), clock });
+  store.append({ streamId: 'preview', role: 'user', content: 'Visible topic', taint: null });
+  store.append({ streamId: 'preview', role: 'user', content: 'Hidden contract', dispatchState: 'pending' });
+  store.append({ streamId: 'preview', role: 'user', content: 'Hidden repair', dispatchState: 'internal' });
+  A.eq(store.streams()[0].preview, 'Visible topic', 'RAM preview excludes pending and internal prompts');
+  store.append({ streamId: 'preview', role: 'assistant', content: 'answer', dispatchState: 'final', dispatchPrompt: 'Accepted request', taint: 'web_fetch' });
+  A.eq(store.streams()[0].preview, 'Accepted request', 'RAM preview mirrors accepted projection topic');
+  A.eq(store.streams()[0].previewTaint, 'web_fetch', 'RAM preview uses accepted source provenance');
+  store.append({ streamId: 'preview', role: 'user', content: 'New clean topic', taint: null });
+  A.eq(store.streams()[0].previewTaint, '', 'new clean visible prompt clears prior tainted preview metadata');
+  A.ok(store.streams()[0].previewTaintKnown, 'new clean visible prompt retains known-clean provenance');
 }
 A.report('transcript.test');

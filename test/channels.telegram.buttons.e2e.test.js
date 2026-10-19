@@ -20,6 +20,8 @@ const os = require('os');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
+// the run-context note is the leading text of the newest user message on a non-Claude chat wire: key on the Commander's own words
+const { userWords } = require('./helpers/host-notes.js');
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
@@ -43,7 +45,7 @@ function readJsonBody(req) {
 function startMockOpenRouter() {
   const requests = [], script = [];
   const lastUser = (msgs) => {
-    for (let i = (msgs || []).length - 1; i >= 0; i--) if (msgs[i].role === 'user') return String(msgs[i].content || '');
+    for (let i = (msgs || []).length - 1; i >= 0; i--) if (msgs[i].role === 'user') return userWords(msgs[i]);
     return '';
   };
   return new Promise(resolve => {
@@ -175,7 +177,7 @@ async function waitUntil(fn, ms, label) {
 // request" is NOT reliably the Telegram turn. Callers search ALL requests for the one they mean instead.
 const lastUserTurn = (req) => {
   const m = (req && req.messages) || [];
-  for (let i = m.length - 1; i >= 0; i--) if (m[i].role === 'user') return m[i].content;
+  for (let i = m.length - 1; i >= 0; i--) if (m[i].role === 'user') return userWords(m[i]);
   return null;
 };
 

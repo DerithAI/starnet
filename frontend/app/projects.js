@@ -86,7 +86,7 @@
       .slice()
       .sort(function (a, b) { return (b.lastActiveAt || 0) - (a.lastActiveAt || 0); })
       .map(function (w) {
-        return { id: w.id, title: (w.title != null && w.title !== '') ? w.title : 'General', rel: relTime(w.lastActiveAt || 0, nowMs) };
+        return { id: w.id, title: (w.title != null && w.title !== '') ? w.title : (typeof Workstreams !== 'undefined' && Workstreams.titleOf ? Workstreams.titleOf(w) : 'General'), rel: relTime(w.lastActiveAt || 0, nowMs) };
       });
   }
 

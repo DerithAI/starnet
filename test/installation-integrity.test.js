@@ -48,6 +48,9 @@ try {
   } finally { fs.readSync = originalRead; put(installed, shell, moduleText); }
   for (const file of ['../secret.js', 'sidecar/../../secret.js', 'profiles/customer/station.json', '/sidecar/index.js', 'C:\\secret.js', 'sidecar/link/file.json']) assert.throws(() => run({ files: [file] }), /Unsupported/);
   assert.throws(() => run({ reference: installed }), /separate/);
+  // a mistyped --installation is an invalid invocation, never a report that every file is "missing"
+  assert.throws(() => run({ installation: path.join(root, 'absent') }), /not an existing directory/);
+  assert.throws(() => run({ installation: path.join(installed, shell) }), /not an existing directory/);
   assert.throws(() => run({ signature: true }), /requires --installer/);
   const linkRoot = path.join(root, 'linked'); fs.mkdirSync(linkRoot);
   fs.symlinkSync(path.join(installed, 'sidecar'), path.join(linkRoot, 'sidecar'), process.platform === 'win32' ? 'junction' : 'dir');

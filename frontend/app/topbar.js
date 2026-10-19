@@ -43,7 +43,8 @@ const Topbar = (() => {
         const pct = Math.max(0, Math.min(100, Math.round(100 * (g.points - g.levelStartsAt) / (g.nextLevelAt - g.levelStartsAt))));
         fill.style.width = pct + '%';
         const xp = $('#tb-station .tb-xp');
-        if (xp) xp.title = 'COMMANDER Lv ' + g.level + ' — ' + g.points + ' achievement points; ' + g.pointsToNextLevel + ' to the next level';
+        // the station tooltip card, not the OS bubble (org pass 10-14, P28)
+        if (xp && xp.setAttribute) xp.setAttribute('data-tip', 'COMMANDER Lv ' + g.level + ' — ' + g.points + ' achievement points; ' + g.pointsToNextLevel + ' to the next level');
       }
     } catch (_) { /* honest no-op: leave the sliver where it is */ }
   }

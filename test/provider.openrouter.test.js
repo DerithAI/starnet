@@ -5,6 +5,7 @@
 'use strict';
 const A = require('./_assert.js');
 const { makeOpenRouterProvider } = require('../sidecar/providers/openrouter.js');
+const provider = require('../sidecar/providers/provider.js');
 
 const line = obj => 'data: ' + JSON.stringify(obj);
 const sseFetch = (sseText, status) => async () => new Response(sseText, { status: status || 200, headers: { 'Content-Type': 'text/event-stream' } });
@@ -332,12 +333,33 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.eq(cached[1], msgs[1], 'messages beyond the three tail anchors are passed through by reference');
     A.eq(msgs[3].content, 'tool result', 'pure: no input message is mutated');
     // A blank message is never stamped (Anthropic 400s an empty text block); the anchor slides past it.
+    // (lean-prompt 2026-10-12: the fixture used to put two user messages back to back and expect the FIRST stamped —
+    //  they are one upstream turn, and only a turn's last message is stamped now; see ONE ANCHOR PER USER TURN.)
     const blank = applyCacheControl([
-      { role: 'system', content: 'S' }, { role: 'user', content: 'u1' },
+      { role: 'system', content: 'S' }, { role: 'user', content: 'u0' }, { role: 'assistant', content: 'a0' },
       { role: 'user', content: 'u2' }, { role: 'assistant', content: '' }, { role: 'user', content: 'u3' }
     ], 'anthropic/claude-3.5');
-    A.eq(blank[3].content, '', 'a blank message is skipped, not stamped');
-    A.ok(Array.isArray(blank[1].content) && blank[1].content[0].cache_control, 'the third anchor slides past the blank onto the next stampable message');
+    A.eq(blank[4].content, '', 'a blank message is skipped, not stamped');
+    A.ok(Array.isArray(blank[2].content) && blank[2].content[0].cache_control, 'the third anchor slides past the blank onto the next stampable message');
+    // ONE ANCHOR PER USER TURN: host notes made user-side (run context, recall) never take a tail anchor from the
+    // previous assistant reply — the last bytes the NEXT message's request shares, so the one whose write it reads.
+    const prefix = 'STABLE '.repeat(40);
+    const turn = applyCacheControl(provider.preserveClaudeContinuations([
+      { role: 'system', content: prefix + 'tail' }, { role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' },
+      { role: 'system', content: provider.runContextNote('[RUNTIME] Run id: r2') }, { role: 'system', content: '<recalled-memory>\nm\n</recalled-memory>' },
+      { role: 'user', content: 'q2' }
+    ], 'anthropic/claude-sonnet-4.6'), 'anthropic/claude-sonnet-4.6', prefix);
+    const turnAnchors = turn.map((m, i) => Array.isArray(m.content) && m.content.some(p => p && p.cache_control) ? i : -1).filter(i => i >= 0);
+    A.eq(turnAnchors, [0, 2, 5], 'split system + the user turn + the previous reply; the run-context and recall notes are not stamped');
+    A.eq(turn.map(m => m.role), ['system', 'user', 'assistant', 'user', 'user', 'user'], 'the notes ride the user side for Claude');
+    A.eq((JSON.stringify(turn).match(/cache_control/g) || []).length, 4, 'four markers: two system, two tail');
+    process.env.STARNET_STABLE_PREFIX = '0';
+    const legacy = applyCacheControl(provider.preserveClaudeContinuations([
+      { role: 'system', content: prefix + 'tail' }, { role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' },
+      { role: 'system', content: provider.runContextNote('x') }, { role: 'user', content: 'q2' }
+    ], 'anthropic/claude-sonnet-4.6'), 'anthropic/claude-sonnet-4.6', prefix);
+    delete process.env.STARNET_STABLE_PREFIX;
+    A.eq(legacy.map((m, i) => Array.isArray(m.content) && m.content.some(p => p && p.cache_control) ? i : -1).filter(i => i >= 0), [0, 3, 4], 'kill switch STARNET_STABLE_PREFIX=0: the old per-message stamping');
   }
 
   // L2. caching is actually WIRED into the request body for Anthropic models (and absent for others)

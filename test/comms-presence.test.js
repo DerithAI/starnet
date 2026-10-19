@@ -66,8 +66,9 @@ A.eq(C.elapsedOf('w', 9000), 0, 'end zeroes the honest elapsed');
    re-become the old hard gate: no disabled composer, no preflight refusal.) */
 A.ok(/function\s+busyPeerFor\s*\(ws\)[\s\S]{0,700}Workstreams\.list[\s\S]{0,1200}Channels\.isBusy/.test(src),
   'COMMS still resolves a same-agent peer run (the soft indicator\'s source of truth)');
-A.ok(/ALSO RUNNING IN/.test(src) && /VIEW ACTIVE RUN/.test(src),
-  'a session with a busy peer names it and offers a route to the active run');
+// org P25 (2026-10-14): the row reads '<NAME> IS BUSY IN <SESSION>' (who and where) — was 'ALSO RUNNING IN <SESSION>'
+A.ok(/' IS BUSY IN ' \+ shownName\(peer\)\.toUpperCase\(\)/.test(src) && /VIEW ACTIVE RUN/.test(src),
+  'a session with a busy peer names who is busy and where, and offers a route to the active run');
 A.ok(/function\s+maybeEmptyState[\s\S]{0,300}busyPeerFor\(activeWs\)/.test(src),
   'an empty busy-peer session shows the peer row, not competing starter chips');
 // the OLD hard gate must stay dead: nothing may disable the composer off a peer run…
@@ -93,5 +94,15 @@ A.ok(/function\s+hydrateRunTelemetry[\s\S]{0,2200}entry\.children/.test(src), 'r
 A.ok(/workerCalls[\s\S]{0,800}reasoningEffort/.test(src), 'summary exposes worker call count plus actual model/effort');
 A.ok(/function\s+telemetryRun[\s\S]{0,1300}t\.ms/.test(src), 'expanded hierarchy renders each persisted per-tool duration');
 A.ok(/hydrateRunTelemetry\(ws,\s*entry,\s*runId\)[\s\S]{0,300}if\s*\(!arts\.length/.test(src), 'clean artifact-less runs still hydrate telemetry before the quiet recap return');
+
+// ONE run, ONE duration (live walkthrough 2026-10-13): the telemetry hydration rewrote the resolved card with the
+// sidecar's WALL time (approval waits included) under a receipt showing machine time. The card keeps the honest ms and
+// names any approval wait apart.
+{
+  const hyd = src.slice(src.indexOf('  function hydrateRunTelemetry('), src.indexOf('  function hydrateRunTelemetry(') + 2500);
+  A.ok(/if \(started\) card\.dataset\.ms = String\(Math\.max\(0, Math\.round\(Channels\.elapsedOf\(ws\.id, Date\.now\(\)\)/.test(src), 'the resolved card carries the honest (pause-excluded) run time');
+  A.ok(hyd.indexOf('const honest = Number(card.dataset.ms) || 0') >= 0 && hyd.indexOf("bits.push(fmtMs(wall - honest) + ' waiting on you')") >= 0,
+    'hydration shows that honest time and names the approval wait apart — never the wall time as the run time');
+}
 
 A.report('comms-presence.test');

@@ -74,5 +74,10 @@ A.ok(/\(isTask && surface === 'interactive'\) \? \(coreNames\.indexOf\('manual\.
 
 // ---- E. nothing that is gone ----
 for (const gone of [/SKILLS tab/, /APPROVALS hotspot/, /Alt\+A/]) A.ok(!gone.test(full), 'the manual never names ' + gone);
+// org P12 (2026-10-14): TO REVIEW holds away runs and workflow jobs waiting for a rating; an attended chat is rated in COMMS
+// and never lands there, so the manual must not let an agent tell the Commander a chat result waits in TO REVIEW
+A.ok(!/TO REVIEW[^.]{0,80}(finished work|results) waiting/.test(full), 'the manual never calls TO REVIEW every finished result waiting on a verdict');
+A.eq((full.match(/away runs and workflow jobs waiting for the Commander's rating/g) || []).length, 3, 'all three TO REVIEW mentions (MY WORK, the EVERY PLACE entry, OUTBOX vs DELIVERABLES) name what it really holds');
+A.eq((full.match(/chats are rated in COMMS/g) || []).length, 3, 'all three TO REVIEW mentions say chats are rated in COMMS');
 
 A.report('manual-concepts');

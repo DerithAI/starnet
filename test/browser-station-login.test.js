@@ -10,19 +10,21 @@ const { makeBrowserTools } = require('../sidecar/tools/builtin/browser.js');
 (async () => {
   const opened = [], closed = [];
   let finishSignIn; const doneAnswer = new Promise(r => { finishSignIn = r; });
-  const asks = [];
+  const asks = [], fresh = [];
   const drv = { url: '', navigate: async u => { drv.url = u; return u; }, getText: async () => 'secret page text', snapshot: async () => [],
     close: async () => {}, usingPersistentProfile: () => false, tabs: async () => [], alive: () => true, challengeStatus: async () => null };
   const B = makeBrowserTools({
     makeDriver: () => drv, lookup: async () => [{ address: '140.82.112.3', family: 4 }],
     stationLogin: true, preferVisible: true, forceHeadless: false,
-    attendedLogin: { prompt: async ask => { asks.push(ask.tool); return ask.tool === 'browser.login.done' ? doneAnswer : 'allow'; } },
+    attendedLogin: { prompt: async ask => { asks.push(ask.tool); fresh.push(ask.fresh); return ask.tool === 'browser.login.done' ? doneAnswer : 'allow'; } },
     onLoginOpen: v => { opened.push(v.host); }, onLoginClose: v => { closed.push(v.host); }
   });
   const tool = name => B.tools.find(t => t.name === name);
   const login = tool('browser.login').run({ url: 'https://github.com/login' }, {});
   for (let i = 0; i < 50 && asks.indexOf('browser.login.done') < 0; i++) await new Promise(r => setTimeout(r, 10));
   A.eq(asks, ['browser.login', 'browser.login.done'], 'it asks to open the sign-in, then waits for Done');
+  // review app-shell-ui-03: a sign-in is approved once; a standing answer is echoed as once, never as a grant
+  A.eq(fresh, [true, true], 'both sign-in asks are fresh consent (approve once only)');
   A.eq(drv.url, 'https://github.com/login', 'the page opened IN the shared browser (no relaunch)');
   A.eq(opened, ['github.com'], 'and was shown to the Commander');
   let err = ''; try { await tool('browser.get_text').run({}, {}); } catch (e) { err = e.message; }

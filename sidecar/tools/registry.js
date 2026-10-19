@@ -26,6 +26,7 @@
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (schema, toolMod, contextMod) {
   'use strict';
+  const responseProvenance = typeof require === 'function' ? require('./response-provenance.js') : null;
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   const { note: failNote } = (typeof require === 'function') ? require('../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
 
@@ -466,6 +467,9 @@
       let authority = null;
       if (typeof ctx.authorize === 'function') {
         try { authority = await ctx.authorize(call, tool); } catch (e) { authority = { ok: false, reason: 'authority error' }; }
+        // a TIMED-OUT exact confirmation (inputpolicy.js timedOut) is not a refusal: same words as the consent timeout
+        // below, never "denied". Summary 'denied' + "Do NOT retry" keep it a terminal human decision for loop.js.
+        if (authority && authority.ok !== true && authority.timedOut === true) return errResult('approval timed out for ' + call.name + ': the Commander did not answer the approval request in time, so it was NOT run. This was not a refusal — tell them it timed out and that they can ask again to retry. Do NOT retry it yourself.', 'denied');
         if (!authority || authority.ok !== true) return errResult('user-control denied: ' + ((authority && authority.reason) || call.name), 'user-control-denied');
       } else if (tool.impact === 'physical-input' || tool.impact === 'visible-desktop' || tool.impact === 'external-unknown') {
         return errResult('user-control denied: no run authority for ' + tool.impact, 'user-control-denied');
@@ -494,6 +498,12 @@
         try { c = await ctx.consent(call, tool); } catch (e) { c = { allow: false, reason: 'consent error' }; }
         // a TIMED-OUT approval is not a refusal: name it as what happened, or the model reports "you declined"
         if (c && !c.allow && c.timedOut) return errResult('approval timed out for ' + call.name + ': the Commander did not answer the approval request in time, so it was NOT run. This was not a refusal — tell them it timed out and that they can ask again to retry. Do NOT retry it yourself.', 'denied');
+        /* the Commander's own No (reason 'denied', permissions.js): the model repeats a result's framing, and "consent denied"
+           came back to the Commander as "The Commander declined the dispatch" (rc walk 10-14) — they ARE the Commander. Say
+           who said no and how to say it to them; any other refusal (no channel, unattended, a hard line) keeps its reason. */
+        if (c && !c.allow && c.reason === 'denied') return errResult('consent denied for ' + call.name + ': the Commander said no on the approval card, so it was NOT run. Do NOT retry it or work around it; carry on without it. If you mention it, say it to them as "you" ("you declined …").', 'denied');
+        // withdrawn before anyone answered (the run stopped): never a No — the model must not say they declined
+        if (c && !c.allow && c.cancelled) return errResult('approval withdrawn for ' + call.name + ': the request ended before anyone answered it, so it was NOT run. Nobody said no; do NOT retry it yourself.', 'cancelled');
         if (!c || !c.allow) return errResult('consent denied for ' + call.name + (c && c.reason ? ': ' + c.reason : ''), 'denied');
       }
 
@@ -587,6 +597,8 @@
         // RELAYED TAINT (additive): a tool that hands back ANOTHER run's text (team.dispatch / team.subagents …)
         // reports that run's host-proven taint; the run host latches it on the ingesting run (see taint.relayedTaint).
         if (shaped && typeof out.taintedBy === 'string' && out.taintedBy) done.taintedBy = out.taintedBy.slice(0, 200);
+        // Only host-minted provenance survives shaping; body text and ordinary metadata fields are not proof.
+        if (shaped && responseProvenance) responseProvenance.carry(out, done);
         return await notifyPost(done, elapsed());
       } catch (e) {
         /* A TIMEOUT IS NOT A NO-OP (h1 audit 2026-09-22). "timed out" read like "nothing happened", the failure-recovery
@@ -627,6 +639,8 @@
           thrownSummary || (unknownEffect && e.cancelled ? 'cancelled' : (e && e.precondition ? 'precondition' : 'error')),
           parked, fullError.length, fullErrorBytes, e && e.mutationReceipt, e && e.precondition, hostCap);
         if (unknownEffect) failed.effectUnknown = true;
+        // the HOST wrote this refusal (a URL guard, a path rule) — no outside bytes reached the model (taint observation)
+        if (e && e.hostAuthored === true) failed.hostAuthored = true;
         // A refusal that points at a DEFERRED tool (browser.eval -> browser.inspect) must also make it callable: the
         // loop moves revealTools names into the advertised set only when they were already granted and deferred,
         // so this never widens capability. The result stays an error.

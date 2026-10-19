@@ -49,20 +49,24 @@
      cues (a dock button playing open(), a handler's own click()) always win — the delegate only
      fills silence. Selectors are conservative: real controls only, never canvas/window chrome. ---- */
   const CLICKY = 'button, [role="button"], a[href], select, summary, [data-act], .chip, .tab';
+  // COMMS (model selector included — it lives in #chat-panel) sounds like the bottom docks: press(), not click()
+  // composedPath() is snapshotted at dispatch, so it still holds the panel when the handler re-rendered (and
+  // detached) the pressed node — a model row / effort key rebuilds its list before the click bubbles here.
+  const inComms = ev => { const p = ev.composedPath ? ev.composedPath() : []; for (let i = 0; i < p.length; i++) if (p[i] && p[i].id === 'chat-panel') return true; return false; };
   function wireUI() {
     document.addEventListener('click', ev => {
       if (ev.button) return;
       const t = ev.target && ev.target.closest ? ev.target.closest(CLICKY) : null;
       if (!t || t.disabled) return;
       if (Date.now() - SFX._lastAny < 80) return;       // an explicit cue just sounded — yield
-      SFX.click();
+      if (inComms(ev)) SFX.press(); else SFX.click();
     }, { passive: true });                              // bubble phase: after app handlers
     document.addEventListener('change', ev => {
       const t = ev.target;
       if (!t || !t.matches) return;
       if (Date.now() - SFX._lastAny < 80) return;
       if (t.matches('input[type="checkbox"], input[type="radio"]')) SFX.toggle();
-      else if (t.matches('select')) SFX.click();
+      else if (t.matches('select')) { if (inComms(ev)) SFX.press(); else SFX.click(); }
     }, { passive: true });
     document.addEventListener('input', ev => {
       const t = ev.target;

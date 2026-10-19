@@ -21,6 +21,18 @@ const WorldModel = (() => {
      is the plain-node/test case: every prop is placeable on bare deck exactly as before. */
   let propRules = null;
   function setPropRules(fn) { propRules = (typeof fn === 'function') ? fn : null; }
+  /* an unnamed line's LETTER from its INBOX's persistent id (p14 -> N), never its index among surviving lines — pure, so a plan
+     copy (stationbuilder) reserves the same LINE <letter> the floor shows (station.lineLetter is this, for an INBOX). The one rule
+     lives in pipeline.js (Pipeline.lineLetterOf), beside lineNames, so the sidecar names a line by the same letter. */
+  function lineLetterOf(id) {
+    const P = pipelineModule();
+    return P && typeof P.lineLetterOf === 'function' ? P.lineLetterOf(id) : '';
+  }
+  // a line name as the floor SHOWS it (Pipeline.lineWord: 'Line: Alpha 2' and 'alpha 2' are both LINE ALPHA 2) — the one duplicate key
+  function lineNameKeyOf(label) {
+    const P = pipelineModule(), s = String(label == null ? '' : label).replace(/\s+/g, ' ').trim();
+    return !s ? '' : P && P.lineWord ? P.lineWord(s, '') : 'LINE ' + (s.replace(/^line\b[\s:·.\-–—]*/i, '').trim() || s).toUpperCase();
+  }
   // the ONE line-budget normalizer (pipeline.js): the browser global, or the module in node tests. Absent
   // (no compiler loaded) -> limits are dropped rather than stored raw: a number no executor normalized never rides a save.
   // the ONE compiler (browser global or node require) — read lazily so load order never matters
@@ -559,19 +571,23 @@ const WorldModel = (() => {
         { x: 4, y: 0, d: 'W' },
         { x: 3, y: 0, d: 'S' }, { x: 3, y: 1, d: 'S' }, { x: 3, y: 2, d: 'S' }, { x: 3, y: 3, d: 'S' },
       ] },
-    { id: 'sorting_office', grp: 'sort', label: 'SORTING OFFICE', w: 9, h: 5,
-      desc: 'INBOX ▸ FILTER ▸ two BAYs — the filter reads each job and sends code one way, everything else the other.',
+    { id: 'sorting_office', grp: 'sort', label: 'SORTING OFFICE', w: 13, h: 5,
+      desc: 'INBOX ▸ FILTER ▸ two BAYs ▸ two OUTBOXes — the filter sends code one way, everything else the other; each lane ships its result.',
       props: [
         { t: 'intake', x: 0, y: 0, w: 2, h: 2 },
         // pre-configured so a fresh stamp never nags FILTER_NO_DEFAULT: code → east lane, everything else → south
         { t: 'filter', x: 4, y: 1, w: 1, h: 1, block: false, routes: { code: 'E' }, def: 'S' },
         { t: 'bay', x: 7, y: 0, w: 2, h: 2, role: 'ENGINEER' },     // the filter's `code -> E` lane lands here
         { t: 'bay', x: 7, y: 3, w: 2, h: 2, role: 'GENERALIST' },   // the default (everything-else) lane
+        { t: 'outbox', x: 11, y: 0, w: 2, h: 2 },
+        { t: 'outbox', x: 11, y: 3, w: 2, h: 2 },
       ],
       belts: [
         { x: 2, y: 1, d: 'E' }, { x: 3, y: 1, d: 'E' }, { x: 4, y: 1, d: 'E' },
         { x: 5, y: 1, d: 'E' }, { x: 6, y: 1, d: 'E' },
         { x: 4, y: 2, d: 'S' }, { x: 4, y: 3, d: 'S' }, { x: 4, y: 4, d: 'E' }, { x: 5, y: 4, d: 'E' }, { x: 6, y: 4, d: 'E' },
+        { x: 9, y: 1, d: 'E' }, { x: 10, y: 1, d: 'E' },
+        { x: 9, y: 4, d: 'E' }, { x: 10, y: 4, d: 'E' },
       ] },
     /* FULL TRIAGE. The filter's THREE lanes are exactly Classify.getTag's three tags (code /
        research / general) — a routes map naming a tag the classifier never emits would leave a dock
@@ -770,7 +786,7 @@ const WorldModel = (() => {
         { x: 7, y: 0, d: 'W' }, { x: 6, y: 0, d: 'W' }, { x: 5, y: 0, d: 'S' }, { x: 5, y: 1, d: 'S' },
       ] },
     { id: 'code_foundry', grp: 'gate', label: 'CODE FOUNDRY', w: 19, h: 7,
-      desc: 'INBOX ▸ FILTER ▸ ENGINEER ▸ REVIEWER ▸ LOOP GATE ▸ OUTBOX — code work is built, reviewed, and sent back round until the verdict is APPROVED; everything else takes the generalist lane.',
+      desc: 'INBOX ▸ FILTER ▸ ENGINEER ▸ REVIEWER ▸ LOOP GATE ▸ OUTBOX — code work is built, reviewed, and sent back round until the verdict is APPROVED; everything else takes the generalist lane to its own OUTBOX.',
       props: [
         { t: 'intake', x: 0, y: 2, w: 2, h: 2 },
         { t: 'filter', x: 4, y: 3, w: 1, h: 1, block: false, routes: { code: 'E' }, def: 'S' },
@@ -779,6 +795,7 @@ const WorldModel = (() => {
         { t: 'loop', x: 14, y: 3, w: 1, h: 1, block: false, done: 'E', when: 'approved', maxIter: 3 },
         { t: 'outbox', x: 17, y: 2, w: 2, h: 2 },
         { t: 'bay', x: 7, y: 5, w: 2, h: 2, role: 'GENERALIST' },
+        { t: 'outbox', x: 11, y: 5, w: 2, h: 2 },
       ],
       belts: [
         { x: 2, y: 3, d: 'E' }, { x: 3, y: 3, d: 'E' }, { x: 4, y: 3, d: 'E' },
@@ -794,6 +811,7 @@ const WorldModel = (() => {
         // the default (everything-else) lane south to the generalist
         { x: 4, y: 4, d: 'S' }, { x: 4, y: 5, d: 'S' }, { x: 4, y: 6, d: 'E' },
         { x: 5, y: 6, d: 'E' }, { x: 6, y: 6, d: 'E' },
+        { x: 9, y: 6, d: 'E' }, { x: 10, y: 6, d: 'E' },
       ] },
     /* EVERY MECHANIC ON ONE FLOOR: fan-out ▸ barrier ▸ synthesis ▸ review ▸ verdict-gated loop.
        The gate's back lane re-enters at the ANALYST — a failed review redoes the synthesis from
@@ -1199,6 +1217,7 @@ const WorldModel = (() => {
       const nested = batchDepth > 0;
       const inner = nested ? snap() : null;
       const redoKept = nested ? null : redoStack.slice();
+      const seqAtStart = seq;
       snapshot(label);
       batchDepth++;
       let r;
@@ -1207,7 +1226,10 @@ const WorldModel = (() => {
       if (!r || !r.ok) {
         if (nested) restore(inner);
         else { restore(undoStack.pop()); redoStack.length = 0; Array.prototype.push.apply(redoStack, redoKept); }
-        emit([], { global: true });
+        /* a refused batch that never emitted was never SEEN half-done: the restored doc has the same value, so the static bake
+           still holds — re-derive navigation/routing (restore hands in new prop objects), never re-bake the whole station
+           (~2.5 s on a big one) for a move or a nudge the floor refused. One whose inner edits did emit stays global. */
+        emit([], seq === seqAtStart ? { staticBakeUnchanged: true } : { global: true });
       }
       return r;
     }
@@ -1229,6 +1251,24 @@ const WorldModel = (() => {
       subs.forEach(fn => { try { fn(patch); } catch (e) { /* a listener must never break a mutation */ } });
       return patch;
     }
+
+    /* A SEALING AIRLOCK MOVES A WHOLE ROOM'S DOORWAYS (2026-10-13). A room holding a closed or jammed airlock has no
+       boundary doors at all (projectGeometry), so placing, moving, pasting or removing one changes the walls along the
+       room's whole edge — not just under the airlock. Its footprint alone left BUILD MODE's chunked bake showing the old
+       doorways (~6.5k stale pixels sealing one room on the demo station); these edits now also name the rects of every
+       room such an airlock stands, or stood, in. `spots` are airlock-shaped {t, door, x, y}; anything else is skipped. */
+    function sealRoomRects(spots) {
+      const out = [], seen = new Set();
+      for (const s of spots) {
+        if (!s || s.t !== 'airlock' || !doorSeals(s.door)) continue;
+        const rid = roomAt(s.x, s.y);
+        if (!rid || seen.has(rid) || !doc.rooms[rid]) continue;
+        seen.add(rid);
+        for (const r of doc.rooms[rid].rects) out.push({ x1: r.x1, y1: r.y1, x2: r.x2, y2: r.y2 });
+      }
+      return out;
+    }
+    const roomRectsAt = (x, y) => { const rid = roomAt(x, y), rm = rid && doc.rooms[rid]; return rm ? rm.rects.map(r => ({ x1: r.x1, y1: r.y1, x2: r.x2, y2: r.y2 })) : []; };
 
     /* ---------- mutations ---------- */
     function addRoom(opts) {
@@ -1689,7 +1729,7 @@ const WorldModel = (() => {
       applyJunctionCfg(prop, opts);   // a FILTER/MERGER carries its routes/def/bufferSize (inert on other props)
       if (cleanDoor(opts.door)) prop.door = opts.door;   // an AIRLOCK carries its seal state (inert on other props)
       doc.props.push(prop);
-      emit([{ x1: x, y1: y, x2: x + w - 1, y2: y + h - 1 }], { staticBakeUnchanged: t !== 'airlock' });
+      emit([{ x1: x, y1: y, x2: x + w - 1, y2: y + h - 1 }].concat(sealRoomRects([prop])), { staticBakeUnchanged: t !== 'airlock' });
       return { ok: true, id };
     }
 
@@ -1744,7 +1784,7 @@ const WorldModel = (() => {
       const p = doc.props[i];
       doc.props.splice(i, 1);
       if (p.t === 'intake') pruneSendTo();   // an OUTBOX that sent work to this INBOX now sends it nowhere (one undo with the delete)
-      emit([propFootprint(p)], { staticBakeUnchanged: p.t !== 'airlock' });
+      emit([propFootprint(p)].concat(sealRoomRects([p])), { staticBakeUnchanged: p.t !== 'airlock' });
       return { ok: true };
     }
 
@@ -1756,21 +1796,30 @@ const WorldModel = (() => {
       const g = sendGraph();
       return { routing, lines: g ? g.comps.map(c => c.props.slice().sort().join(',')).sort() : null };
     }
-    function moveRouteRefusal(before, links) {
+    /* `lost` = the moved machine's own links its belts could not re-lay (relayLinksOf). The refusal names the real cause (wave 2,
+       worldmodel-09): a connection that appeared, or one of ANOTHER machine's that broke, is the route changing (WOULD_REWIRE — e.g.
+       dropped onto another line's belt); only its own belts lost is ITS BELT CAN'T FOLLOW HERE (LINK_LOST); else the compiled route */
+    function moveRouteRefusal(before, links, lost) {
       const after = moveRouting(), now = currentLinks() || [];
       const pair = l => l.from.prop + '>' + l.to.prop;
-      const expected = new Set(links.map(pair));
-      if (now.some(l => !expected.has(pair(l))) || links.some(l => !now.some(n => pair(n) === pair(l)))
-        || (before && JSON.stringify(before) !== JSON.stringify(after)))
-        return sendFail('WOULD_REWIRE', 'Moving here would change which machines receive the work. Choose clear floor where the same belts can follow.', 'THIS MOVE WOULD CHANGE THE ROUTE');
+      const expected = new Set(links.map(pair)), gone = new Set((lost || []).map(l => l.from + '>' + l.to));
+      const rewire = () => sendFail('WOULD_REWIRE', 'Moving here would change which machines receive the work. Choose clear floor where the same belts can follow.', 'THIS MOVE WOULD CHANGE THE ROUTE');
+      if (now.some(l => !expected.has(pair(l))) || links.some(l => !gone.has(pair(l)) && !now.some(n => pair(n) === pair(l)))) return rewire();
+      if (lost && lost.length) return Object.assign(sendFail('LINK_LOST', 'Its belt finds no clear route from there. Move it where the belt can follow, or take the belt up first.', 'ITS BELT CAN’T FOLLOW HERE'), { lost });
+      if (before && JSON.stringify(before) !== JSON.stringify(after)) return rewire();
       return null;
     }
     const moveMemo = { k: null, v: null };
+    /* the route BEFORE a move is the same for every tile of one drag: compiled once per edit on the live floor and handed to
+       each probe copy (final floor lane M13 — a drag on a big station compiled it twice per tile crossed, 60-170 ms each) */
+    const routeMemo = { k: null, v: null };
+    function liveMoveRouting() { if (routeMemo.k !== seq) { routeMemo.v = moveRouting(); routeMemo.k = seq; } return routeMemo.v; }
     function canMoveProps(ids, dx, dy) {
       const k = JSON.stringify([seq, ids, dx, dy]);
       if (moveMemo.k !== k) {
+        const conv = (ids || []).some(id => { const q = propById(id); return !!(q && CONNECTABLE[q.t]); });
         const probe = makeStation(clone(doc));
-        moveMemo.v = probe.moveProps(ids, dx, dy); moveMemo.k = k;
+        moveMemo.v = probe.moveProps(ids, dx, dy, conv ? { routeBefore: liveMoveRouting() } : null); moveMemo.k = k;
       }
       return clone(moveMemo.v);
     }
@@ -1780,11 +1829,11 @@ const WorldModel = (() => {
       const k = JSON.stringify([seq, id, x, y]);
       if (moveMemo.k !== k) {
         const probe = makeStation(clone(doc));
-        moveMemo.v = probe.moveProp(id, x - p.x, y - p.y); moveMemo.k = k;
+        moveMemo.v = probe.moveProp(id, x - p.x, y - p.y, CONNECTABLE[p.t] ? { routeBefore: liveMoveRouting() } : null); moveMemo.k = k;
       }
       return clone(moveMemo.v);
     }
-    function moveProp(id, dTx, dTy) {
+    function moveProp(id, dTx, dTy, o) {
       const p = propById(id);
       if (!p) return fail('NOT_FOUND', 'no such prop');
       if (!dTx && !dTy) return { ok: true };
@@ -1792,22 +1841,26 @@ const WorldModel = (() => {
       const v = checkProp({ x1: nx, y1: ny, x2: nx + p.w - 1, y2: ny + p.h - 1 }, id, p.t);
       if (!v.ok) return v;
       const linked = CONNECTABLE[p.t] && Array.isArray(currentLinks());
-      const links = linked ? clone(currentLinks()) : [], route = linked ? moveRouting() : null;
+      const links = linked ? clone(currentLinks()) : [], route = linked ? ((o && o.routeBefore) || moveRouting()) : null;
       if (linked && isJunction(p) && links.some(l => l.from.prop !== id && l.to.prop !== id && (l.path || []).some(t => t.x === nx && t.y === ny)))
         return sendFail('ON_BELT', 'A junction cannot move onto another belt: it would take that line. Choose clear floor.', 'ANOTHER BELT RUNS HERE');
       return transact(() => {
       const before = propFootprint(p);
       if (!linked) {
         p.x = nx; p.y = ny;
-        emit([before, propFootprint(p)], { staticBakeUnchanged: p.t !== 'airlock' });
+        emit([before, propFootprint(p)].concat(sealRoomRects([Object.assign({}, p, { x: before.x1, y: before.y1 }), p])), { staticBakeUnchanged: p.t !== 'airlock' });
         return { ok: true };
       }
       // A LINKED MACHINE'S BELTS FOLLOW IT (conveyor-links phase B): each link to another machine is lifted and re-laid
-      // from its new spot, keeping its id and ports; one that finds no route is reported, never silently kept
+      // from its new spot, keeping its id and ports. One that finds no route refuses the move IN ITS OWN WORDS (wave 2,
+      // worldmodel-09 — it read "would change which machines receive the work"), unless the move also rewires another
+      // machine's connections (moveRouteRefusal decides which); the transact puts everything back either way
       const r = relayLinksOf(p, () => { p.x = nx; p.y = ny; });
-      const no = moveRouteRefusal(route, links); if (no) return no;
+      // (set down ON another machine's belt, the move takes that line — the route changing is the cause, whatever its own belts do)
+      const onOther = links.some(l => l.from.prop !== id && l.to.prop !== id && (l.path || []).some(q => q.x >= nx && q.x < nx + p.w && q.y >= ny && q.y < ny + p.h));
+      const no = moveRouteRefusal(route, links, onOther ? null : r.lost); if (no) return no;
       emit([before, propFootprint(p)].concat(r.dirty), { staticBakeUnchanged: true });
-      return { ok: true, relaid: r.relaid, lost: r.lost };
+      return { ok: true, relaid: r.relaid, lost: r.lost };   // (lost is always empty here now: a lost link refused above)
       }, 'MOVE');
     }
     /* MOVE SEVERAL PIECES AS ONE (Build Mode's group move, sweep 2026-10-02): every member shifts by (dTx, dTy) at once, then
@@ -1815,11 +1868,14 @@ const WorldModel = (() => {
        after ALL have moved. Members never block each other: the group moves rigidly, so what overlapped before (a lamp on its
        table) overlaps the same way after. Member by member, a table was refused by its own lamp, and a link re-laid against a
        neighbour that had not moved yet was lost, depending on the order. One undo; refused, nothing changes. */
-    function moveProps(ids, dTx, dTy) {
+    function moveProps(ids, dTx, dTy, o) {
       const ps = Array.from(new Set(ids || [])).map(propById).filter(Boolean);
       if (!ps.length) return fail('NOT_FOUND', 'no such prop');
       if (!dTx && !dTy) return { ok: true };
-      const linksBefore = clone(currentLinks() || []), routeBefore = moveRouting();
+      // the route can only change when a conveyor piece moves (the links and the compiler read LINK_MACHINES and belts only):
+      // a group of plants and lamps never pays for a compile (final floor lane M13)
+      const conv = ps.some(q => CONNECTABLE[q.t]);
+      const linksBefore = conv ? clone(currentLinks() || []) : null, routeBefore = conv ? ((o && o.routeBefore) || moveRouting()) : null;
       return transact(() => {
         const set = new Set(ps.map(q => q.id)), dirty = ps.map(propFootprint);
         const L = Array.isArray(doc.links) ? doc.links : [];
@@ -1848,8 +1904,8 @@ const WorldModel = (() => {
         }
         if (lost.length) return { ok: false, error: 'LINK_LOST', msg: 'moving these together would take up a belt link — move those machines one at a time (their belts follow)', lost };
         for (const id of ends) { const J = propById(id); if (J && isJunction(J)) syncJunctionCfg(J); }
-        const no = moveRouteRefusal(routeBefore, linksBefore); if (no) return no;
-        emit(dirty, { staticBakeUnchanged: !ps.some(q => q.t === 'airlock') });
+        if (conv) { const no = moveRouteRefusal(routeBefore, linksBefore); if (no) return no; }
+        emit(dirty.concat(sealRoomRects(ps.flatMap(q => [q, Object.assign({}, q, { x: q.x - dTx, y: q.y - dTy })]))), { staticBakeUnchanged: !ps.some(q => q.t === 'airlock') });
         return { ok: true, relaid };
       });
     }
@@ -1928,7 +1984,7 @@ const WorldModel = (() => {
       if (doc.belts[beltKey(x, y)] === dir) return { ok: true };   // no-op: don't burn an undo slot
       snapshot();
       doc.belts[beltKey(x, y)] = dir;
-      emit([{ x1: x, y1: y, x2: x, y2: y }]);
+      emit([{ x1: x, y1: y, x2: x, y2: y }], { staticBakeUnchanged: true });   // belts are the conveyor's layer, never the deck bake
       return { ok: true };
     }
     function removeBelt(x, y) {
@@ -1936,7 +1992,7 @@ const WorldModel = (() => {
       if (!doc.belts[k]) return fail('NOT_FOUND', 'no belt here');
       snapshot();
       delete doc.belts[k];
-      emit([{ x1: x | 0, y1: y | 0, x2: x | 0, y2: y | 0 }]);
+      emit([{ x1: x | 0, y1: y | 0, x2: x | 0, y2: y | 0 }], { staticBakeUnchanged: true });
       return { ok: true };
     }
     // batch-remove a set of belt tiles in ONE undo slot (a RECLAIM drag clearing a whole run —
@@ -1948,7 +2004,7 @@ const WorldModel = (() => {
       snapshot();
       const dirty = [];
       for (const [x, y] of hit) { delete doc.belts[beltKey(x, y)]; dirty.push({ x1: x, y1: y, x2: x, y2: y }); }
-      emit(dirty);
+      emit(dirty, { staticBakeUnchanged: true });
       return { ok: true, count: hit.length };
     }
     // lay a straight run a→b; direction = the dominant drag axis (drag east → E belts, etc.)
@@ -1972,7 +2028,7 @@ const WorldModel = (() => {
       if (!changed) { doc.belts = prev; return { ok: true }; }
       doc.belts = prev; snapshot();                                  // snapshot the pre-run state
       for (const [x, y] of tiles) doc.belts[beltKey(x, y)] = dir;
-      emit(dirty);
+      emit(dirty, { staticBakeUnchanged: true });
       return { ok: true, dir, count: tiles.length };
     }
     const canPlaceBeltRun = (a, b) => {
@@ -2095,7 +2151,9 @@ const WorldModel = (() => {
       if (!insertProbe.memo[k]) {
         let r;
         try { r = makeStation(clone(doc)).insertBayBetween(fromId, toId, size); } catch (e) { r = fail('THREW', String((e && e.message) || e)); }
-        insertProbe.memo[k] = (r && r.ok) ? { ok: true, beforeJoin: !!lane.beforeJoin } : (r || fail('NO_ROOM', 'no room for a new BAY here'));
+        // (x, y = where the dry run put the BAY: the same insert on a clone at the same edit lands it there too — the drop ghost
+        // stands THERE, never at the pointer: final floor lane M4)
+        insertProbe.memo[k] = (r && r.ok) ? { ok: true, beforeJoin: !!lane.beforeJoin, x: r.x, y: r.y } : (r || fail('NO_ROOM', 'no room for a new BAY here'));
       }
       return insertProbe.memo[k];
     }
@@ -2115,7 +2173,7 @@ const WorldModel = (() => {
       const before = routingSummary([A.id, B.id]);
       return transact(() => {
         for (const t of lane.tiles) delete doc.belts[beltKey(t.x, t.y)];
-        emit(lane.tiles.map(t => ({ x1: t.x, y1: t.y, x2: t.x, y2: t.y })));
+        emit(lane.tiles.map(t => ({ x1: t.x, y1: t.y, x2: t.x, y2: t.y })), { staticBakeUnchanged: true });
         let tried = 0;
         for (const c of cands) {
           if (tried > 60) break;
@@ -2245,6 +2303,10 @@ const WorldModel = (() => {
       const line = first ? lineOf(first.id) : { ids: [], links: [] };
       if (!line) return fail('NOT_LINKED', 'this line is not on a floor that builds by links');
       const oldLinkIds = new Set(line.links.map(l => l.id));
+      // a NEW labelled INBOX (a shelf line laid out to fit) is numbered past a name another line already shows — judged on the floor
+      // before the edit, the line's own INBOXes excepted (wave 2, worldmodel-07)
+      const own = new Set(line.ids.filter(id => { const q = propById(id); return !!q && q.t === 'intake'; })), fresh = {};
+      for (const n of graph.nodes) if (n.t === 'intake' && !propById(n.id) && typeof n.label === 'string' && n.label.trim() && !(n.label in fresh)) fresh[n.label] = freshIntakeLabel(n.label, own);
       return transact(() => {
         const dirty = [], cell = (x, y) => ({ x1: x, y1: y, x2: x, y2: y });
         const mine = new Set(line.ids), inLine = l => mine.has(l.from.prop) && mine.has(l.to.prop);
@@ -2278,7 +2340,7 @@ const WorldModel = (() => {
             if (n.role && BAY_ROLES[n.role]) p.role = n.role;
             if (typeof n.agentId === 'string' && n.agentId) p.agentId = n.agentId;
             if (n.t === 'bay') stampBrief(p, n.role && (n.brief || n.hands) ? { [n.role]: { does: n.brief, hands: n.hands } } : null);
-            if ((n.t === 'intake' || n.t === 'bay') && typeof n.label === 'string' && n.label.trim()) p.label = n.label.trim().slice(0, 48);
+            if ((n.t === 'intake' || n.t === 'bay') && typeof n.label === 'string' && n.label.trim()) p.label = (n.t === 'intake' && fresh[n.label]) || n.label.trim().slice(0, 48);
             if (n.t === 'intake' && n.limits && typeof n.limits === 'object') {   // through the one normalizer, as a stamp does
               const nl = normalizeLimits(n.limits);
               if (nl) p.limits = { maxHops: nl.maxHops, maxUsdPerMessage: nl.maxUsdPerMessage, maxUsdPerDay: nl.maxUsdPerDay };
@@ -2456,10 +2518,13 @@ const WorldModel = (() => {
       if (!A || toId == null) return null;
       const handoff = sendMergeRefusal(A.id, toId); if (handoff) return handoff;
       const L = currentLinks();
-      if (!Array.isArray(L) || !handsOnTo(handOffs(L, doc.belts, o && o.skip), toId, A.id)) return null;
+      const next = Array.isArray(L) ? handOffs(L, doc.belts, o && o.skip) : null;
+      if (!next || !handsOnTo(next, toId, A.id)) return null;
       if (A.t === 'loop' && !(o && o.strict)) {
+        // an exit counts as the LOOP's back lane only when it really hands work round to the LOOP: an ESCAPE lane laid before
+        // the back lane is read as "back" by the lane-order guess (it runs nowhere upstream), and must not block the real one
         const outs = L.filter(l => l.from && l.from.prop === A.id), back = loopBackLinks(L, doc.belts);
-        if (outs.length && (!outs.some(l => back.has(l.id)) || (o && back.has(o.skip)))) return null;
+        if (outs.length && (!outs.some(l => back.has(l.id) && handsOnTo(next, l.to.prop, A.id)) || (o && back.has(o.skip)))) return null;
         return sendFail('CIRCLE', outs.length ? 'This LOOP already has its back lane. Another upstream exit would close a circle.' : 'Connect the LOOP’s done lane downstream before adding its back lane.', outs.length ? 'LOOP ALREADY HAS A BACK LANE' : 'DRAW THE LOOP DONE LANE FIRST');
       }
       return circleFail((o && o.here) || 'THIS ' + machineWord(A), (o && o.there) || 'THAT ' + machineWord(propById(toId)), A.id, toId);
@@ -2517,18 +2582,62 @@ const WorldModel = (() => {
     // The fallback name follows the persistent INBOX id, never its index among surviving lines.
     function lineLetter(intakeId) {
       const p = propById(intakeId); if (!p || p.t !== 'intake') return null;
-      const digits = /^p([1-9][0-9]*)$/.exec(p.id);
-      let n = digits ? Number(digits[1]) : 0;
-      if (!Number.isSafeInteger(n) || n <= 0) { n = 0; for (const c of String(p.id)) n = (Math.imul(n, 31) + c.charCodeAt(0)) >>> 0; n++; }
-      let name = ''; do { n--; name = String.fromCharCode(65 + n % 26) + name; n = Math.floor(n / 26); } while (n > 0);
-      return name;
+      return lineLetterOf(p.id);
     }
-    // a line as the floor names it: its INBOX's label, else plainly "another line"
-    function lineWord(g, key) {
-      const c = g && g.comps.find(x => x.key === key), P = pipelineModule();
-      for (const iid of (c ? c.intakes : [])) { const ip = propById(iid); if (ip) return P && P.lineWord ? P.lineWord(ip.label, 'LINE ' + lineLetter(iid)) : 'LINE ' + String(ip.label || lineLetter(iid)).toUpperCase(); }
-      return null;
+    /* THE LINE NAME (final floor lane, 2026-10-12) — the ONE rule every surface names a line by (floor plates, SEND TO chips and
+       plates, the Workflow panel, LINE WATCH and crate cards, the Workflows window, the lead's station.layout / refit cards):
+       a line is called by its first NAMED INBOX ('LINE RESEARCH' — Pipeline.lineWord, the compiled line record's own `name`),
+       else LINE <the letter of its first INBOX>. Never by a BAY's step name, never by whatever prop keys the line (a line whose
+       first-placed machine is a BAY is keyed by that BAY). `ref` = a line's id (its compiled lineId = its component key) or one of
+       its INBOXes; null when that names no line with an INBOX on this floor (the caller says so plainly).
+       NO TWO LINES SHARE A NAME (repair): Pipeline.lineNames gives an unnamed line whose LINE <letter> a named line already shows
+       LINE <letter> 2 — a line named 'F' and a new unnamed INBOX p6 (= F) were both LINE F, and the lead could not tell them apart
+       even by room. An INBOX on no line yet shows its own label, else its own letter. */
+    const shownWord = lineNameKeyOf;
+    function intakesOfLine(g, ref) {
+      const id = ref == null ? '' : String(ref), ip = propById(id);
+      const c = g ? (g.comps.find(x => x.key === id) || (ip && ip.t === 'intake' ? g.comps.find(x => x.key === g.lineOfProp[id]) : null)) : null;
+      return c ? c.intakes : ip && ip.t === 'intake' ? [id] : [];
     }
+    const labelled = q => !!q && typeof q.label === 'string' && !!q.label.trim();
+    // an INBOX's own word (an INBOX on no line: its label, else its letter)
+    const ownWord = q => labelled(q) ? shownWord(q.label) : 'LINE ' + lineLetterOf(q.id);
+    // every line on this floor (a component with an INBOX still standing), as Pipeline.lineNames reads a compiled line record
+    function lineRecs(g) {
+      const out = [];
+      for (const c of (g ? g.comps : [])) {
+        const ins = c.intakes.filter(id => propById(id)); if (!ins.length) continue;
+        const named = ins.map(propById).find(labelled);
+        out.push({ lineId: c.key, intakes: ins, name: named ? named.label.trim().slice(0, 48) : '' });
+      }
+      return out;
+    }
+    function shownNames(g) { const P = pipelineModule(); return P && typeof P.lineNames === 'function' ? P.lineNames(lineRecs(g)) : {}; }
+    function lineName(ref) {
+      const g = sendGraph(), id = ref == null ? '' : String(ref), ip = propById(id);
+      const c = g ? (g.comps.find(x => x.key === id) || (ip && ip.t === 'intake' ? g.comps.find(x => x.key === g.lineOfProp[id]) : null)) : null;
+      if (c) return shownNames(g)[c.key] || null;
+      return ip && ip.t === 'intake' ? ownWord(ip) : null;
+    }
+    // …and the name of the line any machine stands on (an OUTBOX, a BAY), by the same rule; null off every line
+    function lineNameAt(propId) { const g = sendGraph(), k = g && g.lineOfProp[propId]; return k ? lineName(k) : null; }
+    /* the duplicate-name key (the same shown word): 'Alpha 2', 'Line: Alpha 2' and 'LINE—Alpha 2' all SHOW as LINE ALPHA 2. A name is
+       taken when another LINE shows it — judged per line, by the name the floor shows it under (lineName), never per INBOX: a second,
+       unnamed INBOX of a named line shows that line's name, so its own letter is no one's (repair — 'Another line is already
+       called LINE D' named a line no plate showed). An INBOX on no line yet counts by its own word. `except` = INBOX ids whose line
+       is skipped (the line being named). */
+    const lineNameKey = label => shownWord(label);
+    function lineNameTaken(label, except) {
+      const k = lineNameKey(label); if (!k) return false;
+      const g = sendGraph(), names = shownNames(g), onLine = new Set();
+      for (const r of lineRecs(g)) {
+        r.intakes.forEach(id => onLine.add(id));
+        if (names[r.lineId] === k && !(except && r.intakes.some(id => except.has(id)))) return true;
+      }
+      return doc.props.some(q => q.t === 'intake' && !onLine.has(q.id) && !(except && except.has(q.id)) && ownWord(q) === k);
+    }
+    // a line as the floor names it, by its component key (sendToRefusal, setSendTo, sendToChoices)
+    const lineWord = (g, key) => g && g.comps.some(x => x.key === key) ? lineName(key) : null;
     // does line `from` reach line `to` through the floor's SEND TO pointers (transitively)?
     function sendReaches(g, from, to) {
       if (!g || !from || !to) return false;
@@ -2584,7 +2693,7 @@ const WorldModel = (() => {
       if (O.t !== 'outbox') return sendFail('BAD_TYPE', 'Only an OUTBOX sends its line’s finished work on.', 'ONLY AN OUTBOX SENDS WORK ON');
       if (intakeId == null || intakeId === '') {
         if (!O.sendTo) return { ok: true, id: O.id, sendTo: null };
-        snapshot();
+        snapshot('SEND TO');   // (undo says UNDID · SEND TO, never SETTINGS — wave 2, worldmodel-11)
         delete O.sendTo;
         emit([propFootprint(O)], { staticBakeUnchanged: true });
         return { ok: true, id: O.id, sendTo: null };
@@ -2594,7 +2703,7 @@ const WorldModel = (() => {
       const g = sendGraph(), toLine = (g && g.lineOfProp[intakeId]) || null;
       if (O.sendTo === intakeId) return { ok: true, id: O.id, sendTo: intakeId, toLine, name: lineWord(g, toLine) };
       const I = propById(intakeId);
-      snapshot();
+      snapshot('SEND TO');
       O.sendTo = intakeId;
       emit([propFootprint(O), propFootprint(I)], { staticBakeUnchanged: true });
       return { ok: true, id: O.id, sendTo: intakeId, toLine, name: lineWord(g, toLine) };
@@ -2670,7 +2779,17 @@ const WorldModel = (() => {
       const r = planBelt(A, B, linked, o);
       if (!r.ok) return r;
       snapshot();   // one undo slot for the whole connection
-      emit(layBelt(A, B, r, linked, null));
+      // a LOOP's real back lane, drawn after its escape lane: the lane-order guess took that escape for the back lane, so name
+      // it as the escape (its port, and the gate's compass config) before the back lane goes down — same undo slot
+      if (A.t === 'loop' && linked) {
+        const L0 = currentLinks(), bk = loopBackLinks(L0, doc.belts), nx = handOffs(L0, doc.belts, null), I = (pipelineModule() || {})._internals;
+        const fake = L0.find(l => l.from && l.from.prop === A.id && bk.has(l.id) && !handsOnTo(nx, l.to.prop, A.id));
+        if (fake && I && typeof I.dirBetween === 'function' && handsOnTo(nx, B.id, A.id)) {
+          const d = I.dirBetween({ x: A.x, y: A.y }, fake.path && fake.path[0]);
+          if (d) { fake.from = Object.assign({}, fake.from, { port: 'esc' }); A.esc = d; }
+        }
+      }
+      emit(layBelt(A, B, r, linked, null), { staticBakeUnchanged: true });
       return { ok: true, count: r.path.length, from: A.t, to: B.t };
     }
     // the next free link id (l1, l2, …) — ids are never reused while a link still holds one
@@ -3107,7 +3226,7 @@ const WorldModel = (() => {
        link's id), and a FILTER's EVERYTHING ELSE lane / a LOOP's DONE lane is the lane the belt already runs on, so the
        line keeps flowing exactly as before (a filter with no default lane is a finding). `o.cfg` = settings carried in
        hand (a pipette / a copy): passes, verdict, wait — never a compass lane from somewhere else. One undo. */
-    const HAND_CFG = ['maxIter', 'when', 'timeoutMin', 'bufferSize'];
+    const HAND_CFG = ['maxIter', 'when', 'timeoutMin', 'bufferSize', 'divide'];   // (+divide: a SPLIT THE JOB splitter picked up keeps dividing — applyJunctionCfg writes it only when literally true)
     function junctionOnBelt(x, y, t, o) {
       if (!JUNCTION[t]) return fail('NOT_JUNCTION', 'only a 1×1 junction goes on a belt');
       const no = junctionOnBeltRefusal(x, y);
@@ -3222,14 +3341,14 @@ const WorldModel = (() => {
         if (!s.ok) return s;
         let toId = typeof to === 'string' ? to : null, made = null;
         if (!toId && doc.belts[tileKey(to.x, to.y)]) { const m = junctionOnBelt(to.x, to.y, 'merger', o); if (!m.ok) return m; toId = made = m.id; }
-        if (!toId) { const d = placeNear(o && o.place, to, s.id); if (!d.ok) return d; toId = made = d.id; }
+        if (!toId) { const d = placeNear(o && o.place, to); if (!d.ok) return d; toId = made = d.id; }
         const c = connectBelt(s.id, toId, o);
         return c.ok ? { ok: true, id: s.id, made, count: c.count } : c;
       }, 'SPLITTER');
     }
     /* stand a new machine of spec {t,w,h,block} at (or as near as fits) tile {x,y} — the empty-floor drop. A 1x1 junction
        goes exactly there; a 2x2 machine tries the four footprints that cover the tile, then a ring further out. */
-    function placeNear(spec, tile, avoidId) {
+    function placeNear(spec, tile) {   // (the spot and its near neighbours only — no avoidance of the source machine: addProp's checks + the belt decide)
       if (!spec || !spec.t) return fail('NO_TYPE', 'pick what goes here');
       const w = Math.max(1, spec.w | 0 || 1), h = Math.max(1, spec.h | 0 || 1), x0 = tile.x | 0, y0 = tile.y | 0;
       const cands = [[x0, y0]];
@@ -3256,7 +3375,7 @@ const WorldModel = (() => {
     // the EMPTY-FLOOR drop: stand a piece there (placeNear) and belt machine fromId into it — one undo
     function dropFrom(fromId, tile, spec, o) {
       return transact(() => {
-        const d = placeNear(spec, tile, fromId);
+        const d = placeNear(spec, tile);
         if (!d.ok) return d;
         const c = connectBelt(fromId, d.id, o);
         return c.ok ? { ok: true, id: d.id, count: c.count } : c;
@@ -3325,7 +3444,7 @@ const WorldModel = (() => {
     function reshapeLink(linkId, x, y, o) {
       const links = clone(currentLinks() || []), l = links.find(q => q.id === linkId);
       if (!l) return fail('NOT_FOUND', 'no such belt');
-      const before = moveRouting();
+      const before = (o && o.routeBefore) || moveRouting();
       return transact(() => {
         const r = relinkTo(linkId, l.to.prop, Object.assign({}, o, { via: { x, y } })); if (!r.ok) return r;
         const after = (currentLinks() || []).find(q => q.id === linkId);
@@ -3338,7 +3457,7 @@ const WorldModel = (() => {
     function canReshapeLink(linkId, x, y, o) {
       const k = JSON.stringify([seq, linkId, x, y, !!(o && o.flip)]);
       if (reshapeMemo.k !== k) {
-        const probe = makeStation(clone(doc)), r = probe.reshapeLink(linkId, x, y, o);
+        const probe = makeStation(clone(doc)), r = probe.reshapeLink(linkId, x, y, Object.assign({}, o, { routeBefore: liveMoveRouting() }));
         const l = r.ok && (probe.links() || []).find(q => q.id === linkId);
         reshapeMemo.v = l ? Object.assign({}, r, { path: l.path }) : r; reshapeMemo.k = k;
       }
@@ -3381,17 +3500,25 @@ const WorldModel = (() => {
        paste). Crew travels only where the caller's `o.agent(id)` says that agent is on this station.
        pasteLines lays a clip EXACTLY as drawn — every machine where the clip says, every belt tile on clear floor (never over
        another belt, never touching a junction already here), then asks the floor's own reconcile whether every pasted belt
-       still joins the two machines it joined and nothing already here was joined into the copy — one undo, all-or-nothing.
+       still joins the two machines it joined and nothing already here was joined into the copy, and asks the compiler whether
+       the copy stays a line of its own (a belt laid beside another line's fuses the two) — one undo, all-or-nothing.
        pasteLinesLaid is the fallback: the same clip as a graph, laid out by the layout engine near the spot (LineEdit). */
     const CLIP_CFG_DIRS = ['def', 'done', 'esc'];
-    const intakeLabelTaken = (label, except) => doc.props.some(q => q.t === 'intake' && !(except && except.has(q.id)) && typeof q.label === 'string' && q.label.trim().toUpperCase() === label.trim().toUpperCase());
-    // a pasted INBOX keeps its line's name, numbered when that name is already a line here ("RESEARCH" → "RESEARCH 2")
+    /* a pasted INBOX keeps its line's name, numbered when that name is already SHOWN here ("RESEARCH" → "RESEARCH 2") — by the one
+       name key setPropLabel refuses on (final floor lane M32: 'Alpha' pasted beside 'Line Alpha 2' made a second LINE ALPHA 2) */
+    //  (numbered by the ONE rule, Pipeline.uniqueLineName — 'BATCH 7' pasted beside itself is BATCH 8, as the lead numbers it; a
+    //  stamped / laid shelf line's INBOX name is numbered the same way: wave 2, worldmodel-07)
     function freshIntakeLabel(label, except) {
-      const base = String(label || '').trim().slice(0, 48);
-      if (!base || !intakeLabelTaken(base, except)) return base;
-      const stem = base.replace(/\s+\d+$/, '');
-      for (let n = 2; n < 100; n++) { const nm = (stem.slice(0, 44) + ' ' + n); if (!intakeLabelTaken(nm, except)) return nm; }
-      return base;
+      const base = String(label || '').trim().slice(0, 48), P = pipelineModule();
+      if (!base) return base;
+      /* side-effect-free first: every name a line can SHOW is some INBOX's own word, or (an unnamed line numbered past a named one)
+         that word + ' N' — so when no INBOX's word is the name or its stem, nothing shows it, and the line graph (which adopts the
+         floor's links on a floor that never had them — a stamp mid-way through a fixture changed how later stamps were linked) is
+         never asked */
+      const key = shownWord(base);
+      if (!doc.props.some(q => q.t === 'intake' && !(except && except.has(q.id)) && (w => w === key || key.startsWith(w + ' '))(ownWord(q)))) return base;
+      if (!lineNameTaken(base, except)) return base;
+      return P && typeof P.uniqueLineName === 'function' ? P.uniqueLineName(base, v => lineNameTaken(v, except)) : base;
     }
     function lineMembers(propId) {
       const line = lineOf(propId);
@@ -3400,9 +3527,44 @@ const WorldModel = (() => {
     function copyLines(ids, o) {
       const opt = o || {}, set = new Set((ids || []).filter(id => propById(id)));
       if (!set.size) return fail('NOTHING', 'select something to copy first');
-      const ps = doc.props.filter(p => set.has(p.id));
       const L = Array.isArray(currentLinks()) ? currentLinks() : [];
-      const ls = L.filter(l => l && l.from && l.to && l.from.prop !== l.to.prop && set.has(l.from.prop) && set.has(l.to.prop));
+      const inClip = L.filter(l => l && l.from && l.to && l.from.prop !== l.to.prop && set.has(l.from.prop) && set.has(l.to.prop));
+      /* an OLD SAVE's hand-off belt never travels as a belt (final floor lane M30 — a hand-off is SEND TO, never a belt: a pasted one
+         fused the two copied lines into ONE line, one budget). Every link the clip carries is judged by the floor's own end rule
+         (beltEndRefusal: no belt out of an OUTBOX, none into an INBOX) — a direct OUTBOX → INBOX belt AND one that runs through a
+         junction (OUTBOX → MERGER → INBOX: repair, it pasted as a belt and fused the copy). Such a link stays behind, and so does
+         every junction left with no way in or no way out once it is gone (with its belts and tile). The hand-off travels as what
+         convertHandoffBelt makes of it: that OUTBOX's SEND TO, when its old belts reach exactly one INBOX in the copy and it sends
+         nowhere already; any other old belt is counted (oldBelts) — said, never pasted. */
+      const tOf = id => (propById(id) || {}).t;
+      const gone = new Set(inClip.filter(l => tOf(l.from.prop) === 'outbox' || tOf(l.to.prop) === 'intake'));
+      const deadJ = new Set();
+      for (let more = gone.size > 0; more;) {
+        more = false;
+        for (const id of set) {
+          const J = propById(id); if (!J || !isJunction(J) || deadJ.has(id)) continue;
+          const mine = inClip.filter(l => l.from.prop === id || l.to.prop === id);
+          if (!mine.some(l => gone.has(l))) continue;   // (only a junction an old hand-off belt runs through)
+          const live = mine.filter(l => !gone.has(l));
+          if (live.some(l => l.to.prop === id) && live.some(l => l.from.prop === id)) continue;
+          deadJ.add(id); live.forEach(l => gone.add(l)); more = true;
+        }
+      }
+      // where each OUTBOX's old belts lead: through the junctions that stay behind, to the INBOXes in the copy they reach
+      const oldSend = {};
+      for (const l of gone) {
+        if (tOf(l.from.prop) !== 'outbox') continue;
+        const reach = oldSend[l.from.prop] = oldSend[l.from.prop] || new Set(), seen = new Set(), q = [l];
+        while (q.length) {
+          const k = q.shift(); if (seen.has(k)) continue; seen.add(k);
+          if (tOf(k.to.prop) === 'intake') reach.add(k.to.prop);
+          else if (deadJ.has(k.to.prop)) for (const n of gone) if (n.from.prop === k.to.prop) q.push(n);
+        }
+      }
+      let oldBelts = 0;
+      for (const l of gone) if (tOf(l.from.prop) !== 'outbox' && tOf(l.to.prop) === 'intake' && !deadJ.has(l.from.prop)) oldBelts++;   // (into an INBOX from a step)
+      const ps = doc.props.filter(p => set.has(p.id) && !deadJ.has(p.id));
+      const ls = inClip.filter(l => !gone.has(l));
       const tiles = new Map();
       for (const l of ls) for (const t of (l.path || [])) { const k = beltKey(t.x, t.y); if (doc.belts[k]) tiles.set(k, { x: t.x, y: t.y, d: doc.belts[k] }); }
       for (const p of ps) if (isJunction(p)) { const k = beltKey(p.x, p.y); if (doc.belts[k]) tiles.set(k, { x: p.x, y: p.y, d: doc.belts[k] }); }
@@ -3430,7 +3592,11 @@ const WorldModel = (() => {
         }
         const cfg = applyJunctionCfg({}, p); if (Object.keys(cfg).length) n.cfg = cfg;
         if (cleanDoor(p.door)) n.door = p.door;
-        if (p.t === 'outbox' && typeof p.sendTo === 'string' && p.sendTo) { if (set.has(p.sendTo)) n.sendTo = p.sendTo; else dropped++; }
+        const old = p.t === 'outbox' && oldSend[p.id] ? [...oldSend[p.id]] : [];
+        const own = p.t === 'outbox' && typeof p.sendTo === 'string' && p.sendTo ? p.sendTo : null;
+        const sendTo = own || (old.length === 1 ? old[0] : null);
+        if (oldSend[p.id] && (own || old.length !== 1)) oldBelts++;   // (an old hand-off the copy cannot carry as its SEND TO)
+        if (sendTo) { if (set.has(sendTo)) n.sendTo = sendTo; else dropped++; }
         return n;
       });
       const links = ls.map(l => {
@@ -3440,7 +3606,7 @@ const WorldModel = (() => {
         return { id: l.id, from, to: { node: l.to.prop }, path: (l.path || []).map(t => ({ x: t.x - x0, y: t.y - y0, d: t.d })) };
       });
       const belts = Array.from(tiles.values()).map(t => ({ x: t.x - x0, y: t.y - y0, d: t.d }));
-      return { ok: true, clip: { v: 1, w: x1 - x0 + 1, h: y1 - y0 + 1, x0, y0, n: nodes.length, nb: links.length, nodes, links, belts, dropped, crewLeft } };
+      return { ok: true, clip: { v: 1, w: x1 - x0 + 1, h: y1 - y0 + 1, x0, y0, n: nodes.length, nb: links.length, nodes, links, belts, dropped, oldBelts, crewLeft } };
     }
     /* may clip go down with its top-left on tile (ax, ay)? Pure (reads the floor, writes nothing): every machine and every belt
        tile is asked of the floor, and EVERY spot that will not take its piece is reported (the ghost paints those red) —
@@ -3507,6 +3673,7 @@ const WorldModel = (() => {
       if (p.t === 'bay' && typeof n.label === 'string' && n.label.trim()) p.label = n.label.trim().slice(0, 48);
       if (p.t === 'intake') {
         if (typeof n.label === 'string' && n.label.trim()) { const nm = freshIntakeLabel(n.label, newLabels); if (nm) p.label = nm; }
+        if (newLabels) newLabels.delete(p.id);   // (named now: the next pasted INBOX's name is judged against this one's)
         if (n.limits && typeof n.limits === 'object') { const nl = normalizeLimits(n.limits); if (nl) p.limits = { maxHops: nl.maxHops, maxUsdPerMessage: nl.maxUsdPerMessage, maxUsdPerDay: nl.maxUsdPerDay }; }
       }
       if (n.cfg) applyJunctionCfg(p, n.cfg);
@@ -3522,7 +3689,7 @@ const WorldModel = (() => {
       return transact(() => {
         const map = {}, made = [], dirty = [], cell = (x, y) => ({ x1: x, y1: y, x2: x, y2: y }), fresh = new Set();
         for (const i of clipOrder(clip)) {
-          const n = clip.nodes[i], p = clipProp(n, ax, ay, o, fresh);
+          const n = clip.nodes[i], p = clipProp(n, ax, ay, o, null);   // (each piece is named before it goes down: the copy's earlier INBOXes already count)
           const v = checkProp(propFootprint(p), null, p.t);
           if (!v.ok) return Object.assign(v, { short: 'A PIECE OF THE COPY CANNOT STAND THERE' });
           doc.props.push(p); propIdx = null; propIdIdx = null; fresh.add(p.id);
@@ -3554,6 +3721,12 @@ const WorldModel = (() => {
           }
           const ours = new Set(placed.map(l => l.id));
           if (after.some(q => !ours.has(q.id) && (mine.has(q.from.prop) || mine.has(q.to.prop)))) return Object.assign(fail('JOINS_FLOOR', 'the copy would join a belt already here'), { short: 'IT WOULD JOIN A BELT ALREADY HERE' });
+          // …and no belt of the copy runs beside another line's: the compiler joins belts that touch into ONE line (one line id,
+          // one budget — the 10-09 P0), so the copy must stay a line of its own (the check applyLineLayout makes)
+          sendMemo.k = null;
+          const comps = sendGraph();
+          if (comps && comps.comps.some(c => c.props.some(id => mine.has(id)) && c.props.some(id => !mine.has(id))))
+            return sendFail('JOINS_FLOOR', 'the copy would join another line: a belt of it runs right beside that line', 'ANOTHER LINE IS TOO CLOSE');
           for (const id of made) { const J = propById(id); if (J && isJunction(J)) syncJunctionCfg(J); }
           // …and a copy never brings a work-line circle onto the floor (a legacy floor's — NO CIRCLE BUT A LOOP'S)
           const cl = circleAmong(currentLinks() || [], doc.belts, mine);
@@ -3561,7 +3734,7 @@ const WorldModel = (() => {
         }
         // SEND TO inside the copy points at the copy's own INBOX
         for (const n of clip.nodes) if (n.sendTo && map[n.sendTo] && map[n.oid]) { const P = propById(map[n.oid]); if (P && P.t === 'outbox') P.sendTo = map[n.sendTo]; }
-        emit(dirty, { staticBakeUnchanged: !clip.nodes.some(n => n.t === 'airlock') });
+        emit(dirty.concat(sealRoomRects(made.map(propById))), { staticBakeUnchanged: !clip.nodes.some(n => n.t === 'airlock') });
         return { ok: true, ids: made, map, links: placed.map(l => l.id), belts: (clip.belts || []).length };
       }, (o && typeof o.label === 'string' && o.label) || 'PASTE');
     }
@@ -3611,15 +3784,19 @@ const WorldModel = (() => {
           const cfg = Object.assign({}, n.cfg); delete cfg.routes; for (const f of CLIP_CFG_DIRS) delete cfg[f];
           return Object.assign({}, n, { cfg });
         };
+        /* the layout laid each INBOX with the clip's raw name (the original line's own): unnamed first, so each copied line is
+           named in turn against the floor and the copy's earlier lines — by the name each LINE shows (lineNameTaken), the way a
+           plain paste names each INBOX before it goes down */
+        for (const id of fresh) { const q = propById(id); if (q && q.t === 'intake') delete q.label; }
         clip.nodes.forEach(n => {
           const p = propById(map[n.oid]); if (!p) return;
           const keep = { x: p.x, y: p.y, w: p.w, h: p.h };
-          clipExtras(p, laidNode(n), o, fresh);
+          clipExtras(p, laidNode(n), o, null);
           Object.assign(p, keep);   // (a laid-out machine keeps the spot the engine gave it)
           if (n.sendTo && map[n.sendTo] && p.t === 'outbox') p.sendTo = map[n.sendTo];
         });
         emit(made.map(id => propFootprint(propById(id))), { staticBakeUnchanged: true });
-        return { ok: true, ids: made, map, laid: true };
+        return { ok: true, ids: made, map, links: (r.links || []).slice(), laid: true };   // (the belts the layout laid, as pasteLines reports its own)
       }, 'PASTE');
     }
     /* DELETE LINE: every machine of the line holding propId, every belt between them (the tiles no other line rides) and the
@@ -3711,6 +3888,10 @@ const WorldModel = (() => {
       if (!v.ok) return v;
       tx |= 0; ty |= 0;
       const ov = (opts && typeof opts === 'object') ? opts : {};
+      // a pre-labeled INBOX (ALLOWANCE DESK) is numbered past a name the floor already shows — judged on the floor BEFORE the stamp
+      // (stamped twice it made two LINE ALLOWANCE that setPropLabel would refuse: wave 2, worldmodel-07)
+      const fresh = {};
+      for (const s of bp.props) if (s.t === 'intake' && typeof s.label === 'string' && s.label.trim() && !(s.label in fresh)) fresh[s.label] = freshIntakeLabel(s.label);
       snapshot();   // ONE undo slot for the whole line
       const ids = [], dirty = [];
       for (const s of bp.props) {
@@ -3720,7 +3901,7 @@ const WorldModel = (() => {
         /* an INBOX may stamp pre-labeled and pre-budgeted (ALLOWANCE DESK, 2026-08-30) — through the
            SAME normalizer setPropLimits uses, so a blueprint can never write a number the executor
            would read differently. Both fields already round-trip via migrate()'s prop whitelist. */
-        if (s.t === 'intake' && typeof s.label === 'string' && s.label.trim()) prop.label = s.label.trim().slice(0, 48);
+        if (s.t === 'intake' && typeof s.label === 'string' && s.label.trim()) prop.label = fresh[s.label] || s.label.trim().slice(0, 48);
         if (s.t === 'intake' && s.limits) {
           const nl = normalizeLimits(s.limits);
           if (nl) prop.limits = { maxHops: nl.maxHops, maxUsdPerMessage: nl.maxUsdPerMessage, maxUsdPerDay: nl.maxUsdPerDay };
@@ -3741,10 +3922,24 @@ const WorldModel = (() => {
         doc.belts[beltKey(x, y)] = b.d;
         dirty.push({ x1: x, y1: y, x2: x, y2: y });
       }
-      emit(dirty);
+      emit(dirty.concat(sealRoomRects(doc.props.filter(q => ids.includes(q.id)))), { staticBakeUnchanged: !bp.props.some(s => s.t === 'airlock') });   // machines + belts only, unless it brings a door
       return { ok: true, ids, props: bp.props.length, belts: bp.belts.length };
     }
 
+    /* WHERE A ROOM'S NAME IS PAINTED (2026-10-13, Andrew: "a huge delay in build mode"). The bake reads a room's name in one
+       place: the faint plate it stencils at the bottom-right corner of the room's bounding box (StationBake buildBase, a
+       24-char cap at 7px — well inside one chunk reach of that corner). A rename used to emit [] and re-bake the whole
+       station (~6 s on a large floor); it now names that corner, so only the chunks around the plate re-bake. */
+    /* ...AND ONLY THE TEXT (2026-10-14, the busy-station walk: a rename still froze BUILD MODE ~0.4 s re-baking two chunks).
+       The plate is its own pixels and nothing else: 24 chars at 7px written rightward from 28px inside the box's right edge,
+       baseline 4px above its bottom — tiles x2-3..x2+12 of its bottom row hold it in any font (<= 7px a glyph). No wall
+       paints differently for a name, so the rect carries no wall reach (pad 0; StationBake pads every other rect by its
+       dirty reach): one chunk instead of two around most plates. */
+    function nameplateRect(rm) {
+      let x2 = -Infinity, y2 = -Infinity;
+      for (const r of rm.rects) { if (r.x2 > x2) x2 = r.x2; if (r.y2 > y2) y2 = r.y2; }
+      return { x1: x2 - 3, y1: y2, x2: x2 + 12, y2, pad: 0 };
+    }
     function renameRoom(id, name) {
       const rm = doc.rooms[id];
       if (!rm) return fail('NOT_FOUND', 'no such room');
@@ -3752,7 +3947,7 @@ const WorldModel = (() => {
       if (nm === rm.name) return { ok: true };   // no-op: don't burn an undo slot / wipe redo
       snapshot();
       rm.name = nm;
-      emit([]);
+      emit([nameplateRect(rm)]);
       return { ok: true };
     }
 
@@ -3806,11 +4001,57 @@ const WorldModel = (() => {
       let belts = 0;
       for (const k in ba) if (ba[k] !== bb[k] && rects.length < 400) { const q = k.split(','); rects.push({ x1: +q[0], y1: +q[1], x2: +q[0], y2: +q[1] }); belts++; }
       for (const k in bb) if (!(k in ba) && rects.length < 400) { const q = k.split(','); rects.push({ x1: +q[0], y1: +q[1], x2: +q[0], y2: +q[1] }); belts++; }
+      /* ROOMS SAY THEIR NAME TOO (walk 10-14: undoing a stamped room floated a generic UNDID · EDIT): a room that came or went is
+         ROOM (a hallway HALLWAY) — it outranks the pieces that left or returned with it; a room only renamed is ROOM NAME, only
+         re-floored FLOOR, only re-clad WALLS, otherwise ROOM. `at` = the changed rooms' rects, where the word floats when no
+         machine or belt moved (never fed to the re-bake: restoreEmit reads the rooms itself). */
+      const ra = a.rooms || {}, rb = b.rooms || {}, at = [], roomCame = [], roomChanged = [];
+      for (const id of new Set(Object.keys(ra).concat(Object.keys(rb)))) {
+        const x = ra[id], y = rb[id];
+        if (x && y && JSON.stringify(x) === JSON.stringify(y)) continue;
+        if (!x || !y) roomCame.push(x || y); else roomChanged.push([x, y]);
+        for (const r of ((x && x.rects) || []).concat((y && y.rects) || [])) if (at.length < 60) at.push({ x1: r.x1, y1: r.y1, x2: r.x2, y2: r.y2 });
+      }
+      const ROOM_PART = { name: 'ROOM NAME', floorStyle: 'FLOOR', floorMat: 'FLOOR', floorPaint: 'FLOOR', wallStyle: 'WALLS', wallMat: 'WALLS', hullStyle: 'WALLS', hullMat: 'WALLS' };
+      const partOf = ([x, y]) => { const w = new Set(); for (const k of new Set(Object.keys(x).concat(Object.keys(y)))) if (JSON.stringify(x[k]) !== JSON.stringify(y[k])) w.add(ROOM_PART[k] || 'ROOM'); return w.size === 1 ? [...w][0] : 'ROOM'; };
+      const roomWord = roomCame.length + roomChanged.length > 1 ? (roomCame.length + roomChanged.length) + ' ROOMS'
+        : roomCame.length ? (roomCame[0].kind === 'corridor' ? 'HALLWAY' : 'ROOM')
+        : roomChanged.length ? partOf(roomChanged[0]) : '';
       const one = came.length + went.length === 1 ? (came[0] || went[0]) : null;
-      const word = one ? (LABEL_OF[one.t] || String(one.t).toUpperCase().replace(/_/g, ' '))
+      const word = roomCame.length ? roomWord
+        : one ? (LABEL_OF[one.t] || String(one.t).toUpperCase().replace(/_/g, ' '))
         : (came.length + went.length > 1) ? (came.length + went.length) + ' PIECES'
-        : moved.length ? 'MOVE' : belts ? 'BELT' : rects.length ? 'SETTINGS' : 'EDIT';
-      return { rects, word };
+        : moved.length ? 'MOVE' : belts ? 'BELT' : rects.length ? 'SETTINGS' : roomWord || 'EDIT';
+      return { rects, word, at };
+    }
+    /* AN UNDO RE-BAKES ONLY WHAT IT PUT BACK (2026-10-13, Andrew: "a huge delay in build mode"). undo()/redo() used to
+       emit [] — re-bake the whole station — for every slot, so Ctrl+Z on one stool froze BUILD MODE for ~6 s on a
+       218-prop floor. The patch now says what the forward edit said, read off the two snapshots: a slot that changed only
+       machines, belts, links or pipeline edges (no airlock) leaves the bake alone; changed rooms re-bake their own rects,
+       old and new (a renamed one its name plate too); anything the bake reads station-wide — a re-clad shell, the
+       trunk/spawn rooms, the room order, any airlock (a sealed room drops every doorway it has) — is a global edit, so
+       every chunk re-bakes exactly as before. */
+    function restoreEmit(a, b, d) {
+      const same = (x, y) => JSON.stringify(x === undefined ? null : x) === JSON.stringify(y === undefined ? null : y);
+      const everything = () => emit([], { global: true });
+      if (!same(a.meta, b.meta)) return everything();
+      const ra = a.rooms || {}, rb = b.rooms || {};
+      const common = id => id in ra && id in rb;
+      if (!same((a.order || []).filter(common), (b.order || []).filter(common))) return everything();
+      const air = new Map();   // airlocks that came, went, moved or changed state
+      for (const p of (a.props || [])) if (p.t === 'airlock') air.set(p.id, JSON.stringify(p));
+      for (const p of (b.props || [])) if (p.t === 'airlock') { const k = JSON.stringify(p); if (air.get(p.id) === k) air.delete(p.id); else air.set(p.id, k); }
+      if (air.size) return everything();
+      const rects = [];
+      for (const id of new Set(Object.keys(ra).concat(Object.keys(rb)))) {
+        const x = ra[id], y = rb[id];
+        if (same(x, y)) continue;
+        if (x && y && ((x.hullStyle || null) !== (y.hullStyle || null) || (x.hullMat || null) !== (y.hullMat || null))) return everything();
+        if (x && y && x.name !== y.name) rects.push(nameplateRect(x), nameplateRect(y));
+        if (x && y && same(Object.assign({}, x, { name: null }), Object.assign({}, y, { name: null }))) continue;   // only renamed: just the plate
+        for (const r of ((x && x.rects) || []).concat((y && y.rects) || [])) rects.push({ x1: r.x1, y1: r.y1, x2: r.x2, y2: r.y2 });
+      }
+      return rects.length ? emit(rects.concat(d.rects)) : emit(d.rects, { staticBakeUnchanged: true });
     }
     function undo() {
       if (!undoStack.length) return fail('NOTHING', 'nothing to undo');
@@ -3819,8 +4060,8 @@ const WorldModel = (() => {
       redoStack.push(cur);
       const d = editDiff(cur, back);
       restore(back);
-      emit([]);   // empty dirty = full re-bake
-      return { ok: true, label: back._label || d.word, rects: d.rects };
+      restoreEmit(cur, back, d);
+      return { ok: true, label: back._label || d.word, rects: d.rects.length ? d.rects : d.at };   // a room-only edit floats over its room
     }
     function redo() {
       if (!redoStack.length) return fail('NOTHING', 'nothing to redo');
@@ -3829,8 +4070,8 @@ const WorldModel = (() => {
       undoStack.push(cur);
       const d = editDiff(cur, fwd);
       restore(fwd);
-      emit([]);
-      return { ok: true, label: fwd._label || d.word, rects: d.rects };
+      restoreEmit(cur, fwd, d);
+      return { ok: true, label: fwd._label || d.word, rects: d.rects.length ? d.rects : d.at };
     }
     const canUndo = () => undoStack.length > 0;
     const canRedo = () => redoStack.length > 0;
@@ -4191,7 +4432,7 @@ const WorldModel = (() => {
       if (aid && !AID_RE.test(aid)) return fail('BAD_AGENT', 'agentId must match ' + AID_RE);
       snapshot();
       if (aid) p.agentId = aid; else delete p.agentId;   // empty string unbinds
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, agentId: aid || null };
     }
     // cycle an AIRLOCK's door state (open|closed|jammed) — the room-seal (merge/staging) handle. Mirrors
@@ -4204,7 +4445,7 @@ const WorldModel = (() => {
       if (!s) return fail('BAD_STATE', 'door state must be open|closed|jammed');
       snapshot();
       if (s === 'open') delete p.door; else p.door = s;
-      emit([]);
+      emit([propFootprint(p)].concat(roomRectsAt(p.x, p.y)));   // sealing or opening changes that room's doorways, all round its edge
       return { ok: true, id: propId, door: p.door || 'open' };
     }
     // set/replace a FILTER's routes+def or a MERGER's bufferSize (cfg null/empty clears). Mirrors assignPropAgent.
@@ -4233,7 +4474,7 @@ const WorldModel = (() => {
       if (!p) return fail('NOT_FOUND', 'no such prop');
       if (p.t !== 'splitter') return fail('BAD_TYPE', 'only a SPLITTER divides a job');
       if (!!p.divide === !!on) return { ok: true, id: p.id, divide: !!on, already: true };
-      snapshot();
+      snapshot('SPLIT THE JOB');
       if (on) p.divide = true; else delete p.divide;
       emit([propFootprint(p)], { staticBakeUnchanged: true });
       return { ok: true, id: p.id, divide: !!on };
@@ -4251,7 +4492,7 @@ const WorldModel = (() => {
         const lanes = junctionOutLanes(p);
         if (lanes.length) doc.links = doc.links.map(l => { const o = lanes.find(q => q.link === l); return o ? Object.assign({}, l, { from: junctionPort(p, o.dir) }) : l; });
       }
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, routes: p.routes || null, def: p.def || null, bufferSize: p.bufferSize || null, timeoutMin: p.timeoutMin || null, maxIter: p.maxIter || null, done: p.done || null, when: p.when || null };
     }
     // bind/clear the connectorId on a CONNECTOR PORTAL — WHICH MCP server this gateway grants (per-instance).
@@ -4263,7 +4504,7 @@ const WorldModel = (() => {
       snapshot();
       const id = (connectorId == null ? '' : String(connectorId)).trim();
       if (id) p.connectorId = id; else delete p.connectorId;
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, connectorId: p.connectorId || null };
     }
     // bind/clear the pluginId on a PLUGIN TERMINAL — WHICH plugin's tools it grants and whose window it opens.
@@ -4276,7 +4517,7 @@ const WorldModel = (() => {
       if (id && !PLUGIN_ID_RE.test(id)) return fail('BAD_PLUGIN', 'that is not a plugin id');
       snapshot();
       if (id) p.pluginId = id; else delete p.pluginId;
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, pluginId: p.pluginId || null };
     }
     /* PLACE A PLUGIN'S TERMINAL (install places it — Andrew 2026-09-29): a REAL placed prop, bound to the plugin, in
@@ -4305,7 +4546,7 @@ const WorldModel = (() => {
             if (!added.ok) continue;
             const p = doc.props.find(q => q.id === added.id);
             p.pluginId = pid;
-            emit([{ x1: x, y1: y, x2: x, y2: y + 1 }]);
+            emit([{ x1: x, y1: y, x2: x, y2: y + 1 }], { staticBakeUnchanged: true });
             return { ok: true, id: added.id, x, y, roomId };
           }
         }
@@ -4326,7 +4567,7 @@ const WorldModel = (() => {
       if ((p.role || null) === r) return { ok: true, id: propId, role: r };
       snapshot();
       if (r) p.role = r; else delete p.role;
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, role: r };
     }
     function setPropBrief(propId, brief) {
@@ -4337,7 +4578,7 @@ const WorldModel = (() => {
       if ((p.brief || '') === b || (!p.brief && !b)) return { ok: true, id: propId, brief: p.brief || null };   // no-op: no undo slot, no re-emit
       snapshot();
       if (b) p.brief = b; else delete p.brief;
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, brief: p.brief || null };
     }
     /* set/clear a BAY's HANDS OFF phrase (workflow panel, 2026-09-22) — the short "what this step hands to the
@@ -4351,7 +4592,7 @@ const WorldModel = (() => {
       if ((p.hands || '') === h || (!p.hands && !h)) return { ok: true, id: propId, hands: p.hands || null };
       snapshot();
       if (h) p.hands = h; else delete p.hands;
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, hands: p.hands || null };
     }
     // set/clear an INTAKE's line name (step editor) — pure legibility (the finish-the-line header + the
@@ -4362,12 +4603,15 @@ const WorldModel = (() => {
       if (p.t !== 'intake' && p.t !== 'bay') return fail('BAD_TYPE', 'only an INBOX or BAY has a name');
       const l = (label == null ? '' : String(label)).trim().slice(0, 48);
       if ((p.label || '') === l || (!p.label && !l)) return { ok: true, id: propId, label: p.label || null };
-      const nameKey = v => String(v || '').trim().replace(/^line\s+/i, '').replace(/\s+/g, ' ').toUpperCase();
-      if (p.t === 'intake' && nameKey(l) && doc.props.some(q => q.id !== p.id && q.t === 'intake' && nameKey(q.label) === nameKey(l)))
-        return sendFail('DUPLICATE_NAME', 'Another INBOX already uses that line name. Choose a distinct name.', 'THAT LINE NAME IS ALREADY IN USE');
-      snapshot();
+      // one name per line, judged by what the floor SHOWS (lineNameTaken — 'Line: Alpha 2' is LINE ALPHA 2, and an unnamed line
+      // shows LINE <its letter>); this INBOX and the others of its own line never block it (final floor lane M32 / R30)
+      if (p.t === 'intake' && l) {
+        const own = new Set([p.id].concat(intakesOfLine(sendGraph(), p.id)));
+        if (lineNameTaken(l, own)) return sendFail('DUPLICATE_NAME', 'Another line is already called ' + lineNameKey(l) + '. Choose a distinct name.', 'THAT LINE NAME IS ALREADY IN USE');
+      }
+      snapshot('NAME');   // (UNDID · NAME)
       if (l) p.label = l; else delete p.label;
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, label: p.label || null };
     }
     function setPropProject(propId, projectRoot) {
@@ -4382,13 +4626,13 @@ const WorldModel = (() => {
       if (targets.every(q => (q.projectRoot || '') === root)) return { ok: true, projectRoot: root };
       snapshot();
       for (const q of targets) { if (root) q.projectRoot = root; else delete q.projectRoot; }
-      emit(targets.map(q => ({ x1: q.x, y1: q.y, x2: q.x + (q.w || 1) - 1, y2: q.y + (q.h || 1) - 1 })));
+      emit(targets.map(q => ({ x1: q.x, y1: q.y, x2: q.x + (q.w || 1) - 1, y2: q.y + (q.h || 1) - 1 })), { staticBakeUnchanged: true });
       return { ok: true, projectRoot: root };
     }
     /* set/clear an INTAKE's LINE BUDGET (REFIT flow card, 2026-08-21): { maxHops, maxUsdPerMessage, maxUsdPerDay }.
        Normalized + clamped through the ONE shared normalizer (Pipeline.normalizeLineLimits) so the doc never
-       holds a number the executor would read differently; null/empty clears (= executor defaults). Mirrors
-       setPropLabel: only an INBOX carries it, no-op edits take no undo slot. */
+       holds a number the executor would read differently; null/empty clears (= executor defaults). Only an
+       INBOX carries it; like setPropLabel, no-op edits take no undo slot. */
     function setPropLimits(propId, limits) {
       const p = doc.props.find(q => q.id === propId);
       if (!p) return fail('NOT_FOUND', 'no such prop');
@@ -4399,7 +4643,7 @@ const WorldModel = (() => {
       if (same) return { ok: true, id: propId, limits: p.limits || null, clamped: (norm && norm.clamped) || [] };
       snapshot();
       if (next) p.limits = next; else delete p.limits;
-      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }]);
+      emit([{ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }], { staticBakeUnchanged: true });
       return { ok: true, id: propId, limits: p.limits || null, clamped: (norm && norm.clamped) || [] };
     }
     const propsByType = t => doc.props.filter(p => p.t === t).map(clone);
@@ -4418,7 +4662,7 @@ const WorldModel = (() => {
       if (JSON.stringify(clean) === JSON.stringify(doc.edges || [])) return { ok: true, count: clean.length };
       snapshot();
       doc.edges = clean;
-      emit([]);
+      emit([], { staticBakeUnchanged: true });
       return { ok: true, count: clean.length };
     }
     function addPipelineEdge(edge) {
@@ -4434,7 +4678,7 @@ const WorldModel = (() => {
       if (next.length === before.length) return fail('NOT_FOUND', 'no such edge');
       snapshot();
       doc.edges = next;
-      emit([]);
+      emit([], { staticBakeUnchanged: true });
       return { ok: true, count: next.length };
     }
     /* The agent's CAPABILITY room — the capability-isolation seam. REMOTE-BAY RULING (2026-08-14, Andrew):
@@ -4648,7 +4892,7 @@ const WorldModel = (() => {
       },
       // mutations
       addRoom, placeHallway, removeRoom, moveRoom, moveRooms, resizeRoom, setRoomKind, setFloor, setMaterial, setDeck, setWalls, setHull, paintTiles, renameRoom,
-      addProp, removeProp, moveProp, moveProps, canMoveProp, canMoveProps, rotateProp, faceProp, mirrorProp, assignPropAgent, assignDesk, ensureWorkstation, configureJunction, swapJoinerMerger, setSplitDivide, bindConnector, bindPlugin, placePluginTerminal, setDoorState, setPropProject, setPropBrief, setPropRole, setPropHands, setPropLabel, setPropLimits, setSendTo, sendToRefusal, sendToChoices, lineLetter, oldHandoffBelts, convertHandoffBelt,
+      addProp, removeProp, moveProp, moveProps, canMoveProp, canMoveProps, rotateProp, faceProp, mirrorProp, assignPropAgent, assignDesk, ensureWorkstation, configureJunction, swapJoinerMerger, setSplitDivide, bindConnector, bindPlugin, placePluginTerminal, setDoorState, setPropProject, setPropBrief, setPropRole, setPropHands, setPropLabel, setPropLimits, setSendTo, sendToRefusal, sendToChoices, lineLetter, lineName, lineNameAt, lineNameKey, lineNameTaken, oldHandoffBelts, convertHandoffBelt,
       setBelt, removeBelt, removeBelts, placeBeltRun, connectBelt, connectionPreview, hookedBelts, stampBlueprint, insertBayBetween, canInsertBayBetween, transact, lineGraph, applyLineLayout, blueprintGraph,
       // agent-bay binding queries
       propsByType, propsByAgent, pipelineEdges, setPipelineEdges, addPipelineEdge, removePipelineEdge, agentRoomId, bayObjects,
@@ -4797,6 +5041,10 @@ const WorldModel = (() => {
     BAY_ROLES, bayRoleInfo: r => BAY_ROLES[r] || null,
     // a clip (station.copyLines) turned a quarter turn clockwise per turn — pure (THE HAND part 2: R turns a paste in hand)
     rotateClip, clipTurns,
+    // an unnamed line's letter from its INBOX id (pure — station.lineLetter for an INBOX)
+    lineLetterOf, lineNameKey: lineNameKeyOf,
+    // the one numbering rule for a new line's name (Pipeline.uniqueLineName, reached through here by stationbuilder, which takes WM)
+    uniqueLineName: (wanted, taken) => { const P = pipelineModule(); return P && typeof P.uniqueLineName === 'function' ? P.uniqueLineName(wanted, taken) : String(wanted == null ? '' : wanted).trim().slice(0, 48); },
   };
 })();
 

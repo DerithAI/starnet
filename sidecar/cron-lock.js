@@ -47,6 +47,7 @@
      pid      : optional holder id (defaults to process.pid). nonce: optional ()->string (defaults
                 to a crypto random hex) — pid:nonce is the holder stamp written + read-back-verified. */
 'use strict';
+const { judgeReuse } = require('./process-identity.js');
 
 function defaultNonce() {
   try { return require('node:crypto').randomBytes(8).toString('hex'); }
@@ -100,6 +101,27 @@ function makeCronLock(deps) {
   // injected for tests; defaults to the process.kill(pid,0) probe. Returns true when the holder pid is (or may be)
   // alive, false only when we can PROVE the holder process is gone.
   const pidAlive = typeof d.pidAlive === 'function' ? d.pidAlive : defaultPidAlive;
+  /* processIdentity: { probe(pid) } from sidecar/process-identity.js — OPT-IN exactly like bootedAt (only the
+     workspace-recovery lock passes the host's). WHY (soak 2026-10-15, review P3): within ONE boot Windows hands a
+     hard-killed holder's PID to an unrelated process, kill(pid,0) then says ALIVE, and with reclaimByAge:false the
+     recovery lock never broke: every boot exited 73 RECOVERY_LOCK_UNAVAILABLE, before the crash-loop breaker
+     could even record it. The stamp carries no time of its own, but the holder wrote the lockfile, so its mtime
+     is when the stamp was made; judgeReuse proves the PID's CURRENT process was created after that. Unknown,
+     older, in-slack or in-tolerance stays a live holder. */
+  const identity = d.processIdentity && typeof d.processIdentity.probe === 'function' ? d.processIdentity : null;
+  function pidReused(holderPid) {
+    if (!identity) return false;
+    let writtenAt = 0;
+    try {
+      const st = fs.statSync(lockfile);
+      writtenAt = (st && typeof st.mtimeMs === 'number') ? st.mtimeMs : (st && st.mtime ? st.mtime.getTime() : 0);
+    } catch (e) { warn('could not stat ' + lockfile + ' for the holder identity check (' + ((e && e.code) || e) + ') — holder treated as live'); return false; }
+    if (!(writtenAt > 0)) return false;
+    let seen = null;
+    try { seen = identity.probe(holderPid); }
+    catch (e) { warn('identity probe for holder pid ' + holderPid + ' failed (' + ((e && (e.code || e.message)) || e) + ') — holder treated as live'); return false; }
+    return judgeReuse({ startedAt: writtenAt }, seen).verdict === 'reused';
+  }
   if (!fs || typeof fs.openSync !== 'function' || typeof fs.renameSync !== 'function') {
     throw new Error('cron-lock: an injected fs with openSync/renameSync is required');
   }
@@ -171,7 +193,8 @@ function makeCronLock(deps) {
     // Safe: one lock instance per lockfile per process (the composition root), so no live acquisition of
     // this file can exist in-process while heldStamp is null.
     if (holderPid === Number(pid) && !heldStamp) return true;
-    return !pidAlive(holderPid);                    // proven-dead pid -> reclaimable NOW (don't wait for mtime)
+    if (!pidAlive(holderPid)) return true;          // proven-dead pid -> reclaimable NOW (don't wait for mtime)
+    return pidReused(holderPid);                    // a live pid whose CURRENT process postdates the stamp (opt-in)
   }
 
   // claimStaleRename — the SINGLE atomic mutual-exclusion step of a stale reclaim: rename the stale

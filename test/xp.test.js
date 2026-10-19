@@ -588,4 +588,14 @@ A.eq(twiceRating.stats.xp, onceRating.stats.xp, 'a replayed work rating cannot m
 A.eq(twiceRating.stats.samples, onceRating.stats.samples, 'a replayed work rating cannot skew confidence twice');
 A.eq(twiceRating.awards.duplicate, true, 'the duplicate rating receipt is explicit to callers');
 
+// user-visible text says AUTONOMY, never "night shift" (the server-side driver keeps the internal name; walk 10-14 #20):
+// the trophy keeps its id (saved trophy cases still hold 'night_shift') and is named for what it marks — work that
+// reached the Commander through a channel, far from the station.
+{
+  const away = Xp.MILESTONES.find(m => m.id === 'night_shift');
+  A.ok(!!away, 'the channel-delivery trophy keeps its saved id');
+  A.ok(away && !/night\s*shift/i.test(away.label), 'its visible label never says NIGHT SHIFT, got ' + (away && away.label));
+  A.eq(away && away.label, 'LONG RANGE', 'it reads LONG RANGE: the first work that reached you through a channel');
+  A.ok(Xp.MILESTONES.every(m => !/night\s*shift/i.test(m.label + ' ' + m.hint)), 'no trophy label or hint says night shift');
+}
 A.report('xp.test');

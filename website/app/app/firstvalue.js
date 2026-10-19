@@ -132,7 +132,7 @@
     q('.fv-refresh').onclick = () => refreshRoots().then(() => status('Approved folders refreshed.')).catch(e => status(e.message));
     q('.fv-projects').onclick = () => { remember(); return ctx.onProjects ? ctx.onProjects() : status('Open Projects in the session rail to add or revoke an approved folder, then refresh here.'); };
     q('.fv-platforms').onclick = () => { remember(); if (typeof Tutorial !== 'undefined' && Tutorial.showPlatformConnections) Tutorial.showPlatformConnections(); };
-    q('.fv-model').onclick = () => { remember(); return ctx.onModelSetup ? ctx.onModelSetup() : status('Open CONNECT to configure your agent’s model, then return here.'); };
+    q('.fv-model').onclick = () => { remember(); return ctx.onModelSetup ? ctx.onModelSetup() : status('Open SETTINGS › AI & MODELS to configure your agent’s model, then return here.'); };
     q('.fv-clear').onclick = () => {
       q('.fv-request').value = ''; q('.fv-sample').value = ''; q('.fv-root').value = '';
       q('input[value="sample"]').checked = true; q('input[value="folder"]').checked = false;

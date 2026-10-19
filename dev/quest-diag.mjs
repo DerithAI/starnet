@@ -134,7 +134,9 @@ const START_QUEST = `(async () => {
   return JSON.stringify({ ok: true, label, before, afterOne, afterTwo: Workstreams.list().length,
     activeTitle: active ? active.title : null,
     composerPrefill: composer ? String(composer.value || '').slice(0, 90) : '(composer not found)',
-    taskBoardOpened: [...document.querySelectorAll('.term')].some(t => /TASK BOARD/.test(t.textContent)) });
+    // by the window's own class, never its title text: the title was renamed TASK BOARD → TASKS (org P30) and a title
+    // match silently stopped firing
+    taskBoardOpened: !!document.querySelector('.term.tasks-win') });
 })()`;
 
 (async () => {

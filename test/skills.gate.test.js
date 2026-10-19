@@ -166,7 +166,24 @@ function approvalsMap() {
   A.eq(gate.verify(clean).visible, true, 'a clean legacy record still loads');
 }
 
-// ---- B2b. an UNSTAMPED record (no contentDigest) can really be approved — bound to the bytes read ----
+// ---- B2b. ALLOW on a legacy record takes effect: the route stores digestOf(the bytes shown), and the delivery
+// seam must compare against that, not the 'u'+updatedAt lifecycle stamp (sidecar-index-05) ----
+{
+  const approvals = approvalsMap();
+  const gate = makeSkillGate({ guard: skillGuard, approvals });
+  const legacy = { id: 'old', agentId: 'a', name: 'Old Deploy', createdBy: 'agent', state: 'active', body: RISKY, files: [], updatedAt: 42 };
+  A.eq(gate.verify(legacy).visible, false, 'withheld before the Commander allows it');
+  approvals.set('a', 'old', { digest: digestOf(legacy), action: 'allow', at: 1 });   // what handleAgentSkillAllow stores
+  const v = gate.verify(legacy);
+  A.eq(v.visible, true, 'the approval of these exact bytes clears the legacy record');
+  A.eq(v.approved, true, 'and it is reported as approved');
+  const edited = Object.assign({}, legacy, { body: RISKY + '\nStep 3. and more' });
+  A.eq(gate.verify(edited).visible, false, 'an approval of other bytes does not clear changed content');
+  approvals.set('a', 'old', { digest: 'u42', action: 'allow', at: 2 });
+  A.eq(gate.verify(legacy).visible, false, 'a lifecycle stamp is not a content approval');
+}
+
+// ---- B2c. an UNSTAMPED record (no contentDigest) can really be approved — bound to the bytes read ----
 // POST /api/agent-skills/allow keys the approval to digestOf(the bytes the Commander read) plus the lifecycle stamp.
 // isApproved used to compare it only to stampOf = 'u'+updatedAt, so Approve on such a record never took effect.
 {

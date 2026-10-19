@@ -50,7 +50,7 @@ for (const p of Places.PLACES) {
     if (o.section) ok(sections[o.term] && sections[o.term].has(o.section), p.id + ': ' + o.term + ' has section "' + o.section + '"');
   }
   if (o.agent) ok(sectionIds(ui.slice(ui.indexOf("mountConsole(body, 'agents', ["), ui.indexOf("mountConsole(body, 'agents', [") + 4000)).has(o.agent), p.id + ': the dossier has tab ' + o.agent);
-  if (o.fn) ok(['build', 'recruit', 'recipes'].indexOf(o.fn) >= 0, p.id + ': a known door');
+  if (o.fn) ok(['build', 'recruit', 'recipes', 'needs-you'].indexOf(o.fn) >= 0, p.id + ': a known door');
 }
 // every dock window a Commander can open is a place (a new window must be added here, or the agent cannot show it)
 for (const k of ['tasks', 'deliverables', 'settings', 'notifs', 'manual', 'quests', 'updates', 'commander', 'workflows', 'automation', 'connectors', 'messaging', 'trophies', 'apps', 'browser', 'stepin']) {
@@ -75,7 +75,8 @@ function boot(opts) {
     fetch: async (url, init) => { acks.push(JSON.parse(init.body)); return { ok: true }; },
     Workstreams: { activeId: () => opts.active || 'ws1' },
     Channels: { isBusy: id => id === 'ws1' && !opts.idle, runIdOf: id => id === 'ws1' ? 'run1' : null },
-    App: { agents: () => crew, openSummonBay: () => { calls.push('summon'); setTimeout(() => open.add('marketplace'), 250); }, openRecipes: () => { calls.push('recipes'); open.add('marketplace'); } },
+    App: { agents: () => crew, openSummonBay: () => { calls.push('summon'); setTimeout(() => open.add('marketplace'), 250); }, openRecipes: () => { calls.push('recipes'); open.add('marketplace'); },
+      showNeedsYou: () => { calls.push('needs-you'); return { open: !opts.railHidden, key: 'needs-you', waiting: 2 }; } },
     Marketplace: { currentTab: () => opts.tab || null },
     Build: { open: () => { calls.push('build'); open.add('build'); }, isOpen: () => open.has('build') },
     StationUI: {
@@ -116,6 +117,12 @@ function boot(opts) {
   r = await boot().run({ place: 'agent', agent: 'zed' });
   ok(/^REFUSED: no agent called "zed" \(crew: NOVA, REX, Rex2\)/.test(r.content), 'an unknown agent refuses with the real roster');
 
+  // org P01: NEEDS YOU heads the SESSIONS rail (not a window): App.showNeedsYou puts it in front, and a hidden rail is never reported open
+  env = boot(); r = await env.run({ place: 'needs-you' });
+  eq(env.calls, ['needs-you'], 'NEEDS YOU opens through App.showNeedsYou');
+  ok(/^OPEN on the Commander's screen: SESSIONS › NEEDS YOU/.test(r.content), 'and the answer names it in UI words');
+  r = await boot({ railHidden: true }).run({ place: 'needs-you' });
+  ok(/^REFUSED: SESSIONS › NEEDS YOU did not open/.test(r.content), 'a hidden rail (BUILD MODE) is never reported open');
   env = boot(); await env.run({ place: 'build-mode' });
   eq(env.calls, ['build'], 'BUILD MODE opens through Build.open');
   env = boot(); r = await env.run({ place: 'recruit' });

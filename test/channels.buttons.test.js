@@ -518,6 +518,44 @@ async function run() {
     A.eq(decision, 'deny', 'and it resolves to deny (fail-closed), never a silent allow');
   }
 
+  // ---- 5G. a TYPED follow-up while the run waits on an approval keyboard is not told "it picks this up at its next
+  //          step" — the run is paused on the keyboard, and a typed "yes" does not answer it (review voice-remote-channels-03)
+  {
+    const sends = []; const steers = []; const store = fakeStore({ 555: { agentId: 'tg_555', approvals: true } });
+    const host = makeHostConsent(5000);
+    let releaseRun = null;
+    const runOnce = async (o) => {
+      await o.prompt({ name: 'fs.write', args: { path: 'notes.md' } }, { scope: 'write' });
+      await new Promise(res => { releaseRun = res; });
+      o.emit('agent.token', { delta: 'done' });
+      o.emit('agent.run.end', { reason: 'done' });
+    };
+    const reg = makePromptRegistry({ newId: idGen('tok') });
+    const hub = makeChannelHub({
+      isOwner: () => true, runOnce, store, prompts: reg,
+      send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'consent-msg' }); },
+      answerCallback: () => Promise.resolve({ ok: true }), editMessage: () => Promise.resolve({ ok: true }),
+      askConsent: host.ask, resolveConsent: host.resolve,
+      steerRun: (runId, text) => { steers.push(text); return { ok: true }; },
+      secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen('run')
+    });
+    const inflight = hub.onInbound(dm('write notes.md'));
+    await waitFor(() => { const e = reg.peekChat('555', 'consent'); return !!(e && e.messageId); });
+    await hub.onInbound(dm('yes go ahead'));
+    A.eq(steers, ['yes go ahead'], 'the typed note still reaches the running task');
+    const waitingReply = sends[sends.length - 1].t;
+    A.ok(/permission request/.test(waitingReply) && /Tap Allow or Deny/.test(waitingReply) && !/picks this up at its next step/.test(waitingReply),
+      'the reply says the run is paused on the open approval and how to answer it: ' + waitingReply);
+    const kb = lastKeyboard(sends);
+    await hub.onCallback({ chatId: '555', userId: 'u1', data: kb[3][0].callback_data, callbackId: 'cbG', messageId: 'consent-msg' });
+    await waitFor(() => typeof releaseRun === 'function');
+    await hub.onInbound(dm('also add a title'));
+    const afterReply = sends[sends.length - 1].t;
+    A.ok(/picks this up at its next step/.test(afterReply), 'once the approval is answered a follow-up gets the ordinary reply: ' + afterReply);
+    releaseRun();
+    await inflight;
+  }
+
   // ---- 5F. a token from one chat cannot resolve another chat's prompt ----
   {
     const sends = [], acks = []; const store = fakeStore();

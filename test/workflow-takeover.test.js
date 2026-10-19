@@ -304,14 +304,18 @@ console.log('workflow-takeover: repeat sense (paraphrase, guards, notice, cadenc
   assert.equal(guestAsk.impressions.length, 0, 'and records no shown impression');
   assert.ok(host(history()).notice(CLEAN, 'agent', PROJECT, { channelSender: true, channelSenderOwner: true }), 'the bound owner in a direct chat still gets the notice');
 
-  // (2026-10-12) This used to pin the opposite: 400 newer rows (every assistant and tool row counts) evicted the
-  // original-row proof, so a weekly task's two-week-old occasion fell out of the 60-day detector. The proof is now
-  // looked up by original run id across the rows the store holds; every row still passes the clean-owner check.
+  // review sidecar-index-03 (2026-10-12): this used to pin the opposite: 400 newer rows (every assistant and tool row
+  // counts) evicted the original-row proof, so a few days of ordinary use pushed Monday's request out and a weekly
+  // task's two-week-old occasion fell out of the 60-day detector. The proof is now looked up by original run id across
+  // every row the caller holds; every row still passes the clean-owner check.
+  const later = Array.from({ length: 400 }, (_, i) => ({ role: 'assistant', content: 'bounded-tail-' + i }));
   const agedOut = history();
-  agedOut.rows.push(...Array.from({ length: 400 }, (_, i) => ({ role: 'assistant', content: 'bounded-tail-' + i })));
+  agedOut.rows.push(...later);
   assert.equal(TrustedLearning.ownedBriefs(agedOut.briefs, agedOut.rows, agedOut.runs).length, 3, '400 newer rows do not evict a held clean original');
   assert.equal(host(agedOut).candidates().length, 1, 'a long-ago clean occasion still counts toward the routine card');
+  assert.equal(host(agedOut).candidates()[0].count, 3, 'and still counts as its own occasion');
   assert.ok(host(agedOut).notice(), 'and toward the in-reply notice');
+  denied({ ...history(), rows: later.slice() }, 'no original row anywhere in the transcript');
   const weekly = history();
   weekly.rows.splice(1, 0, ...Array.from({ length: 14 * 17 }, (_, i) => ({ role: i % 17 ? 'tool' : 'user', agentId: 'agent', streamId: 'other-' + i,
     content: 'ordinary run ' + i, sourceRunId: 'filler-' + i, taintKnown: true })));
@@ -321,6 +325,10 @@ console.log('workflow-takeover: repeat sense (paraphrase, guards, notice, cadenc
   agedOutUnknown.rows[0] = { ...agedOutUnknown.rows[0], taintKnown: undefined };
   agedOutUnknown.rows.push(...Array.from({ length: 400 }, (_, i) => ({ role: 'assistant', content: 'bounded-tail-' + i })));
   assert.equal(TrustedLearning.ownedBriefs(agedOutUnknown.briefs, agedOutUnknown.rows, agedOutUnknown.runs).length, 2, 'an old original without a clean stamp still proves nothing');
+  // ambient owner activity keeps its recency bound: only the newest 400 rows
+  assert.equal(TrustedLearning.cleanOwnerRows(history().rows, history().runs).length, 3, 'fixture: the owner-stamped originals are owner activity');
+  const ambient = TrustedLearning.cleanOwnerRows(history().rows.concat(later), history().runs);
+  assert.equal(ambient.length, 0, 'ambient owner activity still reads only the newest 400 rows');
   const paused = host(history(), false);
   assert.equal(paused.notice(), null);
   assert.equal(paused.candidates().length, 0);

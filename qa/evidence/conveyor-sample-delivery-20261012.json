@@ -1,0 +1,72 @@
+{
+  "kind": "actual-sidecar-sample-delivery-identity",
+  "sourceCommit": "dd74c386f671afe16a6a746061063aa4db2ada36",
+  "combinedDiagnosticCandidate": "2c366fd8ffbf18a40cdec41db09986ac022aef6c",
+  "equivalentSource": "The complete16,803-character getSampleHub/handleRoutingSample region, chain.js, and original sample HTTP test match the combined candidate. This follow-up changes only the sample test.",
+  "verifiedAt": "2026-10-12T10:15:11.355Z",
+  "method": "Execute test/routing.sample.e2e.test.js over real HTTP/SSE sockets against the real sidecar and a content-driven local provider. An untracked Module._compile wrapper only saves the already collected successful-job receipt, leaving every suite assertion and real sidecar call intact. No paid provider service or user workspace.",
+  "before": {
+    "failures": 1,
+    "passes": 98,
+    "message": "the delivery carries the sample:true marker too — expected true, got undefined"
+  },
+  "after": {
+    "failures": 0,
+    "passes": 105,
+    "markerAssertion": "A.eq(outDel.sample, true, the delivery carries the sample:true marker too)",
+    "schemaAssertionsPreserved": true
+  },
+  "receipt": {
+    "sampleWorkitemId": "297ccf85-a07e-4769-8555-8c9baddabfda",
+    "entryRunId": "409d6743-c78f-4b9a-b34e-2805c158fcbc",
+    "placed": {
+      "workitemId": "297ccf85-a07e-4769-8555-8c9baddabfda",
+      "queueId": "research-agent",
+      "agentId": "research-agent",
+      "kind": "sample",
+      "sample": true,
+      "lineId": "b1",
+      "dockId": "b1",
+      "preview": "SAMPLE JOB: summarize what this work lin",
+      "queueDepth": 1,
+      "ts": 1791800109381
+    },
+    "sampleDelivery": {
+      "workitemId": "297ccf85-a07e-4769-8555-8c9baddabfda",
+      "finalQueueId": "outbox",
+      "agentId": "research-agent",
+      "box": "",
+      "ms": 416,
+      "ts": 1791800109792,
+      "sample": true
+    },
+    "terminalReceipt": {
+      "workitemId": "wi_5d5e6f7a",
+      "finalQueueId": "outbox",
+      "agentId": "writer-agent",
+      "box": "line-output",
+      "lineId": "b1",
+      "outboxId": "o",
+      "entryRunId": "409d6743-c78f-4b9a-b34e-2805c158fcbc",
+      "workitemIds": [
+        "wi_34ecc1bf"
+      ],
+      "ms": 0,
+      "ts": 1791800109788,
+      "dockId": "b2"
+    },
+    "outboxDeliveryOrder": [
+      {
+        "workitemId": "wi_5d5e6f7a",
+        "box": "line-output",
+        "sample": false
+      },
+      {
+        "workitemId": "297ccf85-a07e-4769-8555-8c9baddabfda",
+        "box": "",
+        "sample": true
+      }
+    ],
+    "markerAssertionRetained": true
+  }
+}

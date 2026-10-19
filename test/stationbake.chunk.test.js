@@ -109,6 +109,7 @@ function fakeCtx(canvas) {
     },
     fillText(s, x, y) { writeRect(x, y - 7, Math.max(1, String(s || '').length * 4), 7, fillValue()); },
     measureText(s) { return { width: String(s || '').length * 7 }; },
+    getTransform() { return { a: 1, b: 0, c: 0, d: 1, e: state.tx, f: state.ty }; },
     createRadialGradient: fakeGradient
   };
 }
@@ -231,6 +232,9 @@ canvases.length = 0;
 const second = StationBake.bakeIncremental(geo, first, [{ x1: 10, y1: 10, x2: 10, y2: 10 }]);
 A.eq(second.stats.fullReset, false, 'same bounds/origin allow incremental reuse');
 A.eq(second.stats.dirtyChunks, ['0,0'], 'single tile edit maps to the exact dirty chunk');
+// a rect that names its own reach (a room's name plate: only the text's pixels change) is not padded by the wall reach
+A.eq(StationBake.dirtyChunks(geo, [{ x1: 28, y1: 20, x2: 30, y2: 20 }]).map(d => d.key), ['0,0', '1,0'], 'a tile edit near a chunk edge reaches the next chunk');
+A.eq(StationBake.dirtyChunks(geo, [{ x1: 28, y1: 20, x2: 30, y2: 20, pad: 0 }]).map(d => d.key), ['0,0'], '…a pad-0 rect there re-bakes only the chunk it lies in');
 A.eq(second.stats.rebakedChunks, 1, 'single tile edit rebakes one chunk');
 A.eq(second.stats.reusedChunks, 5, 'single tile edit reuses untouched chunks');
 A.ok(second.chunkMap.get('1,0') === reusedBefore.get('1,0'), 'untouched chunk object is reused');
@@ -250,9 +254,11 @@ A.eq(drawn[0].x, 384, 'drawBase preserves chunk world offset when culling');
 
 const fullDrawn = [];
 StationBake.drawBase({ drawImage(cv, x, y) { fullDrawn.push({ cv, x, y, w: cv.width, h: cv.height }); } }, first, 0, 0);
+// every chunk is a whole CHUNK_PX square, the edge ones too (past the floor's edge it is transparent): a floor that grows
+// or shrinks there never changes a chunk's size, so it never re-bakes a chunk its rects do not reach
 A.eq(fullDrawn.map(d => [d.x, d.y, d.w, d.h]), [
-  [0, 0, 384, 384], [384, 0, 384, 384], [768, 0, 132, 384],
-  [0, 384, 384, 266], [384, 384, 384, 266], [768, 384, 132, 266]
+  [0, 0, 384, 384], [384, 0, 384, 384], [768, 0, 384, 384],
+  [0, 384, 384, 384], [384, 384, 384, 384], [768, 384, 384, 384]
 ], 'full chunk composite covers the station without gaps, overlaps, or seam offsets');
 
 canvases.length = 0;
@@ -294,6 +300,97 @@ A.eq(reset.stats.fullReset, true, 'origin changes reset chunk metadata instead o
 A.eq(reset.stats.chunkCount, 1, 'origin reset can rebuild only the visible chunk');
 A.ok(canvases.every(boundedCanvas),
   'origin reset does not allocate full-world base/light canvases');
+
+/* THE FLOOR GREW, THE FRAME DID NOT MOVE (2026-10-13): a room stamped past the south edge changes H, not the origin —
+   the chunks it cannot reach are kept (the same objects), the reshaped edge row re-bakes, and the composite is still
+   pixel-identical to a monolithic bake of the grown floor. */
+function roomsGeo(rooms, ROWS, chamfer) {
+  const TILE = 12, COLS = 75, zoneGrid = new Array(COLS * ROWS).fill(null), idx = (x, y) => y * COLS + x, zones = {};
+  for (const r of rooms) { zones[r.z] = r; for (let y = r.y1; y <= r.y2; y++) for (let x = r.x1; x <= r.x2; x++) zoneGrid[idx(x, y)] = r.z; }
+  return {
+    TILE, COLS, ROWS, W: COLS * TILE, H: ROWS * TILE, origin: { tx: 0, ty: 0 },
+    allRects: rooms.slice(), zones, ROOM_IDS: rooms.map(r => r.z), windows: [], doorDefs: [], zoneGrid, idx,
+    chamfers: chamfer ? rooms.flatMap(r => [[r.x1, r.y1, 'tl'], [r.x2, r.y1, 'tr'], [r.x1, r.y2, 'bl'], [r.x2, r.y2, 'br']]) : [],
+    isCorridor: () => false,
+    canStep: (x1, y1, x2, y2) => zoneGrid[idx(x1, y1)] === zoneGrid[idx(x2, y2)],
+    baseColorOf: () => '#30343a', nameOf: z => z.toUpperCase(), kindOf: () => 'hab',
+    FLOOR_STYLES: { hull: { base: '#30343a' } }
+  };
+}
+const northRoom = { z: 'r1', x1: 2, y1: 2, x2: 60, y2: 20 }, southRoom = { z: 'r2', x1: 4, y1: 44, x2: 30, y2: 60 };
+const before = roomsGeo([northRoom], 52), beforeBake = StationBake.bakeIncremental(before, null, null);
+const grownGeo = roomsGeo([northRoom, southRoom], 66);
+const grownBake = StationBake.bakeIncremental(grownGeo, beforeBake, [southRoom]);
+A.eq(grownBake.stats.fullReset, false, 'a floor that grew south keeps its frame');
+A.ok(grownBake.chunkMap.get('0,0') === beforeBake.chunkMap.get('0,0') && grownBake.chunkMap.get('2,0') === beforeBake.chunkMap.get('2,0'),
+  'chunks the new room cannot reach are kept, not re-baked');
+A.ok(grownBake.chunkMap.get('0,1') !== beforeBake.chunkMap.get('0,1'), 'the edge chunk the new room reaches is re-baked');
+A.ok(grownBake.chunkMap.get('2,1') === beforeBake.chunkMap.get('2,1'), '…and the edge chunk it does not reach is kept: the new size reshapes no chunk');
+const grownMono = StationBake.bake(grownGeo);
+A.eq(pixelDiff(composeLayer(grownBake, 'base'), grownMono.baseCv), 0, 'the kept + re-baked composite is the grown floor, pixel for pixel');
+A.eq(pixelDiff(composeLayer(grownBake, 'light'), grownMono.lightCv), 0, '…its light too');
+const shrunk = StationBake.bakeIncremental(before, grownBake, [southRoom]);
+A.eq(pixelDiff(composeLayer(shrunk, 'base'), StationBake.bake(before).baseCv), 0, 'removing it again composes the original floor');
+const movedOrigin = roomsGeo([northRoom], 52); movedOrigin.origin = { tx: -3, ty: 0 };
+A.eq(StationBake.bakeIncremental(movedOrigin, beforeBake, [northRoom]).stats.fullReset, true, 'an origin move still resets every chunk');
+// an edit with no rects re-bakes the station: only what is on screen bakes now, the rest as it pans into view
+const everything = StationBake.bakeIncremental(before, beforeBake, [], { visibleRect: { x: 0, y: 0, w: 384, h: 384 } });
+A.eq(everything.stats.rebakedChunks, 1, 'a station-wide edit bakes the visible chunk, not all six');
+A.eq(everything.stats.chunkCount, 1, '…and drops the stale others');
+A.eq(StationBake.missingVisibleChunks(everything, { x: 384, y: 0, w: 384, h: 384 }), ['1,0'], '…which the pan path re-bakes on sight');
+/* THE WORLD'S BAKE IS ALREADY THE FLOOR (2026-10-13): BUILD MODE's first edit starts from the live world's WHOLE-station
+   bake. The chunks the edit cannot reach are cut from it (never re-baked) and the composite is still the edited floor. */
+const wholeBefore = StationBake.bake(before);
+const firstSame = StationBake.bakeIncremental(before, wholeBefore, [{ x1: 10, y1: 5, x2: 12, y2: 6 }]);
+A.eq(firstSame.stats.fullReset, false, 'a first edit keeps the frame of the whole-station bake');
+A.eq(firstSame.chunkMap.size, 6, '…every chunk of the floor is present');
+A.eq(firstSame.stats.rebakedChunks, 1, '…and only the one the edit reaches is baked');
+A.eq(pixelDiff(composeLayer(firstSame, 'base'), wholeBefore.baseCv), 0, 'cut chunks compose the whole-station bake exactly');
+A.eq(pixelDiff(composeLayer(firstSame, 'light'), wholeBefore.lightCv), 0, '…its light too');
+A.eq(firstSame.lamps.length, wholeBefore.lamps.length, '…and every lamp');
+/* (the floor here ends on a chunk row: this canvas mock has no readback, so its hull pass paints its band over every
+   transparent pixel of a chunk, beyond the floor too, which a real canvas masks away — a chunk cut from a whole-station bake
+   ends at that bake's edge. The real-canvas cut of a part-row edge chunk is stationbake.plate-parity's south room.) */
+const before768 = roomsGeo([northRoom], 64), whole768 = StationBake.bake(before768);
+const southRoom768 = { z: 'r2', x1: 4, y1: 70, x2: 30, y2: 76 }, grown768 = roomsGeo([northRoom, southRoom768], 80), grownMono768 = StationBake.bake(grown768);
+const firstGrown = StationBake.bakeIncremental(grown768, whole768, [southRoom768]);
+A.eq(firstGrown.stats.fullReset, false, 'a first edit that grows the floor south keeps the frame too');
+A.eq(firstGrown.stats.reusedChunks, 4, '…cutting every chunk of the old floor the new room cannot reach');
+A.eq(pixelDiff(composeLayer(firstGrown, 'base'), grownMono768.baseCv), 0, '…and the composite is the grown floor, pixel for pixel');
+A.eq(pixelDiff(composeLayer(firstGrown, 'light'), grownMono768.lightCv), 0, '…its light too');
+A.eq(StationBake.bakeIncremental(movedOrigin, wholeBefore, [northRoom]).stats.fullReset, true, 'an origin move still bakes every chunk');
+/* THE LIGHTS ARE THE FLOOR'S NOW (2026-10-13): every chunk lists the whole station's lamps as they stood when it baked —
+   removing a room in-frame must take its lamps out of the cache, even from chunks the edit never reached. */
+const sideRoom = { z: 'r3', x1: 4, y1: 30, x2: 14, y2: 40 };
+const twoRooms = StationBake.bakeIncremental(roomsGeo([northRoom, sideRoom], 52), null, null);
+const oneRoomGeo = roomsGeo([northRoom], 52), freshOne = StationBake.bakeIncremental(oneRoomGeo, null, null);
+A.ok(twoRooms.lamps.length > freshOne.lamps.length, 'the second room has lamps of its own');
+const roomGone = StationBake.bakeIncremental(oneRoomGeo, twoRooms, [sideRoom]);
+A.ok(roomGone.stats.reusedChunks > 0, 'removing it keeps the chunks it never reached');
+A.eq([roomGone.lamps.length, roomGone.flickers.length], [freshOne.lamps.length, freshOne.flickers.length], '…and its lamps and flickers go with it');
+A.eq(StationBake.bakeIncremental(oneRoomGeo, roomGone, null, { visibleRect: { x: 0, y: 0, w: 384, h: 384 }, onlyMissingVisible: true }).lamps.length,
+  freshOne.lamps.length, 'a pan that bakes nothing carries the lists over unchanged');
+
+/* BUILD MODE HANDS ITS FLOOR BACK (2026-10-13): a chunk set that covers the floor stitches into the whole-station bake the
+   live world takes on SAVE & EXIT, pixel for pixel; one with holes, or from another frame, is refused (the world bakes). */
+const handedBack = StationBake.stitchWhole(before, firstSame);
+A.ok(handedBack && handedBack.stitched, 'a complete chunk set stitches into one whole-station bake');
+A.eq(pixelDiff(handedBack.baseCv, wholeBefore.baseCv), 0, '…its base is the whole-station bake');
+A.eq(pixelDiff(handedBack.lightCv, wholeBefore.lightCv), 0, '…and so is its light');
+A.eq([handedBack.W, handedBack.H, handedBack.lamps.length, handedBack.doorOccluders.length],
+  [wholeBefore.W, wholeBefore.H, wholeBefore.lamps.length, wholeBefore.doorOccluders.length], '…with the same frame, lamps and door occluders');
+const grownHandedBack = StationBake.stitchWhole(grown768, firstGrown);
+A.ok(grownHandedBack && pixelDiff(grownHandedBack.baseCv, grownMono768.baseCv) === 0, 'a grown floor hands back its grown whole bake');
+const holes = StationBake.bakeIncremental(before, null, [], { visibleRect: { x: 0, y: 0, w: 384, h: 384 } });
+A.eq(StationBake.stitchWhole(before, holes), null, 'a chunk set with holes is refused');
+A.eq(StationBake.stitchWhole(grownGeo, firstSame), null, '…and so is one baked in another frame');
+
+// A CHUNK PAINTS ONLY WHAT CAN REACH IT: far-apart rounded rooms, chunked == monolithic
+const spread = roomsGeo([{ z: 'a', x1: 2, y1: 3, x2: 12, y2: 12 }, { z: 'b', x1: 52, y1: 3, x2: 70, y2: 14 }, { z: 'c', x1: 20, y1: 36, x2: 40, y2: 48 }], 52, true);
+const spreadMono = StationBake.bake(spread), spreadChunks = StationBake.bakeIncremental(spread, null, null);
+A.eq(pixelDiff(composeLayer(spreadChunks, 'base'), spreadMono.baseCv), 0, 'culled chunks compose the monolithic base exactly');
+A.eq(pixelDiff(composeLayer(spreadChunks, 'light'), spreadMono.lightCv), 0, 'culled chunks compose the monolithic light exactly');
+A.eq(spreadChunks.lamps.length, spreadMono.lamps.length, 'every lamp survives the cull');
 
 /* Deck MATERIAL selection rides the same chunk path as everything above; the per-material
    pixel work is asserted in stationbake.materials.test.js instead. It can't be asserted HERE:
@@ -454,6 +551,61 @@ global.IndustrialTextures.isRemaster = () => false;
 const classicDoors = StationBake.bake(doorGeo).doorOccluders;
 const doorGeometry = d => ({ x: d.x, y: d.y, w: d.w, h: d.h, sortY: d.sortY });
 A.eq(remasterDoors.map(doorGeometry), classicDoors.map(doorGeometry), 'remaster preserves every door occluder footprint and depth anchor');
+
+/* ONE PLATE GRID, ONE SET OF PIXELS (2026-10-14, the busy-station walk: BUILD MODE's kept bake disagreed with a fresh one by
+   0.8-1.1 M dense-plate pixels after a rename or a room past the south/east edge, and a room past the east edge left 9 chunks
+   at the wrong plate size). With the industrial plate on, a floor wider than 682px paints at a fractional density. */
+function gridGeo(COLS, ROWS, rooms) {
+  const TILE = 12, zoneGrid = new Array(COLS * ROWS).fill(null), idx = (x, y) => y * COLS + x, zones = {};
+  for (const r of rooms) { zones[r.z] = r; for (let y = r.y1; y <= r.y2; y++) for (let x = r.x1; x <= r.x2; x++) zoneGrid[idx(x, y)] = r.z; }
+  return { TILE, COLS, ROWS, W: COLS * TILE, H: ROWS * TILE, origin: { tx: 0, ty: 0 }, allRects: rooms.slice(), zones,
+    ROOM_IDS: rooms.map(r => r.z), windows: [], doorDefs: [], zoneGrid, idx, chamfers: [], isCorridor: () => false,
+    canStep: (x1, y1, x2, y2) => zoneGrid[idx(x1, y1)] === zoneGrid[idx(x2, y2)],
+    baseColorOf: () => '#30343a', nameOf: z => z.toUpperCase(), kindOf: () => 'hab', FLOOR_STYLES: { hull: { base: '#30343a' } } };
+}
+const gridRooms = [{ z: 'a', x1: 2, y1: 2, x2: 30, y2: 14 }, { z: 'b', x1: 40, y1: 4, x2: 70, y2: 20 }, { z: 'c', x1: 6, y1: 24, x2: 36, y2: 34 }];
+{
+  // every dense scratch layer the bake folds back into a plate lands on that plate's pixel grid, 1:1 — its size and its offset
+  // in the canvas it folds into are whole plate pixels (a fractional one resamples the hull skirts differently per canvas)
+  const plated = new Set(), folds = [], dc = global.IndustrialTextures.detailContext;
+  global.IndustrialTextures.detailContext = (ctx, ref) => {
+    const s = ref && ref.scale;
+    plated.add(ctx.canvas);
+    return new Proxy(ctx, {
+      get(target, key) {
+        const v = target[key];
+        if (key === 'drawImage') return (img, x, y, ...rest) => {
+          if (plated.has(img) && s) { const m = target.getTransform(); folds.push({ s, w: img.width, h: img.height, x: x + m.e, y: y + m.f }); }
+          return v.apply(target, [img, x, y, ...rest]);
+        };
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+      set(target, key, value) { target[key] = value; return true; }
+    });
+  };
+  StationBake.bakeIncremental(gridGeo(84, 40, gridRooms), null, null);
+  global.IndustrialTextures.detailContext = dc;
+  const whole = n => Math.abs(n - Math.round(n)) < 1e-9;
+  A.ok(folds.length > 0 && folds.every(f => f.s === 4.0625), 'a 1008px floor paints its plate at 4.0625x and folds hull layers into it (' + folds.length + ')');
+  const off = folds.filter(f => !whole(f.w * f.s) || !whole(f.h * f.s) || !whole(f.x * f.s) || !whole(f.y * f.s));
+  A.eq(off.length, 0, 'every hull scratch layer folds into the plate 1:1 on its pixel grid' + (off.length ? ' (first off-grid: ' + JSON.stringify(off[0]) + ')' : ''));
+}
+{
+  const narrow = gridGeo(75, 40, gridRooms), wide = gridGeo(84, 40, gridRooms), tall = gridGeo(75, 50, gridRooms);
+  const before = StationBake.bakeIncremental(narrow, null, null);
+  const east = StationBake.bakeIncremental(wide, before, [{ x1: 76, y1: 2, x2: 82, y2: 8 }]);
+  A.eq([east.stats.fullReset, east.stats.reusedChunks], [true, 0], 'a floor that grew east past a plate density step keeps no chunk painted at the old density');
+  const south = StationBake.bakeIncremental(tall, before, [{ x1: 2, y1: 42, x2: 9, y2: 47 }]);
+  A.ok(!south.stats.fullReset && south.stats.reusedChunks > 0, '…while one that grew without moving the density keeps its unreached chunks');
+  const stitched = StationBake.bake(narrow);
+  A.ok(stitched.stitched, 'a station wider than one chunk bakes AS its chunks, stitched — the world, the cut chunks and the re-baked ones are one set of pixels');
+  A.ok(!StationBake.bake(textureGeo('bulkhead', '#476a91')).stitched, '…a one-chunk station bakes whole');
+  const cut = StationBake.bakeIncremental(narrow, stitched, [{ x1: 10, y1: 5, x2: 12, y2: 6 }]);
+  A.ok(!cut.stats.fullReset && cut.stats.reusedChunks > 0, 'BUILD MODE\'s first edit cuts its unreached chunks from that stitched bake');
+  const monolithic = Object.assign({}, stitched, { stitched: false });
+  A.eq(StationBake.bakeIncremental(narrow, monolithic, [{ x1: 10, y1: 5, x2: 12, y2: 6 }]).stats.fullReset, true,
+    '…but never from a whole-canvas bake of a larger floor, which is not made of chunk pixels');
+}
 
 delete global.IndustrialTextures;
 delete global.WorldSurface;

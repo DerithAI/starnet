@@ -637,9 +637,11 @@ const Voice = (() => {
     try { armAudio(); } catch (_) {}   // inside the click: the newly needed chain starts running
     return { effect: want || 'auto', appliesOn: 'the next spoken reply' };
   }
+  // Also takes a reply's pinned local engine ('local-kokoro' | 'edge'): a request locked to it is only ever served
+  // by that engine, so a clip whose header is unreadable is still that engine, never the keyed recipe.
   function engineOf(servedBy) {
     const s = String(servedBy || '').toLowerCase();
-    return s === 'local-kokoro' ? 'kokoro' : s.indexOf('edge:') === 0 ? 'edge' : 'keyed';
+    return s === 'local-kokoro' ? 'kokoro' : (s === 'edge' || s.indexOf('edge:') === 0) ? 'edge' : 'keyed';
   }
   function effectFor(engine) {
     return voiceEffect() || (engine === 'keyed' ? 'machine' : 'natural');
@@ -789,6 +791,19 @@ const Voice = (() => {
   function localVoiceId(agentId) {
     return voiceChoice(agentId) || voiceChoice('');
   }
+  /* (org P21 wire) a stored voice is an engine id ('af_heart'); the VOICE FOR picker names it by its catalogue label ('HEART').
+     Anything else that shows a choice (the dossier's VOICE row) names it with the picker's word: the labels the sidecar last
+     reported (VoiceLive.voices remembers them), else the id without its language/sex prefix, uppercased — which is every label
+     the shipped catalogue has. */
+  const voiceLabels = new Map();
+  function rememberVoiceLabels(list) {
+    (Array.isArray(list) ? list : []).forEach(v => { if (v && v.id && v.label) voiceLabels.set(String(v.id), String(v.label)); });
+  }
+  function voiceLabel(id) {
+    const v = String(id || '').trim();
+    if (!v) return '';
+    return voiceLabels.get(v) || v.replace(/^[a-z]{2}_/, '').toUpperCase();
+  }
   function setVoiceChoice(id, agentId) {
     const want = String(id || '').trim();
     const key = agentId ? AGENT_VOICE_KEY + encodeURIComponent(agentId) : LOCAL_VOICE_KEY;
@@ -887,7 +902,7 @@ const Voice = (() => {
         }
       }
       const ct = r.headers.get('Content-Type') || '';
-      if (r.ok && ct.indexOf('audio') === 0) { const blob = await r.blob(); if (blob && blob.size) return { kind: 'neural', blob, engine: engineOf(r.headers.get('X-Voice-Provider')) }; }
+      if (r.ok && ct.indexOf('audio') === 0) { const blob = await r.blob(); if (blob && blob.size) return { kind: 'neural', blob, engine: engineOf(r.headers.get('X-Voice-Provider') || job.voice.engine) }; }
       let reason = 'http ' + r.status;
       try { const j = await r.json(); if (j && j.reason) reason = j.reason; } catch (_) {}
       if (job.seq === speakSeq) recordSpeechEvent('synthesis_failure', { chunk: jobs.indexOf(job), attempt: job.attempt, httpStatus: r.status, category: classifyFallback(reason), retryable: retryableFallback(reason) });
@@ -966,6 +981,11 @@ const Voice = (() => {
     reflectToggle();
     if (message) coordinatorEvent('onSpeechInterrupted', { message });
   }
+  /* Speaker off: a note about speech is moot — and nothing else would ever put it away. Only a new SPOKEN reply
+     (or a click) clears it, and a muted station opens none, so a note raised in Local Live stayed under the
+     COMMS keys for good once ending the call restored the mute (2026-10-15 report). EVERY path that turns the
+     speaker off calls this — the speaker key, /voice off, and the two restores of a mute voice mode lifted. */
+  function speakerOffClearsNote() { if (interruptionMessage) showInterruption(''); }
   function failReply(stage, job, error) {
     if (job.seq !== speakSeq) return;
     recordSpeechEvent(stage, { chunk: playIdx, characters: job.text.length,
@@ -1195,7 +1215,7 @@ const Voice = (() => {
     stopSpeaking();
     // restore the speaker mute that voice-mode-on force-flipped — don't let a transient mode permanently
     // clobber a deliberate preference (only if the user didn't manually re-touch the speaker meanwhile).
-    if (forcedSpeak) { forcedSpeak = false; speakReplies = false; savePref(LS_SPEAK, false); reflectToggle(); }
+    if (forcedSpeak) { forcedSpeak = false; speakReplies = false; savePref(LS_SPEAK, false); speakerOffClearsNote(); reflectToggle(); }
     reflectMode();
     if (was && !busyNow()) setStatus('online');
     if (was) coordinatorEvent('onState', 'ended');
@@ -1448,8 +1468,12 @@ const Voice = (() => {
          the user's spoken sentence disappeared with no error and no diagnostic, byte-identical to having said
          nothing into a dead room. An unknown is not an empty. */
       if (!r.ok && !(j && (j.text || j.reason))) {
-        const reason = r.status === 403
-          ? 'the station restarted — reload the page to reconnect'
+        // a page the station KEPT its key from (Harness.tokenWithheld) gets the same 403, but it is not a restart: a
+        // reload only re-runs the same ownership check, and the station notice says why (review threads-backend-05)
+        const withheld = r.status === 403 && typeof Harness !== 'undefined' && Harness
+          && typeof Harness.tokenWithheld === 'function' && Harness.tokenWithheld();
+        const reason = withheld ? 'this browser was not verified as your own account — see the station notice'
+          : r.status === 403 ? 'the station restarted — reload the page to reconnect'
           : 'transcription unreachable (HTTP ' + r.status + ')';
         console.warn('[voice] STT HTTP', r.status);
         return { text: '', reason, failed: true };
@@ -1915,18 +1939,20 @@ const Voice = (() => {
     speakReplies = !speakReplies; savePref(LS_SPEAK, speakReplies);
     forcedSpeak = false;   // a manual speaker change is the user's own choice — keep it (don't restore on voice-mode exit)
     clearNeuralCold();     // ANY toggle re-probes the neural path fresh — no cold-off survives a deliberate flip
-    if (!speakReplies) { muteStopSpeaking(); if (interruptionMessage) showInterruption(''); }   // speaker off: a note about speech is moot
+    if (!speakReplies) { muteStopSpeaking(); speakerOffClearsNote(); }
     else prewarmVoice();   // turning ON → quietly warm the stock lines so mutters/samples play instantly
     reflectToggle();
-    if (typeof SFX !== 'undefined') SFX.click();
+    // the COMMS speaker key sounds like every other COMMS key (and the bottom docks): press(), not the Click_02 tick
+    if (typeof SFX !== 'undefined') (SFX.press || SFX.click)();
   }
   function setSpeakReplies(on) {
     const want = on !== false;
     clearNeuralCold();     // ANY toggle re-probes the neural path fresh — no cold-off survives a deliberate flip
-    if (speakReplies === want) { reflectToggle(); return speakReplies; }
+    // already off still clears: `/voice off` runs stopConvo first, which may have restored the mute already
+    if (speakReplies === want) { if (!want) speakerOffClearsNote(); reflectToggle(); return speakReplies; }
     speakReplies = want; savePref(LS_SPEAK, speakReplies);
     forcedSpeak = false;
-    if (!speakReplies) { muteStopSpeaking(); if (interruptionMessage) showInterruption(''); }
+    if (!speakReplies) { muteStopSpeaking(); speakerOffClearsNote(); }
     else prewarmVoice();
     reflectToggle();
     return speakReplies;
@@ -1960,7 +1986,8 @@ const Voice = (() => {
     }
     // Escape always drops out of hands-free (never auto-arm on load — the first listen needs a click,
     // which also satisfies the browser mic-permission gesture).
-    if (!init._esc) { init._esc = true; document.addEventListener('keydown', e => { if (e.key === 'Escape' && convoMode) { savePref(LS_CONVO, false); stopConvo(); } }); }
+    // (an Esc that dropped out of hands-free is marked used, so an offer panel over COMMS never also reads it as NOT NOW)
+    if (!init._esc) { init._esc = true; document.addEventListener('keydown', e => { if (e.key === 'Escape' && convoMode) { e.preventDefault(); savePref(LS_CONVO, false); stopConvo(); } }); }
     // unlock browser audio on the first user gesture so the agent's voice is never silently swallowed after a reload
     if (!init._audio) { init._audio = true; ['pointerdown', 'keydown', 'touchstart'].forEach(ev => document.addEventListener(ev, armAudio, { capture: true })); }
     // were they hands-free last session? the refresh reset it — invite a one-tap resume (skipped during the
@@ -2001,7 +2028,7 @@ const Voice = (() => {
     toggleVoiceMode, stopConvo, onTurnEnd,
     canListen, canSpeak, startCoordinator, stopCoordinator, pauseCoordinator, resumeCoordinator, attachCoordinator, detachCoordinator,
     canOAuthLive: () => !!SR || typeof fetch !== 'undefined', personaId: () => activePersonaId,
-    setLocalTts, voiceChoice, localVoiceId, setVoiceChoice, currentAgentId, microphoneHelp,
+    setLocalTts, voiceChoice, localVoiceId, setVoiceChoice, voiceLabel, rememberVoiceLabels, currentAgentId, microphoneHelp,
     voiceEffect, setVoiceEffect, playbackChain: () => lastChain,
     /* LIVE VOICE MUST ARRIVE AUDIBLE. Opening a hands-free session with the speaker muted is a room where you
        talk and nothing answers — the Commander then has to find a toggle to make the feature work at all.
@@ -2015,7 +2042,11 @@ const Voice = (() => {
     },
     restoreSpeak: () => {
       if (!forcedSpeak) return false;          // the Commander's own choice — never undo it
-      forcedSpeak = false; speakReplies = false; savePref(LS_SPEAK, false); reflectToggle();
+      // a muted speaker is SILENT: stop what is playing or queued first, as every other speaker-off path does. A failed
+      // Local Live start (mic permission denied) restores the mute with no stop of its own, and the reply already speaking
+      // went on with the speaker key OFF (delta review 10-15).
+      muteStopSpeaking();
+      forcedSpeak = false; speakReplies = false; savePref(LS_SPEAK, false); speakerOffClearsNote(); reflectToggle();
       return true;
     },
     // Which transcription engine is ACTUALLY selected right now ('recorder' | 'web' | 'native'). A UI that

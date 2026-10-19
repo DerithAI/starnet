@@ -132,9 +132,15 @@
      The next-turn message fed back to the agent — a plain user-role directive, NO system-prompt mutation and NO
      toolset swap (prompt caching + the moat's real-prop reach stay intact). Carries the goal, any subgoals, and
      the judge's reason so the agent knows why it's still going. */
+  const CONT_HEAD = '[Continuing toward your session goal]\nGoal: ';
+  // the head every goal step stored BEFORE the org pass carries (0.13.2 / 0.13.3 / the 0.13.5 candidate wrote "standing goal"):
+  // a saved session replays those steps too, so the READER accepts both heads; only CONT_HEAD is ever written
+  const CONT_HEAD_RE = /^\[Continuing toward your (?:session|standing) goal\]\nGoal: /;
+  const CONT_SUBS = '\n\nAdditional criteria the Commander added:\n';
+  const CONT_TAIL = '\n\nContinue working toward this goal. ';
   function continuationPrompt(s) {
     if (!isActive(s)) return null;
-    let p = '[Continuing toward your standing goal]\nGoal: ' + s.goal + '\n\n';
+    let p = CONT_HEAD + s.goal + '\n\n';
     if (s.subgoals.length) {
       p += 'Additional criteria the Commander added:\n'
         + s.subgoals.map((t, i) => '- ' + (i + 1) + '. ' + t).join('\n') + '\n\n'
@@ -147,6 +153,29 @@
         + 'If you are blocked and need input from the user, say so clearly and stop.';
     }
     return p;
+  }
+  /* WHICH GOAL a continuation turn works toward — or null when `text` is not one (org P29-sys, 2026-10-14). The prompt
+     above rides the wire as a user-role turn, but the Commander never typed it: COMMS shows a goal step as ONE station line
+     naming the goal, live and when the history is replayed, so it reads the stored turn's own text (no flag on the turn,
+     nothing new on the wire). */
+  function continuationGoal(text) {
+    const t = String(text == null ? '' : text);
+    const head = CONT_HEAD_RE.exec(t);
+    if (!head) return null;
+    const rest = t.slice(head[0].length);
+    const cuts = [rest.indexOf(CONT_SUBS), rest.indexOf(CONT_TAIL)].filter(i => i >= 0);
+    if (!cuts.length) return null;
+    const goal = rest.slice(0, Math.min.apply(null, cuts)).trim();
+    return goal || null;
+  }
+  /* THE ONE TURN-LEVEL PREDICATE every history reader shares (org P29-sys wiring, 2026-10-14): the goal a stored history
+     turn works toward when it is a goal step, else null. Only a user-role turn the Commander's own page sent can be one —
+     a delegated brief (m.from) keeps its own speaker. COMMS, the rail excerpt, export, the HUD + desk screen task and
+     station.read_session (the page's handler AND the overseer's, sidecar/overseer.js readSessionTurns, which the interactive
+     lead's session.peek reaches) all ask THIS, so a goal step never reads as the Commander's words on any surface. */
+  function stepOfTurn(m) {
+    if (!m || m.role !== 'user' || m.from || typeof m.content !== 'string') return null;
+    return continuationGoal(m.content);
   }
 
   /* ============================ THE JUDGE PROMPT ============================
@@ -205,7 +234,7 @@
     if (opts.preempt) {
       pause(s, 'you took over — /goal resume to continue');
       return { shouldContinue: false, continuation: null, verdict: 'preempted', reason: 'user message preempted the loop',
-        message: 'goal loop paused — you took over. /goal resume to continue.' };
+        message: '⏸ session goal paused — you took over. /goal resume to continue.' };
     }
     const j = judged || { verdict: 'continue', reason: 'no verdict', parseFailed: true };
     s.turnsUsed += 1;
@@ -217,42 +246,42 @@
     if (j.verdict === 'done') {
       s.status = 'done';
       return { shouldContinue: false, continuation: null, verdict: 'done', reason: j.reason,
-        message: '✓ goal loop: judge says done — ' + j.reason };
+        message: '✓ session goal: judge says done — ' + j.reason };
     }
     // weak-judge guard: N unparseable replies in a row → auto-pause (don't burn the budget on garbage).
     if (s.parseFails >= MAX_PARSE_FAILS) {
       s.status = 'paused';
       s.pausedReason = 'the judge model returned unparseable output ' + s.parseFails + ' turns in a row';
       return { shouldContinue: false, continuation: null, verdict: 'paused', reason: s.pausedReason,
-        message: '⏸ goal loop paused — the judge isn\'t returning a JSON verdict (' + s.parseFails + ' turns). Try a stronger model, then /goal resume.' };
+        message: '⏸ session goal paused — the judge isn\'t returning a JSON verdict (' + s.parseFails + ' turns). Try a stronger model, then /goal resume.' };
     }
     // budget backstop: spent the continuation budget → auto-pause (resumable).
     if (s.turnsUsed >= s.maxTurns) {
       s.status = 'paused';
       s.pausedReason = 'turn budget exhausted (' + s.turnsUsed + '/' + s.maxTurns + ')';
       return { shouldContinue: false, continuation: null, verdict: 'paused', reason: s.pausedReason,
-        message: '⏸ goal loop paused — ' + s.turnsUsed + '/' + s.maxTurns + ' turns used. /goal resume to keep going, /goal clear to stop.' };
+        message: '⏸ session goal paused — ' + s.turnsUsed + '/' + s.maxTurns + ' turns used. /goal resume to keep going, /goal clear to stop.' };
     }
     // not done, budget + judge healthy → fire the next continuation.
     return { shouldContinue: true, continuation: continuationPrompt(s), verdict: 'continue', reason: j.reason,
-      message: 'goal loop: turn ' + s.turnsUsed + '/' + s.maxTurns + ' — judge: not yet, ' + j.reason };
+      message: 'session goal: turn ' + s.turnsUsed + '/' + s.maxTurns + ' — judge: not yet, ' + j.reason };
   }
 
   /* ============================ STATUS LINE ============================ */
   function statusLine(s) {
-    if (!s || s.status === 'cleared') return 'No goal loop is running. Set one with /goal <text>.';
+    if (!s || s.status === 'cleared') return 'No session goal is set. Set one with /goal <text>.';
     const turns = s.turnsUsed + '/' + s.maxTurns + ' turns';
     const sub = s.subgoals.length ? (', ' + s.subgoals.length + ' subgoal' + (s.subgoals.length === 1 ? '' : 's')) : '';
-    if (s.status === 'active') return '⊙ goal loop (active, ' + turns + sub + '): ' + s.goal;
-    if (s.status === 'paused') return '⏸ goal loop (paused' + (s.pausedReason ? ' — ' + s.pausedReason : '') + ', ' + turns + sub + '): ' + s.goal;
-    if (s.status === 'done') return '✓ goal loop done (' + turns + sub + '): ' + s.goal;
-    return 'goal loop (' + s.status + ', ' + turns + sub + '): ' + s.goal;
+    if (s.status === 'active') return '⊙ session goal (active, ' + turns + sub + '): ' + s.goal;
+    if (s.status === 'paused') return '⏸ session goal (paused' + (s.pausedReason ? ' — ' + s.pausedReason : '') + ', ' + turns + sub + '): ' + s.goal;
+    if (s.status === 'done') return '✓ session goal done (' + turns + sub + '): ' + s.goal;
+    return 'session goal (' + s.status + ', ' + turns + sub + '): ' + s.goal;
   }
 
   return {
     DEFAULT_MAX_TURNS, MAX_PARSE_FAILS,
     parseVerdict, create, normalize, isActive, hasGoal,
     addSubgoal, pause, resume, clear,
-    continuationPrompt, judgeSystem: () => JUDGE_SYSTEM, judgeUser, evaluate, statusLine
+    continuationPrompt, continuationGoal, stepOfTurn, judgeSystem: () => JUDGE_SYSTEM, judgeUser, evaluate, statusLine
   };
 });

@@ -33,6 +33,19 @@
     }
   };
 
+  /* A DRAFT IS AN AGENT'S TASK (org wire AUTO-P16-3): RUN BY is set to the draft's agent; a draft whose agent has no button on this roster
+     (none named, or one not aboard) puts RUN BY back on an agent when it sits on a WORKFLOW — routines.js keeps that pick as window state
+     (routineLineKey), and a stale one would save the draft's prompt as runsLine at that workflow's first BAY. The select's own change
+     handler clears the pick, so the form and the save read one choice. */
+  function applyDraftAgent(body, agentId) {
+    const agentButton = Array.from(body.querySelectorAll('.rt-agent-btn')).find(b => b.dataset.agent === agentId);
+    if (agentButton) { agentButton.click(); return; }
+    const sel = body.querySelector('#rt-agent-select');
+    if (!sel || String(sel.value || '').indexOf('line:') !== 0) return;
+    const first = Array.from(sel.options || []).find(o => o && !o.disabled && String(o.value || '').indexOf('line:') !== 0);
+    if (first) { sel.value = first.value; sel.dispatchEvent(new Event('change')); }
+  }
+
   function buildAutomation(body) {
     const built = lanes.map(fn => fn(body)).filter(b => b && Array.isArray(b.sections));
     const sections = built.reduce((acc, b) => acc.concat(b.sections), []);
@@ -45,13 +58,14 @@
     const hints = { routines: 'Next runs and recent results', 'routines-create': 'Repeat a task at a chosen time', loops: 'Progress and work to review', 'loops-start': 'Work toward a defined stopping point', away: 'Queued work between messages' };
     sections.forEach(sec => { sec.label = labels[sec.id] || sec.label; });
     // ONE AUTOMATION DOOR: the agents' initiative lives in SETTINGS › AUTONOMY, but whoever opens AUTOMATION sees it
-    // here (read from the confirmed posture, never assumed) with a CHANGE door — no hunting through two windows.
-    const INIT_NAME = { wait: 'WAIT', propose: 'SUGGEST', leash: 'BUILD', free: 'FREE' };
+    // here (read from the confirmed posture, never assumed) with a CHANGE door — no hunting through two windows. The rung
+    // name comes from the dial's one INITIATIVE_RUNGS table (StationUI.initiativeLabel), so AUTOMATE reads SMALL JOBS
+    // exactly where SETTINGS › AUTONOMY does.
     const railTop = top => {
       const sum = (typeof AutonomyStore !== 'undefined' && AutonomyStore.summary) ? AutonomyStore.summary() : null;
       top.classList.add('auto-init-head');
       top.innerHTML = '<div class="set-sub"><span class="set-sub-k">ON ITS OWN</span><span class="set-sub-d">'
-        + (sum ? H.esc(INIT_NAME[sum.initiative] || String(sum.initiative).toUpperCase()) : 'not loaded yet') + '</span></div>'
+        + (sum ? H.esc(StationUI.initiativeLabel(sum.initiative)) : 'not loaded yet') + '</span></div>'
         + '<button type="button" class="bb sm" id="auto-init-change" data-tip="Whether agents start work nobody asked for. It does not change the schedules here.">CHANGE</button>';
       top.querySelector('#auto-init-change').addEventListener('click', () => H.openTerm('settings', 'autonomy'));
     };
@@ -109,8 +123,7 @@
       for (const [selector, key] of [['#rt-name','name'],['#rt-prompt','prompt'],['#rt-workdir','workdir']]) {
         const el = body.querySelector(selector); if (el) el.value = String(draft[key] || '');
       }
-      const agentButton = Array.from(body.querySelectorAll('.rt-agent-btn')).find(b => b.dataset.agent === draft.agentId);
-      if (agentButton) agentButton.click();
+      applyDraftAgent(body, draft.agentId);
       // REPEAT SENSE: a takeover carries the rhythm read off when the Commander actually asked. It only
       // pre-selects the picker; nothing is scheduled until the existing ADD click.
       const sug = draft.suggest;

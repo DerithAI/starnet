@@ -118,6 +118,50 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.eq(captured.body.include, ['reasoning.encrypted_content'], 'reasoning carry-over requested when thinking is on');
   }
 
+  // C1a. PROMPT-CACHE ROUTING (token-burn audit 2026-10-17). Measured live: with no route the Codex backend served 0
+  //      cached tokens on every call, and the body prompt_cache_key ALONE also served 0 — the session_id HEADER is what
+  //      it honors. Every request names a route that is STABLE across the turns of a run (messages grow, a tool.search
+  //      reveal appends a tool, the per-conversation tail after cacheSystemPrefix differs) and DIFFERENT across model,
+  //      system prefix and ChatGPT account; an explicit req.promptCacheKey wins.
+  {
+    const seen = [];
+    const f = async (_url, init) => { seen.push({ body: JSON.parse(init.body), headers: init.headers }); return new Response(['data: [DONE]', ''].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }); };
+    const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const jwt = acct => b64({ alg: 'none' }) + '.' + b64({ 'https://api.openai.com/auth': { chatgpt_account_id: acct } }) + '.sig';
+    const p = makeCodexProvider({ fetch: f, token: jwt('acct-A') });
+    const tools = [{ type: 'function', function: { name: 'fs_read', parameters: { type: 'object' } } }];
+    const moreTools = tools.concat([{ type: 'function', function: { name: 'browser_resize', parameters: { type: 'object' } } }]);
+    const stable = 'You are the overseer. [HARNESS] tools...';
+    const sys = { role: 'system', content: stable + '\nconversation tail one' };
+    const call = (req) => collect(p, Object.assign({ model: 'gpt-5.5', cacheSystemPrefix: stable, tools }, req));
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }] });                                                              // 0
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'turn two' }] });   // 1
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }], tools: moreTools });                                            // 2
+    await call({ messages: [{ role: 'system', content: stable + '\nconversation tail two' }, { role: 'user', content: 'x' }] });        // 3
+    await call({ messages: [{ role: 'system', content: 'You are a worker.' }, { role: 'user', content: 'turn one' }], cacheSystemPrefix: '' });   // 4
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }], model: 'gpt-5.4' });                                            // 5
+    await call({ messages: [sys, { role: 'user', content: 'turn one' }], promptCacheKey: 'agent|stream-1' });                            // 6
+    await collect(makeCodexProvider({ fetch: f, token: jwt('acct-B') }), { model: 'gpt-5.5', cacheSystemPrefix: stable, tools, messages: [sys, { role: 'user', content: 'turn one' }] });   // 7
+    await collect(makeCodexProvider({ fetch: f, token: 'not-a-jwt' }), { model: 'gpt-5.5', messages: [sys, { role: 'user', content: 'hi' }] });   // 8
+    // a stale cacheSystemPrefix the instructions do NOT start with is ignored: the route falls back to the whole instructions
+    const other = { role: 'system', content: 'Another prompt entirely.' };
+    await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: stable });   // 9
+    await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: '' });       // 10
+    const keys = seen.map(s => s.body.prompt_cache_key);
+    A.ok(keys.every(k => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(k)), 'every request names a uuid-shaped route (an unreadable token still gets one)');
+    A.eq(keys[1], keys[0], 'the route holds as the conversation grows');
+    A.eq(keys[2], keys[0], 'a tool.search reveal (one more tool) does not move the route');
+    A.eq(keys[3], keys[0], 'a different per-conversation tail after cacheSystemPrefix keeps the route');
+    A.ok(keys[4] !== keys[0], 'a different system prompt gets a different route');
+    A.ok(keys[5] !== keys[0], 'a different model gets a different route');
+    A.ok(keys[6] !== keys[0], 'an explicit req.promptCacheKey wins over the derived route');
+    A.ok(keys[7] !== keys[0], 'another ChatGPT account never shares the route');
+    A.ok(keys[9] !== keys[0] && keys[9] === keys[10], 'a cacheSystemPrefix the instructions do not start with is ignored (route = the whole instructions)');
+    A.ok(seen.every(s => s.headers['session_id'] === s.body.prompt_cache_key), 'the session_id header (the half the backend honors) carries the route on every request');
+    A.eq(_internals.tokenAccount(jwt('acct-A')), 'acct-A', 'the account is read from the token claim');
+    A.eq(_internals.tokenAccount('ACCESS'), '', 'a non-JWT token yields no account (and no throw)');
+  }
+
   // C1b. Codex effort aliases clamp to the backend scale; reasoning-off skips encrypted reasoning carry-over.
   {
     const bodies = [];
@@ -300,6 +344,49 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.ok(live.length === 1 && !live[0].fallback, 'a live-discovered catalog carries no fallback flag');
     const offline = await makeCodexProvider({ fetch: async () => new Response('nope', { status: 500 }), token: 'acc' }).listModels();
     A.ok(offline.length > 0 && offline.every(m => m.fallback === true), 'the curated offline list is marked fallback:true on every entry');
+  }
+
+  // M. #118: a slug this sign-in accepts comes from the account's LIVE list. liveModelIds keeps only what that list
+  //    offered (priority order, deduped); liveDefaultModel keeps the pinned slug while that list still offers it,
+  //    takes the list's top entry only when it does not, and never guesses or hangs.
+  {
+    const codexMod = require('../sidecar/providers/codex.js');
+    const { liveModelIds, liveDefaultModel, memoLiveModelIds, DEFAULT_MODEL } = codexMod;
+    A.eq(liveModelIds([{ id: 'b' }, { id: ' a ' }, { id: 'b' }, null, { id: '' }, { id: 7 }]), ['b', 'a'], 'live ids: trimmed, deduped, malformed entries dropped');
+    A.eq(liveModelIds([{ id: 'gpt-5.5', fallback: true }, { id: 'gpt-5.4', fallback: true }]), [], 'the curated offline list proves nothing about the account');
+    A.eq(liveModelIds(null), [], 'no answer, no ids');
+    const json = obj => async () => new Response(JSON.stringify(obj), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const live = makeCodexProvider({ fetch: json({ models: [{ slug: 'gpt-5.5', priority: 2 }, { slug: 'gpt-5.6-luna', priority: 1 }, { slug: 'gpt-old', priority: 0, visibility: 'hide' }] }), token: 'acc' });
+    A.eq(liveModelIds(await live.listModels()), ['gpt-5.6-luna', 'gpt-5.5'], 'live ids follow the backend priority and skip hidden slugs');
+    // the pinned slug stays while the account still offers it: an aux pass never moves to a newer flagship by itself
+    A.eq(await liveDefaultModel(() => live.listModels(), DEFAULT_MODEL, 1000), DEFAULT_MODEL, 'the pinned slug stays while the live list still offers it');
+    const dropped = makeCodexProvider({ fetch: json({ models: [{ slug: 'gpt-5.6-luna', priority: 1 }, { slug: 'gpt-5.4', priority: 2 }] }), token: 'acc' });
+    A.eq(await liveDefaultModel(() => dropped.listModels(), DEFAULT_MODEL, 1000), 'gpt-5.6-luna', 'a pinned slug the live list no longer offers yields the account\'s top live model');
+    const offline = makeCodexProvider({ fetch: async () => new Response('nope', { status: 500 }), token: 'acc' });
+    A.eq(await liveDefaultModel(() => offline.listModels(), 'pinned-slug', 1000), 'pinned-slug', 'an offline list falls back to the pinned slug, never a curated guess');
+    const traced = () => require('../sidecar/failopen.js').counts()['codex.live-default'] || 0;
+    const tracedBefore = traced();
+    A.eq(await liveDefaultModel(() => { throw new Error('no sign-in'); }, 'pinned-slug', 1000), 'pinned-slug', 'a throwing lister falls back');
+    A.eq(traced() - tracedBefore, 1, 'a throwing lister leaves a failopen trace');
+    A.eq(await liveDefaultModel(() => new Promise(() => {}), 'pinned-slug', 20), 'pinned-slug', 'a silent lister is bounded');
+    // the per-run image-host list: one shared read, and only a list that proves something is kept
+    let reads = 0;
+    const answers = [() => { throw new Error('no sign-in'); }, () => offline.listModels(), () => live.listModels()];
+    const memo = memoLiveModelIds(() => answers[reads++]());
+    A.eq(await memo().then(() => 'resolved', e => 'rejected: ' + e.message), 'rejected: no sign-in', 'a failed read rejects (the image tool records it)');
+    A.eq(await memo(), [], 'an offline answer yields no ids');
+    const [one, two] = await Promise.all([memo(), memo()]);
+    A.eq([one, two, reads], [['gpt-5.6-luna', 'gpt-5.5'], ['gpt-5.6-luna', 'gpt-5.5'], 3], 'a failed or offline read is asked again; concurrent asks share ONE read');
+    A.eq([await memo(), reads], [['gpt-5.6-luna', 'gpt-5.5'], 3], 'a live list is kept for the run');
+    // Composition root: the quest refresh's Codex pass rides the SAME sign-in's live list (built after its provider),
+    // and an explicit aux model still wins. Source pin only: requiring index.js boots a sidecar.
+    const fs = require('node:fs'), path = require('node:path');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+    const at = src.indexOf('async function runQuestRefreshCycle(');
+    const quest = src.slice(at, src.indexOf('\n}\n', at));
+    A.ok(at > 0 && /const auxModel = resolveAuxModel\(\);/.test(quest), 'quest refresh reads the aux model once');
+    const providerAt = quest.indexOf('provider = selectProvider'), pickAt = quest.search(/if \(usingCodex && !auxModel\) model = await codexLiveDefaultModel\(\(\) => provider\.listModels\(\), CODEX_DEFAULT_MODEL, \d+\);/);
+    A.ok(providerAt > 0 && pickAt > providerAt && pickAt < quest.indexOf('const req = {'), 'a Codex quest refresh with no aux model asks its own provider\'s live list before the request');
   }
 
   A.report('provider.codex.test');

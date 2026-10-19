@@ -81,6 +81,29 @@ function clickFor(row, preview) {
     A.eq(calls[0] && calls[0].args.path, 'workshop/run-2/brief.md',
       'Workshop OPEN preserves the backend-proven jailed path instead of guessing from the display name');
 
+    /* P24 wiring: a keyless TO REVIEW FILES row whose desktop OPEN fails points at "the library below" ONLY while a library card
+       for its run is really drawn there. TO REVIEW lists cleared runs too (includeCleared=1), and those have no library card. */
+    {
+      const failing = { invoke: async () => { throw new Error('host refused'); } };
+      global.window.__TAURI__ = { core: failing };
+      const reviewClick = (cards, inLib) => {
+        const li = { querySelector: () => null };   // TO REVIEW's file row: no .dlv-floc key slot
+        const dlv = { querySelectorAll: sel => sel === 'article.dlv-card[data-run]' ? cards.map(id => ({ getAttribute: a => a === 'data-run' ? id : null })) : [] };
+        const c = clickFor({ id: 'run:agent:rv', agentId: 'agent', runId: 'run-rv', source: 'run',
+          files: [{ path: 'out.md', preview: 'markdown', sandboxed: false, openUrl: '/api/file?agent=agent&path=out.md' }] }, { innerHTML: '' });
+        const base = c.event.target.closest;
+        c.event.target.closest = sel => sel === 'li' ? li : sel === '.dlv' ? (inLib ? dlv : null) : base(sel);
+        return c;
+      };
+      const said = async c => { const out = []; await D.handleOpenClick(c.event, c.rows, {}, t => out.push(t)); return out.join(' '); };
+      A.ok(/open its run in the library below/.test(await said(reviewClick(['other', 'run-rv'], true))), 'a run whose library card is drawn below: the toast points at it');
+      const cleared = await said(reviewClick(['other'], true));
+      A.ok(!/library below/.test(cleared) && /session or workspace folder/.test(cleared), 'a CLEARED run (no library card) never points at a row that is not there: ' + cleared);
+      A.ok(!/library below/.test(await said(reviewClick(['run-rv'], false))), 'no library around the link: no "below" claim');
+      global.window.__TAURI__ = { core: { invoke: async (name, args) => { calls.push({ name, args }); } } };
+    }
+    A.ok(/'<article class="dlv-card" data-i="' \+ i \+ '"' \+ \(r\.runId \? ' data-run="' \+ esc\(r\.runId\) \+ '"' : ''\)/.test(frontendSource), 'every library card carries its run id (what TO REVIEW\'s fallback looks for)');
+
     delete global.window.__TAURI__;
     let fetched = '';
     global.fetch = async url => {

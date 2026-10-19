@@ -3,7 +3,7 @@
    scripted local model, to see the delegated-work flow end to end without credentials or spend:
    the lead dispatches up to three crew in the background → each worker gets its own thread under the conversation
    (fileUnderThreads) → the rail folds them under it → the DELEGATED card follows the real ledger → each result is
-   reviewed back in the parent. Recruit two or three specialists first; the lead dispatches whoever is on the roster.
+   reviewed back in the parent. Recruit two or three specialists first; the lead dispatches the first three on the roster.
    The scripted model proves the harness flow, not real-model judgment. */
 const fs = require('node:fs');
 const http = require('node:http');
@@ -14,7 +14,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const TASKS = [
   { prompt: 'Scan our 4 closest competitors and their entry pricing', ms: 9000, tool: ['fs_list', { path: '.' }], out: 'Scanned 4 competitors. Two undercut our entry tier by $5 to $8 a month; none offer a local-first plan.' },
   { prompt: 'Draft the new pricing page copy and layout', ms: 16000, tool: ['fs_list', { path: '.' }], out: 'Drafted the pricing page: entry price unchanged, a cheaper annual plan, and a local-first comparison row.' },
-  // VEX WRITES a file: a real artifact for its receipt, and (SEED_FULL_ACCESS=0) a real approval that names VEX
+  // the THIRD crew member on the roster writes a file: a real artifact for its receipt, and (SEED_FULL_ACCESS=0) a real
+  // approval that names that agent. Recruit at least three specialists to see it.
   { prompt: 'Write the launch email for the 20th', ms: 12000, tool: ['fs_write', { path: 'launch-email.md', content: '# Launch email\n\nSubject: Local-first, finally.\n' }], out: 'Wrote the launch email: subject line plus two openers built on the local-first angle.' }
 ];
 

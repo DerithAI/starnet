@@ -149,4 +149,80 @@ A.ok(/'dblclick'[\s\S]{0,200}removeItem\(RKEY\)/.test(js), 'double-click hands t
 A.ok(/vseam\.hidden = !cuts\.length/.test(js), 'only an EMPTY roster hides the handle — one agent still has two notches (shown, or closed)');
 A.ok(/rowsAtHeight\(cuts, \(clientY[\s\S]{0,60}\/ zoomOf\(\)\)/.test(js), 'the dragged height is converted through the body zoom exactly once (uiZoom law)');
 
+/* ---- 5. NEEDS YOU sits between the roster and SESSIONS (review app-shell-ui-04 / seams-04) ----
+   It replaced the old #ws-attention button, but the rail still measured and watched the removed button: the
+   NEEDS YOU block (about 70px an ask, its "N more" expand, its margins) went uncounted, and nothing re-fitted when it
+   appeared, so SESSIONS lost its WS_FLOOR rows. Run the real measuring against a stub layout: a 600px column,
+   six 49px crew rows, then NEEDS YOU opening at 360px tall (8px/4px margins). */
+{
+  const vm = require('vm');
+  const rect = (top, bottom, height) => ({ top, bottom, height: height == null ? bottom - top : height });
+  const el = (props) => Object.assign({ hidden: false, style: { _p: {}, getPropertyValue(k) { return this._p[k] || ''; }, setProperty(k, v) { this._p[k] = v; }, removeProperty(k) { delete this._p[k]; } },
+    classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, _cs: {} }, props);
+  const ul = el({ getBoundingClientRect: () => rect(100, 300) });
+  const rows = Array.from({ length: 6 }, (_, i) => ({ offsetTop: 3 + 49 * i, offsetHeight: 49, offsetParent: ul, _cs: {}, getBoundingClientRect: () => rect(100 + 3 + 49 * i, 100 + 3 + 49 * (i + 1)) }));
+  ul.querySelectorAll = () => rows;
+  const left = el({ offsetParent: {}, clientHeight: 600, getBoundingClientRect: () => rect(0, 700) });
+  const vseam = el({ getBoundingClientRect: () => rect(300, 300) });
+  const search = el({ hidden: true });
+  let needsH = 0;
+  const needs = el({ hidden: true, _cs: { marginTop: '8px', marginBottom: '4px' }, getBoundingClientRect: () => rect(0, needsH, needsH) });
+  const byId = { crew: ul, left, 'crew-vresizer': vseam, 'crew-search-wrap': search, 'ws-needs': needs };
+  const frames = [], resized = [];
+  const ctx = {
+    document: { getElementById: id => byId[id] || null, body: el({}) },
+    getComputedStyle: e => Object.assign({ paddingBottom: '0', borderTopWidth: '0', marginBottom: '0', marginTop: '0' }, e._cs || {}),
+    MutationObserver: class { observe() {} },
+    ResizeObserver: class { constructor(cb) { this.cb = cb; } observe(t) { resized.push({ cb: this.cb, t }); } disconnect() {} },
+    requestAnimationFrame: cb => { frames.push(cb); return frames.length; },
+    cancelAnimationFrame() {}, performance: { now: () => 0 },
+    window: { addEventListener() {} }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }
+  };
+  vm.runInNewContext(js, ctx);
+  const flush = () => { while (frames.length) frames.shift()(); };
+  flush();
+  A.eq(ul.style.getPropertyValue('--crew-cap'), '199px', 'NEEDS YOU hidden: the roster keeps its 40% share (4 whole rows)');
+  // three asks arrive: NEEDS YOU opens 360px tall. Its own resize must re-fit the rail
+  needs.hidden = false; needsH = 360;
+  const watch = resized.filter(r => r.t === needs);
+  A.ok(watch.length > 0, 'the rail re-measures when NEEDS YOU appears, grows or expands "N more" (a ResizeObserver on #ws-needs)');
+  // (2026-10-14) a working card grows a line when its run clock does not fit beside the name — with no class change when a
+  // clock outgrows its line mid-run (9:59 → 10:00) — so every crew row is watched for its own size too
+  A.ok(rows.every(r => resized.some(x => x.t === r)), 'every crew row is watched for its own size (a card that grows a line re-fits the roster window)');
+  for (const r of watch) r.cb([]);
+  flush();
+  // 700 - 100 - 360 - 8 - 4 = 228 for the roster + SESSIONS; SESSIONS keeps WS_FLOOR (132) → 96 for the roster = one whole row
+  A.eq(ul.style.getPropertyValue('--crew-cap'), '52px', 'with NEEDS YOU open, SESSIONS keeps its floor: the roster gives up rows, margins included');
+  A.ok(!/getElementById\('ws-attention'\)/.test(js), 'the rail no longer measures the removed #ws-attention button');
+}
+
+/* ---- 6. THE LAST ROW'S FRACTION (2026-10-14) ----
+   Live (isolated station, TEXT SIZE 115%): a working card whose run clock took the line under its name measured 81.427px;
+   offsetHeight said 81, the window was cut 1px short of the list, and the 1px scrollbar that appeared narrowed every card
+   (STRATEGY then ellipsized). The last cut — the list's whole scrollHeight — is rounded UP from the row's true bottom. */
+{
+  const vm = require('vm');
+  const rect = (top, bottom) => ({ top, bottom, height: bottom - top });
+  const el = (props) => Object.assign({ hidden: false, style: { _p: {}, getPropertyValue(k) { return this._p[k] || ''; }, setProperty(k, v) { this._p[k] = v; }, removeProperty(k) { delete this._p[k]; } },
+    classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, _cs: {} }, props);
+  const ul = el({ getBoundingClientRect: () => rect(100, 300), scrollTop: 0 });
+  const rows = [
+    { offsetTop: 3, offsetHeight: 49, offsetParent: ul, _cs: {}, getBoundingClientRect: () => rect(103, 152) },
+    { offsetTop: 52, offsetHeight: 81, offsetParent: ul, _cs: {}, getBoundingClientRect: () => rect(152, 233.427) }
+  ];
+  ul.querySelectorAll = () => rows;
+  const left = el({ offsetParent: {}, clientHeight: 600, getBoundingClientRect: () => rect(0, 700) });
+  const byId = { crew: ul, left, 'crew-vresizer': el({ getBoundingClientRect: () => rect(300, 300) }), 'crew-search-wrap': el({ hidden: true }), 'ws-needs': el({ hidden: true, getBoundingClientRect: () => rect(0, 0) }) };
+  const frames = [];
+  vm.runInNewContext(js, {
+    document: { getElementById: id => byId[id] || null, body: el({}) },
+    getComputedStyle: e => Object.assign({ paddingBottom: '0', borderTopWidth: '0', marginBottom: '0', marginTop: '0' }, e._cs || {}),
+    MutationObserver: class { observe() {} }, ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: cb => { frames.push(cb); return frames.length; }, cancelAnimationFrame() {}, performance: { now: () => 0 },
+    window: { addEventListener() {} }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }
+  });
+  while (frames.length) frames.shift()();
+  A.eq(ul.style.getPropertyValue('--crew-cap'), '134px', 'a last row ending at 133.427px gets a 134px window, never the 133px offsetHeight rounds to');
+}
+
 A.report('crew-rail-fit');

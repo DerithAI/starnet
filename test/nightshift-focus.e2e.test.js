@@ -15,6 +15,7 @@
 'use strict';
 
 const A = require('./_assert.js');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 const http = require('http');
 const path = require('path');
 const os = require('os');
@@ -72,7 +73,7 @@ function startMock() {
       if (req.url.indexOf('/chat/completions') >= 0) {
         let body = ''; req.on('data', d => { body += d; }); req.on('end', () => {
           let msgs = []; try { msgs = (JSON.parse(body).messages) || []; } catch (_) {}
-          const prompt = String(((msgs.find(m => m && m.role === 'user')) || {}).content || '');
+          const prompt = userWords(msgs.find(m => m && m.role === 'user'));
           const toolResults = msgs.filter(m => m && m.role === 'tool').length;
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
           const tool = (id, name, args) => {

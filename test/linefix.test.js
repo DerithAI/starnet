@@ -53,6 +53,17 @@ const leaky = L.parseFixes(JSON.stringify({ diagnosis: 'Step p11 produced an ess
 A.ok(leaky.ok && leaky.diagnosis === 'the WRITER step produced an essay.' && leaky.fixes[0].why === 'the WRITER step decides the length.', 'a step id that slips into the diagnosis or a why becomes the step\'s role (the Commander never reads "p11")');
 A.ok(/name a step by its role/.test(L.SYSTEM), '…and the prompt asks for roles, not ids');
 A.ok(/must work for EVERY job this line gets, not only this one, so never copy this job's topic or numbers/.test(L.SYSTEM), 'a fix is a standing instruction: it never bakes in this job\'s topic or counts (a real model wrote "exactly three bullet points")');
+// a NAMED step goes by its NAME, in the prompt and in what the Commander reads — the fix card's header names it so (conveyor-ui-15)
+{
+  const named = L.normalizeInput({ complaint: 'too long', steps: [{ dockId: 'p21', name: 'Fact checker', role: 'REVIEWER', agent: 'NOVA', does: 'Check it.', output: 'ok' }, { dockId: 'p22', role: 'WRITER', does: 'Write it.', output: 'x' }] });
+  A.ok(named.ok && named.steps[0].name === 'Fact checker' && named.steps[1].name === '', 'the step\'s NAME rides with its role (none for an unnamed step)');
+  A.ok(L.normalizeInput({ complaint: 'x', steps: [{ dockId: 'p1', name: 'n'.repeat(90), role: 'WRITER' }] }).steps[0].name.length === L.MAX.label, '…bounded');
+  const np = L.buildPrompt(named);
+  A.ok(/step id "p21" — Fact checker \(REVIEWER\) \(agent NOVA\)/.test(np.user) && /step id "p22" — WRITER\n/.test(np.user), 'the prompt lists a named step by its NAME (role beside it), an unnamed one by its role — ' + np.user.split('\n').filter(l => /step id/.test(l)).join(' | '));
+  A.ok(/name a step by its NAME when it has one/.test(L.SYSTEM) && /name a step by its role/.test(L.SYSTEM), 'the model is asked to name a step the way the cards do');
+  const said = L.parseFixes(JSON.stringify({ diagnosis: 'Step p21 let it through.', fixes: [{ step: 'p21', does: 'Cut it to two sentences.', why: 'p21 decides.' }] }), named);
+  A.ok(said.ok && said.diagnosis === 'the Fact checker step let it through.' && said.fixes[0].why === 'the Fact checker step decides.', 'a step id that slips into the answer becomes the step\'s NAME — ' + said.diagnosis);
+}
 const already = L.parseFixes(JSON.stringify({ diagnosis: 'd', fixes: [{ step: 'p11', does: 'Write a 200-word digest.', hands: 'a 200-word draft' }] }), inp);
 A.ok(!already.ok && /already in this line's steps/.test(already.error), 'a suggestion the line already has (a fix already used) says so, instead of "no change"');
 

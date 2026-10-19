@@ -1,0 +1,1097 @@
+{
+  "doc": {
+    "schema": "starnet.station",
+    "version": 2,
+    "_nid": 15,
+    "meta": {
+      "name": "STARNET STATION",
+      "createdAt": 1791778779060,
+      "tier": 0,
+      "spawnRoomId": "r1",
+      "trunkRoomId": "r1"
+    },
+    "rooms": {
+      "r1": {
+        "id": "r1",
+        "kind": "hab",
+        "name": "HAB-01",
+        "rects": [
+          {
+            "x1": 0,
+            "y1": 0,
+            "x2": 17,
+            "y2": 10
+          }
+        ],
+        "floorStyle": "hull",
+        "floorMat": null,
+        "wallStyle": null,
+        "wallMat": null,
+        "hullStyle": null,
+        "hullMat": null,
+        "tier": 0,
+        "floorPaint": {}
+      },
+      "r2": {
+        "id": "r2",
+        "kind": "hab",
+        "name": "HAB-02",
+        "rects": [
+          {
+            "x1": 30,
+            "y1": 0,
+            "x2": 69,
+            "y2": 34
+          }
+        ],
+        "floorStyle": "hull",
+        "floorMat": null,
+        "wallStyle": null,
+        "wallMat": null,
+        "hullStyle": null,
+        "hullMat": null,
+        "tier": 0,
+        "floorPaint": {}
+      }
+    },
+    "order": [
+      "r1",
+      "r2"
+    ],
+    "props": [
+      {
+        "id": "p3",
+        "t": "intake",
+        "x": 32,
+        "y": 4,
+        "w": 2,
+        "h": 2
+      },
+      {
+        "id": "p4",
+        "t": "splitter",
+        "x": 37,
+        "y": 5,
+        "w": 1,
+        "h": 1,
+        "block": false
+      },
+      {
+        "id": "p5",
+        "t": "bay",
+        "x": 39,
+        "y": 2,
+        "w": 2,
+        "h": 2,
+        "role": "CREW",
+        "agentId": "other0"
+      },
+      {
+        "id": "p6",
+        "t": "bay",
+        "x": 39,
+        "y": 6,
+        "w": 2,
+        "h": 2,
+        "role": "CREW",
+        "agentId": "same"
+      },
+      {
+        "id": "p7",
+        "t": "joiner",
+        "x": 42,
+        "y": 5,
+        "w": 1,
+        "h": 1,
+        "block": false
+      },
+      {
+        "id": "p8",
+        "t": "outbox",
+        "x": 45,
+        "y": 4,
+        "w": 2,
+        "h": 2
+      },
+      {
+        "id": "p9",
+        "t": "intake",
+        "x": 32,
+        "y": 21,
+        "w": 2,
+        "h": 2
+      },
+      {
+        "id": "p10",
+        "t": "splitter",
+        "x": 37,
+        "y": 22,
+        "w": 1,
+        "h": 1,
+        "block": false
+      },
+      {
+        "id": "p11",
+        "t": "bay",
+        "x": 39,
+        "y": 19,
+        "w": 2,
+        "h": 2,
+        "role": "CREW",
+        "agentId": "other1"
+      },
+      {
+        "id": "p12",
+        "t": "bay",
+        "x": 39,
+        "y": 23,
+        "w": 2,
+        "h": 2,
+        "role": "CREW",
+        "agentId": "same"
+      },
+      {
+        "id": "p13",
+        "t": "joiner",
+        "x": 42,
+        "y": 22,
+        "w": 1,
+        "h": 1,
+        "block": false
+      },
+      {
+        "id": "p14",
+        "t": "outbox",
+        "x": 45,
+        "y": 21,
+        "w": 2,
+        "h": 2
+      }
+    ],
+    "belts": {
+      "34,5": "E",
+      "35,5": "E",
+      "36,5": "E",
+      "37,5": "N",
+      "37,4": "N",
+      "37,3": "E",
+      "38,3": "E",
+      "37,6": "S",
+      "37,7": "E",
+      "38,7": "E",
+      "41,3": "E",
+      "42,3": "S",
+      "42,4": "S",
+      "41,7": "E",
+      "42,7": "N",
+      "42,6": "N",
+      "42,5": "E",
+      "43,5": "E",
+      "44,5": "E",
+      "34,22": "E",
+      "35,22": "E",
+      "36,22": "E",
+      "37,22": "N",
+      "37,21": "N",
+      "37,20": "E",
+      "38,20": "E",
+      "37,23": "S",
+      "37,24": "E",
+      "38,24": "E",
+      "41,20": "E",
+      "42,20": "S",
+      "42,21": "S",
+      "41,24": "E",
+      "42,24": "N",
+      "42,23": "N",
+      "42,22": "E",
+      "43,22": "E",
+      "44,22": "E"
+    },
+    "edges": [],
+    "links": [
+      {
+        "id": "l1",
+        "from": {
+          "prop": "p4",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p6",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 37,
+            "y": 6,
+            "d": "S"
+          },
+          {
+            "x": 37,
+            "y": 7,
+            "d": "E"
+          },
+          {
+            "x": 38,
+            "y": 7,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l2",
+        "from": {
+          "prop": "p4",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p5",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 37,
+            "y": 4,
+            "d": "N"
+          },
+          {
+            "x": 37,
+            "y": 3,
+            "d": "E"
+          },
+          {
+            "x": 38,
+            "y": 3,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l3",
+        "from": {
+          "prop": "p7",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p8",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 43,
+            "y": 5,
+            "d": "E"
+          },
+          {
+            "x": 44,
+            "y": 5,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l4",
+        "from": {
+          "prop": "p10",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p12",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 37,
+            "y": 23,
+            "d": "S"
+          },
+          {
+            "x": 37,
+            "y": 24,
+            "d": "E"
+          },
+          {
+            "x": 38,
+            "y": 24,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l5",
+        "from": {
+          "prop": "p10",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p11",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 37,
+            "y": 21,
+            "d": "N"
+          },
+          {
+            "x": 37,
+            "y": 20,
+            "d": "E"
+          },
+          {
+            "x": 38,
+            "y": 20,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l6",
+        "from": {
+          "prop": "p13",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p14",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 43,
+            "y": 22,
+            "d": "E"
+          },
+          {
+            "x": 44,
+            "y": 22,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l7",
+        "from": {
+          "prop": "p3",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p4",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 34,
+            "y": 5,
+            "d": "E"
+          },
+          {
+            "x": 35,
+            "y": 5,
+            "d": "E"
+          },
+          {
+            "x": 36,
+            "y": 5,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l8",
+        "from": {
+          "prop": "p5",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p7",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 41,
+            "y": 3,
+            "d": "E"
+          },
+          {
+            "x": 42,
+            "y": 3,
+            "d": "S"
+          },
+          {
+            "x": 42,
+            "y": 4,
+            "d": "S"
+          }
+        ]
+      },
+      {
+        "id": "l9",
+        "from": {
+          "prop": "p6",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p7",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 41,
+            "y": 7,
+            "d": "E"
+          },
+          {
+            "x": 42,
+            "y": 7,
+            "d": "N"
+          },
+          {
+            "x": 42,
+            "y": 6,
+            "d": "N"
+          }
+        ]
+      },
+      {
+        "id": "l10",
+        "from": {
+          "prop": "p9",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p10",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 34,
+            "y": 22,
+            "d": "E"
+          },
+          {
+            "x": 35,
+            "y": 22,
+            "d": "E"
+          },
+          {
+            "x": 36,
+            "y": 22,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l11",
+        "from": {
+          "prop": "p11",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p13",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 41,
+            "y": 20,
+            "d": "E"
+          },
+          {
+            "x": 42,
+            "y": 20,
+            "d": "S"
+          },
+          {
+            "x": 42,
+            "y": 21,
+            "d": "S"
+          }
+        ]
+      },
+      {
+        "id": "l12",
+        "from": {
+          "prop": "p12",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p13",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 41,
+            "y": 24,
+            "d": "E"
+          },
+          {
+            "x": 42,
+            "y": 24,
+            "d": "N"
+          },
+          {
+            "x": 42,
+            "y": 23,
+            "d": "N"
+          }
+        ]
+      }
+    ]
+  },
+  "beforeRelease": [
+    {
+      "name": "cron.fire",
+      "payload": {
+        "jobId": "e3976961-2b8c-4d67-81e8-842522ab60f5",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "scheduledFor": 1791778779722
+      }
+    },
+    {
+      "name": "workitem.placed",
+      "payload": {
+        "workitemId": "42137952-163c-416b-8e85-3e933ef5788e",
+        "queueId": "same",
+        "agentId": "same",
+        "kind": "cron",
+        "lineId": "p3",
+        "dockId": "p6",
+        "preview": "List files for JOB_A.",
+        "queueDepth": 1,
+        "ts": 1791778779821
+      }
+    },
+    {
+      "name": "queue.status",
+      "payload": {
+        "queueId": "same",
+        "depth": 1,
+        "maxCapacity": 64,
+        "nextAdvanceAt": 0
+      }
+    },
+    {
+      "name": "agent.run.start",
+      "payload": {
+        "agentId": "same",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "trigger": "schedule",
+        "model": "fast",
+        "dockId": "p6",
+        "streamId": "cron-7de66e7c-d0ac-4836-91f1-30419ec561e9"
+      }
+    },
+    {
+      "name": "channel.inbound",
+      "payload": {
+        "channel": "sample",
+        "chatId": "sample",
+        "agentId": "same",
+        "userId": "commander",
+        "kind": "dm"
+      }
+    },
+    {
+      "name": "workitem.placed",
+      "payload": {
+        "workitemId": "01b59be0-8845-4f8b-9a53-80a10f5b88c2",
+        "queueId": "same",
+        "agentId": "same",
+        "kind": "sample",
+        "sample": true,
+        "lineId": "p9",
+        "dockId": "p12",
+        "preview": "List files for JOB_B.",
+        "queueDepth": 2,
+        "ts": 1791778780947
+      }
+    },
+    {
+      "name": "queue.status",
+      "payload": {
+        "queueId": "same",
+        "depth": 2,
+        "maxCapacity": 64,
+        "nextAdvanceAt": 0
+      }
+    },
+    {
+      "name": "agent.run.start",
+      "payload": {
+        "agentId": "same",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "trigger": "event",
+        "model": "fast",
+        "dockId": "p12",
+        "streamId": "sample-43ccb810"
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "same",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true,
+        "unpriced": true
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "same",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.tool_call",
+      "payload": {
+        "agentId": "same",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "callId": "proof",
+        "name": "fs_list"
+      }
+    },
+    {
+      "name": "agent.tool_result",
+      "payload": {
+        "agentId": "same",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "callId": "proof",
+        "ok": true,
+        "isError": false,
+        "ms": 7
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "same",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.run.end",
+      "payload": {
+        "agentId": "same",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "reason": "done",
+        "turns": 3,
+        "usd": 0,
+        "completionVerdict": "not_assessed",
+        "effectVerdict": "no_observed_effects"
+      }
+    },
+    {
+      "name": "workitem.placed",
+      "payload": {
+        "workitemId": "wi_b55c6f49",
+        "queueId": "other1",
+        "agentId": "other1",
+        "kind": "chain",
+        "lineId": "p9",
+        "preview": "List files for JOB_B.",
+        "ts": 1791778781144,
+        "dockId": "p11"
+      }
+    },
+    {
+      "name": "agent.run.start",
+      "payload": {
+        "agentId": "other1",
+        "runId": "78c25124-f187-4a4c-abbd-4f0bab850a4e",
+        "trigger": "event",
+        "model": "fast",
+        "dockId": "p11",
+        "workitemId": "wi_b55c6f49",
+        "streamId": "sample-43ccb810"
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "other1",
+        "runId": "78c25124-f187-4a4c-abbd-4f0bab850a4e",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true,
+        "unpriced": true
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "other1",
+        "runId": "78c25124-f187-4a4c-abbd-4f0bab850a4e",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.tool_call",
+      "payload": {
+        "agentId": "other1",
+        "runId": "78c25124-f187-4a4c-abbd-4f0bab850a4e",
+        "callId": "proof",
+        "name": "fs_list"
+      }
+    },
+    {
+      "name": "agent.tool_result",
+      "payload": {
+        "agentId": "other1",
+        "runId": "78c25124-f187-4a4c-abbd-4f0bab850a4e",
+        "callId": "proof",
+        "ok": true,
+        "isError": false,
+        "ms": 4
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "other1",
+        "runId": "78c25124-f187-4a4c-abbd-4f0bab850a4e",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.run.end",
+      "payload": {
+        "agentId": "other1",
+        "runId": "78c25124-f187-4a4c-abbd-4f0bab850a4e",
+        "reason": "done",
+        "turns": 3,
+        "usd": 0,
+        "completionVerdict": "not_assessed",
+        "effectVerdict": "no_observed_effects"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_b55c6f49",
+        "finalQueueId": "other1",
+        "agentId": "other1",
+        "box": "",
+        "ms": 1001,
+        "ts": 1791778782145,
+        "dockId": "p11"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_4e7d4a1c",
+        "finalQueueId": "other1",
+        "agentId": "other1",
+        "box": "join:45,25",
+        "ms": 0,
+        "ts": 1791778782150,
+        "dockId": "p11"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_ce346e1a",
+        "finalQueueId": "outbox",
+        "agentId": "other1",
+        "box": "line-output",
+        "lineId": "p9",
+        "outboxId": "p14",
+        "entryRunId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "workitemIds": [
+          "wi_b55c6f49"
+        ],
+        "ms": 0,
+        "ts": 1791778782150,
+        "dockId": "p11"
+      }
+    },
+    {
+      "name": "channel.delivery",
+      "payload": {
+        "channel": "sample",
+        "chatId": "sample",
+        "runId": "7d6b2ae1-d204-4525-8532-3cbc259c7d26",
+        "ok": true,
+        "chunks": 1,
+        "reason": "done",
+        "agentId": "other1"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "01b59be0-8845-4f8b-9a53-80a10f5b88c2",
+        "finalQueueId": "outbox",
+        "agentId": "same",
+        "box": "",
+        "ms": 1301,
+        "ts": 1791778782185,
+        "sample": true
+      }
+    },
+    {
+      "name": "queue.status",
+      "payload": {
+        "queueId": "same",
+        "depth": 1,
+        "maxCapacity": 64,
+        "nextAdvanceAt": 0
+      }
+    }
+  ],
+  "afterRelease": [
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "same",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true,
+        "unpriced": true
+      }
+    },
+    {
+      "name": "agent.tool_call",
+      "payload": {
+        "agentId": "same",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "callId": "proof",
+        "name": "fs_list"
+      }
+    },
+    {
+      "name": "agent.tool_result",
+      "payload": {
+        "agentId": "same",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "callId": "proof",
+        "ok": true,
+        "isError": false,
+        "ms": 5
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "same",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.run.end",
+      "payload": {
+        "agentId": "same",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "reason": "done",
+        "turns": 2,
+        "usd": 0
+      }
+    },
+    {
+      "name": "workitem.placed",
+      "payload": {
+        "workitemId": "wi_dd358355",
+        "queueId": "other0",
+        "agentId": "other0",
+        "kind": "chain",
+        "lineId": "p3",
+        "preview": "List files for JOB_A.",
+        "ts": 1791778782665,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "agent.run.start",
+      "payload": {
+        "agentId": "other0",
+        "runId": "14ef4e88-eebc-41bc-9ae7-3ecdc2d73992",
+        "trigger": "schedule",
+        "model": "fast",
+        "dockId": "p5",
+        "workitemId": "wi_dd358355",
+        "streamId": "cron-7de66e7c-d0ac-4836-91f1-30419ec561e9"
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "other0",
+        "runId": "14ef4e88-eebc-41bc-9ae7-3ecdc2d73992",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true,
+        "unpriced": true
+      }
+    },
+    {
+      "name": "agent.tool_call",
+      "payload": {
+        "agentId": "other0",
+        "runId": "14ef4e88-eebc-41bc-9ae7-3ecdc2d73992",
+        "callId": "proof",
+        "name": "fs_list"
+      }
+    },
+    {
+      "name": "agent.tool_result",
+      "payload": {
+        "agentId": "other0",
+        "runId": "14ef4e88-eebc-41bc-9ae7-3ecdc2d73992",
+        "callId": "proof",
+        "ok": true,
+        "isError": false,
+        "ms": 5
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "other0",
+        "runId": "14ef4e88-eebc-41bc-9ae7-3ecdc2d73992",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.run.end",
+      "payload": {
+        "agentId": "other0",
+        "runId": "14ef4e88-eebc-41bc-9ae7-3ecdc2d73992",
+        "reason": "done",
+        "turns": 2,
+        "usd": 0
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_dd358355",
+        "finalQueueId": "other0",
+        "agentId": "other0",
+        "box": "",
+        "ms": 312,
+        "ts": 1791778782977,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_25401fa9",
+        "finalQueueId": "other0",
+        "agentId": "other0",
+        "box": "join:45,8",
+        "ms": 0,
+        "ts": 1791778783277,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_42f8d1f8",
+        "finalQueueId": "outbox",
+        "agentId": "other0",
+        "box": "line-output",
+        "lineId": "p3",
+        "outboxId": "p8",
+        "entryRunId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "workitemIds": [
+          "wi_dd358355"
+        ],
+        "ms": 0,
+        "ts": 1791778783277,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "42137952-163c-416b-8e85-3e933ef5788e",
+        "finalQueueId": "outbox",
+        "agentId": "same",
+        "box": "",
+        "ms": 0,
+        "ts": 1791778783864
+      }
+    },
+    {
+      "name": "queue.status",
+      "payload": {
+        "queueId": "same",
+        "depth": 0,
+        "maxCapacity": 64,
+        "nextAdvanceAt": 0
+      }
+    },
+    {
+      "name": "cron.result",
+      "payload": {
+        "jobId": "e3976961-2b8c-4d67-81e8-842522ab60f5",
+        "runId": "7de66e7c-d0ac-4836-91f1-30419ec561e9",
+        "outcome": "ok",
+        "reason": "done"
+      }
+    }
+  ],
+  "source": "actual hermetic sidecar SSE, concurrent Run Now and sample jobs, same agent at distinct JOINER lines, A deliberately held so B finishes first"
+}

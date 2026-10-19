@@ -303,6 +303,8 @@ body:has(.refit-workflow-editor):has(> .tut-coach:not(.kit)) > .tut-ring { visib
 .refit-tier { color: var(--gold); letter-spacing: 2px; text-shadow: 0 0 9px rgba(var(--gold-rgb), .45); }
 @media (prefers-reduced-motion: reduce) { .refit-levelup { animation: none; } }
 .refit-finline .fl-title { color: var(--ink); background: var(--ph); padding: 1px 8px; font-size: 13px; letter-spacing: 1.5px; }
+/* (org D7 polish) a long line name or step wraps into even lines ('FINISH RESEARCH · / DIG & WRITE'), never one stranded word */
+.refit-finline .fl-title, .refit-finline .fl-step { text-wrap: balance; }
 .refit-finline .fl-x { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 22px; }
 .refit-finline .fl-step {
   display: flex; align-items: center; text-align: left; width: 100%; margin-top: 4px;
@@ -310,6 +312,10 @@ body:has(.refit-workflow-editor):has(> .tut-coach:not(.kit)) > .tut-ring { visib
   padding: 4px 7px;
 }
 .refit-finline .fl-step.done { color: var(--ok); opacity: .8; }
+/* (org D8 polish) ③ stays pressable once delivered: the green ✓ DELIVERED is the status, SEND ANOTHER keeps the amber of a key */
+.refit-finline .fl-step.done:not(:disabled) { opacity: 1; }
+.refit-finline .fl-step .fl-again { color: var(--ph); }
+.refit-finline .fl-step:hover .fl-again { color: var(--ph-bright); }
 /* an OFF step keeps pointer events so the station tooltip ("coming online soon") still speaks */
 .refit-finline .fl-step.off { opacity: .45; cursor: default; }
 /* the SAMPLE readout (2026-08-22): the server's recorded outcome under ③ — stages ▸ cost ▸ the first line the

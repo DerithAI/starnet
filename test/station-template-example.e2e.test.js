@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 const Templates = require('../frontend/app/stationtemplates.js');
 const Model = require('../frontend/app/worldmodel.js');
@@ -79,7 +80,7 @@ test('Software Studio sample goes back to the Builder when the Tester finds a fa
   const failure = 'Example 2 fails: "Hello  World" gives "hello--world", expected "hello-world".';
   const pass = 'All three examples pass.\n\n' + v2;
   // answers follow the work, not the call count: the harness also runs after-run memory reads on each agent
-  const answer = (model,body) => { const m=JSON.stringify(body.messages.at(-1));   // this turn's work only, not the agent's history
+  const answer = (model,body) => { const last=body.messages.at(-1); const m=last&&last.role==='user'?userWords(last):JSON.stringify(last);   // this turn's work only, not the agent's history
     return model==='builder-fixture' ? (m.includes('Example 2 fails')?v2:v1) : (m.includes('replace(/ /g')?failure+'\nVERDICT: revise':pass+'\nVERDICT: pass'); };
   await withPreset('software',['builder','tester'],answer,async ({response,calls}) => {
     // the sample lists its runs newest first

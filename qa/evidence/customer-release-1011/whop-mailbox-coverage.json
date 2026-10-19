@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-12T09:33:26.389Z",
+  "method": "Read-only connected Gmail search and full matching message bodies",
+  "queries": [
+    {
+      "query": "from:whop {starnet skynet \"star net\"}",
+      "messages": 0
+    },
+    {
+      "query": "from:whop {feedback support bug issue \"new message\" \"new post\" \"new comment\" \"new reply\"}",
+      "messages": 0
+    },
+    {
+      "query": "starnet {\"whop.com\" \"whop.email\"} {feedback support bug issue community}",
+      "messages": 0
+    },
+    {
+      "query": "in:anywhere from:whop.com",
+      "messages": 0
+    },
+    {
+      "query": "in:anywhere whop",
+      "messages": 21,
+      "threads": 12,
+      "bodiesRead": 21,
+      "paginationComplete": true
+    }
+  ],
+  "matchingDates": {
+    "first": "2026-04-14",
+    "last": "2026-10-08",
+    "dateFilterApplied": false
+  },
+  "disposition": {
+    "newStarNetDefects": 0,
+    "duplicates": [
+      "E05",
+      "E28"
+    ],
+    "other": "A promotional inquiry already matches X01; the remaining conversations concern course/community access, refunds or general inquiries."
+  },
+  "limits": [
+    "This is mailbox mention and notification coverage only; the Whop community has not been reviewed.",
+    "No authenticated browser metadata was inspected, no sign-in link followed, and no email or account state changed.",
+    "No new intake ID or bug count is warranted."
+  ]
+}

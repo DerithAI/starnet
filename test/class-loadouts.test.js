@@ -521,9 +521,10 @@ A.ok(/function hydrateSkillRows\(\)/.test(mkt) && /hydrateSkillRows\(\)/.test(mk
   'the dossier hydrates real skill names async once the catalog resolves');
 // CLEARANCE/EFFORT honesty moved onto the control that resolves them (modelHelpHTML), replacing a spec-grid row
 // whose value was the words "station default". The claim must still be advisory, never a promise summon can't keep.
-const mhh = mkt.slice(mkt.indexOf('function modelHelpHTML('), mkt.indexOf('function modelHelpHTML(') + 1200);
-A.ok(/orchestrator/.test(mhh) && /tuned for/.test(mhh),
-  'the MODEL helper is honest — an unpinned model INHERITS the orchestrator, the class tier is only a tuning note');
+const mhh = A.fnBody(mkt, 'function modelHelpHTML(');
+// org P22 (2026-10-14): "orchestrator" became "the agent on the line" — summonAgent copies the FOCUSED agent's model
+A.ok(/Copies the model of the agent on the line now/.test(mhh) && /tuned for/.test(mhh),
+  'the MODEL helper is honest — an unpinned model COPIES the agent on the line, the class tier is only a tuning note');
 A.ok(/overrides the class default/.test(mhh), 'a pinned model is labelled as overriding the class default');
 A.ok(/applied at summon/.test(mkt), 'the builder still labels reasoning effort as what summon APPLIES');
 
@@ -609,7 +610,8 @@ A.ok(/Object\.assign\(\{\}, editing \|\| \{\}/.test(createSeg), 'editing starts 
 // the seam is now filled: resolveTierModel reads a persisted tier->model map (a pinned tier wins; else base model).
 A.ok(/TIER_MODELS_KEY = 'starnet\.tierModels\.v1'/.test(app), 'app.js defines the tier->model store key');
 const rtm = app.slice(app.indexOf('function resolveTierModel('), app.indexOf('function resolveTierModel(') + 400);
-A.ok(/tierModelMap\(\)\[tier\]/.test(rtm), 'resolveTierModel consults the persisted tier->model map (the S1 seam is filled)');
+// org P22 fix: the read moved into tierModelFor (shared with the Recruitment Bay's MODEL helper); resolveTierModel calls it
+A.ok(/tierModelFor\(tier\)/.test(rtm) && /tierModelMap\(\)\[tier\]/.test(A.fnBody(app, 'function tierModelFor(')), 'resolveTierModel consults the persisted tier->model map (the S1 seam is filled)');
 A.ok(/return baseModel \|\|/.test(rtm), 'an unpinned tier still falls back to the base/station-default model (default unchanged)');
 // the SETTINGS MODELS section adds the CLASS TIER MODELS mapping + wires it to the SAME localStorage key.
 A.ok(/CLASS TIER MODELS/.test(sui), 'SETTINGS surfaces a CLASS TIER MODELS mapping');

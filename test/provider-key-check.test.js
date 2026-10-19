@@ -27,6 +27,15 @@ const origin = keyCheckFailure(403, {}, 'forbidden origin');
 A.ok(/station refused the key check \(HTTP 403 forbidden origin\)/.test(origin), 'a 403 origin refusal names the station, not the provider: ' + origin);
 A.ok(/address/.test(origin), 'the origin refusal says what to do');
 A.ok(/reload the page/.test(keyCheckFailure(403, {}, 'forbidden token')), 'a stale-token refusal says reload');
+// a page the station KEPT its key from (Harness tokenWithheld = the peerowner reason) is not a restarted station: every
+// key save on it hits 'forbidden token', and "restarted; reload" would be false (review threads-backend-05 follow-up)
+{
+  const withheldCheck = new Function('tokenWithheld', mFail[0] + '\nreturn keyCheckFailure;')('other-user');
+  const w = withheldCheck(403, {}, 'forbidden token');
+  A.ok(/not verified as running under your own user account/.test(w) && /kept its key from this page/.test(w), 'a withheld page\'s refused key check says why: ' + w);
+  A.ok(!/restarted|reload/i.test(w), 'and never claims a restart or offers a reload: ' + w);
+  A.ok(/reload the page/.test(new Function('tokenWithheld', mFail[0] + '\nreturn keyCheckFailure;')('')(403, {}, 'forbidden token')), 'a keyed page keeps the reload line');
+}
 A.ok(/localhost/.test(keyCheckFailure(403, {}, 'forbidden host')), 'a host refusal names the loopback rule');
 A.ok(/HTTP 423\)$/.test(keyCheckFailure(423, {}, '<html>frozen</html>')), 'an HTML/JSON-ish body is not pasted into the message');
 A.ok(!/did not verify/.test(origin), 'the misleading "provider did not verify" never appears for a station refusal');
@@ -63,11 +72,34 @@ A.ok(/noteKeyCheckFailure\('probe', id, obj, probeKey\)/.test(sidecar), 'a saved
 // ---- refused API calls are no longer silent ----
 A.ok(/isAllowedApiOrigin\(String\(req\.headers\.origin \|\| ''\), PORT, req\.headers\.host\)\) \{ noteApiRefusal\(req, 'forbidden origin'\);/.test(sidecar), 'rejectApi passes the Host (tunnel same-origin) and notes an origin refusal');
 A.ok(/noteApiRefusal\(req, 'forbidden token'\);/.test(sidecar), 'a stale-token refusal is noted');
+// sidecar-index-06: a page the station WITHHELD its key from sends no key at all. Its refusals must not be logged as "a
+// page from before a sidecar restart; reload it" (the station did not restart, and reloading changes nothing).
+{
+  const m = /function noteApiRefusal\(req, reason\) \{[\s\S]*?\n\}/.exec(sidecar);
+  A.ok(m, 'index.js defines noteApiRefusal');
+  const lines = [];
+  // a fresh once-per-cause registry per instance, so each case below is logged
+  const noter = () => new Function('apiRefusalsSeen', 'apiauth', 'apitickets', 'PORT', 'recordDiagError', 'failNote', 'console', m[0] + '\nreturn noteApiRefusal;')(
+    new Set(), require('../sidecar/apiauth.js'), require('../sidecar/apitickets.js'), 8787, () => {}, () => {}, { warn: l => lines.push(l) });
+  const note = noter();
+  note({ method: 'GET', url: '/api/state', headers: { host: '127.0.0.1:8787', origin: 'http://127.0.0.1:8787' } }, 'forbidden token');
+  A.ok(lines[0] && !/before a sidecar restart/.test(lines[0]) && /no station key/.test(lines[0]), 'a key-less request is not called a stale page: ' + lines[0]);
+  note({ method: 'GET', url: '/api/state', headers: { host: '127.0.0.1:8787', origin: 'http://127.0.0.1:8787', 'x-starnet-token': 'old-launch-key' } }, 'forbidden token');
+  A.ok(lines[1] && /before a sidecar restart; reload it/.test(lines[1]), 'a wrong key is still a page from before a restart: ' + lines[1]);
+  // the header-less shapes (the COMMS EventSource, the unload save beacon) carry their key as a ?ticket=: a stale
+  // ticket is a stale page, not a page the station kept its key from
+  noter()({ method: 'GET', url: '/api/channels/events?ticket=old-launch-ticket', headers: { host: '127.0.0.1:8787', origin: 'http://127.0.0.1:8787' } }, 'forbidden token');
+  A.ok(lines[2] && /before a sidecar restart; reload it/.test(lines[2]) && !/no station key/.test(lines[2]), 'a stale ?ticket= is a page from before a restart: ' + lines[2]);
+  noter()({ method: 'GET', url: '/api/channels/events', headers: { host: '127.0.0.1:8787', origin: 'http://127.0.0.1:8787' } }, 'forbidden token');
+  A.ok(lines[3] && /no station key/.test(lines[3]), 'the same shape with no ticket carried no key: ' + lines[3]);
+}
 A.ok(/if \(apiRefusalsSeen\.has\(sig\) \|\| apiRefusalsSeen\.size >= 64\) return;/.test(sidecar), 'refusal notes are once per cause and bounded');
 
 // ---- Settings shows the reason ----
-A.ok(/const statWhy = [^\n]*health && !health\.credentialVerified && health\.error/.test(stationui), 'the provider card derives a reason line from the probe');
-A.ok(/statWhy \+ '<\/span><\/span>'/.test(stationui), 'the reason renders inside the card status');
+A.ok(/const statWhy = [^\n]*health && !health\.credentialVerified\n[^\n]*health\.error \? String\(health\.error\)/.test(stationui), 'the provider card derives a reason line from the probe');
+// org P03: an empty probe error still prints what the probe saw — never a bare NOT VERIFIED / CHECK FAILED
+A.ok(/health\.reachable \? 'the provider answered but did not confirm this key' : 'the check got no answer from the provider'/.test(stationui), 'an empty probe error prints a fallback reason');
+A.ok(/<span class="prov-stat-t">' \+ stat \+ statWhy \+ [^\n]*'<\/span><\/span>'/.test(stationui), 'the reason renders inside the card status, right under the verdict it explains');
 A.ok(/error: r\.ok \? String\(\(j && j\.error\) \|\| ''\) : keyCheckFailure\(r\.status, j, text\)/.test(harness), 'a refused probe names the refusal instead of a blank CHECK FAILED');
 
 A.report('provider-key-check.test');

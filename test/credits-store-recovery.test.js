@@ -8,6 +8,10 @@ const source = fs.readFileSync(require.resolve('../frontend/app/stationui.js'), 
 const start = source.indexOf('  let _creditsLinkPoll =');
 const end = source.indexOf('  // BUDGET panel', start);
 assert.ok(start >= 0 && end > start);
+// the STORE reads through the shared, repaint-proof credits read (live walk 10-14: one SETTINGS open = 12 x /api/credits)
+const readStart = source.indexOf('  const CREDITS_FRESH_MS');
+const readEnd = source.indexOf('  function refreshCreditsProvider()', readStart);
+assert.ok(readStart >= 0 && readEnd > readStart);
 
 class Host {
   constructor() { this.isConnected = true; this.buttons = new Map(); }
@@ -41,8 +45,10 @@ function fixture({ native, get, post } = {}) {
       post: async route => { calls.push(route); return post ? post(route) : { ok: true, j: { ok: true, unlinked: true } }; }
     } }, document: { body: { contains: () => true } }
   });
-  vm.runInContext(source.slice(start, end) + '\nthis.store = { wireCredits };', context);
+  vm.runInContext(source.slice(readStart, readEnd) + source.slice(start, end) + '\nthis.store = { wireCredits, forgetCreditsReads };', context);
   return { host, calls, read: async () => { await context.store.wireCredits(body); await flush(); },
+    // a read after something changed (LINK / UNLINK / RETRY / REFRESH forget the shared answer first)
+    fresh: async () => { context.store.forgetCreditsReads(); await context.store.wireCredits(body); await flush(); },
     async unlink() { const button = host.querySelector('#credits-unlink'); assert.ok(button); button.click(); button.click(); await flush(); }
   };
 }
@@ -88,7 +94,7 @@ function fixture({ native, get, post } = {}) {
   const race = fixture({ get: route => route === '/api/credits'
     ? (++statusReads === 1 ? new Promise(r => { resolveOld = r; }) : { configured: false })
     : { available: true, cloud: true } });
-  const old = race.read(); await flush(); await race.read(); resolveOld(linked); await old;
+  const old = race.read(); await flush(); await race.fresh(); resolveOld(linked); await old;
   assert.ok(race.host.querySelector('#credits-link'), 'late old-account read cannot hide new linking controls');
 
   let resolveNative; let unlinked = false;

@@ -12,8 +12,8 @@
        instant its cap is granted (a prop was placed). Placement is the completion signal, never a claim.
      • the LABELS — resolved from the LIVE catalog (WorldModel.CAP_LABEL + the capability's canonical prop
        label from PropSprites.CATALOG) and the live roster (the agent's display name), never hardcoded.
-     • the STANDING candidate — the one known non-tool gap: an OUTBOX quest when unattended work exists
-       with no outbox placed (ReturnStore.pendingCount() > 0). (The STUDIO gap is a plain tool-gap — see below.)
+     • NO standing candidate — the old OUTBOX one (unattended work, no outbox placed) was a false promise and is
+       retired (org P14, see below). The STUDIO gap is a plain tool-gap: image_generate in a room with no STUDIO.
 
    Self-persists to its own localStorage key (rides the backup prefix, like queststatestore/curiositystore —
    no save.js change). The projection (quests()) is joined into QuestStore.view, so these quests ride the
@@ -115,48 +115,28 @@ const StationQuestStore = (() => {
   // if the log is open, refresh it so the new pin/row lands immediately (a no-op when closed).
   function poke() { try { if (typeof StationUI !== 'undefined' && StationUI.rerender) StationUI.rerender('quests', false); } catch (_) {} }
 
-  /* ---------- the STANDING candidate (a non-tool gap folded through the same engine) ----------
-     The STUDIO gap needs no special case: it's a plain tool-gap — the moment an `image_generate` fires in a
-     room with no STUDIO prop, capForTool('image_generate')→'studio' mints "reached for STUDIO — place a
-     STUDIO in its bay", and placing the studio prop closes it (feature 3 makes that prop real). The one gap
-     with no tool signal is the OUTBOX: unattended work exists but nowhere to stage it. It's modeled against
-     the FOCUSED hero (App.heroId) so it rides the same (agent,cap) dedup + projection, with a synthetic cap
-     key ('outbox') that no tool maps to — so it can never collide with a real tool-gap entry. */
-  function heroId() {
-    try { if (typeof App !== 'undefined' && App.heroId) return App.heroId(); } catch (_) {}
-    return 'agent';
-  }
-
-  // OUTBOX: unattended work exists (ReturnStore.pendingCount > 0) but no OUTBOX prop is placed to stage it.
-  function evalOutboxCandidate() {
-    if (!ready()) return;
-    let pending = 0, hasOutbox = false;
-    try { pending = (typeof ReturnStore !== 'undefined' && ReturnStore.pendingCount) ? (ReturnStore.pendingCount() | 0) : 0; } catch (_) {}
-    try {
-      const doc = (typeof World !== 'undefined' && World.stationDoc) ? World.stationDoc() : null;
-      hasOutbox = !!(doc && Array.isArray(doc.props) && doc.props.some(p => p && p.t === 'outbox'));
-    } catch (_) {}
-    if (pending > 0 && !hasOutbox) {
-      StationQuests.record(state, { agentId: heroId(), cap: 'outbox', capLabel: 'DELIVERY', propLabel: 'OUTBOX', agentLabel: 'The station' }, nowMs());
+  /* ---------- the retired OUTBOX standing candidate (org P14, 2026-10-14) ----------
+     It minted "The station reached for DELIVERY — place a OUTBOX in its bay" from ReturnStore's STATION-WIDE pending
+     crate count, which includes away, scheduled and chat runs no OUTBOX ever holds (an OUTBOX shows ONLY its own line's work, and every
+     finished run waits in DELIVERABLES › TO REVIEW, prop or no prop). Placing an OUTBOX could not make those runs reviewable, so
+     the quest was a false promise: it is never minted now, and one an older build left OPEN is waved off quietly on load (never
+     celebrated as done — nothing was closed). A completed one stays in the log as history. */
+  function retireOutboxCandidate() {
+    if (!ready() || !state.gaps) return false;
+    let took = false;
+    for (const id of Object.keys(state.gaps)) {
+      const e = state.gaps[id];
+      if (e && e.cap === 'outbox' && e.completedAt == null && e.dismissedAt == null) took = StationQuests.dismiss(state, id, nowMs()) || took;
     }
+    return took;
   }
 
   /* ---------- the heartbeat: resolve + re-evaluate standing candidates. Driven by the same 1s station
      tick + every quest-log render (mirrors QuestStateStore.sync). Idempotent + side-effect-light. ---------- */
   function sync() {
     if (!ready()) return;
-    evalOutboxCandidate();
-    // resolve completed gaps against the live floor. The synthetic 'outbox' cap isn't in heroCaps (no
-    // capability grant), so it's resolved explicitly via the doc read — it closes when its prop is placed.
-    const closed = StationQuests.refresh(state, entry => {
-      if (entry.cap === 'outbox') {   // the OUTBOX standing quest closes when an OUTBOX prop lands on the floor
-        try {
-          const doc = (typeof World !== 'undefined' && World.stationDoc) ? World.stationDoc() : null;
-          return !!(doc && Array.isArray(doc.props) && doc.props.some(p => p && p.t === 'outbox'));
-        } catch (_) { return false; }
-      }
-      return gapGranted(entry);
-    }, nowMs());
+    // resolve completed gaps against the live floor (placement = completion, never a claim)
+    const closed = StationQuests.refresh(state, entry => entry.cap !== 'outbox' && gapGranted(entry), nowMs());
     if (closed.length) {
       save();   // completedAt is durable the instant the gap closes (the celebration rides QuestState's fold over quests())
       // G1c QUEST CHAINING: a station gap just closed (a prop was placed → a real capability is live). Offer the
@@ -195,6 +175,7 @@ const StationQuestStore = (() => {
   function init() {
     state = (typeof StationQuests !== 'undefined') ? StationQuests.hydrate(load()) : null;
     bind();
+    if (retireOutboxCandidate()) save();
     sync();
   }
 

@@ -131,10 +131,10 @@ A.ok(/c\.fillStyle = 'rgba\(4,6,8,0\.86\)'; c\.fillRect\(box\.x, box\.y, box\.w,
 const marks = at(build, '  function drawWorkflowMarks(t, now) {', '  /* ---------- WHO SITS AT THIS DESK');
 A.ok(/Conveyor\.drawCrate\(ctx, Math\.round\(x \+ t \/ 2\), Math\.round\(y \+ t \/ 2\) \+ 1, 'product'\)/.test(marks), 'what waits at a paused hand-off is the same crate that rides the belts');
 A.ok(/captionPlate\(c, label, box, '#5fd8ff'\)/.test(marks) && !/shadowBlur/.test(marks), '…and its label is a plate');
-A.ok(/ghost\.draw\(ctx, now, t, capFs\(\), \(box, paint\) => voiceSay\('ghostCaption', box, box, paint\), captionFit\);/.test(build), 'the projection\'s captions take the same size and stay on the glass');
+A.ok(/ghost\.draw\(ctx, now, t, capFs\(\), \(box, paint\) => voiceSay\('ghostCaption', box, box, paint\), ghostCaptionFit\);/.test(build) && /function ghostCaptionFit\(box, n\) \{\s*const t = T\(\), b = GhostLine\.onStation\(box, n, buildRoomBoxes\(\), t, bx => \{ captionFit\(bx\); return true; \}\);/.test(build), 'the projection\'s captions take the same size and stay on the glass (ghostCaptionFit = the on-station law + captionFit + never on a bay\'s name plate)');
 const gdraw = at(ghost, '    function draw(ctx, nowMs, T, fontPx, say, fit) {', '    function reset()');
 A.ok(/ctx\.fillStyle = 'rgba\(4,6,8,0\.86\)'; ctx\.fillRect\(b\.x, b\.y, b\.w, b\.h\);/.test(gdraw) && /ctx\.setLineDash\(\[3 \* px1, 2 \* px1\]\)/.test(gdraw) && !/shadowBlur/.test(ghost), 'a WOULD-caption is a plate edged with a DASHED hairline (dashed = projected), with no glow');
-A.ok(/return \(fit && fit\(b\)\) \|\| b;/.test(gdraw), '…placed by the caller\'s fit when it gives one');
+A.ok(/const c = fit \? fit\(\{ x: b\.x, y, w, h: ph \}, n\) : \{ x: b\.x, y, w, h: ph \};/.test(gdraw), '…placed by the caller\'s fit at every spot it tries (walk 10-14 #13: laid out, never piled)');
 A.ok(/k < 0\.12 \? k \/ 0\.12 : k > 0\.75 \? \(1 - k\) \/ 0\.25 : 1/.test(gdraw), '…and lit while it is read');
 const wait = at(world, '  function drawWaitCrate(cx, cy) {', '  /* SHIPPED TODAY'), ship = at(world, '  function drawShipCrate(cx, cy, pop) {', '  // E2 verification hooks');
 A.ok(/Conveyor\.drawCrate\(ctx, Math\.round\(cx\), Math\.round\(cy\), 'ore'\)/.test(wait) && /Conveyor\.drawCrate\(ctx, x, y, 'product'\)/.test(ship), 'the INBOX\'s waiting jam and the OUTBOX\'s shipped pallet park the same crate');

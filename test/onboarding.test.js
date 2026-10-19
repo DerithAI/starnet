@@ -87,13 +87,16 @@ A.ok(/bs\('aimless'\)\s*\|\|\s*'incredible\. genuinely\. and pointed at nothing\
   'the aimless slot falls back to the scripted spine');
 A.ok(/seg\('  so you’re the one who knows where this points\. aim me\.'/.test(src),
   'the contact beat keeps its scripted fallback triplet');
-A.ok(/stage\('READY TO BEGIN'/.test(src) && /const readyLine = role/.test(src),
-  'the closing handoff uses a concise role-aware message');
+A.ok(/stage\('YOUR FIRST TASK', 'From getting acquainted to working together'\)/.test(src) && !/stage\('READY TO BEGIN'/.test(src) && /const readyLine = role/.test(src),
+  'the closing handoff uses a concise role-aware message under the SAME header as the first-task review (org P31)');
+A.ok(/Dialogue\.setStage\('YOUR FIRST TASK', 'From getting acquainted to working together'\)/.test(fs.readFileSync(path.join(__dirname, '../frontend/app/pitchstore.js'), 'utf8')),
+  'PitchStore\'s first-task review carries that same header');
 A.ok(/bs\('mandate'\)\s*\|\|\s*'and i’m built to run a floor/.test(src),
   'the mandate slot falls back to the scripted promise');
-// a live-configured wire that answers DEAD is owned diegetically at the close, pointing at CONNECT.
-A.ok(/birthFailed[\s\S]{0,700}CONNECT/.test(src),
-  'a dead wire during the ceremony is owned honestly at the close (the CONNECT repair line)');
+// a live-configured wire that answers DEAD is owned diegetically at the close, pointing at the model door (org P30:
+// models live in SETTINGS › AI & MODELS; CONNECT holds tools and channels).
+A.ok(/if \(birthFailed\) \{[\s\S]{0,200}check SETTINGS › AI & MODELS before starting a task/.test(src) && !/check CONNECT/.test(src),
+  'a dead wire during the ceremony is owned honestly at the close (the SETTINGS › AI & MODELS repair line)');
 // the stakes beat: extraction earns attention by declaring what the answers become, before asking —
 // and earns GENEROSITY by declaring the trade (sharper picture in → sharper first move out).
 A.ok(/saved in your dossier, where you can review and change them/.test(src),

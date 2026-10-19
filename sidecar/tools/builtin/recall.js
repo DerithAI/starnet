@@ -26,11 +26,14 @@
    ctx.connectorAuthority.withholdTaste (the same tasteWithheld flag, already on every run's capCtx) pins it too. */
 'use strict';
 (function (root, factory) {
-  const api = factory(typeof require === 'function' ? require('../../context.js') : (root.SK && root.SK.context));
+  const api = factory(typeof require === 'function' ? require('../../context.js') : (root.SK && root.SK.context),
+    typeof require === 'function' ? require('../../transcriptstore.js') : (root.SK && root.SK.transcriptstore));
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else { root.SK = root.SK || {}; root.SK.tools = root.SK.tools || {}; (root.SK.tools.builtin = root.SK.tools.builtin || {}).recall = api; }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (retrieval) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (retrieval, transcripts) {
   'use strict';
+  // the one rule for a stored row's provenance (transcriptstore.js rowTaint; docs/DECISIONS.md)
+  const { rowTaint, UNVERIFIED_ROW } = transcripts;
 
   const { note: failNote } = (typeof require === 'function') ? require('../../failopen.js') : { note: function (tag, code) { console.warn('[failopen] ' + tag + ':', code); } };
 
@@ -51,15 +54,17 @@
   function makeRecallTool(deps) {
     const d = deps || {};
     const transcriptStore = d.transcriptStore;
-    // Taint follows only returned rows/previews. Missing legacy provenance is not proof of clean
-    // history; use the store's exact known source when possible, otherwise relay uncertainty.
+    // Taint follows only returned rows/previews, read through rowTaint (review memory-learning-07): an explicit taint is
+    // the source, the writer's clean stamp is clean, and a row without provenance is unverifiable whatever its age —
+    // pre-update history, or a writer that passed no taint value. For those, use the store's exact known source when
+    // it has one, or relay the uncertainty.
     function resultTaint(rows, preview) {
       let unknown = false;
       for (const r of rows) {
         if (preview && !r.preview) continue;
-        const source = preview ? r.previewTaint : r.taint;
-        if (source) return String(source).slice(0, 200);
-        if ((preview ? r.previewTaintKnown : r.taintKnown) === true) continue;
+        const source = rowTaint(preview ? { taint: r.previewTaint, taintKnown: r.previewTaintKnown } : r);
+        if (source == null) continue;
+        if (source !== UNVERIFIED_ROW) return String(source).slice(0, 200);
         unknown = true;
         if (transcriptStore && typeof transcriptStore.taintOf === 'function') {
           try {
@@ -71,7 +76,7 @@
           }
         }
       }
-      return unknown ? 'historical conversation (taint unverifiable: missing row provenance)' : null;
+      return unknown ? UNVERIFIED_ROW : null;
     }
 
     const recallTool = {
@@ -97,8 +102,10 @@
         const authority = ctx && ctx.connectorAuthority;
         const pinned = (typeof d.ownStreamOnly === 'function' && d.ownStreamOnly() === true)
           || !!(authority && typeof authority === 'object' && authority.withholdTaste === true);
-        // the store files a missing/invalid stream id under 'global' (transcriptstore normStream): compare hits to THAT,
-        // or a headless run's own scope:'stream' hits read as foreign and it reports "no messages" over real ones
+        // the store files a run with no (or a malformed) workstream id under 'global' (transcriptstore normStream): hits
+        // are matched against that same id, or a headless run's own scope:"stream" hits read as foreign and it reports
+        // "no messages" over real ones (review memory-learning-16). A pinned run keeps its raw id below, so it can never
+        // read the shared 'global' stream.
         const here = streamId && /^[A-Za-z0-9_-]{1,64}$/.test(streamId) ? streamId : 'global';
         const LIMITED = 'Conversation recall is limited to this chat.';
         if (pinned && !streamId) return { content: LIMITED + ' This run has no chat history to search.', summary: 'limited to this chat' };
@@ -170,8 +177,9 @@
             || Number(b.h.streamId === here) - Number(a.h.streamId === here)
             || (Number(b.h.ts) || 0) - (Number(a.h.ts) || 0) || a.i - b.i);
         const hits = ranked.slice(0, limit).map(x => x.h);
-        // "nothing matched here" only when NO ranked match (exact OR lexical-expansion) came from this workstream
-        // and its own search actually ran — a local paraphrase hit listed under that lead contradicts it
+        // "nothing matched here" only when NO ranked match (exact OR lexical-expansion) came from this workstream — one
+        // the limit cut still counts (review memory-learning-15) — and its own search actually ran: a local paraphrase
+        // hit listed under that lead contradicts it
         const widened = !strictStream && !wantAll && !failures.includes('stream')
           && !ranked.some(x => local.has(key(x.h))) && hits.some(h => h.streamId !== here);
         if (!hits.length) {

@@ -1,6 +1,6 @@
 /* Settings: shared glass language, scoped to this console and its expanded controls. */
 .settings-console .con-pane { padding: 22px; container: settings-pane / inline-size; }
-.settings-console .con-sec-desc { font-size: 16px; line-height: 1.5; margin-bottom: 20px; }
+.settings-console .con-sec-desc { font-size: 16px; line-height: 1.5; margin-bottom: 20px; text-wrap: pretty; }   /* no lone last word under a section head */
 .settings-console.sn-menu .con-rail-list { padding: 8px; gap: 4px; }
 .settings-console.sn-menu .con-rail-item { flex: 0 0 auto; min-height: 36px; grid-template-columns: 16px minmax(0,1fr); gap: 8px; padding: 8px 10px; margin: 0; border-radius: 7px; background: transparent; font-size: 14px; line-height: 1.25; }
 .settings-console.sn-menu .con-rail-label { font-size: 14px; letter-spacing: .15px; line-height: 1.25; }
@@ -10,9 +10,16 @@
 .settings-console .settings-group:empty { display: none; }
 .settings-console .settings-group > .ms-h:first-child { margin-top: 0; }
 .settings-console .ms-h { color: var(--ph-bright); font-size: 19px; line-height: 1.35; letter-spacing: .3px; border: 0; padding: 0; margin: 0 0 14px; }
-.settings-console .ms-h .dim { display: block; font-size: 14px; line-height: 1.5; letter-spacing: 0; margin-top: 4px; }
+/* a heading's subtitle is its own line under the title and its rule (the shared .ms-h is a flex row: without the wrap the
+   title and subtitle squeezed each other into two-line columns and the rule vanished) */
+.settings-console .ms-h:has(> .dim) { flex-wrap: wrap; row-gap: 0; }
+.settings-console .ms-h .dim { display: block; flex: 1 0 100%; order: 4; font-size: 14px; line-height: 1.5; letter-spacing: 0; margin-top: 4px; }
 .settings-console :is(.set-about,.mc-hint,.pc-plain,.perm-m-desc,.perm-m-floor,.ns-note) { font-size: 14px; line-height: 1.55; letter-spacing: 0; overflow-wrap: anywhere; }
 .settings-console .set-about { margin: 0 0 16px; }
+.settings-console .key-list + .set-about { margin-top: 16px; }   /* org P04: the note under API KEYS keeps its gap from the last key card (the dropped add box used to give it) */
+/* org P04 (g4 final round): the selected provider's no-key line is the one action in API KEYS — read at the size of the
+   paragraphs under it (the .term reading floor, 16px), never the dim 12px empty-state voice */
+.settings-console .key-empty.key-goto p { font-size: 16px; line-height: 1.5; letter-spacing: .2px; color: var(--text); opacity: 1; }
 .settings-console .mc-hint { margin: 7px 0 18px; }
 .settings-console .set-sub { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 22px 0 10px; border: 0; }
 .settings-console .set-sub-k { font-size: 14px; color: var(--ph-bright); }
@@ -30,6 +37,9 @@
 .settings-console :is(.bb,.set-theme,.ov-vchip) { border-radius: 7px; box-shadow: none; text-shadow: none; }
 .settings-console .bb { padding: 9px 12px; font-size: 13px; line-height: 1.3; }
 .settings-console :is(.mc-acts,.set-save) { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 18px 0 0; }
+/* live walk 10-14: the STORE (or its status line) under API KEYS' door key sat flush against the key — the .ms-h/.set-about inside
+   it carry no top margin, so the store keeps the same 18px the key row keeps above itself */
+.settings-console .mc-acts + #credits-store:not(:empty) { margin-top: 18px; }
 .settings-console .set-themes { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 18px; padding: 0; }
 .settings-console .set-theme { padding: 10px 13px; border: 1px solid rgba(var(--ph-rgb), .2); background: rgba(var(--ph-rgb), .035); color: var(--ph-dim); font-size: 14px; line-height: 1.35; }
 .settings-console .set-theme.sel, .settings-console .set-theme[aria-pressed="true"] { background: var(--menu-glass); border-color: rgba(var(--ph-rgb), .55); color: var(--ph-bright); box-shadow: inset 0 1px 0 rgba(var(--ph-bright-rgb), .12); }
@@ -54,6 +64,10 @@
 .settings-console .prov-stat-t { font-size: 12px; line-height: 1.4; }
 /* #62: the reason a saved key failed its check, under the verdict (sentence case, wraps, never truncated by the badge) */
 .settings-console .prov-stat-why { display: block; white-space: normal; margin-top: 3px; font-size: 12px; line-height: 1.4; letter-spacing: 0; color: var(--bad, var(--ph-dim)); overflow-wrap: anywhere; }
+/* org P03 polish: the reason reads at the verdict's own size, sentence case, with a little air above the key count under it */
+.settings-console .prov-stat-why { font-size: inherit; margin-bottom: 3px; }
+.settings-console .prov-stat-why::first-letter { text-transform: uppercase; }
+.settings-console .prov-stat-why.soft { color: inherit; }   /* org P03: a neutral reason wears its NOT VERIFIED line's amber, not the alarm red */
 .settings-console .prov-key-edit, .settings-console .prov-oauth-inline { grid-column: 1 / -1; }
 /* subscription stacking: the CLAUDE CODE card's connected sign-ins + ＋ ADD ACCOUNT, full width under the card head */
 .settings-console .prov-accounts { grid-column: 1 / -1; display: grid; gap: 8px; margin-top: 4px; }
@@ -68,10 +82,24 @@
 .settings-console .prov-accounts-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; line-height: 1.4; }
 .settings-console .key-edit:not([hidden]) { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px; border-radius: 8px; background: rgba(0,0,0,.16); }
 .settings-console .key-edit input { flex: 1 1 200px; }
+/* org P04 polish: the spare-key SAVE / CLEAR pair keeps one width — side by side, or each full width once the pane is too narrow for both */
+.settings-console .key-edit-pair { display: flex; flex-wrap: wrap; gap: 10px; flex: 1 1 260px; }
+.settings-console .key-edit-pair > .bb { flex: 1 1 0; white-space: nowrap; }
 .settings-console .key-row { padding: 14px; gap: 12px; border-radius: 9px; border-color: rgba(var(--ph-rgb), .2); box-shadow: none; }
 .settings-console .key-prov { font-size: 16px; }
 .settings-console .key-meta { font-size: 13px; line-height: 1.5; }
 .settings-console .key-acts { display: flex; flex-wrap: wrap; gap: 7px; }
+/* org P04 polish: a saved row's address chip (a CUSTOM endpoint URL) wraps inside its own column, never under the keys */
+.settings-console .key-mask { max-width: 100%; overflow-wrap: anywhere; }
+/* a narrow pane: the keys drop under the name and model as one wrapping row, so the model line keeps the row's width
+   (a 4-key CUSTOM column left "model" alone on its line). 21px = the lamp (9) + the row gap (12). */
+@container settings-pane (max-width: 460px) {
+  .settings-console .key-row { flex-wrap: wrap; }
+  .settings-console .key-main { flex: 1 1 calc(100% - 21px); }
+  .settings-console .key-acts { flex: 1 1 100%; flex-direction: row; padding-left: 21px; }
+  /* org P04 polish: each wrapped line of keys fills the row, so a third key (✕ REMOVE) is a full-width key under the pair, never a lone tile */
+  .settings-console .key-acts > .bb { flex: 1 1 auto; }
+}
 .settings-console .ns-grid { gap: 12px; }
 .settings-console .ns-cell { border-radius: 9px; padding: 14px; border-color: rgba(var(--ph-rgb), .16); background: rgba(0,0,0,.1); }
 .settings-console .ns-k { font-size: 12px; margin-bottom: 7px; }
@@ -163,3 +191,5 @@
 .settings-console .rmt-dev .dot.on { background:var(--ok); }
 .settings-console .rmt-dev .bb { margin-left:auto; }
 .settings-console #rmt-msg.bad { color:var(--bad); }
+/* org P03: an error door that lands on a provider card marks it for a moment (StationUI.focusProvider) */
+.settings-console .prov-card.prov-landed { border-color: rgba(var(--ph-bright-rgb), .85); box-shadow: inset 0 0 0 1px rgba(var(--ph-bright-rgb), .45); }

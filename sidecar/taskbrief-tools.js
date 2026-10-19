@@ -55,7 +55,7 @@ function registerTaskBriefTools(registry, store, state, deps) {
         // marker fallback (no recommendation at all) and the Commander just stops seeing ★ chips with no
         // way to know why. One warn line makes that rate knowable without surfacing model churn as UI noise.
         try { console.warn('[taskbrief] brief_ask rejected: ' + checked.error); } catch (_) {}
-        throw new Error(checked.error + '. Correct the arguments and call brief_ask again — do NOT ask in plain prose; if you cannot satisfy the validator, end your reply with: TASK_QUESTION: <question> || <option A> | <option B>');
+        throw new Error(checked.error + '. Correct the arguments and call brief_ask again — do NOT ask in plain prose; if you cannot satisfy the validator, end your reply with: TASK_QUESTION: <question> || <option A> | <option B> — and put the question ONLY in that marker line (it renders as the question card; never write it out in prose as well).');
       }
       // ASK-WORTHINESS GATE: the Commander has repeatedly answered "use your judgment" in this dimension, so
       // asking again spends one of only two questions on something they have already told us to decide. Refuse

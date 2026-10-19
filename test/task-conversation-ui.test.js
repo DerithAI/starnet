@@ -21,7 +21,11 @@ class Element {
   const order=card.children.map(n=>n.className);
   assert.ok(order.indexOf('tc-actions')<order.indexOf('tc-why')&&order.indexOf('tc-actions')<order.indexOf('tc-understanding'),'the answer comes before the folds: '+order.join(' '));
   const hintAt=order.indexOf('tc-hint');assert.ok(hintAt===order.indexOf('tc-shortcuts')+1&&card.children[hintAt].textContent==='Tap one to add it to your answer below, then edit and send.','one plain line, UNDER the keys it explains');
-  assert.equal(order.filter(c=>c==='tc-hint').length,1,'one hint line (the keyboard tip lives in the placeholder)');assert.match(input.placeholder,/Ctrl \+ Enter sends/);
+  assert.equal(order.filter(c=>c==='tc-hint').length,1,'one hint line (the keyboard tip lives in the placeholder)');assert.match(input.placeholder,/Enter sends · Shift \+ Enter adds a line/,'the placeholder names the keys the box has (Enter sends, like the COMMS composer)');
+  // Enter sends from the box (the same keys as the COMMS composer); Shift + Enter does not
+  {const probe=ctx.module.exports.TaskConversation.mount(new Element('root'),{question:'q'},async()=>true);let prevented=false;
+   probe.input.value='x';probe.input.events.keydown({key:'Enter',shiftKey:true,isComposing:false,preventDefault(){prevented=true;}});assert.equal(prevented,false,'Shift + Enter keeps the newline');
+   probe.input.events.keydown({key:'Enter',shiftKey:false,isComposing:false,preventDefault(){prevented=true;}});assert.equal(prevented,true,'Enter sends');}
   assert.ok(all().some(n=>n.tag==='summary'&&n.textContent==='Why NOVA is asking'),'the reason fold names who asks, like every other card');
   assert.equal(button('Send answer').disabled,true);
   // a starting point toggles: in (✓), out again, never a duplicate; typed text is kept

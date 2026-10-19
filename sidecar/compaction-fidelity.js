@@ -164,13 +164,18 @@ function mergeUserMessages(prev, fresh, budgetChars) {
   const prio = uniq.map(it => it.kind === 'task' ? 3 : messagePriority(it.text));
   // which messages can each keep at least min(own length, SHARE_FLOOR)? Drop the lowest priority first, oldest first
   // within a priority (uniq is newest first, so the oldest is the highest index), and always keep at least one.
+  // The current task is counted at the share it will really take (up to TASK_SHARE), not at the floor: counting it
+  // at 240 kept every message, then the task took 70% and ordinary messages were cut to 1-char stubs (review
+  // memory-learning-05). Now what cannot keep its floor is dropped and counted in the omitted line instead.
+  const floorOf = it => Math.min(cap(it), SHARE_FLOOR);
+  const others = prio.some(x => x !== 3);
   const dropped = new Set();
-  let need = 0;
-  for (let k = 0; k < uniq.length; k++) need += Math.min(cap(uniq[k]), SHARE_FLOOR);
+  let need = Math.min(uniq.reduce((a, it, k) => a + (prio[k] === 3 ? cap(it) : 0), 0), others ? Math.floor(budget * TASK_SHARE) : budget);
+  for (let k = 0; k < uniq.length; k++) if (prio[k] !== 3) need += floorOf(uniq[k]);
   for (let level = 0; level <= 2 && need > budget; level++) {   // level 3 (the current task) is never dropped
     for (let k = uniq.length - 1; k >= 0 && need > budget; k--) {
       if (prio[k] !== level || dropped.has(k) || dropped.size >= uniq.length - 1) continue;
-      dropped.add(k); need -= Math.min(cap(uniq[k]), SHARE_FLOOR);
+      dropped.add(k); need -= floorOf(uniq[k]);
     }
   }
   const keepIdx = [];
@@ -187,8 +192,11 @@ function mergeUserMessages(prev, fresh, budgetChars) {
     remaining = remaining - taskBudget + waterFill(keep, tasks, taskBudget, cap, alloc);
   }
   if (rules.length && rest.length) {
-    // instructions next: up to RULE_SHARE of what is left (never less than the floor each of them is owed)
-    const ruleBudget = Math.max(Math.min(remaining, rules.length * SHARE_FLOOR), Math.floor(remaining * RULE_SHARE));
+    // instructions next: up to RULE_SHARE of what is left (never less than the floor each of them is owed), and never
+    // so much that an ordinary message kept above loses the floor it is owed
+    const restFloor = rest.reduce((a, i) => a + floorOf(keep[i]), 0);
+    const ruleRoom = Math.max(0, remaining - restFloor);
+    const ruleBudget = Math.max(Math.min(ruleRoom, rules.reduce((a, i) => a + floorOf(keep[i]), 0)), Math.min(Math.floor(remaining * RULE_SHARE), ruleRoom));
     const left = waterFill(keep, rules, ruleBudget, cap, alloc);
     waterFill(keep, rest, remaining - ruleBudget + left, cap, alloc);
   } else if (rules.length || rest.length) {

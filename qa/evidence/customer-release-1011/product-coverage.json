@@ -1651,5 +1651,1197 @@
     "missing": [],
     "checkedAt": "2026-10-12T03:07:04.705Z",
     "method": "Filesystem existence and literal fast/http manifest membership; no tests run."
+  },
+  "currentSourceSupplement": {
+    "candidate": "dd9b5da0f620563b9a3bd3a0ccffbe4dd11d54d3",
+    "reviewedAt": "2026-10-12T11:10:19.625Z",
+    "scope": "Reconcile path existence and registered tests on the final combined source. Original area evidence remains pinned to a20ffa71f; registration is not a test pass or installed/customer acceptance.",
+    "manifestSteps": {
+      "fast": 1154,
+      "http": 217,
+      "customer-journeys": 38
+    },
+    "areas": [
+      {
+        "id": "F01",
+        "area": "First run, boot, account/provider connect",
+        "paths": [
+          {
+            "path": "frontend/app/onboarding.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/stationui.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/index.js",
+            "exists": true
+          },
+          {
+            "path": "src-tauri/src/credentials.rs",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/customer-journey.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/app-boot-provider-truth.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/genesis-starnet-link.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F02",
+        "area": "Provider adapters, local models and model selection",
+        "paths": [
+          {
+            "path": "sidecar/providers/anthropic.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/providers/openrouter.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/providers/openai-compatible.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/providers/gemini.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/providers/codex.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/modelpicker.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/provider-recovery.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/provider.gemini.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/provider.openai-compatible.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/provider.openrouter.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/customer-journey.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F03",
+        "area": "Managed account, credits, spending caps and cancellation settlement",
+        "paths": [
+          {
+            "path": "sidecar/credits.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/credits-link.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/budget.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/budgetcaps.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/billing.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/stationui.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/credits.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/paid-link-lifecycle.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/budget-caps.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/sidecar.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F04",
+        "area": "COMMS, sessions, worker chat, steering and truthful stop",
+        "paths": [
+          {
+            "path": "frontend/app/chat.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/app.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/loop.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/group-sessions.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/channels/hub.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/session-focus-safety.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/session-typing-safety.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/session-reliability.e2e.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/run-stop-handles.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/channels.telegram.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F05",
+        "area": "Memory, corrections, approved references and task context",
+        "paths": [
+          {
+            "path": "sidecar/memory-store.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/feedbackmemory.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/loop.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/launchmemory.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/memory-truth.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/memory-corrections.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/feedbackmemory.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/earlier-conversation.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/tasteref.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F06",
+        "area": "Delegation, permissions, project binding and file handoff",
+        "paths": [
+          {
+            "path": "sidecar/tools/builtin/orchestration.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/pathtrust.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/deliverable-provenance.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/routing/handoff-runner.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/stationcommands.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/e2e.dispatch-session.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/e2e.worker-access.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/e2e.worker-project-files.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/routing.handoff.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/tool-projection.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F07",
+        "area": "Station building, floor moves, conveyors, SEND TO and templates",
+        "paths": [
+          {
+            "path": "frontend/app/worldmodel.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/build.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/conveyor.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/stationbuilder.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/stationcommands.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/workflowpanel.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/routing/router.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/conveyor-floor-integrity.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/build-hand.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/conveyor-links.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/station-builder.e2e.test.mjs",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/station-layout.e2e.test.mjs",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/station-builder-publication.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F08",
+        "area": "Routines, workflow execution, night shift and unattended work",
+        "paths": [
+          {
+            "path": "sidecar/cron.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/cron-store.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/cron-driver.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/loopjob.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/nightshift.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/autonomy.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/cron.run-now.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/cron.session-transcript.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/routing.persist.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/routing.sample-provider.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/loops-endurance.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F09",
+        "area": "File tools, patch correctness, checkpoints and undo",
+        "paths": [
+          {
+            "path": "sidecar/checkpoint-store.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/checkpoint-git.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/checkpoint.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/tools/builtin/fs.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/pathtrust.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/checkpoint-maintenance.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/checkpoint-git.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/checkpoint-restore-undoable.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/checkpoint-store.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F10",
+        "area": "Browser, upload, station browser recovery and computer control",
+        "paths": [
+          {
+            "path": "sidecar/tools/builtin/browser.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/tools/builtin/browser-upload.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/browser-install.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/browser-handoff.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/browserstream.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/browser.desktop-login-journey.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/browser-station-login.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/browser-handoff.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/browser.wait-recovery.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F11",
+        "area": "MCP connectors, OAuth, schema, credential recovery",
+        "paths": [
+          {
+            "path": "sidecar/mcp/manager.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/mcp/oauth.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/mcp/translate.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/connectorstate.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/connector-vault.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/windows/connectors.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/connector-storage-start-fresh.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/connector-oauth-refresh-race.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/e2e.mcp-session-expiry.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/connector-vault-invalid.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F12",
+        "area": "Telegram, Discord and other messaging channels",
+        "paths": [
+          {
+            "path": "sidecar/channels/hub.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/channels/telegram.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/channels/discord.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/channels/secrets.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/channels.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/channels.telegram.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/channels.telegram.updates.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F13",
+        "area": "Voice, voice-model routing and companion",
+        "paths": [
+          {
+            "path": "frontend/app/voice.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/voice-live.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/local-voice.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/voice-chat-route.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/remote/voice.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/local-voice.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/voice-chat-model.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/voice-live-ui.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/remote-voice.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/desktop-voice-bundle.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F14",
+        "area": "Visual settings, window usability, lighting and accessibility",
+        "paths": [
+          {
+            "path": "frontend/app/world.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/worldlight.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/stationui.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/build.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/room-lighting-settings.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/worldlight.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/conveyor-ui-truth.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/prop-remaster-contract.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F15",
+        "area": "Performance: station navigation, rendering, tool payload and long work",
+        "paths": [
+          {
+            "path": "frontend/app/world.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/conveyor.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/stationbake.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/loop.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/providers/claude-cli.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/render-pacing.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/static-bake-guard.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/payload.budget.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/eval-installed-performance.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F16",
+        "area": "Goals, Quest Log, recommendation and learning feedback",
+        "paths": [
+          {
+            "path": "frontend/app/goals.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/goalstore.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/quests.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/recommend.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/recquality.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/goal-advance.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/goalstore.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/goals.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/recquality.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/recqualitystore.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/questrefresh.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F17",
+        "area": "Desktop shell, keychain, packaged lifecycle and first install",
+        "paths": [
+          {
+            "path": "src-tauri/src/main.rs",
+            "exists": true
+          },
+          {
+            "path": "src-tauri/src/credentials.rs",
+            "exists": true
+          },
+          {
+            "path": "src-tauri/src/lifecycle_preferences.rs",
+            "exists": true
+          },
+          {
+            "path": "src-tauri/src/webview_recovery.rs",
+            "exists": true
+          },
+          {
+            "path": "src-tauri/tauri.conf.json",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/desktop.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/packaged-lifecycle.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/desktop-workspace-migration.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/desktop-build-macos-notarization.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F18",
+        "area": "Updates, backup/export/restore, fresh start and downgrade safety",
+        "paths": [
+          {
+            "path": "frontend/app/updates.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/backup.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/update-preparation.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/station-recovery.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/workspace-recovery.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/recovery-policy.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/station-recovery.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/emergency-recovery.http.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/desktop-fresh-start-contract.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/installer-upgrade-resilience.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/backup-secrets.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F19",
+        "area": "Security, trust, approvals, tools and external editor entrypoints",
+        "paths": [
+          {
+            "path": "sidecar/permissions.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/projectbless.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/pathtrust.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/capability/resolve.js",
+            "exists": true
+          },
+          {
+            "path": "sidecar/loop.js",
+            "exists": true
+          },
+          {
+            "path": "frontend/app/permissions.js",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/projectbless.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/permissions-authority.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/permissions-ui.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/tool-projection.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          },
+          {
+            "path": "test/connector-security.e2e.test.js",
+            "exists": true,
+            "fast": false,
+            "http": true
+          }
+        ]
+      },
+      {
+        "id": "F20",
+        "area": "Website, manuals, release notes, claims and support routes",
+        "paths": [
+          {
+            "path": "website/index.html",
+            "exists": true
+          },
+          {
+            "path": "website/app",
+            "exists": true
+          },
+          {
+            "path": "README.md",
+            "exists": true
+          },
+          {
+            "path": "INSTALL.md",
+            "exists": true
+          },
+          {
+            "path": "PRIVACY.md",
+            "exists": true
+          },
+          {
+            "path": "TERMS.md",
+            "exists": true
+          },
+          {
+            "path": "RELEASE_NOTES.md",
+            "exists": true
+          },
+          {
+            "path": "docs/releases/next/NOTES_DRAFT.md",
+            "exists": true
+          },
+          {
+            "path": "qa/product-perfect/claims.json",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/website-app-sync.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/website-docs-navigation.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/website-deploy-staging.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/qa-product-perfect-claims.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      },
+      {
+        "id": "F21",
+        "area": "Release orchestration, signing, provenance and promotion",
+        "paths": [
+          {
+            "path": "scripts/release-preflight.mjs",
+            "exists": true
+          },
+          {
+            "path": "scripts/release-ritual.mjs",
+            "exists": true
+          },
+          {
+            "path": "scripts/release-cut.mjs",
+            "exists": true
+          },
+          {
+            "path": "scripts/release-promotion-gate.mjs",
+            "exists": true
+          },
+          {
+            "path": ".github/workflows/release-train.yml",
+            "exists": true
+          },
+          {
+            "path": "scripts/qa/ready.mjs",
+            "exists": true
+          }
+        ],
+        "registeredTests": [
+          {
+            "path": "test/release-train-macos-trust.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/qa-ready.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          },
+          {
+            "path": "test/qa-bug-lifecycle.test.js",
+            "exists": true,
+            "fast": true,
+            "http": false
+          }
+        ]
+      }
+    ],
+    "sourceAcceptance": "All 23 independent source-review findings have accepted repairs in the isolated candidate; full combined gates and live/installed acceptance remain separate.",
+    "remaining": "Exact installed first use/upgrade/native lifecycle, affected platform/provider and customer acceptance, direct Whop review, readiness and required product waves."
   }
 }

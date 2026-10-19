@@ -70,6 +70,7 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.eq(captured.headers['anthropic-version'], '2023-06-01', 'Anthropic API version header set');
     A.eq(captured.body.system, [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } }],
       'leading system lifted — block form, carrying the cache breakpoint');
+    // an UNSPLIT system prompt keeps the system anchor over the tools (the TOOL ANCHOR rides only a split, task-run system)
     A.eq(captured.body.tools[0], { name: 'web', description: 'd', input_schema: { type: 'object' } }, 'OpenAI tool -> Anthropic tool');
     A.eq(captured.body.messages[0].content[1], { type: 'tool_use', id: 'call_7', name: 'web', input: { q: 1 }, cache_control: { type: 'ephemeral' } },
       'assistant tool_call -> tool_use block (inside the last-3 sliding window, so it carries an anchor)');
@@ -101,10 +102,33 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     };
     const TOOLS = [{ type: 'function', function: { name: 'a', parameters: { type: 'object' } } }];
 
-    // With a system prompt, SYSTEM is the anchor — it renders after tools, so one breakpoint caches both.
-    const withSys = await cap({ model: 'm', messages: [{ role: 'system', content: 's' }, { role: 'user', content: 'u' }], tools: TOOLS });
+    // With an UNSPLIT system prompt, SYSTEM is the anchor — it renders after tools, so one breakpoint caches both, and the
+    // three newest messages keep their sliding anchors (1 + 3 = the API's 4).
+    const tail3 = [{ role: 'system', content: 's' }, { role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: 'u2' }];
+    const withSys = await cap({ model: 'm', messages: tail3, tools: TOOLS });
     A.eq(withSys.system[0].cache_control, { type: 'ephemeral' }, 'system block carries the static-prefix breakpoint');
-    A.ok(!withSys.tools[0].cache_control, 'no redundant breakpoint on tools when system already covers them');
+    A.ok(!withSys.tools[withSys.tools.length - 1].cache_control, 'unsplit system: no redundant breakpoint on the tools (the system anchor covers them)');
+    A.eq(withSys.messages.map(m => m.content.some(b => b.cache_control)), [true, true, true], 'unsplit system: the three newest messages keep their sliding anchors');
+    /* TOOL ANCHOR (lean-prompt 2026-10-12): only a SPLIT system (a task run's cacheSystemPrefix + the per-conversation
+       tail) anchors the last tool on its own, so a change in the system tail (a Dossier edit, a persona toggle) never
+       re-writes the catalogue in front of it (issue #105). Budget: tools 1 + the stable system block 1 + 2 tail. */
+    const SPLIT_SYS = 'stable prefix. '.repeat(10);
+    const split = await cap({ model: 'm', cacheSystemPrefix: SPLIT_SYS, messages: [{ role: 'system', content: SPLIT_SYS + '\n\nper-conversation tail' }].concat(tail3.slice(1)), tools: TOOLS });
+    A.eq(split.tools[split.tools.length - 1].cache_control, { type: 'ephemeral' }, 'split system: the last tool anchors the catalogue');
+    A.ok(split.system[0].cache_control && !split.system[1].cache_control, 'split system: the stable block is anchored, the tail block is not');
+    A.eq(split.messages.map(m => m.content.some(b => b.cache_control)), [false, true, true], 'split system: two sliding tail anchors');
+    {
+      // the kill switch is read PER CALL: the provider made above (module already loaded) obeys it without a re-require
+      const prev = process.env.STARNET_ANTHROPIC_TOOL_ANCHOR;
+      process.env.STARNET_ANTHROPIC_TOOL_ANCHOR = '0';
+      let legacy = null;
+      try {
+        await collect(makeAnthropicProvider({ key: 'k', fetch: async (_, o) => { legacy = JSON.parse(o.body); return new Response('data: {"type":"message_stop"}\n\n'); } }),
+          { model: 'm', cacheSystemPrefix: SPLIT_SYS, messages: [{ role: 'system', content: SPLIT_SYS + '\n\nper-conversation tail' }].concat(tail3.slice(1)), tools: TOOLS });
+      } finally { if (prev === undefined) delete process.env.STARNET_ANTHROPIC_TOOL_ANCHOR; else process.env.STARNET_ANTHROPIC_TOOL_ANCHOR = prev; }
+      A.ok(legacy && !legacy.tools[0].cache_control && legacy.system[0].cache_control && legacy.system[1].cache_control,
+        'kill switch STARNET_ANTHROPIC_TOOL_ANCHOR=0 (read per call): the system-only anchor layout');
+    }
 
     // With NO system prompt the last tool is the only anchor that still covers the tool catalogue.
     const noSys = await cap({ model: 'm', messages: [{ role: 'user', content: 'u' }], tools: TOOLS });
@@ -401,8 +425,12 @@ async function collect(provider, req) { const out = []; for await (const e of pr
       await collect(p,{model:'claude-test',messages,cacheSystemPrefix:prefix,tools:[{type:'function',function:{name:'verify',description:'verify work',parameters:{type:'object',properties:{}}}}]});
       A.eq(body.system.map(b=>b.text).join(''),text,'split preserves every system byte');
       A.eq(body.system.length,2,'stable and changing context have separate blocks');
-      A.ok(body.system.every(b=>b.cache_control),'both boundaries remain cacheable');
+      // lean-prompt 2026-10-12: with tools present the budget is tools 1 + the STABLE system block 1 + 2 tail anchors
+      // (it was both system blocks + 2 tail); the per-run tail block rides uncached, as the per-run note now does.
+      A.ok(body.system[0].cache_control && !body.system[1].cache_control,'the stable boundary stays cacheable; the changing tail is not anchored');
+      A.ok(body.tools[body.tools.length-1].cache_control,'the tool catalogue carries its own anchor');
       A.eq((JSON.stringify(body).match(/cache_control/g)||[]).length,4,'four-breakpoint budget includes tail');
+      A.eq(body.messages.map(m=>m.content.some(b=>b.cache_control)),[false,true,true],'two sliding tail anchors: the newest turn and the reply before it');
       A.eq(body.tools[0].name,'verify','verification tool retained');
       A.eq(body.messages.map(m=>m.role),history.map(m=>m.role),'history roles unchanged');
       A.eq(JSON.stringify(messages),snapshot,'cache decoration never mutates history');
@@ -415,6 +443,20 @@ async function collect(provider, req) { const out = []; for await (const e of pr
       A.eq(body.system.length,1,'mismatch uses unchanged legacy block');
       A.eq(body.system[0].text,'policy','mismatch never drops text');
     }
+  }
+  /* RUN CONTEXT NOTE (lean-prompt 2026-10-12). The per-run block now rides a fenced system note placed with the newest
+     user message. On a conversation's FIRST message nothing precedes it but the system prompt — the leading-system
+     hoist must stop at it, or message 1's system would differ from message 2's. It becomes part of the user turn. */
+  {
+    const provider = require('../sidecar/providers/provider.js');
+    const note = provider.runContextNote('[RUNTIME]\nRun id: r1');
+    const first = _internals.messagesToAnthropic([{ role: 'system', content: 'S' }, { role: 'system', content: note }, { role: 'system', content: '<recalled-memory>\nm\n</recalled-memory>' }, { role: 'user', content: 'hi' }]);
+    A.eq(first.system, 'S', 'first message: the run-context note is NOT hoisted into the system prompt');
+    A.eq(first.messages, [{ role: 'user', content: [{ type: 'text', text: note }, { type: 'text', text: '<recalled-memory>\nm\n</recalled-memory>' }, { type: 'text', text: 'hi' }] }],
+      'first message: note, recall and the request merge into ONE user turn (the request still ends on it)');
+    const later = _internals.messagesToAnthropic([{ role: 'system', content: 'S' }, { role: 'user', content: 'hi' }, { role: 'assistant', content: 'yo' }, { role: 'system', content: provider.runContextNote('[RUNTIME]\nRun id: r2') }, { role: 'user', content: 'again' }]);
+    A.eq(later.system, first.system, 'second message: the system prompt is byte-identical to the first message\'s');
+    A.eq(later.messages.map(m => m.role), ['user', 'assistant', 'user'], 'second message: roles alternate, ending on the user turn');
   }
   A.report('provider.anthropic.test');
 })().catch(e => { console.log('FAIL: provider.anthropic.test threw -- ' + (e && e.stack || e)); process.exit(1); });

@@ -2248,7 +2248,7 @@ for (const c of T.catalog) {
   A.ok(/^REFUSED: The page sent no picture/.test(lkAll.content), 'a reply with no picture is refused, never passed off as one');
   const lkBad = await mapT.run({ look: 'Void' }, {});
   A.ok(/^REFUSED: There is no room called "Void"/.test(lkBad.content) && !lkBad.images, 'a room that is not there is refused');
-  A.ok(/station\.map \{ look: the room \}/.test(planT.description) && /^STATION BUILDER, step 2: plan a change to the station floor\. You are the station's designer/.test(planT.description) && !/You never send a position/.test(planT.description) && /up to 1500 in one plan/.test(planT.description) && planT.description.indexOf('DESIGN IT YOURSELF') < planT.description.indexOf('SHORTCUTS'), 'the planner hands the design to the lead: its own refit first, the forms as shortcuts');
+  A.ok(/station\.map \{ look: the room \}/.test(planT.description) && /^STATION BUILDER, step 2: plan a change to the station floor \(rooms, furniture, conveyor and assembly lines\)\. You are the station's designer/.test(planT.description) && !/You never send a position/.test(planT.description) && /up to 1500 in one plan/.test(planT.description) && planT.description.indexOf('DESIGN IT YOURSELF') < planT.description.indexOf('SHORTCUTS'), 'the planner hands the design to the lead: its own refit first, the forms as shortcuts');
   const b = await buildT.run({ planId: 'plan-t-1' }, {});
   A.ok(/"built":true/.test(b.content) && !memo.has('plan-t-1'), 'a build uses the plan once and forgets it');
   const b2 = await buildT.run({ planId: 'plan-t-1' }, {});

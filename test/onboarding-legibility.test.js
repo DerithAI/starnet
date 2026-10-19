@@ -91,7 +91,7 @@ const Glossary = require('../frontend/app/glossary.js');
     'TASK BOARD explains which real work belongs only in COMMS Sessions');
   A.ok(/workstream:\s+'the saved conversation behind a COMMS session/.test(fs.readFileSync(path.join(root, 'frontend', 'app', 'glossary.js'), 'utf8')),
     'the glossary explains the workstream record without conflating it with a board task');
-  A.ok(/every crew member you recruit is a real, separate agent/.test(tutorialSrc),
+  A.ok(/Every crew member you recruit is a real, separate agent/.test(tutorialSrc),
     'Field Manual states that recruited crew are real independent agents');
   A.eq(/echoes for now|placeholders until you recruit more minds/.test(tutorialSrc), false,
     'Field Manual contains no placeholder-agent contradiction');

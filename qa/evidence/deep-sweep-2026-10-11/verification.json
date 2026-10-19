@@ -346,7 +346,7 @@
   "limits": [
     "Coverage is an inventory of 299 commits and 140 changed application paths in the aligned range, with targeted seam reviews and tests. It does not mean every line or every commit was exercised.",
     "Earlier aggregate endurance first-boot timeout and stall-loop transport failure remain unexplained; focused instrumented reruns passed unchanged. See qa/evidence/runtime-sweep-2026-10-11/lifecycle-observation.json; a later aggregate pass would not establish historical cause.",
-    "Peer ownership: actual Windows live checks establish owner access. Foreign-user and recycled-PID refusal are injected cases; no real OS cross-user PID-reuse scenario was executed.",
+    "Peer ownership: actual Windows live checks establish owner access. Refusal cases are injected; no multi-account native scenario was executed.",
     "No issues were closed, no release published, and no remote branch was pushed.",
     "The 299-commit aligned snapshot is the current local trunk. These additional repairs are held in agent/issue-triage-1011.",
     "Native Linux/macOS ownership checks, signed installer/upgrade acceptance, actual Qwen/WSL, physical audio/device quality, overnight WebView2 behavior, customer account failures and customer retests remain unverified.",

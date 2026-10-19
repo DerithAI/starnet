@@ -18,6 +18,7 @@
 'use strict';
 
 const A = require('./_assert.js');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 const http = require('http');
 const path = require('path');
 const os = require('os');
@@ -45,7 +46,7 @@ function startMockOpenRouter() {
         let body = ''; req.on('data', d => { body += d; }); req.on('end', () => {
           let msgs = []; try { msgs = (JSON.parse(body).messages) || []; } catch (_) {}
           const userMsg = msgs.find(m => m && m.role === 'user');
-          const prompt = String((userMsg && userMsg.content) || '');
+          const prompt = userWords(userMsg);
           // the run's OWN dir — take it from the manifest instruction, never the first "workshop/" in the text
           // (an implement prompt names the SOURCE dir first, so a loose match would target the wrong run).
           const runId = (prompt.match(/manifest to "workshop\/([A-Za-z0-9-]+)\/deliverable\.json"/) || [])[1] || 'run';

@@ -120,4 +120,13 @@ function host() {
   A.ok(/setInterval\(\(\) => \{ if \(updateHolding\(\)\) return;/.test(nsArm), 'a night-shift tick launches no beat under the barrier');
 }
 
+// a DELEGATED foreground worker (parentRunId) is a live run too: without it the snapshot never listed the worker and the
+// 30 s reconcile painted its CREW card "idle" through its whole run (live walkthrough 2026-10-13)
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const inner = src.slice(src.indexOf('async function runOnceTrackedInner(o) {'), src.indexOf('/* UPDATE DRAIN (B10)'));
+  A.ok(inner.indexOf("const fgWorker = !!(o.parentRunId && typeof o.steer !== 'function');") >= 0 && inner.indexOf('!(o.lineId || o.dockId || fgWorker)') >= 0, 'a FOREGROUND delegated worker run registers in hostLiveRuns (the snapshot lists it); a background one stays listed by the subagent manager');
+  A.ok(inner.indexOf("source: fgWorker && !(o.lineId || o.dockId) ? 'delegated' : 'host'") >= 0, 'and is marked as a delegated run, not a line run');
+}
+
 A.report('update-drain-wiring.test');

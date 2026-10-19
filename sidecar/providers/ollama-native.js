@@ -20,9 +20,9 @@
      showFacts(json)                      /api/show -> { contextLength, supportsTools, supportsReasoning } */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.ollamaNative = factory(); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.ollamaNative = factory(root.SK.providers.provider); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider) {
   'use strict';
 
   // Window sizes Ollama is asked for. A LADDER, not the exact need: every distinct num_ctx forces Ollama to reload
@@ -49,8 +49,14 @@
   // policy to a user turn, or promote user/tool content into policy. Non-system turns (including
   // tool-call/result pairs) keep their order and identity; the durable transcript is not mutated.
   // This is applied by the adapter before sizing/sending, including its compatible-wire fallback.
+  // HOST NOTES (lean-prompt review, 2026-10-12): the per-run <run_context> note, <recalled-memory> and the
+  // <conversation_summary> are NOT merged into that slot — they change on every message, and merging them made system[0]
+  // differ per message (no prefix reuse). They become the fenced leading text of the newest user message instead
+  // (provider.userSideHostNotes, the same projection every generic Chat Completions route gets), so system[0] stays
+  // byte-stable across a conversation's messages.
   function leadingSystemMessages(messages) {
     if (!Array.isArray(messages)) return messages;
+    if (provider && typeof provider.userSideHostNotes === 'function') messages = provider.userSideHostNotes(messages);
     const systems = messages.filter(m => m && m.role === 'system');
     if (!systems.length || (systems.length === 1 && messages[0] === systems[0])) return messages;
     let content;
@@ -63,7 +69,16 @@
       }
     } else content = systems.map(m => m.content == null ? '' : String(m.content)).join('\n\n');
     const system = systems.length === 1 ? systems[0] : Object.assign({}, systems[0], { content });
-    return [system, ...messages.filter(m => !(m && m.role === 'system'))];
+    const out = [system, ...messages.filter(m => !(m && m.role === 'system'))];
+    // A trailing host nudge after assistant prose would leave the wire ending on that prose: an assistant prefill the
+    // template continues (or a strict server refuses). Open a fresh turn with a neutral user boundary that carries no
+    // policy; the instruction itself keeps its SYSTEM authority above.
+    const last = messages[messages.length - 1];
+    const tail = out[out.length - 1];
+    if (last && last.role === 'system' && tail && tail.role === 'assistant' && !(Array.isArray(tail.tool_calls) && tail.tool_calls.length)) {
+      out.push({ role: 'user', content: '<host_turn>Respond to the latest host instruction above.</host_turn>' });
+    }
+    return out;
   }
 
   function textOfParts(content) {
@@ -243,19 +258,21 @@
   /* STATUS WHEN A LOCAL MODEL SENT NO RESPONSE. Ollama can withhold headers until its first token.
      /api/ps provides placement evidence, not the cause of the silence or the current inference stage.
      A missing row does not establish that a load is underway; a loaded row does not prove prompt reading.
-     Pure: psJson is the /api/ps body (or null when it could not be read). */
-  function placementNote(psJson, model, promptTokens) {
+     Pure: psJson is the /api/ps body (or null when it could not be read). `place` says where the server is
+     ('on this computer' for loopback, else 'at <host>'): a GPU box on the LAN is not this computer. */
+  function placementNote(psJson, model, promptTokens, place) {
+    const server = 'Ollama ' + (place || 'on this computer');
     const id = String(model || '');
     const row = psJson && Array.isArray(psJson.models) ? psJson.models.find(m => m && (m.name === id || m.model === id)) : null;
     const prompt = promptTokens > 0 ? ' a ~' + Math.round(promptTokens / 1000) + 'k-token prompt' : ' the prompt';
-    if (!psJson) return 'Ollama on this computer sent nothing back, and its status (/api/ps) could not be read.';
-    if (!row) return 'Ollama on this computer sent nothing back, and ' + id + ' was not listed as loaded when its status was checked. It may still be loading, but this status does not establish why no response arrived.';
+    if (!psJson) return server + ' sent nothing back, and its status (/api/ps) could not be read.';
+    if (!row) return server + ' sent nothing back, and ' + id + ' was not listed as loaded when its status was checked. It may still be loading, but this status does not establish why no response arrived.';
     const size = Number(row.size) || 0, vram = Number(row.size_vram) || 0;
     const ctx = Number(row.context_length) || 0;
     const where = !vram ? 'entirely on the CPU (no part of it is on a GPU)'
       : (size && vram < size) ? 'only ' + Math.round(vram / size * 100) + '% on the GPU, the rest on the CPU'
       : 'fully on the GPU';
-    return 'Ollama on this computer had ' + id + ' loaded ' + where + (ctx ? ' at a ' + Math.round(ctx / 1024) + 'k window' : '')
+    return server + ' had ' + id + ' loaded ' + where + (ctx ? ' at a ' + Math.round(ctx / 1024) + 'k window' : '')
       + ' but sent no response to' + prompt + '. '
       + (!vram || (size && vram < size) ? 'A model running on the CPU reads StarNet task prompts slowly; a smaller model, or one that fits the GPU, answers sooner.' : '');
   }

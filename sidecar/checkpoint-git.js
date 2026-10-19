@@ -8,6 +8,10 @@ function makeCheckpointGitRunner(deps) {
   const d = deps || {};
   return async function runGitCheckpoint(args, opts) {
     let stdout = '', stderr = '';
+    // A per-call bound wins over the runner default: shadow-repo maintenance (gc, the re-init add/commit) needs
+    // longer than a snapshot's add. Ignoring it killed every gc at the default and left its tmp_pack behind (#107).
+    const perCall = Number(opts && opts.timeoutMs);
+    const timeoutMs = perCall > 0 && isFinite(perCall) ? perCall : (d.timeoutMs || 15000);
     const maxBytes = d.maxBytes || (8 << 20);
     const controller = new AbortController();
     let outBytes = 0, errBytes = 0, overflow = false;
@@ -29,7 +33,7 @@ function makeCheckpointGitRunner(deps) {
       return child;
     };
     try {
-      const result = await runProcess({ spawn, file: d.file || 'git', args, timeoutMs: d.timeoutMs || 15000,
+      const result = await runProcess({ spawn, file: d.file || 'git', args, timeoutMs,
         maxBytes, captureFullOut: false, clock: d.clock, ledger: d.ledger, ledgerCmd: d.file || 'git',
         signal: controller.signal,
         spawnOptions: { cwd: opts && opts.cwd || d.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] } });

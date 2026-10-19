@@ -60,7 +60,8 @@
     // "raise", never "remove" — on StarNet credits PER RUN 0 still stops at the managed default (mirrors chat.js).
     return '\n\n(' + what + (scope === 'run' ? ' — raise it' : ' — raise or remove it') + ' in the app under SETTINGS › SPENDING LIMITS.)';
   }
-  // a follow-up that is itself a stop request never steers the running task — it stops it (the supersede path)
+  // a follow-up that is itself a stop request never steers the running task — from the owner it IS /stop (onInbound);
+  // anything else (a group, a forward) still stops it through the supersede path
   const STOP_WORDS_RE = /^\s*(?:stop|cancel|abort|halt|never\s*mind|nvm|forget\s+(?:it|that)|scratch\s+that)\s*[.!]*\s*$/i;
   // plain-English stop sentences shared with routines/loops (sidecar/stop-reason.js); the inline fallback only serves a
   // non-node embed, which never runs the hub against a real host.
@@ -280,6 +281,33 @@
     return { cmd: head, arg: arg };
   }
 
+  /* parseUserCommand(text, names) — recognise one of the Commander's OWN commands (`names` = what the sidecar's
+     usercommands.json defines). Returns { name, line }, where `line` is the canonical "/name args" the slash
+     registry can read, or null when the text is not one of them.
+
+     Two forms a messenger produces that the registry cannot read raw (2026-10-18 — custom commands did not work
+     in a bot's groups):
+       '/standup@starnetbot'  Telegram appends the bot's @name when a command is picked in a group, and in privacy
+                              mode it is often the only form the bot is sent at all. The registry refuses an '@', so
+                              this answered "Unknown command." Stripped here exactly as parseCommand strips it for
+                              the built-ins.
+       '/disk_usage'          Telegram's command grammar has no '-', so a "/disk-usage" command can only be listed in
+                              the "/" menu (and tapped) as "/disk_usage". Accepted as the same command — but an exact
+                              name always wins, so a Commander who defined both keeps both.
+     The head must end at whitespace or the end of the text: "/standup/notes.md" is a path, not a command. */
+  function parseUserCommand(text, names) {
+    const s = String(text == null ? '' : text).trim();
+    const m = /^\/([A-Za-z0-9_-]+)(?:@[A-Za-z0-9_]+)?(?=\s|$)/.exec(s);
+    if (!m) return null;
+    const list = (Array.isArray(names) ? names : []).map(n => String(n).toLowerCase());
+    const typed = m[1].toLowerCase();
+    let name = list.indexOf(typed) !== -1 ? typed : null;
+    if (!name && typed.indexOf('_') !== -1 && list.indexOf(typed.replace(/_/g, '-')) !== -1) name = typed.replace(/_/g, '-');
+    if (!name) return null;
+    const rest = s.slice(m[0].length).trim();
+    return { name: name, line: '/' + name + (rest ? ' ' + rest : '') };
+  }
+
   // Forgiving roster lookup: exact agentId, then case-insensitive exact name, then case-insensitive prefix on
   // name OR agentId (a unique prefix wins; an ambiguous prefix returns { ambiguous:[...] } so we can list them).
   function matchAgent(roster, query) {
@@ -386,6 +414,27 @@
     // its FIRST hop starts under, so the entry run's sensitive tools are consent-gated exactly like any other run
     // that has read untrusted content. Absent -> the old rule (only a media attachment taints the entry run).
     const entryTaint = (typeof o.entryTaint === 'string' && o.entryTaint.trim()) ? o.entryTaint.trim().slice(0, 80) : null;
+    /* SEND TO VERDICTS (review finding conveyor-backend-04, 2026-10-13). A hub whose inbound is a SEND TO hand-off (the handoff
+       runner's trigger hub, index.js makeTriggerHub) is told the SENDING job's own verdicts instead of inferring them from its taint
+       label, so a job the Commander typed into LINE A keeps Full Access on LINE B exactly as an in-line hop does. Both only NARROW:
+         entryUntrusted(msg) -> is this entry third-party content? Read only on an entryTaint hub; anything but a literal false, or a
+                                throw, is untrusted. Absent -> today's rule (an entryTaint hub's entry is untrusted). An attachment or
+                                a forwarded message stays untrusted whatever it answers.
+         senderWithheld(msg) -> did the sending job run with host power withheld (a non-owner sender)? Anything but a literal false, or a
+                                throw, withholds: the entry run and every hop then run as that sender did (channelSender:true,
+                                channelSenderOwner:false). Absent -> nothing is withheld beyond this hub's own sender rule.
+       The entry run still starts TAINTED under entryTaint (initialTaint below), like a chain hop. */
+    const entryUntrustedFn = typeof o.entryUntrusted === 'function' ? o.entryUntrusted : (() => !!entryTaint);
+    const senderWithheldFn = typeof o.senderWithheld === 'function' ? o.senderWithheld : null;
+    function entryVerdictUntrusted(msg) {
+      try { return entryUntrustedFn(msg) !== false; }
+      catch (e) { failNote('channels.hub.entryUntrusted', e); return true; }
+    }
+    function senderVerdictWithheld(msg) {
+      if (!senderWithheldFn) return false;
+      try { return senderWithheldFn(msg) !== false; }
+      catch (e) { failNote('channels.hub.senderWithheld', e); return true; }
+    }
     // SAMPLE/PROOF SEAM (additive, 2026-08-05): an optional streamId (string, or fn(chatId) -> string) stamped
     // onto every runOnce this hub fires (entry dock AND chain hops). With it, the host records the runs +
     // transcripts under that workstream (runs.jsonl streamId -> a readable OUTBOX crate); WITHOUT it — every
@@ -415,6 +464,8 @@
     // The composition root may mint this only for an authenticated Telegram owner DM. It deliberately lives at
     // the hub edge so every other channel and every Telegram group message stays on its ordinary policy.
     const ownerTrustedFor = typeof o.ownerTrusted === 'function' ? o.ownerTrusted : (() => false);
+    // whether this hub HAS an owner DM that can be trusted — what a shell-command refusal may point the owner to
+    const ownerDmExec = typeof o.ownerTrusted === 'function';
     /* OWNER IDENTITY for control commands and Full Power inheritance (2026-09-25, sec-owner-gates).
        isOwner(msg) answers "is this sender the bound owner?" in ANY chat type (the owner may /model from their own
        group); it is minted by the composition root from the adapter's paired owner id, never from message text.
@@ -602,7 +653,8 @@
       if (!bindChats) return null;
       try {
         const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
-        const bound = rec && String(rec.streamId || '');
+        // a string, always: a NEW chat has no record, and RegExp.test(undefined) tests "undefined" — a valid-looking id
+        const bound = rec ? String(rec.streamId || '') : '';
         if (/^[A-Za-z0-9_-]{1,64}$/.test(bound)) return bound;
       } catch (_) {}
       const base = ('channel_' + channel + '_' + String(chatId)).replace(/[^A-Za-z0-9_-]/g, '_');
@@ -1555,23 +1607,29 @@
       // otherwise fall through and be answered by the MODEL — spending a turn to say it doesn't understand.
       // Match only against the names the sidecar actually reports, so an ordinary message that happens to start
       // with a slash (a path, say) still reaches the agent untouched. The registry itself decides what a given
-      // command may do here: an alias resolves and runs, a shell exec is refused off-desktop.
+      // command may do here: an alias resolves and runs, a shell exec runs only in the owner's trusted DM.
       // Same provenance rule as the built-in table above: forwarded / forward-quoting text is a third party's words,
       // never the Commander's command — it flows on to the (tainted) run as ordinary text.
-      const userNamed = carriesThirdPartyText(msg) ? null : /^\/([A-Za-z0-9_-]+)/.exec(String(msg.text || ''));
-      if (userNamed && runSlashFn && userCommandNames().indexOf(userNamed[1].toLowerCase()) !== -1) {
+      // The name list is read only for a slash-led message: it re-reads the Commander's file.
+      const userCmd = (runSlashFn && !carriesThirdPartyText(msg) && String(msg.text || '').trim().charAt(0) === '/')
+        ? parseUserCommand(msg.text, userCommandNames()) : null;
+      if (userCmd) {
         // the Commander's own commands run the Commander's own aliases — owner-only, same gate as the table above
-        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userNamed[1]), '', 'command'); return; }
+        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userCmd.name), '', 'command'); return; }
         // resolve the agent the SAME way handleCommand does, so a user command is scoped to whoever this chat
         // is actually talking to rather than a default
         const ucAgent = currentBoundAgent(chatId, boundAgentId, sec);
+        // chatType + ownerDmExec let the registry word a shell-command refusal truthfully for THIS chat: a group
+        // never runs one (the output would post to the whole room), and only a hub that can mint ownerTrusted has
+        // an owner DM where one does run.
+        const ucCtx = { agentId: ucAgent, ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec };
         let r;
-        try { r = await runSlashFn(String(msg.text).trim(), { agentId: ucAgent, ownerTrusted: ownerTrusted }); }
+        try { r = await runSlashFn(userCmd.line, ucCtx); }
         catch (e) { try { console.error('[' + channel + '] user command threw:', (e && e.message) || e); } catch (_) {} r = null; }
         const body = (r && Array.isArray(r.lines) && r.lines.length)
           ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
           : String((r && r.text) || '');
-        await deliver(chatId, body || ('/' + userNamed[1] + ' had nothing to report.'), '', 'command');
+        await deliver(chatId, body || ('/' + userCmd.name + ' had nothing to report.'), '', 'command');
         return;
       }
 
@@ -1614,10 +1672,23 @@
          this is a plain follow-up to the SAME agent, it goes into that run's steer buffer — the loop reads it at its
          next step, exactly like a COMMS mid-run steer — and nothing is aborted. Only in a DIRECT chat with no
          forwarded/quoted text and no media: the run's trust and taint were decided from its first sender, so a group
-         member or third-party text must never ride into it as a Commander instruction. A plain "stop"/"cancel" still
-         stops (falls through to the supersede below). A refused steer (the run already finished its work, or has no
-         id yet) falls through to the old path, which now says the earlier run was stopped. */
+         member or third-party text must never ride into it as a Commander instruction. A plain "stop"/"cancel" from
+         the owner IS /stop (below). A refused steer (the run already finished its work, or has no id yet) falls
+         through to the old path, which now says the earlier run was stopped. */
       const liveRun = inflight.get(chatId);
+      // a plain "stop"/"cancel" from the owner while this chat's run is working IS /stop: the same reply, no supersede
+      // notice, and no paid model run on the word "stop". Same message kinds the steer below accepts; anything else
+      // (a group, a forward, media, a non-owner) falls through unchanged.
+      if (liveRun && liveRun.abort && !liveRun.superseded && !liveRun.halted && senderIsOwner
+          && msg.chatType !== 'group' && !msg.edited && !carriesThirdPartyText(msg)
+          && !(Array.isArray(msg.media) && msg.media.length)
+          && STOP_WORDS_RE.test(String(msg.text || ''))) {
+        liveRun.superseded = true;   // no supersededBy: the run's teardown stays quiet, exactly like /stop
+        let aborted = false;
+        try { liveRun.abort.abort(); aborted = true; } catch (e) { failNote('channels.hub.plainStop', e); }
+        await deliver(chatId, aborted ? 'Stopped the run in progress.' : '⚠ Could not stop that run — it may already be finishing.', '', 'command');
+        return;
+      }
       // 409 = that run's loop already FINISHED its work and is settling its reply: never abort it (that would throw away
       // a finished answer) — it delivers, and this message runs next, queued behind it on the same conversation.
       let letPrevFinish = false;
@@ -1632,7 +1703,12 @@
         if (steered) {
           try { store.appendTurn(agentId, 'user', note); } catch (e) { failNote('channels.hub.appendTurn', e); }
           try { emit('channel.inbound', { channel, chatId, agentId, userId: msg.userId || '', kind: 'dm' }); } catch (e) { failNote('channels.hub.inbound.emit', e); }
-          await deliver(chatId, '↪ Added to the task that is already running — it picks this up at its next step, no restart.', liveRun.runId, 'command');
+          // the run may be PAUSED on an approval keyboard: "next step" would then wait out the keyboard (and a typed "yes"
+          // never answers it — only a tap grants a security decision), so say where it is stuck and what unblocks it
+          const waitingOnApproval = (liveRun.awaitingConsent || 0) > 0;
+          await deliver(chatId, waitingOnApproval
+            ? '↪ Added to the task — but it is paused on the permission request above. Tap Allow or Deny there (a typed yes/no does not answer it); it reads your note right after.'
+            : '↪ Added to the task that is already running — it picks this up at its next step, no restart.', liveRun.runId, 'command');
           return;
         }
       }
@@ -1733,8 +1809,13 @@
       }
       // UNTRUSTED ENTRY (run-origin.js entryUntrusted): the same three provenances that start the entry run tainted —
       // a trigger payload (entryTaint), a chat attachment, a forwarded/quoted third-party message. Decided ONCE per
-      // message so the entry run and every hop of its line carry one verdict.
-      const lineEntryUntrusted = !!(entryTaint || mediaIngest.attachments.length || carriesThirdPartyText(msg));
+      // message so the entry run and every hop of its line carry one verdict. A SEND TO hand-off's entryTaint is read through
+      // the sending job's own verdict (entryUntrusted above): a Commander-typed job stays trusted on the next line.
+      const lineEntryUntrusted = !!((entryTaint && entryVerdictUntrusted(msg)) || mediaIngest.attachments.length || carriesThirdPartyText(msg));
+      // …and the sending job's sender verdict (senderWithheld above): a non-owner's job stays withheld on every line it reaches
+      const lineWithheld = senderVerdictWithheld(msg);
+      const runChannelSender = lineWithheld ? true : tagSenderRuns;
+      const runChannelSenderOwner = lineWithheld ? false : channelSenderOwner;
       // The quoted preamble goes ABOVE the member's own words — it is the context their sentence refers back to.
       // It is built from msg.replyTo only, never from msg.text, so routing/classification/commands (which all ran
       // on the RAW text above) are untouched by it.
@@ -1757,8 +1838,12 @@
          and can have it answer both, or split the difference. One line naming what happened is the difference
          between "they repeated themselves" and "the earlier version is void". */
       const editLead = msg.edited ? '[the previous message was edited — this is the corrected version, treat it as replacing what came before]' : '';
-      const turnText = (editLead ? editLead + '\n' : '') + (replyLead ? replyLead + '\n\n' : '') + bodyText
+      // what the member actually asked, as the entry run reads it (voice transcript, quoted reply, attachment notes) minus
+      // the edit marker, which names a message a downstream stage never saw. A line's hops no longer replay the chat stream
+      // (resumeSeed:false), so this is the only place a stage meets e.g. a captionless voice note's words.
+      const lineAsk = (replyLead ? replyLead + '\n\n' : '') + bodyText
         + (mediaIngest.notes.length ? ((bodyText ? '\n' : '') + mediaIngest.notes.join('\n')) : '');
+      const turnText = (editLead ? editLead + '\n' : '') + lineAsk;
 
       // durable transcript: load prior turns, persist the new user turn, build the replay messages. The persisted
       // turn carries the media notes (with saved .attachments/ paths), so an agent in a LATER turn can still reach
@@ -1833,12 +1918,15 @@
         if (!myRec.superseded) return false;
         if (myRec.halted && !haltNoticeSent) {
           haltNoticeSent = true;
+          // the station's OWN process-fault containment marks the run `faulted` before it kills it (halt.js markFaulted): that
+          // stop is said as the fault it was, never as an E-STOP nobody pressed (wave 2 repair, conveyor-backend-08)
+          const why = myRec.faulted ? 'the station hit an internal fault and stopped this run' : 'E-STOP was pressed in the station';
           try {
-            await deliver(chatId, '⏹ Stopped — E-STOP was pressed in the station. This message got no reply and nothing further will run for it.', myRec.runId || '', 'command');
+            await deliver(chatId, '⏹ Stopped — ' + why + '. This message got no reply and nothing further will run for it.', myRec.runId || '', 'command');
           } catch (_) { /* a stop notice must never crash the teardown */ }
         } else if (!myRec.halted && myRec.supersededBy === 'message' && !haltNoticeSent && myRec.runId && !(state && state.errMsg)) {
           /* A NEWER MESSAGE STOPPED THIS RUN — never silently (2026-10-11). This is the fallback when the follow-up
-             could not join the run (no steer seam, a group chat, media, an explicit "stop", or no live loop to read
+             could not join the run (no steer seam, a group chat, media, a "stop" the owner did not send, or no live loop to read
              it): the earlier task's unfinished reply is dropped, so say so once. Its question stays
              in the transcript, so the newer run can see it. */
           haltNoticeSent = true;
@@ -1859,14 +1947,14 @@
 
         // assemble the reply by buffering agent.token deltas — the SAME reassembly harness.js does in the browser.
         // transient rides alongside errMsg so the retry gate can tell the workspace-mutex race from a hard error.
-        state = { runId, buf: '', errMsg: null, reason: null, transient: false };
+        state = { runId, buf: '', errMsg: null, reason: null, transient: false, toolsRan: 0 };
         const sink = (name, payload) => {
           let p; try { p = redact(payload); } catch (_) { p = payload; }
           if (name === 'agent.run.start') state.runId = p.runId || state.runId;
           // The reply is already being assembled here, delta by delta — so this is also where it can be SHOWN.
           // stream.push is fire-and-forget and throttled; it can never delay or fail the run.
           else if (name === 'agent.token') { state.buf += (p.delta || ''); if (stream) stream.push(state.buf); }
-          else if (name === 'agent.tool_call') state.buf = '';
+          else if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; }   // counted: an 'empty' end after tools is not "nothing was done"
           else if (name === 'agent.run.error') { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; }
           else if (name === 'capdenied') state.errMsg = state.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
           else if (name === 'agent.run.end') { state.reason = p.reason; state.finishReason = p.finishReason || null; state.unpricedModel = p.unpricedModel || null; state.unpricedCapTokens = Number(p.unpricedCapTokens) || 0; state.subscriptionModel = p.subscriptionModel || null; state.subscriptionCapTokens = Number(p.subscriptionCapTokens) || 0; state.budgetScope = p.budgetScope || null; state.budgetCapUsd = (typeof p.budgetCapUsd === 'number' && isFinite(p.budgetCapUsd)) ? p.budgetCapUsd : null; state.budgetCapIsBalance = p.budgetCapIsBalance === true; if (typeof p.usd === 'number' && isFinite(p.usd)) state.usd = Math.max(state.usd || 0, p.usd); }
@@ -1879,12 +1967,20 @@
         // only renders the keyboard and routes the tap back. Built per ATTEMPT so it closes over this attempt's
         // runId + AbortController; a superseded attempt's prompts die with its signal.
         const consentPrompt = wantApprovals ? function (call, tool) {
-          return askConsent({
+          // count the open asks on the chat's run record (released however the wait settles: tap, timeout, abort) so a
+          // typed follow-up can say the run is paused on this keyboard (LIVE STEER above)
+          myRec.awaitingConsent = (myRec.awaitingConsent || 0) + 1;
+          const release = function () { myRec.awaitingConsent = Math.max(0, (myRec.awaitingConsent || 1) - 1); };
+          let asked;
+          try {
+            asked = askConsent({
             agentId: agentId, runId: runId, signal: ac.signal, call: call, tool: tool,
             onPrompt: function (promptId, fields) { sendConsentPrompt(chatId, runId, promptId, fields); },
             // the fail-closed timer fired with no tap: SAY so, or the chat sees the run carry on as if they had refused
             onTimeout: function (promptId, fields) { notifyConsentTimeout(chatId, runId, fields); }
-          });
+            });
+          } catch (e) { release(); throw e; }
+          return Promise.resolve(asked).finally(release);
         } : undefined;
 
         try {
@@ -1901,8 +1997,9 @@
             surface: wantApprovals ? 'interactive' : 'autonomous',
             ownerTrusted: ownerTrusted,
             // RUN ORIGIN (sidecar/run-origin.js): a chat sender started this run. Full Power (per-agent Full Access /
-            // master bypass) is inherited only when that sender is the bound owner in a direct chat.
-            channelSender: tagSenderRuns, channelSenderOwner: channelSenderOwner,
+            // master bypass) is inherited only when that sender is the bound owner in a direct chat (a SEND TO hand-off: as
+            // the sending job's sender was, lineWithheld above).
+            channelSender: runChannelSender, channelSenderOwner: runChannelSenderOwner,
             // ...but ONLY for who answers a consent prompt. A phone has no floor to place props on, so this run
             // composes the headless office either way. Without this, /approvals on silently cut the agent from
             // the full autonomous office to compute-only (2 tools) — THE MOAT is floor-real placement, and there
@@ -1954,7 +2051,7 @@
          would be an unstoppable spend. The reply that finally leaves is the LAST stage's. */
       if (chain && !state.errMsg && !myRec.superseded && String(state.buf || '').trim()) {
         const line = await chain.advance({
-          agentId: agentId, dockId: dockId || undefined, text: state.buf, originalText: msg.text,
+          agentId: agentId, dockId: dockId || undefined, text: state.buf, originalText: lineAsk || msg.text, runId: myRec.runId,
           // the entry run's reconciled spend: the chain's $ ceiling covers the whole line, stage one included
           // (2026-08-10 audit). `line.usd` stays hop-only, so onLineOutcome's accounting is unchanged.
           entryUsd: state.usd || 0,
@@ -1964,6 +2061,11 @@
           // SEND TO (2026-10-10, additive): the job's stream and the time its entry run started, so a hand-off reads back exactly
           // this job's run rows (a channel chat's stream carries every earlier message too)
           streamId: canonicalStreamId || undefined, since: (typeof myRec.startedAt === 'number' ? myRec.startedAt : undefined),
+          /* SEND TO VERDICTS (conveyor-backend-04): the verdicts this job's entry run and every hop below run under, stamped
+             POSITIVE only and only here — this hub established them. A hand-off of this job (handoff-runner) runs the next line
+             under the same ones; a seed without them (routines, Run Now, anything older) hands on as untrusted + withheld. */
+          entryTrusted: lineEntryUntrusted ? undefined : true,
+          hostPowerKept: (runChannelSender === true && runChannelSenderOwner !== true) ? undefined : true,   // run-origin.js hostPowerWithheldFor's own test
           signal: myRec.abort ? myRec.abort.signal : null,
           runAgent: async function (h) {
             // a hop is a plain autonomous run of ANOTHER agent: its OWN composed persona (never this channel's
@@ -2005,10 +2107,11 @@
                 agentId: h.agentId, lineId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 streamId: canonicalStreamId || undefined, parallelBranch: !!h.parallel,   // the whole line shares one canonical transcript; a PARALLEL branch hop skips its one-turn-at-a-time queue (chain.js runBatch)
+                resumeSeed: false,   // THIS dock's own history rides `hist` above; never the whole line stream's transcript (runOnceCore seed)
                 initialTaint: 'upstream agent output',
                 untrustedEntry: lineEntryUntrusted || undefined,   // a hop of a payload-started line stays under the taint lock
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,
-                channelSender: tagSenderRuns, channelSenderOwner: channelSenderOwner,   // a hop keeps the entry sender's Full Power verdict
+                channelSender: runChannelSender, channelSenderOwner: runChannelSenderOwner,   // a hop keeps the entry sender's Full Power verdict
                 // the hop's OWN dock room (multi-bay: never the union of the agent's bays)
                 station: (resolveStation ? (h.dockId ? resolveStation(h.agentId, h.dockId) : resolveStation(h.agentId)) : null) || undefined,
                 taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel,
@@ -2022,7 +2125,11 @@
         if (onLineOutcome) {
           // a throwing outcome hook is the HOST's bug (the trigger runner records every fire's truth through it): never
           // let it abort the reply, but never swallow it silently either — the failopen ledger names it
-          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
+          // partial (additive): the JOINER sent on without every branch — the job is not clean, whatever its run rows say
+          // unapproved (additive, GitHub #122): a review loop ran out of passes and sent the work on — delivered, never approved
+          // outboxId (additive, 2026-10-15): the OUTBOX this job landed in (chain.js out.outboxId) — the only one a SEND TO hand-off
+          // ever leaves from, so the sample route names only ITS destination to station.test_line (absent = unknown)
+          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; if (line.partial) lo.partial = String(line.partial); if (line.unapproved) lo.unapproved = String(line.unapproved); if (line.outboxId) lo.outboxId = String(line.outboxId); onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
         }
         if (!myRec.superseded && line.hops.length) {
           // the line's answer replaces the first stage's — and the floor/channel agree on who produced it
@@ -2051,8 +2158,10 @@
           : '⚠ ' + (explained ? explained.text : state.errMsg);
       } else if (!String(state.buf || '').trim() && (state.reason === 'empty' || !state.reason)) {
         // NOTHING came back. "(no reply)\n\n(stopped: empty)" read as a silent stop; say what happened and the way on.
+        // the shared sentence (stop-reason.js) knows whether tools already ran — a file may be written even though the reply is empty
+        const emptySentence = state.reason === 'empty' ? String(StopReason.stopSentence('empty', { toolsRan: state.toolsRan }) || '') : '';
         reply = state.reason === 'empty'
-          ? '⚠ The model sent back an empty reply, so nothing was done — say "continue" to try again, or switch model with /model if it keeps happening.'
+          ? '⚠ ' + emptySentence.charAt(0).toUpperCase() + emptySentence.slice(1).replace('switch model', 'switch model with /model') + '.'
           : '⚠ The run ended without a reply and without saying why — say "continue" to try again.';
       } else {
         reply = state.buf || '(no reply)';
@@ -2248,5 +2357,5 @@
     };
   }
 
-  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

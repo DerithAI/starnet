@@ -20,6 +20,11 @@ A.ok(J.finish(s, 'job-aaaaaaaaaaaa', { status: 'perfect' }).job.status === 'inte
 r = J.note(s, 'job-aaaaaaaaaaaa', { kind: 'fix', at: 5000, dockId: 'p12', role: 'WRITER', field: 'does', text: 'Two sentences.', was: 'Write it up.', why: 'shorter' });
 A.ok(r.job && r.job.notes.length === 1 && r.job.notes[0].kind === 'fix' && r.job.notes[0].was === 'Write it up.', 'a fix used is kept with what it replaced');
 s = r.state;
+// a step goes by its NAME (up to the 48 characters setPropLabel keeps): the note keeps all of it, never a name cut mid-word
+const longName = 'Senior fact checker for science journalism ok';
+A.eq(longName.length, 45, '(fixture) a 45-character step name');
+A.eq(J.note(s, 'job-aaaaaaaaaaaa', { kind: 'fix', at: 5001, dockId: 'p12', role: longName, field: 'does', text: 't' }).job.notes.slice(-1)[0].role, longName, 'a step NAME is kept whole in the job\'s note (wave-2 repair: it was cut to 40)');
+A.eq(J.note(s, 'job-aaaaaaaaaaaa', { kind: 'fix', at: 5002, dockId: 'p12', role: 'x'.repeat(60), field: 'does', text: 't' }).job.notes.slice(-1)[0].role.length, 48, '…and bounded at the name limit');
 A.ok(J.note(s, 'job-aaaaaaaaaaaa', { kind: 'wipe' }).job === null, 'a note kind the record does not keep is refused');
 for (let i = 0; i < 20; i++) s = J.note(s, 'job-aaaaaaaaaaaa', { kind: 'putback', at: 6000 + i, dockId: 'p12', text: 'x' + i }).state;
 A.ok(J.get(s, 'job-aaaaaaaaaaaa').notes.length === J.MAX_NOTES && J.get(s, 'job-aaaaaaaaaaaa').notes.slice(-1)[0].text === 'x19', 'notes are bounded, newest kept');

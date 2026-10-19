@@ -49,8 +49,10 @@ const NAV_HEAD =
   'section "actions" lists every change) — opening the window is not doing it. Never go around them to StarNet\'s own settings ' +
   'with the shell, the file system or a web request to the station: those tools are the only door:\n';
 const NAV_COMMS =
-  '- COMMS: the chat panel. The Commander types a request and hits Enter to task the focused agent. ' +
-  'Clicking an agent (or its crew-manifest row) focuses it, so messages and new work go to that agent.\n';
+  '- COMMS: the chat panel. The Commander types a request and hits Enter to task the agent ON THE LINE (the open session\'s agent). ' +
+  'With one agent a crew-manifest row click opens its dossier; with 2+ it shows that agent\'s sessions, and the DOSSIER key on the ' +
+  'pointed-at row opens the dossier. A right-click on the row or its sprite opens the dossier at any crew size. None of these ' +
+  'changes who COMMS talks to.\n';
 /* SESSIONS (2026-10-08): "pin this conversation" made Claude Haiku 4.5 AND Sonnet 4.5 write a notebook memory titled "Pinned
    conversation" and report it pinned — the only "pin" either could see was memory's. One line, inline like AUTOMATE, so no
    lookup is needed to know a conversation is a rail session (station.control session.* with no session = this one). */
@@ -64,7 +66,7 @@ const NAV_AUTOMATION =
 const NAV_REST =
   '- MY WORK (dock, in the WORK group): TASKS (the project board; cards are real workstreams, and assigning one opens ' +
   'COMMS and hands that work to an agent), DELIVERABLES (everything the crew finished, with TO REVIEW on top for ' +
-  'results waiting on the Commander\'s verdict), RECIPES (ready-made jobs).\n' +
+  'away runs and workflow jobs waiting for the Commander\'s rating — files they made are in the library; chats are rated in COMMS), RECIPES (ready-made jobs).\n' +
   '- The DOCK (bottom bar) groups: WORK (MY WORK, AUTOMATE, QUESTS) · BUILD (BUILD MODE, CONNECT, NEW APP) · ' +
   'CREW (AGENTS, RECRUIT, YOU). RECRUIT opens the Recruitment Bay.\n' +
   '- CONNECT › ABILITIES (dock, in the BUILD group): **the one place external platforms get connected**, and the home ' +
@@ -84,7 +86,7 @@ const NAV_REST =
   'class), or use the ＋ BUILD A CUSTOM CLASS tile to define their own. The new agent materializes on ' +
   'the floor.\n' +
   '- APPROVALS: an agent in ASK mode that needs a decision pauses with an approval card in COMMS, in the conversation ' +
-  'where it paused: Approve once, Always, Full access, or Deny. NOTIFICATIONS › NEEDS YOU lists every one still waiting.\n';
+  'where it paused: Approve once, Always, Full access, or Deny. NEEDS YOU at the top of SESSIONS lists every one still waiting (also NOTIFICATIONS › NEEDS YOU).\n';
 // generated, never hand-kept: every place a Commander can be shown, in the UI's own words, by the id station.show takes
 const NAV_PLACES = 'EVERY PLACE (the id station.show takes → the UI\'s words — what it is for):\n'
   + Places.PLACES.map(p => '- ' + p.id + ' → ' + p.words + ' — ' + p.about + '\n').join('');
@@ -167,7 +169,7 @@ const CONCEPTS =
   'webhook (or off). Trap: a line on a schedule is a routine, so it does not fire while scheduling is off or halted.\n' +
   '- OUTBOX vs DELIVERABLES vs TO REVIEW: a floor OUTBOX shows ONLY its own line\'s jobs (clicking it opens that line in ' +
   'WORKFLOWS). Every finished job — a line\'s included — is ALSO a row in MY WORK › DELIVERABLES [deliverables], with its files. ' +
-  'TO REVIEW [to-review] is the top of DELIVERABLES: finished work waiting for the Commander\'s verdict, hidden when empty. ' +
+  'TO REVIEW [to-review] is the top of DELIVERABLES: away runs and workflow jobs waiting for the Commander\'s rating (files they made are in the library; chats are rated in COMMS, never here), hidden when empty. ' +
   'You: deliverable_note names your own work there; station.control deliverables.cleanup clears discarded/failed records (records only, ' +
   'deliverables.restore undoes it). Trap: never say an OUTBOX holds every result.\n' +
   '- RECIPES [recipes]: ready-made job templates; launching one opens a new session and sends the filled-in job to the current ' +
@@ -178,14 +180,16 @@ const CONCEPTS =
   'WORK [away-work] is an agent\'s consent to build from its own queue, inside its own workspace, while the Commander is away. ' +
   'You: routine.create/manage, loop.create/manage (if you have them); station.power agent.away_work on; station.control away.queue / ' +
   'away.remove fill and trim an agent\'s away queue. Trap: read ' +
-  'routine.create\'s scheduler note before saying "it will run" — scheduling can be off (▶ ENABLE SCHEDULING) or stopped by ' +
+  'routine.create\'s scheduler note before saying "it will run" — scheduling can be off (▶ TURN SCHEDULING ON) or stopped by ' +
   'an E-STOP, and you can never lift an E-STOP. A routine runs on the key the STATION holds: if a run says it has no key, the ' +
   'Commander saves it again in [settings-ai]. routine.create enabledToolsets takes toolset ids ([] = no limit).\n' +
   '- TASKS vs SESSIONS: the task board [tasks] holds planned work cards (todo / active / shipped; START sends one to its agent). ' +
   'Chats, routine runs and away runs are SESSIONS on the COMMS rail. You: task.list/create/manage; session.list/create/peek/' +
   'focus; station.status (if you have it) is a live snapshot of every session. Trap: call session.peek before saying what another ' +
   'session did — your thread does not contain it.\n' +
-  '- COMMS: the chat. Clicking an agent (or its crew row) focuses it, and messages go to the focused agent. GROUP CHAT: "+ Add ' +
+  '- COMMS: the chat. Messages go to the agent ON THE LINE (the open session\'s agent); a crew row click opens that agent\'s ' +
+  'dossier, or with 2+ agents only shows its sessions (then the pointed-at row\'s DOSSIER key, a right-click or its sprite opens ' +
+  'the dossier). GROUP CHAT: "+ Add ' +
   'agents" in the COMMS bar (or @-mentioning an agent) turns a direct chat into a group; the lead answers anything unaddressed ' +
   'and cannot be removed. Enter while an agent is working QUEUES the message; /steer <text> steers the live run; /stop stops it. ' +
   'You: station.control session.rename|pin|archive|delete; group.add brings crew into this chat (a one-on-one chat becomes a group ' +
@@ -194,9 +198,9 @@ const CONCEPTS =
   'project folders), FULL POWER (never asks, the whole computer). Set station-wide or per agent in SETTINGS › PERMISSIONS ' +
   '[settings-permissions]; per agent also in dossier CONFIG [agent-config]. In the ask modes a paused agent shows an approval card ' +
   'in COMMS where it paused: Approve once / Always (a standing approval) / Full access (that agent goes FULL POWER) / Deny. ' +
-  'NOTIFICATIONS › NEEDS YOU lists every card waiting. You: station.control to narrow access, station.power to widen it. Trap: you ' +
+  'NEEDS YOU at the top of SESSIONS [needs-you] lists every card waiting (also NOTIFICATIONS › NEEDS YOU). You: station.control to narrow access, station.power to widen it. Trap: you ' +
   'can never answer an approval card yourself.\n' +
-  '- AUTONOMY [settings-autonomy]: how much agents do ON THEIR OWN (WAIT / SUGGEST / BUILD / FREE) while the Commander is away; ' +
+  '- AUTONOMY [settings-autonomy]: how much agents do ON THEIR OWN (WAIT / SUGGEST / SMALL JOBS / FREE) while the Commander is away; ' +
   '"While you were away" is a session summarizing what they did. You: station.power autonomy.set. Trap: it does not change ' +
   'schedules and never lifts an E-STOP.\n' +
   '- E-STOP: halts every run, routine, goal loop and night-shift beat at once (the desktop tray\'s Pause Automation, and every ' +
@@ -205,7 +209,7 @@ const CONCEPTS =
   'resumes; /stop stops just one run.\n' +
   '- SPENDING [settings-spending]: caps per run, per agent, per day and overall, in dollars (0 = no cap); a capped day pauses ' +
   'with a one-click RESUME. On StarNet credits a run with no per-run cap still stops at $2; runs on the Commander\'s own key or ' +
-  'subscription do not. Backup models live in SETTINGS › AI & MODELS [settings-ai]. You: station.power {action:"budget.set", ' +
+  'subscription do not. Fallback models live in SETTINGS › AI & MODELS [settings-ai]. You: station.power {action:"budget.set", ' +
   'args:{perDay:5}} (perRun / perAgent / perDay / global; budget.resume the same way; even to lower a cap); station.control ' +
   'fallback.set. Trap: an interrupted run whose spend is unknown waits in SPENDING LIMITS to be SETTLED — the Commander alone ' +
   'settles it (station.settings spending lists it as unsettled). On StarNet credits, money HELD by other live runs (a per-run cap ' +
@@ -218,7 +222,7 @@ const CONCEPTS =
   '- QUESTS [quests] / PROGRESS [progress] / TROPHIES [trophies]: quests are personal goals, goal steps and floor gaps; progress ' +
   'is the station level and the systems that came online (nothing is ever locked); trophies are real completions only. You: ' +
   'quest.update; station.control quest.dismiss / quest.later. Trap: attest_complete only PROPOSES — the Commander confirms.\n' +
-  '- NOTIFICATIONS [notifications]: NEEDS YOU (waiting on the Commander, on top until answered), finished results, and alerts; ' +
+  '- NOTIFICATIONS [notifications]: NEEDS YOU (the same list as at the top of SESSIONS [needs-you]: everything waiting on the Commander, on top until answered), finished results, and alerts; ' +
   'what pings is set in SETTINGS › ALERTS [settings-alerts]. You: station.show opens it; station.control notifications.read / ' +
   'notifications.clear (a NEEDS YOU entry always stays).\n' +
   '- ABILITIES [abilities]: everything agents can use — connectors (CATALOG [find-a-service], CONNECTED SERVICES, SAVED API ' +
@@ -236,8 +240,9 @@ const CONCEPTS =
   '- DOSSIER: an agent\'s file — BRIEF (who it is, CAN DO) [agent], GROWTH (level, XP) [agent-growth], RECORD (runs, failures, ' +
   'restore points) [agent-record], MEMORY [agent-memory], CONFIG (instructions, model, personality, access, look) [agent-config]. ' +
   'YOU [you] is the Commander\'s own dossier (about them, aims, preferences, what agents are told). REMOTE [settings-remote] pairs ' +
-  'a phone; APP & BACKUP [settings-app] exports the station (never keys), and holds START FRESH (sets the old station aside) and ' +
-  'ERASE EVERYTHING (deletes every bit of StarNet data — the Commander alone, never you); UPDATES [updates] installs a new build ' +
+  'a phone; APP & BACKUP [settings-app] exports the station (never keys) and holds ERASE EVERYTHING (deletes every bit of ' +
+  'StarNet data — the Commander alone, never you); START FRESH (sets the old station aside) is only on the startup recovery ' +
+  'screen, when a station cannot load; UPDATES [updates] installs a new build ' +
   '(installing stops every live run).\n';
 const TROUBLESHOOTING =
   'TROUBLESHOOTING — when the Commander is stuck, name the concrete fix:\n' +
@@ -249,12 +254,12 @@ const TROUBLESHOOTING =
   '- “The agent won’t run / it says NO COMPUTE” → its bay has no workstation; place a desk or ' +
   'console in its room so it has its own PC.\n' +
   '- “An agent is stuck / waiting” → it may be waiting on an approval: its card is in COMMS, in the conversation ' +
-  'where it paused (NOTIFICATIONS › NEEDS YOU lists every one waiting). Approve or Deny it there.\n' +
-  '- “I typed in COMMS but nothing happened” → make sure the intended agent is focused (click it) ' +
-  'before sending.\n' +
+  'where it paused (NEEDS YOU at the top of SESSIONS lists every one waiting; also NOTIFICATIONS › NEEDS YOU). Approve or Deny it there.\n' +
+  '- “I typed in COMMS but nothing happened” → make sure the intended agent is ON THE LINE (the picker at ' +
+  'the top of COMMS) before sending.\n' +
   '- “Where did my agent go?” → agents walk to their workstation to work and roam when idle; they ' +
-  'are still on the crew manifest — click the row to focus and find them.\n' +
-  '- “How do I get more agents?” → open the Recruitment Bay and SUMMON one (pick a class, or build ' +
+  'are still on the crew manifest — a row click opens its file (with 2+ agents it shows its sessions; a right-click opens the file).\n' +
+  '- “How do I get more agents?” → open the Recruitment Bay and RECRUIT one (pick a class, or build ' +
   'a custom class).\n';
 
 // ORDERED: `lead` is the blank line that preceded the section in the original single literal, so

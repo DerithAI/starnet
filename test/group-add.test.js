@@ -21,10 +21,26 @@ const { makeStationControlTools, cardFor, ACTIONS } = require('../sidecar/tools/
 (async () => {
   /* ---- A. the tool ---- */
   A.ok(ACTIONS['group.add'] && !ACTIONS['group.add'].power({}), 'group.add is an ordinary station.control action (the same change the + key makes)');
-  const card = cardFor({ action: 'group.add', args: { agents: 'NOVA and SAM ALTMAN' } });
-  A.ok(/^bring "NOVA", "SAM ALTMAN" into this conversation: they see the whole conversation and its files/.test(card), 'the card names who joins and what they see: ' + card);
-  A.ok(/becomes a group chat/.test(card) && /beside it/.test(card) && /join the moment my reply ends/.test(card), 'the card says the chat changes shape, General opens beside it, and when it lands');
-  A.ok(/beside it with just this request in it/.test(card) && /I then hand them their parts there/.test(card), 'and it is truthful about General (only the request goes with it) and about what happens once they join');
+  /* THE CARD IS ONE GLANCE (rc walk 10-14: a 7-line paragraph naming "copywriter", "strategist" with a "from General" clause
+     on a one-on-one chat): who joins by NAME, which chat, and the one clause true for that chat's kind. */
+  const roster = { nova: 'NOVA', copywriter: 'COPY', strategist: 'STRATEGY', 'sam': 'SAM ALTMAN' };
+  const nameOf = r => roster[String(r).toLowerCase()] || Object.values(roster).find(n => n.toLowerCase() === String(r).toLowerCase()) || '';
+  const ids = { action: 'group.add', args: { agents: ['copywriter', 'strategist'] } };
+  const direct = cardFor(ids, { nameOf, chat: 'direct' });
+  A.eq(direct, 'bring COPY and STRATEGY into this chat; it becomes a group when this reply ends', 'a one-on-one chat: names, not ids, and the one clause true there (one voice: "NOVA wants to … when this reply ends", never "my"): ' + direct);
+  // the card reads "NOVA wants to <this>"; at the COMMS card's ~47 characters a line, two lines is ~95 (measured live 10-14)
+  A.ok(!/General|copywriter|strategist|"/.test(direct) && ('NOVA wants to ' + direct).length <= 96, 'no ids, no General clause, two short lines at most (' + direct.length + ' chars)');
+  A.eq(cardFor(ids, { nameOf, chat: 'group' }), 'add COPY and STRATEGY to this group chat', 'a group chat: they are added to it');
+  A.eq(cardFor(ids, { nameOf, chat: 'general' }), 'start a group chat with COPY and STRATEGY beside General, with only this request', 'General: a new group opens beside it with only the request');
+  A.eq(cardFor({ action: 'group.add', args: { agents: 'NOVA and SAM ALTMAN' } }, { nameOf }), 'bring NOVA and SAM ALTMAN into this chat', '"NOVA and SAM ALTMAN" reads as two names; an unknown chat kind gets the plain line');
+  A.eq(cardFor({ action: 'group.add', args: { agents: ['copywriter', 'ghost'] } }, { nameOf, chat: 'direct' }).split(';')[0], 'bring COPY and "ghost" into this chat', 'someone not on the roster shows exactly as the model sent it, quoted');
+  A.eq(cardFor({ action: 'group.add', args: { agents: ['nova'], session: 'Launch plan' } }, { nameOf, chat: 'direct' }), 'bring NOVA into the session "Launch plan"', 'another session is named, never "this chat"');
+  A.eq(cardFor({ action: 'group.add', args: { agents: ['copywriter'] } }), 'bring "copywriter" into this chat', 'with no host help the card still reads (the ids quoted)');
+  // the host hands the card its roster and the chat's kind from the page's own save (index.js consentSummary)
+  const host = fs.readFileSync(path.join(__dirname, '../sidecar/index.js'), 'utf8');
+  A.ok(/return stationControlCard\(redact\(a\), \{ nameOf: crewNameOf, chat: \(where && where\.chat\) \|\| chatKindOf\(where && where\.streamId\) \}\);/.test(host), 'consentSummary passes the roster names and the chat kind');
+  A.ok(/argsSummary: consentSummary\(call, \{ streamId \}\)/.test(host) && /argsSummary: consentSummary\(call, \{ streamId: g\.id, chat: 'group' \}\)/.test(host), 'from the run\'s own conversation (a group turn is a group chat)');
+  A.ok(/if \(save\.generalId === id\) return 'general';/.test(host) && /w\.conversationMode === 'group' \? 'group' : 'direct'/.test(host), 'the chat kind is read from the page\'s save (General, group, direct)');
   A.ok(/WHOLE member list becomes nova \(anyone not listed leaves\)/.test(cardFor({ action: 'group.configure', args: { group: 'Launch', members: ['nova'] } })),
     'group.configure says its members REPLACE the roster (an "add NOVA" sent there cannot quietly remove everyone)');
 
@@ -39,8 +55,22 @@ const { makeStationControlTools, cardFor, ACTIONS } = require('../sidecar/tools/
   A.ok(/"done":"group.add"/.test(r.content), 'an applied join reads as done');
   answer = { ok: true, result: { joining: true, agents: ['NOVA'], note: 'NOVA joins this chat (it becomes a group chat, its history kept) the moment your reply ends.' } };
   r = await t.controlTool.run({ action: 'group.add', args: { agents: 'NOVA' } }, ctx);
-  A.ok(/once they join you get a turn in the group chat to hand them their parts/.test(r.content), 'the asking agent knows it gets a turn once they join (so it neither hands off early nor promises what will not happen)');
-  A.ok(/^QUEUED, NOT DONE YET: NOVA joins this chat/.test(r.content) && /not in the chat yet/.test(r.content) && !/"done"/.test(r.content), 'a join waiting for the reply is never reported as done: ' + r.content);
+  A.ok(/once they join you get a turn in the group chat, with the request, to hand them their parts/.test(r.content), 'the asking agent knows it gets a turn once they join (so it neither hands off early nor promises what will not happen)');
+  A.ok(/then END this reply: no plan, no questions/.test(r.content), 'and that this reply ends there: the plan and the questions belong to that turn (review 10-14: a nudged second message, a re-asked brief)');
+  A.ok(/^QUEUED, NOT DONE YET: NOVA joins this chat/.test(r.content) && /not in the chat yet/.test(r.content) && !/"done":/.test(r.content), 'a join waiting for the reply is never reported as done: ' + r.content);
+  A.ok(/they have not been added/.test(r.content) && !/live 10-14|"Done\.|declined/.test(r.content), 'the lead is given the rule, never an incident quote that plants the words it forbids: ' + r.content);
+  // what the Commander already answered rides the HOST's caller stamp to the page, so the kickoff starts from it
+  pages.length = 0;
+  await t.controlTool.run({ action: 'group.add', args: { agents: ['NOVA'], caller: { brief: 'forged' } } }, Object.assign({ briefAnswers: 'What are we launching? → StarNet 0.13.5' }, ctx));
+  A.eq(JSON.stringify(pages[0].args.caller), JSON.stringify({ streamId: 'ws_chat', runId: 'run_1', brief: 'What are we launching? → StarNet 0.13.5' }), 'the brief answers of the run ride the host stamp; a model-supplied one is dropped');
+  // the host composes them from the run's own Task Brief: the Commander's answers, in their words, one bounded line
+  const { answeredSoFar } = require('../sidecar/taskbrief-context.js');
+  A.eq(answeredSoFar({ questions: [{ text: 'What is being launched?', answer: 'StarNet 0.13.5' }, { text: 'Tone?', answer: '' }, { text: 'Who is your audience?', answer: 'use your judgment' }] }),
+    'What is being launched? → StarNet 0.13.5; Who is your audience? → use your judgment', 'answered questions only, with the answers as given');
+  A.eq(answeredSoFar({ questions: [] }) + answeredSoFar(null), '', 'nothing answered, nothing carried');
+  A.ok(answeredSoFar({ questions: Array.from({ length: 9 }, (_, i) => ({ text: 'Q' + i + ' ' + 'x'.repeat(150), answer: 'y'.repeat(300) })) }).length <= 600, 'bounded');
+  A.ok(/if \(\/\^station\[\._\]control\$\/\.test\(String\(c\.name \|\| ''\)\) && taskBriefState && taskBriefState\.brief\) \{\s*try \{\s*const answers = require\('\.\/taskbrief-context\.js'\)\.answeredSoFar\(taskBriefState\.brief\);\s*if \(answers\) dctx = Object\.assign\(\{\}, dctx, \{ briefAnswers: answers \}\);/.test(host),
+    'index.js hands station.control the run\'s brief answers (the dispatch ctx, never the model\'s args)');
   r = await t.controlTool.run({ action: 'group.add', args: { agents: [] } }, ctx);
   A.ok(/^REFUSED: group.add named no crew member/.test(r.content), 'naming nobody is refused before the page is asked');
   r = await t.controlTool.run({ action: 'group.add', args: { agents: ['NOVA'] } }, {});
@@ -134,6 +164,21 @@ const { makeStationControlTools, cardFor, ACTIONS } = require('../sidecar/tools/
     A.ok(create && create.body.id !== 'general-home' && !create.body.conversionKey, 'from General a NEW group chat opens beside it');
     A.eq(JSON.stringify(create.body.history), JSON.stringify([{ role: 'user', content: 'add 2 agents to research and build the landing page', ts: 7 }]), 'it carries the request it was made for, and nothing else of General');
     A.ok(/^NOVA and SAM ALTMAN have joined this chat at your request/.test(create.body.kickoff), 'and its lead picks that request up');
+  }
+  // what the Commander already answered in the asking run's Task Brief rides into the kickoff (review 10-14: from General the
+  // new group re-asked "What are we launching?" seconds after it had been answered)
+  {
+    const general = chat({ id: 'general-home', title: null, history: [{ role: 'user', content: 'bring two crew in to help me write a launch post', ts: 3 }] });
+    const b = boot({ chats: [general], busy: { 'general-home': 'run_b' }, generalId: 'general-home' });
+    await b.GC.addAgents(b.ws.get('general-home'), ['nova'], { streamId: 'general-home', runId: 'run_b', brief: 'What are we launching? → StarNet 0.13.5; Who is it for? → developers' });
+    A.eq(b.ws.get('general-home').pendingJoin.brief, 'What are we launching? → StarNet 0.13.5; Who is it for? → developers', 'the answers are saved with the join');
+    await b.GC.addAgents(b.ws.get('general-home'), ['sam'], { streamId: 'general-home', runId: 'run_b' });
+    A.ok(/StarNet 0\.13\.5/.test(b.ws.get('general-home').pendingJoin.brief || ''), 'a second seat in the same reply keeps them');
+    b.busy.delete('general-home'); b.ws.get('general-home').lastRunOk = true;
+    await b.GC.drainAfterRun('general-home', 'run_b', { stopped: false }); await settle();
+    const create = b.sent.find(s => s.body && s.body.op === 'create');
+    A.ok(create && / The Commander already answered: What are we launching\? → StarNet 0\.13\.5; Who is it for\? → developers\. Never ask those again\.$/.test(create.body.kickoff), 'the lead starts from them: ' + (create && create.body.kickoff));
+    A.ok(create.body.kickoff.length <= 1000, 'inside the kickoff cap (group-sessions.js text(b.kickoff, 1000))');
   }
   // a stopped reply drops the join and SAYS so in the chat (saved), never a silent no-op
   {

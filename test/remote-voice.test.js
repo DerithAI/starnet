@@ -121,6 +121,40 @@ function parsePages(buf) {
     await voice.hear('devB', { utt: 'b1', part: 0, frames: [b64u(SILK_WB_60MS)] });
     t += VOICE_TTL_MS + 1;
     A.ok(!(await voice.hear('devB', { utt: 'b1', part: 1, frames: [], last: true })).ok, 'an abandoned utterance expires');
+
+    // a reply lost on the relay: the device sends its FINAL part again and gets the same transcript back,
+    // never a second (paid) STT call and never "start again from part 0"
+    {
+      let calls = 0, release;
+      const gate = new Promise((r) => { release = r; });
+      const v4 = makeRemoteVoice({ now: () => t, newId: () => 'x', transcribeOgg: async () => { calls++; await gate; return { ok: true, text: 'what time is it' }; } });
+      const frames = Array(10).fill(b64u(SILK_WB_60MS));
+      A.ok((await v4.hear('devR', { utt: 'r1', part: 0, frames, frameMs: 60 })).ok, 'retry: part 0 opens the utterance');
+      const lastPart = { utt: 'r1', part: 1, frames, frameMs: 60, last: true };
+      const first = v4.hear('devR', lastPart);
+      const during = v4.hear('devR', lastPart);   // the retry lands while the station is still transcribing
+      release();
+      const [r1, r2] = await Promise.all([first, during]);
+      const r3 = await v4.hear('devR', lastPart);   // and one after it finished
+      A.ok(r1.ok && r1.data.text === 'what time is it', 'the final part is transcribed');
+      A.ok(r2.ok && r2.data.text === 'what time is it', 'a repeat of the final part during STT gets the same transcript: ' + JSON.stringify(r2));
+      A.ok(r3.ok && r3.data.text === 'what time is it', 'a repeat of the final part after STT gets the same transcript: ' + JSON.stringify(r3));
+      A.eq(calls, 1, 'one STT call for three deliveries of the final part');
+      A.ok(!(await v4.hear('devR', { utt: 'r1', part: 1, frames: frames.slice(0, 9), frameMs: 60, last: true })).ok, 'different audio under the same part number is not a repeat: refused');
+      A.ok(!(await v4.hear('devR', { utt: 'r1', part: 2, frames, frameMs: 60, last: true })).ok, 'a later part of a closed utterance is still refused');
+      A.ok((await v4.hear('devR', { utt: 'r2', part: 0, frames, frameMs: 60 })).ok, 'a new utterance opens');
+      A.ok(!(await v4.hear('devR', lastPart)).ok, 'a new utterance drops the old transcript');
+      A.eq(calls, 1, 'still one STT call');
+      const v5 = makeRemoteVoice({ now: () => t, newId: () => 'x', transcribeOgg: async () => { calls++; return { ok: true, text: 'lights off' }; } });
+      const solo = { utt: 's1', part: 0, frames, frameMs: 60, last: true };
+      A.ok((await v5.hear('devS', solo)).ok && (await v5.hear('devS', solo)).data.text === 'lights off', 'a one-part utterance sent twice is one transcript');
+      A.eq(calls, 2, 'a one-part repeat never reaches STT again');
+      v5.forget('devS');
+      A.ok((await v5.hear('devS', solo)).ok && calls === 3, 'a revoke (forget) drops the kept transcript');
+      t += VOICE_TTL_MS + 1;
+      A.ok((await v5.hear('devS', solo)).ok && calls === 4, 'the kept transcript expires after VOICE_TTL_MS');
+      A.eq(v5._sizes().heard, 1, 'one kept transcript per device');
+    }
   }
 
   /* ---------- 3. speak / speech: progressive (sentence by sentence), ADPCM, per device, re-askable, expiring ---------- */
@@ -134,10 +168,12 @@ function parsePages(buf) {
     const LONG_REPLY = S150('alpha') + ' ' + S150('bravo') + ' ' + S150('delta');
     const gate = [];   // synthesis of sentences 2+ waits here, so the test can watch the reply grow
     let calls = 0, said = [];
+    const pins = [];   // the engine each sentence was pinned to (undefined = the first sentence picks)
     const voice = makeRemoteVoice({
       now: () => t, newId: () => 'r' + (++calls),
-      synthesize: async (text) => {
+      synthesize: async (text, o) => {
         said.push(text);
+        pins.push(o && o.provider);
         if (text === 'fail') return { ok: false, reason: 'no engine' };
         if (said.length > 1) await new Promise((r) => gate.push(r));
         return { ok: true, buf: sentenceWav(said.length), mime: 'audio/wav', provider: 'local-kokoro' };
@@ -169,6 +205,7 @@ function parsePages(buf) {
       if (c.data.done) break;
       if (!b.length) await settle();
     }
+    A.eq(pins.slice(-3), [undefined, 'local-kokoro', 'local-kokoro'], 'the first sentence picks the engine; the rest of the reply is pinned to it (one speaker, one format)');
     const decoded = decodeAdpcm(Buffer.concat(all));
     A.eq(decoded.rate, 24000, 'the stream says its rate');
     A.eq(decoded.samples.length, 3 * 24000, 'all three sentences arrive, exactly 3 s of samples');
@@ -198,6 +235,35 @@ function parsePages(buf) {
     t += VOICE_TTL_MS + 1;
     A.ok(!voice.speech('devA', { id: s3.data.id, offset: 0 }).ok, 'an unread reply expires');
 
+    // sweep() alone (what the store's own timer runs): a device that never calls again does not keep its audio in memory
+    let tIdle = 1;
+    const idle = makeRemoteVoice({ now: () => tIdle, newId: () => 'i1', synthesize: async () => ({ ok: true, buf: Buffer.from([0xff, 0xfb, 0x90, 0x00]), mime: 'audio/mpeg', provider: 'edge' }) });
+    await idle.speak('devZ', { text: 'Hi.' });
+    await idle.hear('devZ', { utt: 'z1', part: 0, frames: [b64u(SILK_WB_60MS)] });
+    await idle.hear('devY', { utt: 'y1', part: 0, frames: [b64u(SILK_WB_60MS)], last: true });
+    A.eq(idle._sizes(), { utterances: 1, replies: 1, heard: 1 }, 'an unfinished utterance, a reply and a kept transcript are held');
+    tIdle += VOICE_TTL_MS + 1;
+    A.eq(typeof idle.sweep, 'function', 'sweep is exported');
+    idle.sweep();
+    A.eq(idle._sizes(), { utterances: 0, replies: 0, heard: 0 }, 'sweep alone drops expired audio and transcripts, with no voice verb called');
+
+    // ...and nobody has to remember to call it: the voice store runs sweep on its own unref'd timer, so a companion
+    // unplugged mid-reply does not keep its audio or its question in memory until another device speaks
+    const timers = [];
+    let tTimed = 1;
+    const timed = makeRemoteVoice({ now: () => tTimed, newId: () => 't1',
+      setInterval: (fn, ms) => { const h = { fn, ms, unrefd: false, unref() { h.unrefd = true; return h; } }; timers.push(h); return h; },
+      synthesize: async () => ({ ok: true, buf: Buffer.from([0xff, 0xfb, 0x90, 0x00]), mime: 'audio/mpeg', provider: 'edge' }) });
+    A.eq(timers.map((h) => [h.ms, h.unrefd]), [[60 * 1000, true]], 'one sweep timer, once a minute, unref\'d (it never keeps the sidecar alive)');
+    await timed.speak('devT', { text: 'Hi.' });
+    await timed.hear('devT', { utt: 't1', part: 0, frames: [b64u(SILK_WB_60MS)] });
+    await timed.hear('devU', { utt: 'u1', part: 0, frames: [b64u(SILK_WB_60MS)], last: true });
+    timers[0].fn();
+    A.eq(timed._sizes(), { utterances: 1, replies: 1, heard: 1 }, 'a tick drops nothing that is still fresh');
+    tTimed += VOICE_TTL_MS + 1;
+    timers[0].fn();
+    A.eq(timed._sizes(), { utterances: 0, replies: 0, heard: 0 }, 'a tick after VOICE_TTL_MS drops it all, with no voice verb called');
+
     // a later sentence that fails ends the reply with what was said, and says why
     let n = 0;
     const flaky = makeRemoteVoice({ now: () => 1, newId: () => 'f1', synthesize: async () => (++n === 2 ? { ok: false, reason: 'engine crashed' } : { ok: true, buf: sentenceWav(n), mime: 'audio/wav' }) });
@@ -205,6 +271,16 @@ function parsePages(buf) {
     await settle(); await settle();
     const fc = flaky.speech('devA', { id: fs1.data.id, offset: 0 });
     A.ok(fc.data.done && /engine crashed/.test(fc.data.error || ''), 'a failed later sentence ends the reply and reports it');
+
+    // a later sentence in a different engine's voice (same format) ends the reply there: one reply, one speaker
+    let k = 0;
+    const swap = makeRemoteVoice({ now: () => 1, newId: () => 'p1', synthesize: async () => (++k === 1
+      ? { ok: true, buf: Buffer.from([0xff, 0xfb, 0x90, 0x00]), mime: 'audio/mpeg', provider: 'edge' }
+      : { ok: true, buf: Buffer.from([0xff, 0xfb, 0x90, 0x01]), mime: 'audio/mpeg', provider: 'openrouter' }) });
+    const sw = await swap.speak('devA', { text: LONG_REPLY });
+    await settle(); await settle();
+    const swc = swap.speech('devA', { id: sw.data.id, offset: 0 });
+    A.ok(swc.data.done && swc.data.bytes === 4 && /changed mid-reply/.test(swc.data.error || ''), 'a speaker change mid-reply ends it with what the first voice said: ' + JSON.stringify({ bytes: swc.data.bytes, error: swc.data.error }));
 
     // the encoder itself: a 440 Hz tone survives ADPCM with good SNR
     const enc = makeAdpcmEncoder();
@@ -222,9 +298,15 @@ function parsePages(buf) {
     A.ok(chunks.every((c) => c.endsWith('.')), 'each chunk ends on a sentence boundary');
     const long = splitSentences('word '.repeat(120).trim());
     A.ok(long.length >= 2 && long.every((p) => p.length <= 240), 'a run-on is cut at spaces under 240 characters');
+    // a decimal, a version or a price is one number, never a sentence end ("3.5" was spoken "three. five")
+    const nums = splitSentences('It is 3.5 GB and version 0.13.2 is out. That is $4.99!').join(' | ');
+    A.ok(nums.includes('3.5') && nums.includes('0.13.2') && nums.includes('$4.99'), 'numbers stay whole: ' + nums);
+    A.ok(!/3\. 5|0\. 13|13\. 2|4\. 99/.test(nums), 'no sentence break inside a number: ' + nums);
+    const numChunks = splitSentences(S150('alpha') + ' It weighs 3.5 GB. ' + S150('bravo'));
+    A.ok(numChunks.length === 2 && numChunks.every((c) => c.endsWith('.')) && numChunks.join(' ').includes('3.5 GB'), 'a long reply with a decimal is still cut only at sentence ends: ' + JSON.stringify(numChunks.map((c) => c.slice(-24))));
   }
 
-  /* ---------- 3b. WAV normalisation: what the local voice engine writes -> what a device decoder plays ---------- */
+  /* ---------- 3b. speaker levelling: wavToPcm16 is the test seam for the levelling the ADPCM path applies ---------- */
   {
     const rmsOf = (w) => { let e = 0; const n = (w.length - 44) / 2; for (let i = 0; i < n; i++) { const v = w.readInt16LE(44 + i * 2) / 32768; e += v * v; } return Math.sqrt(e / n); };
     const peakOf = (w) => { let p = 0; for (let i = 44; i < w.length; i += 2) p = Math.max(p, Math.abs(w.readInt16LE(i))); return p; };
@@ -301,6 +383,11 @@ function parsePages(buf) {
     A.eq(withVoiceStyle(''), VOICE_SURFACE, 'an agent with no system prompt still gets them');
     const hostSrc = fs.readFileSync(require('path').join(__dirname, '../sidecar/remote/host.js'), 'utf8');
     A.ok(hostSrc.includes('system: o.voice ? withVoiceStyle(cred.system) : cred.system'), 'host.send applies them to the run it starts');
+    A.ok(/voiceTurn: o\.voice === true \|\| undefined/.test(hostSrc), 'and marks it a voice turn, so the VOICE CHAT MODEL may answer the companion (a phone is unchanged)');
+    // voice-remote-channels-02: the per-reply engine pin (synthOne's { provider }) must reach the station voice, or a model
+    // that finishes loading mid-reply answers sentence 2 in another engine and the reply is cut short
+    const indexSrc = fs.readFileSync(require('path').join(__dirname, '../sidecar/index.js'), 'utf8');
+    A.ok(indexSrc.includes('synthesize: (text, o) => media.synthesizeStationVoice(text, o)'), 'the sidecar passes the per-reply engine pin through to the station voice');
   }
 
   A.report('remote-voice');

@@ -11,8 +11,9 @@
  *   1. preflight (pre-bump)          release-preflight.mjs — any FAIL row stops here.
  *   2. bump                          `release-bump.mjs <ver> --no-tag` → commit `release: v<ver>`
  *                                    (the five pins + RELEASE_NOTES scaffold, pathspec commit).
- *   3. release notes                 STOP until RELEASE_NOTES.md has no TODO scaffold — the notes are
- *                                    the GitHub release body AND the in-app UPDATE CENTER text.
+ *   3. release notes                 STOP until RELEASE_NOTES.md has no TODO scaffold and no HTML comment
+ *                                    (a placeholder ships as-is) — the notes are the GitHub release body
+ *                                    AND the in-app UPDATE CENTER text.
  *   4. claims re-lock                `claims.mjs --refresh-surface --candidate HEAD` spliced into
  *                                    qa/product-perfect/claims.json, committed as its OWN commit.
  *                                    (The audit reads the COMMIT, never the tree; RELEASE_NOTES.md is
@@ -46,7 +47,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  GATE_RECEIPT_DIR, SEMVER_RE, TRUNK, bumpSemver, parseGateLog,
+  GATE_RECEIPT_DIR, SEMVER_RE, TRUNK, bumpSemver, notesHtmlComment, parseGateLog,
   readVersionPins, renderChecklist, runPreflight, stripBom
 } from './release-preflight.mjs';
 
@@ -84,7 +85,7 @@ export function notesDone(io, target) {
   const t = io.readText('RELEASE_NOTES.md');
   if (t == null) return false;
   const header = (/^#\s*StarNet\s+v?(\S+)/m.exec(stripBom(t)) || [])[1];
-  return header === target && !/TODO: summarize/.test(t);
+  return header === target && !/TODO: summarize/.test(t) && !notesHtmlComment(t);
 }
 
 export function relockDone(io) {
@@ -164,8 +165,13 @@ export function runRitual(ctx, io) {
   // 3. release notes — hard stop until real
   {
     const s = step('notes');
-    if (notesDone(io, target)) { s.status = 'done'; s.lines.push('RELEASE_NOTES.md has a real # StarNet ' + tag + ' entry (no TODO)'); }
+    const text = io.readText('RELEASE_NOTES.md');
+    // written for this tag (header matches, no TODO scaffold); notesDone additionally needs no HTML comment left in it
+    const written = text != null && (/^#\s*StarNet\s+v?(\S+)/m.exec(stripBom(text)) || [])[1] === target && !/TODO: summarize/.test(text);
+    const comment = written ? notesHtmlComment(text) : null;
+    if (notesDone(io, target)) { s.status = 'done'; s.lines.push('RELEASE_NOTES.md has a real # StarNet ' + tag + ' entry (no TODO, no HTML comment)'); }
     else if (dry && !bumpDone(io, target)) { s.lines.push('would STOP until RELEASE_NOTES.md is written for ' + tag + ' (replace the TODO scaffold; `git add RELEASE_NOTES.md && git commit --amend --no-edit`)'); }
+    else if (comment) { stop(s, 'RELEASE_NOTES.md for ' + tag + ' still holds an HTML comment: ' + comment, ['fill it or delete it: the notes are published as-is (GitHub release body, the updater text, the source mirror), so a placeholder or internal note in a comment ships to users', 'git add RELEASE_NOTES.md && git commit --amend --no-edit    (amend the `release: ' + tag + '` commit — it must be HEAD)', 'then run this same command again']); return out; }
     else { stop(s, 'RELEASE_NOTES.md is still the TODO scaffold for ' + tag, ['write the user-facing notes (GitHub release body + in-app UPDATE CENTER text)', 'git add RELEASE_NOTES.md && git commit --amend --no-edit    (amend the `release: ' + tag + '` commit — it must be HEAD)', 'then run this same command again']); return out; }
   }
 

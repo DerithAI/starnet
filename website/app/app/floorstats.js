@@ -88,6 +88,7 @@
         if (p.workitemId && t) placedAt.set(p.workitemId, t);
         if (t) { inRing.push(t); prune(inRing, t); }
       } else if (name === 'workitem.delivered') {
+        if (p.box === 'line-output') return;   // routing authority; the ordinary delivery already owns throughput
         // A routing-line PROOF dispatch (POST /api/routing/sample) marks itself sample:true precisely so
         // consumers can tell a test from customer work — folding it into delivered/items-min told the
         // Commander their five test presses were five real deliveries. The crate still rides the belt

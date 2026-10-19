@@ -31,9 +31,9 @@
    can never escape <root>/<agentId>/. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./fs.js'));
-  else { root.SK = root.SK || {}; root.SK.tools = root.SK.tools || {}; (root.SK.tools.builtin = root.SK.tools.builtin || {}).image = factory(root.SK.tools.builtin.fs); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (fsMod) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./fs.js'), require('../../context.js'));
+  else { root.SK = root.SK || {}; root.SK.tools = root.SK.tools || {}; (root.SK.tools.builtin = root.SK.tools.builtin || {}).image = factory(root.SK.tools.builtin.fs, root.SK.context); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (fsMod, contextMod) {
   'use strict';
 
   const DEFAULT_OR_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -44,10 +44,52 @@
      the rendered PNG comes back as an image_generation_call result. Live probe on a Pro sign-in: 200, a PNG in 18s at
      low quality; background:'transparent' returned a real RGBA PNG. Two wire facts the reference learned the hard way:
      tool_choice must be OMITTED (the backend looks hosted tools up as function names and 400s every forcing shape),
-     and originator:codex_cli_rs is required past the Cloudflare layer. The host chat model is fixed: the run's own
-     model may be a slug the image tool does not ride. */
+     and originator:codex_cli_rs is required past the Cloudflare layer. The host chat model was fixed (the run's own
+     model may be a slug the image tool does not ride) until #118: see the host order below. */
   const DEFAULT_CODEX_URL = 'https://chatgpt.com/backend-api/codex';
   const CODEX_HOST_MODEL = 'gpt-5.5';
+  /* #118 phase B (2026-10-15): two 0.13.3 reporters' accounts refuse that pinned host ("The 'gpt-5.5' model is not
+     supported when using Codex with a ChatGPT account"), so every image failed while their chat (which rides the
+     account's live catalog) worked. The FIRST attempt always rides the historical host, so every account it already
+     serves keeps the exact request it sends today, and the live list is never read for it. Only after an explicit
+     refusal of that host (phase A's codexHostRejected, nothing looser) is the account's LIVE list read, and ONE retry
+     rides the run's own Codex model when that list offers it (chat already rides it), else the list's top host in the
+     backend's priority order. List membership proves the account serves a chat model, not that the model can host the
+     image tool, so it is never trusted ahead of the proven host. An offline/unknown list adds nothing: it proves
+     nothing about the account. An image-only slug never hosts: the hosted tool needs a chat model under it. */
+  const HOST_SLUG = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
+  const IMAGE_ONLY_SLUG = /^(?:gpt-image-|chatgpt-image-|dall-e-)/i;
+  const CODEX_CATALOG_TIMEOUT_MS = 10000;   // the live list has no abort seam: a silent one must not hold the render
+  function codexHostOrder(runModel, live) {
+    const listed = (Array.isArray(live) ? live : []).filter(id => typeof id === 'string' && HOST_SLUG.test(id) && !IMAGE_ONLY_SLUG.test(id));
+    const order = [];
+    const add = id => { if (id && order.indexOf(id) < 0) order.push(id); };
+    if (runModel && listed.indexOf(runModel) >= 0) add(runModel);
+    listed.forEach(add);
+    add(CODEX_HOST_MODEL);
+    return order;
+  }
+  // Issue #118: classify only the explicitly quoted dispatched host, not a generic 400 or a model substring.
+  // The reported text is known; its enclosing backend JSON shape is not customer-provided evidence.
+  function codexHostRejected(status, detail, host, image) {
+    if (status !== 400 || typeof detail !== 'string' || detail.length > 8192) return false;
+    if (typeof host !== 'string' || typeof image !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(host) || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(image)) return false;
+    if (host === image || host.startsWith(image) || image.startsWith(host)) return false;
+    const m = /^The (['"])([A-Za-z0-9][A-Za-z0-9._/-]*)\1 model is not supported when using Codex with a ChatGPT account\.(?:\s|$)/.exec(detail);
+    if (!m || m[2] !== host) return false;
+    // If the detail also names the image model, its attribution is ambiguous: retain the generic error.
+    return !(detail.match(/[A-Za-z0-9][A-Za-z0-9._/-]*/g) || []).some(token => token.replace(/\.+$/, '') === image);
+  }
+  function codexErrorDetail(detail, secrets) {
+    if (typeof detail !== 'string' || detail.length > 8192) return '[provider detail withheld]';
+    let clean = detail;
+    for (const secret of (secrets || []).filter(value => typeof value === 'string' && value).sort((a, b) => b.length - a.length)) clean = clean.split(secret).join('[redacted-secret]');
+    try {
+      if (!contextMod || typeof contextMod.redact !== 'function') return '[provider detail withheld]';
+      clean = contextMod.redact(clean);
+    } catch (_) { return '[provider detail withheld]'; }
+    return String(clean).replace(/[\r\n\t]+/g, ' ').slice(0, 300);
+  }
   const CODEX_IMAGE_QUALITY = 'medium';   // the reference default: ~40s; 'high' runs ~2 minutes, past this tool's timeout
   const CODEX_INSTRUCTIONS = 'You are an assistant that must fulfill image generation and image editing requests by using the image_generation tool when provided.';
   // 2026-07-07 image-quality escape: the old default (gemini-2.5-flash-image, "Nano Banana 1") is the OLDEST
@@ -352,6 +394,11 @@
     const providerLabel = or.provider === 'starnet' ? 'StarNet' : (or.provider === 'openai' ? 'OpenAI' : (isCodex ? 'ChatGPT' : 'OpenRouter'));
     const getCodexToken = typeof or.getToken === 'function' ? or.getToken : null;
     const renewCodexToken = typeof or.renewToken === 'function' ? or.renewToken : null;
+    // #118: the run host's view of the image host (see codexHostOrder). codexHostModels: async () => the ids the SAME
+    // sign-in's live list offers (never the offline fallback); codexRunModel: the run's Codex model, '' off Codex.
+    const codexHostModels = typeof deps.codexHostModels === 'function' ? deps.codexHostModels : null;
+    const codexRunModel = typeof deps.codexRunModel === 'function' ? deps.codexRunModel : () => deps.codexRunModel;
+    const codexCatalogTimeoutMs = Number(deps.codexCatalogTimeoutMs) > 0 ? Number(deps.codexCatalogTimeoutMs) : CODEX_CATALOG_TIMEOUT_MS;
     const orBaseUrl = String(or.baseUrl || deps.baseUrl || '').trim().replace(/\/+$/, '');
     const orUrl = orBaseUrl ? orBaseUrl + '/chat/completions' : DEFAULT_OR_URL;
     const openAIImageUrl = orBaseUrl ? orBaseUrl + '/images/generations' : DEFAULT_OPENAI_IMAGE_URL;
@@ -472,7 +519,7 @@
     // the publish path below stays one path. No usage is booked: the plan is flat-rate, and the host chat model's
     // token counts would otherwise be priced at API rates the user never pays. refUrl: a reference image (data URL)
     // rides the user turn as an input_image part.
-    async function codexImagePost(tool, prompt, timeoutMs, parentSignal, refUrl) {
+    async function codexImagePost(tool, prompt, timeoutMs, parentSignal, refUrl, originalPrompt) {
       checkCancelled(parentSignal);
       if (!getCodexToken) throw new Error('STUDIO image generation is unavailable: the ChatGPT sign-in is not connected. Open SETTINGS and sign in to ChatGPT, or connect an OpenAI or OpenRouter API key, then retry; no image was produced.');
       const userContent = [{ type: 'input_text', text: prompt }];
@@ -493,15 +540,67 @@
         return withTimeout(signal => doFetch(codexUrl, { method: 'POST', headers, body: JSON.stringify(body), signal })
           .then(async r => ({ status: r.status, text: await r.text() })), timeoutMs, parentSignal || deps.signal);
       };
+      const stopSignal = parentSignal || deps.signal;
+      // #118: the account's live list, read at most once per render and only after the historical host was refused.
+      // Bounded and abortable; a failed, silent or offline read is null (unknown), which adds no host.
+      let live;
+      const readLive = async () => {
+        checkCancelled(stopSignal);
+        if (live !== undefined) return live;
+        live = null;
+        if (!codexHostModels) return live;
+        let timer = null, onAbort = null;
+        const unanswered = new Promise(resolve => {
+          timer = setTimeout(() => resolve(null), codexCatalogTimeoutMs);
+          if (stopSignal) { onAbort = () => resolve(null); stopSignal.addEventListener('abort', onAbort, { once: true }); }
+        });
+        try {
+          const ids = await Promise.race([Promise.resolve().then(() => codexHostModels()).catch(require('../../failopen.js').swallow('image.codex.host-catalog', null)), unanswered]);
+          live = Array.isArray(ids) ? ids : null;
+        } finally { clearTimeout(timer); if (onAbort) stopSignal.removeEventListener('abort', onAbort); }
+        checkCancelled(stopSignal);
+        return live;
+      };
+      // the run's own Codex model leads the retry order (only when the live list offers it); never the first attempt
+      const runModel = String((codexRunModel && codexRunModel()) || '').trim();
       let token = await getCodexToken();
-      let res = await send(token);
-      // The server is the authority on expiry (codex.js renewToken law): one renew + retry on a 401.
-      if (res.status === 401 && renewCodexToken) { checkCancelled(parentSignal); token = await renewCodexToken(token); res = await send(token); }
-      if (res.status < 200 || res.status >= 300) {
+      const errorSecrets = [token, jwtAccountId(token), apiKey, prompt, originalPrompt, refUrl];
+      let renewed = false;
+      const attempt = async () => {
+        let res = await send(token);
+        // The server is the authority on expiry (codex.js renewToken law): ONE renew + resend per render, host retry included.
+        if (res.status === 401 && renewCodexToken && !renewed) { renewed = true; checkCancelled(parentSignal); token = await renewCodexToken(token); errorSecrets.push(token, jwtAccountId(token)); res = await send(token); }
+        return res;
+      };
+      const failureOf = res => {
         let errMsg = 'http ' + res.status;
         try { const j = JSON.parse(res.text); errMsg = (j && j.error && (j.error.message || j.error.code)) || (j && j.detail) || errMsg; }
-        catch (_) { if (res.text) errMsg = String(res.text).slice(0, 300); }
-        throw new Error('ChatGPT ' + res.status + ': ' + (typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg)));
+        catch (_) { if (res.text) errMsg = String(res.text); }
+        const detail = errMsg; // Non-string provider details are withheld, never serialized into display text.
+        return { detail, safe: codexErrorDetail(detail, errorSecrets) };
+      };
+      let res = await attempt();
+      // #118: an explicit refusal of THIS host earns ONE retry on the next host the live list offers. Any other failure
+      // (another 400, a plan limit, a bad stream) is reported as before; the failed attempt returned no image to save.
+      const refused = [];
+      let noRetry = '';
+      if (res.status === 400 && codexHostRejected(res.status, failureOf(res).detail, body.model, tool.model)) {
+        refused.push(body.model);
+        const listed = await readLive();
+        const next = codexHostOrder(runModel, listed).find(id => refused.indexOf(id) < 0);
+        // a recovered refusal still leaves a trace (failopen tally + diagnostics), so a host this account refuses is visible
+        require('../../failopen.js').note('image.codex.host-refused', new Error('ChatGPT refused image host ' + refused[0] + (next ? '; one retry on ' + next : '; no other live host')));
+        if (next) { checkCancelled(stopSignal); body.model = next; res = await attempt(); }
+        else if (codexHostModels) noRetry = listed && listed.length ? 'the account\'s live model list offers no other model' : 'the account\'s live model list was unavailable';
+      }
+      const retried = refused.length > 0 && refused[0] !== body.model;
+      if (res.status < 200 || res.status >= 300) {
+        const { detail, safe } = failureOf(res);
+        if (codexHostRejected(res.status, detail, body.model, tool.model)) {
+          if (retried) throw new Error('ChatGPT rejected image hosts ' + refused[0] + ' and ' + body.model + ' for this request (HTTP ' + res.status + '). Requested image model: ' + tool.model + '. No image was returned or saved by these attempts. Provider detail: ' + safe);
+          throw new Error('ChatGPT rejected image host ' + body.model + ' for this request (HTTP ' + res.status + '). Requested image model: ' + tool.model + '. No image was returned or saved by this attempt. ' + (noRetry ? 'No other image host was tried: ' + noRetry + '. ' : '') + 'Provider detail: ' + safe);
+        }
+        throw new Error('ChatGPT ' + res.status + ': ' + safe + (retried ? ' (retried on image host ' + body.model + ' after ChatGPT rejected image host ' + refused[0] + ')' : ''));
       }
       const out = parseCodexImageStream(res.text);
       if (!out.image && out.failed) throw new Error('ChatGPT image generation failed: ' + out.failed);
@@ -582,7 +681,7 @@
         if (isCodex) {
           // the hosted tool takes the Images API's own parameters; quality is pinned (see CODEX_IMAGE_QUALITY)
           data = await codexImagePost({ model, size: openAIImageSize(shape), quality: CODEX_IMAGE_QUALITY, background: transparent ? 'transparent' : 'opaque' },
-            refPrompt, GEN_TIMEOUT_MS, signal, ref ? ref.url : '');
+            refPrompt, GEN_TIMEOUT_MS, signal, ref ? ref.url : '', prompt);
         } else if (protocol === 'openai-images') {
           const body = { model, prompt: genPrompt, size: openAIImageSize(shape) };
           // gpt-image models take transparency as a parameter (gpt-image-2: preview since 2026-08-20). Alpha needs
@@ -806,7 +905,7 @@
 
     return {
       generateTool, analyzeTool, analyzeImageUrl, browserVision, hasVision,
-      _internals: { parseImageFromResponse, parseOpenAIImageResponse, parseCodexImageStream, jwtAccountId, openAIImageSize, textFromResponse, dataUrlToBuffer, imageUrlFromPart, imageToUrl, analyzeImageUrl, resolveShape, fitToSize, alphaCoverage, TRANSPARENT_ASK, TRANSPARENT_IMAGE_MODEL },
+      _internals: { codexHostRejected, codexErrorDetail, codexHostOrder, parseImageFromResponse, parseOpenAIImageResponse, parseCodexImageStream, jwtAccountId, openAIImageSize, textFromResponse, dataUrlToBuffer, imageUrlFromPart, imageToUrl, analyzeImageUrl, resolveShape, fitToSize, alphaCoverage, TRANSPARENT_ASK, TRANSPARENT_IMAGE_MODEL },
       register(reg) { reg.register(generateTool); reg.register(analyzeTool); return reg; }
     };
   }

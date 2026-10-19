@@ -46,7 +46,21 @@ const Backup = (() => {
     return SECRET_NAMESPACE_RE.test(key) || SECRET_SEGMENT_RE.test(key);
   }
 
-  function collectStore() {
+  // #121: once the browser cache cannot hold the save (its per-site storage cap), the newest station lives only in this
+  // window's memory and the station file; the cached copy is older, or removed once the station file confirms. The
+  // export then carries that in-memory save, so the file holds the station the user sees and RESTORE BACKUP accepts it.
+  // Null when the cache holds the newest save (the export reads the cache exactly as before).
+  function memorySaveRaw() {
+    try {
+      if (typeof CloudSave === 'undefined' || !CloudSave.memorySave) return null;
+      const doc = CloudSave.memorySave();
+      if (!doc || typeof doc !== 'object' || !doc.agent) return null;
+      delete doc._saveClient;   // this window's write id, not part of the station
+      return JSON.stringify(doc);
+    } catch (_) { return null; }
+  }
+
+  function collectStore(saveRaw) {
     const out = {};
     try {
       for (let i = 0; i < localStorage.length; i++) {
@@ -54,12 +68,15 @@ const Backup = (() => {
         if (k && k.indexOf(PREFIX) === 0 && !isCredentialKey(k)) out[k] = localStorage.getItem(k);
       }
     } catch (_) {}
+    const mem = saveRaw === undefined ? memorySaveRaw() : saveRaw;
+    if (typeof mem === 'string') out[SAVE_KEY] = mem;
     return out;
   }
 
-  function agentName() {
+  function agentName(saveRaw) {
     try {
-      const doc = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
+      const mem = saveRaw === undefined ? memorySaveRaw() : saveRaw;
+      const doc = JSON.parse((typeof mem === 'string' ? mem : localStorage.getItem(SAVE_KEY)) || 'null');
       return (doc && doc.agent && doc.agent.name) || 'agent';
     } catch (_) { return 'agent'; }
   }
@@ -84,13 +101,14 @@ const Backup = (() => {
   }
 
   async function build() {
+    const saveRaw = memorySaveRaw();   // read once: the file name and the store describe the same save
     return {
       schema: SCHEMA, version: VERSION, app: 'starnet',
       exportedAt: Date.now(),
-      agentName: agentName(),
+      agentName: agentName(saveRaw),
       secretsIncluded: false,
       secretPolicy: SECRET_POLICY,
-      store: collectStore(),
+      store: collectStore(saveRaw),
       notebook: await snapshotNotebook()
     };
   }

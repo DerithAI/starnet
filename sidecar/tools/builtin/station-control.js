@@ -85,7 +85,7 @@
     shape: a => ({ look: lookOf(a) }), needs: a => Object.keys(a.look || {}).length ? '' : 'look.set named no look setting (e.g. {"look": {"hints": false}})',
     card: a => 'change the station\'s look: ' + clip(Object.keys(a.look || {}).map(k => k + ' ' + (typeof a.look[k] === 'object' ? JSON.stringify(a.look[k]) : a.look[k])).join(', ') || 'nothing named', 160) + '.' });
 
-  // ---- spending (Settings › SPENDING LIMITS, AI & MODELS › backup models) ----
+  // ---- spending (Settings › SPENDING LIMITS, AI & MODELS › FALLBACK MODELS) ----
   // "5" / "$5" from a model is the number it means (the card and the saved value read it the same way); anything else
   // reaches the route's own strict parse exactly as sent
   const dollars = a => { const o = pick(a, ['perRun', 'perAgent', 'perDay', 'global']); for (const k of Object.keys(o)) if (typeof o[k] === 'string' && /^\s*\$?\d+(\.\d+)?\s*$/.test(o[k])) o[k] = Number(o[k].replace(/[\s$]/g, '')); return o; };
@@ -94,7 +94,7 @@
     run: (a, env) => env.route('POST', '/api/budget/caps', dollars(a)) });
   def('budget.resume', { takes: '{scope: day|global}', power: () => true, card: a => 'grant one more cap\'s worth of headroom on the ' + clip(a.scope, 10) + ' spending pool.',
     run: (a, env) => env.route('POST', '/api/budget/resume', { scope: a.scope }) });
-  def('fallback.set', { takes: '{models: ["model id", …] | null}', card: a => a.models ? 'set your backup models to ' + clip((a.models || []).join(', '), 160) + '.' : 'reset your backup models to the default.',
+  def('fallback.set', { takes: '{models: ["model id", …] | null}', card: a => a.models ? 'set your fallback models to ' + clip((a.models || []).join(', '), 160) + '.' : 'reset your fallback models to the default.',
     run: (a, env) => env.route('POST', '/api/fallback/chain', { models: a.models == null ? null : a.models }) });
 
   // ---- permissions & autonomy ----
@@ -266,10 +266,25 @@
     const list = Array.isArray(raw) ? raw : String(raw == null ? '' : raw).split(/\s*(?:,|;|&|\band\b)\s*/i);
     return Array.from(new Set(list.map(x => String(x == null ? '' : x).trim()).filter(Boolean))).slice(0, 10);
   };
+  /* THE CARD (rc walk 10-14: it was a 7-line paragraph naming raw agent ids, with a "from General" clause on a one-on-one
+     chat). One short line: WHO joins, by the names the Commander knows (opts.nameOf, the host's roster), and WHICH chat —
+     its kind (opts.chat, read from the page's own save: 'direct' | 'group' | 'general') picks the one clause that is true
+     there. Unknown kind (a channel, a test): the plain line. Two lines at most on the COMMS card (measured live: the
+     version that also said "they see its history and files" wrapped to three). */
+  const crewNames = (a, o) => {
+    const n = crewList(a).map(r => (o && typeof o.nameOf === 'function' && o.nameOf(r)) || q(r));
+    return n.length > 1 ? n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1] : (n[0] || 'nobody named');
+  };
   def('group.add', { page: true, thisSession: true, caller: true, takes: '{agents: [crew names or ids], session? (default: this conversation)}',
     shape: a => Object.assign({}, a, { agents: crewList(a) }),
     needs: a => a.agents.length ? '' : 'group.add named no crew member (e.g. {"agents": ["NOVA", "ROOK"]})',
-    card: a => 'bring ' + (crewList(a).map(q).join(', ') || 'nobody named') + ' into ' + sess(a) + ': they see the whole conversation and its files. A one-on-one chat becomes a group chat (from General, a new group chat opens beside it with just this request in it); if I am still answering there, they join the moment my reply ends, and I then hand them their parts there.' });
+    card: (a, o) => {
+      const who = crewNames(a, o), chat = o && o.chat;
+      if (!(a.session == null || THIS_SESSION.test(String(a.session)))) return 'bring ' + who + ' into ' + sess(a) + '.';
+      return chat === 'group' ? 'add ' + who + ' to this group chat.'
+        : chat === 'general' ? 'start a group chat with ' + who + ' beside General, with only this request.'
+        : 'bring ' + who + ' into this chat' + (chat === 'direct' ? '; it becomes a group when this reply ends.' : '.');
+    } });
   def('group.configure', { takes: '{group (its id or title), members? [the group\'s WHOLE member list, crew ids], leadId?, title?, instructions?, maxTurns? 1-100}',
     // members REPLACES the roster: the card says so, so "add NOVA" sent as {members:["nova"]} cannot quietly remove everyone else
     card: a => 'change the group chat ' + q(a.group) + ': ' + clip(['members', 'leadId', 'title', 'instructions', 'maxTurns'].filter(k => a[k] != null).map(k => k === 'members' && Array.isArray(a[k]) ? 'its WHOLE member list becomes ' + a[k].join(', ') + ' (anyone not listed leaves)' : k + ' ' + (Array.isArray(a[k]) ? a[k].join(', ') : a[k])).join('; ') || 'nothing named', 200) + '.',
@@ -337,6 +352,8 @@
      (a KNOWN action name only), and its args flat beside it instead of under `args`. The approval card, the tier check and
      the run all read the call HERE, so the card always names the change that will run. */
   const CALL_KEYS = ['action', 'setting', 'name'];
+  // the station.control actions that are setup, never held behind an unsettled Task Brief (makeChange briefExempt)
+  const BRIEF_SETUP = new Set(['group.add', 'group.configure', 'session.rename', 'session.pin', 'session.archive', 'look.set', 'estop.engage']);
   function readCall(input) {
     const i = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
     let action = '', from = 'action';
@@ -368,12 +385,13 @@
   /* the approval card's words for a station.control / station.power call (index.js consentSummary) — host-written from
      the catalog, never the model's own framing. A verb phrase: the COMMS card reads "<AGENT> wants to <this>" and a
      paired phone's lock screen shows the same words. */
-  function cardFor(args) {
+  // opts (optional, host-supplied): { nameOf(ref) -> a crew member's display name or '', chat: this conversation's kind }
+  function cardFor(args, opts) {
     const call = readCall(args);
     const spec = A[call.action];
     if (!spec) return 'make an unknown station change (it will be refused, and nothing will change)';
     const a = argsFor(spec, call.args);
-    try { return spec.card(a).replace(/\.$/, ''); } catch (_) { return 'make the station change ' + spec.name; }
+    try { return spec.card(a, opts || {}).replace(/\.$/, ''); } catch (_) { return 'make the station change ' + spec.name; }
   }
 
   /* READS for station.settings: one section at a time, so a 32k model is not handed every store at once */
@@ -392,7 +410,7 @@
       ['GET', '/api/skill-market', j => ({ market: (j.entries || []).map(e => ({ slug: e.slug, name: e.name, installed: /^(installed|update|bundled|tampered)$/.test(String(e.status || '')), status: e.status, version: e.version })) })]],
     apps: [['GET', '/api/apps', j => ({ apps: (j.apps || []).map(x => ({ id: x.id, name: x.name })), routinesOn: j.routinesOn })]],
     projects: [['GET', '/api/projects', j => ({ projects: (j.projects || []).map(p => ({ name: p.displayPath || p.root, root: p.root, trusted: !!p.blessed })) })]],
-    checkpoints: [['GET', a => '/api/checkpoint?agent=' + enc(a.agent || 'agent'), j => ({ enabled: j.enabled, snapshots: (j.snapshots || []).slice(0, 30) })]],
+    checkpoints: [['GET', a => '/api/checkpoint?agent=' + enc(a.agent || 'agent'), j => ({ enabled: j.enabled, snapshots: (j.snapshots || []).slice(0, 30), health: j.health || null })]],
     deliverables: [['GET', a => '/api/workshop/pending?agent=' + enc(a.agent || 'agent')]],
     away: [['GET', a => '/api/workshop/backlog?agent=' + enc(a.agent || 'agent'), j => ({ agentId: j.agentId, awayWorkOn: j.granted, queue: (j.items || []).slice(0, 40).map(i => ({ id: i.id, title: i.title, state: i.state })), nextShiftAt: j.nextShiftAt })]],
     library: [['GET', '/api/deliverables', j => ({ total: j.total, summary: j.summary, recent: (j.items || []).slice(0, 25).map(i => ({ id: i.id, title: clip(i.title, 100), status: i.status, kind: i.kind, agentId: i.agentId })) })]],
@@ -487,12 +505,16 @@
     function makeChange(name, consentKey, isPower) {
       return {
         name, capability: 'orchestrator', consentKey, taintLocked: true, scope: 'write', requiresConsent: true, timeoutMs: 45000,
+        // station SETUP (bring crew into this chat, rename a session, the look, an e-stop) is not the deliverable a Task Brief
+        // settles — the team.summon rule (taskbrief-policy canMutate). It keeps its own approval card. Anything that deletes,
+        // wipes, rewinds or decides work (agent.delete, memory.reset, checkpoint.restore…) and every escalation still waits.
+        briefExempt: isPower ? false : (input) => BRIEF_SETUP.has(readCall(input).action),
         // in ASK an escalation is a card per call (no cached "always" approves it, none is left behind), and a Full Access
         // run that read outside content asks before it widens the leash (permissions.js, taint.js)
         freshConsent: isPower,
         description: isPower
           ? 'ESCALATE a station setting for the Commander — only what widens access or spending: agent.approval full, agent.reach trusted-project/this-computer, agent.away_work on, fullpower.set on, budget.set, budget.resume, autonomy.set, scheduler.set on, permission.grant, key.unattended on, key.set on, ability.set on, skill.install, deliverable.decide keep, project.trust, plugin.approve|revoke|delete, hook.approve|revoke|delete, limits.set. Only when the Commander asked for it in this conversation; refused on runs nobody is watching. Same {action, args} as station.control.'
-          : 'CHANGE a station setting for the Commander when they ask — the same change their button makes, proven saved. {action, args}: agent.model|personality|rename|skin|approval|reach|away_work|delete, session.rename|pin|archive|delete, look.set, fallback.set, permission.revoke, fullpower.set off, nightshift.focus|avoid, memory.forget|pin|edit|reset|settings, learning.set|wipe, connector.remove|refresh, ability.set, skill.set|install|uninstall, key.set|remove, spotify.disconnect, channels.notify, app.delete|rename, project.untrust|forget, checkpoint.restore, deliverable.decide, deliverables.cleanup|restore, away.queue|remove, quest.dismiss|later, channel.disconnect, browser.mode, group.add (bring crew into this chat: a one-on-one chat becomes a group chat, when your reply there ends), group.configure (an existing group chat; members = its WHOLE list), notifications.read|clear, estop.engage (the Commander alone resumes). station.settings section "actions" lists what each takes; read the current value first. Make the call BEFORE you say anything changed, and say only what its result says. Widening access or spending goes through station.power instead.',
+          : 'CHANGE a station setting for the Commander when they ask, or bring crew into this conversation (group.add) — the same change their button makes, proven saved. {action, args}: agent.model|personality|rename|skin|approval|reach|away_work|delete, session.rename|pin|archive|delete, look.set, fallback.set, permission.revoke, fullpower.set off, nightshift.focus|avoid, memory.forget|pin|edit|reset|settings, learning.set|wipe, connector.remove|refresh, ability.set, skill.set|install|uninstall, key.set|remove, spotify.disconnect, channels.notify, app.delete|rename, project.untrust|forget, checkpoint.restore, deliverable.decide, deliverables.cleanup|restore, away.queue|remove, quest.dismiss|later, channel.disconnect, browser.mode, group.add (bring crew into this chat: the agents named join it; a one-on-one chat becomes a group chat, when your reply there ends), group.configure (an existing group chat; members = its WHOLE list), notifications.read|clear, estop.engage (the Commander alone resumes). station.settings section "actions" lists what each takes; read the current value first. Make the call BEFORE you say anything changed, and say only what its result says. Widening access or spending goes through station.power instead.',
         schema: { type: 'object', properties: { action: { type: 'string', enum: Object.keys(A) }, args: { type: ['object', 'string'] } } },
         run: async (input, ctx) => {
           const call = readCall(input);
@@ -518,11 +540,17 @@
           }
           // the run that asked, host-stamped LAST (a model cannot name another run): the page lets a chat take a change
           // that must wait for THIS run's reply to end only when the run asking is the one running there
-          const caller = spec.caller && ctx && ctx.streamId && ctx.runId ? { caller: { streamId: String(ctx.streamId), runId: String(ctx.runId) } } : {};
+          // …with what the Commander already answered in this run's Task Brief (host-composed, their own words): the crew's
+          // kickoff turn starts from it instead of asking again (review 10-14: from General the new group re-asked "What
+          // are we launching?" right after the Commander had answered it)
+          const caller = spec.caller && ctx && ctx.streamId && ctx.runId ? { caller: Object.assign({ streamId: String(ctx.streamId), runId: String(ctx.runId) },
+            typeof ctx.briefAnswers === 'string' && ctx.briefAnswers.trim() ? { brief: clip(ctx.briefAnswers.trim(), 600) } : {}) } : {};
           const r = spec.page ? await page('station.control', Object.assign({}, a, { action: spec.name }, caller)) : await spec.run(a, env);
           if (!r || r.status >= 400 || r.refused || (r.json && r.json.ok === false)) return refuse(errorOf(r));
           // a change that lands only when this reply ends is NOT done yet — say exactly that (truthful telemetry)
-          if (r.json && r.json.joining) return { content: 'QUEUED, NOT DONE YET: ' + clip(r.json.note, 400) + ' Tell the Commander exactly that. They are not in the chat yet, so do not hand them work in this reply: once they join you get a turn in the group chat to hand them their parts (group.handoff).', summary: spec.name + ' (queued)' };
+          // …and this reply's only job left is to say so and END: the join lands when it ends, and the lead's next turn (the
+          // kickoff in the group, with the request) is where the plan, the questions and the hand-offs belong
+          if (r.json && r.json.joining) return { content: 'QUEUED, NOT DONE YET: ' + clip(r.json.note, 400) + ' Say that in a sentence or two — they join when this reply ends; they have not been added — then END this reply: no plan, no questions. They are not in the chat yet: once they join you get a turn in the group chat, with the request, to hand them their parts (group.handoff).', summary: spec.name + ' (queued)' };
           return { content: shape({ done: spec.name, result: r.json }), summary: spec.name };
         }
       };

@@ -24,13 +24,21 @@
     if (key) h['x-goog-api-key'] = key;
     return h;
   }
-  function modelPath(id) {
+  // GitHub #98: 'google/<model>' is the OpenRouter spelling of a Gemini model, which a station keeps after switching to
+  // the native GEMINI provider. It names the native model 'models/<model>', never a 'google/…' resource (Google 404s).
+  // A routed id's OpenRouter variant suffix (':free', ':thinking', …) is a routing option, never part of a native model
+  // name — left on, the native URL would read it as its ':method' half.
+  function routedToNative(id) {
     const s = String(id || '').trim();
+    return /^google\//i.test(s) ? s.replace(/^google\//i, '').replace(/:[a-z][a-z0-9-]*$/i, '') : s;
+  }
+  function modelPath(id) {
+    const s = routedToNative(id);
     if (!s) return 'models/gemini-pro';
     return s.indexOf('/') >= 0 ? s.replace(/^\/+/, '') : ('models/' + s);
   }
   function stripModelPrefix(id) {
-    return String(id || '').replace(/^models\//, '');
+    return routedToNative(id).replace(/^models\//, '');
   }
   function safeJson(value, fallback) {
     if (value && typeof value === 'object') return value;
@@ -101,7 +109,7 @@
     let i = 0;
     for (; i < (messages || []).length; i++) {
       const msg = messages[i];
-      if (!msg || msg.role !== 'system') break;
+      if (!msg || msg.role !== 'system' || provider.isRunContextNote(msg)) break;   // the run-context note rides the user side (provider.js)
       const text = textFromContent(msg.content).trim();
       if (text) system.push({ text });
     }
@@ -553,7 +561,7 @@
     // which silently disabled the per-run spend ceiling and the day/global pools (loop.js only stops when
     // spentUsd crosses the cap). Resolved off the dated list-rate table, independent of catalog warm state so
     // the cap works from the first turn; an unrecognized model still returns null and stays 'unpriced'.
-    function priceOf(id) { return prices.priceOf('gemini', id); }
+    function priceOf(id) { return prices.priceOf('gemini', routedToNative(id)); }
     function supportsTools(id) { const m = findModel(id); return m ? m.supportsTools : true; }
     // Resolved from the model NAME: /v1beta/models publishes no capability data, and the dock asks before a
     // catalog fetch has necessarily landed.

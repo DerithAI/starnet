@@ -105,15 +105,17 @@ async function exercise(source, wire, options = {}) {
     for (const active of [true, false]) {
       const ws = { id: 'original', agentId: 'agent', history: [] };
       const calls = [], interruptedStreams = new Set();
-      const sandbox = { ws, acc: 'Retained partial', thisRunId: 'lead', interrupted: new Set(), interruptedStreams,
+      const sandbox = { ws, acc: 'Retained partial', thisRunId: 'lead', runRoot: null, interrupted: new Set(), interruptedStreams,
         persistPartial: (w, text) => { calls.push('partial'); w.history.push({ role: 'assistant', content: text }); },
         Harness: { pingEngine: async () => { calls.push('health'); return true; } },
-        Friendly: { friendlyError: () => ({ kind: 'network', userMessage: 'Stream interrupted' }) },
+        // a transport-loss verdict: the reconnect watch arms on its provenance (transport), never on the kind alone
+        Friendly: { friendlyError: () => ({ kind: 'network', transport: true, userMessage: 'Stream interrupted' }) },
         Workstreams: { noteRunEnd: (...args) => calls.push(args) },
         armReconnectWatch: () => calls.push('journal'), isActiveWs: () => active,
         activeLiveRow: { error: () => calls.push('render-error') }, resolvePresence: () => calls.push('presence'),
         offerRetry: () => calls.push('retry-control'), StationUI: { clearRunning: () => calls.push('clear') },
-        errorHistoryLine: v => '⚠ ' + v.userMessage, stopSource: new Map()
+        errorHistoryLine: v => '⚠ ' + v.userMessage, stopSource: new Map(),
+        settleRunNeeds: id => calls.push(['settle-needs', id])
       };
       await vm.runInNewContext('(async function(e) {' + body + '\n})', sandbox)(new Error('stream disconnected'));
       A.eq(calls.slice(0, 2), ['partial', 'health'], 'partial output persists before asynchronous health check');
@@ -122,6 +124,7 @@ async function exercise(source, wire, options = {}) {
       A.ok(calls.some(x => Array.isArray(x) && x[0] === 'original' && x[1] === 'lead' && x[2] === false), 'task status cannot become delivered');
       A.eq(calls.includes('render-error'), active, 'background failure does not overwrite the active conversation');
       A.eq(calls.filter(x => x === 'journal').length, 1, 'one recovery watch, no automatic inference replay');
+      A.ok(calls.some(x => Array.isArray(x) && x[0] === 'settle-needs' && x[1] === 'original'), 'the run\'s own waits on you leave the bell with it (' + file + ')');
     }
   }
   A.report('harness-stream-completion');

@@ -197,9 +197,10 @@ const GroupChat = (() => {
   }
   function name(id) { return id === 'user' ? 'COMMANDER' : (roster.find(a => a.id === id)?.name || App.agents?.().find(a => a.id === id)?.name || id); }
   function colorOf(id) { const c = typeof App !== 'undefined' && App.agents ? App.agents().find(a => a.id === id)?.color : ''; return /^#[0-9a-f]{3,8}$/i.test(c || '') ? c : ''; }
-  /* The group header: a [ GROUP ] tag, then EVERY member by name in their roster colour (lead first), the count, and
-     the + key. Names wrap to a second line before anything is hidden; past two lines the rest fold into "+N", which
-     opens the full list (Andrew 10-04: "you cant even tell when the groupchat is there, it does not show all the agents"). */
+  /* The group header: EVERY member by name in their roster colour (lead first), the count, and the + key (Andrew 10-04:
+     "you cant even tell when the groupchat is there, it does not show all the agents"). No GROUP word in front of them —
+     the names and the count say it (the no-shrunken-chips law, 10-13; walk 10-14 #18). ONE line: names that do not fit
+     fold into "+N", which opens the full list, so a name never drops alone onto a second line. */
   function participantsHeader(element, ids, paused, leadId) {
     const order = leadId && ids.includes(leadId) ? [leadId, ...ids.filter(id => id !== leadId)] : ids.slice();
     const people = h('button', { type: 'button', class: 'gc-people', title: order.map(name).join(' · '), 'aria-label': 'Agents in this chat: ' + order.map(name).join(', ') + '. Add or remove agents', onclick: () => picker(true) });
@@ -209,11 +210,11 @@ const GroupChat = (() => {
       people.append(p);
     }
     const more = h('span', { class: 'gc-more', hidden: '' }); people.append(more);
-    element.replaceChildren(h('span', { class: 'gc-badge', 'aria-hidden': 'true' }, 'GROUP'), people, h('span', { class: 'gc-count' }, ids.length + (ids.length === 1 ? ' agent' : ' agents')));
+    element.replaceChildren(people, h('span', { class: 'gc-count' }, ids.length + (ids.length === 1 ? ' agent' : ' agents')));
     if (paused) element.append(h('small', {}, 'Paused'));
     fitPeople(people);
   }
-  // two lines of names at most: hide from the end until it fits, and say how many are folded away
+  // one line of names: hide from the end until it fits, and say how many are folded away
   function fitPeople(people) {
     if (!people || typeof people.querySelectorAll !== 'function' || !people.isConnected) return;
     const persons = [...people.querySelectorAll('.gc-person')], more = people.querySelector('.gc-more');
@@ -225,7 +226,7 @@ const GroupChat = (() => {
       if (more) { more.hidden = false; more.textContent = '+' + hidden; }
     }
   }
-  /* Per-row description for the picker: the class tagline when the agent was recruited from the
+  /* Per-row description for the picker (the row's hover tip, never a line under the name): the class tagline when the agent was recruited from the
      catalog, otherwise its role. Never invented — blank beats a made-up job title. */
   function describe(id) {
     const a = typeof App !== 'undefined' && App.agents ? App.agents().find(x => x.id === id) : null; if (!a) return '';
@@ -274,12 +275,11 @@ const GroupChat = (() => {
       #gc-tray .gc-tray-scroll.more-below{-webkit-mask-image:linear-gradient(#000 calc(100% - 28px),transparent);mask-image:linear-gradient(#000 calc(100% - 28px),transparent)}
       #comms-idbar{flex:0 0 auto;flex-wrap:nowrap}#comms-idbar.gc-group>.comms-agent-wrap,#comms-idbar.gc-group>#comms-agent-model,#chat-panel #comms-idbar.gc-group>.comms-identity,#chat-panel #comms-idbar.gc-group>.comms-portrait{display:none}
       #gc-header{display:flex;align-items:center;gap:10px;flex:1;min-width:0;color:var(--ph)}
-      .gc-badge{flex:0 0 auto;align-self:baseline;font:inherit;font-size:15px;line-height:18px;letter-spacing:1px;text-transform:uppercase;color:var(--ph);text-shadow:var(--pg-glow-soft,none);white-space:nowrap}
       .gc-count{order:2;flex:0 0 auto;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--ph-dim);white-space:nowrap}
       #gc-add-agents{flex:0 0 auto;white-space:nowrap}
-      .gc-people{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:12px;row-gap:2px;flex:1 1 0;min-width:0;max-height:38px;overflow:hidden;margin:0;padding:0;border:0;background:none;font:inherit;text-align:left;cursor:pointer;color:var(--ph)}
+      .gc-people{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:12px;row-gap:2px;flex:1 1 0;min-width:0;max-height:18px;overflow:hidden;margin:0;padding:0;border:0;background:none;font:inherit;text-align:left;cursor:pointer;color:var(--ph)}
       .gc-person{display:inline-block;font-size:15px;line-height:18px;letter-spacing:1px;text-transform:uppercase;color:var(--ph-bright);white-space:nowrap;text-shadow:var(--pg-glow-soft,none)}.gc-person[hidden],.gc-more[hidden]{display:none}
-      .gc-more{display:inline-block;font-size:13px;line-height:18px;letter-spacing:1px;color:var(--ph)}
+      .gc-more{display:inline-block;font-size:var(--sn-type-control,16px);line-height:18px;letter-spacing:1px;color:var(--ph)}
       .gc-people:hover .gc-person,.gc-people:hover .gc-more{text-decoration:underline;text-underline-offset:3px}
       #group-chat .bb,#gc-add-agents{margin:0;padding:3px 8px;min-height:26px;font-size:13px;line-height:18px;letter-spacing:1px;border:1px solid var(--ph-faint);border-radius:3px;background:var(--panel2);color:var(--ph);box-shadow:var(--raise)}
       #group-chat .bb:hover,#gc-add-agents:hover{border-color:var(--ph);background:var(--ph-faint)}
@@ -298,6 +298,7 @@ const GroupChat = (() => {
       body #chat-panel #gc-log .gc-message.agent .who.gc-who:is(:hover,:focus-visible){color:var(--ph-bright);text-shadow:0 0 5px var(--ph-glow)}
       .gc-message.draft .body{opacity:.85}.gc-message.draft .body::after{content:'▌';color:var(--ph);animation:1s steps(1) infinite comms-blink}
       .gc-message .gc-partial{display:block;margin-top:4px;font-size:12px;letter-spacing:.5px;color:var(--gold)}
+      #gc-log>.gc-retired{flex:0 0 auto}#gc-log>.gc-retired .consent-result{display:block;margin-top:4px}
       #gc-recipients:not(:empty){padding:4px 12px;font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:var(--ph-dim);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
       #gc-recipients .gc-to{color:var(--ph)}#gc-recipients .bb{font-size:11px!important;min-height:20px!important;padding:0 6px!important}
       #gc-mentions{flex:0 0 auto;display:flex;flex-direction:column;max-height:min(40vh,264px);overflow:auto;margin:0 0 6px;padding:0;border:1px solid rgba(var(--ph-rgb),.35);border-radius:4px;background:color-mix(in srgb,var(--panel2) 94%,var(--ph));scrollbar-color:var(--ph-dim) transparent}
@@ -326,22 +327,28 @@ const GroupChat = (() => {
       .gc-state .gc-inspect summary{cursor:pointer;list-style:none;text-wrap:pretty}.gc-state .gc-inspect summary::-webkit-details-marker{display:none}.gc-state .gc-inspect summary::before{content:'▸ '}.gc-state .gc-inspect[open] summary::before{content:'▾ '}#gc-states .gc-state .gc-what.gc-asks{flex:1 1 auto;font-size:var(--sn-type-control,16px)!important;line-height:1.4;color:var(--ph-bright);overflow:visible;overflow-wrap:anywhere;white-space:normal;text-wrap:pretty}.gc-state .gc-ok-row{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 2px}.gc-state .gc-inspect pre{max-height:240px;overflow:auto;margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;font-family:inherit}.gc-state .gc-ok{min-width:8em;min-height:36px;padding:6px 14px;font:inherit;font-size:var(--sn-type-control,16px);line-height:1.2;letter-spacing:.2px;color:var(--ph-bright);border:1px solid var(--beat-edge);border-radius:5px;background:rgba(var(--ph-rgb),.04);box-shadow:inset 0 1px 0 var(--beat-light);text-shadow:none;cursor:pointer}.gc-state .gc-ok.lit{border-color:rgba(var(--gold-rgb),.55);background:linear-gradient(140deg,rgba(var(--gold-rgb),.15),rgba(var(--ph-rgb),.04))}.gc-state .gc-ok.deny{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 35%,transparent);background:color-mix(in srgb,var(--bad) 5%,transparent)}.gc-state .gc-ok:hover:not(:disabled){background:var(--beat-hover)}.gc-state .gc-ok:disabled{opacity:.55;cursor:default}.gc-state .gc-ok:focus-visible{outline:2px solid var(--ph);outline-offset:2px}#gc-states .gc-state .gc-approval:not(.gc-inspect){font-size:var(--sn-type-control,16px)!important;color:var(--ph-bright);opacity:1}#gc-states .gc-state .gc-inspect :is(summary,pre){font-size:var(--sn-type-control,16px)!important;line-height:1.45}.gc-state .gc-approval{flex:1 0 100%;font-size:14px;line-height:1.45;color:var(--text);opacity:.9;overflow-wrap:anywhere}.gc-state .bb{margin-left:auto!important;font-size:15px!important;min-height:34px!important;padding:0 14px!important}.gc-state .bb+.bb{margin-left:0!important}
       #gc-questions:empty{display:none}#gc-questions{padding:2px 12px 6px}.gc-question{margin:6px 0;padding:13px 15px;border:1px solid rgba(var(--ph-rgb),.2);border-left:2px solid var(--gc-c,rgba(var(--gold-rgb),.62));border-radius:5px;background:var(--cg-card,var(--beat-face));box-shadow:none;color:var(--text);text-shadow:none;overflow-wrap:anywhere;font-variant-ligatures:none}.gc-question .gc-q-who{font-size:var(--sn-type-meta,14px);line-height:1.3;letter-spacing:1.2px;text-transform:uppercase;color:var(--gc-c,var(--gold))}.gc-question .gc-q-cue{color:var(--text);opacity:.85}.gc-question .gc-q-more>summary{list-style:none}.gc-question .gc-q-more>summary::-webkit-details-marker{display:none}.gc-question .gc-q-more>summary::before{content:'▸ '}.gc-question .gc-q-more[open]>summary::before{content:'▾ '}.gc-question .gc-q-hint,.gc-question .gc-q-more>summary{text-wrap:pretty}.gc-question .gc-q-text{margin:6px 0 2px;font-size:var(--sn-type-prose,18px);line-height:1.45;color:var(--ph-bright);white-space:pre-wrap;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}.gc-question.whole .gc-q-text{display:block;-webkit-line-clamp:unset;max-height:calc(1.45em * 7);overflow-y:auto}.gc-question .gc-q-whole{display:block;margin:2px 0 0;padding:3px 0;font:inherit;font-size:var(--sn-type-meta,14px);letter-spacing:.3px;color:var(--ph);background:none;border:0;box-shadow:none;text-shadow:none;cursor:pointer}.gc-question .gc-q-whole[hidden]{display:none}.gc-question .gc-q-whole:focus-visible{outline:2px solid var(--ph);outline-offset:2px}.gc-question-choices{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:10px 0}.gc-question .gc-q-choice{min-height:36px;width:100%;padding:6px 14px;font:inherit;font-size:var(--sn-type-control,16px);line-height:1.25;letter-spacing:.2px;text-align:left;white-space:normal;color:var(--ph-bright);border:1px solid var(--beat-edge);border-radius:5px;background:rgba(var(--ph-rgb),.04);box-shadow:inset 0 1px 0 var(--beat-light);text-shadow:none;cursor:pointer}.gc-question .gc-q-choice.lit{border-color:rgba(var(--gold-rgb),.55);background:linear-gradient(140deg,rgba(var(--gold-rgb),.15),rgba(var(--ph-rgb),.04))}.gc-question .gc-q-choice:hover:not(:disabled){background:var(--beat-hover);border-color:var(--ph-dim)}.gc-question .gc-q-choice[aria-pressed=true],.gc-question .gc-q-choice.chosen{border-color:var(--ph-bright);background:linear-gradient(140deg,rgba(var(--gold-rgb),.32),rgba(var(--ph-rgb),.08))}.gc-question .gc-q-choice:disabled{cursor:default;opacity:.55}.gc-question .gc-q-choice.chosen:disabled{opacity:1}.gc-question .gc-q-choice:focus-visible{outline:2px solid var(--ph);outline-offset:3px}.gc-question .gc-q-hint{font-size:var(--sn-type-meta,14px);line-height:1.4;color:var(--text);opacity:.85}.gc-question .gc-q-folds{display:flex;flex-wrap:wrap;gap:2px 22px;margin-top:6px}.gc-question .gc-q-folds>details[open]{flex-basis:100%}.gc-question .gc-q-more>summary{cursor:pointer;padding:3px 0;font-size:var(--sn-type-meta,14px);letter-spacing:.3px;color:var(--ph)}.gc-question .gc-q-more>summary:focus-visible{outline:2px solid var(--ph);outline-offset:2px}.gc-question .gc-q-more>p{margin:6px 0 2px;font-size:var(--sn-type-control,16px);line-height:1.5;color:var(--text);white-space:pre-wrap}.gc-question .gc-q-more>p.gc-q-draft{padding:10px 12px;border:1px solid var(--beat-edge);border-radius:5px;background:rgba(0,0,0,.2)}.gc-message .gc-asked{margin:0 0 4px;font-size:var(--sn-type-meta,14px);line-height:1.4;color:var(--text);opacity:.8;font-variant-ligatures:none}.gc-transfer{color:var(--ph-dim);font-size:12px;padding:2px 0 5px 14px;flex:0 0 auto}.gc-transfer{color:var(--ph-dim);font-size:12px;padding:2px 0 5px 14px;flex:0 0 auto}
       #gc-notice:empty{display:none}#gc-notice{flex:0 0 auto;padding:4px 12px;font-size:13px;color:var(--gold);overflow-wrap:anywhere}
-      /* the picker fills its window: the two lists share the height and scroll on their own, the footer never leaves view */
-      .gc-picker{min-width:0;min-height:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:10px}.gc-picker>.key-input{flex:0 0 auto;display:block;width:100%;box-sizing:border-box;margin:0}
-      .gc-sect{display:flex;flex-direction:column;min-width:0;min-height:0}.gc-sect.in{flex:0 0 auto}.gc-sect.out{flex:1 1 0;min-height:132px}
-      .gc-sect-h{flex:0 0 auto;display:flex;align-items:baseline;gap:8px;margin:0 0 4px;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--ph-dim)}.gc-sect-h b{font-weight:normal;color:var(--ph)}
+      /* the picker IS its window's height: the two lists share it and scroll on their own, the how-to line and the footer stay
+         in the flow under them (min-height:100% let it grow past the window, and the sticky footer then sat over the how-to
+         line, which showed through its 95%-alpha panel — walk 10-14 #9). The ADD list keeps a floor of two agents and the
+         members list gives way first, to one; below both floors the window body scrolls, the how-to line and footer still in
+         the flow (review 10-14: at min-height:0 a 5-member group showed no agent to add on a window 80px shorter). The floors
+         count in rows: the 38px portrait + its padding + its 1px rule (8px here, 11px in glass-comms.css), plus the list's 1px frame. */
+      .gc-picker{--gc-row-h:55px;--gc-head-h:22px;min-width:0;height:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:10px}.gc-picker>.key-input{flex:0 0 auto;display:block;width:100%;box-sizing:border-box;margin:0}
+      .gc-sect{display:flex;flex-direction:column;min-width:0;min-height:0}.gc-sect.in{flex:0 1 auto;min-height:calc(var(--gc-head-h) + var(--gc-row-h) + 2px)}.gc-sect.out{flex:1 1 0;min-height:calc(var(--gc-head-h) + 2 * var(--gc-row-h) + 2px)}
+      body.glass-demo .gc-picker{--gc-row-h:61px}
+      .gc-sect-h{flex:0 0 auto;display:flex;align-items:baseline;gap:8px;margin:0 0 4px;font-size:var(--sn-type-meta,14px);line-height:18px;letter-spacing:1.5px;text-transform:uppercase;color:var(--ph-dim)}.gc-sect-h b{font-weight:normal;color:var(--ph)}
       .gc-sect-list{flex:1 1 auto;min-height:0;overflow:auto;border:1px solid var(--ph-faint);border-radius:3px;background:rgba(0,0,0,.18)}.gc-sect-list:empty{display:none}.gc-sect.in .gc-sect-list{flex:0 1 auto;max-height:min(30vh,174px)}
       .gc-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--ph-faint);min-width:0}.gc-row:last-child{border-bottom:0}.gc-row[hidden]{display:none}
       .gc-row .gc-led{flex:0 0 auto;width:8px;height:8px;border-radius:2px;background:var(--ph-dim)}.gc-row.in .gc-led{box-shadow:0 0 6px var(--ph-glow)}
       .gc-row .gc-pic{flex:0 0 auto;display:flex;line-height:0}.gc-row .gc-av{border-radius:5px;background:rgba(0,0,0,.34);box-shadow:inset 0 0 0 1px rgba(var(--ph-rgb),.22),inset 0 1px 3px rgba(0,0,0,.15)}
-      .gc-row .gc-id{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}.gc-row .gc-nm{font-size:14px;letter-spacing:1px;text-transform:uppercase;color:var(--ph-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.gc-row .gc-tag{font-size:12px;color:var(--ph-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.gc-row .gc-tag:empty{display:none}
+      .gc-row .gc-id{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}.gc-row .gc-nm{font-size:14px;letter-spacing:1px;text-transform:uppercase;color:var(--ph-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .gc-row.in .gc-nm{color:var(--ph)}.gc-row .bb{flex:0 0 auto;min-width:74px;text-align:center}.gc-row.in .bb{color:var(--ph-dim)}.gc-row.in .bb:hover{color:var(--bad);border-color:var(--bad);background:transparent}
       .gc-row .bb[disabled]{opacity:.45;cursor:default}
-      .gc-row .gc-lead{flex:0 0 auto;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--gold)}
-      .gc-empty{padding:10px;font-size:13px;line-height:1.4;color:var(--ph-dim)}.gc-empty a{color:var(--ph);cursor:pointer}
-      .gc-hint{flex:0 0 auto;margin:0;font-size:13px;line-height:1.4;color:var(--ph-dim)}.gc-hint b{font-weight:normal;color:var(--ph)}
-      .gc-picker>[role=alert]{flex:0 0 auto;margin:0;color:var(--bad);font-size:13px}.gc-picker>[role=alert]:empty{display:none}
-      .gc-picker-footer{flex:0 0 auto;position:sticky;bottom:0;display:flex;align-items:center;gap:8px;padding:10px 0 0;border-top:1px solid var(--ph-faint);background:var(--panel)}.gc-picker-footer .gc-delta{flex:1 1 auto;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--ph-dim)}
+      .gc-row .gc-lead{flex:0 0 auto;font-size:var(--sn-type-meta,14px);letter-spacing:1px;text-transform:uppercase;color:var(--gold)}
+      .gc-empty{padding:10px;font-size:13px;line-height:1.4;color:var(--ph-dim)}.gc-empty:empty{display:none}.gc-empty a{color:var(--ph);cursor:pointer}
+      .gc-hint{flex:0 0 auto;margin:0;font-size:var(--sn-type-meta,14px);line-height:1.4;color:var(--ph-dim)}.gc-hint b{font-weight:normal;color:var(--ph)}
+      .gc-picker>[role=alert]{flex:0 0 auto;margin:0;color:var(--bad);font-size:var(--sn-type-meta,14px)}.gc-picker>[role=alert]:empty{display:none}
+      .gc-picker-footer{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 0 0;border-top:1px solid var(--ph-faint)}.gc-picker-footer .gc-delta{flex:1 1 auto;font-size:var(--sn-type-meta,14px);letter-spacing:1px;text-transform:uppercase;color:var(--ph-dim)}
       .gc-picker-footer .gc-delta.ok{color:var(--ph)}.gc-picker-footer .bb.primary{color:var(--ph-bright);border-color:var(--ph-dim)}
     `; document.head.append(css);
     discover().catch(e => { notice = e.message || String(e); });   // quiet: nobody asked yet (and the website embed has no sidecar)
@@ -418,6 +425,10 @@ const GroupChat = (() => {
     // the ADD AGENTS window edits ONE session: leaving it for another closes the window (it would edit the wrong chat)
     if (pickerFor && pickerFor !== ws?.id && $('gc-picker') && typeof StationUI !== 'undefined') StationUI.closeTerm('group-agents');
     if (openedFileUrl) { URL.revokeObjectURL(openedFileUrl); openedFileUrl = null; openedFile = null; $('gc-preview').replaceChildren(); }
+    // …and the previous group's inline shared images: the log is emptied below, so nothing shows these URLs any more
+    // (a read that failed made no URL, so there is nothing to release for it — it already showed as not found)
+    for (const p of sharedBlobs.values()) p.then(u => URL.revokeObjectURL(u), () => {});
+    sharedBlobs.clear();
     if (active) composerDrafts.set(active.id, input.value);
     active = ws; group = null; replyTo = null; selected = []; lastPaint = ''; generation++;
     clearTimeout(timer); $('gc-log').replaceChildren(); $('gc-states').replaceChildren(); $('gc-questions').replaceChildren(); input.value = composerDrafts.get(ws?.id) || ''; draftKey = null; notice = ''; $('gc-notice').textContent = ''; closeMentions(); recipientLabel();
@@ -433,6 +444,41 @@ const GroupChat = (() => {
       if (/not found/i.test(e.message || '')) return;   // never poll a gone group every 900 ms forever
     }
     if (gen === generation && active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), 900);
+  }
+  /* A REPLY'S FLOW (rc walk 2026-10-14). The group transcript glued the lead's streamed sentences together ("Let me configure
+     it:The steps are locked.") and showed none of its tool calls. A reply that made visible calls carries its flow from the
+     host (sidecar group-sessions.js: the prose as it streamed + each call's offset into it); it is drawn the way the
+     one-on-one chat draws a run — said → did → said — with the same chips (Chat.toolRailOf). `clean` is the finished
+     message's marker rule; a still-streaming draft (`live`) never shows a choice marker, complete or half-typed. */
+  function renderFlow(body, text, steps, files, clean, live) {
+    // a streaming draft re-renders on every token or poll: a chip the Commander opened stays open (keyed by its call id)
+    const opened = new Set(Array.from(body.querySelectorAll('.tool-chip.open')).map(c => c.dataset && c.dataset.callId).filter(Boolean));
+    body.replaceChildren();
+    const src = String(text == null ? '' : text);
+    const list = (Array.isArray(steps) ? steps : []).slice().sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+    const shownOf = s => (live && typeof Fork !== 'undefined' && Fork.liveText) ? Fork.liveText(s) : clean ? clean(s) : s;
+    const prose = s => {
+      const shown = String(shownOf(s) || '').trim();
+      if (!shown) return;
+      const seg = h('div', { class: 'gc-seg' });
+      if (typeof Chat !== 'undefined' && Chat.renderProse) Chat.renderProse(seg, shown, { files }); else seg.textContent = shown;
+      body.append(seg);
+    };
+    const offset = s => Math.max(0, Math.min(src.length, Number(s && s.at) || 0));
+    let from = 0, i = 0;
+    while (i < list.length) {
+      const at = Math.max(from, offset(list[i])), batch = [];
+      while (i < list.length && Math.max(from, offset(list[i])) === at) batch.push(list[i++]);
+      prose(src.slice(from, at));
+      if (typeof Chat !== 'undefined' && Chat.toolRailOf) body.append(Chat.toolRailOf(batch));
+      from = at;
+    }
+    prose(src.slice(from));
+    if (opened.size) for (const c of Array.from(body.querySelectorAll('.tool-chip'))) {
+      if (!(c.dataset && opened.has(c.dataset.callId))) continue;
+      c.classList.add('open');
+      const head = c.querySelector('.tc-head'); if (head) head.setAttribute('aria-expanded', 'true');
+    }
   }
   // the turn's REAL recorded time (never the current clock for a message that carries none)
   function stampOf(at) { const d = new Date(at); return at && !isNaN(d.getTime()) ? d : null; }
@@ -485,10 +531,20 @@ const GroupChat = (() => {
       return cp;
     };
     let prevAt = 0, prevAuthor = null, prevClock = '';
+    /* A STOP WHILE AN APPROVAL WAITED retires that card here, in the one-on-one card's words (live walk 2026-10-14: the card
+       just vanished): right under the reply it interrupted, or — when the turn had said nothing — where the turn ended. */
+    const retiredAt = new Map();   // message id -> turns whose unanswered approval follows it
+    const shown = group.messages.filter(m => String(m.content || '').trim());
+    for (const t of group.turns) if (t.unansweredApproval) {
+      const at = shown.find(m => m.turnId === t.id) || shown.filter(m => !t.endedAt || (Number(m.at) || 0) <= t.endedAt).at(-1) || shown.find(m => m.id === t.origin);
+      if (at) retiredAt.set(at.id, (retiredAt.get(at.id) || []).concat(t));
+    }
+    const turnOf = id => (id ? group.turns.find(t => t.id === id) : null);
     for (const m of group.messages) {
-      // brief.ask's fallback marker belongs to the durable question card, not a chat bubble.
-      const content = (group.questions || []).some(q => q.turnId === m.turnId)
-        ? m.content.replace(/(?:^|\n)TASK_QUESTION:[^\n]*(?:\n|$)/g, '\n').trim() : m.content;
+      // brief.ask's fallback marker belongs to the durable question card, not a chat bubble. A marker no card claimed
+      // (a FORK, or a TASK_QUESTION the host never registered) reads as its question and options — never machine syntax.
+      const asks = (group.questions || []).some(q => q.turnId === m.turnId);
+      const content = (typeof Fork === 'undefined' || m.author === 'user') ? m.content : asks ? Fork.stripMarkers(m.content) : Fork.readable(m.content);
       if (!content) continue;
       const attachments = (m.artifactIds || []).map(id => group.artifacts.find(f => f.id === id)).filter(Boolean);
       // TIME BREAKS, the direct chat's rule: the first stamped turn, a new day, or 30 minutes of quiet
@@ -502,11 +558,16 @@ const GroupChat = (() => {
         prevAt = at.getTime();
       }
       const askedQ = m.questionId ? (group.questions || []).find(q => q.id === m.questionId) : null;
-      const rowKey = JSON.stringify([m, content, attachments, group.members, name(m.author), colorOf(m.author), clock, askedQ && askedQ.question]);
+      // a reply the Commander STOPPED says so; any other unfinished one stays "partial" (failed, cut off)
+      const endedTurn = m.partial ? turnOf(m.turnId) : null;
+      const unfinished = endedTurn && endedTurn.state === 'stopped' && /^stopped by you$/i.test(String(endedTurn.reason || '')) ? 'stopped by you · work did not complete' : 'partial · work did not complete';
+      const rowKey = JSON.stringify([m, content, attachments, group.members, name(m.author), colorOf(m.author), clock, askedQ && askedQ.question, m.partial && unfinished]);
       const row = keep('m:' + m.id, rowKey, () => {
         const row = h('article', { class: 'gc-message cmsg' + (m.author === 'user' ? ' user' : ' agent'), 'data-message-id': m.id });
         const body = h('div', { class: 'body' });
-        if (typeof Chat !== 'undefined' && Chat.renderProse) Chat.renderProse(body, content, { files: fileRefs(group.id, m.author, m.id) }); else body.textContent = content;
+        if (m.author !== 'user' && m.flow && Array.isArray(m.flow.steps) && m.flow.steps.length && typeof Chat !== 'undefined' && Chat.toolRailOf)
+          renderFlow(body, m.flow.text, m.flow.steps, fileRefs(group.id, m.author, m.id), s => (typeof Fork === 'undefined' ? s : asks ? Fork.stripMarkers(s) : Fork.readable(s)), false);
+        else if (typeof Chat !== 'undefined' && Chat.renderProse) Chat.renderProse(body, content, { files: fileRefs(group.id, m.author, m.id) }); else body.textContent = content;
         const color = colorOf(m.author); if (color) { row.style.setProperty('--gc-c', color); body.style.setProperty('--rail', color); }
         const who = group.members.includes(m.author) ? speaker(m.author, m.id) : h('span', { class: 'who' }, name(m.author).toUpperCase());
         // the answer to a question keeps its question (the card leaves the strip once answered)
@@ -515,7 +576,7 @@ const GroupChat = (() => {
           const head = h('span', { class: 'cmsg-head' }); head.append(who, h('span', { class: 'cmsg-ts' }, clock));
           row.dataset.ts = String(at.getTime()); row.append(head); if (asked) row.append(asked); row.append(body);
         } else { row.append(who); if (asked) row.append(asked); row.append(body); }
-        if (m.partial) row.append(h('small', { class: 'gc-partial' }, 'partial · work did not complete'));
+        if (m.partial) row.append(h('small', { class: 'gc-partial' }, unfinished));
         if (attachments.length) renderMessageAttachments(row, group.id, attachments);
         row.append(copyKey(content));
         return row;
@@ -526,6 +587,18 @@ const GroupChat = (() => {
       // above may be someone else, so only a true same-speaker follow-up continues it
       row.classList.toggle('gc-cont', prevAuthor === m.author);
       prevAuthor = m.author; prevClock = clock;
+      for (const t of retiredAt.get(m.id) || []) {
+        const ask = t.unansweredApproval;
+        const phrase = typeof Chat !== 'undefined' && Chat.consentPhrase ? String(Chat.consentPhrase(ask) || '').trim() : '';
+        const said = '▣ ' + name(t.agentId) + ' wants to ' + (phrase || String(ask.tool || 'take an action')) + ' ';
+        keep('ra:' + t.id, said, () => {
+          const card = h('div', { class: 'cmsg agent tool consent gc-retired', role: 'note' }), body = h('div', { class: 'body' });
+          body.append(said, h('span', { class: 'consent-result err' }, '■ the run ended before an answer — nothing was approved'));
+          card.append(body);
+          return card;
+        });
+        prevAuthor = null;
+      }
       // replies a PAUSE stopped before they ran (E-STOP, a restart, PAUSE — then a new message carried on): said under
       // the message they were for, with the one key that runs them now
       const unrun = m.author === 'user' ? group.turns.filter(t => t.origin === m.id && t.state === 'stopped' && t.reason === 'Paused before it ran' && !group.turns.some(x => x.retryOf === t.id)) : [];
@@ -540,14 +613,15 @@ const GroupChat = (() => {
         prevAuthor = null;
       }
     }
-    for (const t of group.turns) if (t.draft) {
-      // a streaming reply keeps its row; only its text moves
+    for (const t of group.turns) if (t.draft || (t.draftSteps && t.draftSteps.length)) {
+      // a streaming reply keeps its row; only its flow moves (prose + the calls it made so far, like the one-on-one chat)
       const n = keep('dr:' + t.id, name(t.agentId) + colorOf(t.agentId), () => {
         const row = h('article', { class: 'gc-message cmsg agent draft' }), body = h('div', { class: 'body' }); const color = colorOf(t.agentId);
         if (color) { row.style.setProperty('--gc-c', color); body.style.setProperty('--rail', color); }
         row.append(h('span', { class: 'who' }, name(t.agentId).toUpperCase()), body); row._gcBody = body; return row;
       });
-      if (n._gcBody && n._gcBody.textContent !== t.draft) n._gcBody.textContent = t.draft;
+      const draftSig = JSON.stringify([t.draft || '', t.draftSteps || []]);
+      if (n._gcBody && n._gcDraftSig !== draftSig) { n._gcDraftSig = draftSig; renderFlow(n._gcBody, t.draft || '', t.draftSteps || [], fileRefs(group.id, t.agentId, 'draft:' + t.id), null, true); }
     }
     for (let i = 0; i < nodes.length; i++) { const cur = log.children[i]; if (cur !== nodes[i]) log.insertBefore(nodes[i], cur || null); }
     while (log.children.length > nodes.length) log.lastElementChild.remove();
@@ -691,32 +765,49 @@ const GroupChat = (() => {
     e.append(document.createTextNode('to'), h('span', { class: 'gc-to' }, selected.map(name).join(', ')));
     e.append(button('✕', () => { selected = []; replyTo = null; recipientLabel(); }));
   }
-  /* A FILE THE AGENT NAMES IN ITS MESSAGE ("[the review](review/x/index.html)", "![preview](review/x/final.jpg)") opens the
-     group's SHARED copy when one was published from that path — the exact bytes every member sees — and otherwise the
-     speaking agent's own workspace file (Chat's default resolver: the same jailed open + lightbox as every deliverable). */
+  /* Inline files belong to the message's author and version. Prefer its run's published copy, otherwise the
+     newest copy that author had shared when the message was written. An old reply must never open a later
+     revision or another agent's same-named file. If no unambiguous shared version exists, use that author's
+     workspace file through Chat's normal file resolver. */
   const sharedBlobs = new Map();   // artifact id -> Promise<blob url> (immutable versions: safe to keep)
-  function sharedFor(groupId, p) {
-    const g = group && group.id === groupId ? group : null; if (!g) return null;
+  function sharedFor(groupId, p, agentId, messageId) {
+    const g = group && group.id === groupId ? group : null; if (!g || !agentId) return null;
+    const m = (g.messages || []).find(x => x.id === messageId && x.author === agentId);
+    if (!m) return null;
     const clean = v => String(v || '').replace(/\\/g, '/').replace(/^\.\//, '');
-    const want = clean(p), base = want.split('/').pop();
-    const norm = a => clean(a.sourcePath);
-    return g.artifacts.find(a => norm(a) === want) || g.artifacts.find(a => norm(a).endsWith('/' + want)) || g.artifacts.find(a => a.name === base) || null;
+    const want = clean(p);
+    const available = (g.artifacts || []).filter(a => {
+      if (a.agentId !== agentId) return false;
+      if ((m.artifactIds || []).includes(a.id) || (m.runId && a.runId === m.runId)) return true;
+      if (Number.isFinite(m.seq) && Number.isFinite(a.messageSeq)) return a.messageSeq < m.seq;
+      return Number.isFinite(m.at) && Number.isFinite(a.createdAt) && a.createdAt <= m.at;
+    });
+    let matching = available.filter(a => clean(a.sourcePath) === want);
+    if (!matching.length) matching = available.filter(a => clean(a.sourcePath).endsWith('/' + want));
+    // A bare filename may identify a single authored path; two different paths are ambiguous.
+    if (!matching.length && !want.includes('/')) matching = available.filter(a => a.name === want);
+    if (!matching.length || new Set(matching.map(a => clean(a.sourcePath) || a.name)).size !== 1) return null;
+    const attached = matching.filter(a => (m.artifactIds || []).includes(a.id));
+    const fromRun = m.runId && matching.filter(a => a.runId === m.runId);
+    const versions = attached.length ? attached : (fromRun && fromRun.length ? fromRun : matching);
+    // The ledger appends immutable versions in publication order (including equal timestamps).
+    return versions[versions.length - 1];
   }
   function fileRefs(groupId, agentId, messageId) {
     const own = (typeof Chat !== 'undefined' && Chat.workspaceFileRefs) ? Chat.workspaceFileRefs(agentId, 'group:' + groupId + ':' + messageId) : null;
     return {
-      // decided at CLICK time: a message rendered before the file was shared must still open the shared copy afterwards
-      // (capture on the link itself runs before the workspace opener's own listeners, so it can take the click over)
+      // Resolve against the latest ledger at click time, while retaining this message's author/version.
+      // Capture runs before the workspace opener, so a published immutable copy takes precedence.
       wire: (a, p) => {
         a.addEventListener('click', ev => {
-          const art = sharedFor(groupId, p); if (!art) return;
+          const art = sharedFor(groupId, p, agentId, messageId); if (!art) return;
           ev.preventDefault(); ev.stopImmediatePropagation();
           openFile(groupId, art).catch(showError);
         }, true);
         if (own) own.wire(a, p);
       },
       image: p => {
-        const art = sharedFor(groupId, p);
+        const art = sharedFor(groupId, p, agentId, messageId);
         if (!art) return own ? own.image(p) : Promise.reject(new Error('no file'));
         if (!sharedBlobs.has(art.id)) sharedBlobs.set(art.id, Chat.imageBlobUrl('/api/groups?id=' + encodeURIComponent(groupId) + '&file=' + encodeURIComponent(art.id), art.sourcePath || art.name));
         return sharedBlobs.get(art.id);
@@ -852,7 +943,10 @@ const GroupChat = (() => {
       }
       const cur = ws.pendingJoin && ws.pendingJoin.runId === runId ? ws.pendingJoin.ids : [];
       const all = [...new Set([...cur, ...add])].slice(0, 10);
-      ws.pendingJoin = { runId, ids: all, at: Date.now() }; save();
+      // what the Commander already answered in that run's Task Brief (the sidecar's host stamp): the kickoff starts from it
+      const brief = typeof caller.brief === 'string' && caller.brief.trim() ? caller.brief.trim().slice(0, 600)
+        : (ws.pendingJoin && ws.pendingJoin.runId === runId && ws.pendingJoin.brief) || '';
+      ws.pendingJoin = { runId, ids: all, at: Date.now(), ...(brief ? { brief } : {}) }; save();
       return { joining: true, agents: all.map(name), note: agentNames(all) + (all.length > 1 ? ' join ' : ' joins ')
         + (isGeneral(ws) ? 'a new group chat that opens beside General' : 'this chat (it becomes a group chat, its history kept)')
         + ' the moment this reply ends. If the reply is stopped or fails, nobody is added and the Commander is told in the chat.' };
@@ -883,7 +977,10 @@ const GroupChat = (() => {
     try {
       // the lead asked for them to work on the Commander's request: it gets the first turn in the group to hand them their parts
       const kickoff = agentNames(ids) + (ids.length > 1 ? ' have' : ' has') + ' joined this chat at your request. Carry on with the Commander\'s request: give '
-        + (ids.length > 1 ? 'each of them their part' : 'them their part') + ' (group.handoff) and do your own.';
+        + (ids.length > 1 ? 'each of them their part' : 'them their part') + ' (group.handoff) and do your own.'
+        // …starting from what the Commander already answered (review 10-14: from General the new group re-asked "What are
+        // we launching?" seconds after they had answered it there)
+        + (job.brief ? ' The Commander already answered: ' + String(job.brief).replace(/[\s.;,]+$/, '') + '. Never ask those again.' : '');
       const out = ws.conversationMode === 'group' ? await addAgents(ws, ids, null) : await startGroup(ws, ids, { kickoff });
       if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(agentNames(ids) + (ids.length > 1 ? ' joined ' : ' joined ') + (out && out.title ? '"' + out.title + '"' : 'the chat'), 'good');
       return out;
@@ -950,7 +1047,8 @@ const GroupChat = (() => {
         onclick: () => acceptMention(item) });
       if (mentionBusy) row.setAttribute('disabled', '');
       const led = h('span', { class: 'gc-led', 'aria-hidden': 'true' }); const c = colorOf(item.id); if (c) led.style.background = c;
-      const what = item.all ? 'everyone here' : item.member ? 'in this chat' : inGroup ? 'adds to this chat' : 'starts a group with ' + lead;
+      // from General the pick never converts General: a new group opens beside it (startGroup), so the row says so
+      const what = item.all ? 'everyone here' : item.member ? 'in this chat' : inGroup ? 'adds to this chat' : isGeneral(active) ? 'opens a group chat with ' + lead + ' beside General' : 'starts a group with ' + lead;
       row.append(led, h('span', { class: 'gc-mn' }, item.all ? '@all' : item.name), h('span', { class: 'gc-mt' }, what));
       e.append(row);
     });
@@ -1088,7 +1186,7 @@ const GroupChat = (() => {
     const dialog = h('div', { id: 'gc-picker', class: 'gc-picker' });
     const close = () => StationUI.closeTerm('group-agents');
     dialog.append(h('p', { role: 'status' }, 'Loading agents…'), button('CANCEL', close));
-    StationUI.toggleTerm('group-agents', origin?.conversationMode === 'group' ? 'AGENTS IN THIS CHAT' : 'ADD AGENTS', body => body.replaceChildren(dialog), { onClose: () => { dialog.remove(); pickerFor = null; pickerRepaint = null; } });
+    StationUI.toggleTerm('group-agents', origin?.conversationMode === 'group' ? 'AGENTS IN THIS CHAT' : 'ADD AGENTS', body => body.replaceChildren(dialog), { className: 'gc-picker-win', onClose: () => { dialog.remove(); pickerFor = null; pickerRepaint = null; } });
     try {
       if (App.pushRoster) await App.pushRoster();
       const info = await api(); roster = info.roster;
@@ -1128,12 +1226,14 @@ const GroupChat = (() => {
         finally { saving = null; if (dialog.isConnected) render(); }
       }
       function row(a, inChat) {
-        const r = h('div', { class: 'gc-row' + (inChat ? ' in' : ''), role: 'listitem', 'data-agent-name': label(a.id).toLowerCase() });
+        // NO SENTENCES UNDER TILES (walk 10-14 #9): portrait + name; the agent's description is the row's hover tip
+        const about = describe(a.id);
+        const r = h('div', { class: 'gc-row' + (inChat ? ' in' : ''), role: 'listitem', 'data-agent-name': label(a.id).toLowerCase(), ...(about ? { title: about, 'aria-description': about } : {}) });
         const led = h('span', { class: 'gc-led', 'aria-hidden': 'true' }); if (colorOf(a.id)) led.style.background = colorOf(a.id);
         // the agent's own skin (the shared thumb path every crew surface uses); a skin still loading shows the silhouette
         const pic = h('span', { class: 'gc-pic', 'aria-hidden': 'true' });
         if (typeof AgentPortraits !== 'undefined' && AgentPortraits.thumbHTML) pic.innerHTML = AgentPortraits.thumbHTML(App.agents?.().find(x => x.id === a.id) || a, 32, 38, 'gc-av');
-        const idc = h('div', { class: 'gc-id' }); idc.append(h('span', { class: 'gc-nm' }, label(a.id)), h('span', { class: 'gc-tag' }, describe(a.id)));
+        const idc = h('div', { class: 'gc-id' }); idc.append(h('span', { class: 'gc-nm' }, label(a.id)));
         r.append(led, pic, idc);
         if (inChat && a.id === leadNow()) { r.append(h('span', { class: 'gc-lead', title: 'Answers when you do not @ anyone' }, 'lead')); return r; }
         const b = inChat ? button(saving === a.id ? 'REMOVING…' : '✕ REMOVE', () => change(a.id, false)) : button(saving === a.id ? 'ADDING…' : '+ ADD', () => change(a.id, true));
@@ -1159,6 +1259,8 @@ const GroupChat = (() => {
       pickerRepaint = g => { const k = g.members.join('\n') + '|' + g.leadId; current = g; if (!saving && k !== shown) render(); };
       if (search) search.addEventListener('input', render);
       render();
+      const win = dialog.closest ? dialog.closest('.term') : null;
+      if (win && typeof win._fitDockedSheet === 'function') win._fitDockedSheet();   // the dock re-seats it to hold its floors
     } catch (e) {
       if (!dialog.isConnected) return;
       dialog.replaceChildren(h('p', { role: 'alert' }, e.message || String(e)), button('RETRY', () => { close(); return picker(true); }), button('CANCEL', close));

@@ -99,17 +99,21 @@ function warnBox(lines) {
   console.error('');
 }
 
-// Fail-open pre-flight: fetch the KEY-INDEPENDENT public OpenRouter catalog (same source the sidecar warms
-// at boot) and check the configured model id is present. If it's ABSENT, warn LOUDLY that the first run will
-// fail — model ids rot and a dead default 404s ("No endpoints found"). We WARN, never block: an unreachable
+// Fail-open pre-flight: fetch the KEY-INDEPENDENT OpenRouter catalog the sidecar warms at boot (the public one,
+// or SKYNET_OPENROUTER_BASE's when a preview points the sidecar at a mock) and check the configured model id is
+// present. If it's ABSENT, warn LOUDLY that the first run will fail — model ids rot and a dead default 404s ("No endpoints found"). We WARN, never block: an unreachable
 // catalog, a fetch error, or a brand-new-but-real slug must not stop a dev launch (mirrors the sidecar's
 // warmModelCatalogSet() returning null => skip the check). Returns a promise that always resolves.
 async function checkModelInCatalog(model) {
   if (typeof globalThis.fetch !== 'function') return;   // ancient node; sidecar warm will still run
+  // the catalog the sidecar will call: SKYNET_OPENROUTER_BASE (STARNET_ first, like the sidecar's ENV), so a preview
+  // that aims the sidecar at a local mock is checked against that mock's /models, not the public catalog
+  const rawBase = ('STARNET_OPENROUTER_BASE' in process.env) ? process.env.STARNET_OPENROUTER_BASE : process.env.SKYNET_OPENROUTER_BASE;
+  const base = String(rawBase || '').trim().replace(/\/+$/, '') || 'https://openrouter.ai/api/v1';
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 6000);
   try {
-    const r = await fetch('https://openrouter.ai/api/v1/models', { signal: ctrl.signal });
+    const r = await fetch(base + '/models', { signal: ctrl.signal });
     if (!r.ok) return;                                  // catalog unreachable -> stay quiet, sidecar decides
     const body = await r.json();
     const list = (body && body.data) || body;
@@ -121,7 +125,7 @@ async function checkModelInCatalog(model) {
       'default model NOT in live catalog — first runs WILL fail.',
       '',
       '  SKYNET_DEFAULT_MODEL = ' + model,
-      '  This id is not on openrouter.ai/api/v1/models (it 404s:',
+      '  This id is not on ' + base + '/models (it 404s:',
       '  "No endpoints found"). Set SKYNET_DEFAULT_MODEL to a live id',
       '  in dev/.env.dev, then relaunch.' ,
       ...(near.length ? ['', '  Live Anthropic ids right now, e.g.:', ...near.map(x => '    ' + x)] : [])

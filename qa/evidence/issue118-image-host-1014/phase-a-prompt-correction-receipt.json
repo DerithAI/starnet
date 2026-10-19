@@ -1,0 +1,58 @@
+{
+  "status": "PREPARED_NOT_RUN_COORDINATOR_REVIEW_PENDING",
+  "issue": 118,
+  "phase": "A original-prompt redaction correction",
+  "ownerThread": "01a12ce1-53da-7a50-a7f8-12fccba769e6",
+  "branch": "agent/issue118-image-host-1014",
+  "reviewedPredecessor": "b706f34add53a76394c449c3950693ca326dacdb",
+  "predecessorDisposition": "Coordinator CHANGES_REQUESTED: original prompt echo could bypass redaction when dispatched prompt was augmented. This is a source-level privacy gap, not observed customer exposure. Prior receipt remains immutable historical evidence and is superseded by this correction.",
+  "sourceBase": "cbf01f528f1286da588e410c78756fea234259c3",
+  "revisionBinding": "The containing commit is the correction revision; exact source/test blobs and file SHA256 bind the reviewed bytes below.",
+  "source": {
+    "path": "sidecar/tools/builtin/image.js",
+    "blob": "251ac771f80accefc7951beb3b416a7494b6e181",
+    "sha256": "caea5590b565cdae4edfc292c882cd9020941b82750f5714baf54b95c2ce67a6"
+  },
+  "controls": {
+    "path": "test/image.test.js",
+    "blob": "9e71fcb8b9de8ba863b84395ef1295757d434354",
+    "sha256": "8818a0a61c115674f30ac28136ca1fd0960fe2b656591ef8954a0713b9e68848",
+    "status": "PREPARED_NOT_RUN",
+    "newCases": 12,
+    "matrix": "Transparency-only, reference-only, combined x original-only/augmented prompt echo x existing/missing output path",
+    "assertions": [
+      "Actual generateTool.run error equals fully redacted expected message, including echoed reference data URL",
+      "Dispatched augmented text, reference bytes, route and hosted image parameters unchanged",
+      "One send, zero renewal, zero usage booking and zero publication",
+      "Existing output and reference files unchanged; absent output not created"
+    ],
+    "priorControls": "All b706 controls retained without modification; existing test/fast.list registration unchanged",
+    "fixtureProvenance": "All backend JSON envelopes are synthetic. Customer evidence supplied error text only. No fixture is claimed as a captured customer backend response."
+  },
+  "correction": "Pass original normalized prompt separately into codexImagePost solely as redaction context; include original and augmented prompts alongside existing credentials, IDs and reference URL in longest-first exact-secret removal. Request body construction is unchanged.",
+  "unchanged": [
+    "Model constants and selection, account behavior, route selection and request body",
+    "At most one 401 renewal and two sends; no API-key/account/billing fallback",
+    "Success parsing, file saving and publication semantics",
+    "Shared context redactor blob 686bdb98d8be4223e19880aca25bfb0d021bd8f6",
+    "Prior receipt, shared contracts and frozen spend evidence"
+  ],
+  "independentStaticReview": {
+    "reviewer": "/root/issue118_static_review",
+    "disposition": "ACCEPT_PREPARED_NOT_RUN",
+    "sourceBlob": "251ac771f80accefc7951beb3b416a7494b6e181",
+    "testBlob": "9e71fcb8b9de8ba863b84395ef1295757d434354",
+    "result": "Original normalized prompt reaches only the redaction list alongside augmented prompt; no additional actionable finding in focused static review. Earlier review missed this gap. Coordinator acceptance remains pending."
+  },
+  "verification": {
+    "performed": ["Source-only diff inspection", "Independent static review", "Git diff whitespace checks", "Content hashing"],
+    "notPerformed": ["Syntax checks", "Tests or test:fast", "Imports", "Dependencies", "Runtime/app/build execution", "Provider/account calls", "Image generation", "Customer verification"],
+    "hold": "Coordinator execution hold retained: reported RAM 612843520 bytes, below 2 GiB at 18:15; this receipt does not assert a new resource observation"
+  },
+  "remaining": [
+    "Coordinator re-review and acceptance of this exact revision",
+    "Runtime verification after execution hold is lifted",
+    "Phase B host selection remains unresolved",
+    "No merge/release authorization or claim that image generation/customer recovery is repaired"
+  ]
+}

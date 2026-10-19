@@ -33,7 +33,7 @@
     if (opts.enabled === false) return false;
     if (!result || result.reason !== 'done') return false;
     // VERDICT-TRIGGERED (consistency loop, 2026-08-22): the Commander rating the work `ok` or `miss` is a lesson
-    // regardless of run size â€” a two-turn run they called short of the mark teaches MORE than a forty-tool run
+    // regardless of run size — a two-turn run they called short of the mark teaches MORE than a forty-tool run
     // nobody rated. `great` never triggers here; praise is not a procedure change.
     if (opts.verdict === 'ok' || opts.verdict === 'miss') return true;
     const s = stats(result.messages);
@@ -68,7 +68,7 @@
     const managedLines = managed.length ? managed.map(s => '- ' + s.name + ' (' + s.action + ')').join('\n') : '(none)';
     const memoryLines = memories.length ? memories.map(m => '- ' + (m.kind || 'note') + ': ' + str(m.content || m.body || '').replace(/\s+/g, ' ').slice(0, 220)).join('\n') : '(none)';
     // the COMMANDER VERDICT block (consistency loop): when this review was triggered by a rating, the reviewer is
-    // told so, told what was rated, and pointed at the one job that matters â€” make the governing skill prevent a
+    // told so, told what was rated, and pointed at the one job that matters — make the governing skill prevent a
     // repeat. `correction` is the Commander's own words when captured (slice 2); absent = verdict only.
     const verdict = str(input.verdict);
     const correction = str(evidence ? evidence.correction && evidence.correction.text : '').replace(/\s+/g, ' ').trim().slice(0, 600);
@@ -125,7 +125,7 @@
 
   // Actions that CHANGE the skillbase (worth a deliverable + a COMMS aside). A pure read/list must stay silent.
   // Sets, not object literals: `({a:1})['constructor']` is truthy, so an object-literal allowlist
-  // silently admits every Object.prototype key â€” and these keys come off persisted/model-supplied data.
+  // silently admits every Object.prototype key — and these keys come off persisted/model-supplied data.
   const WRITE_ACTIONS = new Set(['propose', 'create', 'edit', 'patch', 'archive', 'restore', 'write_file', 'remove_file', 'saved', 'edited', 'manage']);
   function isWriteAction(action) { return WRITE_ACTIONS.has(String(action || '').toLowerCase()); }
 
@@ -158,14 +158,16 @@
     return { count: next, due: every > 0 && next >= every };
   }
 
-  /* makeReviewObserver({ emit, log, now, source }) -> { onManage(skill, action) }
+  /* makeReviewObserver({ emit, log, now, source }) -> { onManage(skill, action, info) }
      The ONE testable seam that un-silences a background pass. When the quiet review/curator loop mutates a
      skill, onManage fires:
-       1. the EXISTING `deliverable` event (kind:'skill') through the injected emit â€” the SKILLS panel + the
+       1. the EXISTING `deliverable` event (kind:'skill') through the injected emit — the SKILLS panel + the
           COMMS aside both hang off this; no new schema.
        2. a single auditable log line per changed skill (C1) so a review pass is greppable.
      Deduped by skill id+action so a create-then-edit within one pass emits once per distinct change, and a
-     read that slips through (view) is dropped. Pure given injected emit/log/clock â€” no globals. */
+     read that slips through (view) is dropped. Pure given injected emit/log/clock — no globals.
+     info is skills.js's { isNew }: a proposal for a skill with no active version is titled 'Proposed skill',
+     one that revises an active skill 'Proposed revision' (also the title when info is absent). */
   function makeReviewObserver(deps) {
     deps = deps || {};
     const emit = typeof deps.emit === 'function' ? deps.emit : function () {};
@@ -174,13 +176,13 @@
     const source = str(deps.source || 'background-review');
     const seen = new Set();
     return {
-      onManage(skill, action) {
+      onManage(skill, action, info) {
         if (!skill || !isWriteAction(action)) return false;
         const key = str(skill.id || skill.name) + ':' + str(action).toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);
         const act = str(action).toLowerCase();
-        try { emit('deliverable', { id: skill.id, agentId: skill.agentId || 'agent', kind: 'skill', title: (act === 'propose' || skill.pendingCandidate ? 'Proposed revision: ' : '') + skill.name }); } catch (_) {}
+        try { emit('deliverable', { id: skill.id, agentId: skill.agentId || 'agent', kind: 'skill', title: ((act === 'propose' || skill.pendingCandidate) ? ((info && info.isNew) ? 'Proposed skill: ' : 'Proposed revision: ') : '') + skill.name }); } catch (_) {}
         try { log('[skills] ' + source + ' ' + act + ' "' + str(skill.name) + '" (agent=' + str(skill.agentId || 'agent') + ') at ' + now()); } catch (_) {}
         return true;
       }

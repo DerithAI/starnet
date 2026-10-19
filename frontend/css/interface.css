@@ -220,12 +220,24 @@ body:not(.rows-inbox) #workstreams .ws-row.attn > .ws-kebab { grid-area: menu; }
 .ab-router > summary, .cf-group > summary { list-style: none; cursor: pointer; position: relative; }
 .ab-router > summary::-webkit-details-marker, .cf-group > summary::-webkit-details-marker { display: none; }
 .ab-router > summary::after, .cf-group > summary::after { content: '＋'; position: absolute; right: 12px; top: 13px; color: var(--ph-dim); }
+/* the ADD AN ABILITY summary is also .ab-router-q, whose ::after was a fading phosphor rule: drop that rule's line, keep the ＋/− toggle */
+.ab-router > summary::after { flex: none; height: auto; background: none; opacity: 1; }
 .ab-router[open] > summary::after, .cf-group[open] > summary::after { content: '−'; }
 .ab-router .ab-router-q { display: flex; flex-direction: column; gap: 5px; padding: 12px 34px 12px 12px; margin: 0; font-size: 16px; color: var(--ph-bright); }
 .ab-router-q small { color: var(--ph-dim); font-size: 13px; font-weight: 400; letter-spacing: .3px; }
 .ab-router { padding: 0; border-color: var(--ui-edge); background: var(--ui-face); }
 .ab-router-grid { padding: 0 12px 12px; }
 .ab-router-grid .ab-route { padding: 12px; }
+/* ORG P21: the agent pickers on ABILITIES (BUILT-IN ABILITIES' #ts-agent, AGENT SKILLS' #sk-agent-pick) are glass fields,
+   the settings-console field recipe — never the OS select or the old key-input strip */
+select.ab-agent-pick {
+  box-sizing: border-box; display: block; width: 100%; max-width: 360px; margin: 4px 0 10px; appearance: none; -webkit-appearance: none;
+  border: 1px solid rgba(var(--ph-rgb), .25); border-radius: 8px; padding: 9px 32px 9px 12px; font: inherit; font-size: 15px; color: var(--text);
+  background-color: rgba(0,0,0,.2); box-shadow: inset 0 1px 0 rgba(var(--ph-rgb), .04); cursor: pointer;
+  background-image: linear-gradient(45deg,transparent 50%,var(--ph) 50%),linear-gradient(135deg,var(--ph) 50%,transparent 50%);
+  background-position: calc(100% - 17px) 50%,calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat;
+}
+select.ab-agent-pick:is(:hover,:focus-visible) { border-color: rgba(var(--ph-rgb), .55); outline: none; }
 .ability-readout { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin: 12px 0 8px; }
 .ability-readout > div { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--ui-edge); background: var(--panel); box-shadow: var(--ui-well); }
 .ability-readout b { color: var(--ph-bright); font: 29px 'VT323', monospace; }

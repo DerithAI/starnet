@@ -19,15 +19,16 @@ const from = src.indexOf('const postTaintConfirmed = postTaint.oneShot;');
 const to = src.indexOf('const internalBriefControl = internalBriefTools.indexOf(c.name) >= 0;');
 A.ok(from > 0 && to > from, 'index.js still has the refusal block between the post-taint decision and the brief gate');
 const block = src.slice(from, to);
+const taintPolicy = require('../sidecar/taint.js');
 const refusal = new Function('postTaint', 'execution', 'taintAtStart', 'taintHandedIn', 'inheritedTaint', 'taintSource', 'o', 'c',
-  'effectSurface', 'effectPrompt', 'isUnverifiedTaint', block + '\nreturn null;');
+  'effectSurface', 'effectPrompt', 'isUnverifiedTaint', 'taintPolicy', 'liveTool', block + '\nreturn null;');
 
 const ask = () => 'deny';
 function refuse(s) {
   const own = s.own || null;
   const r = refusal({ allow: false, oneShot: false }, { taintedBy: () => own }, s.atStart === undefined ? own : s.atStart,
     s.handedIn || null, s.inherited || null, own || s.inherited, s.o || {}, { name: s.tool || 'web_request' },
-    s.surface || 'autonomous', s.prompt || null, isUnverifiedTaint);
+    s.surface || 'autonomous', s.prompt || null, isUnverifiedTaint, taintPolicy, { name: s.tool || 'web_request' });
   A.ok(r && r.summary === 'untrusted-content-lockout' && /^BLOCKED: "/.test(r.content), 'still the same lockout (' + s.label + ')');
   return (r && r.content) || '';
 }

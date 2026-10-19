@@ -488,6 +488,221 @@ const imageReply = png => jsonResp({ choices: [{ message: { images: [{ image_url
     const errFetch = stubFetch(() => ({ status: 403, text: async () => JSON.stringify({ error: { message: 'plan limit reached' } }) }));
     await rejects(makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', getToken: async () => jwt }, fsp, pathMod: path, root: ROOT, fetchImpl: errFetch }).generateTool.run({ prompt: 'x' }, ctx),
       /ChatGPT 403: plan limit reached/, 'a plan error is reported verbatim');
+    // #118: the customer supplied error TEXT, not a raw envelope. All JSON responses here are synthetic.
+    const hostError = "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.";
+    const classify = TP._internals.codexHostRejected;
+    A.ok(classify(400, hostError, 'gpt-5.5', 'gpt-image-2'), 'exact quoted dispatched host is recognized');
+    for (const [detail, host, image] of [
+      [hostError.replace('gpt-5.5', 'gpt-5.50'), 'gpt-5.5', 'gpt-image-2'],
+      [hostError.replace('gpt-5.5', 'other/gpt-5.5'), 'gpt-5.5', 'gpt-image-2'],
+      [hostError.replace('gpt-5.5', 'gpt-5.5-preview'), 'gpt-5.5', 'gpt-image-2'],
+      [hostError, 'gpt-5.5', 'gpt-5.5'],
+      [hostError, 'gpt-5.5', 'gpt-5.5-image'],
+      [hostError, 'gpt-5.5', 'gpt-5'],
+      [hostError, 'gpt-5.5', 'gpt-image-2 unsafe label'],
+      [hostError, 'gpt-5.5', 'gpt-image-' + 'x'.repeat(150)],
+      [hostError + ' Requested gpt-image-2.', 'gpt-5.5', 'gpt-image-2'],
+      ['Unsupported model gpt-5.5 or image model gpt-image-2', 'gpt-5.5', 'gpt-image-2']
+    ]) A.ok(!classify(400, detail, host, image), 'substring/ambiguous model is not classified: ' + detail);
+    A.ok(!classify(403, hostError, 'gpt-5.5', 'gpt-image-2'), 'status alone is not reclassified');
+    const privatePrompt = 'issue118-private-prompt', privateKey = 'sk-issue118-private-key-1234567890';
+    const sensitive = hostError + ' token=' + jwt + ' account=acct-1 key=' + privateKey + ' prompt=' + privatePrompt;
+    const existingPath = path.join(ROOT, 'hero', 'issue118-existing.png');
+    const missingPath = path.join(ROOT, 'hero', 'issue118-missing.png');
+    await fsp.writeFile(existingPath, 'original image bytes');
+    for (const [tag, status, detail, expected] of [
+      ['host', 400, hostError, true],
+      ['sensitive', 400, sensitive, true],
+      ['substring', 400, hostError.replace('gpt-5.5', 'gpt-5.50'), false],
+      ['ambiguous', 400, hostError + ' Requested gpt-image-2.', false],
+      ['image', 400, hostError.replace('gpt-5.5', 'gpt-image-2'), false],
+      ['generic', 400, 'invalid request', false],
+      ['plan', 403, 'plan limit reached', false],
+      ['oversized', 400, hostError + 'x'.repeat(9000) + privateKey, false]
+    ]) {
+      for (const output of ['issue118-existing.png', 'issue118-missing.png']) {
+        let renewals = 0, usageCalls = 0, message = '';
+        const beforeEmits = emits.length;
+        const failing = stubFetch(() => ({ status, text: async () => JSON.stringify({ error: { message: detail } }) }));
+        const tool = makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', apiKey: privateKey, model: 'conversation-only', getToken: async () => jwt, renewToken: async () => { renewals++; return jwt; } }, fsp, pathMod: path, root: ROOT, fetchImpl: failing, onUsage: () => { usageCalls++; } });
+        try { await tool.generateTool.run({ prompt: privatePrompt, model: 'gpt-image-2', path: output }, ctx); } catch (e) { message = String(e.message); }
+        A.ok(!!message, tag + ': actual tool rejects');
+        A.eq(message.startsWith('ChatGPT rejected image host '), expected, tag + ': precise host classification');
+        if (expected) {
+          A.ok(message.includes('image host gpt-5.5') && message.includes('Requested image model: gpt-image-2'), tag + ': distinct dispatched model roles');
+          A.ok(message.includes('No image was returned or saved by this attempt'), tag + ': no claim about unseen server production');
+        }
+        A.eq([failing.calls.length, renewals, usageCalls, emits.length - beforeEmits], [1, 0, 0, 0], tag + ': one request, no renewal, booking or publication');
+        A.eq([failing.calls[0].url, failing.calls[0].body.model, failing.calls[0].body.tools[0].model], ['https://chatgpt.com/backend-api/codex/responses', 'gpt-5.5', 'gpt-image-2'], tag + ': route/constants unchanged despite API key and different conversation model');
+        A.eq(await fsp.readFile(existingPath, 'utf8'), 'original image bytes', tag + ': existing output untouched');
+        A.ok(!fssync.existsSync(missingPath), tag + ': absent output not created');
+        for (const secret of [jwt, 'acct-1', privateKey, privatePrompt]) A.ok(!message.includes(secret), tag + ': known sensitive detail withheld');
+        A.ok(message.length < 600, tag + ': displayed error bounded');
+      }
+    }
+    // Synthetic error envelopes: exercise original-only and augmented prompt echoes through the real tool path.
+    const campaignPrompt = 'private-campaign-marker';
+    const referenceName = 'issue118-reference.png';
+    await fsp.writeFile(path.join(ROOT, 'hero', referenceName), logo);
+    const referenceUrl = 'data:image/png;base64,' + logo.toString('base64');
+    const transparencySuffix = ' Render the subject alone on a fully transparent background (PNG with an alpha channel): no backdrop, no scenery and no checkerboard pattern.';
+    const referencePrefix = 'Match the attached reference image: the same art style, colour palette, lighting and overall concept. ';
+    for (const [tag, transparent, withReference] of [['transparent', true, false], ['reference', false, true], ['combined', true, true]]) {
+      const dispatchedPrompt = (withReference ? referencePrefix : '') + campaignPrompt + (transparent ? transparencySuffix : '');
+      for (const echoedPrompt of [campaignPrompt, dispatchedPrompt]) {
+        for (const output of ['issue118-existing.png', 'issue118-missing.png']) {
+          let message = '', renewals = 0, usageCalls = 0;
+          const beforeEmits = emits.length;
+          const echoFetch = stubFetch(() => ({ status: 400, text: async () => JSON.stringify({ error: { message: 'echo=' + echoedPrompt + (withReference ? ' reference=' + referenceUrl : '') } }) }));
+          const echoTool = makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', apiKey: privateKey, getToken: async () => jwt, renewToken: async () => { renewals++; return jwt; } }, fsp, pathMod: path, root: ROOT, fetchImpl: echoFetch, onUsage: () => { usageCalls++; } });
+          try { await echoTool.generateTool.run({ prompt: campaignPrompt, transparent, reference: withReference ? referenceName : undefined, path: output }, ctx); } catch (e) { message = String(e.message); }
+          A.eq(message, 'ChatGPT 400: echo=[redacted-secret]' + (withReference ? ' reference=[redacted-secret]' : ''), tag + ': original and augmented prompt echoes are fully redacted');
+          A.eq([echoFetch.calls.length, renewals, usageCalls, emits.length - beforeEmits], [1, 0, 0, 0], tag + ': no retry, billing fallback, booking or publication');
+          const request = echoFetch.calls[0];
+          A.eq([request.url, request.body.model, request.body.tools], ['https://chatgpt.com/backend-api/codex/responses', 'gpt-5.5', [{ type: 'image_generation', output_format: 'png', partial_images: 1, model: 'gpt-image-2', size: '1024x1024', quality: 'medium', background: transparent ? 'transparent' : 'opaque' }]], tag + ': route and hosted image parameters unchanged');
+          A.eq(request.body.input[0].content, [{ type: 'input_text', text: dispatchedPrompt }].concat(withReference ? [{ type: 'input_image', image_url: referenceUrl }] : []), tag + ': dispatched augmented prompt and reference bytes unchanged');
+          A.eq(await fsp.readFile(existingPath, 'utf8'), 'original image bytes', tag + ': failure cannot overwrite existing output');
+          A.ok(!fssync.existsSync(missingPath), tag + ': failure cannot create absent output');
+          A.ok((await fsp.readFile(path.join(ROOT, 'hero', referenceName))).equals(logo), tag + ': reference file unchanged');
+        }
+      }
+    }
+    const rawSensitive = stubFetch(() => ({ status: 400, text: async () => 'not JSON: ' + jwt + ' acct-1 ' + privateKey + ' ' + privatePrompt }));
+    let rawMessage = '';
+    try { await makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', apiKey: privateKey, getToken: async () => jwt }, fsp, pathMod: path, root: ROOT, fetchImpl: rawSensitive }).generateTool.run({ prompt: privatePrompt, path: 'issue118-existing.png' }, ctx); } catch (e) { rawMessage = String(e.message); }
+    A.ok(rawMessage.startsWith('ChatGPT 400:') && !rawMessage.startsWith('ChatGPT rejected'), 'malformed envelope stays generic');
+    for (const secret of [jwt, 'acct-1', privateKey, privatePrompt]) A.ok(!rawMessage.includes(secret), 'malformed envelope detail is sanitized before clipping');
+    A.eq(await fsp.readFile(existingPath, 'utf8'), 'original image bytes', 'malformed error cannot overwrite output');
+    const structuredSensitive = stubFetch(() => ({ status: 400, text: async () => JSON.stringify({ detail: { cookie: 'opaque-cookie-value', nested: { token: 'opaque-nested-token' } } }) }));
+    let structuredMessage = '';
+    try { await makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', getToken: async () => jwt }, fsp, pathMod: path, root: ROOT, fetchImpl: structuredSensitive }).generateTool.run({ prompt: privatePrompt, path: 'issue118-existing.png' }, ctx); } catch (e) { structuredMessage = String(e.message); }
+    A.eq(structuredMessage, 'ChatGPT 400: [provider detail withheld]', 'structured sensitive detail is withheld before serialization');
+    A.eq(await fsp.readFile(existingPath, 'utf8'), 'original image bytes', 'structured error cannot overwrite output');
+    const overlappingOld = 'opaque-credential', overlappingNew = overlappingOld + '-private-tail';
+    let overlapRenewals = 0, overlapMessage = '';
+    const overlap401 = stubFetch(() => ({ status: 401, text: async () => JSON.stringify({ error: { message: overlappingOld + ' ' + overlappingNew } }) }));
+    try { await makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', getToken: async () => overlappingOld, renewToken: async () => { overlapRenewals++; return overlappingNew; } }, fsp, pathMod: path, root: ROOT, fetchImpl: overlap401 }).generateTool.run({ prompt: privatePrompt, path: 'issue118-existing.png' }, ctx); } catch (e) { overlapMessage = String(e.message); }
+    A.eq(overlapMessage, 'ChatGPT 401: [redacted-secret] [redacted-secret]', 'overlapping old and renewed credentials leave no private suffix');
+    A.eq([overlap401.calls.length, overlapRenewals], [2, 1], 'overlapping credentials preserve bounded auth retry');
+    A.eq(await fsp.readFile(existingPath, 'utf8'), 'original image bytes', 'overlapping auth error cannot overwrite output');
+    const unknownKey = 'sk-proj-' + 'Z'.repeat(24);
+    const safeDetail = TP._internals.codexErrorDetail('unknown ' + unknownKey + '\n' + 'x'.repeat(400), []);
+    A.ok(!safeDetail.includes(unknownKey) && !safeDetail.includes('\n') && safeDetail.length <= 300, 'shared pattern redaction precedes one-line clipping');
+    let twiceRenewed = 0, repeatedMessage = '';
+    const repeated401 = stubFetch(() => ({ status: 401, text: async () => JSON.stringify({ error: { message: 'expired ' + jwt } }) }));
+    try { await makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', getToken: async () => 'old-token-118', renewToken: async () => { twiceRenewed++; return jwt; } }, fsp, pathMod: path, root: ROOT, fetchImpl: repeated401 }).generateTool.run({ prompt: privatePrompt, path: 'issue118-existing.png' }, ctx); } catch (e) { repeatedMessage = String(e.message); }
+    A.eq([repeated401.calls.length, twiceRenewed], [2, 1], 'repeated 401 remains bounded at one renewal and two sends');
+    A.ok(repeatedMessage.startsWith('ChatGPT 401:') && !repeatedMessage.includes(jwt), 'renewed credential is redacted from generic failure');
+    A.eq(await fsp.readFile(existingPath, 'utf8'), 'original image bytes', 'repeated auth failure does not overwrite output');
+    // #118 phase B: when ChatGPT refuses the image HOST, the account's LIVE model list names the retry host. Every wire
+    // answer below is synthetic (a fake fetch); nothing here reaches the ChatGPT backend.
+    {
+      const codexMod = require('../sidecar/providers/codex.js');
+      const hostReject = host => ({ status: 400, text: async () => JSON.stringify({ error: { message: "The '" + host + "' model is not supported when using Codex with a ChatGPT account." } }) });
+      const failWith = (status, message) => ({ status, text: async () => JSON.stringify({ error: { message } }) });
+      // ONE fake wire for both seams: GET /models serves `catalog` (null = offline), POST /responses answers per host
+      const wire = (catalog, answer) => stubFetch((url, body) => /\/models\?/.test(url)
+        ? (catalog ? { ok: true, status: 200, json: async () => catalog } : { ok: false, status: 503, json: async () => ({}) })
+        : answer(body));
+      const posts = f => f.calls.filter(c => /\/responses$/.test(c.url));
+      const lists = f => f.calls.filter(c => /\/models\?/.test(c.url));
+      // the run host's catalog dep, built the way the composition root builds it: the codex adapter's own listModels
+      // on the SAME sign-in and wire as the image POST, reduced to the ids the account's live list offered
+      const liveCatalog = f => async () => codexMod.liveModelIds(await codexMod.makeCodexProvider({ fetch: f, token: jwt }).listModels());
+      const planTools = (f, extra) => makeImageTools(Object.assign({ openrouter: { provider: 'codex', protocol: 'codex-responses', getToken: async () => jwt }, fsp, pathMod: path, root: ROOT, fetchImpl: f, codexHostModels: liveCatalog(f) }, extra || {}));
+      const luna = { models: [{ slug: 'gpt-5.6-luna', priority: 1, visibility: 'list' }] };
+      const outPath = name => path.join(ROOT, 'hero', name);
+      const failure = async p => { try { await p; } catch (e) { return String(e && e.message || e); } return ''; };
+
+      // the reported failure: gpt-5.5 refused, the account lists gpt-5.6-luna -> ONE retry on it, and that image is saved
+      const retryFetch = wire(luna, body => body.model === 'gpt-5.5' ? hostReject('gpt-5.5') : sse(planEvents));
+      const refusedTally = () => require('../sidecar/failopen.js').counts()['image.codex.host-refused'] || 0;
+      const refusedBefore = refusedTally();
+      const retried = await planTools(retryFetch).generateTool.run({ prompt: 'a fox logo', path: 'issue118-retry.png' }, ctx);
+      A.eq(refusedTally() - refusedBefore, 1, '#118: a recovered refusal still leaves a failopen trace');
+      A.eq(posts(retryFetch).map(c => c.body.model), ['gpt-5.5', 'gpt-5.6-luna'], '#118: a refused host retries ONCE, on the live list\'s host');
+      A.eq(posts(retryFetch).map(c => c.body.tools[0].model), ['gpt-image-2', 'gpt-image-2'], '#118: both attempts ask for the same image model');
+      A.eq(lists(retryFetch).length, 1, '#118: the live list is read once, and only after the refusal');
+      A.ok(fssync.existsSync(outPath('issue118-retry.png')) && /issue118-retry\.png/.test(retried.content), '#118: the retried render is saved: ' + JSON.stringify(retried.content));
+
+      // the historical host ALWAYS leads: an account that accepts it sends today's exact request and its list is never
+      // read, whatever the run's model (listed, unlisted, or an offline list)
+      for (const [tag, catalog, runModel] of [['listed', { models: [{ slug: 'gpt-5.5', priority: 1 }, { slug: 'gpt-5.6-luna', priority: 2 }] }, () => 'gpt-5.6-luna'], ['unlisted', luna, 'gpt-9-unlisted'], ['offline', null, 'gpt-9-unlisted']]) {
+        const f = wire(catalog, () => sse(planEvents));
+        await planTools(f, { codexRunModel: runModel }).generateTool.run({ prompt: 'x' }, ctx);
+        A.eq([posts(f).map(c => c.body.model), lists(f).length], [['gpt-5.5'], 0], tag + ' run model: the historical host leads and the list is never read');
+      }
+      // control (review repro): a LISTED run model that cannot host the image tool (a non-refusal 400 on it) never
+      // costs an account the proven host: one POST on gpt-5.5, the file is saved
+      const sparkFetch = wire({ models: [{ slug: 'gpt-5.6-luna', priority: 1 }, { slug: 'gpt-5.5', priority: 2 }, { slug: 'gpt-5.3-codex-spark', priority: 3 }] },
+        body => body.model === 'gpt-5.3-codex-spark' ? { status: 400, text: async () => JSON.stringify({ detail: "Tool 'image_generation' is not supported with gpt-5.3-codex-spark." }) } : sse(planEvents));
+      await planTools(sparkFetch, { codexRunModel: () => 'gpt-5.3-codex-spark' }).generateTool.run({ prompt: 'a basil plant', path: 'issue118-spark.png' }, ctx);
+      A.eq([posts(sparkFetch).map(c => c.body.model), lists(sparkFetch).length], [['gpt-5.5'], 0], 'a listed run model never displaces the proven host');
+      A.ok(fssync.existsSync(outPath('issue118-spark.png')), 'a listed run model: the proven host\'s render is saved');
+      // gpt-5.5 refused + a Codex run on a LISTED lower-priority model: the retry rides the run's model (chat rides it)
+      const runRetry = wire({ models: [{ slug: 'gpt-5.6-luna', priority: 1 }, { slug: 'gpt-5.4', priority: 2 }] }, body => body.model === 'gpt-5.5' ? hostReject('gpt-5.5') : sse(planEvents));
+      await planTools(runRetry, { codexRunModel: 'gpt-5.4' }).generateTool.run({ prompt: 'x', path: 'issue118-run.png' }, ctx);
+      A.eq(posts(runRetry).map(c => c.body.model), ['gpt-5.5', 'gpt-5.4'], 'gpt-5.5 refused: the retry rides the listed run model first');
+      A.ok(fssync.existsSync(outPath('issue118-run.png')), 'the run-model retry\'s render is saved');
+      // ...an unlisted run model never hosts: the retry rides the list's top host
+      const unlistedRetry = wire(luna, body => body.model === 'gpt-5.5' ? hostReject('gpt-5.5') : sse(planEvents));
+      await planTools(unlistedRetry, { codexRunModel: 'gpt-9-unlisted' }).generateTool.run({ prompt: 'x' }, ctx);
+      A.eq(posts(unlistedRetry).map(c => c.body.model), ['gpt-5.5', 'gpt-5.6-luna'], 'gpt-5.5 refused, run model unlisted: the retry rides the top live host');
+      // ...and an image-only slug the list offers never hosts the hosted tool
+      const imageSlugRetry = wire({ models: [{ slug: 'gpt-image-2', priority: 0 }, { slug: 'gpt-5.6-luna', priority: 1 }] }, body => body.model === 'gpt-5.5' ? hostReject('gpt-5.5') : sse(planEvents));
+      await planTools(imageSlugRetry, { codexRunModel: 'gpt-image-2' }).generateTool.run({ prompt: 'x' }, ctx);
+      A.eq(posts(imageSlugRetry).map(c => c.body.model), ['gpt-5.5', 'gpt-5.6-luna'], 'an image-only slug never hosts the retry');
+      A.eq(T0._internals.codexHostOrder('', ['dall-e-3', 'chatgpt-image-latest', 'GPT-IMAGE-1', 'gpt-5.6-luna', 'bad slug']), ['gpt-5.6-luna', 'gpt-5.5'], 'host order drops image-only and malformed slugs, historical host last');
+
+      // an unrelated 400 is never retried and never reads the list
+      const otherFetch = wire(luna, () => failWith(400, 'invalid request'));
+      A.eq(await failure(planTools(otherFetch).generateTool.run({ prompt: 'x' }, ctx)), 'ChatGPT 400: invalid request', 'an unrelated 400 keeps the generic error');
+      A.eq([posts(otherFetch).length, lists(otherFetch).length], [1, 0], 'an unrelated 400: one POST, the list is never read');
+
+      // an offline list: a single gpt-5.5 attempt in phase A's wording, which also says why no other host was tried
+      const offFetch = wire(null, body => hostReject(body.model));
+      const offMsg = await failure(planTools(offFetch).generateTool.run({ prompt: 'x', path: 'issue118-off.png' }, ctx));
+      A.eq(posts(offFetch).map(c => c.body.model), ['gpt-5.5'], 'an offline list: a single attempt on the historical host');
+      A.ok(offMsg.startsWith('ChatGPT rejected image host gpt-5.5 for this request (HTTP 400). Requested image model: gpt-image-2. No image was returned or saved by this attempt.')
+        && /No other image host was tried: the account's live model list was unavailable/.test(offMsg), 'offline: phase A wording plus why nothing else was tried: ' + offMsg);
+      A.ok(!fssync.existsSync(outPath('issue118-off.png')), 'offline: nothing is saved');
+      // a live list that offers nothing new says so
+      const onlyFetch = wire({ models: [{ slug: 'gpt-5.5', priority: 1 }] }, body => hostReject(body.model));
+      const onlyMsg = await failure(planTools(onlyFetch).generateTool.run({ prompt: 'x' }, ctx));
+      A.ok(posts(onlyFetch).length === 1 && /No other image host was tried: the account's live model list offers no other model/.test(onlyMsg), 'a list with no other host: one attempt, said plainly: ' + onlyMsg);
+
+      // both hosts refused: exactly one retry, both hosts named, nothing saved
+      const bothFetch = wire(luna, body => hostReject(body.model));
+      const bothMsg = await failure(planTools(bothFetch).generateTool.run({ prompt: 'x', path: 'issue118-both.png' }, ctx));
+      A.eq(posts(bothFetch).map(c => c.body.model), ['gpt-5.5', 'gpt-5.6-luna'], 'both refused: exactly one retry');
+      A.ok(bothMsg.startsWith('ChatGPT rejected image hosts gpt-5.5 and gpt-5.6-luna for this request (HTTP 400). Requested image model: gpt-image-2. No image was returned or saved by these attempts.'), 'both refused: both hosts named: ' + bothMsg);
+      A.ok(!fssync.existsSync(outPath('issue118-both.png')), 'both refused: nothing is saved');
+      // a retry that fails another way says it was the retry
+      const limitFetch = wire(luna, body => body.model === 'gpt-5.5' ? hostReject('gpt-5.5') : failWith(403, 'plan limit reached'));
+      A.eq(await failure(planTools(limitFetch).generateTool.run({ prompt: 'x' }, ctx)), 'ChatGPT 403: plan limit reached (retried on image host gpt-5.6-luna after ChatGPT rejected image host gpt-5.5)', 'a retry failure names the retry');
+
+      // the ONE 401 renew spans the host retry: 401 -> renew -> refused -> retry -> 401 again = no second renew
+      for (const [tag, last, expectErr] of [['retry 401', failWith(401, 'expired'), true], ['retry ok', null, false]]) {
+        let renewals = 0, n401 = 0;
+        const authFetch = wire(luna, body => {
+          if (++n401 === 1) return failWith(401, 'expired');
+          if (body.model === 'gpt-5.5') return hostReject('gpt-5.5');
+          return last || sse(planEvents);
+        });
+        const tools = planTools(authFetch, { openrouter: { provider: 'codex', protocol: 'codex-responses', getToken: async () => jwt, renewToken: async () => { renewals++; return jwt; } } });
+        const msg = await failure(tools.generateTool.run({ prompt: 'x' }, ctx));
+        A.eq([posts(authFetch).map(c => c.body.model), renewals, msg.startsWith('ChatGPT 401:')], [['gpt-5.5', 'gpt-5.5', 'gpt-5.6-luna'], 1, expectErr], tag + ': at most one renewal across the host retry');
+      }
+
+      // Stop after the refusal sends no retry
+      const stop = new AbortController();
+      const stopFetch = wire(luna, body => { stop.abort(); return hostReject(body.model); });
+      A.ok(/cancelled/.test(await failure(planTools(stopFetch).generateTool.run({ prompt: 'x' }, Object.assign({}, ctx, { signal: stop.signal })))) && posts(stopFetch).length === 1, 'Stop after a host refusal: no retry is sent');
+      // a silent list never hangs the tool: past its bound it counts as unavailable
+      const hangFetch = wire(null, body => hostReject(body.model));
+      const hangMsg = await failure(planTools(hangFetch, { codexHostModels: () => new Promise(() => {}), codexCatalogTimeoutMs: 30 }).generateTool.run({ prompt: 'x' }, ctx));
+      A.ok(posts(hangFetch).length === 1 && /live model list was unavailable/.test(hangMsg), 'a silent list is bounded and reported as unavailable: ' + hangMsg);
+    }
     const textOnly = stubFetch(() => sse([{ type: 'response.output_text.done', text: 'I cannot draw that.' }, { type: 'response.completed', response: { output: [] } }]));
     await rejects(makeImageTools({ openrouter: { provider: 'codex', protocol: 'codex-responses', getToken: async () => jwt }, fsp, pathMod: path, root: ROOT, fetchImpl: textOnly }).generateTool.run({ prompt: 'x' }, ctx),
       /model returned no image \(I cannot draw that\.\)/, 'a text-only reply is an honest failure that quotes the model');

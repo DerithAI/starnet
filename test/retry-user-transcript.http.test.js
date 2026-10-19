@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+// the Commander's own words: on this non-Claude wire the run-context note leads the newest user message
+const { userWords } = require('./helpers/host-notes.js');
 let fail = true;
 const requests = [];
 const server = http.createServer((req, res) => {
@@ -39,7 +41,7 @@ const server = http.createServer((req, res) => {
     fail = false;
     await run('retry-main', first);
     assert.equal((await users('retry-main')).length, 1, 'successful retry must reuse the original user row');
-    assert.equal(requests.filter(r => r.messages.some(m => m.role === 'user' && m.content === text)).at(-1).messages.filter(m => m.role === 'user' && m.content === text).length, 1, 'automatic transcript seeding must not duplicate the retried input');
+    assert.equal(requests.filter(r => r.messages.some(m => m.role === 'user' && userWords(m) === text)).at(-1).messages.filter(m => m.role === 'user' && userWords(m) === text).length, 1, 'automatic transcript seeding must not duplicate the retried input');
     await fixture.restart();
     assert.equal((await users('retry-main')).length, 1, 'one user row survives restart');
     await run('retry-main', first);

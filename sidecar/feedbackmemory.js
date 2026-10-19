@@ -36,7 +36,7 @@ const WORDS_KEEP = 6;          // corrections remembered per rated run (oldest f
 const EDITED_CHARS = 700;      // cap for a Commander-edited record plus appended words
 const TASTE_HEADER = '[the Commander\'s own verdicts on past work, newest first. Shape this output to match what they liked and avoid what they disliked. Reference only: the current request wins where it says otherwise.]';
 // added under the header only when a line carries a reference (" → …")
-const TASTE_REF_RULE = '[→ = what that work really was, read from the work itself: its files, colours, fonts, image settings and the tools it used. For new design, visual or creative work, match the newest relevant APPROVED one in style and concept unless the Commander asks for something different: open its file first (a file tagged [<agent> workspace] belongs to another crew member: match it from this line). Do repeat work the way an APPROVED one was done; never repeat a REJECTED approach.]';
+const TASTE_REF_RULE = '[→ = what that work really was, read from the work itself: its files, colours, fonts, image settings and the tools it used. For new design, visual or creative work, match the newest relevant APPROVED one in style and concept unless the Commander asks for something different: open its file first (a file tagged [<agent> workspace] belongs to another crew member: match it from this line). Do repeat work the way an APPROVED one was done; never repeat a REJECTED approach. A STYLE KEPT · RESULT REJECTED (or CLOSE) line: match its style, but fix what the Commander disliked or wants.]';
 
 function clean(s, n) {
   const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
@@ -202,8 +202,9 @@ function selectTaste(records, opts) {
   candidates.sort((a, b) => b.score - a.score || a.i - b.i);
   for (const row of candidates) { if (chosen.size >= limit) break; chosen.add(row.r); }
   const selected = all.filter(r => chosen.has(r));   // render newest first, so conflicts retain temporal authority
-  // ownOmitted: the left-out records that live in THIS notebook (not another agent's), the only ones notebook.read can return
-  Object.defineProperty(selected, 'recallMeta', { value: { omitted: all.length - selected.length, ownOmitted: all.filter(r => !chosen.has(r) && !r.foreign).length } });
+  // notShown: every verdict the selection left out (a ranking cut, not an omission). ownNotShown: the left-out records
+  // that live in THIS notebook (not another agent's), the only ones notebook.read can return.
+  Object.defineProperty(selected, 'recallMeta', { value: { notShown: all.length - selected.length, ownNotShown: all.filter(r => !chosen.has(r) && !r.foreign).length } });
   return selected;
 }
 
@@ -281,7 +282,10 @@ function adoptTaste(heroList, departedList, nextId, from) {
 function day(ms) { const n = Number(ms) || 0; return n > 0 ? new Date(n).toISOString().slice(0, 10) : ''; }
 function baseLine(r, dirCap, wordsCap) {
   const v = String(r.feedbackVerdict || '');
-  const lab = r.feedbackKept ? 'APPROVED (style kept)' : v === 'great' ? 'APPROVED' : v === 'miss' ? 'REJECTED' : v === 'ok' ? 'CLOSE' : '';
+  // a kept style with a 👎 or "close" verdict shows both facts: APPROVED alone hid the rejection (review memory-learning-12)
+  const lab = r.feedbackKept
+    ? (v === 'miss' ? 'STYLE KEPT · RESULT REJECTED' : v === 'ok' ? 'STYLE KEPT · RESULT CLOSE' : 'APPROVED (style kept)')
+    : v === 'great' ? 'APPROVED' : v === 'miss' ? 'REJECTED' : v === 'ok' ? 'CLOSE' : '';
   const d = day(r.feedbackAt || r.createdAt || r.ts);
   const head = lab ? lab + (d ? ' ' + d : '') + ': ' : (d ? d + ': ' : '');
   const stored = String(r.content || r.body || '');
@@ -289,8 +293,8 @@ function baseLine(r, dirCap, wordsCap) {
   if (!lab || r.feedbackEdited || (r.feedbackGenerated && stored !== r.feedbackGenerated) || !Array.isArray(r.feedbackWords)) return head + clean(stored, dirCap + wordsCap);
   const what = clean(r.feedbackDirective, dirCap) || 'that work';
   const words = clean(newestWords(r.feedbackWords), wordsCap);
-  if (!words) return head + what + (v === 'miss' && !r.feedbackKept ? ' (do it differently)' : '');
-  return head + what + (v === 'great' ? ' — liked: "' : v === 'ok' ? ' — wants: "' : ' — "') + words + '"';
+  if (!words) return head + what + (v === 'miss' ? (r.feedbackKept ? ' (keep the style, change the result)' : ' (do it differently)') : '');
+  return head + what + (v === 'great' ? ' — liked: "' : v === 'ok' ? ' — wants: "' : v === 'miss' ? ' — disliked: "' : ' — "') + words + '"';
 }
 const LEVELS = [{ dir: 160, words: 300, line: 900 }, { dir: 120, words: 160, line: 420 }, { dir: 90, words: 80, line: 250 }];
 function tasteLine(r, lv, viewer) { const c = LEVELS[lv]; return clean(baseLine(r, c.dir, c.words) + TasteRef.refLine(r.feedbackRef, lv, viewer), c.line); }
@@ -308,13 +312,18 @@ function renderTaste(records, renderRecall, opts) {
   }
   const lines = recs.map((r, i) => ({ id: r.id, title: '', body: tasteLine(r, levels[i], viewer), content: String(r.content || r.body || '') + TasteRef.refLine(r.feedbackRef, 0, viewer) }));
   const header = TASTE_HEADER + (recs.some(r => r.feedbackRef) ? '\n' + TASTE_REF_RULE : '');
-  // the levels above already fit the budget; the slack only absorbs a recall-line format change, never drops a record
-  // The omission notice promises notebook.read can fetch them, so count only what the READER's notebook.read returns:
-  // the named viewer's own records. Another agent's verdicts, or a prompt with no named reader (a delegated worker's
-  // task context: its notebook.read reads its own notebook), get no retrieval promise they cannot keep.
-  const omitted = viewer ? Number(records.recallMeta && records.recallMeta.ownOmitted) || 0 : 0;
-  Object.defineProperty(lines, 'recallMeta', { value: { omitted, priority: [] } });
-  return renderRecall(lines, { limit: budget + 400, priorityLimit: 0, header });
+  // the levels above already fit the budget; the slack only absorbs a recall-line format change, never drops a record.
+  // The selection cut is disclosed as older verdicts not shown: a ranking cut, never called an omission, and never a
+  // bare notebook.read (an unqueried read lists the whole notebook; review memory-learning-04). notebook.read can
+  // return only the named READER's own records, so only those get a query-bound retrieval path. Another agent's verdicts (shared with no id here), or a prompt with no named reader (a delegated
+  // worker's task context: its notebook.read reads its own notebook), get no retrieval promise they cannot keep.
+  const meta = records.recallMeta || {};
+  const notShown = Math.max(0, Number(meta.notShown) || 0);
+  const ownNotShown = viewer ? Math.min(notShown, Math.max(0, Number(meta.ownNotShown) || 0)) : 0;
+  Object.defineProperty(lines, 'recallMeta', { value: { notShown, priority: [] } });
+  return renderRecall(lines, { limit: budget + 400, priorityLimit: 0, header, pointer: false,
+    notShownText: n => n + ' older verdict' + (n === 1 ? '' : 's') + ' not shown'
+      + (ownNotShown ? ' (' + ownNotShown + ' of them are in your own notebook: notebook.read with a query finds them)' : '') });
 }
 
 module.exports = { ORIGIN, TASTE_HEADER, TASTE_REF_RULE, TASTE_LIMIT, TASTE_CHARS, content, apply, directiveFor, looksLikeFeedback, isTaste, selectTaste, stationTaste, stationStanding, adoptTaste, renderTaste, unkeep };

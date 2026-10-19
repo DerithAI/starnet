@@ -128,7 +128,7 @@ const snap = st => JSON.stringify({ props: st.props(), belts: st.belts(), links:
 /* ---------- THE WIRING: REFIT says it where the click was ---------- */
 {
   const build = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'build.js'), 'utf8');
-  A.ok(/const no = station\.connectRefusal \? station\.connectRefusal\(pid, null\) : null;\s*if \(no\) \{ sfx\('bad'\); flashTip\(ev, no\.msg, false\); return; \}/.test(build), 'the BELT tool\'s first click on an OUTBOX is refused at the click, in the refusal\'s own words');
+  A.ok(/const no = station\.connectRefusal \? station\.connectRefusal\(pid, null\) : null;\s*if \(no\) \{ sfx\('bad'\); flashTip\(ev, no\.msg, false\); return; \}/.test(build), 'the BELT tool\'s first click asks connectRefusal and says any refusal at the click, in the refusal\'s own words (an OUTBOX may be armed: its second click on an INBOX is a SEND TO)');
   A.ok(/\(pv && !pv\.ok\) \? \(pv\.short \|\| 'NO ROUTE — '/.test(build), 'hovering an INBOX mid-connect captions the refusal, not "NO ROUTE"');
   A.ok(/if \(g\.v && g\.v\.short\) return g\.v\.short;/.test(build), 'a hand-drawn run\'s ghost carries the refusal\'s caption');
   A.ok(/else \{ sfx\('bad'\); flashTip\(ev, \(res && res\.msg\) \|\| 'no clear route between those machines', false\); \}/.test(build), 'a refused second click says the refusal\'s words (and never chimes)');

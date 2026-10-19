@@ -199,6 +199,8 @@
 .fm-pager > span { align-self: center; font-size: 12px; letter-spacing: .07em; color: var(--ph); }
 .fm-map, .fm-gear-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .fm-map > div { padding: 11px; border: 1px solid var(--ph-dim); }
+/* the dock map (CONTROLS): an odd last card spans the row, so a fifth dock (APPS) never leaves SYSTEM beside an empty cell */
+.fm-dock > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .fm-map b, .fm-map span { display: block; }
 .fm-map b { font-size: 17px; color: var(--ph); margin-bottom: 5px; }
 .fm-map span { font-size: 15px; line-height: 1.4; color: var(--text); }
@@ -208,6 +210,13 @@
 .fm-keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 16px; margin: 12px 0; }
 .fm-keys > div { display: flex; gap: 9px; align-items: center; }
 .fm-keys dt, .fm-keys dd { margin: 0; font-size: 16px; color: var(--text); }
+/* a key chip never breaks inside itself ("Shift + F10" stays one chip); the label wraps instead */
+.fm-keys dt { flex: none; white-space: nowrap; }
+/* focus keys read a sentence each: one column, one aligned key column, the label starting on the chip's line */
+.fm-keys.fm-keys-wide { grid-template-columns: 1fr; gap: 10px; }
+.fm-keys-wide > div { align-items: baseline; }
+.fm-keys-wide dt { min-width: 7.5em; }
+.fm-keys-wide dd { line-height: 1.45; }
 @container (max-width: 400px) {
   .fm-map, .fm-gear-grid { grid-template-columns: 1fr; }
   .fm-cover { padding: 12px; }

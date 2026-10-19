@@ -78,11 +78,28 @@ const hoverTile = (tx, ty) => `(() => {
 
 // the dock buttons TOGGLE — clicking the already-armed tool drops back to SELECT and tears down
 // its palette, so arm only when it isn't armed already.
+/* the LINES shelves open FOLDED (org P18): only ANY JOB and the armed line's shelf show their tiles, so a line in a
+   folded shelf has no tile until its shelf is opened — open it the way the Commander does (its shelf key), then
+   click the tile. Returns whether the tile was found; callers throw when it was not, so a scene never silently
+   shoots whatever line was already armed. */
+const pickLineTile = (id) => `(() => {
+  const id = ${JSON.stringify(id)}, sel = '.refit-linetile[data-line="' + id + '"]';
+  let c = document.querySelector(sel);
+  if (!c) {
+    const bp = ((typeof WorldModel !== 'undefined' && WorldModel.BLUEPRINTS) || []).find(b => b.id === id);
+    const tog = bp && document.querySelector('.refit-lineshelf-tog[data-shelf="' + (bp.work || 'decide') + '"]');
+    if (tog && tog.getAttribute('aria-expanded') !== 'true') tog.click();
+    c = document.querySelector(sel);
+  }
+  if (c) c.click();
+  return !!c;
+})()`;
+
 const armLine = (id) => `(() => {
   if (Build.__test__.tool() !== 'line') document.querySelector('.refit-tool[data-tool="line"]').click();
-  const c = document.querySelector('.refit-linetile[data-line=${JSON.stringify(id)}]');
-  if (c) c.click();
-  return { tool: Build.__test__.tool(), bp: c && c.dataset.line, card: !!c };
+  const card = ${pickLineTile(id)};
+  if (!card) throw new Error('no ' + ${JSON.stringify(id)} + ' tile on the LINES shelf');
+  return { tool: Build.__test__.tool(), bp: ${JSON.stringify(id)}, card };
 })()`;
 
 const J = (cdp, expr) => evalJS(cdp, `JSON.stringify(${expr})`).then(s => JSON.parse(s));

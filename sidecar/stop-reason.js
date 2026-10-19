@@ -9,7 +9,9 @@
 
    stopSentence(reason, extra) -> string | ''
      reason: agent.run.end reason. extra (optional): { finishReason, budgetScope, unpricedModel, unpricedCapTokens,
-     subscriptionModel, subscriptionCapTokens }.
+     subscriptionModel, subscriptionCapTokens, toolsRan (agent.tool_call count this run — 'empty' after tools is not
+     "nothing was done"), unattended (a routine/loop: no conversation to say "continue" to, so the advice is to run it
+     again — never RUN NOW by name, since loops have RESUME) }.
      '' for a clean end ('done' with no cut, 'clarifying') — nothing to explain. Never throws. */
 'use strict';
 
@@ -17,23 +19,33 @@ function stopSentence(reason, extra) {
   const x = extra || {};
   const r = String(reason == null ? '' : reason);
   if (r === 'done' || r === 'clarifying') {
-    if (x.finishReason === 'length') return 'the reply was cut short by the model\'s output limit — say "continue" for the rest';
+    if (x.finishReason === 'length') return x.unattended ? 'the reply was cut short by the model\'s output limit' : 'the reply was cut short by the model\'s output limit — say "continue" for the rest';
     if (x.finishReason === 'content_filter') return 'the model\'s output was filtered, so this reply is incomplete';
     return '';
   }
-  if (r === 'empty') return 'the model sent back an empty reply, so nothing was done — say "continue" to try again, or switch model if it keeps happening';
-  if (r === 'max_iters') return 'it reached the step limit before finishing — say "continue" to keep going';
+  if (r === 'empty') {
+    // tools already ran (a file may be written): "nothing was done" would be false, and a blind retry could redo the work
+    const ran = Math.floor(Number(x.toolsRan) || 0);
+    if (ran > 0) return 'the model went silent after ' + ran + ' tool step' + (ran === 1 ? '' : 's') + ' and never gave a final answer — those steps may already have made changes; '
+      + (x.unattended ? 'check them before you run it again, or switch model if it keeps happening' : 'say "continue" to have it finish, or switch model if it keeps happening');
+    return x.unattended
+      ? 'the model sent back an empty reply, so nothing was done — run it again, or switch model if it keeps happening'
+      : 'the model sent back an empty reply, so nothing was done — say "continue" to try again, or switch model if it keeps happening';
+  }
+  if (r === 'max_iters') return x.unattended
+    ? 'it reached the step limit before finishing — run it again, or split the task into smaller steps'
+    : 'it reached the step limit before finishing — say "continue" to keep going';
   if (r === 'budget') {
     if (x.unpricedModel) {
       const cap = Number(x.unpricedCapTokens) > 0 ? Number(x.unpricedCapTokens).toLocaleString('en-US') + '-token' : 'token';
       // NOT the $ cap: a model with no known price is bounded in TOKENS (loop.js maxUnpricedTokens), and the $ setting
       // never reads it — so "raise your spend cap" was a door onto a room without the lever. Name the real knobs.
-      return 'it reached the ' + cap + ' safety ceiling StarNet puts on ' + x.unpricedModel + ', a model it has no price for — raising the $ spending limit does not change this. Switch to a priced model, or raise the ceiling with the STARNET_MAX_UNPRICED_TOKENS environment variable (or give the model a price with SKYNET_MODEL_PRICES)';
+      return 'it reached the ' + cap + ' safety ceiling StarNet puts on ' + x.unpricedModel + ', a model it has no price for — raising the $ spending limit does not change this. Switch to a priced model, or raise the ceiling with the STARNET_MAX_UNPRICED_TOKENS environment variable, or give the model a price with SKYNET_MODEL_PRICES';
     }
     if (x.subscriptionModel) {
       const cap = Number(x.subscriptionCapTokens) > 0 ? Number(x.subscriptionCapTokens).toLocaleString('en-US') + '-token' : 'token';
       // a Claude Code sign-in books $0 per turn: its run is bounded in TOKENS (loop.js maxSubscriptionTokens), not by the $ limits
-      return 'it used the ' + cap + ' per-run ceiling StarNet puts on your Claude subscription (' + x.subscriptionModel + ') — say "continue" to keep going, or change the ceiling in SETTINGS › APP & BACKUP › Runtime limits (or STARNET_MAX_SUBSCRIPTION_TOKENS)';
+      return 'it used the ' + cap + ' per-run ceiling StarNet puts on your Claude subscription (' + x.subscriptionModel + ') — ' + (x.unattended ? 'run it again' : 'say "continue" to keep going') + ', or change the ceiling in SETTINGS › APP & BACKUP › Runtime limits, or with STARNET_MAX_SUBSCRIPTION_TOKENS';
     }
     return 'it hit a spending limit (SETTINGS › SPENDING LIMITS)';
   }
@@ -81,10 +93,11 @@ function explainStop(message) {
   return null;
 }
 
-// The routine/loop settlement line: the plain sentence first, the machine reason kept in brackets for triage.
+// The routine/loop settlement line: the plain sentence first, the machine reason kept in brackets for triage. Every
+// caller is an unattended run (routine fire, Run Now, loop step), so the advice never says "continue" to a missing chat.
 function incompleteRunMessage(reason, extra) {
   const r = String(reason == null ? '' : reason).trim();
-  const plain = stopSentence(r || '', extra) || 'it ended without a clean finish';
+  const plain = stopSentence(r || '', Object.assign({}, extra, { unattended: true })) || 'it ended without a clean finish';
   return 'run ended without completion — ' + plain + ' [' + (r || 'missing terminal outcome') + ']';
 }
 

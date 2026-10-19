@@ -1,0 +1,227 @@
+{
+  "candidate": "fcd8007ca473d52488986537e304370c37f7f9a0",
+  "responseCommit": "049e6ff7e7c92b7b0f38ab34ce1eeb9ae30c7833",
+  "voiceCommit": "fcd8007ca473d52488986537e304370c37f7f9a0",
+  "date": "2026-10-12",
+  "baseline": {
+    "candidate": "3679f61f30790f851783c51d61ae5f49dafe0672",
+    "actualModuleRepro": {
+      "pendingAfterBothRemoteAnswers": [
+        "mira",
+        "rook"
+      ],
+      "notifications": [
+        "rook",
+        "mira"
+      ],
+      "finalBellSettled": false
+    }
+  },
+  "staleFixtures": [
+    "comms-deliverable-replay required renderHistory() and extracted no body after the onlyTurns parameter was introduced.",
+    "notifications-useful required eager bell settlement before successful HTTP acknowledgement.",
+    "bell-settles extracted the response listener without its new settlement helper; its test bus swallowed the resulting missing-function error."
+  ],
+  "productionFixes": [
+    "Known prompt responses clear exactly the original parent channel/prompt before selecting remaining sibling attention. Unknown responses do not claim channel ownership.",
+    "Spoken approvals use Chat.answerConsent, deduplicate in-flight submission, preserve siblings on failure, and say only the applied decision after confirmation. Late feedback is bound to both voice-call generation and conversation; a remote answer winning a failed local submission is not announced as still waiting."
+  ],
+  "focused": {
+    "candidate": "fcd8007ca473d52488986537e304370c37f7f9a0",
+    "results": [
+      {
+        "suite": "test/comms-deliverable-replay.test.js",
+        "status": 0,
+        "receipt": "comms-deliverable-replay.test: OK (27 assertions)"
+      },
+      {
+        "suite": "test/notifications-useful.test.js",
+        "status": 0,
+        "receipt": "notifications-useful.test: OK (46 assertions)"
+      },
+      {
+        "suite": "test/bell-settles.test.js",
+        "status": 0,
+        "receipt": "bell-settles.test: OK (34 assertions)"
+      },
+      {
+        "suite": "test/remote-sessions.test.js",
+        "status": 0,
+        "receipt": "remote-sessions: OK (30 assertions)"
+      },
+      {
+        "suite": "test/voice-live-ui.test.js",
+        "status": 0,
+        "receipt": "voice-live-ui.test.js: ok"
+      },
+      {
+        "suite": "UX and consent",
+        "status": 0,
+        "receipt": "35 tests pass; zero failures"
+      }
+    ],
+    "syntax": [
+      {
+        "path": "frontend/app/chat.js",
+        "status": 0
+      },
+      {
+        "path": "frontend/app/voice-live.js",
+        "status": 0
+      },
+      {
+        "path": "test/bell-settles.test.js",
+        "status": 0
+      },
+      {
+        "path": "test/comms-deliverable-replay.test.js",
+        "status": 0
+      },
+      {
+        "path": "test/notifications-useful.test.js",
+        "status": 0
+      },
+      {
+        "path": "test/thread-ux-regressions.test.js",
+        "status": 0
+      },
+      {
+        "path": "website/app/app/chat.js",
+        "status": 0
+      },
+      {
+        "path": "website/app/app/voice-live.js",
+        "status": 0
+      }
+    ],
+    "mirrors": [
+      {
+        "path": "chat.js",
+        "equal": true
+      },
+      {
+        "path": "voice-live.js",
+        "equal": true
+      }
+    ],
+    "binding": [
+      {
+        "path": "chat.js",
+        "sha256": "22144ebc82d7b0aaf6e154ad2e890592daedc604fc1ac62a2111f161d7017266",
+        "matchesCommit": true
+      },
+      {
+        "path": "voice-live.js",
+        "sha256": "c3aae32b391614a81a8a8fdc58abc4267cff9620005aed733d836ad80d18474a",
+        "matchesCommit": true
+      }
+    ]
+  },
+  "liveBrowser": {
+    "fixture": "Actual seeded Chat.send background-permission callback, Channels, event bus, notification UI and file replay; model/permission events and file contents are controlled fixtures. No microphone or installed-build verification.",
+    "ids": {
+      "parent": "ws_mv52yutx4nyf",
+      "other": "ws_mv52yutx9u7s"
+    },
+    "before": {
+      "pending": [
+        "mira-remote",
+        "rook-remote"
+      ],
+      "unrelated": [
+        "unrelated"
+      ],
+      "waiting": [
+        "needs:ws_mv52yutx4nyf"
+      ],
+      "bell": [
+        "ROOK needs approval to change proof.txt — Background prompt proof"
+      ],
+      "mountedApprovalCards": 0
+    },
+    "first": {
+      "pending": [
+        "rook-remote"
+      ],
+      "unrelated": [
+        "unrelated"
+      ],
+      "waiting": [
+        "needs:ws_mv52yutx4nyf"
+      ],
+      "bell": [
+        "ROOK still needs approval to change proof.txt"
+      ],
+      "mountedApprovalCards": 0
+    },
+    "duplicateUnknown": {
+      "pending": [
+        "rook-remote"
+      ],
+      "unrelated": [
+        "unrelated"
+      ],
+      "waiting": [
+        "needs:ws_mv52yutx4nyf"
+      ],
+      "bell": [
+        "ROOK still needs approval to change proof.txt"
+      ],
+      "mountedApprovalCards": 0
+    },
+    "last": {
+      "pending": [],
+      "unrelated": [
+        "unrelated"
+      ],
+      "waiting": [],
+      "bell": [],
+      "mountedApprovalCards": 0
+    },
+    "files": {
+      "text": "Today · 5:59 AMCOMMANDER5:59 AMFILE_REQUEST⧉MIRA▤ saved before-proof.txtcopy path⧉MIRA5:59 AMREPLY_MIDDLE⧉MIRA▤ saved after-proof.txtcopy path⧉",
+      "links": [
+        {
+          "text": "before-proof.txt",
+          "agent": "mira",
+          "path": "before-proof.txt"
+        },
+        {
+          "text": "after-proof.txt",
+          "agent": "mira",
+          "path": "after-proof.txt"
+        }
+      ]
+    },
+    "opened": {
+      "agent": "mira",
+      "path": "before-proof.txt",
+      "body": "File ownership proof."
+    },
+    "incremental": {
+      "fileRows": 2,
+      "text": "Today · 5:59 AMCOMMANDER5:59 AMFILE_REQUEST⧉MIRA▤ saved before-proof.txtcopy path⧉MIRA5:59 AMREPLY_MIDDLE⧉MIRA▤ saved after-proof.txtcopy path⧉MIRA5:59 AMNEW_INCREMENTAL_REPLY⧉"
+    },
+    "binding": [
+      {
+        "name": "chat.js",
+        "sha256": "22144ebc82d7b0aaf6e154ad2e890592daedc604fc1ac62a2111f161d7017266",
+        "servedSha256": "22144ebc82d7b0aaf6e154ad2e890592daedc604fc1ac62a2111f161d7017266",
+        "equal": true
+      },
+      {
+        "name": "voice-live.js",
+        "sha256": "c3aae32b391614a81a8a8fdc58abc4267cff9620005aed733d836ad80d18474a",
+        "servedSha256": "c3aae32b391614a81a8a8fdc58abc4267cff9620005aed733d836ad80d18474a",
+        "equal": true
+      }
+    ],
+    "pageErrors": []
+  },
+  "limits": [
+    "Controlled permission/model events and file bytes; actual seeded Chat.send callbacks, Channels, notification UI, rendered file order, link navigation and incremental delivery.",
+    "No microphone/live voice call acceptance tested. Voice submission and race behavior verified by executing production functions with actual Channels and answerConsent.",
+    "No full gates, trunk mutation, installer or customer acceptance. Complete combined gates belong to release coordination.",
+    "Customer record 082ee8e5 remains OPEN; no original-customer causal link inferred."
+  ]
+}

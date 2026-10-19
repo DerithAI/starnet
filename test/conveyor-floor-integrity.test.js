@@ -19,7 +19,7 @@ function rig(type='loop') {
  const {s,I,B1,B2,O,J}=rig();
  A.ok(s.connectBelt(J,B1).ok,'first back lane remains allowed');
  const before=frozen(s),pv=s.previewBelt(J,I),r=s.connectBelt(J,I);
- A.ok(!pv.ok&&!r.ok,'cannot connect LOOP into INBOX');
+ A.ok(!pv.ok&&!r.ok,'cannot connect LOOP into INBOX');A.ok(frozen(s)===before,'refused LOOP->INBOX leaves floor unchanged');
  const upstream=add(s,'bay',34,15);s.assignPropAgent(upstream,'up');
  A.ok(s.connectBelt(upstream,B1).ok,'independent upstream BAY connects');
  const state=frozen(s),p=s.previewBelt(J,upstream),c=s.connectBelt(J,upstream);
@@ -29,12 +29,67 @@ function rig(type='loop') {
  const x=add(s,'outbox',82,18);A.ok(s.connectBelt(J,x).ok,'third downstream escape remains allowed');
  A.ok(s.isBackLink&&s.links().filter(l=>s.isBackLink(l.id)).length===1,'back-lane reader identifies just the legitimate lane');
 }
+// ESCAPE FIRST, BACK SECOND (final floor lane M3): a LOOP whose escape lane was laid before its back lane must still take
+// that back lane. The lane-order guess read the escape as "the back lane", so the drag refused with "already has its back
+// lane" while the floor's compile said LOOP_NO_BACK — the two must agree, and the order the Commander draws in must not matter.
+{
+ const {s,I,B1,B2,J}=rig();
+ const x=add(s,'outbox',60,20);A.ok(s.connectBelt(J,x).ok,'escape lane first is allowed');
+ const before=frozen(s),pv=s.previewBelt(J,B1);
+ A.ok(pv.ok,'back lane after the escape lane previews green — '+JSON.stringify({error:pv.error,msg:pv.msg}));
+ const r=s.connectBelt(J,B1);A.ok(r.ok,'…and commits — '+JSON.stringify({error:r.error,msg:r.msg}));
+ const pl=plan(s),bad=pl.errors.filter(e=>e.code==='LOOP_NO_BACK'||e.code==='CHAIN_CYCLE');
+ A.eq(bad.map(e=>e.code),[],'the compile agrees: no LOOP_NO_BACK, no CHAIN_CYCLE');
+ const backs=s.links().filter(l=>s.isBackLink(l.id));
+ A.ok(backs.length===1&&backs[0].from.prop===J&&backs[0].to.prop===B1,'only the LOOP → BAY1 lane reads as the back lane');
+ const upstream=add(s,'bay',34,15);s.assignPropAgent(upstream,'up');A.ok(s.connectBelt(upstream,B1).ok,'independent upstream BAY connects');
+ const state=frozen(s),p2=s.previewBelt(J,upstream),c2=s.connectBelt(J,upstream);
+ A.ok(!p2.ok&&p2.error==='CIRCLE'&&!c2.ok&&c2.error==='CIRCLE'&&frozen(s)===state,'a second upstream lane is still a CIRCLE in preview and commit');
+ const m=s.lineMembers(I),c=s.copyLines(m.ids);A.ok(c.ok,'the line copies');
+ let pasted=null;for(let y=24;y<=50&&!pasted;y+=2){const q=s.pasteLines(c.clip,32,y);if(q.ok)pasted=q;}
+ A.ok(!!pasted,'…and pastes');
+ const s2=WM.deserialize(JSON.parse(before));A.ok(s2.connectBelt(J,B1).ok,'(a reloaded floor takes the same back lane)');
+ s2.undo();A.ok(frozen(s2)===before,'one undo restores the floor exactly');
+}
 {
  const {s,B1,B2,J}=rig();
  const l=s.links().find(l=>l.from.prop===J);s.removeLinks([l.id],[],{});
  const before=frozen(s),p=s.previewBelt(J,B1),c=s.connectBelt(J,B1);
  A.ok(!p.ok&&!c.ok&&c.error==='CIRCLE','first lane upstream cannot masquerade as done');
  A.ok(frozen(s)===before,'first upstream refusal leaves floor unchanged');
+}
+// A REFUSED move or nudge changed nothing anyone saw (final floor lane M14): it must never ask for a whole-station re-bake
+// (a `global` patch costs ~2.5 s on a big station). The rollback says staticBakeUnchanged; a real move is unchanged.
+{
+ const s=fresh(),a=[add(s,'intake',32,4),add(s,'bay',42,4),add(s,'outbox',56,4)],b=[add(s,'intake',32,30),add(s,'bay',42,30),add(s,'outbox',56,30)];
+ for(const L of [a,b]) for(let i=1;i<3;i++) A.ok(s.connectBelt(L[i-1],L[i]).ok,'two-line rig');
+ const seen=[];s.onChange(p=>seen.push(p));const bay=()=>s.propById(a[1]),state=frozen(s);
+ const r1=s.moveProp(a[1],34-bay().x,30-bay().y);
+ A.ok(!r1.ok&&r1.error==='WOULD_REWIRE'&&frozen(s)===state,'a move onto the other line is refused intact');
+ A.ok(seen.length>0&&!seen.some(p=>p.global)&&seen.every(p=>p.staticBakeUnchanged),'…and its rollback asks for no re-bake — '+JSON.stringify(seen));
+ seen.length=0;const r2=s.moveProps([a[1]],0,26);
+ A.ok(!r2.ok&&frozen(s)===state,'a group move onto another piece is refused intact');
+ A.ok(seen.length>0&&!seen.some(p=>p.global)&&seen.every(p=>p.staticBakeUnchanged),'…and its rollback asks for no re-bake either — '+JSON.stringify(seen));
+ seen.length=0;A.ok(s.moveProps([a[1]],0,2).ok,'a legal move still moves');
+ A.ok(seen.length===1&&!seen[0].global&&seen[0].staticBakeUnchanged,'…with its usual prop-only patch');
+}
+// A drag's ghost asks a move verdict on every tile it crosses (final floor lane M13): a group of plants never pays for a
+// routing compile, and a conveyor piece's verdict compiles the route-before ONCE per edit (not inside every probe copy).
+{
+ const s=fresh(),ids=[add(s,'intake',32,4),add(s,'bay',42,4),add(s,'outbox',56,4)];
+ for(let i=1;i<3;i++) A.ok(s.connectBelt(ids[i-1],ids[i]).ok,'compile-count rig');
+ const pl=[add(s,'plant',40,20),add(s,'plant',41,20)];
+ const real=P.compileRoutingPlan;let n=0;P.compileRoutingPlan=function(){n++;return real.apply(this,arguments);};
+ try {
+  s.links();n=0;
+  for(let dx=1;dx<=4;dx++) A.ok(s.canMoveProps(pl,dx,0).ok,'decor group ghost verdict '+dx);
+  A.eq(n,0,'a decor group\'s move verdicts compile nothing');
+  n=0;A.ok(s.moveProps(pl,1,0).ok&&n===0,'…and neither does its commit');
+  s.links();n=0;const v1=s.canMoveProp(ids[1],42,8);const first=n;n=0;
+  const v2=s.canMoveProp(ids[1],42,9);
+  A.ok(v1.ok&&v2.ok,'a BAY\'s move verdicts still judge the route');
+  A.ok(n>0&&n<first,'…and the next tile of the same drag compiles the route-before no more — first '+first+', next '+n);
+ } finally { P.compileRoutingPlan=real; }
 }
 // SELECT MOVES never means splice a selected junction into some other belt.
 for (const type of ['merger','splitter','filter','loop']) {
@@ -83,7 +138,7 @@ function lines(n) {
  const before=plan(s),r=LE.run(s,b.B[0],'appendStep',{after:b.B[0],role:'WRITER'});
  A.ok(r.ok,'adding a step on clear nearby floor succeeds');
  const after=plan(s);A.ok(after.lines.length===2&&after.sendTo[a.O].intakeId===b.I,'editing B preserves two lines and A SEND TO');
- A.eq(after.lines.map(l=>l.maxHops).sort(),before.lines.map(l=>l.maxHops).sort(),'each line keeps its own budget');
+ const hops=(p,id)=>(p.lines.find(l=>l.intakes.includes(id))||{}).maxHops;A.ok(hops(before,a.I)===4&&hops(before,b.I)===9&&hops(after,a.I)===4&&hops(after,b.I)===9,'each line keeps its own budget, on its own INBOX — '+JSON.stringify([hops(before,a.I),hops(before,b.I),hops(after,a.I),hops(after,b.I)]));
 }
 // Names persist and duplicate line labels are refused without forbidding BAY labels.
 {

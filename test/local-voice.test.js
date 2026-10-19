@@ -173,10 +173,28 @@ function packageOnDisk(name) {
 
     const before = process.env.STARNET_KOKORO_DTYPE;
     delete process.env.STARNET_KOKORO_DTYPE;
-    assert.deepEqual(localVoice._kokoroDtypes(), ['fp32', 'q4'], 'full precision first, q4 only as the fallback');
-    process.env.STARNET_KOKORO_DTYPE = 'q4';
-    try { assert.deepEqual(localVoice._kokoroDtypes(), ['q4'], 'STARNET_KOKORO_DTYPE pins one precision'); }
-    finally { if (before === undefined) delete process.env.STARNET_KOKORO_DTYPE; else process.env.STARNET_KOKORO_DTYPE = before; }
+    // a throwaway model cache, never the real per-user one (that may hold either copy on a dev machine)
+    const cache = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'starnet-kokoro-cache-'));
+    const onnx = path.join(cache, 'transformers-kokoro', 'onnx-community', 'Kokoro-82M-v1.0-ONNX', 'onnx');
+    try {
+      assert.deepEqual(localVoice._kokoroDtypes(cache), ['fp32', 'q4'], 'full precision first, q4 only as the fallback');
+      assert.equal(localVoice._kokoroCached(cache), false, 'an empty cache means the first load is a download');
+      fs.mkdirSync(onnx, { recursive: true });
+      fs.writeFileSync(path.join(onnx, 'model_q4.onnx'), 'q4');
+      assert.deepEqual(localVoice._kokoroDtypes(cache), ['q4', 'fp32'], 'an install that already holds only q4 speaks from it (no surprise ~326 MB download)');
+      assert.equal(localVoice._kokoroCached(cache), true, 'the q4 copy on disk counts as cached (it loads first)');
+      fs.writeFileSync(path.join(onnx, 'model.onnx'), 'fp32');
+      assert.deepEqual(localVoice._kokoroDtypes(cache), ['fp32', 'q4'], 'once fp32 is on disk it is preferred again');
+      assert.equal(localVoice._kokoroCached(cache), true, 'fp32 on disk counts as cached');
+      process.env.STARNET_KOKORO_DTYPE = 'q4';
+      assert.deepEqual(localVoice._kokoroDtypes(cache), ['q4'], 'STARNET_KOKORO_DTYPE pins one precision');
+      process.env.STARNET_KOKORO_DTYPE = 'q8';
+      assert.equal(localVoice._kokoroCached(cache), false, 'a pinned precision with no file of its own is a download');
+      assert.equal(typeof localVoice.ttsCached(), 'boolean', 'the station voice can ask without a root');
+    } finally {
+      if (before === undefined) delete process.env.STARNET_KOKORO_DTYPE; else process.env.STARNET_KOKORO_DTYPE = before;
+      fs.rmSync(cache, { recursive: true, force: true });
+    }
     assert.equal(localVoice.status().ttsPrecision, '', 'no precision is reported before one has actually loaded');
   }
 

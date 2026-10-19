@@ -16,6 +16,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+const { hostText } = require('./helpers/host-notes.js');   // system + the user-side <run_context> note (per-run ids)
 const WM = require('../frontend/app/worldmodel.js');
 const C = require('../sidecar/skills/catalog.js');
 const M = require('../sidecar/manual.js');
@@ -93,7 +94,8 @@ const textText = c => typeof c === 'string' ? c : (Array.isArray(c) ? c.map(p =>
     A.ok(sys.indexOf(M.manualSection('navigation')) < 0 && sys.indexOf(M.manualSection('troubleshooting')) < 0 && sys.indexOf(M.manualSection('props')) < 0,
       'no manual reference section body is in the system prompt');
     A.ok(sys.indexOf('<capabilities_ground_truth>') >= 0, 'the capability ground truth stays');
-    A.ok(sys.lastIndexOf('Run id:') > sys.indexOf('## INSTALLED SKILLS') && sys.lastIndexOf('Run id:') > sys.indexOf('</starnet_operator_manual>'),
+    const host = hostText(first.messages);   // the per-run id rides the run-context note, after the system prompt
+    A.ok(host.lastIndexOf('Run id:') > host.indexOf('## INSTALLED SKILLS') && host.lastIndexOf('Run id:') > host.indexOf('</starnet_operator_manual>'),
       'the per-run id still rides after the byte-stable blocks (prefix cache)');
     console.log('[on-demand] default-floor system prompt: ' + sys.length + ' chars');
 

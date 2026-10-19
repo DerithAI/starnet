@@ -27,7 +27,9 @@
   // Absent on purpose: unknown + server_error (plausibly StarNet's own fault — those keep "report it").
   const KNOWN_ERROR_KINDS = { billing: 1, managed_credit: 1, managed_credit_link: 1, auth: 1, no_model: 1, oauth: 1, grok_oauth_unavailable: 1,
     quota_exhausted: 1, model_not_found: 1, context_overflow: 1, content_policy_blocked: 1, capdenied: 1,
-    spotify_not_connected: 1, stale_session: 1, spend_unknown: 1,
+    spotify_not_connected: 1, stale_session: 1, spend_unknown: 1, local_model_memory: 1,
+    // the OLLAMA card points at a server that is not Ollama (GH#111): its message names the CUSTOM card that fixes it
+    endpoint_mismatch: 1,
     // harness stops whose own message is the fix and a plain resend repeats them (2026-10-11): a tool call too big for
     // the model's output limit (ask in smaller parts / switch model), and a Commander hook that blocks the run
     output_limit: 1, hook_blocked: 1 };
@@ -73,7 +75,11 @@
         // Commander to report StarNet).
         if (ctx.error && ctx.error.msg && KNOWN_ERROR_KINDS[ctx.error.kind])
           return { reason, title: 'errored out',
-            cause: 'The run stopped before doing any work, for a reason a resend will not fix.',
+            // Allocation can fail after earlier turns already ran. Do not claim
+            // that no work happened, or confuse this with an unexplained timeout.
+            cause: ctx.error.kind === 'local_model_memory'
+              ? 'The model could not allocate enough memory. A resend alone will not fix that; free memory or use a smaller model first.'
+              : 'The run stopped before doing any work, for a reason a resend will not fix.',
             fix: String(ctx.error.msg) };
         if (ctx.error && ctx.error.msg && RETRY_ERROR_KINDS[ctx.error.kind])
           return { reason, title: 'errored out',

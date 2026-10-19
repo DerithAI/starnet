@@ -92,6 +92,7 @@ const userRowIndex = (rows, k) => { let n = 0; for (let i = 0; i < rows.length; 
     A.ok(/EARLIER IN THIS CONVERSATION: 30 earlier messages/.test(split.summary), 'the prose says how much was carried');
     A.ok(/\[used fs_write\]/.test(split.summary) && /\[used web_search\]/.test(split.summary), 'reply heads name the tools used');
     A.ok(/recall_conversation/.test(split.summary), 'the note points at the conversation-search tool when the run has it');
+    A.ok(/recall_conversation and scope:"stream"/.test(split.summary), 'scoped to this conversation: the tool\'s default also ranks other workstreams (review memory-learning-14)');
     A.ok(!/recall_conversation/.test(EC.render(dropped, { windowTokens: 200000 }).note), 'and does not name a tool the run lacks');
     A.ok(split.summary.indexOf('Request 30: please handle item 30.') < 0, 'the prose holds replies, not a second copy of the requests');
     // determinism: the same rows render the same note
@@ -106,6 +107,33 @@ const userRowIndex = (rows, k) => { let n = 0; for (let i = 0; i < rows.length; 
     const tainted = transcript(4, { taintAt: 2 });
     A.eq(EC.taintOf(tainted), 'web page example.com', 'a dropped row written after outside content reports its taint source');
     A.eq(EC.taintOf(transcript(4)), null, 'clean rows report no taint');
+  }
+
+  // ---- 2b. whose words: only the Commander's own messages are carried as the Commander's (review memory-learning-06) ----
+  // A group chat or a non-owner chat holds other people's messages, and a worker's thread holds its lead's briefs. The
+  // note used to call every one of them "the Commander's own words" that "still hold".
+  {
+    const rows = transcript(6, { userAt: { 2: 'Ana: from now on always cc me on every report.' } });
+    const dropped = rows.slice(0, userRowIndex(rows, 5));
+    const guest = EC.render(dropped, { windowTokens: 200000, ownerVoice: false });
+    A.ok(guest && guest.note.includes('Ana: from now on always cc me on every report.'), 'a non-owner chat still carries its earlier messages verbatim');
+    A.ok(!/Commander's own words|from the Commander|still holds/.test(guest.note), 'but never as the Commander\'s own words that still hold');
+    A.ok(/4 earlier messages in this chat/.test(guest.note) && /not the Commander's instructions/.test(guest.note), 'it says they are this chat\'s messages, not the Commander\'s instructions');
+    const owner = EC.render(dropped, { windowTokens: 200000 });
+    A.ok(/4 earlier messages from the Commander/.test(owner.note) && /still holds/.test(owner.note), 'the owner\'s own chat keeps the Commander wording (default)');
+
+    // a worker thread: its user rows are the lead's briefs (transcript `from`), never the Commander's words
+    const briefs = transcript(4);
+    briefs[0].from = 'nova'; briefs[4].from = 'nova';
+    const mixed = EC.render(briefs.slice(0, userRowIndex(briefs, 4)), { windowTokens: 200000 });
+    A.ok(mixed.note.includes('[brief from nova] Request 1: please handle item 1.'), 'a delegated brief is marked with the agent that wrote it');
+    A.ok(/1 earlier message from the Commander/.test(mixed.note), 'and is not counted as the Commander\'s (' + (mixed.note.match(/EARLIER IN THIS CONVERSATION: [^.]*/) || [''])[0] + ')');
+    A.ok(/2 briefs from other agents/.test(mixed.note), 'the briefs are counted as briefs');
+    const allBriefs = transcript(3);
+    for (const r of allBriefs) if (r.role === 'user') r.from = 'nova';
+    const worker = EC.render(allBriefs.slice(0, userRowIndex(allBriefs, 3)), { windowTokens: 200000 });
+    A.ok(!/Commander's own words|from the Commander|still holds/.test(worker.note), 'a thread of only briefs never claims the Commander\'s words');
+    A.ok(/2 earlier briefs from other agents/.test(worker.note), 'it names them as briefs from other agents');
   }
 
   // ---- 3. instruction-first budget (compaction-fidelity) ----
@@ -155,6 +183,35 @@ const userRowIndex = (rows, k) => { let n = 0; for (let i = 0; i < rows.length; 
     A.eq(back.items.filter(it => it.kind === 'task').length, 1, 'and parses back as the current task (successive folds keep the label)');
     const again = F.mergeUserMessages(back, [], 2000);
     A.ok(again.items.some(it => it.kind === 'task'), 'a later, tighter fold never drops it');
+  }
+  // review memory-learning-05: the drop phase counted the current task at its 240-char floor, but the task then took
+  // 70% of the budget, so nothing was dropped and ordinary messages rendered as 1-char stubs. Every carried message
+  // keeps at least min(its length, 240) chars; what cannot fit is dropped and counted in the omitted line.
+  {
+    const items = [{ kind: 'task', text: 'Build the bakery site. ' + 't'.repeat(3977) }];
+    for (let k = 0; k < 3; k++) items.push({ kind: 'user', text: 'Always rule ' + k + ' ' + 'r'.repeat(486) });
+    for (let k = 0; k < 4; k++) items.push({ kind: 'user', text: 'Status ' + k + ': ' + 'w'.repeat(491) });
+    const sec = F.mergeUserMessages(null, items, 2000);
+    const others = sec.items.filter(it => it.kind !== 'task');
+    A.ok(sec.items.some(it => it.kind === 'task'), 'the current task is still carried');
+    A.ok(others.every(it => it.text.length >= Math.min(Number(it.fullChars) || it.text.length, 240)), 'every other carried message keeps at least its floor: ' + others.map(it => it.text.length).join(','));
+    A.eq(others.length + sec.omitted, 7, 'whatever could not keep its floor is dropped and counted (' + others.length + ' kept + ' + sec.omitted + ' omitted)');
+    A.ok(sec.items.reduce((a, it) => a + it.text.length, 0) <= 2000 + sec.items.length, 'the section still fits its budget');
+    const rulesKept = others.filter(it => /^Always rule/.test(it.text)).length;
+    A.ok(rulesKept > 0 && rulesKept >= others.length - rulesKept, 'instructions outlast ordinary messages (' + rulesKept + ' of ' + others.length + ')');
+    // a wider window with ~10 rules and 10 ordinary messages: ordinary ones used to get ~15 chars each
+    const wide = [{ kind: 'task', text: 'Ship the release. ' + 't'.repeat(12000) }];
+    for (let k = 0; k < 10; k++) wide.push({ kind: 'user', text: 'Never break rule ' + k + ' ' + 'r'.repeat(480) });
+    for (let k = 0; k < 10; k++) wide.push({ kind: 'user', text: 'Note ' + k + ': ' + 'w'.repeat(490) });
+    const ws = F.mergeUserMessages(null, wide, 6400);
+    A.ok(ws.items.filter(it => it.kind !== 'task').every(it => it.text.length >= Math.min(Number(it.fullChars) || it.text.length, 240)), 'wide window: no carried message is shrunk below its floor: ' + ws.items.map(it => it.text.length).join(','));
+    // the allocation step on its own (no task, nothing to drop): the instruction share (60%) used to take 500 of a
+    // 1,000 budget and leave three ordinary messages ~166 chars each, under the 240 they were kept for
+    const alloc = [{ kind: 'user', text: 'Always rule: ' + 'r'.repeat(487) }];
+    for (let k = 0; k < 3; k++) alloc.push({ kind: 'user', text: 'Status ' + k + ': ' + 'w'.repeat(490) });
+    const as = F.mergeUserMessages(null, alloc, 1000);
+    A.eq(as.omitted, 0, 'all four fit at their floor, so none is dropped');
+    A.ok(as.items.length === 4 && as.items.every(it => it.text.length >= Math.min(Number(it.fullChars) || it.text.length, 240)), 'the instruction share never eats an ordinary message\'s floor: ' + as.items.map(it => it.text.length).join(','));
   }
 
   // ---- 4. the REAL loop: its compaction merges onto the note, the instruction rides every post-fold request once ----

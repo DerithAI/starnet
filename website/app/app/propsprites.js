@@ -10764,7 +10764,7 @@ const PropSprites = (() => {
     { id: "splitter", label: "SPLITTER", cat: "workflow", tier: "functional", w: 1, h: 1, animated: true, blocks: false, desc: "SPLITTER — one belt into several. With a JOINER after the branches, every branch gets a COPY of the job and they run at the same time; without one, jobs TAKE TURNS between the branches (share the load). Drop it ON a belt." },
     { id: "joiner", label: "JOINER", cat: "workflow", tier: "functional", w: 1, h: 1, animated: true, blocks: false, desc: "JOINER — waits until every branch of the same job has finished (or 10 minutes pass), then sends ONE combined result on, each branch's part labelled. Put a SPLITTER before the branches so each one gets a copy." },
     { id: "loop", label: "LOOP", cat: "workflow", tier: "functional", w: 1, h: 1, animated: true, blocks: false, desc: "LOOP — sends work BACK to an earlier step for another pass, until the reviewer approves it or the passes run out (5 by default, 20 at most), then sends it ON. Belt one exit back to the earlier BAY and one exit onward. Spend stays inside the line's dollar cap." },
-    { id: "outbox", label: "OUTBOX", cat: "workflow", tier: "functional", w: 2, h: 2, animated: true, blocks: true, desc: "OUTBOX — the dispatch chute where an agent's finished reply leaves the station. Click it to read and rate every finished run waiting for you. Drag it onto another line's INBOX (SEND TO) and every job this line finishes rides on to that line." },
+    { id: "outbox", label: "OUTBOX", cat: "workflow", tier: "functional", w: 2, h: 2, animated: true, blocks: true, desc: "OUTBOX — the dispatch chute where an agent's finished reply leaves the station. Click it to read and rate every finished run waiting for you. Drag it onto another line's INBOX (SEND TO) and every job that finishes cleanly is sent on to that line (its crew, its budget)." },
     // NOTE: the old "CONVEYOR" palette prop (beltH) is retired — it was inert scenery that LOOKED like the
     // routing system and taught users the wrong model (you can't assign or route through it). Real belts are
     // laid with the BELT tool and compile into the RoutingPlan. F.beltH stays so stations that placed one
@@ -11339,7 +11339,7 @@ const PropSprites = (() => {
     // applied — a prop function must never bake its own mount height.
     const lift = surfaceLift(f);
     const X = f.x * TILE, Y = f.y * TILE - lift, W = (f.w || 1) * TILE, H = (f.h || 1) * TILE;
-    const o = { x: f.x, work: !!work, agentId: f.agentId || null, dockName: f.dockName || null, door: f.door || null };
+    const o = { x: f.x, work: !!work, agentId: f.agentId || null, dockName: f.dockName || null, door: f.door || null, tagRoom: f.tagRoom || null };
     o.occupied = live && typeof live.occupied === 'boolean' ? live.occupied : !!work;
     o.still = !!(live && live.still);
     o.scanning = !!(live && live.scanning);
@@ -11949,9 +11949,9 @@ const PropSprites = (() => {
     PropRemaster.ready.then(() => {
       if (!PropRemaster.revision()) return;
       shadowMasks.clear(); invalidateLightResponse(); _ink.clear();
-      // The world caches the aggregate shadow pass against its current bake.
-      // rebake is the existing public render invalidation; it does not edit the save.
-      if (typeof World !== 'undefined' && typeof World.rebake === 'function') World.rebake();
+      // The world caches the aggregate shadow pass; prop art never reaches the station bake, so repaint only that
+      // layer (World.invalidatePropShadows) instead of a full rebake. Neither edits the save.
+      if (typeof World !== 'undefined') { if (typeof World.invalidatePropShadows === 'function') World.invalidatePropShadows(); else if (typeof World.rebake === 'function') World.rebake(); }
       if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent !== 'undefined')
         window.dispatchEvent(new CustomEvent('starnet:prop-art-ready',{detail:{revision:PropRemaster.revision()}}));
     });
@@ -11968,7 +11968,7 @@ const PropSprites = (() => {
     getChroma: () => CHROMA,
     registerUserProp, registerUserSide, unregisterUserProp, resizeUserProp, markUserDeleted, ruleFor, isUserProp: (t) => USER_ID.test(String(t || '')),
     // After player-made art decodes: drop the caches that were built while those props were placeholders.
-    userArtChanged() { shadowMasks.clear(); invalidateLightResponse(); _ink.clear(); if (typeof World !== 'undefined' && typeof World.rebake === 'function') World.rebake(); },
+    userArtChanged() { shadowMasks.clear(); invalidateLightResponse(); _ink.clear(); if (typeof World !== 'undefined') { if (typeof World.invalidatePropShadows === 'function') World.invalidatePropShadows(); else if (typeof World.rebake === 'function') World.rebake(); } },
     draw, drawBayNames, drawOver, hasOver, drawSeatFront, get CATALOG(){return projectionCatalog()?CATALOG.map(c=>spec(c.id)):CATALOG;}, CATS, spec, has, TILE,
     drawShadow, lightOf, EMIT, canLightResponse, drawLightResponse, lightResponseStats, invalidateLightResponse,
     // ORIENTATION: what each prop's art can honestly do, and the box it covers once turned. The

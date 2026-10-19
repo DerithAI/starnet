@@ -381,6 +381,17 @@ const detail = async (o, line) => (await layout(o, { line: line || 'draft & revi
     A.eq([D.steps[0].lastRun.result, D.steps[0].lastRun.failed, D.steps[0].lastRun.runId], ['budget', true, 'r1'], 'the detail carries the run id to look it up');
     const r = (await layout({ app: app(st, []), facts: {} })).r;
     A.eq(r.todayUnread, true, 'no stats reader: today is said to be unread, never zero');
+    // (runtime audit 2026-10-12) an unreadable shipment history: SHIPPED is unknown (null + why), the other numbers still stand
+    const why = 'shipment history unreadable: shipment history could not be read (invalid)';
+    const unread = { routed: FACTS.routed, budget: facts.budget,
+      today: () => ({ lines: [{ lineId: key, runs: 3, shipped: null, shippedUnknown: why, failed: 1, tests: 0, usdToday: 0.5, capUsdPerDay: 5, medianMs: null, spendDay: 'utc' }], docks: {}, shippedUnknown: why }) };
+    const U = (await layout({ app: app(st, []), facts: unread })).r.lines[0];
+    A.eq(U.today, { runs: 3, shipped: null, failed: 1, tests: 0, usd: 0.5, capUsdPerDay: 5, medianMs: null, day: 'UTC day', shippedUnknown: why }, 'an unknown SHIPPED is said with its reason, never as 0, and the rest still counts');
+    // (runtime repair 2026-10-12) a LOWER BOUND (some of today's shipped jobs have no saved record) is said, never as the exact count
+    const low = { routed: FACTS.routed, budget: facts.budget,
+      today: () => ({ lines: [{ lineId: key, runs: 3, shipped: 5000, shippedAtLeast: true, failed: 0, tests: 0, usdToday: 0.5, capUsdPerDay: 5, medianMs: null, spendDay: 'utc' }], docks: {}, shippedAtLeast: true }) };
+    const Lo = (await layout({ app: app(st, []), facts: low })).r.lines[0];
+    A.eq(Lo.today, { runs: 3, shipped: 5000, failed: 0, tests: 0, usd: 0.5, capUsdPerDay: 5, medianMs: null, day: 'UTC day', shippedAtLeast: true }, 'a lower-bound SHIPPED reaches the lead marked as at least');
   }
 
   /* ---- 18. the answer FITS the model's budget, as valid JSON, and names what it left out ---- */
@@ -444,11 +455,11 @@ const detail = async (o, line) => (await layout(o, { line: line || 'draft & revi
     const agents = [{ id: 'wA', name: 'Ann' }, { id: 'wB', name: 'Bo' }];
     const { r } = await layout({ app: app(s, agents) });
     const LA = r.lines.find(l => l.name === 'A'), LB = r.lines.find(l => l.name === 'B');
-    A.ok(/Then every job it finishes is sent on to LINE B \(SEND TO\), whose own crew works it next\.$/.test(LA.howItRuns), 'the overview sentence says where A’s work goes next: ' + LA.howItRuns);
+    A.ok(/Then every job it finishes cleanly is sent on to LINE B \(SEND TO\), whose own crew works it next\.$/.test(LA.howItRuns), 'the overview sentence says where A’s work goes next: ' + LA.howItRuns);
     A.eq([LA.sendsWorkTo, LB.getsWorkFromLines, LB.sendsWorkTo], [['LINE B'], ['LINE A'], undefined], 'and names the lines on each end');
     const D = (await layout({ app: app(s, agents) }, { line: 'A' })).r.line;
     A.ok(D.steps[0].sendsTo.some(x => /^OUTBOX, then on to LINE B \(SEND TO/.test(String(x))), 'one line in full: its last step hands to the OUTBOX, then on to LINE B — ' + JSON.stringify(D.steps[0].sendsTo));
-    // (10-11 repair) a SECOND OUTBOX on LINE A that sends nowhere: the lead is never told "every job it finishes" rides on
+    // (10-11 repair) a SECOND OUTBOX on LINE A that sends nowhere: the lead is never told "every job it finishes cleanly" rides on
     const ox = s.addProp({ t: 'outbox', x: z.x2 + 30, y: z.y1 + 1, w: 2, h: 2 });
     A.ok(ox.ok && s.connectBelt(ids[0].bay, ox.id).ok, 'fixture: LINE A gets a second OUTBOX that sends nowhere');
     const L2 = (await layout({ app: app(s, agents) })).r.lines.find(l => l.name === 'A');
@@ -467,7 +478,18 @@ const detail = async (o, line) => (await layout(o, { line: line || 'draft & revi
     s.setSendTo(ids[0].outboxes[0], ids[1].intakes[0]);
     const result = (await layout({ app: app(s, []) })).r;
     const source = result.lines.find(l => l.sendsWorkTo);
-    A.ok(source && source.sendsWorkTo[0] === 'an unnamed line (lineId ' + ids[1].key + ')', 'unlabeled SEND TO keeps its actionable lineId');
+    // final floor lane M25 / R62: the unnamed target is named as the floor's plate and SEND TO chip name it (LINE <its INBOX letter>,
+    // worldmodel.lineName), and keeps its actionable lineId — 'an unnamed line' named nothing the Commander could see
+    const shown = 'LINE ' + s.lineLetter(ids[1].intakes[0]);
+    A.ok(source && source.sendsWorkTo[0] === shown + ' (lineId ' + ids[1].key + ')', 'unlabeled SEND TO says the floor name and keeps its actionable lineId — ' + JSON.stringify(source && source.sendsWorkTo));
+    A.ok(source && new RegExp('sent on to ' + shown + ' [(]lineId ').test(source.howItRuns), '…and so does howItRuns — ' + (source && source.howItRuns));
+    const target = result.lines.find(l => l.lineId === ids[1].key);
+    A.ok(target && target.name === null && target.word === shown, 'each line carries the floor word for it (name stays the INBOX label, null here)');
+    const picked = (await layout({ app: app(s, []) }, { line: shown.toLowerCase() })).r;
+    A.ok(picked && picked.line && picked.line.lineId === ids[1].key, 'station.layout line="' + shown.toLowerCase() + '" resolves the unnamed line the floor calls ' + shown + ' — ' + JSON.stringify(picked && picked.line && picked.line.lineId));
+    // the tool's own summary line names it the same way (repair: its head said '"unnamed line": …' while its word said LINE F)
+    const said = (await layout({ app: app(s, []) }, { line: shown.toLowerCase() })).out.summary;
+    A.ok(said.indexOf('"' + shown + '": ') === 0, 'the one-line summary names the unnamed line ' + shown + ' — ' + said);
   }
 
   A.report('station-layout');

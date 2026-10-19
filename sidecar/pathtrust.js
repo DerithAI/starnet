@@ -106,10 +106,16 @@
        SEGMENTS (forward-slashed, case-folded), so a name merely containing ".ssh" is not caught. */
     const CREDENTIAL_STORES = [
       [/(^|\/)\.(ssh|gnupg|aws|azure|kube|tauri|starnet-signing|starnet-keys|fly|codex)(\/|$)/, 'SSH, GPG, cloud CLI and signing keys'],
-      [/(^|\/)(\.netrc|_netrc|\.git-credentials|\.pypirc|\.pgpass|\.npmrc)$/, 'saved login credentials'],
-      [/(^|\/)\.docker\/config\.json$|(^|\/)\.config\/(gcloud|gh)(\/|$)|(^|\/)\.claude\/\.credentials\.json$/, 'cloud and developer CLI logins'],
+      [/(^|\/)(\.netrc|_netrc|\.git-credentials|\.pypirc|\.pgpass|\.npmrc)$|(^|\/)\.cargo\/credentials(\.toml)?$/, 'saved login credentials'],
+      // gcloud and the GitHub CLI keep their logins under %APPDATA% on Windows, ~/.config elsewhere
+      [/(^|\/)\.docker\/config\.json$|(^|\/)\.config\/(gcloud|gh)(\/|$)|(^|\/)appdata\/roaming\/(gcloud|github cli)(\/|$)|(^|\/)\.claude\/\.credentials\.json$/, 'cloud and developer CLI logins'],
       [/(^|\/)microsoft\/(credentials|protect|vault)(\/|$)|(^|\/)library\/keychains(\/|$)|(^|\/)\.local\/share\/keyrings(\/|$)/, 'the operating system credential store'],
-      [/(^|\/)(google\/chrome|chromium|microsoft\/edge|bravesoftware\/brave-browser|vivaldi|opera software)(\/|\s)?(user data|beta|dev)?(\/|$)|(^|\/)(mozilla\/firefox|\.mozilla\/firefox|\.config\/(google-chrome|chromium|brave-?software))(\/|$)|(^|\/)library\/(cookies|application support\/(google\/chrome|firefox|microsoft edge|bravesoftware))(\/|$)/, 'browser profiles (cookies and saved passwords)']
+      // browser profiles are matched under their real parent folders (AppData, ~/.config and its snap/flatpak
+      // twins, ~/Library) — a project folder merely NAMED chromium or vivaldi is an ordinary project. The [^\/]*
+      // suffix keeps the Beta/Dev/SxS/Stable siblings ("Chrome SxS", "Edge Beta", "google-chrome-beta").
+      // A Microsoft Store (MSIX) browser keeps its AppData under Packages/<pkg>/LocalCache/{Local,Roaming}.
+      // Opera's ~/.config folders are named exactly, so ~/.config/operator or .config/operations stay readable.
+      [/(^|\/)(appdata|localcache)\/(local|roaming)\/(google\/chrome|chromium|microsoft\/edge|bravesoftware\/brave-browser|vivaldi|opera software|mozilla\/firefox)[^\/]*(\/|$)|(^|\/)\.mozilla\/firefox(\/|$)|(^|\/)(\.config|\.var\/app\/[^\/]+\/config|snap\/chromium\/common)\/(google-chrome[^\/]*|chromium|vivaldi[^\/]*|brave-?software|opera(-beta|-developer|-gx)?|microsoft-edge[^\/]*)(\/|$)|(^|\/)library\/(cookies|application support\/(google\/chrome[^\/]*|chromium|vivaldi|firefox|microsoft edge[^\/]*|bravesoftware|com\.operasoftware\.opera[^\/]*))(\/|$)/, 'browser profiles (cookies and saved passwords)']
     ];
     function credentialFloor(p) {
       const s = String(p || '').replace(/\\/g, '/').toLowerCase();
@@ -195,6 +201,17 @@
           if (/^[A-Za-z0-9_-]{1,40}$/.test(agentId) && !isReservedWorkspaceId(agentId)) {
             const ownReal = await realpathOrSelf(P.join(workspaceRoot, agentId));
             if (pathInside(real, ownReal)) return { base: ownReal, abs: norm };
+          }
+          /* THE HAND-OFF EXCEPTION (2026-10-13): a READ of one EXACT file the host handed this run (a dispatched
+             worker reading what the worker before it saved; a lead reading its workers' saved files). Exact real path
+             only — never a folder, never a write, never a path the model named on its own. */
+          if (scope === 'read' && Array.isArray(o.readGrants) && o.readGrants.length) {
+            for (const g of o.readGrants) {
+              if (!g || !P.isAbsolute(String(g))) continue;
+              let gReal = '';
+              try { gReal = await realpathOrSelf(String(g)); } catch (e) { continue; }   // a granted file since deleted grants nothing
+              if (gReal && pathInside(real, gReal) && pathInside(gReal, real)) return { base: P.dirname(real), abs: norm, handoff: true };
+            }
           }
           throw new Error('path is inside another agent workspace and cannot be shared by a project grant: ' + norm);
         }

@@ -962,7 +962,11 @@ const App = (() => {
           : sel.reason === 'effort'
             ? 'REASONING: ' + effortLabel(effort)
             : 'MODEL: ' + providerLabel(provider) + ' / ' + shortModelLabel(model) + ' / ' + effortLabel(effort);
-      StationUI.notify(msg, 'good');
+      // a dock pick ('model'/'effort') is the user's own press — silent receipt; a catalog-driven change keeps its bell.
+      // One receipt card for every pick (live walk 10-14: LOW, MED, HIGH, MAX stacked four cards over the CREW column):
+      // the next press updates the card already up instead of stacking another.
+      const userPick = sel.reason === 'model' || sel.reason === 'effort';
+      StationUI.notify(msg, 'good', undefined, userPick ? { silent: true, key: 'model-pick' } : undefined);
     }
   }
   // the persisted shape of a crew member (systemPrompt is derived, recomposed on rehydrate).
@@ -1088,9 +1092,15 @@ const App = (() => {
       return (m && typeof m === 'object') ? m : {};
     } catch (_) { return {}; }
   }
-  function resolveTierModel(tier, baseModel) {
+  // the SETTINGS › New agent defaults pin for a class tier, or null — the ONE reader the summon path and the
+  // Recruitment Bay's MODEL helper share, so the bay never promises a copy that applyLoadout then replaces.
+  function tierModelFor(tier) {
     const pinned = tier && tierModelMap()[tier];
-    if (pinned && String(pinned).trim()) return String(pinned).trim();
+    return (pinned && String(pinned).trim()) ? String(pinned).trim() : null;
+  }
+  function resolveTierModel(tier, baseModel) {
+    const pinned = tierModelFor(tier);
+    if (pinned) return pinned;
     return baseModel || ((typeof Harness !== 'undefined' && Harness.getModel) ? Harness.getModel() : null) || null;
   }
   // fold the class loadout (model tier + effort + skills) onto an agent record. A class's `kit` is NOT placed
@@ -1169,10 +1179,14 @@ const App = (() => {
     if (typeof StationUI !== 'undefined' && StationUI.setRoster) StationUI.setRoster(liveAgents());
     else console.warn('[summon] StationUI.setRoster missing — crew manifest not refreshed');
     try { if (window.__STARNET_DEV__) console.log('[summon]', JSON.stringify({ id, name: a.name, skin: a.skin, hadHero: !!agent, worldSpawn: _spawned, crew: (typeof World !== 'undefined' && World.crewCount) ? World.crewCount() : '?', roster: agents.size })); } catch (e) {}
-    // a fresh workstream BOUND to the new agent, but inactive by default. Activation is the explicit
-    // "talk to this specialist directly" action; summon itself only expands the crew/roster.
+    // ORG P25 — FEWER EMPTY SESSIONS: a session is made only when someone is going to talk in it. An ACTIVATED summon (the
+    // bay's RECRUIT: "talk to this specialist now") opens its own session; a background hire (the overseer's team.summon,
+    // a workflow RECRUIT) makes NONE — it only grows the crew. Its first session is minted when it is first needed:
+    // ON THE LINE (selectAgent's "a specialist that has no stream yet gets a fresh one"), the narrowed rail's START ONE,
+    // a delegation's own worker thread. Every reader takes "no session yet" (waitingSessionOf walks pending asks, the
+    // HUD falls back to selectAgent, channels are keyed by session id, group add is by agent id).
     const activate = opts.activate === true;
-    const ws = (typeof Workstreams !== 'undefined') ? Workstreams.create(a.name, { agentId: id, activate }) : null;
+    const ws = (activate && typeof Workstreams !== 'undefined') ? Workstreams.create(a.name, { agentId: id, activate }) : null;
     // the COMMS "who you're talking to" selector reads App.agents() but only rebuilds inside renderIdBar —
     // without this, a summon leaves the selector stale (missing the new agent) until some other stream
     // switch happens, while the toast says "switch to its stream". Refresh it the moment the roster grows.
@@ -1191,7 +1205,7 @@ const App = (() => {
       // with no way to act. Now the agent says it plainly — "desk", never "OWN PC" — and a chip opens BUILD MODE with
       // desk placement teed up. FINALE (Lane D): the toast is ONE line now — the desk requirement + its door move
       // into the diegetic line + chip below (the standing record no longer duplicates the whole instruction).
-      _notify(a.name + ' summoned — type to task it now.', 'good');
+      _notify(a.name + ' recruited — type to task it now.', 'good');
       // WHERE THAT LINE COMES FROM (2026-08-03): the Chat.load(ws) above opened the new agent's session, and the
       // desk prompt is now a property of THAT SESSION (chat.js maybeDeskPrompt → App.needsWorkstation), not a
       // one-shot printed here. It used to be printed once, DOM-only: the first stream switch (or any reload) wiped
@@ -1209,7 +1223,7 @@ const App = (() => {
       // "took the free desk" vs "desk placed": ensureWorkstation may ADOPT an unbound workstation instead of
       // building one, and saying "placed" for a desk that was already there is a small lie about the floor.
       const deskLine = (desk && desk.ok) ? ((desk.adopted ? 'took the free desk' : 'desk placed') + (deskRoom ? ' in ' + deskRoom : '') + '. ') : '';
-      _notify(a.name + ' summoned — ' + deskLine + 'switch to its stream to task it, or let the overseer delegate.', 'good');
+      _notify(a.name + ' recruited — ' + deskLine + 'pick it ON THE LINE in COMMS to talk to it, or let the overseer delegate.', 'good');
     }
     // ONE loadout beat: state plainly what the class summon actually applied — the skills enabled, the effort
     // applied, and the STATION GEAR the class draws on (honest present/missing under the overseer, NOT per-agent
@@ -1598,12 +1612,23 @@ const App = (() => {
     const worksignal = (typeof WorkSignalStore !== 'undefined') ? WorkSignalStore.serialize() : undefined;   // the capability-usage histogram (adaptive recruitment)
     const roster = liveAgents();
     const dossier = (typeof DossierStore !== 'undefined') ? DossierStore.serialize() : undefined;   // the station-wide Commander model
-    const doc = Save.write(Object.assign({ _saveDirty: true, _saveRevision: typeof CloudSave !== 'undefined' && CloudSave.revision ? CloudSave.revision() : 0, agent: hero, agents: roster.length > 1 ? roster.map(serializeAgentLite) : undefined, usage: Harness.totals(), prov, reasoningEffort, reasoningMigrated: '0125' /* = REASONING_MIGRATION; a literal so persist() also runs when lifted alone */, station: station ? station.serialize() : undefined, stationStats, profile, worksignal, dossier }, Workstreams.serialize()));
-    if (doc && typeof CloudSave !== 'undefined') CloudSave.push(doc);   // durable write-through to the sidecar (debounced, best-effort)
+    const saveState = Object.assign({ _saveDirty: true, _saveRevision: typeof CloudSave !== 'undefined' && CloudSave.revision ? CloudSave.revision() : 0, agent: hero, agents: roster.length > 1 ? roster.map(serializeAgentLite) : undefined, usage: Harness.totals(), prov, reasoningEffort, reasoningMigrated: '0125' /* = REASONING_MIGRATION; a literal so persist() also runs when lifted alone */, station: station ? station.serialize() : undefined, stationStats, profile, worksignal, dossier }, Workstreams.serialize());
+    // #121 WRITE-THROUGH: build the envelope ONCE and always queue it for the station file. The browser cache holds the
+    // whole save under one key and refuses it past the browser's per-site cap; gating the station file on that write
+    // froze BOTH copies at the first failure, so every restart reverted the station.
+    const envelope = Save.envelope ? Save.envelope(saveState) : saveState;
+    const doc = Save.write(envelope);
+    if (typeof CloudSave !== 'undefined') CloudSave.push(doc || envelope, { cacheFailed: !doc, cacheError: doc ? null : (Save.writeError ? Save.writeError() : null) });   // durable write-through to the sidecar (debounced, best-effort)
     if (rosterPushFailed) pushRoster();   // a prior roster POST failed — retry it opportunistically on this persist
     if (!doc) {
-      if (!saveFailureNotified && typeof StationUI !== 'undefined') StationUI.notify('Could not save station changes. Keep this window open and free storage before trying again.', 'warn', undefined, { kind: 'alert', key: 'save-failed' });
+      // #121: the cache refused this save (the browser's per-site cap). It was queued for the station file above; the save
+      // light tracks the station file's confirmation. Freeing disk space never helps, so the notice no longer asks for it.
+      const why = (!Save.writeQuotaFull || Save.writeQuotaFull()) ? 'Browser storage for this window is full (a browser limit — freeing disk space will not help).' : 'Browser storage refused this window’s save.';
+      if (!saveFailureNotified && typeof StationUI !== 'undefined') StationUI.notify(why + ' Station changes now go to the station file only; the ● save light in the top bar says whether your latest change is confirmed there.', 'warn', undefined, { kind: 'alert', key: 'save-failed' });
       saveFailureNotified = true;
+      // repaint the light NOW (no green flash: nothing reached the cache) — waiting for its 1 s tick left "autosave" or
+      // "confirmed in the station file" showing for a change the station file has not confirmed yet (live proof 10-15)
+      if (typeof StationUI !== 'undefined' && StationUI.refreshSave) StationUI.refreshSave();
       return false;
     }
     saveFailureNotified = false;
@@ -1642,6 +1667,21 @@ const App = (() => {
   // (mirrors ModelDock's E4 honesty). Harness.listModels() populates the price/context map priceOf reads.
   let genesisModels = [];
   let genesisOffline = false;
+  /* Why this page's keyed /api calls are refused, in one short phrase ('' = they are not, as far as the page knows).
+     A page the station KEPT its key from (Harness.tokenWithheld: it could not prove this browser runs as the owner's OS
+     user, sidecar/peerowner.js) is checked FIRST: it is not a restarted station (review threads-backend-05 /
+     sidecar-index-06). A reload re-runs the check, so it is offered only for a transient reason
+     (Harness.tokenWithheldRetryable: the lookup failed or the connection could not be traced), before the hatch that
+     turns the check off; for another account it would re-run the same failing check, so it is never offered. */
+  function refusedPageLine() {
+    if (Harness.tokenWithheld && Harness.tokenWithheld()) {
+      return 'this browser was not verified as running under your own user account, so StarNet won’t take commands from it — '
+        + (Harness.tokenWithheldRetryable && Harness.tokenWithheldRetryable() ? 'reload this page to run the check again; if it keeps failing and it is yours, ' : 'if it is yours, ')
+        + 'restart StarNet with STARNET_TRUST_LOCAL_PEERS=1';
+    }
+    if (Harness.sessionStale && Harness.sessionStale()) return 'the station restarted; reload this page';
+    return '';
+  }
   async function loadModels(provider) {
     const p = normalizeProviderId(provider || pickedProvider);
     const countEl = el('model-count'), inp = el('in-model');
@@ -1674,10 +1714,10 @@ const App = (() => {
       const FALLBACK = FALLBACK_MODELS[p] || FALLBACK_MODELS.openrouter;
       genesisModels = FALLBACK.map(id => ({ id, name: id, fallback: true }));
       genesisOffline = true;
-      // #39: a stale-token 403 after a sidecar restart is NOT an offline catalog — say the one thing that fixes it.
-      countEl.textContent = (Harness.sessionStale && Harness.sessionStale())
-        ? '(the station restarted — reload this page to load the catalog)'
-        : '(catalog offline — type or pick a slug)';
+      // #39: a refused page (a stale token after a sidecar restart, or a key the station withheld) is NOT an offline
+      // catalog — say the one thing that fixes it.
+      const refused = refusedPageLine();
+      countEl.textContent = refused ? '(' + refused + ')' : '(catalog offline — type or pick a slug)';
       if (!inp.value) inp.value = defId || FALLBACK[0];   // default-fill even offline so WAKE works; the Commander can overtype
       inp.placeholder = 'type a model slug — e.g. ' + (defId || 'gpt-5.5');
     }
@@ -2967,7 +3007,7 @@ const App = (() => {
   // fresh first run it's a no-op beyond dropping any in-flight codex poll (the create screen is the root).
   async function onConnectBack() {
     SFX.click(); stopCodexPoll();
-    const saved = Save.has() ? Save.load() : null;
+    const saved = resumableSave().doc;   // #121: the in-memory save when the browser cache could not hold it
     if (saved && saved.agent) {
       // RETRY must re-ask, not re-read. A StarNet station's "configured" flag is read ONCE at boot; when the
       // account service was down then (issue #76), retry kept consulting that stale false and bounced straight
@@ -2986,12 +3026,23 @@ const App = (() => {
   // (disconnect, recovery, back). Preserves the agent ALWAYS: if creds are in hand it resumes straight into the
   // station; otherwise it shows the connect screen in RESUME mode. Only a genuine no-save state falls through
   // to a fresh creation.
+  // #121: the save a re-entry resumes. Normally the browser cache. When the cache could not hold this station (the
+  // browser's per-site storage cap), the cache is stale or already removed and the newest save lives in memory:
+  // the envelope this page last queued for the station file, or the station file's copy that boot resumed.
+  // Never read the cache then — it would revert the station, or (removed) open a brand-new creation over it.
+  function resumableSave() {
+    const mem = (typeof CloudSave !== 'undefined' && CloudSave.memorySave) ? CloudSave.memorySave() : null;
+    if (mem && mem.agent) return { doc: mem, memory: true };
+    return { doc: Save.has() ? Save.load() : null, memory: false };
+  }
+
   function reentry() {
+    const resumable = resumableSave();
     // FORWARD-VERSION GATE (P0.3): a re-entry (disconnect / back / recovery) must not fall through to a fresh
     // create when the stored save is from a NEWER build — Save.load() returns null for it, which would look like
     // "no save" and clobber it on first persist(). Stop at the honest update gate; the save stays untouched.
-    if (Save.isFuture && Save.isFuture()) { showFutureSaveGate(Save.loadStatus().version); return; }
-    const saved = Save.has() ? Save.load() : null;
+    if (!resumable.memory && Save.isFuture && Save.isFuture()) { showFutureSaveGate(Save.loadStatus().version); return; }
+    const saved = resumable.doc;
     if (saved && saved.agent) {
       migrateLegacyReasoning(saved);   // before any saved effort reaches the wire (0.12.5 reasoning migration)
       if (savedStationProv(saved) && Harness.setProv) Harness.setProv(savedStationProv(saved));
@@ -3026,8 +3077,8 @@ const App = (() => {
     } catch (e) {
       waking = false; wakeBtnBusy(false);
       // #39: after a sidecar restart the refusal surfaced as "Failed to fetch", which reads like the user's own network.
-      const stale = !!(Harness.sessionStale && Harness.sessionStale());
-      const msg = el('connect-msg'); if (msg) { msg.className = 'msg bad'; msg.textContent = 'could not start — ' + (stale ? 'the station restarted; reload this page' : ((e && e.message) || 'try again')); }
+      const refused = refusedPageLine();
+      const msg = el('connect-msg'); if (msg) { msg.className = 'msg bad'; msg.textContent = 'could not start — ' + (refused || ((e && e.message) || 'try again')); }
     }
   }
   // THE WIRE PREFLIGHT — one real reason-only round-trip through the exact path the awakening will use
@@ -3036,7 +3087,8 @@ const App = (() => {
   async function preflightWire() {
     try {
       if (typeof Harness === 'undefined' || !Harness.chat) return { ok: false, why: 'the harness is not loaded (reload the app)' };
-      const call = Harness.chat({ system: '', messages: [{ role: 'user', content: 'Reply with exactly: OK' }], agentId: 'agent', isTask: false, placed: [], internal: true })
+      // keepEffort: the Commander's own reasoning effort, the one the awakening runs on — not the aux effort self-talk uses
+      const call = Harness.chat({ system: '', messages: [{ role: 'user', content: 'Reply with exactly: OK' }], agentId: 'agent', isTask: false, placed: [], internal: true, keepEffort: true })
         .catch(e => ({ error: true, text: String((e && e.message) || e) }));
       const res = await Promise.race([call, new Promise(r => setTimeout(() => r(null), 30000))]);
       if (!res) return { ok: false, why: 'no reply within 30 seconds (network or provider stall)' };
@@ -3152,7 +3204,7 @@ const App = (() => {
       }
       // Only (re)store when a key was actually typed — desktop keeps the existing keychain key on blank.
       // setKey is async in desktop (writes the keychain + pushes it to the sidecar); await so the run has it.
-      if (key) warnStation(await (Harness.validateAndSetKey ? Harness.validateAndSetKey(key, pickedProvider) : Harness.setKey(key, pickedProvider)));
+      if (key) warnStation(await (Harness.validateAndSetKey ? Harness.validateAndSetKey(key, pickedProvider, model) : Harness.setKey(key, pickedProvider)));
       Harness.setModel(model); Harness.setProv(pickedProvider);
       if (pickedProvider === 'openai') wireVia = key ? 'the OpenAI API key you typed' : 'the OpenAI API key stored on this station';
     }
@@ -3984,6 +4036,7 @@ const App = (() => {
   let railTicker = 0;
   let railShowArchived = false;   // when true the rail also lists archived (put-away) sessions, dimmed
   let railFocusId = null;         // roving-tabindex cursor: one rail stop regardless of session count
+  let railLineObserver = null;    // re-fits each group row's names line when its room changes (fitRailAgentLines)
   let railAttentionKey = '';
   // PER-AGENT THREADS: a crew-row click narrows the rail to that agent's sessions — the streams bound to it
   // plus group chats and conversations holding its delegated work. The SESSIONS tab, the chip's ✕,
@@ -4051,6 +4104,17 @@ const App = (() => {
   }
   // NEEDS YOU (needsyou.js, 2026-10-11) replaced the "Waiting for you" filter: one pinned list of every ask and failure
   // on the station, each with its own action. It lives in the SESSIONS view only.
+  /* station.show 'needs-you' (org P01): put the SESSIONS view (where NEEDS YOU lives) in front and bring the list into view.
+     open = the rail is on screen (BUILD MODE or a hidden crew rail is not); waiting = how many rows it holds right now. */
+  function showNeedsYou() {
+    if (railView !== 'sessions') setRailView('sessions');
+    if (typeof NeedsYou !== 'undefined' && NeedsYou.render) NeedsYou.render();
+    const left = el('left'), host = el('ws-needs');
+    const railShown = !!(left && left.getClientRects && left.getClientRects().length);
+    const waiting = typeof NeedsYou !== 'undefined' && NeedsYou.items ? NeedsYou.items().length : 0;
+    if (railShown && host && !host.hidden && host.scrollIntoView) host.scrollIntoView({ block: 'nearest' });
+    return { open: railShown, key: 'needs-you', waiting };
+  }
   function syncRailAttention(pending) {
     railAttentionKey = [...pending].sort().join('\n');
     const host = el('ws-needs'); if (!host) return;
@@ -4112,6 +4176,8 @@ const App = (() => {
     // are not in SESSIONS, so the asking conversation's lamp carries it — from the durable ledger, never a guess.
     const ov = typeof Overseer !== 'undefined' && Overseer.snapshot ? Overseer.snapshot() : null;
     const crew = ((ov && ov.workers) || []).filter(x => x && x.status === 'running' && x.parentStreamId === w.id).length;
+    // …a ledger the station has stopped answering for cannot vouch that they still run: say unknown, never "working"
+    if (crew && Overseer.fresh && !Overseer.fresh()) return { dot: 'ws-dot', meta: 'crew · unknown', busy: false, attn: false, status: 'station unreachable — crew state unknown' };
     if (crew) return { dot: 'ws-dot working', meta: crew + ' working', busy: true, attn: false, status: crew + ' of the crew working on what you delegated' };
     // A settled failure uses the crossed lamp; only a live approval/question earns the action row.
     if (w.lastRunOk === false) return { dot: 'ws-dot failed', meta: railRelTime(w.lastActiveAt), busy: false, attn: false, status: 'last run failed — open to inspect' };
@@ -4129,8 +4195,8 @@ const App = (() => {
     if (Workstreams.unread(w)) return { dot: 'ws-dot unseen', meta: railRelTime(w.lastActiveAt), busy: false, attn: false, status: 'unread activity' };
     return { dot: 'ws-dot seen', meta: railRelTime(w.lastActiveAt), busy: false, attn: false, status: 'read' };
   }
-  /* ---------- INBOX row extras (SESSION ROWS = inbox) ----------
-     Both lines are rendered ALWAYS and hidden by CSS in COMPACT, so the setting is a pure repaint —
+  /* ---------- INBOX row extras (SESSION ROWS = inbox) + shared group identity ----------
+     Both spans are rendered ALWAYS; CSS keeps group identity visible in every row layout, so switching is a pure repaint —
      no re-render, no lost rail focus/scroll, and updateRailLive keeps working untouched.
      Every value is a read of state that already exists; nothing here is derived or guessed. */
   function railAgentName(w) {
@@ -4152,6 +4218,42 @@ const App = (() => {
     const names = ids.slice(0, 2).map(id => { const m = agents.get(id); return (m && m.name) || id; }).join(', ');
     const more = ids.length - 2;
     return '<span class="ws-agent-names">' + U.esc(names) + '</span>' + (more > 0 ? '<span class="ws-agent-more">+' + more + '</span>' : '');
+  }
+  /* WHOLE NAMES (walk 10-14 #6): the row gives the names line its whole first line (app.css / pipglass.css), and this
+     picks the reading that fits it — "ULTRON, CYPHER +3", else "ULTRON +4" — so a name is never cut mid-word
+     ("ULTRON, CYP… +3", "ULTR… +3"). The full reading rides data-full, so a wider rail or the COMPACT/INBOX switch
+     brings the second name back. A line that is not laid out is left alone (a zero measure is not "too narrow").
+     A names line that WRAPS at a space (the glass INBOX headline, pipglass.css — rc walk 10-14) already shows every
+     name whole on its own lines: it keeps the full reading and never folds. */
+  function fitRailAgentLine(line) {
+    const names = line && line.querySelector ? line.querySelector('.ws-agent-names') : null;
+    if (!names || !line.getClientRects().length) return;
+    if (names.dataset.full == null) {
+      const more0 = line.querySelector('.ws-agent-more');
+      names.dataset.full = names.textContent;
+      names.dataset.more = String(more0 ? (parseInt(more0.textContent.replace('+', ''), 10) || 0) : 0);
+    }
+    const full = names.dataset.full, extra = +names.dataset.more || 0, parts = full.split(', ');
+    const show = (text, n) => {
+      if (names.textContent !== text) names.textContent = text;
+      let more = line.querySelector('.ws-agent-more');
+      if (n > 0) {
+        if (!more) { more = document.createElement('span'); more.className = 'ws-agent-more'; line.appendChild(more); }
+        if (more.textContent !== '+' + n) more.textContent = '+' + n;
+      } else if (more) more.remove();
+    };
+    show(full, extra);
+    if (typeof getComputedStyle === 'function' && getComputedStyle(names).whiteSpace !== 'nowrap') return;
+    if (parts.length > 1 && names.scrollWidth > names.clientWidth + 1) show(parts[0], extra + parts.length - 1);
+  }
+  function fitRailAgentLines() {
+    const lines = document.querySelectorAll('#workstreams .ws-agent-group');
+    lines.forEach(fitRailAgentLine);
+    // the rail's width and the row layout (COMPACT/INBOX) change the room without a re-render: re-fit on resize
+    if (typeof ResizeObserver === 'undefined') return;
+    if (!railLineObserver) railLineObserver = new ResizeObserver(entries => { for (const e of entries) fitRailAgentLine(e.target); });
+    railLineObserver.disconnect();
+    lines.forEach(l => railLineObserver.observe(l));
   }
   // the INBOX row names its agent in that agent's own colour, exactly as its CREW card does (a group row: the lead's)
   function railAgentColorAttr(w) {
@@ -4175,6 +4277,12 @@ const App = (() => {
     return out;
   }
   function railExcerpt(latest) {
+    // a goal-loop step is the station's line, never "You:" + the internal continuation prompt (org P29-sys wiring)
+    const step = (typeof GoalLoop !== 'undefined' && GoalLoop.stepOfTurn) ? GoalLoop.stepOfTurn(latest) : null;
+    if (step != null) {
+      const g = step.replace(/\s+/g, ' ').trim();
+      return '↻ Goal step: ' + (g.length > 147 ? g.slice(0, 146).trimEnd() + '…' : g);
+    }
     const text = latest.content
       .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
       .replace(/(^|\n)\s{0,3}(?:#{1,6}\s+|[-*+]\s+|>\s*)/g, ' ')
@@ -4187,7 +4295,7 @@ const App = (() => {
   }
   function railModelFull(w) { return (w.lastModel || '').trim(); }
   function railRowLabel(w, st, project = false) {
-    const title = w.title || 'General', name = railAgentName(w);
+    const title = Workstreams.titleOf(w), name = railAgentName(w);
     return title + (w.conversationMode === 'group' ? ' group chat' : ' session') + (name === title ? '' : ', ' + name) + (st.status ? ', ' + st.status : '')
       + (Workstreams.unread(w) && !st.dot.includes('unseen') ? ', unread activity' : '')
       + (project ? '; Enter to open' : '; Enter to open; Shift+F10 for actions');
@@ -4196,16 +4304,32 @@ const App = (() => {
     const full = railModelFull(w);
     // the latest line rides the hover tip: the row itself is name + agent + time (NO SENTENCES UNDER TILES)
     const latest = !project && typeof railReceipt === 'function' ? railReceipt(w) : '';
-    return (w.title || 'General') + (latest ? ' — ' + latest : '') + (w.archived ? ' · archived' : '') + (st.status ? ' · ' + st.status : '')
+    return Workstreams.titleOf(w) + (latest ? ' — ' + latest : '') + (w.archived ? ' · archived' : '') + (st.status ? ' · ' + st.status : '')
       + (Workstreams.unread(w) && !st.dot.includes('unseen') ? ' · unread activity' : '')
       + (w.kind === 'task' ? ' · board: ' + w.lane : '')
       + (full ? ' · last run on ' + full : '')
       + (project ? ' — open this session' : ' — Shift+F10 or right-click for actions');
   }
+  /* a routine's rows on the rail, head first: its NEWEST run carries the runs key, the rest list under it as older.
+     Workstreams.list sorts pinned rows first, so a pinned OLDER run arrived first, took the head and the key, and the
+     newest run was drawn set in under it as "older" (delta review 10-15). Equal times keep the order they came in. */
+  function railRunRows(visible) {
+    const head = visible.reduce((a, b) => (+b.lastActiveAt || 0) > (+a.lastActiveAt || 0) ? b : a);
+    return [head].concat(visible.filter(w => w !== head));
+  }
   function rowClass(w, st, activeId) {
     return 'ws-row' + (w.id === activeId ? ' sel' : '') + (st.busy ? ' busy' : '') + (st.attn ? ' attn' : '')
       + (w.pinned ? ' pinned' : '') + (w.archived ? ' archived' : '')
       + (Workstreams.unread(w) ? ' unread' : '');   // real unseen activity (lastActiveAt > lastReadAt, never the open stream)
+  }
+  /* the name the rail printed for a session on its last pass — the D12 disambiguation ("New session · NOVA", "… 2") included —
+     else Workstreams.titleOf. A printed name is used only while its base still matches titleOf, so a session titled since the
+     last pass never shows the stale one. Chat.sessionTitleText (the COMMS title) and the busy row read this. */
+  let railShownNames = new Map();
+  function sessionDisplayName(w) {
+    if (!w || typeof Workstreams === 'undefined') return '';
+    const base = Workstreams.titleOf(w), hit = railShownNames.get(w.id);
+    return hit && hit.base === base ? hit.shown : base;
   }
   function renderRail() {
     const ul = el('workstreams');
@@ -4223,16 +4347,17 @@ const App = (() => {
     syncRailAgentChip(allRows.length);
     const grouped = Workstreams.railGroups(allRows, { view: railKind, activeId, expanded: [...railExpanded], urgent: allRows.filter(w => railRowState(w).busy || pending.has(w.id)).map(w => w.id) });
     const headers = new Map();
-    const flat = grouped.flatMap(item => {
-      if (item.type === 'session') return [item.w];
-      headers.set(item.visible[0].id, item);
-      return item.visible;
-    });
     // delegated workers' threads are never rows (Workstreams.list hides them): their work is on the asking
     // conversation's delegation card, and a running crew shows on that conversation's own lamp (railRowState reads the ledger)
-    const rows = flat;
+    const olderRuns = new Set();   // a routine's runs listed under its newest one, while its history is open
+    const rows = grouped.flatMap(item => {
+      if (item.type === 'session') return [item.w];
+      const runs = railRunRows(item.visible);
+      headers.set(runs[0].id, item);
+      runs.slice(1).forEach(w => olderRuns.add(w.id));
+      return runs;
+    });
     const filters = el('ws-kind-filter');
-    if (filters) filters.hidden = false;
     if (filters) filters.querySelectorAll('[data-ws-kind]').forEach(button => {
       button.setAttribute('aria-pressed', String(button.dataset.wsKind === railKind));
       button.onclick = () => { railKind = button.dataset.wsKind; saveRailView(); renderRail(); };
@@ -4240,19 +4365,36 @@ const App = (() => {
     if (!rows.some(w => w.id === railFocusId)) railFocusId = rows.some(w => w.id === activeId) ? activeId : (rows[0] && rows[0].id);
     ul.setAttribute('role', 'listbox');
     ul.setAttribute('aria-label', 'Sessions');
-    let index = 0;
-    ul.innerHTML = rows.map(w => {
-      index++;
-      const title = w.title || 'General';
+    // two untitled sessions both read "New session" and could not be told apart: a repeated untitled name carries
+    // whose session it is ("New session · MIRA"), and a number when the same agent has more than one.
+    const baseTitles = rows.map(w => Workstreams.titleOf(w));
+    const untitledName = (w, t) => !w.title && baseTitles.filter(x => x === t).length > 1 ? t + ' · ' + railAgentName(w) : t;
+    const shownTitles = rows.map((w, i) => untitledName(w, baseTitles[i]));
+    const seenTitle = new Map();
+    const titles = shownTitles.map((t, i) => {
+      if (rows[i].title || shownTitles.filter(x => x === t).length < 2) return t;
+      const n = (seenTitle.get(t) || 0) + 1; seenTitle.set(t, n);
+      return n === 1 ? t : t + ' ' + n;
+    });
+    // ONE name per session on every surface (org D12 x P26 x P25): the COMMS title and the busy row read the name this pass
+    // printed (sessionDisplayName), so a disambiguated "New session · NOVA" is never a bare "New session" over the transcript
+    railShownNames = new Map(rows.map((w, i) => [w.id, { base: baseTitles[i], shown: titles[i] }]));
+    if (typeof Chat !== 'undefined' && Chat.paintTitle) Chat.paintTitle();   // ORG P26: a rename / auto-title / group change renames the COMMS title too
+    ul.innerHTML = rows.map((w, i) => {
+      const title = titles[i];   // only the General home reads "General"; an untitled other session is a "New session"
       const st = railRowState(w);
       const group = headers.get(w.id);
-      const groupHead = group ? '<li class="ws-auto-group" role="presentation"><button type="button" data-ws-group="' + U.esc(group.key) + '" aria-expanded="' + railExpanded.has(group.key) + '"><span>' + U.esc(group.name) + '</span><small>' + U.esc(railAgentName(w)) + ' · ' + group.rows.length + ' run' + (group.rows.length === 1 ? '' : 's') + ' · ' + (railExpanded.has(group.key) ? 'collapse' : 'show history') + '</small></button></li>' : '';
+      // a routine is ONE row (Andrew 10-15: a header over its own newest run said the name twice, in an older style): its
+      // newest run, with the run count as its fold key; its older runs list under it, set in, while the history is open
+      const open = !!group && railExpanded.has(group.key), runs = group ? group.rows.length : 0;
+      const runsKey = group && runs > 1 ? '<button type="button" class="ws-runs" data-ws-group="' + U.esc(group.key) + '" aria-expanded="' + open + '" aria-label="' + U.esc((open ? 'Hide the older runs of ' : 'Show every run of ') + group.name) + '">' + runs + ' runs</button>' : '';
+      const runAttr = group ? ' data-runs="head"' : olderRuns.has(w.id) ? ' data-runs="older"' : '';
       const tip = railRowTip(w, st);
-      return groupHead + '<li class="' + rowClass(w, st, activeId) + '" data-id="' + U.esc(w.id) + '" tabindex="' + (w.id === railFocusId ? '0' : '-1') + '" role="option" aria-selected="' + (w.id === activeId ? 'true' : 'false') + '" aria-posinset="' + index + '" aria-setsize="' + rows.length + '" aria-label="' + U.esc(railRowLabel(w, st)) + '" aria-keyshortcuts="Shift+F10" title="' + U.esc(tip) + '">' +
+      return '<li class="' + rowClass(w, st, activeId) + '" data-id="' + U.esc(w.id) + '"' + runAttr + ' tabindex="' + (w.id === railFocusId ? '0' : '-1') + '" role="option" aria-selected="' + (w.id === activeId ? 'true' : 'false') + '" aria-posinset="' + (i + 1) + '" aria-setsize="' + rows.length + '" aria-label="' + U.esc(railRowLabel(w, st)) + '" aria-keyshortcuts="Shift+F10" title="' + U.esc(tip) + '">' +
         '<span class="' + st.dot + '" aria-hidden="true"></span>' +
         (w.pinned ? '<span class="ws-pin" aria-hidden="true">★</span>' : '') +
         '<span class="ws-agent' + (w.conversationMode === 'group' ? ' ws-agent-group' : '') + '" aria-hidden="true"' + railAgentColorAttr(w) + '>' + railAgentLine(w) + '</span>' +
-        '<span class="ws-title">' + U.esc(title) + '</span>' +
+        '<span class="ws-title">' + U.esc(title) + '</span>' + runsKey +
         '<span class="ws-meta">' + U.esc(st.meta) + '</span>' +
         '<span class="ws-receipt" aria-hidden="true">' + U.esc(railReceipt(w)) + '</span>' +
         '<button class="ws-kebab" tabindex="-1" aria-label="session actions" title="session actions">⋯</button>' +
@@ -4269,8 +4411,10 @@ const App = (() => {
     } else if (!rows.length && railKind === 'automated') {
       ul.innerHTML = '<li class="proj-empty" role="presentation"><span role="status">No automation sessions yet.</span></li>';
     }
+    fitRailAgentLines();
     ul.querySelectorAll('[data-ws-group]').forEach(button => {
-      button.onclick = (e) => {
+      button.onclick = e => {
+        e.stopPropagation();   // the key sits on the routine's row: folding its runs never also opens that run
         const key = button.dataset.wsGroup;
         if (railExpanded.has(key)) railExpanded.delete(key); else railExpanded.add(key);
         saveRailView();
@@ -4330,6 +4474,7 @@ const App = (() => {
     const pending = railPendingIds();
     if ([...pending].sort().join('\n') !== railAttentionKey) { renderRail(); return; }
     if (railView === 'sessions' && typeof NeedsYou !== 'undefined' && NeedsYou.render) NeedsYou.render();   // ages tick, failures arrive
+    if (typeof StationUI !== 'undefined' && StationUI.badges) StationUI.badges();   // org P01: the bell adds the live NEEDS YOU count, in every rail view
     const activeId = Workstreams.activeId();
     document.querySelectorAll('#workstreams .ws-row,#projects .proj-sess-full').forEach(li => {
       if (li.querySelector('.ws-rename')) return;   // leave a row alone while its title is being edited in place
@@ -4415,7 +4560,7 @@ const App = (() => {
   function exportSession(id, format) {
     const w = Workstreams.get(id), bundle = w && Workstreams.exportConversation(id, format);
     const ok = sessionDownload(bundle); if (ok) SFX.click(); else SFX.bad();
-    if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(ok ? ('exported “' + ((w && w.title) || 'General') + '” — hidden data and secrets excluded') : 'nothing to export in “' + ((w && w.title) || 'General') + '”', ok ? '' : 'warn', undefined, { transient: true });
+    if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(ok ? ('exported “' + Workstreams.titleOf(w) + '” — hidden data and secrets excluded') : 'nothing to export in “' + Workstreams.titleOf(w) + '”', ok ? '' : 'warn', undefined, { transient: true });
   }
   function renderSessionSearch() {
     const input = el('ws-search'), out = el('ws-search-results'), sessions = el('workstreams'); if (!input || !out) return;
@@ -4430,7 +4575,7 @@ const App = (() => {
       const li = document.createElement('li'); li.className = 'ws-search-hit'; li.tabIndex = 0; li.dataset.id = hit.id;
       // a delegated worker's words are found in its CONVERSATION: say whose work it was, and open it unfolded there
       const worker = hit.match === 'delegated' && hit.workerId ? Workstreams.get(hit.workerId) : null;
-      const title = document.createElement('b'); title.textContent = (hit.title || 'General') + (worker ? ' · ' + (((agents.get(worker.agentId) || {}).name) || worker.agentId) + '\'s work' : '');
+      const title = document.createElement('b'); title.textContent = (hit.title || Workstreams.titleOf(hit.id)) + (worker ? ' · ' + (((agents.get(worker.agentId) || {}).name) || worker.agentId) + '\'s work' : '');
       const snippet = document.createElement('small'); snippet.textContent = hit.snippet;
       li.append(title, snippet);
       const open = () => { switchWorkstream(hit.id); if (worker && typeof Delegated !== 'undefined' && Delegated.reveal) Delegated.reveal(worker.id); input.value = ''; renderSessionSearch(); };
@@ -4562,7 +4707,7 @@ const App = (() => {
     if (act === 'export-json') { exportSession(id, 'json'); return; }
     if (act === 'archive') {
       const wasActive = (id === Workstreams.activeId());
-      const nowArchived = !w.archived, label = w.title || 'General';
+      const nowArchived = !w.archived, label = Workstreams.titleOf(w);
       if (nowArchived && w.conversationMode === 'group' && typeof GroupChat !== 'undefined') {
         try { await GroupChat.pause(id); } catch (e) { StationUI.notify(e.message, 'bad'); return; }
       }
@@ -4609,7 +4754,7 @@ const App = (() => {
     return deleteWorkstream(id);
   }
   function deleteWorkstream(id, groupDeleted) {
-    const w = Workstreams.get(id); const label = w ? (w.title || 'General') : '';
+    const w = Workstreams.get(id); const label = w ? Workstreams.titleOf(w) : '';
     if (w && w.conversationMode === 'group' && !groupDeleted && typeof GroupChat !== 'undefined') {
       GroupChat.remove(id).then(() => deleteWorkstream(id, true)).catch(e => StationUI.notify(e.message, 'bad'));
       return false;
@@ -4651,7 +4796,7 @@ const App = (() => {
     const w = Workstreams.get(id); if (!w) return;
     const input = document.createElement('input');
     input.type = 'text'; input.className = 'ws-rename'; input.maxLength = 80;
-    input.value = w.title || ''; input.placeholder = 'General';
+    input.value = w.title || ''; input.placeholder = Workstreams.titleOf(w);
     li.classList.add('renaming');
     titleSpan.replaceWith(input);
     input.focus(); input.select();
@@ -5225,8 +5370,11 @@ const App = (() => {
   // But if a resume is mid-flight (resumingSaved set, e.g. recovery), do NOT clear it from here — the connect
   // screen must keep its RESUME binding so a key re-entry continues the saved agent rather than re-speccing one.
   function startCreation() {
+    // #121: a station this page holds only in memory (resumed from the station file because the browser cache could not
+    // take it) is never replaced by a new creation: re-enter it. reentry() resumes that save and never comes back here.
+    if (typeof CloudSave !== 'undefined' && CloudSave.memorySave && CloudSave.memorySave()) { reentry(); return; }
     SFX.boot(); SFX.open();
-    const hasSave = Save.has() && !!Save.load();
+    const hasSave = !!resumableSave().doc;
     if (!resumingSaved || !hasSave) resumingSaved = null;
     show('screen-connect'); initConnect();
   }
@@ -5327,21 +5475,28 @@ const App = (() => {
   function showSaveUnreachableGate(reason) {
     gateActive = true;
     try { if (World && World.stop) World.stop(); } catch (_) {}
-    const sub = el('unreachable-sub');
-    if (sub) sub.textContent = reason === 'forbidden' ? 'station service refused this window (stale session) — a relaunch usually clears it' : 'station service not answering';
-    if (sub && reason === 'unreadable') sub.textContent = 'saved station temporarily unreadable — retry without resetting';
-    if (sub && reason === 'cache') sub.textContent = 'saved station could not be restored into this window — retry without resetting';
-    // Screenshot-readable diagnosis for a stranded beginner: support can distinguish an alive sidecar refusing
-    // stale window auth from a fetch that died after the page loaded without asking for Terminal logs.
-    const diagnosis = reason === 'forbidden'
-      ? { code: 'SAVE-403 · STALE WINDOW SESSION', text: 'the station service is running, but it refused this app window' }
-      : reason === 'unreadable'
-        ? { code: 'SAVE-READ · STATION FILE UNAVAILABLE', text: 'the station service is running, but could not read the saved station; your existing files are preserved' }
-        : reason === 'cache'
-          ? { code: 'SAVE-CACHE · LOCAL RESTORE FAILED', text: 'the saved station was received, but this window could not store or read it; the durable station is preserved' }
-          : { code: 'SAVE-NET · SAVE REQUEST LOST', text: 'the app loaded, but its saved-station request did not return' };
-    const code = el('unreachable-code');
-    if (code) code.innerHTML = '<b>RECOVERY CODE: ' + diagnosis.code + '</b><br>' + diagnosis.text + '. Send a screenshot of this code to support.';
+    const sub = el('unreachable-sub'), code = el('unreachable-code');
+    // BROWSER MODE (no desktop shell, see below): the subtitle says so on every repaint, not only the first
+    const core = tauriCore();
+    const notAnswering = 'station service not answering' + (core ? '' : ' (browser mode)');
+    let diagnosis;
+    // A retry can reach a different failure boundary; keep the screenshot and copied report current.
+    const paintDiagnosis = reason => {
+      if (sub) sub.textContent = reason === 'forbidden' ? 'station service refused this window (stale session) — a relaunch usually clears it' : notAnswering;
+      if (sub && reason === 'unreadable') sub.textContent = 'saved station temporarily unreadable — retry without resetting';
+      if (sub && reason === 'cache') sub.textContent = 'saved station could not be restored into this window — retry without resetting';
+      // Screenshot-readable diagnosis for a stranded beginner: support can distinguish an alive sidecar refusing
+      // stale window auth from a fetch that died after the page loaded without asking for Terminal logs.
+      diagnosis = reason === 'forbidden'
+        ? { code: 'SAVE-403 · STALE WINDOW SESSION', text: 'the station service is running, but it refused this app window' }
+        : reason === 'unreadable'
+          ? { code: 'SAVE-READ · STATION FILE UNAVAILABLE', text: 'the station service is running, but could not read the saved station; your existing files are preserved' }
+          : reason === 'cache'
+            ? { code: 'SAVE-CACHE · LOCAL RESTORE FAILED', text: 'the saved station was received, but this window could not store or read it; the durable station is preserved' }
+            : { code: 'SAVE-NET · SAVE REQUEST LOST', text: 'the app loaded, but its saved-station request did not return' };
+      if (code) code.innerHTML = '<b>RECOVERY CODE: ' + diagnosis.code + '</b><br>' + diagnosis.text + '. Send a screenshot of this code to support.';
+    };
+    paintDiagnosis(reason);
     const reportBtn = el('btn-unreachable-report'), reportHost = el('unreachable-report');
     if (reportBtn) reportBtn.onclick = () => {
       SFX.click && SFX.click();
@@ -5363,25 +5518,24 @@ const App = (() => {
     // and a verbatim reason. Show THAT reason on this screen instead of the generic "not answering": the text is
     // produced by the sidecar from its own ledger, so it is proof, not a guess. Likewise, if the desktop guardian
     // has HALTED respawns (starnet_sidecar_status.halted), say so — the retry poll can never heal that on its own.
-    let degradedReason = '';
     // The reading itself is shared with the in-game LINK DOWN chip (Harness.engineState): the same verbatim 503 text
     // or guardian halt, now bounded so a hung service cannot leave the probe pending.
     const probeDegraded = async () => {
       let reason = '';
       try { reason = String(((await Harness.engineState()) || {}).reason || ''); } catch (_) { reason = ''; }
-      if (reason === degradedReason) return reason;
-      degradedReason = reason;
-      if (sub) { if (reason) sub.textContent = reason; else if (/^(degraded|station service halted)/i.test(sub.textContent)) sub.textContent = 'station service not answering'; }
-      if (code && reason) code.innerHTML = '<b>RECOVERY CODE: ' + (/owner unavailable/i.test(reason) ? 'SAVE-OWNER · WORKSPACE OWNED BY ANOTHER PROCESS' : /crash-loop/i.test(reason) ? 'SAVE-LOOP · STATION SERVICE CRASH LOOP' : 'SAVE-DEGRADED · STATION SERVICE DEGRADED') + '</b><br>' + reason.replace(/</g, '&lt;') + '<br>Send a screenshot of this code to support.';
+      // Reapply a persistent degraded verdict after the retry refreshed its save-request diagnosis.
+      if (sub) { if (reason) sub.textContent = reason; else if (/^(degraded|station service halted)/i.test(sub.textContent)) sub.textContent = notAnswering; }
+      if (reason) {
+        diagnosis = { code: /owner unavailable/i.test(reason) ? 'SAVE-OWNER · WORKSPACE OWNED BY ANOTHER PROCESS' : /crash-loop/i.test(reason) ? 'SAVE-LOOP · STATION SERVICE CRASH LOOP' : 'SAVE-DEGRADED · STATION SERVICE DEGRADED', text: reason };
+        if (code) code.innerHTML = '<b>RECOVERY CODE: ' + diagnosis.code + '</b><br>' + diagnosis.text.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '<br>Send a screenshot of this code to support.';
+      }
       return reason;
     };
     // BROWSER MODE (no desktop shell): there is no sidecar to restart and no workspace to quarantine, so this
     // screen used to offer nothing but the 5s poll — a dead end (audit: "first run fails silently"). Say plainly
-    // where the service lives, on the subtitle AND on every poll line, so the exit is never a mystery.
-    const core = tauriCore();
+    // where the service lives, on the subtitle (paintDiagnosis) AND on every poll line, so the exit is never a mystery.
     const BROWSER_HINT = 'the station service isn\'t answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.';
     if (!core) {
-      if (sub && reason !== 'forbidden' && reason !== 'unreadable' && reason !== 'cache') sub.textContent = 'station service not answering (browser mode)';
       if (reason === 'cache') setStatus('Your durable save is untouched. Retry after browser storage becomes available.');
       else if (reason === 'unreadable') setStatus('Your save is untouched. Retry when the station file becomes readable.');
       else setStatus(BROWSER_HINT);
@@ -5403,6 +5557,7 @@ const App = (() => {
         try { location.reload(); } catch (_) {}
         return;
       }
+      paintDiagnosis(r.reason);
       const degraded = await probeDegraded();
       const unreadable = r.reason === 'unreadable', cacheFailed = r.reason === 'cache';
       setStatus((degraded ? degraded + ' — ' : unreadable ? 'saved station still unreadable — ' : cacheFailed ? 'local restore still unavailable — ' : 'still unreachable — ') + 'retrying every 5s (attempt ' + attempts + '). Your save is untouched.' + (core || unreadable || cacheFailed ? '' : ' ' + BROWSER_HINT));
@@ -5628,7 +5783,7 @@ const App = (() => {
       if (status) status.textContent = '＋ preparing redacted recovery report…';
       try {
         const response = await fetch('/api/lineage/report', { cache: 'no-store' });
-        if (!response.ok) throw new Error((Harness.sessionStale && Harness.sessionStale()) ? 'the station restarted; reload this page' : 'report unavailable');
+        if (!response.ok) throw new Error(refusedPageLine() || 'report unavailable');
         const blob = await response.blob();
         const url = URL.createObjectURL(blob), a = document.createElement('a');
         a.href = url; a.download = 'starnet-recovery-report.json'; a.style.display = 'none';
@@ -5654,7 +5809,7 @@ const App = (() => {
         if (next && (next.priorInstallEvidence === false || nextRec.some(row => row && row.recoverable))) { location.reload(); return; }
         if (status) status.textContent = next
           ? '＋ checked again — still nothing recoverable here. START FRESH sets the leftovers aside; RESTORE BACKUP loads a backup file.'
-          : '＋ could not check again — ' + ((Harness.sessionStale && Harness.sessionStale()) ? 'the station restarted; reload this page' : 'the station service did not answer');
+          : '＋ could not check again — ' + (refusedPageLine() || 'the station service did not answer');
       } catch (_) {
         if (status) status.textContent = '＋ could not check again — the station service did not answer';
       }
@@ -5863,8 +6018,11 @@ const App = (() => {
   // (never an id in the UI) and keys its standing candidates against the focused hero.
   // currentAgent/agents/applyConfig (slash-plan): the slash-command suite reads/writes the live roster
   // and per-agent config (/agents, /model, /personality, …).
-  return { show, refreshUsage, persist, pushRoster, refreshRail: renderRail, openWorkstream, waitingSessionOf, launchRecipe, summonAgent, summonForRequest, crewCount: () => agents.size,
-    agentName: id => { const a = agents.get(id); return a ? (a.name || a.id) : null; },
+  return { show, refreshUsage, persist, pushRoster, refreshRail: renderRail, sessionDisplayName, openWorkstream, waitingSessionOf, launchRecipe, summonAgent, summonForRequest, crewCount: () => agents.size,
+    tierModelFor,   // org P22 fix: the bay's MODEL helper names a SETTINGS tier pin instead of promising a copy
+    // a team.spawn clone ('sub-<id>', never on the roster) is a HELPER: its raw id was the name on its approval card and NEEDS
+    // YOU once its ask could outlive the lead's turn (live walk 2026-10-14); the sidecar says "a helper" for it too
+    agentName: id => { const a = agents.get(id); return a ? (a.name || a.id) : (/^sub-/.test(String(id || '')) ? 'HELPER' : null); },
     // WORK LINES: a downstream stage runs as ANOTHER agent, so the chat host needs THAT agent's composed
     // prompt — never the focused one's. Read-only; null for an id that is not on the live roster.
     systemFor: id => { const a = agents.get(id); return a ? (a.systemPrompt || '') : null; },
@@ -5874,7 +6032,13 @@ const App = (() => {
     selectAgent: selectAgent,   // COMMS top-bar agent selector: switch to (or mint) a workstream bound to agentId
     // PER-AGENT THREADS: the CREW roster narrows the SESSIONS rail to one agent (same id again / null = all)
     filterRailByAgent: setRailAgentFilter,
+    showNeedsYou: showNeedsYou,   // station.show 'needs-you' (app/places.js)
+    // NEEDS YOU lives in the SESSIONS view only: needsyou.js reads this before it shows its block (a build landing, a STEP-IN,
+    // a dismiss from NOTIFICATIONS re-render it from any view, and must never un-hide it above PROJECTS)
+    railView: () => railView,
     railAgentFilter: () => railAgentFilter,
+    // NEEDS YOU names a group chat that waits on you by the SAME line its session row reads ("ULTRON, CYPHER +3")
+    railAgentLine,
     // THE POST-SUMMON DESK STEP, owned by the session (chat.js maybeDeskPrompt): the read that decides whether a
     // stream still owes its agent a workstation, and the door its chip opens (BUILD MODE, armed on WORKSTATIONS).
     needsWorkstation: needsWorkstation,

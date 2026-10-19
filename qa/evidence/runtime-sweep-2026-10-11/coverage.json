@@ -24,9 +24,9 @@
         "sidecar/index.js:26755"
       ],
       "limitations": [
-        "No native Linux: WSL not installed. No native macOS or cross-user token-page attack performed.",
+        "No native Linux: WSL not installed. No native macOS or multi-account check performed.",
         "No installed artifact acceptance.",
-        "OS PID reuse was simulated with injected production lookups; no native cross-user PID-recycling exploit attempted."
+        "OS PID reuse was simulated with injected production lookups; no native multi-account check attempted."
       ],
       "fixChain": [
         "9aee8e7fcd8a27f57ceb3900af8c8eace55d5f3c",
@@ -71,7 +71,7 @@
     {
       "test": "test/peerowner.test.js",
       "assertions": 49,
-      "scope": "All injected cases, recycled-PID refusal and real Windows loopback child process on f7553cd3e; no cross-user session available."
+      "scope": "All injected cases, recycled-PID refusal and real Windows loopback child process on f7553cd3e; no second OS account available."
     },
     {
       "test": "test/fs.search-gitignore.test.js",
@@ -199,7 +199,7 @@
     },
     {
       "area": "Native peer ownership",
-      "status": "Windows same-user path verified; cross-platform/cross-user pending",
+      "status": "Windows same-user path verified; cross-platform and multi-account checks pending",
       "detail": "49assertions include real Windows owner child and injected recycled-PID refusal;35real sidecar page/API assertions pass after cache removal. Linux/macOS OS visibility and foreign-user/PID-reuse behavior need native acceptance."
     },
     {

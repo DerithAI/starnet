@@ -149,8 +149,14 @@ const lockBlock = build.slice(build.indexOf('if (protectedSpawn) {'), build.inde
 A.ok(/voiceSay\('hover'/.test(lockBlock), 'the lock badge speaks through the one-voice arbiter, not a bare fillText');
 
 /* ---------- 8. delivery bookkeeping resolves against the LIVE station ---------- */
-const noteBlock = build.slice(build.indexOf('function noteLineDelivered'), build.indexOf('function noteLineDelivered') + 900);
-A.ok(/opts\.getStation\(\)[\s\S]*const st = live \|\| station;/.test(noteBlock),
-  'noteLineDelivered prefers the live station over the module-level one close() never nulls');
+// (the crate-at-a-chute hook noteLineDelivered is gone — a crate books nothing, 2026-10-12; the shipment bookkeeping that replaced
+// it — noteLineShipped, and finLiveStation behind lineShipSpent / markLineShipped — keeps the same live-station rule)
+for (const fn of ['function noteLineShipped', 'function finLiveStation']) {
+  const noteBlock = build.slice(build.indexOf(fn), build.indexOf(fn) + 900);
+  A.ok(build.indexOf(fn) > 0 && /opts\.getStation\(\)[\s\S]*const st = live \|\| station;/.test(noteBlock),
+    fn.slice(9) + ' prefers the live station over the module-level one close() never nulls');
+}
+A.ok(/function lineShipSpent\(lineId\) \{\s*const st = finLiveStation\(\);/.test(build) && /function markLineShipped\(lineId\) \{\s*const st = finLiveStation\(\);/.test(build),
+  '…and lineShipSpent / markLineShipped resolve through it');
 
 A.report('refit-card-stack');

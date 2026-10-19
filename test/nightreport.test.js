@@ -154,7 +154,7 @@ A.eq(panelHalted.reachable, true, 'a halted status is still reachable telemetry'
 A.eq(panelHalted.halted, true, 'panelModel exposes the durable halt');
 A.ok(/E-STOP/i.test(panelHalted.stateText) && /halted/i.test(panelHalted.stateText), 'the state names the halt (E-STOP), prominently');
 A.ok(!/standing by|on watch/i.test(panelHalted.stateText), 'a halted shift NEVER claims "standing by"/"on watch"');
-A.ok(/dial|level/i.test(panelHalted.why), 'the halted why names WHICH control lifts it (the autonomy dial / LEVEL buttons)');
+A.ok(/ON ITS OWN rung/.test(panelHalted.why) && /RESUME AUTOMATION in the top bar/.test(panelHalted.why), 'the halted why names WHICH controls lift it (an ON ITS OWN rung, or RESUME AUTOMATION — org P06)');
 A.ok(/stopped|will not|won.t/i.test(panelHalted.why), 'the halted why says plainly the shift is stopped');
 A.ok(!/\d{1,2}:\d{2}\s*(AM|PM)/.test(panelHalted.nextEligibleText), 'no NEXT ELIGIBLE clock while halted — the shift will NOT run at that time');
 A.ok(/E-STOP|halt/i.test(panelHalted.nextEligibleText), 'the next-eligible slot says WHY there is no next time');
@@ -163,6 +163,10 @@ A.ok(!/standing by|on watch/i.test(NR.panelModel({ status: { active: true, away:
 // non-halted statuses stay exactly as before, and expose halted:false.
 A.eq(panelActive.halted, false, 'a live status carries halted:false');
 A.eq(panelOff.halted, false, 'an OFF status carries halted:false');
+// org pass P09-a: binding 'posture' (dial on WAIT / SUGGEST) means no job runs at any time — NEXT JOB EARLIEST never names a clock
+const panelPosture = NR.panelModel({ status: { active: false, away: false, beatsUsedToday: 0, leashPerDay: 3, binding: 'posture', lastBeatAt: 0, nextEligibleAt: T0610Z + 2700000 }, tzOffsetMin: -300 });
+A.ok(!/\d{1,2}:\d{2}\s*(AM|PM)/.test(panelPosture.nextEligibleText) && /not scheduled/.test(panelPosture.nextEligibleText) && /WAIT or SUGGEST/.test(panelPosture.nextEligibleText), 'a posture-bound shift shows no next-job clock and names the dial as the reason');
+A.ok(/\d{1,2}:\d{2}\s*(AM|PM)/.test(panelActive.nextEligibleText), 'a cooldown-bound shift still shows its real next-job clock');
 
 /* ---------- panelModel(): BUILD-vs-DRAFT mode + cold-start readiness honesty (2026-07-13) ----------
    Regression: at dial=free/sandbox with no away-workshop grant every beat silently degraded to a reason-only
@@ -232,12 +236,31 @@ A.eq(NR.postureOutlook({}), '', 'a status with no buildMode/readiness detail →
 // cold-start build pick with no away-workshop grant: it will only DRAFT, and it's still learning — say BOTH.
 const outCold = NR.postureOutlook(Object.assign({}, stBase, { buildMode: 'draft', draftReason: 'no-workshop-grant', readiness: rdWarm }));
 A.ok(/while you.re away/i.test(outCold), 'the outlook is framed as what happens WHILE AWAY');
-A.ok(/drafts only/i.test(outCold) && /grant/i.test(outCold), 'a build pick that can only draft says so + names the missing grant');
-A.ok(/still learning you/i.test(outCold) && /3 of 4 areas/.test(outCold), 'the cold-start readiness caveat rides the same line');
-// a fully-hot, granted build station: the outlook is the plain "beats BUILD…" truth, no readiness caveat.
+A.ok(/draft small jobs, not build them/i.test(outCold) && /grant/i.test(outCold), 'a build pick that can only draft says so + names the missing grant');
+A.ok(/LAST REPORT in SETTINGS › AUTONOMY/.test(outCold), 'draft mode names where the drafts really surface (LAST REPORT), not a desk');
+// call #57 (org pass 10-14): a readiness hold reads as ONE plain reason, never a counter or an unlock ladder…
+A.ok(/I’ll start once I’ve seen a few of your runs/.test(outCold), 'the cold-start hold is one plain present-tense reason');
+A.ok(!/\d+ of \d+/.test(outCold) && !/reaching either|lets it act|set REACH/i.test(outCold), 'the readout carries no N-of-M counter and no unlock instruction');
+// …and the exact counts are never dropped: readinessText keeps them for SETTINGS › AUTONOMY and LAST REPORT.
+A.ok(/still learning you/i.test(NR.readinessText(rdWarm)) && /3 of 4 areas/.test(NR.readinessText(rdWarm)), 'readinessText still carries the exact N-of-M counts');
+// P09 review fix: the counts line names a NECESSARY condition, never a promise — with the dial on WAIT / SUGGEST, clearing a
+// bar does not make it act, and LAST REPORT shows this line with no dial context at all.
+A.ok(/; to act on its own it needs either all 4 areas or 4 recent runs$/.test(NR.readinessText(rdWarm)) && !/starts acting|once either|lets it act|one of those is complete|won’t act on its own before/i.test(NR.readinessText(rdWarm)), 'readinessText names the bar it needs — EITHER all 4 areas or 4 recent runs, never read as both (g1 P09 final round) — and never promises it will act once a bar clears');
+A.eq(NR.readinessPlain({ tier: 'hot' }), '', 'a hot station has no hold-back reason');
+// a fully-hot, granted build station: present tense, the real pace from leashPerDay, each job a new session in the rail.
 const outBuild = NR.postureOutlook(Object.assign({}, stBase, { buildMode: 'build', draftReason: null, workshopGranted: true, readiness: { tier: 'hot' } }));
-A.ok(/jobs build real deliverables/i.test(outBuild), 'a granted, hot station promises real building');
-A.ok(!/still learning/i.test(outBuild), 'a hot station adds no still-learning caveat');
+A.eq(outBuild, 'While you’re away I’ll do up to 3 small jobs a day; each arrives as a new session in your rail.', 'a granted, hot station says what it will do, at the status pace');
+// (org P09/P31 wire) onboarding speaks postureOutlook in the Dialogue panel (VT323): no symbol glyph that falls back to another font
+for (const st of [outBuild, outCold, NR.postureOutlook({ buildMode: 'build', leashPerDay: 7 }), NR.postureOutlook({ buildMode: 'draft', draftReason: 'no-workshop-grant' })]) {
+  A.ok(!/[\u2600-\u27BF\u2B00-\u2BFF]/.test(st), 'the posture outlook carries no fallback-font symbol glyph: ' + JSON.stringify(st));
+}
+A.ok(/up to 7 small jobs a day/.test(NR.postureOutlook({ buildMode: 'build', leashPerDay: 7 })), 'the job count follows status.leashPerDay, never a fixed number');
+A.ok(!/\d/.test(NR.postureOutlook({ buildMode: 'build', leashPerDay: null })), 'an unknown leashPerDay drops the number instead of inventing one');
+A.ok(!/still learning|I’ll start once/i.test(outBuild), 'a hot station adds no still-learning caveat');
+A.ok(/set REACH to LOCAL ONLY/.test(NR.modeText({ buildMode: 'draft', draftReason: 'reach' })), 'the panel MODE line names the REACH rung by its rendered label, LOCAL ONLY');
+// a SUGGEST/WAIT pick (initiative below leash): the driver binds on 'posture', nothing ever runs unattended, so the
+// readout promises nothing — even though buildMode reads 'draft'/'reach' and a cold station has readiness detail.
+A.eq(NR.postureOutlook(Object.assign({}, stBase, { binding: 'posture', active: false, buildMode: 'draft', draftReason: 'reach', readiness: rdWarm })), '', 'a posture-bound (SUGGEST) status says nothing — no draft promise, no "I’ll start once"');
 A.eq(NR.postureOutlook(outBuild) === outBuild, false, 'postureOutlook takes a status object, not its own string (sanity)');
 
 /* ---------- unseenDrafts(): the live-session nudge predicate (NS visibility 2026-07-13) ----------

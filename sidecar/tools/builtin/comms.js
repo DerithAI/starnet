@@ -283,5 +283,6 @@
     };
   }
 
-  return { makeCommsTools, DEFAULT_MAX_LEN, MAX_CHUNKS, TEXT_CHARS };
+  // kindForMime + MAX_FILES are shared with routine-media.js: a routine's delivery attaches files exactly like this tool.
+  return { makeCommsTools, DEFAULT_MAX_LEN, MAX_CHUNKS, TEXT_CHARS, MAX_FILES, kindForMime };
 });

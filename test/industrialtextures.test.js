@@ -181,6 +181,32 @@ async function main() {
   };
   equal(wallPatchPixels(-strip.w),wallPatchPixels(0),'side/corner high-detail sampling wraps the same wall strip phase at negative coordinates');
 
+  // A CROP OF A BAKED PLATE (2026-10-13): a whole-station plate painted at an explicit scale is cut 1:1 for one chunk
+  {
+    const whole=canvas(16,8), g=api.detailContext(whole.getContext('2d'),{scale:2});
+    g.fillStyle='#ff0000'; g.fillRect(0,0,8,8); g.fillStyle='#0000ff'; g.fillRect(8,0,8,8);
+    const plate=api.baseLayers(whole)[0];
+    equal([plate.width,plate.height],[32,16],'an explicit plate scale is the plate scale');
+    const piece=canvas(8,8);
+    ok(api.cropBase(whole,piece,8,0),'a cut that lands on whole plate pixels is accepted');
+    const cut=api.baseLayers(piece)[0];
+    equal([cut.width,cut.height],[16,16],'the cut keeps the whole plate density');
+    equal(Buffer.from(cut.pixels),Buffer.from(plate.getContext('2d').getImageData(16,0,16,16).data),'the cut is a 1:1 copy of the plate pixels it covers');
+    const odd=canvas(3,3); api.detailContext(odd.getContext('2d'),{scale:1.5});
+    const refused=canvas(1,1);
+    ok(!api.cropBase(odd,refused,1,0),'a cut off the plate grid is refused (the caller bakes that chunk instead)');
+    equal(api.baseLayers(refused).length,0,'…and nothing is registered for it');
+    ok(api.cropBase(canvas(4,4),canvas(2,2),0,0),'a bake without a plate needs nothing cut');
+    // ...and the way back: the pieces stitch into one plate, the very one they were cut from
+    const left=canvas(8,8); ok(api.cropBase(whole,left,0,0));
+    const back=canvas(16,8);
+    ok(api.stitchBase(back,[{cv:left,x:0,y:0},{cv:piece,x:8,y:0}]),'cut pieces stitch back into one plate');
+    equal(Buffer.from(api.baseLayers(back)[0].pixels),Buffer.from(plate.pixels),'…the very plate they were cut from');
+    const unplated=canvas(16,8);
+    ok(!api.stitchBase(unplated,[{cv:left,x:0,y:0},{cv:canvas(8,8),x:8,y:0}]),'a piece without a plate is refused');
+    equal(api.baseLayers(unplated).length,0,'…and nothing is registered for it');
+  }
+
   const black=draw(api,'floor',0,0,12,0,0,'plate','#111111'), gray=draw(api,'floor',0,0,12,0,0,'plate','#888888');
   ok(black.image!==gray.image,'neutral paint selections have distinct cached materials');
   const neutralPaintResponds=Buffer.compare(Buffer.from(black.image.pixels),Buffer.from(gray.image.pixels))!==0;

@@ -1,5 +1,7 @@
 'use strict';
 const http = require('node:http');
+// the user's own words: on this non-Claude wire the run-context note leads the newest user message
+const { userWords } = require('./host-notes.js');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function startOverseerProvider(options = {}) {
   let reviews = 0;
@@ -16,16 +18,17 @@ async function startOverseerProvider(options = {}) {
     const send = delta => res.write('data: ' + JSON.stringify({ choices: [{ delta }] }) + '\n\n');
     const call = (name, args) => send({ tool_calls: [{ index: 0, id: name + requests.length, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
     const user = messages.filter(m => m.role === 'user').pop();
+    const userText = userWords(user);
     const lastUserIndex = messages.map(m => m.role).lastIndexOf('user');
     const tools = messages.slice(lastUserIndex + 1).filter(m => m.role === 'assistant').flatMap(m => m.tool_calls || []).map(t => t.function && t.function.name);
     const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
     const crew = system.match(/^  - ([A-Za-z0-9_-]+) \(/m);
     const workerId = crew ? crew[1] : 'researcher';
     if (!parsed.tools || !parsed.tools.length) send({ content: 'Ready.' });
-    else if (String(user && user.content).includes('DIRECT_PROOF')) send({ content: 'Direct specialist answer.' });
-    else if (String(user && user.content).startsWith('Review the background work')) { reviews++; if (options.reviewDelay) await sleep(options.reviewDelay); send({ content: /"status"\s*:\s*"interrupted"/.test(user.content) ? 'The crew’s work was stopped. I’ll wait for your next direction.' : 'Reviewed findings: the worker returned two observations.' }); }
-    else if (String(user && user.content).startsWith('BATCH_WORKER_')) { await sleep(100); send({ content: 'BATCH_FINDING: ' + user.content.slice(0, 60) }); }
-    else if (String(user && user.content).includes('BATCH_TIMING_PROOF')) {
+    else if (userText.includes('DIRECT_PROOF')) send({ content: 'Direct specialist answer.' });
+    else if (userText.startsWith('Review the background work')) { reviews++; if (options.reviewDelay) await sleep(options.reviewDelay); send({ content: /"status"\s*:\s*"interrupted"/.test(userText) ? 'The crew’s work was stopped. I’ll wait for your next direction.' : 'Reviewed findings: the worker returned two observations.' }); }
+    else if (userText.startsWith('BATCH_WORKER_')) { await sleep(100); send({ content: 'BATCH_FINDING: ' + userText.slice(0, 60) }); }
+    else if (userText.includes('BATCH_TIMING_PROOF')) {
       const dispatches = tools.filter(t => t === 'team_dispatch').length;
       if (!tools.includes('brief_proceed')) call('brief_proceed', { objective: 'Delegate two findings in one turn', deliverable: 'One combined report' });
       else if (!dispatches) call('team_dispatch', { workers: [{ agentId: workerId, prompt: 'BATCH_WORKER_FIRST: return the first finding.' }], background: true });
@@ -35,14 +38,14 @@ async function startOverseerProvider(options = {}) {
         call('team_dispatch', { workers: [{ agentId: workerId, prompt: 'BATCH_WORKER_SECOND: return the second finding.' }], background: true });
       } else send({ content: 'Both research tasks are assigned.' });
     }
-    else if (String(user && user.content).includes('WORKER_PROOF')) { await sleep(options.workerDelay || 800); send({ content: 'WORKER_FINDINGS: two verified observations.' }); }
-    else if (String(user && user.content).startsWith('Review the project brief and identify')) { await sleep(options.workerDelay || 800); send({ content: 'The project needs a clear audience and a small first milestone. Start with the core workflow, then test it with one user.' }); }
+    else if (userText.includes('WORKER_PROOF')) { await sleep(options.workerDelay || 800); send({ content: 'WORKER_FINDINGS: two verified observations.' }); }
+    else if (userText.startsWith('Review the project brief and identify')) { await sleep(options.workerDelay || 800); send({ content: 'The project needs a clear audience and a small first milestone. Start with the core workflow, then test it with one user.' }); }
     else if (system.includes('[PROJECT WORKSPACE]')) {
       if (!tools.includes('brief_proceed')) call('brief_proceed', { objective: 'Review this project with the station crew', deliverable: 'A concise project recommendation' });
       else if (!tools.includes('team_dispatch')) call('team_dispatch', { workers: [{ agentId: workerId, prompt: 'Review the project brief and identify the two most useful next steps.' }], background: true });
       else send({ content: 'I’ve asked the crew to review the project. You can keep talking here while they work.' });
     }
-    else if (/follow.up/i.test(String(user && user.content))) {
+    else if (/follow.up/i.test(userText)) {
       if (!tools.includes('brief_proceed')) call('brief_proceed', { objective: 'Continue the existing research thread', deliverable: 'Follow-up findings' });
       else if (!tools.includes('team_dispatch')) call('team_dispatch', { workers: [{ agentId: workerId, session: 'Research proof', prompt: 'WORKER_PROOF: continue from your previous findings' }], background: true });
       else send({ content: 'Follow-up started in the existing working session.' });

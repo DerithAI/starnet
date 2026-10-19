@@ -24,6 +24,7 @@ function fixture() {
     assert.equal(result.status,1);
     assert.match(result.stderr,/--workspace requires/);
   }
+  // docs-claims-13: the pure catalog pre-flight case (vm + stubbed fetch) lives in test/dev-seed-preflight.test.js, on the fast gate.
   const a=fixture(), b=fixture();
   try {
     // Concurrent campaigns must neither contend for a lease nor share durable data.

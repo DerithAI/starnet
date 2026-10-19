@@ -10,7 +10,7 @@
    Each place: { id, words (the UI's own path — what the Commander sees), about (one line: what it is for),
    open: how the page reaches it — { term, section? } a window (StationUI.openTerm key + console section, aliases
    included), { agent: <dossier tab> } an agent's dossier tab, { desk: true } an agent's desk screen,
-   { fn: 'build' | 'recruit' | 'recipes' } a door that is not a plain window }.
+   { fn: 'build' | 'recruit' | 'recipes' | 'needs-you' } a door that is not a plain window }.
    Pure data + lookups: no DOM, no IO — node-requirable (the sidecar reads it) and browser-loadable. */
 'use strict';
 (function (root, factory) {
@@ -26,7 +26,7 @@
     // ---- WORK ----
     P('tasks', 'MY WORK › TASKS', 'the task board: planned work as cards; assigning a card hands it to an agent', { term: 'tasks' }),
     P('deliverables', 'MY WORK › DELIVERABLES', 'everything the crew finished, with its files', { term: 'deliverables' }),
-    P('to-review', 'MY WORK › DELIVERABLES › TO REVIEW', 'finished work waiting for the Commander\'s verdict, at the top of DELIVERABLES', { term: 'outbox' }),
+    P('to-review', 'MY WORK › DELIVERABLES › TO REVIEW', 'away runs and workflow jobs waiting for the Commander\'s rating (chats are rated in COMMS), at the top of DELIVERABLES', { term: 'outbox' }),
     P('recipes', 'MY WORK › RECIPES', 'ready-made jobs to start in one click', { fn: 'recipes' }),
     P('workflows', 'AUTOMATE › WORKFLOWS', 'conveyor lines of agents on the floor: send a job down a line, see each line\'s output', { term: 'workflows' }),
     P('schedules', 'AUTOMATE › SCHEDULES', 'routines: any job on a schedule (StarNet\'s own scheduler, never OS cron)', { term: 'automation', section: 'routines' }),
@@ -65,7 +65,7 @@
     P('you', 'CREW › YOU', 'the Commander\'s own dossier: about you, aims, preferences, what agents are told', { term: 'commander' }),
     // ---- SYSTEM ----
     P('settings', 'SETTINGS', 'every station setting', { term: 'settings' }),
-    P('settings-ai', 'SETTINGS › AI & MODELS', 'AI providers, their keys and sign-ins, default and backup models, StarNet credits (the STORE: balance, top up)', { term: 'settings', section: 'providers' }),
+    P('settings-ai', 'SETTINGS › AI & MODELS', 'AI providers, their keys and sign-ins, default and fallback models, StarNet credits (the STORE: balance, top up)', { term: 'settings', section: 'providers' }),
     P('settings-autonomy', 'SETTINGS › AUTONOMY', 'when agents work on their own, and what they did while you were away', { term: 'settings', section: 'autonomy' }),
     P('settings-permissions', 'SETTINGS › PERMISSIONS', 'access and approval rules for the station or one agent', { term: 'settings', section: 'permissions' }),
     P('settings-spending', 'SETTINGS › SPENDING LIMITS', 'spending caps, recorded usage, and interrupted runs to settle', { term: 'settings', section: 'budget' }),
@@ -73,7 +73,8 @@
     P('settings-alerts', 'SETTINGS › ALERTS', 'what pings the Commander and whether it chimes', { term: 'settings', section: 'notifs' }),
     P('settings-remote', 'SETTINGS › REMOTE', 'pair a phone and control the station from anywhere', { term: 'settings', section: 'remote' }),
     P('settings-browser', 'SETTINGS › BROWSER', 'where the station browser runs, and RESET STATION BROWSER when it is stuck', { term: 'settings', section: 'browser' }),
-    P('settings-app', 'SETTINGS › APP & BACKUP', 'startup, runtime limits, backups, updates, troubleshooting, START FRESH and ERASE EVERYTHING', { term: 'settings', section: 'system' }),
+    P('settings-app', 'SETTINGS › APP & BACKUP', 'startup, runtime limits, backups, updates, troubleshooting and ERASE EVERYTHING', { term: 'settings', section: 'system' }),
+    P('needs-you', 'SESSIONS › NEEDS YOU', 'every approval, question and decision waiting on the Commander, at the top of SESSIONS (also NOTIFICATIONS › NEEDS YOU)', { fn: 'needs-you' }),
     P('notifications', 'NOTIFICATIONS', 'everything that happened and what is waiting on the Commander', { term: 'notifs' }),
     P('updates', 'UPDATES', 'check for and install a StarNet update', { term: 'updates' }),
     P('field-manual', 'FIELD MANUAL', 'the Commander\'s guide to StarNet', { term: 'manual' })
@@ -96,6 +97,11 @@
       if (!env.build || !env.build.open) throw new Error('BUILD MODE is not loaded on this page');
       env.build.open();
       return { open: !!(env.build.isOpen && env.build.isOpen()), key: 'build-mode' };
+    }
+    // NEEDS YOU is not a window: it heads the SESSIONS rail (App.showNeedsYou puts that view in front)
+    if (o.fn === 'needs-you') {
+      if (!env.app || !env.app.showNeedsYou) throw new Error('NEEDS YOU is not loaded on this page');
+      return env.app.showNeedsYou();
     }
     if (o.fn === 'recruit' || o.fn === 'recipes') {
       const fn = env.app && (o.fn === 'recruit' ? env.app.openSummonBay : env.app.openRecipes);

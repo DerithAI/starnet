@@ -159,4 +159,121 @@ let readerStamp = Promise.resolve();   // the async leg below; report() waits fo
     'routed is always false until real proxy routing exists');
 }
 
-readerStamp.then(() => A.report('outbound-failure-diagnosability.test'));
+// ---- 5. real registered web_fetch body failures retain code + dialled host ----
+// A decoder/socket failure after HTTP headers is NOT a proven TLS failure or customer recovery.
+const webBodyStamp = (async () => {
+  const http = require('node:http');
+  const undici = require('undici');
+  const { makeRegistry } = require('../sidecar/tools/registry.js');
+  const { makeWebTools } = require('../sidecar/tools/builtin/web.js');
+  const publicAddress = '93.184.216.34';
+  const lookup = async () => [{ address: publicAddress, family: 4 }];
+  const call = url => ({ id: 'body-read', name: 'web_fetch', args: { url } });
+  const safeMessage = out => !/SECRET|private-body|token=|https?:\/\/|decoder-private|:8443/.test(JSON.stringify(out));
+
+  for (const [kind, redirect] of [['gzip', false], ['socket', false], ['gzip', true]]) {
+    let requests = 0, headersSeen = 0, bodyReads = 0, closed = 0, browserCalls = 0, releaseBody;
+    const agents = [], pinnedHosts = [];
+    const server = http.createServer((req, res) => {
+      requests++;
+      if (req.url.startsWith('/redirect')) {
+        res.writeHead(302, { location: 'http://final.body.example:' + server.address().port + '/private-body?token=SECRET' });
+        res.end(); return;
+      }
+      res.writeHead(200, kind === 'gzip'
+        ? { 'content-type': 'text/plain', 'content-encoding': 'gzip' }
+        : { 'content-type': 'text/plain', 'content-length': '256' });
+      if (kind === 'gzip') { res.end('not a gzip stream'); return; }
+      // Destroy the socket only AFTER real Undici returned the headers.
+      res.flushHeaders();
+      releaseBody = () => res.destroy();
+      res.write('partial');
+    });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    try {
+      const web = makeWebTools({ lookup,
+        agentFactory: opts => {
+          // Same public-DNS -> loopback socket seam as web.pinned-dispatcher.test.js.
+          const agent = new undici.Agent({ ...opts, connect: { ...opts.connect, lookup(host, options, cb) {
+            pinnedHosts.push(host);
+            opts.connect.lookup(host, options, (err, address, family) => {
+              if (err) return cb(err);
+              if (Array.isArray(address)) cb(null, address.map(a => ({ ...a, address: '127.0.0.1' })));
+              else cb(null, '127.0.0.1', family);
+            });
+          } } });
+          const close = agent.close.bind(agent);
+          agent.close = () => { closed++; return new Promise((resolve, reject) => close(err => err ? reject(err) : resolve())); };
+          agents.push(agent); return agent;
+        },
+        fetchImpl: async (url, init) => {
+          const response = await undici.fetch(url, init);
+          if (response.status === 200) {
+            headersSeen++;
+            const text = response.text.bind(response);
+            response.text = () => { bodyReads++; return text(); };
+            if (releaseBody) releaseBody();
+          }
+          return response;
+        },
+        reader: { available: () => ({ ok: true }), fetchText: async () => { browserCalls++; return { ok: false }; } }
+      });
+      const url = 'http://initial.body.example:' + server.address().port + (redirect ? '/redirect' : '/private-body?token=SECRET');
+      const out = await web.register(makeRegistry()).dispatch(call(url));
+      const code = kind === 'gzip' ? 'Z_DATA_ERROR' : 'UND_ERR_SOCKET';
+      const host = redirect ? 'final.body.example' : 'initial.body.example';
+      A.eq(out.content, 'tool web_fetch failed: terminated (' + code + ' ' + host + ')', kind + ': registered result retains body cause and final hop');
+      A.eq(out.isError, true, kind + ': a body failure stays a tool error');
+      A.eq([headersSeen, bodyReads], [1, 1], kind + ': failure occurred reading the body after successful headers');
+      A.eq(requests, redirect ? 2 : 1, kind + ': no request retry or extra fallback');
+      A.eq(closed, requests, kind + ': every pinned dispatcher closes');
+      A.eq(browserCalls, 0, kind + ': body failure does not invoke the browser');
+      A.ok(pinnedHosts.includes(host), kind + ': real socket used the public-host pin seam');
+      A.ok(safeMessage(out) && !out.content.includes(':' + server.address().port), kind + ': diagnostic contains no URL path, query, port or body');
+    } finally {
+      await Promise.all(agents.map(a => a.destroy().catch(() => {})));
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+  }
+
+  const bodyError = (message, code, name) => Object.assign(new TypeError(message), {
+    ...(name ? { name } : {}),
+    ...(code === null ? {} : { cause: Object.assign(new Error('decoder-private SECRET https://secret.invalid/path'), {
+      code, hostname: 'https://secret.invalid/private-body?token=SECRET', address: 'SECRET:8443'
+    }) })
+  });
+  const cases = [
+    [bodyError('terminated', 'Z_DATA_ERROR'), 'terminated (Z_DATA_ERROR api.body.example)'],
+    [bodyError('terminated', 'UND_ERR_SOCKET'), 'terminated (UND_ERR_SOCKET api.body.example)'],
+    [bodyError('terminated', null), 'terminated'],
+    [bodyError('terminated', 'Z_DATA_ERROR SECRET/path'), 'terminated'],
+    [bodyError('terminated', 'Z_' + 'A'.repeat(80)), 'terminated'],
+    [bodyError('body read failed', 'Z_DATA_ERROR'), 'body read failed'],
+    [bodyError('terminated', 'Z_DATA_ERROR', 'AbortError'), 'terminated'],
+    [bodyError('terminated (Z_DATA_ERROR api.body.example)', 'Z_DATA_ERROR'), 'terminated (Z_DATA_ERROR api.body.example)']
+  ];
+  for (const [error, message] of cases) {
+    let requests = 0, reads = 0, closed = 0, browserCalls = 0;
+    const web = makeWebTools({ lookup, agentFactory: () => ({ close: async () => { closed++; } }),
+      fetchImpl: async () => {
+        requests++;
+        const response = new undici.Response(new ReadableStream({ start(c) { c.error(error); } }), { status: 200 });
+        const text = response.text.bind(response);
+        response.text = () => { reads++; return text(); }; return response;
+      }, reader: { available: () => ({ ok: true }), fetchText: async () => { browserCalls++; return { ok: false }; } }
+    });
+    const out = await web.register(makeRegistry()).dispatch(call('https://api.body.example:8443/private-body?token=SECRET'));
+    A.eq(out.content, 'tool web_fetch failed: ' + message, 'body metadata guard: ' + message);
+    A.eq([out.isError, requests, reads, closed, browserCalls], [true, 1, 1, 1, 0], 'diagnostic enrichment leaves dispatch and fallback unchanged');
+    A.ok(safeMessage(out), 'raw cause fields never enter the registered result');
+  }
+  let cancelledFetches = 0;
+  const stop = new AbortController(); stop.abort();
+  const cancelled = await makeWebTools({ lookup: null, fetchImpl: async () => { cancelledFetches++; throw Error('must not run'); } })
+    .register(makeRegistry()).dispatch(call('https://api.body.example/'), { signal: stop.signal });
+  A.eq(cancelledFetches, 0, 'cancelled registered call makes no network request');
+  A.ok(cancelled.isError && /cancelled/.test(cancelled.summary), 'cancelled run keeps its cancellation result');
+})().catch(err => A.ok(false, 'registered web body diagnostic threw: ' + (err && err.stack || err)));
+
+Promise.all([readerStamp, webBodyStamp]).then(() => A.report('outbound-failure-diagnosability.test'));

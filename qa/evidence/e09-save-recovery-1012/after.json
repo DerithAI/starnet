@@ -1,0 +1,148 @@
+{
+  "source": "e3e6c2ad0599d00d50969cf15ad2236c1662bffd",
+  "comparedRoot": "bbe1aa1",
+  "startedAt": "2026-10-12T07:42:03.160Z",
+  "command": "node qa/evidence/e09-save-recovery-1012/live-probe.mjs",
+  "scope": "Synthetic seeded profile; server header/body stalls and diagnostics socket failure; browser unreadable-response fixture; no customer files or installed acceptance",
+  "events": [
+    {
+      "mode": "headers",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:42:05.183Z"
+    },
+    {
+      "mode": "body",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:42:09.196Z"
+    },
+    {
+      "mode": "unreadable",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:42:14.437Z"
+    },
+    {
+      "mode": "unreadable",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:42:16.714Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:42:16.903Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:42:17.448Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:42:22.842Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:42:24.187Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:42:25.323Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:42:25.644Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:42:26.050Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:42:32.019Z"
+    },
+    {
+      "mode": "pass",
+      "url": "/api/save",
+      "method": "POST",
+      "at": "2026-10-12T07:42:35.245Z"
+    }
+  ],
+  "initialHash": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "sourceHashes": {
+    "frontend/app/app.js": "e1e2f49c3c2ab1cabe075b239a44b5ab7955cedb7f409f759a229791e3a07722",
+    "frontend/app/cloudsave.js": "87ab0948b270e3b6c606f21f542812c3b6a1ad253aee8a43607a18ea96e2e791",
+    "sidecar/index.js": "81b317a22b56df8f0174650684642975d12e805ebae4f17a17422ab073e9be56",
+    "sidecar/savestore.js": "67af95bfe526a47a8f46706b833598b9d12b467f86af104f42ed05e5c7ab0edb"
+  },
+  "servedAppSha256": "e1e2f49c3c2ab1cabe075b239a44b5ab7955cedb7f409f759a229791e3a07722",
+  "headers": {
+    "screen": [
+      "screen-unreachable"
+    ],
+    "code": "RECOVERY CODE: SAVE-NET · SAVE REQUEST LOSTthe app loaded, but its saved-station request did not return. Send a screenshot of this code to support.",
+    "status": "＋ the station service isn't answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.",
+    "pull": "unreachable"
+  },
+  "healthStatus": 200,
+  "hashDuringNetworkGate": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "diagnostics": {
+    "responded": false
+  },
+  "body": {
+    "screen": [
+      "screen-unreachable"
+    ],
+    "code": "RECOVERY CODE: SAVE-NET · SAVE REQUEST LOSTthe app loaded, but its saved-station request did not return. Send a screenshot of this code to support.",
+    "status": "＋ the station service isn't answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.",
+    "pull": "unreachable"
+  },
+  "bodyHealthStatus": 200,
+  "hashDuringBodyGate": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "unreadableRetry": {
+    "screen": [
+      "screen-unreachable"
+    ],
+    "code": "RECOVERY CODE: SAVE-READ · STATION FILE UNAVAILABLEthe station service is running, but could not read the saved station; your existing files are preserved. Send a screenshot of this code to support.",
+    "status": "＋ saved station still unreadable — retrying every 5s (attempt 2). Your save is untouched.",
+    "pull": "unreadable"
+  },
+  "hashDuringReadGate": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "recovered": {
+    "screen": [
+      "screen-game"
+    ],
+    "code": "",
+    "status": "＋ retrying…",
+    "pull": "save"
+  },
+  "recoveredAgent": "NOVA",
+  "restart": {
+    "screen": [
+      "screen-game"
+    ],
+    "code": "",
+    "status": "＋ retrying…",
+    "pull": "save"
+  },
+  "restartAgent": "NOVA",
+  "pass": true,
+  "finishedAt": "2026-10-12T07:42:35.737Z",
+  "exitCode": 0
+}

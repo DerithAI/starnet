@@ -15,6 +15,7 @@
 const A = require('./_assert.js');
 const http = require('node:http');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
@@ -110,7 +111,7 @@ async function until(fixture, predicate, label, timeoutMs) {
     const cancelObjective = 'inspect then wait for cancellation';
     const loopCalls = objective => provider.state.calls.filter(call => {
       const users = call.messages.filter(message => message && message.role === 'user');
-      return users.length > 0 && String(users[0].content || '').indexOf(objective) === 0;
+      return users.length > 0 && userWords(users[0]).indexOf(objective) === 0;
     }).length;
     const created = await fixture.json('POST', '/api/loops', {
       name: 'endurance restart fixture',
@@ -160,7 +161,7 @@ async function until(fixture, predicate, label, timeoutMs) {
     A.eq(loopCalls(restartObjective), callsAtResume + 1, 'RESUME launches exactly one replacement provider pass');
     const replacementPrompt = provider.state.calls.filter(call => {
       const users = call.messages.filter(message => message && message.role === 'user');
-      return users.length && String(users[0].content || '').indexOf(restartObjective) === 0;
+      return users.length && userWords(users[0]).indexOf(restartObjective) === 0;
     }).slice(-1)[0];
     // The transcript is written per turn now (Step 2), so the interrupted pass's own directive + paired tool turn are
     // real history the replacement is seeded with. The fence belongs to the replacement's OWN directive: the last

@@ -360,6 +360,37 @@ function tmpFile(name) { const f = path.join(tmpRoot, name); cleanup.push(f); re
     holder3.release();
   }
 
+  /* ---- 6d. RECYCLED PID WITHIN ONE BOOT (soak 2026-10-15, review P3): the workspace-recovery lock runs on every
+     boot with reclaimByAge:false. A holder hard-killed while holding it, whose PID Windows then handed to an
+     unrelated process, made kill(pid,0) say ALIVE forever and every boot exit 73 RECOVERY_LOCK_UNAVAILABLE.
+     With an injected processIdentity (opt-in, like bootedAt) a live stamped PID whose CURRENT process was
+     created after the lockfile was written is not the holder. Unknown, older, or in-tolerance stays respected. ---- */
+  {
+    const lockfile = tmpFile('recycled.lock');
+    const CMD = 'C:\\Windows\\system32\\cmd.exe';
+    realFs.writeFileSync(lockfile, '43136:soak');
+    const written = Date.now() - 2 * 3600000;
+    realFs.utimesSync(lockfile, written / 1000, written / 1000);
+    const stampedAt = realFs.statSync(lockfile).mtimeMs;
+    const contender = (pidValue, seen, extra) => makeCronLock(Object.assign({ fs: realFs, path, lockfile, now: () => T0, maxRunMs: 480000,
+      pid: pidValue, nonce: () => 'RC' + pidValue, pidAlive: () => true, reclaimByAge: false,
+      processIdentity: { probe: p => (p === 43136 ? seen : { ok: false, reason: 'ESRCH' }), self: () => null } }, extra || {}));
+    A.ok(!contender(61, { ok: true, startedAt: stampedAt - 1500, executable: 'node.exe' })._internals.deadHolder(),
+      'a holder process created before it wrote the lock is respected');
+    A.ok(!contender(62, { ok: false, reason: 'EACCES' })._internals.deadHolder(), 'an unreadable process identity is respected');
+    A.ok(!contender(63, null, { processIdentity: { probe: () => { throw new Error('probe exploded'); } } })._internals.deadHolder(),
+      'a throwing identity probe is respected, never a crash');
+    A.ok(!contender(64, { ok: true, startedAt: stampedAt + 31 * 60000, executable: CMD, source: 'cim', toleranceMs: 7200000 })._internals.deadHolder(),
+      'a later start inside an approximate reading\'s tolerance is respected (the lock stamps no image to compare)');
+    A.ok(!contender(65, null, { processIdentity: undefined })._internals.deadHolder(), 'without processIdentity a live pid is respected (inert default)');
+    A.eq(realFs.readFileSync(lockfile, 'utf8'), '43136:soak', 'no respected contender touched the lock');
+    const reused = contender(66, { ok: true, startedAt: stampedAt + 31 * 60000, executable: CMD });
+    A.ok(reused._internals.deadHolder(), 'a stamped pid whose process was created 31 min after the lock was written is a recycled PID');
+    let ranReused = false;
+    A.ok(reused.withLock(() => { ranReused = true; }).ran && ranReused, 'the recycled-PID lock is reclaimed and the critical section runs');
+    A.eq(realFs.existsSync(lockfile), false, 'and the reclaimed lock is released after the pass');
+  }
+
   /* ---- 7. DEAD-PID RECLAIM: a lock stamped with a pid that is NOT alive is reclaimed IMMEDIATELY, even when
      its mtime is fresh (not yet stale). A crash-killed sidecar leaves a fresh-mtime lock; the mtime break alone
      would mute cron for the whole maxRunMs window. The pid probe (injected here) closes that gap. An ALIVE

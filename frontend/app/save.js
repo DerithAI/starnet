@@ -108,17 +108,39 @@ const Save = (() => {
   // convenience for callers that only need the yes/no forward-version verdict without the full status shape.
   function isFuture() { return loadStatus().status === 'future'; }
 
+  // #121: the save envelope, built ONCE per persist. persist() hands the same envelope to write() (the browser cache)
+  // and to the station file, so a cache that cannot hold it (the browser's per-site storage cap) never keeps the
+  // station file from receiving it. A state that already carries schema/version/updatedAt keeps them.
+  function envelope(state) { return Object.assign({ schema: SCHEMA, version: CURRENT, updatedAt: Date.now() }, state); }
+
+  // #121: the loadStatus() verdict for a save that did NOT come from the cache (the station file's copy, when the
+  // cache cannot hold it). Pure and in memory: never reads or writes localStorage. Same rules as loadStatus():
+  // not a save -> 'none'; written by a NEWER build -> 'future' (refused, untouched); otherwise migrated on a copy.
+  function fromDoc(input) {
+    try {
+      if (!input || typeof input !== 'object' || (input.schema !== SCHEMA && input.schema !== LEGACY_SCHEMA) || !input.agent) return { status: 'none', doc: null, version: 0 };
+      const v = Number(input.version || 0);
+      if (v > CURRENT) return { status: 'future', doc: null, version: v };
+      return { status: 'ok', doc: migrate(JSON.parse(JSON.stringify(input))), version: CURRENT };
+    } catch (e) { console.warn('[save] in-memory load failed:', e); return { status: 'error', doc: null, version: 0 }; }
+  }
+
   // returns the persisted doc (so callers can mirror the EXACT envelope to the durable sidecar), or null on
   // failure. The doc carries a fresh updatedAt stamp, which the sidecar uses to reject stale write-throughs.
+  // writeError() names why the last write failed (null after a success), so the UI only says "full" when the
+  // browser said quota (QuotaExceededError / NS_ERROR_DOM_QUOTA_REACHED / "exceeded the quota").
+  let lastWriteError = null;
   function write(state) {
-    const doc = Object.assign({ schema: SCHEMA, version: CURRENT, updatedAt: Date.now() }, state);
-    try { localStorage.setItem(KEY, JSON.stringify(doc)); return doc; }
-    catch (e) { console.warn('[save] write failed:', e); return null; }
+    const doc = envelope(state);
+    try { localStorage.setItem(KEY, JSON.stringify(doc)); lastWriteError = null; return doc; }
+    catch (e) { lastWriteError = String((e && (e.name || e.code)) || 'error') + (e && e.message ? ': ' + e.message : ''); console.warn('[save] write failed:', e); return null; }
   }
+  function writeError() { return lastWriteError; }
+  function writeQuotaFull() { return /quota/i.test(String(lastWriteError || '')); }
 
   function clear() { try { localStorage.removeItem(KEY); } catch (e) {} }
   function has() { try { return !!localStorage.getItem(KEY); } catch (e) { return false; } }
 
-  return { load, loadStatus, isFuture, write, clear, has, CURRENT, PRE_MIGRATE_BACKUP_KEY };
+  return { load, loadStatus, isFuture, write, writeError, writeQuotaFull, envelope, fromDoc, clear, has, CURRENT, PRE_MIGRATE_BACKUP_KEY };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Save;

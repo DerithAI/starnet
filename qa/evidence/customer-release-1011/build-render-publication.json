@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-12T12:32:45.655Z",
+  "finding": "R24",
+  "canonicalBug": "qa/bugs/b5c41b7c-render-refresh-publishes-held-build-edits.md",
+  "beforeSource": "ccd24082bedef13422740e011728ceecdfe59a38",
+  "fixedSource": "f90409837a5a69faf32ca3bf2e918bed8c508d4a",
+  "observation": "Render-only rebake, full still and cropped still can rederive unpublished Build geometry. Recompilation posts routing and clears pending-edit state.",
+  "reproduction": {
+    "method": "Real seeded browser, local scripted provider; delay only the actual artwork manifest response until an edit is pending, release it, await real PropRemaster.ready.",
+    "log": ".handoff/station-layout-late-art-ccd.log",
+    "logSha256": "4ff4940784f4d4f926fef207eaa7e67a4604b91217bee5e05368253b0b0aec98",
+    "exitCode": 1,
+    "states": [
+      {
+        "label": "before-first-read",
+        "state": {
+          "build": false,
+          "sync": {
+            "station": true,
+            "pending": false,
+            "errors": [],
+            "hash": "fb92ca7f",
+            "lastHash": "fb92ca7f|agent:computer,cabinet,notebook,dish,workbench,studio;agent:computer,cabinet,notebook,dish,workbench,studio|p12:;p13:|{}|[[\"p11\",\"\",\"RESEARCH DESK\"]]|{}",
+            "refusedHash": null,
+            "pendingHash": null,
+            "inflight": false,
+            "retryPending": false,
+            "stale": false
+          }
+        }
+      },
+      {
+        "label": "before-build-edit",
+        "state": {
+          "build": true,
+          "sync": {
+            "station": true,
+            "pending": false,
+            "errors": [],
+            "hash": "fb92ca7f",
+            "lastHash": "fb92ca7f|agent:computer,cabinet,notebook,dish,workbench,studio;agent:computer,cabinet,notebook,dish,workbench,studio|p12:;p13:|{}|[[\"p11\",\"\",\"RESEARCH DESK\"]]|{}",
+            "refusedHash": null,
+            "pendingHash": null,
+            "inflight": false,
+            "retryPending": false,
+            "stale": false
+          }
+        }
+      },
+      {
+        "label": "before-late-art-ready",
+        "state": {
+          "build": true,
+          "sync": {
+            "station": true,
+            "pending": true,
+            "errors": [],
+            "hash": "fb92ca7f",
+            "lastHash": "fb92ca7f|agent:computer,cabinet,notebook,dish,workbench,studio;agent:computer,cabinet,notebook,dish,workbench,studio|p12:;p13:|{}|[[\"p11\",\"\",\"RESEARCH DESK\"]]|{}",
+            "refusedHash": null,
+            "pendingHash": null,
+            "inflight": false,
+            "retryPending": false,
+            "stale": false
+          }
+        }
+      },
+      {
+        "label": "after-late-art-ready",
+        "state": {
+          "build": true,
+          "sync": {
+            "station": true,
+            "pending": false,
+            "errors": [],
+            "hash": "ed111928",
+            "lastHash": "fb92ca7f|agent:computer,cabinet,notebook,dish,workbench,studio;agent:computer,cabinet,notebook,dish,workbench,studio|p12:;p13:|{}|[[\"p11\",\"\",\"RESEARCH DESK\"]]|{}",
+            "refusedHash": null,
+            "pendingHash": "ed111928|agent:computer,cabinet,notebook,dish,workbench,studio|p12:|{}|[[\"p11\",\"\",\"RESEARCH DESK\"]]|{}",
+            "inflight": true,
+            "retryPending": false,
+            "stale": false
+          }
+        }
+      },
+      {
+        "label": "before-pending-read",
+        "state": {
+          "build": true,
+          "sync": {
+            "station": true,
+            "pending": false,
+            "errors": [],
+            "hash": "ed111928",
+            "lastHash": "ed111928|agent:computer,cabinet,notebook,dish,workbench,studio|p12:|{}|[[\"p11\",\"\",\"RESEARCH DESK\"]]|{}",
+            "refusedHash": null,
+            "pendingHash": null,
+            "inflight": false,
+            "retryPending": false,
+            "stale": false
+          }
+        }
+      }
+    ],
+    "callback": "frontend/app/propsprites.js:11954 -> World.rebake -> rederive -> compileRouting -> POST /api/routing",
+    "oldHash": "fb92ca7f",
+    "publishedHash": "ed111928",
+    "buildRemainedOpen": true
+  },
+  "directBoundary": {
+    "log": ".handoff/station-layout-rebake-challenge-ccd.log",
+    "logSha256": "866aa59f20121418d595179ba47b07655af7b43c71fbb46ee7f2ba2ac1124efc",
+    "exitCode": 1
+  },
+  "fix": {
+    "behavior": "Defer dirty Build geometry at rebake and both still entrypoints. Retain pending/bake invalidation; explicit syncPlan and Build close retain their publication paths.",
+    "sourceHashes": {
+      "frontend/app/world.js": "427c522a12a9c296a0f8c6942232826f248d20fa6c5548bfd1d4083cb80ea468",
+      "website/app/app/world.js": "427c522a12a9c296a0f8c6942232826f248d20fa6c5548bfd1d4083cb80ea468",
+      "test/refit-bake-reuse.test.js": "42879cfe0e0d9e201cf31559c8ac68ce53941351ad89397e973e54137a11be43",
+      "test/station-layout.e2e.test.mjs": "a387a89cb95cf3b858900ce991cd6f226f82f2ef1a6fa357046d7b1a481cb8d0"
+    }
+  },
+  "acceptance": {
+    "live": {
+      "log": ".handoff/station-layout-held-edit-fixed.log",
+      "logSha256": "fc31bf697e04d6eb42119ff8e148a28e7ecd582557fbe3c5f23980a79809512b",
+      "exitCode": 0,
+      "assertions": 23,
+      "artRevision": 184,
+      "postsBeforeAndAfter": 2,
+      "pendingPreserved": true,
+      "fullAndCroppedStillDeferred": true,
+      "explicitSyncConfirmed": true,
+      "buildCloseRouterConfirmed": true,
+      "pageExceptions": 0
+    },
+    "focused": [
+      "test/refit-bake-reuse.test.js PASS",
+      "test/plan-poster.test.js 56 assertions PASS",
+      "test/world-texture-ready.test.js 69 assertions PASS",
+      "syntax checks and git diff --check PASS"
+    ],
+    "independentReview": "codex_lane_audit accepted exact four-file diff; mirror bytes identical; no separate browser execution."
+  },
+  "limits": [
+    "The original full-HTTP49 failure did not record its callback. The controlled actual callback proves this defect, not the identity of every historical failure.",
+    "The full fast pass on ccd is historical after this production repair. Complete new-source gates, installed acceptance and customer recovery remain pending.",
+    "Topology confirmation is not promoted to full publication confirmation; existing conservative guards remain."
+  ],
+  "testReportingFollowUp": {
+    "source": "513cf8817a3515a5e147ebd28196344156848c0f",
+    "reason": "Fullfast9350 failed922 static helper-settlement lint. Existing strict assertions already throw; only fnBody was imported.",
+    "change": "Read/assert shared helper failure counter after existing assertions. Production and lint unchanged.",
+    "sourceReview": "worktree_audit accepted exact one-line diff.",
+    "validation": "Syntax and diff checks PASS; runtime/mutation controls prepared but deferred during scheduled Guardian.",
+    "testSha256": "14c1a26eb2932d1d9bca6f2aad746e8e591ba89185621daaa308374bb023dbdf"
+  }
+}

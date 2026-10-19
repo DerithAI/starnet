@@ -14,6 +14,7 @@ const http = require('node:http');
 const {spawn} = require('node:child_process');
 const {once} = require('node:events');
 const {bootToken} = require('./_httpToken.js');
+const {hostNotes, userWords} = require('./helpers/host-notes.js');
 const root = path.resolve(__dirname, '..');
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-earlier-conversation-'));
 const RULE = 'From now on, never use tables in anything you write for me — bullet lists only.';
@@ -24,7 +25,7 @@ const mock = http.createServer((req, res) => {
   let raw = ''; req.on('data', d => { raw += d; }); req.on('end', () => {
     let body = null; try { body = JSON.parse(raw); seen.push(body); } catch (_) { body = null; }
     const last = body && Array.isArray(body.messages) ? body.messages.filter(m => m.role === 'user').pop() : null;
-    const echo = last ? String(typeof last.content === 'string' ? last.content : JSON.stringify(last.content)).slice(0, 60) : '';
+    const echo = last ? userWords(last).slice(0, 60) : '';
     res.writeHead(200, {'Content-Type': 'text/event-stream'});
     res.write('data: ' + JSON.stringify({choices: [{delta: {content: 'Handled: ' + echo}}]}) + '\n\n');
     res.write('data: ' + JSON.stringify({choices: [{delta: {}, finish_reason: 'stop'}], usage: {prompt_tokens: 5, completion_tokens: 5, total_tokens: 10}}) + '\n\n');
@@ -47,10 +48,15 @@ async function send(streamId, history, text) {
   const end = events.find(e => e.name === 'agent.run.end');
   A.eq(end && end.payload.reason, 'done', 'run completed: ' + text.slice(0, 40));
   const reply = events.filter(e => e.name === 'agent.token').map(e => e.payload.delta).join('');
-  const req = seen.slice(before).find(b => Array.isArray(b.messages) && b.messages.some(m => m.role === 'user' && String(m.content).indexOf(text) >= 0));
+  // the provider request that carried this send (user content may arrive as a string or as content parts). It must be
+  // found: an empty message list would make every "gets no note" / "never sees" check below pass vacuously (review tests-24)
+  const textOf = (c) => typeof c === 'string' ? c : JSON.stringify(c);
+  const req = seen.slice(before).find(b => Array.isArray(b.messages) && b.messages.some(m => m.role === 'user' && textOf(m.content).indexOf(text) >= 0));
+  A.ok(req, 'the provider saw the request: ' + text.slice(0, 40));
   return {reply, messages: req ? req.messages : []};
 }
-const notesOf = (msgs) => msgs.filter(m => m.role === 'system' && /^<conversation_summary>/.test(String(m.content)));
+// the earlier-conversation note: a system message on a Claude route, the newest user turn's fenced leading text on this one
+const notesOf = (msgs) => hostNotes(msgs, 'conversation_summary').map(content => ({content}));
 const count = (hay, needle) => hay.split(needle).length - 1;
 (async () => {
   mock.listen(0, '127.0.0.1'); await once(mock, 'listening');
@@ -80,7 +86,10 @@ const count = (hay, needle) => hay.split(needle).length - 1;
     A.eq(notes.length, 1, 'the model request carries one earlier-conversation note');
     A.eq(count(String(notes[0] && notes[0].content), RULE), 1, 'the turn-1 instruction rides in it verbatim, once');
     A.ok(/EARLIER IN THIS CONVERSATION: 9 earlier messages/.test(String(notes[0] && notes[0].content)), 'the note says how many Commander messages it carries (12 sent, 3 still in the window)');
-    A.eq(late.messages.findIndex(m => m === notes[0]), 1, 'it sits straight after the system prompt');
+    // on this non-Claude chat wire (OpenRouter test/model) it is the fenced leading text of the newest user turn: strict chat
+    // templates refuse a second system message (provider.js userSideHostNotes)
+    A.eq(late.messages.filter(m => m.role === 'system').length, 1, 'the system prompt is the only system message');
+    A.ok(String(late.messages[late.messages.length - 1].content).indexOf('<conversation_summary>') === 0, 'it opens the newest user turn');
     A.ok(!String(notes[0].content).includes('Request 12: draft section 12'), 'messages still in the window are not duplicated into the note');
 
     // a window the transcript cannot place injects nothing (never a guess)

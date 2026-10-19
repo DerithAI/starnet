@@ -23,13 +23,15 @@
 .agent-dossier .ag-mission-text { font-size: 16px; line-height: 1.55; }
 .agent-dossier .ag-setup { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
 .agent-dossier .ag-setup-row { display: grid; grid-template-columns: 1fr auto; gap: 7px; padding: 14px; border: 1px solid rgba(var(--ph-rgb),.2); border-radius: 9px; background: rgba(var(--ph-rgb),.035); text-align: left; }
+/* an odd tile count never strands the last tile beside an empty cell: it spans the row */
+.agent-dossier .ag-setup-row:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .agent-dossier .ag-setup-lbl { font-size: 12px; }
 .agent-dossier .ag-setup-val { grid-column: 1; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
 .agent-dossier .ag-setup-go { grid-column: 2; grid-row: 1 / 3; align-self: center; }
 .agent-dossier :is(.sec,.gx-sec) { height: auto; flex-wrap: wrap; gap: 8px; margin: 20px 0 12px; border: 0; padding: 0; }
 .agent-dossier .sec-l,.agent-dossier .gx-title { font-size: 18px; letter-spacing: .3px; line-height: 1.35; }
 .agent-dossier .gx-ref { display: none; }
-.agent-dossier .gx-tag { white-space: normal; font-size: 12px; line-height: 1.5; letter-spacing: .1px; }
+.agent-dossier .gx-tag { white-space: normal; font-size: var(--sn-type-meta, 14px); line-height: 1.5; letter-spacing: .1px; }
 .agent-dossier :is(.cf-grp-note,.cf-desc,.mc-note,.mc-hint,.sk-note,.ag-foot-row,.ag-del-why) { font-size: 14px; line-height: 1.55; letter-spacing: 0; }
 .agent-dossier :is(.bb,.consent-btn,.cf-nav-b,.ov-vchip,.lb-tx-btn) { font: inherit; font-size: 13px; line-height: 1.4; padding: 9px 12px; border: 1px solid rgba(var(--ph-rgb),.24); border-radius: 7px; background: rgba(var(--ph-rgb),.035); color: var(--ph); box-shadow: none; text-shadow: none; cursor: pointer; }
 .agent-dossier :is(.bb,.consent-btn,.cf-nav-b,.ov-vchip):hover { background: var(--menu-glass); border-color: var(--ph); color: var(--ph-bright); }
@@ -119,7 +121,14 @@
 
 .agent-dossier .cf-group[open] > summary .cf-group-summary { display: none; }
 
-.agent-dossier .mp-wrap { gap: 8px; }
+/* the picker is the CARD's width, never its catalog's (walk 10-14 #7): an inline-flex wrap took the widest model name as
+   its width (a 418px select in a 242px column) and pushed the EFFORT select out of the window, unreachable. A block flex
+   row lets the model select shrink and the effort select drop under it whenever both do not fit one line. */
+.agent-dossier .mp-wrap { display: flex; width: 100%; box-sizing: border-box; gap: 8px; }
+.agent-dossier .mp-wrap .mp-model { flex: 1 1 180px; width: 0; min-width: 0; max-width: 100%; }
+.agent-dossier .mp-wrap .mp-effort { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* when the effort select drops under the model select, MODEL labels the first line, not the gap between the two */
+.agent-dossier .mc-pick-row > label { align-self: flex-start; margin-top: 13px; font-size: var(--sn-type-meta, 14px); }
 .agent-dossier .mp-wrap select { min-height: 40px; padding: 10px 30px 10px 12px; border: 1px solid rgba(var(--ph-rgb),.3); border-radius: 8px; background-color: rgba(0,0,0,.18); font: inherit; font-size: 14px; box-shadow: none; }
 .agent-dossier .ag-effective { font-size: 14px; line-height: 1.55; margin-bottom: 18px; }
 .agent-dossier .ag-effective .perk-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; margin: 14px 0; }

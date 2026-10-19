@@ -36,13 +36,15 @@ const T0 = 1_800_000_000_000;
   const workers = [
     { id: 'w1', agentId: 'researcher', status: 'stale', prompt: 'Dig up the docs', completedAt: T0 - 1000 },
     { id: 'w2', agentId: 'researcher', status: 'refused', prompt: 'Do the thing', completedAt: T0 - 2000 },
-    { id: 'w3', agentId: 'researcher', status: 'weird', prompt: 'Other', completedAt: T0 - 3000 }
+    { id: 'w3', agentId: 'researcher', status: 'weird', prompt: 'Other', completedAt: T0 - 3000 },
+    { id: 'w4', agentId: 'researcher', status: 'stale', reason: 'stalled: no progress for 450s — the liveness check stopped this worker (threshold 420s)', prompt: 'Hung on a tool', completedAt: T0 - 500 }
   ];
   const items = H.workItems({ feed: H.createFeed(), workers, now: T0 });
   const w = id => items.find(x => x.workerId === id);
   A.eq([w('w1').state, w('w1').status], ['fault', 'Lost when the station restarted'], 'a worker lost to a restart is a fault, not "done"');
   A.eq([w('w2').state, w('w2').status], ['fault', 'Refused'], 'a refused worker is a fault');
   A.eq([w('w3').state, w('w3').status], ['stopped', 'Ended (weird)'], 'an ending the HUD does not know is never painted done');
+  A.eq([w('w4').state, w('w4').status], ['fault', 'Stopped: made no progress'], 'a worker the liveness check stopped is never blamed on a restart that did not happen');
   const js = fs.readFileSync(path.join(ROOT, 'frontend/app/hudmode.js'), 'utf8');
   A.ok(!js.includes('No result was recorded') && js.includes("'Its reply isn’t shown here.'") && js.includes("'Its reply is in the conversation.'"),
     'a finished card with no reply on this page says where the reply is, never that there was none');
@@ -53,6 +55,30 @@ const T0 = 1_800_000_000_000;
   A.ok(js.includes('holdToMove(open); holdToMove(rows);') && js.includes('cur.startDragging()') && js.includes("invoke('plugin:window|start_dragging', { label: 'main' })") && js.includes('if (!justMoved()) setView(\'activity\');'),
     'the agent cam moves: hold the picture or a row and drag the window; a press that does not move stays a click');
   A.ok(fs.readFileSync(path.join(ROOT, 'src-tauri/capabilities/default.json'), 'utf8').includes('core:window:allow-start-dragging'), 'the window may start an OS drag');
+  {
+    // the header drags from ANY part of the title, the session name included (org P26 put it in a child span). Tauri 2's
+    // drag.js isDragRegion rule, verbatim in shape: a bare attribute drags only when the press lands ON that element,
+    // 'deep' drags from its whole subtree, a clickable with no attribute blocks.
+    const isDragRegion = (composedPath) => {
+      for (const n of composedPath) {
+        const attr = n.attrs['data-tauri-drag-region'];
+        if (n.clickable && attr === undefined) return false;
+        if (attr === undefined) continue;
+        if (attr === 'false') return false;
+        if (attr === 'deep') return true;
+        if (attr === '' || attr === 'true') return n === composedPath[0];
+      }
+      return false;
+    };
+    const titleAttr = (/S\.els\.title\.setAttribute\('data-tauri-drag-region', '([^']*)'\)/.exec(js) || [])[1];
+    const h3Attr = (/S\.els\.h3\.setAttribute\('data-tauri-drag-region', '([^']*)'\)/.exec(js) || [])[1];
+    const h3 = { attrs: { 'data-tauri-drag-region': h3Attr } }, title = { attrs: { 'data-tauri-drag-region': titleAttr } };
+    const name = { attrs: {} }, key = { attrs: {}, clickable: true };
+    A.ok(isDragRegion([name, title, h3]), 'a press on the session name in the HUD header moves the window');
+    A.ok(isDragRegion([title, h3]) && isDragRegion([h3]), '…as does the word COMMS and the empty header');
+    A.ok(!isDragRegion([key, h3]), 'a header key stays a click (the h3 is not deep)');
+    A.eq(h3Attr, '', 'the h3 keeps the bare (self-only) attribute');
+  }
   const side = fs.readFileSync(path.join(ROOT, 'sidecar/index.js'), 'utf8');
   A.ok(side.includes('row.stoppable = runs.has(runId);') && side.includes("source: 'host', stoppable: runs.has(runId) }"), 'the snapshot says which runs /api/cancel can reach (additive)');
   const world = fs.readFileSync(path.join(ROOT, 'frontend/app/world.js'), 'utf8');

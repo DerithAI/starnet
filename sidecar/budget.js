@@ -87,10 +87,13 @@
     function unknown() { const h = accounting(); return !h.complete || !h.durable; }
     // WHY history is unknown, so a refusal names the fix that works: 'write' (a restart replays the journaled
     // settlement), 'unsettled' (an interrupted run's charge — settle it in SPENDING LIMITS; a restart changes
-    // nothing), or 'read' (the spend record itself could not be read).
+    // nothing), 'damaged' (every open item is an unreadable record line — settled the same way, but it is not an
+    // interrupted run), or 'read' (the spend record itself could not be read).
     function unknownCause() {
       const h = accounting();
-      return h.writeError ? 'write' : (h.readError === 'UNSETTLED_SPEND' ? 'unsettled' : 'read');
+      if (h.writeError) return 'write';
+      if (h.readError !== 'UNSETTLED_SPEND') return 'read';
+      return (h.damagedLines > 0 && h.damagedLines === h.unsettledRuns) ? 'damaged' : 'unsettled';
     }
     function sumLive() { let t = 0; for (const v of live.values()) t += num(v); return t; }
     // live $ for ONE agent: sum the in-flight runs whose runId maps to that agentId (the calling run included).

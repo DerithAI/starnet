@@ -37,7 +37,7 @@ const BUCKET = {
   billing: 'NAMED', managed_credit: 'NAMED', managed_credit_link: 'NAMED', auth: 'NAMED', no_model: 'NAMED', oauth: 'NAMED',
   grok_oauth_unavailable: 'NAMED', quota_exhausted: 'NAMED', model_not_found: 'NAMED', context_overflow: 'NAMED',
   content_policy_blocked: 'NAMED', capdenied: 'NAMED', spotify_not_connected: 'NAMED', stale_session: 'NAMED', spend_unknown: 'NAMED',
-  output_limit: 'NAMED', hook_blocked: 'NAMED',
+  output_limit: 'NAMED', hook_blocked: 'NAMED', local_model_memory: 'NAMED', endpoint_mismatch: 'NAMED',
   // harness stops (2026-10-11) — the agent got stuck / stopped early / failed to save: the cause may be the model or StarNet
   // itself, so the post-mortem keeps "see RECORD, resend, report it if it repeats"
   loop_stuck: 'GENERIC', unknown_tools: 'GENERIC', tool_keeps_failing: 'GENERIC', no_progress: 'GENERIC', incomplete_work: 'GENERIC',
@@ -106,6 +106,24 @@ const postMortem = (text) => {
   A.ok(!NOT_FIXABLE_BY_RESEND.test(r.d.cause) && /resend in a moment/.test(r.d.cause), 'a held balance is a retry: a resend after the runs settle can go through');
 }
 
+/* ---- allocation failures name memory recovery, without inventing an empty run ---- */
+const allocationFailure = 'Local model ran out of memory. [llama runner failed: failed to allocate CUDA0 buffer]';
+{
+  const verdict = Friendly.friendlyError(new Error(allocationFailure));
+  const d = SlagLog.diagnose('error', { turns: 2, error: { kind: verdict.kind, msg: verdict.userMessage } });
+  A.eq(verdict.kind, 'local_model_memory', 'adapter-proven allocation failure keeps its explicit memory kind');
+  A.eq(d.fix, verdict.userMessage, 'the memory post-mortem preserves the real Friendly recovery guidance');
+  A.ok(/could not allocate enough memory/.test(d.cause) && NOT_FIXABLE_BY_RESEND.test(d.cause), 'memory cause names the failed allocation and requires a change before retry');
+  A.ok(!/before doing any work|no useful work/.test(d.cause), 'allocation failure after earlier turns never asserts that no work occurred');
+  A.ok(/Close other local models|memory-heavy apps/.test(d.fix) && /smaller model.*COMMS/.test(d.fix), 'memory fix names freeing memory and choosing a smaller local model');
+  A.ok(!/report it|diagnostics|send the request again/.test(d.fix), 'proven allocation failure is not an unexplained bug-report or blind-resend door');
+  for (const raw of ['Ollama request timed out waiting for the first token', 'an unexplained provider failure']) {
+    const r = postMortem(raw);
+    A.ok(['timeout', 'unknown'].includes(r.kind), 'unproven local failure stays timeout or unknown: ' + r.kind);
+    A.ok(/diagnostics/.test(r.d.fix) && /report it/.test(r.d.fix) && !/allocate|memory/.test(r.d.cause), 'timeout and unknown retain their existing generic post-mortem');
+  }
+}
+
 /* ---- 3. a stalled BUILD names the run's own error door (workqueststore.js stallBeat) ---- */
 global.localStorage = { _s: {}, getItem(k) { return this._s[k] || null; }, setItem(k, v) { this._s[k] = String(v); }, removeItem(k) { delete this._s[k]; } };
 global.WorkQuests = require('../frontend/app/workquests.js');
@@ -130,6 +148,15 @@ A.eq((listeners['agent.run.end'] || []).length, 1, 'the store subscribes to run.
   A.ok(/price watcher/.test(notifs[0].txt) && /Relink it/.test(notifs[0].txt), 'a build stalled on a refused link says relink: ' + notifs[0].txt);
   A.ok(!/report it|diagnostics/.test(notifs[0].txt), 'a refused link never tells the Commander to report StarNet');
   A.eq(notifs[0].cls, 'warn', 'the beat stays in the neutral WARN family');
+}
+{
+  WorkQuestStore.accept({ title: 'the local model report', build: { kind: 'workflow', recipeId: null } });
+  fire('agent.run.start', { agentId: 'agent', runId: 'run-memory', trigger: 'directive' });
+  fire('agent.run.error', { agentId: 'agent', runId: 'run-memory', transient: false, reason: 'local_error', message: allocationFailure });
+  notifs.length = 0;
+  fire('agent.run.end', { agentId: 'agent', runId: 'run-memory', reason: 'error', turns: 2, usd: 0 });
+  A.ok(notifs.length === 1 && /local model report/.test(notifs[0].txt) && /smaller model.*COMMS/.test(notifs[0].txt), 'a build stalled on explicit allocation failure surfaces its memory recovery door');
+  A.ok(!/report it|diagnostics/.test(notifs[0].txt), 'memory-stalled build does not substitute generic reporting advice');
 }
 {
   // a run with NO recorded error keeps the honest generic fix, and an error from an UNBOUND run never leaks into it

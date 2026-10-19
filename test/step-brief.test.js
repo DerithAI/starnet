@@ -44,6 +44,17 @@ const HDR = 'YOUR STANDING BRIEF FOR THIS STATION:';
   const nm = s.setPropLabel(intake.id, '  PRESS DESK  ');
   A.ok(nm.ok && nm.label === 'PRESS DESK', 'setPropLabel trims and stores the line name');
   A.ok(s.setPropLabel(bay.id, 'Draft review').ok, 'a BAY accepts its own visible step name');
+  /* RESTORED (2026-10-12, M34): 14e87ed5c turned the only "a non-intake refuses a label" check into the BAY acceptance above, so
+     nothing covered setPropLabel's BAD_TYPE branch any more. Every other machine still refuses a name — checked on a separate
+     station so this fixture stays as it was. */
+  {
+    const s0 = WM.create(), z0 = s0.rooms()[0].rects[0];
+    const ob = s0.addProp({ t: 'outbox', x: z0.x1 + 1, y: z0.y1 + 1, w: 2, h: 2 }), mg = s0.addProp({ t: 'merger', x: z0.x1 + 5, y: z0.y1 + 1, w: 1, h: 1 });
+    A.ok(ob.ok && mg.ok, 'fixture: an OUTBOX and a junction place on the seed deck');
+    A.eq(s0.setPropLabel(ob.id, 'x').error, 'BAD_TYPE', 'an OUTBOX refuses a name (BAD_TYPE)');
+    A.eq(s0.setPropLabel(mg.id, 'x').error, 'BAD_TYPE', 'a junction refuses a name (BAD_TYPE)');
+    A.ok(!s0.propById(ob.id).label && !s0.propById(mg.id).label, 'a refused name is never stored');
+  }
   A.eq(s.setPropLabel(intake.id, 'y'.repeat(100)).label.length, 48, 'a label is bounded at 48 chars');
   s.setPropLabel(intake.id, 'PRESS DESK');
 

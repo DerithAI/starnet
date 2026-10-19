@@ -48,6 +48,8 @@
   }
 
   /* ---------- popover open/close (one at a time) ---------- */
+  // a toast already up re-seats above a dock menu that opens into its column, and drops back when it closes (rc walk #29)
+  const reseatToasts = () => { try { if (typeof StationUI !== 'undefined' && StationUI.reseatToasts) StationUI.reseatToasts(); } catch (e) { console.warn('[navdock] toast reseat:', (e && e.message) || e); } };
   function closeAll(except) {
     groups.forEach(g => {
       if (g === except) return;
@@ -59,6 +61,7 @@
       // a11y: if focus was inside the popover we just closed, hand it back to the trigger
       if (wasOpen && t && g.contains(document.activeElement)) { try { t.focus(); } catch (_) {} }
     });
+    reseatToasts();
   }
   // viaKeyboard: only a KEYBOARD-initiated open moves focus into the popover (menu-button pattern).
   // A mouse open must NOT transfer focus to the first item (TASKS in the WORK dock) — that invisible
@@ -77,11 +80,12 @@
       // re-clamp on the painted frame and once its opening animation settles.
       requestAnimationFrame(() => clampMenu(g));
       const openingMenu = g.querySelector('.bb-menu');
-      if (openingMenu) openingMenu.addEventListener('animationend', () => clampMenu(g), { once: true });
+      if (openingMenu) openingMenu.addEventListener('animationend', () => { clampMenu(g); reseatToasts(); }, { once: true });
+      requestAnimationFrame(reseatToasts);
       dismissCoach();   // they found the docks — retire the hint for good
       // a11y: on a keyboard open, move focus to the first menu item so the popover is navigable
       if (viaKeyboard) { const first = itemsOf(g)[0]; if (first) { try { first.focus(); } catch (_) {} } }
-    }
+    } else reseatToasts();   // this menu just closed: a raised toast drops back to its seat
     try { if (typeof SFX === 'object' && SFX[willOpen ? 'open' : 'close']) SFX[willOpen ? 'open' : 'close'](); } catch (_) {}
   }
 
@@ -92,15 +96,42 @@
   const COACH_KEY = 'starnet.navcoach.seen';
   const coach = document.getElementById('nav-coach');
   let coachTimer = 0;
+  // RETIRING IS NOT HIDING (live walk 10-14: the tip came back after a reload 40 minutes into heavy use). The 15 s fade
+  // hides it without retiring it, and a dock opened after that returned early here because the tip was already hidden —
+  // so finding every dock was never written down. Opening a dock (or GOT IT) retires it whether or not it is on screen.
   function dismissCoach(persist) {
-    if (!coach || coach.hidden) return;
-    coach.hidden = true;
-    if (coachTimer) { clearTimeout(coachTimer); coachTimer = 0; }
-    if (persist !== false) { try { localStorage.setItem(COACH_KEY, '1'); } catch (_) {} }
+    if (!coach) return;
+    if (!coach.hidden) {
+      coach.hidden = true;
+      if (coachTimer) { clearTimeout(coachTimer); coachTimer = 0; }
+    }
+    if (persist !== false) { try { localStorage.setItem(COACH_KEY, '1'); } catch (e) { console.warn('[navdock] could not remember the dock tip was retired (storage blocked)', e); } }
   }
+  // ONCE PER PAGE (live walkthrough 2026-10-13): the observer below fires on ANY class change of #screen-game, and a
+  // flicker effect toggles a class there every 7 s — so the hint came back 15 s on / 7 s off for the whole session,
+  // over the CREW dock, the dock menus and the approval toasts. It shows once per page; GOT IT still ends it for good.
+  let coachShown = false;
+  // NOT OVER THE ARRIVAL (org P31, 2026-10-14): #screen-game goes active while the awakening still owns the room
+  // (World.beginAwakening), so the coach waited for nothing and talked over the first meeting. It now waits for
+  // World.releaseAwakening, which fires 'starnet:awakening-released'; a returning Commander (no awakening) is unchanged.
+  const awakeningHeld = () => typeof World !== 'undefined' && typeof World.awakeningHeld === 'function' && World.awakeningHeld();
+  // NOT OVER A COVERED COMMS (org P31 review fix): closeOut releases the awakening while the Dialogue panel — mounted
+  // over #chat-panel — still runs the first-task hand-off and the tour, so "Talk to your agent up in COMMS" would point
+  // at a COMMS the panel hides. The coach also holds while a Dialogue is open; Dialogue.close fires
+  // 'starnet:dialogue-closed' and the coach asks again then.
+  const dialogueOpen = () => typeof Dialogue !== 'undefined' && typeof Dialogue.isOpen === 'function' && Dialogue.isOpen();
+  // NOT INSIDE THE TOUR (org P31 wire): the optional tour closes the Dialogue mid-way (TRY A SMALL FILE EXAMPLE reveals
+  // COMMS), and that close is not the end of onboarding — two hints would compete for the first click. The coach holds
+  // while Tutorial.isCoaching() (the same check dockglow/build stand down on); Tutorial.finishUp fires
+  // 'starnet:tutorial-ended' once the tour is over and the coach asks again then.
+  const tourCoaching = () => typeof Tutorial !== 'undefined' && typeof Tutorial.isCoaching === 'function' && !!Tutorial.isCoaching();
   function showCoachOnce() {
-    if (!coach || !coach.hidden) return;
+    if (!coach || !coach.hidden || coachShown) return;
+    if (awakeningHeld()) return;   // the arrival is still on screen — the release event asks again
+    if (dialogueOpen()) return;    // COMMS is covered by the conversation panel — the close event asks again
+    if (tourCoaching()) return;    // the optional tour still owns the first click — 'starnet:tutorial-ended' asks again
     try { if (localStorage.getItem(COACH_KEY)) return; } catch (_) {}
+    coachShown = true;
     coach.hidden = false;
     coachTimer = setTimeout(() => dismissCoach(false), 15000);   // fade out after a while, but let it return next session
   }
@@ -112,6 +143,9 @@
       if (game.classList.contains('active')) showCoachOnce();
       new MutationObserver(() => { if (game.classList.contains('active')) showCoachOnce(); })
         .observe(game, { attributes: true, attributeFilter: ['class'] });
+      document.addEventListener('starnet:awakening-released', () => { if (game.classList.contains('active')) showCoachOnce(); });
+      document.addEventListener('starnet:dialogue-closed', () => { if (game.classList.contains('active')) showCoachOnce(); });
+      document.addEventListener('starnet:tutorial-ended', () => { if (game.classList.contains('active')) showCoachOnce(); });
     }
   }
 

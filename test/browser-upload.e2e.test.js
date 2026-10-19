@@ -85,8 +85,18 @@ const { makeBrowserTools, _internals: T } = require('../sidecar/tools/builtin/br
     A.eq(await driver.testEval('document.querySelector("iframe").contentWindow.selections[0].files[0].size'), 19, 'iframe selected correct project bytes');
     console.log('UPLOAD_LIVE_RECEIPT ' + JSON.stringify({ selected: selected.content, cleared: cleared.content }));
   } finally {
-    await driver.close();
-    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    let closeError = null;
+    try { await driver.close(); }
+    catch (e) { closeError = e; }
+    finally {
+      // The fixture must stop listening even if Chromium teardown fails. Keep the original failure
+      // and leave its scratch/profile intact whenever cleanup cannot prove it is safe to remove.
+      try {
+        const serverClosed = new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
+        server.closeAllConnections(); await serverClosed;
+      } catch (e) { if (!closeError) closeError = e; else console.error('Upload fixture server cleanup failed:', e); }
+    }
+    if (closeError) throw closeError;
     if (path.dirname(scratch) === path.resolve(os.tmpdir()) && path.basename(scratch).startsWith('starnet-upload-live-')) fs.rmSync(scratch, { recursive: true, force: true });
   }
   A.report('browser-upload.e2e');

@@ -40,7 +40,7 @@ const TaskConversation = (() => {
     if(options.children.length) {card.appendChild(options);card.appendChild(hint);}
     const label=el('label','tc-answer-label','Your answer');
     const input=el('textarea','tc-answer');input.rows=3;input.maxLength=3800;
-    input.setAttribute('aria-label','Your answer');input.placeholder='Describe it in your own words. Rough notes are fine. Ctrl + Enter sends.';
+    input.setAttribute('aria-label','Your answer');input.placeholder='Describe it in your own words. Rough notes are fine. Enter sends · Shift + Enter adds a line.';
     label.appendChild(input);card.appendChild(label);
     const actions=el('div','tc-actions'), submit=el('button','consent-btn primary','Send answer'), skip=el('button','consent-btn tc-skip','Use your judgment');
     submit.type=skip.type='button';actions.appendChild(submit);actions.appendChild(skip);card.appendChild(actions);
@@ -72,25 +72,29 @@ const TaskConversation = (() => {
     let busy=false,done=false;
     function refresh(){submit.disabled=busy||done||!input.value.trim();skip.disabled=busy||done;input.disabled=busy||done;for(const b of options.children)b.disabled=busy||done;syncShortcuts();}
     async function answer(delegated) {
-      if(busy||done)return;
+      if(busy||done)return false;
       const typed=input.value.trim();
       const text=delegated ? (typed ? typed+'\nUse your judgment for the remaining choices.' : 'use your judgment') : typed;
-      if(!text)return;
+      if(!text)return false;
       busy=true;feedback.textContent='Sending your answer…';refresh();
       try {
         const accepted=await send(text);
+        if(done)return false;   // settled on another surface while this send was in flight: that outcome stands
         if(accepted===false)throw Error('This question is no longer waiting. Your text is kept here; send it in COMMS to continue.');
         done=true;feedback.textContent='Answer sent';
         options.remove();label.remove();actions.remove();hint.remove();
         whole.remove();card.classList.add('tc-answered');card.setAttribute('aria-label','Shared task context');
         const receipt=el('details','tc-receipt');receipt.appendChild(el('summary','','You answered: '+text.slice(0,100)+(text.length>100?'…':'')));
         receipt.appendChild(el('p','tc-answer-sent',text));card.appendChild(receipt);
-      }catch(e){feedback.textContent=e.message||'Could not send. Your text is kept here; try again.';}
+        return true;
+      }catch(e){if(!done)feedback.textContent=e.message||'Could not send. Your text is kept here; try again.';return false;}
       finally{busy=false;refresh();}
     }
     input.addEventListener('input',refresh);
-    input.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();answer(false);}});
+    input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();answer(false);}});
     submit.onclick=()=>answer(false);skip.onclick=()=>answer(true);
+    // submit(text): the COMMS composer answers this card when the Commander types the reply there (chat.js askAnswerers)
+    const submitText=async text=>{if(done||busy)return false;input.value=String(text||'');refresh();return answer(false);};
     // settled somewhere else (the phone, a timeout, a stop): the card says so and stops taking input; the question stays
     function settle(text){
       if(done)return false;
@@ -98,7 +102,7 @@ const TaskConversation = (() => {
       options.remove();hint.remove();label.remove();actions.remove();
       card.classList.add('tc-settled');refresh();return true;
     }
-    refresh();host.appendChild(card);return {card,input,settle,isDone:()=>done};
+    refresh();host.appendChild(card);return {card,input,submit:submitText,settle,isDone:()=>done};
   }
   return {mount};
 })();

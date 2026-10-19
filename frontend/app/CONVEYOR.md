@@ -103,8 +103,8 @@ TURNS = SPLITTER + MERGER; a partner round a step is named like it) · `addLoop`
 3 passes) · `addSorter` (a FILTER: CODE → ENGINEER, RESEARCH → RESEARCHER, everything else on) · `removeStep` (a split left
 with one way folds away; a sorter's route step takes its route with it — that type then goes with everything else — and a
 sorter left sorting nothing folds away) · `removeLoop` · `moveStep` (swap along a plain run) · `addOutbox` · `wrapLine` (a
-lone BAY becomes INBOX → it → OUTBOX) · `tidy` (TIDY LINE: the whole line re-laid from its INBOX) · `newLine` (BUILD YOUR OWN
-LINE: INBOX → a step → OUTBOX near the middle of the view) · `addArm` (another branch on a SPLITTER, up to three; the JOINER then
+lone BAY becomes INBOX → it → OUTBOX) · `tidy` (TIDY LINE: the whole line re-laid from its INBOX) · `newLine` (a starter
+line INBOX → a step → OUTBOX near the middle of the view — the BUILD YOUR OWN LINE key no longer calls it: it puts an INBOX in hand) · `addArm` (another branch on a SPLITTER, up to three; the JOINER then
 waits for it too) · `removeArm` (a whole branch out — every step on it; a split left with one way folds away, round a branch of
 several steps too) · `addRoute` (a FILTER's step for CODE or RESEARCH when that type has no route, handing on to where
 everything else goes) · `removeSorter` (the FILTER and every route step it sorts to, as one piece).
@@ -127,7 +127,8 @@ everything else goes) · `removeSorter` (the FILTER and every route step it sort
   ROLE chips (`station.setPropRole`) and SHAPE THE LINE (earlier / later / a review / second opinion / share the load / remove),
   REMOVE THE REVIEW on a LOOP gate, a SPLITTER's ADD A BRANCH and ✕ per branch, a FILTER's + A STEP FOR CODE / RESEARCH (a
   type it has no route for) and REMOVE THE SORTER, MAKE IT A LINE on a lone BAY, + OUTBOX where a line that ends on a step has
-  none, TIDY LINE in the footer. The Conveyors tab has BUILD YOUR OWN LINE. Locked by test/line-edit.test.js (every op on a real
+  none, TIDY LINE in the footer. The Conveyors tab has BUILD YOUR OWN LINE: an INBOX in hand, placed where the Commander clicks (Esc /
+  right-click puts it down), then the line grows by dragging from it (test/build-new-line-hand.test.js). Locked by test/line-edit.test.js (every op on a real
   station, the audit's newsletter line built from edits alone, one undo each) and test/line-edit-panel.test.js.
 
 ### Ready-made lines, laid out to fit (conveyor-links phase E)

@@ -306,7 +306,7 @@ const clock = { now: () => clk };
   A.eq(s.list(null, { streamId: 'nope' }).length, 0, 'an unknown stream has no rows');
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
   A.ok(/runsFor: \(streamId\) => \(runStore\.list\(null, \{ streamId: streamId/.test(src), 'the trigger runner reads its fire back by streamId');
-  A.ok(/runs = \(runStore\.list\(null, \{ streamId: streamId, limit: 200 \}\)/.test(src), 'the sample route reads its runs back by streamId');
+  A.ok(/(?:runs|const rows) = \(runStore\.list\(null, \{ streamId: streamId, limit: 200 \}\)/.test(src), 'the sample route reads its runs back by streamId');   // `rows` since the delivered-receipt rule reads them twice
 }
 
 // ---- ROUTINE HISTORY (2026-10-01): a scheduled run carries its routine id; ordinary rows stay byte-identical ----
@@ -329,6 +329,81 @@ const clock = { now: () => clk };
   A.eq(s.latest('w1').delegatedBy, 'strategist', 'delegatedBy survives a replay from disk');
 }
 
+// Dispatch validation finalizes a delivery without rewriting the execution outcome or booking its spend twice.
+{
+  const io = memIo();
+  let s = makeRunStore({ io, clock });
+  clk = 100; s.record({ runId: 'original', agentId: 'worker', streamId: 'thread', reason: 'budget', usd: 2,
+    deliveryText: 'raw unvalidated text', dispatchDelivery: { state: 'pending' } });
+  clk = 110; s.record({ runId: 'repair', agentId: 'worker', streamId: 'thread', reason: 'done', usd: 1,
+    deliveryText: 'also invalid', dispatchDelivery: { state: 'internal' } });
+  clk = 120; s.record({ runId: 'later', agentId: 'worker', reason: 'done', usd: 4 });
+  clk = 130; const final = s.finalizeDelivery('original', { text: 'No completion accepted.', reason: 'invalid-result', repairRunId: 'repair' });
+  A.eq(final.reason, 'budget', 'dispatch validation never rewrites the original execution terminal');
+  A.eq(final.deliveryText, 'raw unvalidated text', 'raw execution output remains available as evidence');
+  A.eq(final.dispatchDelivery.reason, 'invalid-result', 'dispatch failure is separate from the execution terminal');
+  A.eq(final.dispatchDelivery.text, 'No completion accepted.', 'the authoritative delivery contains the validated outcome');
+  A.eq(final.dispatchDelivery.repairRunId, 'repair', 'the repair remains linked as its own real execution');
+  A.eq(final.ts, 100, 'finalization preserves the original run position and time');
+  A.eq(s.list().map(r => r.runId), ['later', 'repair', 'original'], 'a delivery patch is never a second run row');
+  A.eq(s.all().reduce((sum, r) => sum + r.usd, 0), 7, 'delivery finalization does not duplicate spend');
+  A.eq(s.count(), 3, 'delivery finalization does not duplicate run counts');
+  A.eq(s.list(null, { beforeRunId: 'repair' }).map(r => r.runId), ['original'], 'pagination ignores delivery patches');
+  const lines = io.lines.length;
+  A.eq(s.finalizeDelivery('original', { text: 'replacement', reason: 'done' }).dispatchDelivery.reason, 'invalid-result', 'a finalized result cannot be silently replaced');
+  A.eq(io.lines.length, lines, 'finalization is idempotent without another disk append');
+  A.eq(s.finalizeDelivery('repair', { text: 'repair', reason: 'done' }), null, 'an internal repair cannot deliver independently');
+  A.eq(s.finalizeDelivery('missing', { text: 'invented', reason: 'done' }), null, 'a missing execution never becomes invented run/spend history');
+  A.eq(s.finalizeDelivery('later', { text: 'legacy', reason: 'done' }), null, 'legacy rows are not rewritten');
+  s = makeRunStore({ io, clock });
+  A.eq(s.latest('original').dispatchDelivery, final.dispatchDelivery, 'the final delivery survives a fresh store replay');
+  A.eq(s.count(), 3, 'replay keeps one row per real execution');
+  A.eq(s.latest('repair').dispatchDelivery.state, 'internal', 'repair non-delivery survives restart');
+  A.ok(!('dispatchDelivery' in s.latest('later')), 'legacy shape is unchanged');
+  const read = s.latest('original'); read.dispatchDelivery.text = 'mutated by reader';
+  A.eq(s.latest('original').dispatchDelivery.text, 'No completion accepted.', 'readers cannot mutate the persisted delivery envelope');
+}
+{
+  const io = memIo(); let fail = false;
+  const append = io.append.bind(io); io.append = row => { if (fail) throw new Error('disk full'); append(row); };
+  const s = makeRunStore({ io, clock });
+  s.record({ runId: 'pending', reason: 'done', dispatchDelivery: { state: 'pending' } });
+  fail = true; let error = null;
+  try { s.finalizeDelivery('pending', { text: 'validated', reason: 'done' }); } catch (e) { error = e; }
+  A.ok(error && /disk full/.test(error.message), 'persistence failure is reported to the dispatch host');
+  A.eq(s.latest('pending').dispatchDelivery.state, 'pending', 'failed persistence cannot claim a durable finalized delivery');
+  fail = false; s.finalizeDelivery('pending', { text: 'validated', reason: 'done' });
+  A.eq(makeRunStore({ io, clock }).latest('pending').dispatchDelivery.text, 'validated', 'a failed append can be retried and replayed');
+}
+
+{
+  const lines = []; let fail = true;
+  const io = { readAll: () => lines.slice(), append: row => { if (fail) throw new Error('disk full before run record'); lines.push(row); } };
+  const s = makeRunStore({ io, clock });
+  s.record({ runId: 'lost-base', reason: 'done', dispatchDelivery: { state: 'pending' } });
+  fail = false; let error = null;
+  try { s.finalizeDelivery('lost-base', { text: 'answer', reason: 'done' }); } catch (e) { error = e; }
+  A.ok(error && /original dispatch run/.test(error.message), 'a missing durable base cannot masquerade as a recoverable finalized delivery');
+  A.eq(s.latest('lost-base').dispatchDelivery.state, 'pending', 'failed base persistence leaves delivery unconfirmed');
+  A.eq(lines.length, 0, 'no orphan finalization patch is written after the original record failed');
+}
+
+// The real host adapter must propagate a strict delivery write failure (ordinary run history stays fail-open).
+{
+  const fs = require('fs'), vm = require('vm');
+  const source = fs.readFileSync(require('path').join(__dirname, '../sidecar/index.js'), 'utf8');
+  const start = source.indexOf('const runsIo = {'), end = source.indexOf('// In-process capability', start);
+  const io = vm.runInNewContext(source.slice(start, end) + '; runsIo;', {
+    fs: {}, RUNS_FILE: 'runs.jsonl', readBoundedJsonl: () => [], failNote: () => {}, rotateJsonl: () => {},
+    console: { warn: () => {} }, appendJsonlDurable: () => { throw new Error('host disk failure'); }
+  });
+  let ordinary = null, strict = null;
+  try { io.append({}); } catch (e) { ordinary = e; }
+  try { io.append({}, { strict: true }); } catch (e) { strict = e; }
+  A.eq(ordinary, null, 'legacy run record append policy remains fail-open');
+  A.ok(strict && /host disk failure/.test(strict.message), 'the actual host adapter reports strict finalization persistence failure');
+}
+
 // ---- ownerDirective (additive, 2026-10-12) — the host proved the Commander gave this run's directive ----
 {
   const io = memIo();
@@ -338,6 +413,14 @@ const clock = { now: () => clk };
   A.ok(!('ownerDirective' in s.record({ runId: 'g2', agentId: 'agent', reason: 'done', ownerDirective: 'true' })), 'only the boolean host stamp is kept');
   s = makeRunStore({ io, clock });
   A.eq(s.latest('o1').ownerDirective, true, 'ownerDirective survives a replay from disk');
+}
+
+// ---- token-burn audit 2026-10-17: the cache-served part of a run's input rides the row (additive, only when > 0) ----
+{
+  const s = makeRunStore({ io: memIo(), clock });
+  A.eq(s.record({ runId: 'c1', tokens: 1000, cachedTokens: 800 }).cachedTokens, 800, 'cachedTokens is recorded on the run row');
+  A.ok(!('cachedTokens' in s.record({ runId: 'c2', tokens: 1000 })), 'a run with no cache reads keeps the old row shape (no key)');
+  A.ok(!('cachedTokens' in s.record({ runId: 'c3', tokens: 1000, cachedTokens: 'x' })), 'a garbage value is dropped, never stored');
 }
 
 A.report('runstore.test');

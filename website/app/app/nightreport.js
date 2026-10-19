@@ -29,7 +29,7 @@
     // "present" confused real users (2026-07-15): "while you're away" read as "while the app is closed". It isn't —
     // away = no clicks/keys for the idle threshold; the app stays open 24/7. Say the actual rule.
     present: 'you were using the station — it waits until you step away (no clicks or keys for a while); the app stays open',
-    halt: 'the emergency stop was engaged — press any ON ITS OWN button in SETTINGS › AUTONOMY to lift it',
+    halt: 'the emergency stop was engaged — press an ON ITS OWN rung in SETTINGS › AUTONOMY, or RESUME AUTOMATION in the top bar, to lift it',
     leash: 'today’s job limit was already used',
     // NS-2 pre-spend readiness: the station lacks grounded knowledge (a fresh/stale dossier AND too little recent
     // activity) so a beat could not have reached a model call. Honest about what feeds it: real work + answers.
@@ -218,7 +218,7 @@
         away: away,
         halted: true,
         stateText: '⛔ HALTED — E-STOP engaged',
-        why: 'autonomy is stopped and will not run until you re-set the autonomy dial — press any ON ITS OWN button above to lift the halt',
+        why: 'autonomy is stopped and will not run until you lift the halt — press an ON ITS OWN rung above, or RESUME AUTOMATION in the top bar',
         presence: away ? 'you’re away' : 'you’re present',
         awayRuleText: awayRuleText(s),
         leashText: leashText,
@@ -243,7 +243,10 @@
       leashText: leashText,
       leashSpent: leash != null && used >= leash,
       lastBeatText: fmtLocalTime(s.lastBeatAt, tz) || 'no job yet',
-      nextEligibleText: fmtLocalTime(s.nextEligibleAt, tz) || 'when the next window opens',
+      // binding 'posture' = the dial is on WAIT / SUGGEST, so NO job will run at any time: a cooldown clock here read as a
+      // scheduled job the line under the grid says cannot happen (org pass P09-a). Same rule as the halted model above.
+      nextEligibleText: s.binding === 'posture' ? 'not scheduled — ON ITS OWN is set to WAIT or SUGGEST'
+        : (fmtLocalTime(s.nextEligibleAt, tz) || 'when the next window opens'),
       modeText: modeText(s),
       modeWarn: s.buildMode === 'draft' && s.draftReason === 'no-workshop-grant',
       readinessText: readinessText(s.readiness)
@@ -254,38 +257,71 @@
   // buildMode/draftReason (server-proven). An older sidecar without the field → '' (render nothing, never guess).
   function modeText(s) {
     if (!s || (s.buildMode !== 'build' && s.buildMode !== 'draft')) return '';
-    if (s.buildMode === 'build') return 'jobs build real deliverables — each arrives as a new ⚒ session in your rail';
+    if (s.buildMode === 'build') return 'jobs build real deliverables — each arrives as a new session in your rail';
     if (s.draftReason === 'no-workshop-grant') return 'drafts only — the away-workshop grant is off, so jobs can only draft';
-    return 'drafts only — to let it build real things while you’re away, set REACH to SANDBOX under FINE-TUNE in SETTINGS › AUTONOMY';
+    return 'drafts only — to let it build real things while you’re away, set REACH to LOCAL ONLY under FINE-TUNE above';
   }
 
   // the cold-start explanation behind a 'readiness' stand-down: how far the station is from EITHER hot bar
   // (dossier breadth or recent-run evidence). '' when already hot / no detail (an empty line is never invented).
+  // The ending names the BAR itself (all 4 areas / 4 recent runs, from the status's hot bars) so the reader knows the target
+  // (org pass P09-c: 'until one of those is complete' named nothing that can complete). A NECESSARY condition, never a promise: clearing a bar does not make it act while the dial is on WAIT / SUGGEST (the
+  // 'posture' gate binds first) or while you are at the station — so the line says what it WON'T do until then, which is
+  // true on every surface that shows it (the AUTONOMY panel beside the posture reason, and LAST REPORT with no dial).
+  // (g1 P09 final round) "before it knows all 4 areas or has 4 recent runs" read as needing BOTH: it says it needs EITHER one.
   function readinessText(rd) {
     if (!rd || typeof rd !== 'object' || rd.tier === 'hot') return '';
     const dims = Array.isArray(rd.usableDims) ? rd.usableDims.length : 0;
     const dimsBar = Number.isFinite(Number(rd.hotDimsMin)) ? Number(rd.hotDimsMin) : 4;
     const runsBar = Number.isFinite(Number(rd.hotRunsMin)) ? Number(rd.hotRunsMin) : 4;
     const runs = Number(rd.activityCount) || 0;
-    return 'still learning you — it knows ' + dims + ' of ' + dimsBar + ' areas and has ' + runs + ' of ' + runsBar + ' recent runs; reaching either lets it act';
+    return 'still learning you — it knows ' + dims + ' of ' + dimsBar + ' areas and has ' + runs + ' of ' + runsBar + ' recent runs; to act on its own it needs either all ' + dimsBar + ' areas or ' + runsBar + ' recent runs';
+  }
+
+  // THE PLAIN HOLD-BACK REASON (org pass 10-14, call #57): the readout's one sentence for a cold-start station — what
+  // happens, never a counter or an unlock ladder. The exact counts stay in readinessText (SETTINGS › AUTONOMY and LAST
+  // REPORT). '' when the station is hot / the route sent no detail, exactly when readinessText is ''.
+  function readinessPlain(rd) {
+    if (!readinessText(rd)) return '';
+    return 'I’ll start once I’ve seen a few of your runs or learned a little more about you.';
+  }
+
+  // THE PRESENT-TENSE MODE LINE for the readout (org pass 10-14, call #57): what an away job WILL do, in the agent's
+  // own voice, composed only from status fields (buildMode, draftReason, leashPerDay). '' for an older sidecar
+  // without buildMode — never a guess. A null leashPerDay drops the number rather than inventing one.
+  function modePlain(s) {
+    if (!s || (s.buildMode !== 'build' && s.buildMode !== 'draft')) return '';
+    if (s.buildMode === 'build') {
+      const n = Number(s.leashPerDay);
+      const jobs = Number.isFinite(n) && n > 0 ? 'up to ' + plural(n, 'small job') + ' a day' : 'small jobs';
+      // (org P09/P31 wire) no ⚒: postureOutlook speaks this in the Dialogue panel, where a symbol glyph falls back to another font
+      return 'While you’re away I’ll do ' + jobs + '; each arrives as a new session in your rail.';
+    }
+    const why = s.draftReason === 'no-workshop-grant' ? ' (the away-workshop grant is off)' : '';
+    return 'While you’re away I’ll draft small jobs, not build them' + why + ' — see LAST REPORT in SETTINGS › AUTONOMY.';
   }
 
   // THE DIAL-RAISE OUTLOOK (NS visibility 2026-07-13): the one honest sentence shown the INSTANT the Commander raises
   // the autonomy dial (the awakening cadence beat / the station panel) — what a beat will ACTUALLY do while they're
   // away (build vs draft) and how far the station still is from being allowed to act (cold-start readiness). Composed
-  // straight from a /api/nightshift/status payload via the SAME modeText/readinessText the panel uses — so the dial
+  // straight from a /api/nightshift/status payload via modePlain/readinessPlain, which read the SAME fields (and the
+  // same readinessText test) the panel's modeText/readinessText use — so the dial
   // feedback and the panel can never disagree (truthful telemetry). Returns '' when there is nothing honest to add:
   // an unreachable/absent status, OR a fully-hot build-capable station whose only truthful line ('beats BUILD…') the
   // caller may still choose to show. NEVER invents — every clause maps to a status field. Pure + node-testable.
+  // PRESENT TENSE (org pass 10-14, call #57): it says what WILL happen — "I’ll do up to 3 small jobs a day; each
+  // arrives as a new session in your rail" — never an unlock ladder ("set REACH to…", "reaching either lets it act"). The
+  // exact N-of-M readiness counts are not dropped: they stay on readinessText, shown in SETTINGS › AUTONOMY and LAST
+  // REPORT. Still composed only from status fields; '' when the status carries nothing to say.
+  // NOTHING RUNS UNATTENDED (org pass fix): binding 'posture' is the driver's FIRST gate — the dial is below SMALL
+  // JOBS (WAIT / SUGGEST), so no away job or draft ever fires and the night shift never arms. Its buildMode still
+  // reads 'draft' (buildsUnattended is false), but promising drafts would be a lie: say nothing.
   function postureOutlook(status) {
     if (!status || typeof status !== 'object') return '';
-    const mode = modeText(status);                       // build-vs-draft, straight from status.buildMode/draftReason
-    const ready = readinessText(status && status.readiness);   // '' once a hot bar is cleared (nothing to caveat)
-    const parts = [];
-    if (mode) parts.push(mode);
-    if (ready) parts.push(ready);
-    if (!parts.length) return '';
-    return 'here’s what that means while you’re away: ' + parts.join('; ') + '.';
+    if (status.binding === 'posture') return '';
+    const mode = modePlain(status);                      // build-vs-draft, straight from status.buildMode/draftReason/leashPerDay
+    const ready = readinessPlain(status && status.readiness);   // '' once a hot bar is cleared (nothing to caveat)
+    return [mode, ready].filter(Boolean).join(' ');
   }
 
   // THE UNSEEN-DRAFTS PREDICATE (NS live-session nudge 2026-07-13): the drafts a night-shift beat left on the desk
@@ -352,5 +388,5 @@
     });
   }
 
-  return { compose, panelModel, trailLine, collapseTrail, trailLines, awayRuleText, fmtLocalTime, bindingPhrase, plural, modeText, readinessText, postureOutlook, unseenDrafts, BINDING_PHRASE };
+  return { compose, panelModel, trailLine, collapseTrail, trailLines, awayRuleText, fmtLocalTime, bindingPhrase, plural, modeText, readinessText, modePlain, readinessPlain, postureOutlook, unseenDrafts, BINDING_PHRASE };
 });

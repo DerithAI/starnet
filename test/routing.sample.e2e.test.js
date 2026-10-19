@@ -277,7 +277,17 @@ function twoStagePlan() {
     const hopCrate = placed.find(p => p.kind === 'chain' && p.agentId === 'writer-agent');
     A.eq(hopCrate.lineId, planLineId, 'and the handoff crate carries the SAME line end to end');
     A.ok(Events.validate('workitem.placed', hopCrate).ok, 'the additive lineId validates against the frozen workitem.placed contract');
-    const outDel = deliveredEv.find(p => p.finalQueueId === 'outbox');
+    // A separate line-output authority receipt can arrive first. Follow this sample's
+    // exact crate identity; selecting by sample:true would hide a missing marker.
+    const outDel = deliveredEv.find(p => p.finalQueueId === 'outbox' && p.workitemId === h.workitemId);
+    A.eq(entry.workitemId, h.workitemId, 'the response and placed sample identify the same crate');
+    A.eq(deliveredEv.filter(p => p.finalQueueId === 'outbox' && p.workitemId === h.workitemId).length, 1, 'the sample crate receives exactly one OUTBOX completion');
+    const entryRun = h.runs.find(r => r.agentId === 'research-agent');
+    const terminal = deliveredEv.find(p => p.box === 'line-output' && p.entryRunId === entryRun.runId);
+    A.ok(terminal && terminal.workitemId !== h.workitemId, 'the line terminal receipt has separate authority identity');
+    A.ok(terminal && terminal.lineId === planLineId && terminal.outboxId === 'o', 'the terminal receipt names the exact completed line and OUTBOX');
+    A.ok(terminal && terminal.workitemIds.includes(hopCrate.workitemId), 'the terminal receipt identifies the successful downstream work item');
+    A.ok(terminal && Events.validate('workitem.delivered', terminal).ok, 'the authority receipt validates independently against the frozen contract');
     A.ok(outDel, 'the sample crate DELIVERED to the outbox');
     A.eq(outDel.sample, true, 'the delivery carries the sample:true marker too');
     // re-prove the schema law this marker leans on: obj() stanzas set no additionalProperties:false

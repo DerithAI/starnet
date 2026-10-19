@@ -36,23 +36,34 @@
 
   /* RELEVANCE-ORDERED INDEX: with opts.query, the index leads with the skills lexically relevant to THIS ask —
      under the 6000-char budget the relevant skill must never be the one skipped for a stale-but-recent one.
-     Pinned skills keep the existing contract (always first, in caller order). The rest sort by context.js's
-     bm25 over {name, summary} (skills shim onto the record shape as title/body), tiebreak updatedAt desc then
-     name then caller order — the caller (skillStore mine()) already sorts that way, so a no-overlap query
-     degrades to today's order. No query at all (or no scorer in the vestigial browser path) → exactly the
-     caller's order, byte-identical to before. Nothing is ever DROPPED by relevance: the budget's own
-     skip-and-count is the only omission path, unchanged. */
-  function orderByQuery(live, query, ctx) {
-    if (!query || !ctx || typeof ctx.bm25 !== 'function') return live;
+     Pinned skills keep the existing contract (always first, in caller order), with or without a query. With an
+     agentId, only that agent's own pins lead: another agent's pinned station skill never jumps ahead of them. The
+     rest sort by context.js's bm25 over {name, summary} (skills shim onto the record shape as title/body), tiebreak
+     updatedAt desc then name then caller order. No query at all (or no scorer in the vestigial browser path) →
+     the pins, then the caller's order (skillStore listAccessible(): own skills first, then pinned, most recently
+     updated, then name). Nothing is ever DROPPED by relevance: the budget's own skip-and-count is the only
+     omission path, unchanged.
+     Without an agentId the owner is read off the list: listAccessible returns agent-scope rows only for the caller,
+     so any such row names it. A list with none (every own skill shared) lets every pin lead, as before. */
+  function listOwner(live, agentId) {
+    if (str(agentId)) return str(agentId);
+    const own = live.find(s => s && s.agentId && (!s.scope || s.scope === 'agent'));
+    return own ? str(own.agentId) : '';
+  }
+  function leadsAsPinned(s, agentId) { return !!(s && s.pinned) && (!agentId || !s.agentId || str(s.agentId) === agentId); }
+  function orderByQuery(live, query, ctx, agentId) {
+    const owner = listOwner(live, agentId);
+    const pinnedFirst = list => list.filter(s => leadsAsPinned(s, owner)).concat(list.filter(s => !leadsAsPinned(s, owner)));
+    if (!query || !ctx || typeof ctx.bm25 !== 'function') return pinnedFirst(live);
     const rel = ctx.bm25(live.map(s => ({ kind: 'note', title: str(s && s.name), body: str(s && s.summary) })), query);
-    if (!rel.queried) return live;   // no significant tokens (image-only turn) -> today's order
+    if (!rel.queried) return pinnedFirst(live);   // no significant tokens (image-only turn) -> pins, then caller order
     const rows = live.map((s, i) => ({ s: s, i: i, score: rel.scores[i] || 0 }));
     const cmp = (a, b) => (b.score - a.score)
       || (((b.s && b.s.updatedAt) || 0) - ((a.s && a.s.updatedAt) || 0))
       || str(a.s && a.s.name).localeCompare(str(b.s && b.s.name))
       || (a.i - b.i);
-    const pinned = rows.filter(x => x.s && x.s.pinned);
-    const rest = rows.filter(x => !(x.s && x.s.pinned)).sort(cmp);
+    const pinned = rows.filter(x => leadsAsPinned(x.s, owner));
+    const rest = rows.filter(x => !leadsAsPinned(x.s, owner)).sort(cmp);
     return pinned.concat(rest).map(x => x.s);
   }
 
@@ -70,7 +81,9 @@
       + opening + 'A skill is a procedure you write down so your next runs start from it instead of working it out again. '
       + 'When a task makes you work out a non-trivial procedure (a multi-step workflow, a fix for a tricky error, a format or approach the Commander wants), save it '
       + (canManage ? 'with skill.manage (action create)' : 'with skill.write')
-      + ' before you finish: a short name, a one-line summary of when to use it, and the steps.';
+      + ' before you finish: a short name, a one-line summary of when to use it, and the steps. '
+      // A model-written skill is a pending proposal: say so, or the agent believes it already applies.
+      + 'It applies once approved in ABILITIES > SKILLS.';
   }
 
   function composeIndex(skills, opts) {
@@ -83,7 +96,10 @@
       const archived = (Array.isArray(skills) ? skills : []).filter(s => s && s.state === 'archived').length;
       return { text: opts.emptyGuide ? emptyGuide(canManage, archived) : '', ids: [], omitted: 0, withheld: 0 };
     }
-    const ordered = orderByQuery(live, opts.query == null ? '' : String(opts.query), context);
+    const ordered = orderByQuery(live, opts.query == null ? '' : String(opts.query), context, opts.agentId);
+    // The owner tag is spent only where it tells the model something: a shared (station/project) skill, or one
+    // owned by another agent. An agent-scope skill in this list is the caller's own (listAccessible).
+    const ownerTagged = s => !!s.agentId && ((s.scope && s.scope !== 'agent') || (!!opts.agentId && str(s.agentId) !== str(opts.agentId)));
 
     const parts = [];
     const ids = [];
@@ -112,7 +128,7 @@
       if (s.platforms && s.platforms.length) meta.push('platforms: ' + s.platforms.join('/'));
       if (s.files && s.files.length) meta.push(String(s.files.length) + ' support file' + (s.files.length === 1 ? '' : 's'));
       if (meta.length) bits.push(' [' + meta.join(', ') + ']');
-      if (s.agentId) bits.push(' [owner: ' + cleanLine(s.agentId) + ', scope: ' + cleanLine(s.scope || 'agent') + ']');
+      if (ownerTagged(s)) bits.push(' [owner: ' + cleanLine(s.agentId) + ', scope: ' + cleanLine(s.scope || 'agent') + ']');
       if (s.id) bits.push(' (id: ' + cleanLine(s.id) + ')');
       const line = bits.join('');
       if (parts.length && used + line.length > budget) { overflow.push({ skill: s, held: false }); continue; }
@@ -125,7 +141,7 @@
     const compact = [];
     for (const row of overflow) {
       const s = row.skill;
-      const line = '- ' + cleanLine(s.name || s.id) + (s.agentId ? ' [owner: ' + cleanLine(s.agentId) + ']' : '')
+      const line = '- ' + cleanLine(s.name || s.id) + (ownerTagged(s) ? ' [owner: ' + cleanLine(s.agentId) + ']' : '')
         + (row.held ? ' [WITHHELD]' : '');
       if (overflowUsed + line.length > overflowBudget) { omitted++; continue; }
       compact.push(line); overflowUsed += line.length; compacted++;

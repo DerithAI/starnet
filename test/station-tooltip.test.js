@@ -100,6 +100,8 @@ A.eq(above.below, false, 'a tip with room above renders above its anchor');
 A.eq(above.left + tip.width / 2, 450, 'and is centred on the anchor');
 const flipped = T.place({ left: 400, top: 10, width: 100, height: 20 }, tip, vp);
 A.eq(flipped.below, true, 'a tip with no room above flips below');
+A.eq(T.place({ left: 400, top: 300, width: 100, height: 20 }, tip, vp, true).below, true, 'a data-tip-below anchor (a grid tile) gets its tip below, off the tile above');
+A.eq(T.place({ left: 400, top: 770, width: 100, height: 20 }, tip, vp, true).below, false, 'and still goes above when there is no room below');
 const clampedL = T.place({ left: 0, top: 300, width: 20, height: 20 }, tip, vp);
 A.ok(clampedL.left >= 0, 'a tip at the left edge stays on screen');
 const clampedR = T.place({ left: 980, top: 300, width: 20, height: 20 }, tip, vp);

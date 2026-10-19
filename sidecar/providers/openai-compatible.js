@@ -9,6 +9,7 @@
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
+  const { note: failNote } = (typeof require === 'function') ? require('../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
   const classifyApiError = errorClass.classifyApiError;
   const timeouts = provider.timeouts;
   const isAbort = provider.runtime.isAbort;
@@ -217,18 +218,53 @@
     }
     return '';
   }
-  async function responseErrorDetail(res) {
+  // An error body is read only this far: 500 characters are kept, so a proxy's endless HTML page is cut off.
+  const MAX_ERR_BODY = 64 * 1024;
+  async function responseErrorDetail(res, signal, url) {
     let data = null;
     let text = '';
+    let readStream = false;
+    let bodyStalled = false;
     try {
-      text = typeof res.text === 'function' ? await res.text() : '';
+      // Error headers disarm the connect guard too. An unfinished error body must retain the
+      // same idle watchdog and caller cancellation as a successful stream, including local loads.
+      if (res.body && typeof res.body.getReader === 'function') {
+        readStream = true;
+        const raw = res.body.getReader();
+        const reader = timeouts.idleGuardedReader(raw, { signal, url });
+        const decoder = new TextDecoder();
+        let bytes = 0;
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            text += decoder.decode(chunk.value, { stream: true });
+            bytes += (chunk.value && chunk.value.byteLength) || 0;
+            if (bytes >= MAX_ERR_BODY) {
+              try { await reader.cancel(); } catch (e) { failNote('providers.openai_compatible.error_reader_cancel', 'error response reader cancel failed'); }
+              break;
+            }
+          }
+          text += decoder.decode();
+        } finally { try { raw.releaseLock(); } catch (_) { failNote('providers.openai_compatible.error_reader_release', 'error response reader release failed'); } }
+      } else text = typeof res.text === 'function' ? await res.text() : '';
       if (text) { try { data = JSON.parse(text); } catch (_) { data = null; } }
-    } catch (_) { text = ''; data = null; }
-    if (!data && !text && typeof res.json === 'function') {
-      try { data = await res.json(); } catch (_) { data = null; }
+    } catch (e) {
+      if (isAbort(e, signal)) throw e;
+      // The status line already arrived: a body that stalls is still that status (a 401 keeps its reconnect door),
+      // never a "no bytes received" stall. Keep what text did arrive.
+      if (e && e.code === 'PROVIDER_STREAM_TIMEOUT') bodyStalled = true; else text = '';
+      data = null;
+    }
+    if (!readStream && !data && !text && typeof res.json === 'function') {
+      try { data = await res.json(); } catch (e) {
+        if (isAbort(e, signal)) throw e;
+        data = null;
+      }
     }
     const e = data && data.error;
-    const message = safeErrorField((e && e.message) || (data && data.message) || text || res.statusText || ('HTTP ' + res.status), 500);
+    const message = safeErrorField((e && e.message) || (data && data.message) || text || res.statusText || ('HTTP ' + res.status), 500)
+      + (bodyStalled ? ' (error body did not finish)' : '');
     const type = safeErrorField(e && e.type, 80);
     const code = safeErrorField(e && e.code, 80);
     // OpenRouter places provider identity in metadata; raw metadata is deliberately ignored because it may
@@ -311,6 +347,9 @@
     // /models responses). Both stay null/off unless the profile asserts them — capability claims must
     // come from somewhere provable, never be assumed.
     const sendReasoningEffort = opts.sendReasoningEffort === true;
+    // Prompt-cache breakpoints for an endpoint that relays to a cache_control-honoring backend (the managed proxy ->
+    // OpenRouter): (messages, model, cacheSystemPrefix) -> messages. Absent = the body is byte-identical to before.
+    const cacheControl = typeof opts.cacheControl === 'function' ? opts.cacheControl : null;
     // OUTPUT CEILING (2026-09-15, issue #17): this adapter never capped output, so an endpoint with no ceiling of
     // its own (Ollama) ran to end-of-sequence — a 3B local model typed for ten minutes. Off unless the PROFILE opts
     // in (factory: profile.maxOutputTokens) or the caller passes max_tokens explicitly; hosted endpoints that
@@ -324,6 +363,8 @@
     // classifier couldn't route a dead grok/kimi sign-in to its ⏼ RECONNECT door — users got the
     // keyed-provider "＋ Add a key" door for a keyless subscription sign-in.
     const errLabel = String(opts.label || 'openai-compatible');
+    // false = this endpoint's own ids may be vendor/model (CUSTOM, Ollama): no routed-catalog hint on a refused model (#126)
+    const routedIdHint = opts.routedIdHint !== false;
     const profileSupportsTools = (typeof opts.supportsTools === 'boolean') ? opts.supportsTools : null;
     /* PRICE FAMILY (2026-08-21). OpenAI's /v1/models — and every vendor that clones it — carries NO pricing
        block, so priceOf() returned null on openai/xai/groq/mistral/deepseek/together/fireworks and cost.js
@@ -388,6 +429,38 @@
        run continues on the /v1 wire exactly as before. */
     let nativeWire = opts.nativeOllama === true && !!ollamaNative;
     const nativeBase = nativeWire ? ollamaNative.nativeRoot(baseUrl) : '';
+    // Where the Ollama server runs, for its user-facing copy: loopback is "this computer", anything else is named.
+    const ollamaHost = opts.nativeOllama === true ? provider.runtime.requestHostOf(baseUrl) : '';
+    const ollamaIsLoopback = !ollamaHost || /^(?:localhost|.+\.localhost|127(?:\.\d+){3}|0\.0\.0\.0|\[?::1\]?)$/i.test(ollamaHost);
+    /* NOT AN OLLAMA SERVER (GH#111). LM Studio answers a route it does not serve with HTTP 200 and ONE JSON object,
+       {"error":"Unexpected endpoint or method. (POST /api/chat)"}, so an OLLAMA card pointed at LM Studio read that 200
+       as the native stream: a compact body surfaced the bare sentence (an `unknown` error, retried), a pretty-printed one
+       an empty reply. Those words as the FIRST native object prove the URL is not Ollama (Ollama never answers its own
+       route that way): the native wire goes off for this instance and the run is told which server it reached and which
+       card speaks to it. Content-type is never consulted (Ollama proxies vary). Terminal, not retried: errorClass reads
+       `endpointMismatch` as its own reason, so no retry ladder re-sends the turn into a silent /v1 success and hides
+       the misconfiguration. That sentence is for the OLLAMA card only: a CUSTOM card that merely BORROWED the native
+       wire on its URL's look (opts.nativeOllamaBorrowed) is already the right card, so wireStream re-asks /v1 instead. */
+    const NOT_OLLAMA_RE = /unexpected endpoint or method/i;
+    const NATIVE_LEFTOVER_MAX = 65536;   // bounded: only an error body that never parsed line by line is ever re-read
+    const nativeBorrowed = opts.nativeOllamaBorrowed === true;
+    /* host[:port] of the configured URL as a URL parser reads it (the port is what tells 1234 from 11434). URL.host never
+       carries userinfo, even a password with a raw "@", so no credential reaches COMMS, history or pasted diagnostics. */
+    const endpointHostPort = (() => { try { return new URL(String(baseUrl || '')).host || ''; } catch (_) { return ''; } })();
+    function nativeErrorText(j) {
+      if (!j || !j.error) return '';
+      if (typeof j.error === 'string') return j.error;
+      return String(j.error.message || j.error.code || '');
+    }
+    function notOllamaError(detail) {
+      const err = new Error('The OLLAMA card\'s URL' + (endpointHostPort ? ' (' + endpointHostPort + ')' : '') + ' is not an Ollama server: '
+        + 'it answered Ollama\'s chat request the way LM Studio does. Add that server under SETTINGS → AI & MODELS → CUSTOM '
+        + 'with its /v1 URL instead. [' + detail + ']');
+      err.ownMessage = true;
+      err.endpointMismatch = true;
+      err.body = { error: { message: detail } };
+      return err;
+    }
     const pinnedCtx = Math.max(0, Math.floor(Number(opts.numCtx) || 0));
     const ctxCeiling = Math.max(0, Math.floor(Number(opts.maxCtx) || 0)) || (ollamaNative ? ollamaNative.DEFAULT_MAX_CTX : 0);
     const modelFacts = new Map();      // model -> Promise<{ contextLength, supportsTools, supportsReasoning }>
@@ -472,7 +545,24 @@
     // the loop sees them; with no such tool this is the raw stream itself.
     function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
 
+    /* A CUSTOM card's BORROWED native wire (GH#111 review): its URL only looked like Ollama, so a server that answers the
+       native chat as a different server (notOllamaError, thrown on the FIRST native object, before this turn yielded
+       anything) is StarNet's own wrong guess, and CUSTOM is already the card that speaks to it. nativeWire is off by
+       then; the same turn goes once on the /v1 wire, the way the 404 path does, and a /v1 failure reports itself.
+       Every other route streams wireStreamOnce untouched. */
     async function* wireStream(req) {
+      if (!nativeBorrowed || !nativeWire) { yield* wireStreamOnce(req); return; }
+      let yielded = false;
+      try {
+        for await (const ev of wireStreamOnce(req)) { yielded = true; yield ev; }
+      } catch (e) {
+        if (yielded || nativeWire || !e || e.endpointMismatch !== true) throw e;
+        failNote('providers.openai_compatible.custom_not_ollama', 'the CUSTOM endpoint at ' + endpointHostPort + ' looked like Ollama but is not (' + (e.body && e.body.error && e.body.error.message) + '): the turn moves to its /v1 wire');
+        yield* wireStreamOnce(req);
+      }
+    }
+
+    async function* wireStreamOnce(req) {
       req = req || {};
       maybeRewarmCatalog();
       const dropped = droppedParams.get(String(req.model || ''));
@@ -481,9 +571,12 @@
       const prepared = provider.prepareWireMessages(req.messages || [], 'chat');
       // Keep the profile's SYSTEM projection even after nativeWire falls back to /v1. Do not
       // infer this policy from a model name or change generic/hosted Chat Completions requests.
+      // Every other route: ONE role projection (provider.chatRoleProjection) — a Claude model keeps its continuation
+      // placement; any other model gets the host notes (<run_context>, recall, the earlier-conversation summary) as the
+      // fenced leading text of the newest user message, never as a system message after index 0 (#102-class refusals).
       const messages = opts.nativeOllama === true && ollamaNative
         ? ollamaNative.leadingSystemMessages(prepared)
-        : provider.preserveClaudeContinuations(prepared, req.model);
+        : provider.chatRoleProjection(prepared, req.model);
       const body = { model: req.model, messages, stream: true };
       if (includeUsage && !skip('stream_options')) body.stream_options = { include_usage: true };
       const explicitMax = Math.floor(Number(req.max_tokens || req.maxTokens || 0)) || 0;
@@ -532,6 +625,7 @@
       // Strict Chat Completions endpoints (Mistral: 422 extra_forbidden) reject StarNet's own bookkeeping keys on a
       // message (ts, streamId, agentId, the `reasoning` parking field) — only Chat Completions message keys leave.
       body.messages = provider.chatWireMessages(body.messages);
+      if (cacheControl) body.messages = cacheControl(body.messages, req.model, req.cacheSystemPrefix);
       // OLLAMA NATIVE: size the window to THIS request before it leaves (the model's trained maximum is one local
       // /api/show, cached per model). requestWithRetry resizes once more if Ollama counts more tokens than estimated.
       let wire = null;
@@ -552,7 +646,10 @@
            next "hello" waited 26s behind them. Only a model Ollama says can think is told not to, and only here:
            Commander turns and tasks keep the model's own default. */
         const background = !(req.tools && req.tools.length) && typeof req.isTask !== 'boolean';
-        const think = (background && facts && facts.supportsReasoning === true) ? false : undefined;
+        // A background call that chose no effort of its own must not inherit the run's default (a CUSTOM endpoint on
+        // Ollama carries CUSTOM's 'medium', which maps to think:true). An explicit aux effort still rides.
+        if (background && !req.reasoningEffort && facts && facts.supportsReasoning === true) delete body.reasoning_effort;
+        const think =(background && facts && facts.supportsReasoning === true) ? false : undefined;
         wire = { native: true, modelMax, think, numCtx: ollamaNative.pickNumCtx(need, { pinned: pinnedCtx, ceiling: ctxCeiling, modelMax, floor: ollamaWindow(nativeBase, req.model) }) };
       }
       let res;
@@ -594,15 +691,43 @@
         return nextIdx > 0 ? nextIdx - 1 : 0;
       }
       let doneEmitted = false;   // exactly one terminal event per stream (see STREAM-END TRUTH below)
+      // Native body text that parsed as no object, kept only until the first object parses (see nativeLeftover).
+      let nativeObjects = 0;
+      let nativeUnparsed = '';
+
+      // One native NDJSON object. The FIRST one may prove the URL is not Ollama at all (notOllamaError).
+      function nativeObject(j) {
+        if (!j || typeof j !== 'object') return null;
+        if (!nativeObjects++) {
+          const detail = nativeErrorText(j);
+          if (detail && NOT_OLLAMA_RE.test(detail)) { nativeWire = false; throw notOllamaError(detail); }
+        }
+        const chunk = translate(j);
+        return chunk ? { json: chunk, last: j.done === true } : null;
+      }
+      /* A native body that never parsed line by line: a server that pretty-prints ONE JSON object over several lines
+         (LM Studio's 200 "no such route", GH#111) read as nothing, then a cut stream with an EMPTY reply. Read as one
+         document it is that object, so an {error} there is thrown, never an empty success. A body that is not JSON
+         stays exactly as before. */
+      function nativeLeftover() {
+        if (!translate || nativeObjects || !nativeUnparsed.trim()) return null;
+        let j;
+        try { j = JSON.parse(nativeUnparsed); } catch (_) { return null; }
+        return nativeObject(j);
+      }
 
       function parseLine(line) {
         const t = line.replace(/\r$/, '').trim();
         if (translate) {
           // one JSON object per line; the object with done:true is the whole stream's end (Ollama sends no [DONE])
           if (!t) return null;
-          let j; try { j = JSON.parse(t); } catch (_) { return null; }
-          const chunk = translate(j);
-          return chunk ? { json: chunk, last: j.done === true } : null;
+          let j;
+          try { j = JSON.parse(t); } catch (_) { j = undefined; }
+          if (!j || typeof j !== 'object') {
+            if (!nativeObjects && nativeUnparsed.length < NATIVE_LEFTOVER_MAX) nativeUnparsed += line + '\n';
+            return null;
+          }
+          return nativeObject(j);
         }
         if (!t || t.charAt(0) === ':') return null;
         if (t.indexOf('data:') !== 0) return null;
@@ -625,7 +750,7 @@
           const err = new Error((j.error && (j.error.message || j.error.code)) || 'provider stream error');
           err.body = j;   // the structured error (code/type) — errorClass reads it
           err.ownMessage = true;
-          throw err;
+          throw localMemoryError(err);
         }
         if (j.usage) yield { type: 'usage', usage: j.usage };
         const choice = j.choices && j.choices[0];
@@ -675,6 +800,8 @@
             if (p && p.done) sawSentinel = true;
             else if (p && p.json) { yield* emitFrom(p.json); if (p.last) sawSentinel = true; }
           }
+          const whole = nativeLeftover();
+          if (whole) { yield* emitFrom(whole.json); if (whole.last) sawSentinel = true; }
         }
         // STREAM-END TRUTH (truthful-telemetry law): always emit exactly ONE terminal event, and say honestly
         // whether the stream really ENDED or merely stopped arriving. A complete response carries a
@@ -687,6 +814,20 @@
         if (isAbort(e, req.signal)) return;
         throw e;
       }
+    }
+
+    // Local allocation failure is not a busy server. Repeating it can starve the station renderer too.
+    // Keep this scoped to the Ollama profile (including its compatible-wire fallback), not hosted 5xx.
+    function localMemoryError(err) {
+      if (opts.nativeOllama !== true || !err || (err.status && err.status !== 500)) return err;
+      const detail = String(err.message || '');
+      if (!/out[- ]of[- ]memory|failed to allocate (?:CUDA\d* buffer|buffer for kv cache)|model requires more (?:system )?memory/i.test(detail)) return err;
+      err.localModelMemory = true;
+      err.ownMessage = true;
+      err.message = ollamaIsLoopback
+        ? 'Local model ran out of memory. Close other local models or memory-heavy apps, or choose a smaller model from the model picker in COMMS before trying again. [' + detail + ']'
+        : 'The model server at ' + ollamaHost + ' ran out of memory. Free memory on that machine, or choose a smaller model from the model picker in COMMS before trying again. [' + detail + ']';
+      return err;
     }
 
     async function requestWithRetry(body, signal, maxRetries, wireHeaders, wire) {
@@ -717,7 +858,7 @@
           // Appended, so the message still reads "timed out" and classifies exactly as before.
           if (native && e && e.timeout && e.phase === 'connect' && !e.ollamaPlacement) {
             e.ollamaPlacement = true;
-            e.message += ' — ' + ollamaNative.placementNote(await ollamaStatus(), body.model, ollamaNative.estimateTokens(body));
+            e.message += ' — ' + ollamaNative.placementNote(await ollamaStatus(), body.model, ollamaNative.estimateTokens(body), ollamaIsLoopback ? 'on this computer' : 'at ' + ollamaHost);
           }
           // a TLS rejection or a crash in our own request code cannot heal by re-sending: fail fast, unmarked
           if (!classifyApiError(e, { model: body.model }).retryable) throw e;
@@ -730,7 +871,7 @@
           if (native) noteOllamaWindow(nativeBase, body.model, wire.numCtx);
           return res;
         }
-        const upstreamError = await responseErrorDetail(res);
+        const upstreamError = await responseErrorDetail(res, signal, native ? nativeBase + '/api/chat' : baseUrl + chatPath);
         let detail = upstreamError.detail;
         if (native) {
           // No /api/chat behind this URL (a proxy that only forwards /v1): the /v1 wire, for the rest of this
@@ -780,10 +921,16 @@
         // line the user sees only the vendor's bare "invalid model ID" and has no path back (2026-08-25
         // stranded-user incident) — name the mismatch and the fix. Slash-native catalogs (together, fireworks,
         // groq) are safe: their ids resolve on their own endpoints, so this only fires on a real mismatch.
+        // An endpoint the Commander runs or names (CUSTOM: Hive, LiteLLM, vLLM…; Ollama) serves vendor/model ids NATIVELY:
+        // there that line was false and sent a Hive user to switch providers (#126). It names the id that was sent instead.
         if ((res.status === 400 || res.status === 404)
-          && /invalid model|is not a valid model|model .*(does not exist|not found)/i.test(String(detail))
-          && String(body.model || '').indexOf('/') > 0) {
-          detail += ' — "' + body.model + '" is a routed-catalog model id (vendor/model), but this provider calls the vendor API directly. Switch the provider in the model picker (STARNET or OPENROUTER for routed ids), or pick a model from this provider\'s own catalog.';
+          && /invalid model|is not a valid model|model .*(does not exist|not found)/i.test(String(detail))) {
+          const sent = String(body.model || '');
+          if (routedIdHint && sent.indexOf('/') > 0) {
+            detail += ' — "' + sent + '" is a routed-catalog model id (vendor/model), but this provider calls the vendor API directly. Switch the provider in the model picker (STARNET or OPENROUTER for routed ids), or pick a model from this provider\'s own catalog.';
+          } else if (!routedIdHint && sent && String(detail).indexOf(sent) < 0) {
+            detail += ' — the endpoint did not accept the model id "' + sent + '"; check the exact id in your endpoint\'s model list.';
+          }
         }
         const err = new Error(errLabel + ' http ' + res.status + ' - ' + detail);
         err.status = res.status;
@@ -796,6 +943,7 @@
            adapter's own sentence — label + status, which the UI routes on ("Kimi For Coding http 401"); err.ownMessage tells
            errorClass so. */
         if (upstreamError.body) { err.body = upstreamError.body; err.ownMessage = true; }
+        localMemoryError(err);
         const cls = classifyApiError(err, { model: body.model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }
@@ -911,7 +1059,9 @@
       return ['none'];
     }
 
-    return { stream, listModels, contextLimit, priceOf, supportsTools, reasoningEfforts };
+    // localRuntime names the Ollama server this instance talks to, so the loop never fails a local out-of-memory
+    // over to another model on the same server.
+    return { stream, listModels, contextLimit, priceOf, supportsTools, reasoningEfforts, localRuntime: nativeBase || undefined };
   }
 
   return { makeOpenAICompatibleProvider, _internals: { normalizeModel, cleanBaseUrl, responseErrorDetail, safeErrorField, clampToDeclared, canonicalEffort, paramNamed, supportedEffortsFrom, toolsForceNone, replayReasoningContent } };

@@ -21,7 +21,7 @@ const world = read('frontend/app/world.js'), outbox = read('frontend/app/windows
 // (2026-09-28: the four controls became ONE TEST control with modes — conveyor-retest.test.js pins the modes)
 A.ok(/const PREVIEW_LABEL = '▶ TEST';/.test(build), 'the top bar has one TEST control');
 A.ok(/\['watch', 'WATCH IT · FREE'/.test(panel) && /\['step', 'STEP THROUGH · REAL'/.test(panel), 'the free mode says FREE, the step-through says REAL');
-A.ok(/'▶ RUN ONE REAL JOB'/.test(panel) && /'③ RUN ONE REAL JOB'/.test(build) && (chat.match(/'▸ RUN ONE REAL JOB'/g) || []).length === 2, 'every sample control says ONE REAL JOB');
+A.ok(/'▶ SEND A REAL JOB'\) \+ '<\/button>'/.test(panel) && /'③ SEND A REAL JOB'/.test(build) && (chat.match(/'▸ SEND A REAL JOB'/g) || []).length === 2 && !/RUN ONE REAL JOB'/.test(panel + build + chat), 'every sample control says SEND A REAL JOB (org P17: one word set)');
 A.ok(!/RUN A SAMPLE JOB/.test(panel + build + chat), 'the old "sample job" label is gone');
 A.ok(/function testJobForProp\(propId\)/.test(build) && /testJobForProp, close,/.test(build), 'Build answers the test job saved for a prop’s line');
 A.ok(/Build\.testJobForProp\(opts\.propId\)/.test(chat) && /job\.text \? \{ text: job\.text \}/.test(chat) && /job\.line \? \{ line: job\.line \}/.test(chat), 'the live INBOX card sends the Commander’s own test job, scoped to its line');

@@ -204,6 +204,22 @@ A.eq([...STEPS], ['preflight', 'bump', 'notes', 'relock', 'gates', 'preflight-po
   A.eq(r2.steps.find(s => s.id === 'gates').status, 'done', 'without --require-http the fast receipt suffices (http noted as not required)');
 }
 
+// ── notes that still hold an HTML comment (an unfilled placeholder) stop at notes until it is filled or deleted ──
+{
+  const io = fakeRepo();
+  runRitual(CTX, io);                       // bump → notes stop (TODO scaffold)
+  io.st.notes = '# StarNet v0.10.8\n\n- fixed the thing\n<!-- #121 line goes here only if the i121 lane ships -->\n';
+  const r = runRitual(CTX, io);
+  A.eq(r.stoppedAt, 'notes', 'a comment left in the notes stops at notes');
+  const lines = r.steps.find(s => s.id === 'notes').lines;
+  A.ok(lines.some(l => /HTML comment/.test(l) && /#121 line goes here/.test(l)), 'the stop names the comment it found');
+  A.ok(!lines.some(l => /TODO scaffold/.test(l)), 'the stop does not call written notes the TODO scaffold');
+  A.ok(!io.calls.some(c => /claims\.mjs --refresh-surface/.test(c)), 'no relock while the comment stands');
+  io.st.notes = '# StarNet v0.10.8\n\n- fixed the thing\n';
+  const r2 = runRitual(CTX, io);
+  A.eq(ids(r2).slice(0, 3), ['preflight:skipped', 'bump:done', 'notes:done'], 'with the comment gone the notes step is done');
+}
+
 // ── lane flow (--allow-lane): bump + relock happen, tag STOPs with the merge command ──
 {
   const io = fakeRepo({ branch: 'agent/hotfix' });

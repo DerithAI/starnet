@@ -48,7 +48,8 @@
     follow: false,
     ui: null,
     reloadTimer: null, liveTimer: null,
-    loadSeq: 0, opSeq: 0, loadedAt: 0, lastCause: '', note: '', busy: false
+    loadSeq: 0, opSeq: 0, loadedAt: 0, lastCause: '', note: '', busy: false,
+    doorPressedAt: 0     // when the COMMS globe was pressed (its window rises only after the station answers)
   };
   try { state.follow = !!(root.localStorage && root.localStorage.getItem(FOLLOW_KEY) === '1'); } catch (_) { state.follow = false; }
 
@@ -521,7 +522,18 @@
      Any show now restores it, and while it is minimized nothing streams. */
   function termEl() { return state.ui && state.ui.root && state.ui.root.closest ? state.ui.root.closest('.term') : null; }
   function isMinimized() { const w = termEl(); return !!(w && w.classList.contains('term-min-hidden')); }
-  function restoreIfMinimized() { if (isMinimized() && typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('browser'); }
+  /* ONE CUE PER PRESS (Andrew 10-13: COMMS sounds like the bottom docks, once per press). The globe's press already
+     played the docks' open() cue (audio.js → SFX.press); its window rises a beat later, after the awaited station
+     read, outside open()'s 80 ms gate — so that rise would play the same sample a second time. When the press really
+     sounded open() and this rise answers it (within a second), re-arm the gate so the press stays the only cue. */
+  function quietDoorEcho() {
+    const pressed = state.doorPressedAt; state.doorPressedAt = 0;
+    if (!pressed || Date.now() - pressed > 1000) return;
+    const sfx = typeof SFX === 'object' && SFX ? SFX : null;
+    if (sfx && sfx._lastAt && sfx._lastAt.open >= pressed) sfx._lastAt.open = Date.now();
+  }
+  function openBrowserTerm() { quietDoorEcho(); StationUI.openTerm('browser'); }
+  function restoreIfMinimized() { if (isMinimized() && typeof StationUI !== 'undefined' && StationUI.openTerm) openBrowserTerm(); }
   function watchMinimize() {
     const w = termEl();
     if (!w || typeof MutationObserver === 'undefined' || state.ui.minObs) return;
@@ -542,7 +554,7 @@
     if (mounted()) { restoreIfMinimized(); return true; }
     const doc = root.document;
     const prev = keepFocus && doc ? doc.activeElement : null;
-    StationUI.openTerm('browser');
+    openBrowserTerm();
     if (prev && doc && prev !== doc.body && prev.isConnected && typeof prev.focus === 'function') { try { prev.focus({ preventScroll: true }); } catch (_) { /* focus is best-effort */ } }
     return mounted();
   }
@@ -631,7 +643,10 @@
     const b = doc.createElement('button');
     b.type = 'button'; b.id = 'comms-browser'; b.className = 'comms-browser';
     b.innerHTML = icon('globe') + '<span class="cb-lamp" aria-hidden="true"></span>';
-    b.addEventListener('click', () => { openFor(lineAgent()); });
+    b.addEventListener('click', () => {
+      const at = state.doorPressedAt = Date.now();
+      Promise.resolve(openFor(lineAgent())).finally(() => { if (state.doorPressedAt === at) state.doorPressedAt = 0; });
+    });
     bar.appendChild(b);   // after the + (add agents): CSS `order` keeps + then globe whichever mounts first
     const sel = doc.getElementById('comms-agent-select');
     if (sel) sel.addEventListener('change', paintDoor);

@@ -30,5 +30,22 @@ const path = require('node:path');
   assert.equal(reconciled,2,'reconnect reconciles even if worker state did not change');
   hang=true;const pending=sync.refresh();timeout();await pending;hang=false;await sync.refresh();
   assert.equal(reconciled,3,'a hung request times out and does not permanently block synchronization');
+  // review app-shell-ui-05: a failed poll leaves the last ledger readable (finished/failed rows) but no longer FRESH, so
+  // nothing reads its running workers as still working through an outage; the delegation card repaints at once
+  let repaints=0;context.Delegated={repaint(){repaints++;}};
+  await sync.refresh();
+  assert.equal(typeof sync.fresh,'function','the ledger says whether it is still current');
+  assert.equal(sync.fresh(),true,'a ledger just answered is fresh');
+  const before=repaints;fail=true;await sync.refresh();
+  assert.equal(sync.fresh(),false,'a failed poll: the ledger is no longer current');
+  assert.ok(sync.snapshot()&&sync.snapshot().workers.length===1,'…but the last answer stays readable');
+  assert.ok(repaints>before,'the delegation card repaints when the ledger goes stale');
+  fail=false;await sync.refresh();
+  assert.equal(sync.fresh(),true,'recovery makes the ledger current again');
+  hang=true;const stuck=sync.refresh();
+  const realNow=Date.now;context.Date=Date;Date.now=()=>realNow()+60000;
+  try { assert.equal(sync.fresh(),false,'a poll hung past three beats: the ledger is no longer current'); }
+  finally { Date.now=realNow; }
+  timeout();await stuck;hang=false;
   console.log('overseer sync: existing sessions, no added UI/focus changes, recovery and timeout PASS');
 })().catch(e=>{console.error(e);process.exitCode=1;});

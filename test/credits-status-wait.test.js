@@ -23,6 +23,8 @@ const apiCode = slice(harnessSrc, '  async function requestJson(', '\n  // ONE f
 const wakeCode = slice(appSrc, '  let starnetLinked = false;', '  // A station can be linked to a DIFFERENT StarNet login') + '\nthis.wake = { refreshStarnetGenesisStatus, revealStarnetGenesis };';
 const storeCode = slice(stationuiSrc, '  let _creditsLinkPoll =', '  // BUDGET panel') + '\nthis.store = { wireCredits };';
 const provCode = slice(stationuiSrc, '  let creditsProv = {', '  // The rows CONNECTIONS should actually draw') + '\nthis.prov = { refreshCreditsProvider };';
+// the STORE reads through the same shared, repaint-proof credits read the provider card uses (live walk 10-14)
+const readCode = slice(stationuiSrc, '  const CREDITS_FRESH_MS', '  function refreshCreditsProvider()');
 
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(setImmediate); };
 // a virtual clock shared by every lifted module: timers fire in due order, microtasks drain between them
@@ -98,6 +100,7 @@ async function store(delayMs) {
     setInterval: clock.setInterval, clearInterval: clock.clearInterval, esc: s => String(s), fmtUsd: n => '$' + n,
     sfx() {}, openExternal() {}, scheduleSettingsRepaint() {}, tauriInvoke: () => null, H: () => ({}), refreshCreditsProvider: async () => {},
     document: { body: { contains: () => true } }, ArmConfirm: { wire() {} } });
+  vm.runInContext(readCode, ctx);
   vm.runInContext(storeCode, ctx);
   // the painters are the STORE's real outcomes: record which one the read ends in
   vm.runInContext('renderCreditsConfigured = (b, h, j) => { this.__out("configured", j); }; renderCreditsUnavailable = () => { this.__out("unavailable"); }; renderCreditsLinkCard = () => { this.__out("link"); };', ctx);

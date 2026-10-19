@@ -184,7 +184,7 @@ const AutopilotStore = (() => {
       if (!sel.selected) return { delivered: false, reason: sel.reason };
 
       // 3) DO — produce the finished draft (silent reasoning).
-      const dRes = await deps.chat({ system, messages: [{ role: 'user', content: Autopilot.buildDoDirective(sel.selected, { name }) }], agentId: 'agent', isTask: false, placed: [], internal: true });
+      const dRes = await deps.chat({ system, messages: [{ role: 'user', content: Autopilot.buildDoDirective(sel.selected, { name }) }], agentId: 'agent', isTask: false, placed: [], internal: true, keepEffort: true });   // the draft IS work: the Commander's effort, not the aux effort
       let deliverable = (dRes && !dRes.error) ? Autopilot.parseDeliverable(dRes.text, { fallbackTitle: sel.selected.title }) : null;
       if (!deliverable) return { delivered: false, reason: 'no-deliverable' };
 
@@ -192,7 +192,7 @@ const AutopilotStore = (() => {
       // ("verify before done", turned inward). It can drop its own work (not worth their time) or ship a revision.
       const style = (beliefs.style || []).join('; ');
       const standingOrders = (beliefs.standing_orders || []).join('; ');
-      const qRes = await deps.chat({ system, messages: [{ role: 'user', content: Autopilot.buildCritiqueDirective(deliverable, sel.selected, { style, standingOrders }) }], agentId: 'agent', isTask: false, placed: [], internal: true });
+      const qRes = await deps.chat({ system, messages: [{ role: 'user', content: Autopilot.buildCritiqueDirective(deliverable, sel.selected, { style, standingOrders }) }], agentId: 'agent', isTask: false, placed: [], internal: true, keepEffort: true });
       const crit = (qRes && !qRes.error) ? Autopilot.parseCritique(qRes.text, { fallbackTitle: deliverable.title }) : { verdict: 'ship', note: '' };
       if (crit.verdict === 'drop') return { delivered: false, reason: 'self-rejected' };
       if (crit.verdict === 'revise' && crit.revised) deliverable = crit.revised;

@@ -87,7 +87,6 @@ const TRACE = [{ name: 'fs.write', ok: true }, { name: 'image_generate', ok: tru
   A.eq(T.buildRef({ artifacts: [], toolTrace: [{ name: 'notebook.write', ok: true }] }), null, 'nothing real to point at = no reference');
   const methodOnly = T.buildRef({ toolTrace: [{ name: 'web.search', ok: true }, { name: 'web.fetch', ok: true }] });
   A.eq(methodOnly, { v: 2, tools: 'web.search → web.fetch' }, 'a non-design task still remembers HOW it was done');
-  A.ok(!T.hasStyle(methodOnly) && T.hasStyle(ref), 'hasStyle: files/images/palette, not a method alone');
   A.ok(/→ site\/index\.html, images\/hero\.png, notes\.txt · palette #39ff88 .* · fonts Space Grotesk, VT323, Inter · image "neon synthwave skyline, \[x\] haze" \(google\/gemini-2\.5-flash-image, 16:9, reference sent: images\/old\.png\) · image "a fox logo" \(openai\/gpt-5-image-mini, 512x512, transparent\) · via fs\.write → image_generate$/.test(T.refLine(ref, 0)), 'level 0 is the whole reference: ' + T.refLine(ref, 0));
   A.eq(T.refLine(ref, 1), ' → site/index.html · palette #39ff88 #0b0f14 #e6e6e6 · font Space Grotesk', 'level 1: main file + 3 colours + main font');
   A.eq(T.refLine(ref, 2), ' → site/index.html', 'level 2: the main file');
@@ -109,6 +108,20 @@ const TRACE = [{ name: 'fs.write', ok: true }, { name: 'image_generate', ok: tru
   A.eq(T.buildRef({ toolTrace: TRACE, agentId: 'scribe' }).agent, undefined, 'no paths, no owner');
   const abs = T.buildRef({ artifacts: [{ kind: 'file', path: 'C:\\Users\\me\\projects\\candle-shop-website-redesign-2026\\src\\pages\\landing\\index.html' }] });
   A.ok(!abs.agent && /index\.html$/.test(T.refLine(abs, 2)) && T.refLine(abs, 2).length <= 84, 'a project run\'s absolute path has no owner tag and is clipped from the FRONT (the file name survives): ' + T.refLine(abs, 2));
+}
+
+// ---- review memory-learning-11: the palette is what THE RATED RUN made, not what a later run left in the same file ----
+// Run A writes index.html (blue); run B rewrites it dark green; rating run A afterwards used to record B's colours as A's.
+{
+  const ENDED = Date.UTC(2026, 9, 10, 12, 0, 0);
+  const at = (mtimeMs) => T.buildRef({ artifacts: ARTS, toolTrace: TRACE, files: [{ path: 'site/index.html', text: HTML, mtimeMs }], ranUntil: ENDED });
+  const later = at(ENDED + 60000);
+  A.ok(later && later.paths[0] === 'site/index.html', 'a file rewritten after the run ended is still named as the run\'s deliverable');
+  A.eq([later.palette, later.fonts], [undefined, undefined], 'but its current colours and fonts are not recorded as this run\'s');
+  A.eq(at(ENDED - 5000).palette[0], '#39ff88', 'a file unchanged since the run keeps its palette');
+  A.eq(at(ENDED + 1500).fonts[0], 'Space Grotesk', 'within the 2 s slack (mtime granularity, record lag) it still counts');
+  A.eq(at(undefined).palette, undefined, 'with the run\'s end known, a file whose change time is unknown proves nothing');
+  A.eq(T.buildRef({ artifacts: ARTS, files: [{ path: 'site/index.html', text: HTML }] }).palette[0], '#39ff88', 'a caller that knows no end time reads the file as before');
 }
 
 // ---- feedbackmemory.apply: the record carries the reference ----
@@ -152,7 +165,15 @@ const REF = T.buildRef({ artifacts: ARTS, toolTrace: TRACE, rows: ROWS, files: [
   const unkeptMiss = FM.unkeep(missed.list, 'run-k');
   A.eq(unkeptMiss.rec.feedbackVerdict, 'miss', 'a real miss replaces the synthetic keep-style verdict');
   const missPrompt = FM.renderTaste(unkeptMiss.list, renderRecall).text.split('\n').find(line => line.startsWith('• '));
-  A.ok(/REJECTED .*write the release notes page.*wrong colors/.test(missPrompt) && !/APPROVED|liked:/.test(missPrompt), 'after unkeep the prompt retains the real rejection: ' + missPrompt);
+  A.ok(/REJECTED .*write the release notes page.*wrong colors/.test(missPrompt) && !/APPROVED|(?<!dis)liked:/.test(missPrompt), 'after unkeep the prompt retains the real rejection: ' + missPrompt);
+  // review memory-learning-12: while the style is still kept, a later 👎 is shown too, not hidden behind APPROVED
+  const keptMiss = FM.renderTaste(missed.list, renderRecall).text.split('\n').find(line => line.startsWith('• '));
+  A.ok(/STYLE KEPT · RESULT REJECTED .*write the release notes page — disliked: "wrong colors"/.test(keptMiss) && !/APPROVED/.test(keptMiss), 'a kept style rated miss shows both facts: ' + keptMiss);
+  const keptBareMiss = FM.renderTaste(FM.apply(fresh.list, { runId: 'run-k', verdict: 'miss' }, deps(70)).list, renderRecall).text.split('\n').find(line => line.startsWith('• '));
+  A.ok(/STYLE KEPT · RESULT REJECTED .*\(keep the style, change the result\)/.test(keptBareMiss), 'a bare miss on a kept style says what to keep and what to change: ' + keptBareMiss);
+  A.ok(/STYLE KEPT · RESULT REJECTED/.test(FM.TASTE_REF_RULE), 'the reference rule tells the crew what that line means');
+  const keptPrompt = FM.renderTaste(kept.list, renderRecall).text.split('\n').find(line => line.startsWith('• '));
+  A.ok(/STYLE KEPT · RESULT REJECTED .*make the poster — disliked: "too dark"/.test(keptPrompt), 'KEEP THIS STYLE after a 👎 keeps the dislike visible: ' + keptPrompt);
   const editedMiss = FM.apply(edited, { runId: 'run-k', verdict: 'miss', words: 'wrong colors' }, deps(80));
   A.eq(editedMiss.rec.feedbackVerdict, 'miss', 'an edited note also records the real verdict without rewriting the edit');
   A.ok(editedMiss.rec.content.startsWith('Release notes: one page, dark theme'), 'real verdict preserves the Commander edit');
@@ -204,7 +225,7 @@ function eight() {
   A.ok(lines.reduce((n, s) => n + s.length + 1, 0) <= FM.TASTE_CHARS, 'the lines fit the taste budget (' + FM.TASTE_CHARS + ')');
   A.ok(/^• \[note_8\] APPROVED 2025-10-16: Plan the team offsite agenda .* — liked: "keep it under one page" → docs\/out-7\.md · via web\.search ×3/.test(lines[0]), 'newest first, compact, with its method: ' + lines[0]);
   A.ok(lines[1].indexOf('· image "neon synthwave skyline, teal haze" (google/gemini-2.5-flash-image, 16:9') >= 0 && lines[1].indexOf('fonts Space Grotesk, VT323, Inter') >= 0, 'the newest DESIGN approval carries its whole reference: ' + lines[1]);
-  A.ok(/REJECTED 2025-10-10: Write the weekly status report .* — "way too long/.test(block.text), 'a dislike renders as REJECTED in their words');
+  A.ok(/REJECTED 2025-10-10: Write the weekly status report .* — disliked: "way too long/.test(block.text), 'a dislike renders as REJECTED in their words');
   A.ok(/CLOSE 2025-10-12: .* — wants: "add the owner and due date/.test(block.text), 'a close renders what they want');
   A.ok(lines[7].length < lines[1].length && /→ site\/index\.html/.test(lines[7]), 'the oldest design approval is compacted, never dropped: ' + lines[7]);
   A.ok(block.text.indexOf(FM.TASTE_HEADER) >= 0 && block.text.indexOf(FM.TASTE_REF_RULE) >= 0, 'header + the match-the-approved rule');

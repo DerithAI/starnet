@@ -421,6 +421,28 @@ const call = (name, args) => ({ id: 'c1', name, args: args || {}, argsRaw: JSON.
     A.ok(!/E-STOP/.test(String(ran2.note || '')), 'and stops mentioning the E-STOP');
   }
 
+  /* ---- (org wire AUTO-P16-1) the Commander turned scheduling OFF: an agent's create keeps it off and SAYS so --------------------
+     The SCHEDULES form promises "Saving keeps it off"; routine.create's default arm used to re-arm the whole scheduler (every paused
+     schedule firing again) on one approved create. The fake below is the one arm rule: a switch set OFF is never turned on by a save. */
+  {
+    let armedO = false, setO = true;
+    const oTools = makeRoutineTools({
+      roster: () => roster, listJobs: () => [], normalizeProvider: (p) => p,
+      schedulerState: () => armedO, schedulerHalted: () => false, schedulerOffByChoice: () => !armedO && setO,
+      armScheduler: (enabled) => { if (enabled === true && !armedO && !setO) { armedO = true; setO = true; } return armedO; },
+      createRoutine: (spec) => ({ id: 'job_o', name: spec.name, prompt: spec.prompt, agentId: spec.agentId, enabled: true, state: 'scheduled' }),
+      parseSchedule: (x) => ({ kind: 'cron', expr: x })
+    });
+    const out = await oTools.createTool.run({ name: 'Daily brief', prompt: 'summarize the standup', schedule: '0 9 * * *' }, { agentId: 'agent' });
+    const kept = JSON.parse(out.content);
+    A.eq([kept.schedulerArmed, kept.schedulerOffByChoice, kept.schedulerArmedNow], [false, true, false], 'an explicit OFF survives an agent\'s create, and the result says it was the Commander\'s choice');
+    A.ok(/Commander turned it off/.test(String(kept.schedulerNote || '')) && /TURN SCHEDULING ON/.test(String(kept.schedulerNote || '')), 'the note names their choice and their switch: ' + kept.schedulerNote);
+    A.ok(/will not run yet/.test(out.summary), 'the result summary never reads as a running schedule: ' + out.summary);
+    setO = false;   // a switch nobody ever set: the create turns it on, and says so
+    const on = JSON.parse((await oTools.createTool.run({ name: 'Weekly digest', prompt: 'digest the week', schedule: '0 9 * * 1' }, { agentId: 'agent' })).content);
+    A.eq([on.schedulerArmed, on.schedulerOffByChoice, on.schedulerArmedNow, on.schedulerNote], [true, false, true, undefined], 'a never-set switch is turned on by the create (schedulerArmedNow)');
+  }
+
 /* ---- and the INJECTED armScheduler must not lift the durable E-STOP --------------------------------
    The old one did the full resume unconditionally, and its caller is a MODEL-FACING DEFAULT (`arm` is
    "Default true", so the agent never has to think about it). A Commander who pressed E-STOP and later asked
@@ -433,9 +455,15 @@ const call = (name, args) => ({ id: 'c1', name, args: args || {}, argsRaw: JSON.
   const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
   const at = src.indexOf('armScheduler: (enabled) =>');
   A.ok(at > 0, 'index.js injects armScheduler into the routine tools');
-  const seg = src.slice(at, at + 1800);
-  A.ok(/if \(want\) \{ if \(!cronHalted\) armCron\(\); \}/.test(seg),
-    'the tool-facing arm records the INTENT but never restarts a timer the Commander paused');
+  const seg = src.slice(at, at + 3200);   // (org wire AUTO-P16-1: the one-arm-rule note grew the closure)
+  // (org wire AUTO-P16-1) the tool-facing arm IS the one arm rule: armOnSaveIfUnset records the intent, never restarts a halted timer,
+  // and never overrides the Commander's explicit OFF
+  A.ok(/if \(enabled === true\) \{ armOnSaveIfUnset\(\); return cronArmed; \}/.test(seg),
+    'the tool-facing arm goes through the one arm rule (armOnSaveIfUnset)');
+  const rule = src.slice(src.indexOf('function armOnSaveIfUnset() {'), src.indexOf('function armOnSaveIfUnset() {') + 220);
+  A.ok(/if \(cronArmed \|\| cronArmSet\) return false;/.test(rule) && /if \(!cronHalted\) armCron\(\);/.test(rule) && !/cronHalted = false/.test(rule),
+    '…which never overrides an explicit OFF, and records the INTENT but never restarts a timer the Commander paused');
+  A.ok(/schedulerOffByChoice: \(\) => !cronArmed && !!cronArmSet/.test(seg), 'the Commander\'s explicit OFF is exposed to the tool so its response can say so');
   A.ok(!/cronHalted = false/.test(seg), 'and it never clears the durable halt itself');
   A.ok(/schedulerHalted: \(\) => !!cronHalted/.test(seg), 'the halt is exposed to the tool so its response can disclose it');
   A.ok(/function liftCronHalt/.test(src), 'liftCronHalt is still the one documented lift seam');

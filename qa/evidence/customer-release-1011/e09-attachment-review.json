@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "intake": "E09",
+  "canonical": "4c0efd8c",
+  "reviewedAt": "2026-10-12T09:54:26.770Z",
+  "method": "Original Gmail attachment references retrieved through the connector; exact PNG bytes viewed locally.",
+  "images": [
+    {
+      "bytes": 531254,
+      "sha256": "d671f54efe4be533bbe64fbf39d6d9067fe860db8e9d2666888eb8d4960b446c",
+      "observation": "StarNet recovery UI shows STATION DATA UNREACHABLE, SAVE-NET / SAVE REQUEST LOST, station service not answering, RECONNECTING/HOLD, automatic retry every5seconds at attempt8 and recovery controls."
+    },
+    {
+      "bytes": 94034,
+      "sha256": "895524fc0d097a24d0d47bbc9741f4bf0f38d2bf0544e72c8f29ad2ed7beaea0",
+      "observation": "Partial Windows Explorer listing at AppData/Roaming/ai.skynet.harness/workspaces shows run journal, workspace ownership generations, connectors, transcript-history-v2, voice-cache, migration/schema markers and several JSON files."
+    }
+  ],
+  "limits": [
+    "Visible recovery text is UI output, not independent proof of file integrity or absence of data loss.",
+    "The Explorer image is a partial listing; it does not prove a save file is absent, the running service uses this directory, or migration succeeded.",
+    "Neither image supplies a failed-request network trace, complete exception stack, executable hash, file contents or current recovery.",
+    "Raw images and source message/download identifiers remain private and untracked."
+  ],
+  "followUpSearch": "Five mapped priority-report threads and four exact-participant searches found no later reply; original client/runtime details were retained, not requested again."
+}

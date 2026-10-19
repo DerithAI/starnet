@@ -85,6 +85,10 @@ A.ok(/3 small jobs/i.test(Au.describe({ initiative: 'leash', reach: 'sandbox', l
 A.ok(/freely toward your goals/i.test(Au.describe({ initiative: 'free', reach: 'sandbox' })), 'describe(free) says it works freely');
 A.ok(/up to 7 jobs a day/i.test(Au.describe({ initiative: 'free', reach: 'sandbox', leashPerDay: 7 })), 'describe(free) also names the daily leash cap (full autonomy is honest about the pace)');
 A.ok(/nothing leaves the machine/i.test(Au.describe({ initiative: 'free', reach: 'sandbox' })), 'describe(sandbox) is explicit that nothing leaves');
+// call #57 (org pass 10-14): the work lands somewhere REAL — a new ⚒ session, or LAST REPORT for a draft — never "your desk"
+A.ok(/new session in your rail/.test(Au.describe({ initiative: 'leash', reach: 'sandbox' })) && /LAST REPORT below/.test(Au.describe({ initiative: 'leash', reach: 'sandbox' })), 'describe(leash) names the real destinations');
+A.ok(!/⚒|SETTINGS ›/.test(Au.describe({ initiative: 'leash', reach: 'sandbox' })), 'describe carries no fallback-font glyph and no breadcrumb to the AUTONOMY page it is shown on');
+A.ok(!/desk/i.test(Au.describe({ initiative: 'free', reach: 'reach' })), 'describe never points at a desk that does not exist');
 A.ok(/send|publish|external/i.test(Au.describe({ initiative: 'free', reach: 'reach' })), 'describe(reach) is explicit it can act externally');
 A.ok(Au.describe({ initiative: 'free', reach: 'reach' }).indexOf('see everything it did') >= 0, 'describe always promises legibility (you see everything)');
 

@@ -22,4 +22,24 @@ for (const role of ['.crew-status','.ws-meta','#ws-kind-filter','.comms-agent-mo
 const station = fs.readFileSync(path.join(root, 'frontend/app/stationui.js'), 'utf8');
 A.ok(/textScale:\s*0/.test(station), 'fresh users keep the existing automatic text-size preference');
 A.ok(/document\.body\.style\.zoom\s*=\s*String\(tz\s*\/\s*100\)/.test(station), 'explicit saved text-size choices keep their existing meaning');
+// Review finding world-render-11: the TEXT SIZE hotkey toast names the key the user pressed (Cmd on a Mac),
+// in plain ASCII (U+2212 is a VT323 fallback glyph).
+{
+  const start = station.indexOf("  window.addEventListener('keydown', ev => {\n    if (!(ev.ctrlKey || ev.metaKey)");
+  const end = station.indexOf('  let resizeClampTimer', start);
+  A.ok(start >= 0 && end > start, 'the TEXT SIZE hotkey handler is present');
+  const toasts = [];
+  let handler = null;
+  const scales = station.match(/const TEXT_SCALES = (\[[^\n]*\]);/);
+  new Function('window', 'TEXT_SCALES', 'resolveTextScale', 'store', 'applySettings', 'save', 'rerender', 'autoTextScale', 'notify', station.slice(start, end))(
+    { addEventListener: (type, fn) => { if (type === 'keydown') handler = fn; } }, JSON.parse(scales[1].replace(/'/g, '"')),
+    v => Number(v) || 100, { settings: { textScale: 100 } }, () => {}, () => {}, () => {}, () => 100, text => toasts.push(text));
+  const press = mods => handler(Object.assign({ key: '=', altKey: false, defaultPrevented: false, preventDefault() {} }, mods));
+  press({ metaKey: true, ctrlKey: false });
+  A.ok(toasts[0] && toasts[0].includes('Cmd + and Cmd - change it, Cmd 0 resets'), 'Cmd+= teaches the Cmd chord: ' + toasts[0]);
+  A.ok(toasts[0] && !toasts[0].includes('Ctrl'), 'a Mac toast never says Ctrl');
+  press({ metaKey: false, ctrlKey: true });
+  A.ok(toasts[1] && toasts[1].includes('Ctrl + and Ctrl - change it, Ctrl 0 resets'), 'Ctrl+= teaches the Ctrl chord: ' + toasts[1]);
+  A.ok(toasts.every(t => !t.includes('−')), 'the toast uses the plain minus the user types');
+}
 A.report('readability.test');

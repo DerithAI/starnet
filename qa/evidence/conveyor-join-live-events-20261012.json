@@ -1,0 +1,606 @@
+{
+  "doc": {
+    "schema": "starnet.station",
+    "version": 2,
+    "_nid": 9,
+    "meta": {
+      "name": "STARNET STATION",
+      "createdAt": 1791777016568,
+      "tier": 0,
+      "spawnRoomId": "r1",
+      "trunkRoomId": "r1"
+    },
+    "rooms": {
+      "r1": {
+        "id": "r1",
+        "kind": "hab",
+        "name": "HAB-01",
+        "rects": [
+          {
+            "x1": 0,
+            "y1": 0,
+            "x2": 17,
+            "y2": 10
+          }
+        ],
+        "floorStyle": "hull",
+        "floorMat": null,
+        "wallStyle": null,
+        "wallMat": null,
+        "hullStyle": null,
+        "hullMat": null,
+        "tier": 0,
+        "floorPaint": {}
+      },
+      "r2": {
+        "id": "r2",
+        "kind": "hab",
+        "name": "HAB-02",
+        "rects": [
+          {
+            "x1": 30,
+            "y1": 0,
+            "x2": 69,
+            "y2": 14
+          }
+        ],
+        "floorStyle": "hull",
+        "floorMat": null,
+        "wallStyle": null,
+        "wallMat": null,
+        "hullStyle": null,
+        "hullMat": null,
+        "tier": 0,
+        "floorPaint": {}
+      }
+    },
+    "order": [
+      "r1",
+      "r2"
+    ],
+    "props": [
+      {
+        "id": "p3",
+        "t": "intake",
+        "x": 32,
+        "y": 4,
+        "w": 2,
+        "h": 2
+      },
+      {
+        "id": "p4",
+        "t": "splitter",
+        "x": 37,
+        "y": 5,
+        "w": 1,
+        "h": 1,
+        "block": false
+      },
+      {
+        "id": "p5",
+        "t": "bay",
+        "x": 39,
+        "y": 2,
+        "w": 2,
+        "h": 2,
+        "role": "CREW",
+        "agentId": "crew0"
+      },
+      {
+        "id": "p6",
+        "t": "bay",
+        "x": 39,
+        "y": 6,
+        "w": 2,
+        "h": 2,
+        "role": "CREW",
+        "agentId": "crew1"
+      },
+      {
+        "id": "p7",
+        "t": "joiner",
+        "x": 42,
+        "y": 5,
+        "w": 1,
+        "h": 1,
+        "block": false
+      },
+      {
+        "id": "p8",
+        "t": "outbox",
+        "x": 45,
+        "y": 4,
+        "w": 2,
+        "h": 2
+      }
+    ],
+    "belts": {
+      "34,5": "E",
+      "35,5": "E",
+      "36,5": "E",
+      "37,5": "N",
+      "37,4": "N",
+      "37,3": "E",
+      "38,3": "E",
+      "37,6": "S",
+      "37,7": "E",
+      "38,7": "E",
+      "41,3": "E",
+      "42,3": "S",
+      "42,4": "S",
+      "41,7": "E",
+      "42,7": "N",
+      "42,6": "N",
+      "42,5": "E",
+      "43,5": "E",
+      "44,5": "E"
+    },
+    "edges": [],
+    "links": [
+      {
+        "id": "l1",
+        "from": {
+          "prop": "p4",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p6",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 37,
+            "y": 6,
+            "d": "S"
+          },
+          {
+            "x": 37,
+            "y": 7,
+            "d": "E"
+          },
+          {
+            "x": 38,
+            "y": 7,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l2",
+        "from": {
+          "prop": "p4",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p5",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 37,
+            "y": 4,
+            "d": "N"
+          },
+          {
+            "x": 37,
+            "y": 3,
+            "d": "E"
+          },
+          {
+            "x": 38,
+            "y": 3,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l3",
+        "from": {
+          "prop": "p7",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p8",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 43,
+            "y": 5,
+            "d": "E"
+          },
+          {
+            "x": 44,
+            "y": 5,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l4",
+        "from": {
+          "prop": "p3",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p4",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 34,
+            "y": 5,
+            "d": "E"
+          },
+          {
+            "x": 35,
+            "y": 5,
+            "d": "E"
+          },
+          {
+            "x": 36,
+            "y": 5,
+            "d": "E"
+          }
+        ]
+      },
+      {
+        "id": "l5",
+        "from": {
+          "prop": "p5",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p7",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 41,
+            "y": 3,
+            "d": "E"
+          },
+          {
+            "x": 42,
+            "y": 3,
+            "d": "S"
+          },
+          {
+            "x": 42,
+            "y": 4,
+            "d": "S"
+          }
+        ]
+      },
+      {
+        "id": "l6",
+        "from": {
+          "prop": "p6",
+          "port": "out"
+        },
+        "to": {
+          "prop": "p7",
+          "port": "in"
+        },
+        "path": [
+          {
+            "x": 41,
+            "y": 7,
+            "d": "E"
+          },
+          {
+            "x": 42,
+            "y": 7,
+            "d": "N"
+          },
+          {
+            "x": 42,
+            "y": 6,
+            "d": "N"
+          }
+        ]
+      }
+    ]
+  },
+  "beforeRelease": [
+    {
+      "name": "channel.inbound",
+      "payload": {
+        "channel": "sample",
+        "chatId": "sample",
+        "agentId": "crew1",
+        "userId": "commander",
+        "kind": "dm"
+      }
+    },
+    {
+      "name": "workitem.placed",
+      "payload": {
+        "workitemId": "09ba2e70-69d5-469d-b5c9-afc3f92b7fa4",
+        "queueId": "crew1",
+        "agentId": "crew1",
+        "kind": "sample",
+        "sample": true,
+        "lineId": "p3",
+        "dockId": "p6",
+        "preview": "Compare two independent takes.",
+        "queueDepth": 1,
+        "ts": 1791777016686
+      }
+    },
+    {
+      "name": "queue.status",
+      "payload": {
+        "queueId": "crew1",
+        "depth": 1,
+        "maxCapacity": 64,
+        "nextAdvanceAt": 0
+      }
+    },
+    {
+      "name": "agent.run.start",
+      "payload": {
+        "agentId": "crew1",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "trigger": "event",
+        "model": "fast",
+        "dockId": "p6",
+        "streamId": "sample-13a57f88"
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "crew1",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true,
+        "unpriced": true
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "crew1",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.tool_call",
+      "payload": {
+        "agentId": "crew1",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "callId": "proof",
+        "name": "fs_list"
+      }
+    },
+    {
+      "name": "agent.tool_result",
+      "payload": {
+        "agentId": "crew1",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "callId": "proof",
+        "ok": true,
+        "isError": false,
+        "ms": 8
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "crew1",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "fast",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.run.end",
+      "payload": {
+        "agentId": "crew1",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "reason": "done",
+        "turns": 3,
+        "usd": 0,
+        "completionVerdict": "not_assessed",
+        "effectVerdict": "no_observed_effects"
+      }
+    },
+    {
+      "name": "workitem.placed",
+      "payload": {
+        "workitemId": "wi_c1e670d4",
+        "queueId": "crew0",
+        "agentId": "crew0",
+        "kind": "chain",
+        "lineId": "p3",
+        "preview": "Compare two independent takes.",
+        "ts": 1791777017289,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "agent.run.start",
+      "payload": {
+        "agentId": "crew0",
+        "runId": "81e5714c-525e-4883-9b2d-3b5967e034ad",
+        "trigger": "event",
+        "model": "slow",
+        "dockId": "p5",
+        "workitemId": "wi_c1e670d4",
+        "streamId": "sample-13a57f88"
+      }
+    }
+  ],
+  "afterRelease": [
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "crew0",
+        "runId": "81e5714c-525e-4883-9b2d-3b5967e034ad",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "slow",
+        "reconciled": true,
+        "unpriced": true
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "crew0",
+        "runId": "81e5714c-525e-4883-9b2d-3b5967e034ad",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "slow",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.tool_call",
+      "payload": {
+        "agentId": "crew0",
+        "runId": "81e5714c-525e-4883-9b2d-3b5967e034ad",
+        "callId": "proof",
+        "name": "fs_list"
+      }
+    },
+    {
+      "name": "agent.tool_result",
+      "payload": {
+        "agentId": "crew0",
+        "runId": "81e5714c-525e-4883-9b2d-3b5967e034ad",
+        "callId": "proof",
+        "ok": true,
+        "isError": false,
+        "ms": 10
+      }
+    },
+    {
+      "name": "agent.cost",
+      "payload": {
+        "agentId": "crew0",
+        "runId": "81e5714c-525e-4883-9b2d-3b5967e034ad",
+        "usd": 0,
+        "tokensIn": 2,
+        "tokensOut": 2,
+        "reasoningTokens": 0,
+        "cachedTokens": 0,
+        "model": "slow",
+        "reconciled": true
+      }
+    },
+    {
+      "name": "agent.run.end",
+      "payload": {
+        "agentId": "crew0",
+        "runId": "81e5714c-525e-4883-9b2d-3b5967e034ad",
+        "reason": "done",
+        "turns": 3,
+        "usd": 0,
+        "completionVerdict": "not_assessed",
+        "effectVerdict": "no_observed_effects"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_c1e670d4",
+        "finalQueueId": "crew0",
+        "agentId": "crew0",
+        "box": "",
+        "ms": 8539,
+        "ts": 1791777025828,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_bfe9b441",
+        "finalQueueId": "crew0",
+        "agentId": "crew0",
+        "box": "join:45,8",
+        "ms": 0,
+        "ts": 1791777025837,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "wi_55598c0f",
+        "finalQueueId": "outbox",
+        "agentId": "crew0",
+        "box": "line-output",
+        "lineId": "p3",
+        "outboxId": "p8",
+        "entryRunId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "workitemIds": [
+          "wi_c1e670d4"
+        ],
+        "ms": 0,
+        "ts": 1791777025838,
+        "dockId": "p5"
+      }
+    },
+    {
+      "name": "channel.delivery",
+      "payload": {
+        "channel": "sample",
+        "chatId": "sample",
+        "runId": "c8066d4c-da42-46d6-a3ad-1e637fbf9416",
+        "ok": true,
+        "chunks": 1,
+        "reason": "done",
+        "agentId": "crew0"
+      }
+    },
+    {
+      "name": "workitem.delivered",
+      "payload": {
+        "workitemId": "09ba2e70-69d5-469d-b5c9-afc3f92b7fa4",
+        "finalQueueId": "outbox",
+        "agentId": "crew1",
+        "box": "",
+        "ms": 9222,
+        "ts": 1791777025886,
+        "sample": true
+      }
+    },
+    {
+      "name": "queue.status",
+      "payload": {
+        "queueId": "crew1",
+        "depth": 0,
+        "maxCapacity": 64,
+        "nextAdvanceAt": 0
+      }
+    }
+  ],
+  "heldMs": 8200,
+  "source": "actual hermetic sidecar SSE, simulated local provider; fs_list succeeds before delayed sibling"
+}

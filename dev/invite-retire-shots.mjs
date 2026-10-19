@@ -45,6 +45,23 @@ const FRESH_FLOOR = `(() => {
 
 // what the shared guidance card slot is showing — ORDERS (before any line) or FINISH THE LINE
 // (after one). ONE VOICE: `cards` must never exceed 1.
+/* the LINES shelves open FOLDED (org P18): only ANY JOB and the armed line's shelf show their tiles, so a line in a
+   folded shelf has no tile until its shelf is opened — open it the way the Commander does (its shelf key), then
+   click the tile. Returns whether the tile was found; callers throw when it was not, so a scene never silently
+   shoots whatever line was already armed. */
+const pickLineTile = (id) => `(() => {
+  const id = ${JSON.stringify(id)}, sel = '.refit-linetile[data-line="' + id + '"]';
+  let c = document.querySelector(sel);
+  if (!c) {
+    const bp = ((typeof WorldModel !== 'undefined' && WorldModel.BLUEPRINTS) || []).find(b => b.id === id);
+    const tog = bp && document.querySelector('.refit-lineshelf-tog[data-shelf="' + (bp.work || 'decide') + '"]');
+    if (tog && tog.getAttribute('aria-expanded') !== 'true') tog.click();
+    c = document.querySelector(sel);
+  }
+  if (c) c.click();
+  return !!c;
+})()`;
+
 const CARD_SLOT = `(() => {
   const el = document.querySelector('.refit-finline');
   return {
@@ -155,11 +172,8 @@ async function main() {
     await evalJS(cdp, `(() => { const ok = document.querySelector('.tut-coach-ok'); if (ok) ok.click(); return !!ok; })()`);
     await sleep(700);
     // re-arm LINES on a second blueprint and hover a candidate: wash + ghost + the handed-off card
-    await evalJS(cdp, `(() => {
-      if (Build.__test__.tool() !== 'line') document.querySelector('.refit-tool[data-tool="line"]').click();
-      const c = document.querySelector('.refit-linetile[data-line="sorting_office"]');
-      if (c) c.click(); return 1;
-    })()`);
+    await evalJS(cdp, `(() => { if (Build.__test__.tool() !== 'line') document.querySelector('.refit-tool[data-tool="line"]').click(); return 1; })()`);
+    if (!(await evalJS(cdp, pickLineTile('sorting_office')))) throw new Error('no SORTING OFFICE tile on the LINES shelf');
     await sleep(800);
     const s2 = await J(cdp, `(() => { const f = Build.__test__.lineField('sorting_office'); return f && f.count ? f.sample[0] : null; })()`);
     if (s2) {

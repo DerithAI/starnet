@@ -46,6 +46,23 @@ const CLEAR_FLOOR = `(() => {
   return { belts: st.belts().length };
 })()`;
 
+/* the LINES shelves open FOLDED (org P18): only ANY JOB and the armed line's shelf show their tiles, so a line in a
+   folded shelf has no tile until its shelf is opened — open it the way the Commander does (its shelf key), then
+   click the tile. Returns whether the tile was found; callers throw when it was not, so a scene never silently
+   shoots whatever line was already armed. */
+const pickLineTile = (id) => `(() => {
+  const id = ${JSON.stringify(id)}, sel = '.refit-linetile[data-line="' + id + '"]';
+  let c = document.querySelector(sel);
+  if (!c) {
+    const bp = ((typeof WorldModel !== 'undefined' && WorldModel.BLUEPRINTS) || []).find(b => b.id === id);
+    const tog = bp && document.querySelector('.refit-lineshelf-tog[data-shelf="' + (bp.work || 'decide') + '"]');
+    if (tog && tog.getAttribute('aria-expanded') !== 'true') tog.click();
+    c = document.querySelector(sel);
+  }
+  if (c) c.click();
+  return !!c;
+})()`;
+
 const findSpot = (bpId) => `(() => {
   const st = Build.__test__.station();
   const b = st.bounds();
@@ -121,7 +138,7 @@ async function main() {
     // ---- stamp the SORTING OFFICE through the REAL pointer path ----
     await evalJS(cdp, `document.querySelector('.refit-tool[data-tool="line"]').click()`);
     await sleep(300);
-    await evalJS(cdp, `(() => { const b = document.querySelector('.refit-linetile[data-line="sorting_office"]'); if (b) b.click(); return !!b; })()`);
+    if (!(await evalJS(cdp, pickLineTile('sorting_office')))) throw new Error('no SORTING OFFICE tile on the LINES shelf');
     await sleep(300);
     const spot = await evalJS(cdp, findSpot('sorting_office'));
     if (!spot) throw new Error('no stampable spot for sorting_office');

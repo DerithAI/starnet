@@ -16,7 +16,7 @@ const NAME = 'Evaluation Spend Procedure';
 const BASELINE = 'BASELINE_POLICY: Report the old result as JSON.';
 const CANDIDATE = 'CANDIDATE_POLICY: Report the requested result as JSON.';
 const SUITE = 'owner:evaluation-spend';
-const requests = [], phases = [];
+const requests = [], phases = [], faults = [];
 let includeUsage = false;
 function seed(workspace) {
   const rows = [];
@@ -52,6 +52,8 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.end('data: ' + JSON.stringify(chunk) + '\n\ndata: [DONE]\n\n');
     } catch (error) {
+      // An assertion thrown here never reaches the test's own try: record it so the run fails below.
+      faults.push(error.message);
       console.error('scripted spend provider failed: ' + error.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message }));
@@ -66,6 +68,7 @@ const server = http.createServer((req, res) => {
     STARNET_OPENROUTER_BASE: endpoint, SKYNET_OPENROUTER_BASE: endpoint,
     STARNET_OPENROUTER_KEY: 'local-fixture-only', SKYNET_OPENROUTER_KEY: 'local-fixture-only',
     STARNET_BUDGET_PER_DAY: '1', SKYNET_BUDGET_PER_DAY: '1',
+    // no PER RUN cap: the shipped default is none, and that is what most stations evaluate with
     STARNET_FULL_ACCESS: '1', SKYNET_FULL_ACCESS: '1',
     SKYNET_SKILL_REVIEW: '0', SKYNET_SKILL_CURATOR: '0', SKYNET_REFLECT: '0', SKYNET_SCOUT: '0',
     SKYNET_QUEST_REFRESH: '0', SKYNET_CRON_ENABLED: '0', STARNET_CRON_ENABLED: '0'
@@ -107,9 +110,18 @@ const server = http.createServer((req, res) => {
     assert.equal(unknown.unsettled.length, 1);
     const unsettled = unknown.unsettled[0];
     assert.match(unsettled.runId, /^skill-eval-/);
+    assert.doesNotMatch(unsettled.runId, /^skill-eval-skill-eval-/, 'the receipt id carries one skill-eval- namespace');
     assert.equal(unsettled.agentId, 'agent');
     assert.equal(unsettled.provider, 'openrouter');
     assert.equal(unsettled.model, MODEL);
+    // skills-eval-06: with no PER RUN cap set (the shipped default), an evaluation run gets the station's ceiling for
+    // a run nobody capped ($2, issue #53), never a fixed $0.08 that a premium model passes on its first call
+    assert.equal(unsettled.runCapUsd, 2, 'an uncapped station gives each evaluation run the uncapped-run ceiling');
+    // security-storage-07: the row says what it is (an evaluation, not an interrupted run) and the billing source the
+    // host knew (the Commander's own key here, so not StarNet credits)
+    assert.equal(unsettled.kind, 'evaluation');
+    assert.equal(unsettled.title, 'skill evaluation (agent)');
+    assert.equal(unsettled.managed, false, 'the billing source is known');
     phases.push('finished text without usage creates an immediately visible unsettled charge');
 
     const beforeBlocked = requests.length;
@@ -141,9 +153,22 @@ const server = http.createServer((req, res) => {
     assert.ok(Math.abs(final.spentToday - 0.06) < 1e-9, 'the attested charge and four observed charges are each booked exactly once');
     assert.equal(fixture.child.pid, sidecarPid, 'explicit settlement restores evaluation without restarting');
     phases.push('explicit settlement restores known spend and complete-usage evaluation in the same process');
+
+    // skills-eval-06: a PER RUN cap the Commander saves in SPENDING LIMITS replaces that ceiling for the next evaluation
+    await api('POST', '/api/budget/caps', { perRun: 0.25 });
+    includeUsage = false;
+    const beforeCapped = requests.length;
+    const capped = await evaluate();
+    assert.equal(capped.receipt.status, 'insufficient_evidence');
+    assert.equal(requests.length - beforeCapped, 1, 'the uncertain charge stops the evaluation after one call');
+    const cappedStatus = await api('GET', '/api/budget/status');
+    assert.equal(cappedStatus.unsettled.length, 1);
+    assert.equal(cappedStatus.unsettled[0].runCapUsd, 0.25, 'the evaluation run recorded the Commander\'s per-run cap');
+    phases.push('a saved PER RUN cap bounds each evaluation run');
+    assert.deepEqual(faults, [], 'the scripted provider served only the declared evaluation cases (no unrelated or background model work)');
     console.log(JSON.stringify({ status: 'PASS', test: 'skills.evaluation-spend.http', phases, modelCalls: requests.length }, null, 2));
   } catch (error) {
-    console.error(JSON.stringify({ status: 'FAIL', phases, error: error.stack, requests, sidecarTail: fixture.output().slice(-5000) }, null, 2));
+    console.error(JSON.stringify({ status: 'FAIL', phases, error: error.stack, requests, faults, sidecarTail: fixture.output().slice(-5000) }, null, 2));
     process.exitCode = 1;
   } finally {
     await fixture.dispose();

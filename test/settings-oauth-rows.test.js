@@ -85,10 +85,12 @@ A.ok(/p !== 'codex' && p !== 'grok' && p !== 'kimi'/.test(keycta), 'keycta treat
   // it must NOT read as a reconnect-grok door (that would be the dead-end this case exists to avoid).
   A.ok(!/RECONNECT GROK/.test(gxBtn.label), 'the allowlist case never offers the doomed RECONNECT GROK door');
 
-  // regression: codex stays RECONNECT CHATGPT (provider defaults to codex when unnamed).
+  // codex names itself like grok/kimi (provider defaults to codex when unnamed): never signed in reads SIGN IN TO
+  // CHATGPT, a dead refresh reads RECONNECT CHATGPT (org P03).
   const cx = friendlyError(new Error('codex_not_connected'));
   A.eq(cx.provider, 'codex', 'a codex oauth error still resolves to the codex provider');
-  A.eq(actionButton(cx).label, '⏼ RECONNECT CHATGPT', 'the codex door is unchanged (⏼ RECONNECT CHATGPT)');
+  A.eq(actionButton(cx).label, '⏼ SIGN IN TO CHATGPT', 'a never-signed-in codex door reads ⏼ SIGN IN TO CHATGPT');
+  A.eq(actionButton(friendlyError(new Error('refresh_token_reused'))).label, '⏼ RECONNECT CHATGPT', 'a dead codex refresh reads ⏼ RECONNECT CHATGPT');
 }
 
 // ---- FIRST sign-in reachability (live-caught 2026-07-17, widened to codex 2026-07-21): a never-signed-in
@@ -109,6 +111,15 @@ A.ok(/p !== 'codex' && p !== 'grok' && p !== 'kimi'/.test(keycta), 'keycta treat
   // the card handler must route codex's connected truth to its literal status state (codexStatusKnown), not
   // the grok/kimi shared cache — otherwise the row keeps reading NOT SIGNED IN after a successful sign-in.
   A.ok(/pid === 'codex'.*codexStatusKnown\s*=\s*\{\s*connected:\s*true/.test(signinHandler), "a card-driven codex sign-in lands in codexStatusKnown (the codex truth the row actually reads)");
+  // org P03 review: a Settings repaint mid-sign-in (the first open's background checks) replaced the card and the
+  // device code went into the detached box. The box is drawn FROM state, and the callbacks repaint the live box.
+  A.ok(/const oauthCardFlow = \{\}/.test(ui) && /function oauthCardFlowView\(pid, keepEnded\)/.test(ui), 'the card sign-in keeps its flow in module state, not in the card DOM');
+  A.ok(/\(wantsOAuthSignin \|\| cardFlow\s*\?/.test(ui) && /cardFlow \? '' : ' hidden'/.test(ui), 'the card render draws an in-flight sign-in box (code + page) from that state');
+  const starter = ui.slice(ui.indexOf('function startCardSignin('), ui.indexOf('function startCardSignin(') + 3000);
+  A.ok(/onCode: c => \{[\s\S]*?Object\.assign\(mine, \{ phase: 'code'/.test(starter) && !/card\.querySelector/.test(starter), 'onCode writes the code into state and paints whatever card is live — never a captured node');
+  // a RECONNECT door on a card with no sign-in key (still listed as connected) starts the same card flow itself
+  A.ok(/if \(b\) b\.click\(\); else if \(isOAuthProvider\(id\)\) startCardSignin\(id\)/.test(ui), 'a sign-in door always runs a sign-in, even on a card that shows no ⏼ SIGN IN key');
+  A.ok(/if \(!card\.isConnected\) \{ land\(\); return; \}/.test(ui), 'a repaint right after the landing lands on the new card, not at the top of the page');
 }
 
 // ---- 2026-07-22 auth-lifecycle hardening (source-locks; the live races/keychain failures need real tokens
@@ -126,7 +137,8 @@ A.ok(/p !== 'codex' && p !== 'grok' && p !== 'kimi'/.test(keycta), 'keycta treat
   A.ok(/\.then\(r => \{ setDesktopConfigured\(p, on\); return r; \}\)/.test(harness), 'setKey flips configured only after the keychain write resolves');
   A.ok(/err && err\.message/.test(ui) && /could not verify and store the ' \+ provName\(provider\) \+ ' key/.test(ui), 'Settings key save renders the exact validation/keychain failure copy');
   // Settings OAuth state changes mirror into the desktop configured-map (genesis already did; Settings must too).
-  A.ok(/Harness\.setDesktopConfigured\('codex', true\)/.test(ui) && /Harness\.setDesktopConfigured\(pid, true\)/.test(ui), 'Settings sign-in feeds the desktop configured-map');
+  // (org P03 wiring) every sign-in — card, door, or the API KEYS row's RE-SIGN-IN, codex included — finishes in startCardSignin
+  A.ok(/function startCardSignin\(pid, retryLabel\) \{[\s\S]*?Harness\.setDesktopConfigured\(pid, true\)/.test(ui) && /if \(act === 'codex-resign'\) \{ startCardSignin\('codex', '⏼ RE-SIGN-IN'\); return; \}/.test(ui), 'Settings sign-in feeds the desktop configured-map');
   A.ok(/Harness\.setDesktopConfigured\('codex', false\)/.test(ui) && /Harness\.setDesktopConfigured\(pid, false\)/.test(ui), 'Settings disconnect clears the desktop configured-map');
   // model reconcile on OAuth card select: a foreign global model slug must not ride to the new endpoint.
   A.ok(/isOAuthProvider\(p\) && typeof fetch === 'function'/.test(ui) && /\/api\/auth\/' \+ p \+ '\/models/.test(ui), 'selecting an OAuth provider card reconciles the model against that provider\'s catalog');

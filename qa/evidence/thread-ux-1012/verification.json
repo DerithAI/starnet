@@ -1,0 +1,335 @@
+{
+  "candidate": "09e6afba0179fe4aa6930fa5fe5b68a433d4934d",
+  "base": "a20ffa71fd04691805ea55c7d08165438dd7ac6f",
+  "date": "2026-10-12",
+  "scope": "Source and seeded browser verification; not installed-app or customer recovery proof.",
+  "runtime": "Local replay provider, isolated profile/workspaces, owned headless Chrome. Read-only browser fulfillment supplied static assets from the existing checkout; no asset links were used in the final proof.",
+  "live": {
+    "live-approval.json": {
+      "payload": "cmd: echo inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character inspect every character  COMPLETE_REQUEST_TAIL",
+      "fullTail": true,
+      "sameNode": true,
+      "stillOpen": true,
+      "focusRetained": true,
+      "questionButton": true,
+      "miraRow": "MIRA\nScan our 4 closest competitors and their entry…\nNeeds you · Which approach should MIRA use?\nAnswer"
+    },
+    "live-file.json": {
+      "agent": "vex",
+      "path": "ownership-proof.md",
+      "status": 200,
+      "content": "VEX_WORKSPACE_PROOF",
+      "receiptStatus": "ok"
+    },
+    "live-filter.json": {
+      "parent": "ws_mv4xn21sehon",
+      "worker": "ws_95b084e874974f03becd071d6378c7ce",
+      "hasAgent": true,
+      "search": [
+        {
+          "id": "ws_mv4xn21sehon"
+        }
+      ],
+      "domMatches": []
+    },
+    "live-final-response.json": {
+      "before": true,
+      "afterMicrotask": false,
+      "pending": 0,
+      "notifs": []
+    },
+    "live-narrow-final.json": {
+      "cardWidth": 345,
+      "overflow": 0,
+      "controls": true
+    },
+    "live-narrow-retry.json": {
+      "pending": [
+        "ux-approval",
+        "ux-question"
+      ],
+      "retryEnabled": true,
+      "inspectorOpen": true,
+      "cardWidth": 345,
+      "controls": [
+        {
+          "text": "Delegated to MIRA, ROOK and VEX\n2 need you · 1 done",
+          "width": 342,
+          "height": 101.53125,
+          "inside": true
+        },
+        {
+          "text": "Answer",
+          "width": 81.109375,
+          "height": 39.09375,
+          "inside": true
+        },
+        {
+          "text": "See work",
+          "width": 96.75,
+          "height": 39.09375,
+          "inside": true
+        },
+        {
+          "text": "Approve",
+          "width": 88.9375,
+          "height": 39.09375,
+          "inside": true
+        },
+        {
+          "text": "Deny",
+          "width": 65.46875,
+          "height": 39.09375,
+          "inside": true
+        },
+        {
+          "text": "COPY COMMAND",
+          "width": 105.953125,
+          "height": 39.09375,
+          "inside": true
+        }
+      ],
+      "overflow": 6
+    },
+    "live-navigation.json": {
+      "active": "ws_mv4xn21sehon",
+      "parent": "ws_mv4xn21sehon",
+      "draft": "Draft stays in the original conversation",
+      "rowTop": 471.984375,
+      "rowBottom": 538.046875,
+      "logTop": 200.890625,
+      "logBottom": 810.140625,
+      "visible": true,
+      "scrollTop": 162.60870361328125,
+      "scrollHeight": 9481
+    },
+    "live-parallel-question.json": {
+      "before": {
+        "focused": "ux-question",
+        "notifs": [
+          "needs:ws_mv4xn21sehon"
+        ],
+        "pending": [
+          "ux-approval",
+          "ux-question"
+        ]
+      },
+      "after": {
+        "notifs": [
+          "needs:ws_mv4xn21sehon"
+        ],
+        "pending": [
+          "ux-approval"
+        ],
+        "questionStillShown": true,
+        "approvalStillShown": true
+      }
+    },
+    "live-running.json": {
+      "workers": [
+        {
+          "agentId": "mira",
+          "status": "running",
+          "canInterrupt": true
+        },
+        {
+          "agentId": "rook",
+          "status": "running",
+          "canInterrupt": true
+        },
+        {
+          "agentId": "vex",
+          "status": "running",
+          "canInterrupt": true
+        }
+      ],
+      "text": "Delegated to MIRA, ROOK and VEX\n3 working\nMIRA\nScan our 4 closest competitors and their entry…\nLooking through files · 0:01\nStop\nROOK\nDraft the new pricing page copy and layout\nLooking through files · 0:01\nStop\nVEX\nWrite the launch email for the 20th\nWriting · 0:01\nStop",
+      "stopCount": 3
+    },
+    "live-served-byte-binding.json": {
+      "candidate": "09e6afba0179fe4aa6930fa5fe5b68a433d4934d",
+      "files": [
+        {
+          "path": "frontend/app/app.js",
+          "sourceSha256": "cadea93203644183c77985c2319195c6a900698484dbe2dea0b55365266e0b8c",
+          "servedSha256": "cadea93203644183c77985c2319195c6a900698484dbe2dea0b55365266e0b8c",
+          "status": 200,
+          "match": true
+        },
+        {
+          "path": "frontend/app/chat.js",
+          "sourceSha256": "097659d76ec0a3fc6ddc45f963e5c09887bf9eb61c5353792397a15b2e83953b",
+          "servedSha256": "097659d76ec0a3fc6ddc45f963e5c09887bf9eb61c5353792397a15b2e83953b",
+          "status": 200,
+          "match": true
+        },
+        {
+          "path": "frontend/app/delegated.js",
+          "sourceSha256": "ccf4829c44a653e351e628a58210f272495c1d8602b81c63898b63333b59201a",
+          "servedSha256": "ccf4829c44a653e351e628a58210f272495c1d8602b81c63898b63333b59201a",
+          "status": 200,
+          "match": true
+        },
+        {
+          "path": "frontend/app/group-chat.js",
+          "sourceSha256": "8e7db27539662294525d53879fb8e8811971ba13e31c41a606b9d9d390f56c67",
+          "servedSha256": "8e7db27539662294525d53879fb8e8811971ba13e31c41a606b9d9d390f56c67",
+          "status": 200,
+          "match": true
+        },
+        {
+          "path": "frontend/app/overseer.js",
+          "sourceSha256": "cb554074f4775742a81f9e9a76dfa16aa491dd9ba48ed0a388c142c0fe7ea12b",
+          "servedSha256": "cb554074f4775742a81f9e9a76dfa16aa491dd9ba48ed0a388c142c0fe7ea12b",
+          "status": 200,
+          "match": true
+        },
+        {
+          "path": "frontend/app/stationcommands.js",
+          "sourceSha256": "432799eaf05e95d8ce7800bdbd27c49f6aed8ef4462f671578bd0ab400c0ff14",
+          "servedSha256": "432799eaf05e95d8ce7800bdbd27c49f6aed8ef4462f671578bd0ab400c0ff14",
+          "status": 200,
+          "match": true
+        },
+        {
+          "path": "frontend/app/workstreams.js",
+          "sourceSha256": "934b6a6820c1bcfb43fba11535cb119317ba98607280616b77be32e97be20d33",
+          "servedSha256": "934b6a6820c1bcfb43fba11535cb119317ba98607280616b77be32e97be20d33",
+          "status": 200,
+          "match": true
+        },
+        {
+          "path": "frontend/css/beat-cards.css",
+          "sourceSha256": "a0b1eca440f88160bf3ed8679d9f829f4a4ebd479c4a95ce149087ea0b04129c",
+          "servedSha256": "a0b1eca440f88160bf3ed8679d9f829f4a4ebd479c4a95ce149087ea0b04129c",
+          "status": 200,
+          "match": true
+        }
+      ],
+      "pageErrors": []
+    }
+  },
+  "targeted": {
+    "nodeTestCases": 24,
+    "delegatedAssertions": 100,
+    "navigationAssertions": 47,
+    "workstreamsAssertions": 212,
+    "stationCommandsAssertions": 199
+  },
+  "gates": {
+    "fast": {
+      "status": "blocked",
+      "passedSteps": 293,
+      "totalSteps": 1140,
+      "failure": "test/skill-market-catalog.test.js: missing LICENSE, signatures and zip downloads in sparse checkout",
+      "log": ".dogfood/thread-ux-fix/fast.log",
+      "logSha256": "0e4d7154d6409c29e3a2ab36d665ec26d1db071c496301cb9a4ce942b90a266c"
+    },
+    "http": {
+      "status": "failed",
+      "passedSteps": 48,
+      "totalSteps": 209,
+      "failure": "test/station-layout.e2e.test.mjs: the lead is offered station_layout",
+      "observation": "The following actual layout, router, model-result and no-page-error assertions passed. Suspected auxiliary-request selection in the test; not changed or claimed baseline-proven.",
+      "log": ".dogfood/thread-ux-fix/http.log",
+      "logSha256": "d24fdb2953ad3ead9bd167891a0f39efd9bd49fe5402abf6c3741e34a7134d27"
+    },
+    "targetedHttp": {
+      "status": "passed",
+      "steps": 2,
+      "dispatchSessionAssertions": 32,
+      "scenarios": [
+        "delayed second dispatch yields one two-worker report",
+        "parent waitingOn clears",
+        "headless background dispatch and automatic parent review",
+        "restart does not rerun a completed report",
+        "E-STOP/update pause and damaged coordination state preserve ordinary chat"
+      ],
+      "log": ".dogfood/thread-ux-fix/targeted-http.log",
+      "logSha256": "7cb275d3e1fc9bcfa95375ba782eed1c10d826bfa14f38d86efae72790fa5d97"
+    }
+  },
+  "limitations": [
+    "Full fast and HTTP gates are not green; no trunk merge.",
+    "Group immutable-version and capped-outcome edge cases are verified by behavioral tests; this pass did not reproduce them all through an installed client.",
+    "No shipped installer or customer recovery claim.",
+    "Website code mirror generated; complete asset parity gate requires a complete checkout."
+  ],
+  "changedPaths": [
+    "frontend/app/app.js",
+    "frontend/app/chat.js",
+    "frontend/app/delegated.js",
+    "frontend/app/group-chat.js",
+    "frontend/app/overseer.js",
+    "frontend/app/stationcommands.js",
+    "frontend/app/workstreams.js",
+    "frontend/css/beat-cards.css",
+    "sidecar/index.js",
+    "sidecar/overseer.js",
+    "sidecar/tools/builtin/orchestration.js",
+    "test/consent-full-request.test.js",
+    "test/declutter-strips.test.js",
+    "test/delegated-threads.test.js",
+    "test/e2e.overseer.test.js",
+    "test/fast.list",
+    "test/helpers/overseer-provider.js",
+    "test/orchestration.test.js",
+    "test/overseer-batch.test.js",
+    "test/overseer-ui.test.js",
+    "test/station-commands.test.js",
+    "test/thread-flow-navigation.test.js",
+    "test/thread-ux-regressions.test.js",
+    "test/workstreams.test.js",
+    "website/app/app/app.js",
+    "website/app/app/chat.js",
+    "website/app/app/delegated.js",
+    "website/app/app/group-chat.js",
+    "website/app/app/overseer.js",
+    "website/app/app/stationcommands.js",
+    "website/app/app/workstreams.js",
+    "website/app/css/beat-cards.css"
+  ],
+  "mirrorChangedFiles": [
+    {
+      "source": "frontend/app/app.js",
+      "mirror": "website/app/app/app.js",
+      "equal": true
+    },
+    {
+      "source": "frontend/app/chat.js",
+      "mirror": "website/app/app/chat.js",
+      "equal": true
+    },
+    {
+      "source": "frontend/app/delegated.js",
+      "mirror": "website/app/app/delegated.js",
+      "equal": true
+    },
+    {
+      "source": "frontend/app/group-chat.js",
+      "mirror": "website/app/app/group-chat.js",
+      "equal": true
+    },
+    {
+      "source": "frontend/app/overseer.js",
+      "mirror": "website/app/app/overseer.js",
+      "equal": true
+    },
+    {
+      "source": "frontend/app/stationcommands.js",
+      "mirror": "website/app/app/stationcommands.js",
+      "equal": true
+    },
+    {
+      "source": "frontend/app/workstreams.js",
+      "mirror": "website/app/app/workstreams.js",
+      "equal": true
+    },
+    {
+      "source": "frontend/css/beat-cards.css",
+      "mirror": "website/app/css/beat-cards.css",
+      "equal": true
+    }
+  ],
+  "setupIncident": "The initial sparse-worktree directory junction allowed a Git operation to remove tracked shared frontend assets. Restored those tracked assets and verified their shared Git status was clean. All private duplicate asset directories were then removed. A later hardlink proposal was rejected and never executed. Final browser proof uses read-only route fulfillment; no links or shared writes."
+}

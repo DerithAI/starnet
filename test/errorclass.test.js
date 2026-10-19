@@ -349,6 +349,13 @@ const F = (err, status, opts) => friendlyError(err, status, opts);
   A.eq(B(new Error(anthroBroke)).kind, 'billing', 'browser: Anthropic credit-balance 400 -> billing, not an unknown retry');
   A.eq(B(new Error(anthroBroke)).retryable, false, 'browser: Anthropic out of credit offers no doomed retry');
   A.ok(/out of credit/i.test(B(new Error(anthroBroke)).userMessage), 'browser: the Anthropic empty-wallet copy says the account is out of credit');
+  // org P03 (final round): a sign-in SUBSCRIPTION has no wallet — on the browser ladder too, its 402 / "quota" is a spent plan
+  for (const raw of ['codex http 402 — Payment Required', 'codex http 429 — Codex quota exceeded', 'Grok (xAI) http 402 - insufficient credits', 'Kimi For Coding http 429 - insufficient_quota']) {
+    const v = B(new Error(raw));
+    A.eq(v.kind, 'quota_exhausted', 'browser: ' + raw + ' -> quota_exhausted (a plan allowance), never billing');
+    A.ok(!/out of credit|top (?:it )?up/i.test(v.userMessage) && /plan allowance is used up/.test(v.userMessage), 'browser: ' + raw + ' never says "out of credit — top it up": ' + v.userMessage);
+  }
+  A.eq(B(new Error('Kimi For Coding http 429 - quota exceeded: requests per minute')).kind, 'rate_limit', 'browser: a per-minute quota on a subscription stays a rate limit');
 }
 
 /* ---- a TRANSPORT status beats a policy WORD in the message ----

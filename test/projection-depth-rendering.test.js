@@ -67,6 +67,31 @@ async function materials(){
   assert.equal(tg.getImageData(6,6,1,1).data[3],0,'lost material caches would paint an empty rebake');
   api.restoreMaterials();api.floor(tg,0,0,12,0,0,'plate');
   assert.equal(tg.getImageData(6,6,1,1).data[3],255,'original image restores material and derived tint caches');
+  // GPU resets can throw during readback. Only a security/taint failure is
+  // permanent; a transient read must not blind the floor watchdog forever.
+  lossScope.cache.baseCv=base;g=api.detailContext(base.getContext('2d'));g.fillRect(0,0,64,64);lossScope.recordBakeProbe();
+  const beforeTransient=rebuilt;
+  vm.runInNewContext("sentinelCtx.getImageData=()=>{throw Object.assign(new Error('context lost'),{name:'InvalidStateError'});};",lossScope);
+  lossScope.watch(5000);
+  assert.equal(rebuilt,beforeTransient+1,'temporary read failure triggers recovery');
+  assert.equal(lossScope.blank(),false,'fresh CPU probe can witness the repaired floor');
+  base.getContext('2d').clearRect(0,0,64,64);lossScope.watch(5300);
+  assert.equal(rebuilt,beforeTransient+2,'a later loss still heals after the temporary read error');
+  vm.runInNewContext("sentinelCtx.getImageData=()=>{throw Object.assign(new Error('context lost while baking'),{name:'InvalidStateError'});};",lossScope);
+  lossScope.recordBakeProbe();assert.equal(lossScope.blank(),true,'failed initial read remains pending instead of disarming recovery');
+  lossScope.watch(5600);assert.equal(lossScope.blank(),false,'probe registration retries after recovery');
+  base.getContext('2d').clearRect(0,0,64,64);lossScope.recordBakeProbe();
+  assert.equal(lossScope.blank(),true,'blank rebuild of a previously occupied floor is not accepted as empty');
+  lossScope.watch(5900);assert.equal(lossScope.blank(),false,'blank rebuild can recover on the next watchdog check');
+  const sparse=Canvas.createCanvas(256,256),sparseCtx=sparse.getContext('2d');
+  sparseCtx.fillRect(20,20,8,8);sparseCtx.fillRect(212,212,8,8);
+  lossScope.cache.baseCv=sparse;lossScope.geo={COLS:16,TILE:16,zoneGrid:Array(256).fill(null)};
+  lossScope.geo.zoneGrid[17]='room';lossScope.geo.zoneGrid[221]='room';
+  lossScope.recordBakeProbe();const beforeSparse=rebuilt;
+  for(const now of [6300,10000,14000])lossScope.watch(now);
+  assert.equal(lossScope.blank(),false,'occupied tile witnesses sparse healthy floors that all nine coarse points miss');
+  assert.equal(rebuilt,beforeSparse,'healthy sparse floors never trigger recovery or prop reload storms');
+  delete lossScope.geo;
   // Browser async path: no GPU readback inside the frame, stale snapshots cannot
   // invalidate a fresh bake, and a stuck encoder retains a bounded backstop.
   let fakeNow=100,closedBitmaps=0;const callbacks=[];
@@ -87,6 +112,10 @@ async function materials(){
 
   count=probeReads;lossScope.batch();assert.equal(probeReads,count,'late successful encoder resumes asynchronous checks');
   await callbacks.shift()();lossScope.batch();lossScope.endBatch();
+
+  vm.runInNewContext("sentinelCtx.getImageData=()=>{throw Object.assign(new Error('tainted'),{name:'SecurityError'});};",lossScope);
+  assert.equal(lossScope.blank(),false,'actual taint is unknowable, not a recovery loop');
+  assert.equal(vm.runInNewContext('probeOff',lossScope),true,'only SecurityError permanently disables readback');
 
   const props=fs.readFileSync('frontend/app/propsprites.js','utf8'),start=props.indexOf('  function contactShadow('),end=props.indexOf('  function projectedShadow(',start);
   assert(start>0&&end>start);

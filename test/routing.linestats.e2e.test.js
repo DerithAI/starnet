@@ -15,6 +15,7 @@
 'use strict';
 
 const A = require('./_assert.js');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 const http = require('http');
 const path = require('path');
 const os = require('os');
@@ -36,7 +37,7 @@ function startMockOpenRouter(script) {
     const msgs = (body && body.messages) || [];
     if (msgs.some(m => m && m.role === 'tool')) return { text: 'done' };
     const lastUser = [...msgs].reverse().find(m => m && m.role === 'user');
-    const text = String((lastUser && lastUser.content) || '').toLowerCase();
+    const text = userWords(lastUser).toLowerCase();
     return script.find(r => text.indexOf(r.when) >= 0) || { text: 'nothing to do' };
   }
   return new Promise((resolve) => {
@@ -163,6 +164,9 @@ function twoStagePlan() {
     st = await call('GET', '/api/routing/lines/stats?since=' + t0);
     L = st.j.lines.find(l => l.lineId === lineId);
     A.eq([L.runs, L.shipped, L.failed], [2, 0, 0], 'stats match the stamped rows (talk-only runs are not proven work)');
+    // rc walk #30: the job's own answer agrees with SHIPPED — delivered (200), but a talk-only job is not shipped
+    A.eq(s1.j.shipped, false, 'the sample answer says this delivered job was not counted in SHIPPED (it agrees with the plate)');
+    A.eq(s1.j.shippedWhy, 'no-proven-work', '…and why, from its own run rows: no stage had a tool succeed or saved a file');
     A.ok(typeof L.medianMs === 'number' && L.medianMs > 0, 'a real median time per run: ' + L.medianMs);
     A.eq(st.j.docks.b1.failed, false, 'bay b1: last outcome done');
     A.eq(st.j.docks.b2.reason, 'done', 'bay b2: last outcome done');

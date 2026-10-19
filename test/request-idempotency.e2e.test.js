@@ -1,14 +1,16 @@
 'use strict';
 const assert=require('node:assert/strict'), http=require('node:http');
 const {SidecarFixture}=require('./helpers/sidecar-fixture');
+// the caller's own words: on this non-Claude wire the run-context note leads the newest user message
+const {lastUserWords}=require('./helpers/host-notes.js');
 (async()=>{
  let calls=0,completed=0;
  const provider=http.createServer((req,res)=>{
   if(req.url.includes('/models'))return res.end(JSON.stringify({data:[{id:'test/retry',context_length:32000,pricing:{prompt:'0',completion:'0'}}]}));
   let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
-   const body=JSON.parse(raw);const last=body.messages.filter(m=>m.role==='user').at(-1);
-   if(last && /^RETRY_PROBE/.test(last.content))calls++;
-   setTimeout(()=>{if(last && /^RETRY_PROBE/.test(last.content))completed++;res.writeHead(200,{'Content-Type':'text/event-stream'});res.write('data: '+JSON.stringify({choices:[{delta:{content:'Retry evidence'},finish_reason:null}]})+'\n\n');res.end('data: '+JSON.stringify({choices:[{delta:{},finish_reason:'stop'}],usage:{prompt_tokens:3,completion_tokens:2,total_tokens:5}})+'\n\ndata: [DONE]\n\n');},500);
+   const body=JSON.parse(raw);const last=lastUserWords(body.messages);
+   if(/^RETRY_PROBE/.test(last))calls++;
+   setTimeout(()=>{if(/^RETRY_PROBE/.test(last))completed++;res.writeHead(200,{'Content-Type':'text/event-stream'});res.write('data: '+JSON.stringify({choices:[{delta:{content:'Retry evidence'},finish_reason:null}]})+'\n\n');res.end('data: '+JSON.stringify({choices:[{delta:{},finish_reason:'stop'}],usage:{prompt_tokens:3,completion_tokens:2,total_tokens:5}})+'\n\ndata: [DONE]\n\n');},500);
   });
  });
  await new Promise(r=>provider.listen(0,'127.0.0.1',r));

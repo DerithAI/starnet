@@ -254,6 +254,7 @@
         const standing = !!(quote && STANDING.test(norm(quote)));
         const widen = standing && !projectRoot;
         const scope = args.scope || (streamId && !widen ? 'stream' : 'global');
+        const writeProject = retrieval.memoryProjectKey({ scope: scope, projectRoot: projectRoot });
         // §5.2 record minted INSIDE the lock against the re-read list, so the id is collision-proof even if a
         // concurrent run/UI write changed the notebook since this run started (P1).
         let note = null, dupe = null, folded = null, similar = [];
@@ -262,6 +263,9 @@
           if (args.replaceId) {
             const at = list.findIndex(n => n.id === args.replaceId);
             const prior = list[at];
+            if (prior && !retrieval.memoryAllowedInProject(prior, projectRoot)) {
+              throw new Error('no such memory in this project — read your notebook before correcting it');
+            }
             // a correction in the Commander's proven words keeps (or earns) their authority; otherwise it is the
             // agent's inference and renders "[corrected, unconfirmed]" — superseding, never laundered
             const confirmation = statedBy ? ((prior && prior.confirmation === 'user-confirmed') ? 'user-confirmed' : 'user-stated') : 'inferred';
@@ -277,6 +281,7 @@
                one active belief, the old text archived in its history, and the copy's pin carried over. */
             const same = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
             const copyAt = runId ? list.findIndex((n, i) => i !== at && n && n.sourceRunId === runId && !n.revision &&
+              retrieval.memoryProjectKey(n) === retrieval.memoryProjectKey(note) &&
               !(Array.isArray(n.history) && n.history.length) && same(n.body) === same(note.body)) : -1;
             if (copyAt >= 0) {
               folded = list[copyAt];
@@ -290,11 +295,14 @@
           const text = String(args.title) + ' ' + String(args.body);
           // the near-dupe check runs INSIDE the lock against the RE-READ list — outside it, two concurrent runs
           // saving the same belief would both see a clean notebook and both append.
-          dupe = list.find(n => Array.isArray(n.history) && n.history.some(h => h && String(h.body).trim() === String(args.body).trim())) ||
-            (overridden ? null : findSimilar(list, text, { threshold: DUPE_THRESHOLD }));
+          // A belief in another project cannot stand in for this write or nominate its correction.
+          // Compare boundaries, not stream ids: a project's notes already span its conversations.
+          const candidates = list.filter(n => retrieval.memoryProjectKey(n) === writeProject);
+          dupe = candidates.find(n => Array.isArray(n.history) && n.history.some(h => h && String(h.body).trim() === String(args.body).trim())) ||
+            (overridden ? null : findSimilar(candidates, text, { threshold: DUPE_THRESHOLD }));
           if (dupe) return undefined;   // nothing to write — skip the store write entirely
           // same subject, different claim: collected against the list BEFORE the new note joins it
-          similar = list.map((n, i) => ({ n, i, s: n ? jaccard(textOf(n), text) : 0 }))
+          similar = candidates.map((n, i) => ({ n, i, s: n ? jaccard(textOf(n), text) : 0 }))
             .filter(x => x.s >= SIMILAR_FLOOR && x.s < DUPE_THRESHOLD)
             .sort((a, b) => (b.s - a.s) || (b.i - a.i)).slice(0, SIMILAR_MAX).map(x => x.n);
           note = {
@@ -316,15 +324,19 @@
         // the exact behaviour this guard exists to stop. Show the belief it already holds IN FULL so the decision is
         // informed, and emit NOTHING (no memory.write, no deliverable): nothing was written, and a receipt for a
         // write that did not happen is the kind of claim truthful telemetry forbids.
+        /* AN ECHO CARRIES ITS TAINT (security-storage-02). The near-dupe refusal and the similar-notes tail below quote
+           a held note verbatim — the same exposure as notebook.read — so a clean run that sees a tainted note's text
+           here is tainted by it too (registry copies taintedBy onto the result; the host latches it via relayedTaint). */
+        const echoTaint = rows => { const t = (rows || []).find(n => n && typeof n.taintedBy === 'string' && n.taintedBy); return t ? { taintedBy: 'memory saved by a run that read ' + t.taintedBy } : {}; };
         if (dupe) {
           const held = String(dupe.content != null ? dupe.content : (dupe.body != null ? dupe.body : '')).replace(/\s+/g, ' ').trim().slice(0, 300);
-          return {
+          return Object.assign({
             content: 'Not saved — you already remember something very close:\n[' + dupe.id + '] ' + String(dupe.title || '') + ': ' + held + '\n\n' +
               'If that is the SAME belief, you are done — do not reword and retry. If this is genuinely a different fact ' +
               ', use distinct:true. If this is a CORRECTION, call notebook.write with replaceId:"' + dupe.id +
               '" and the exact current previousBody from notebook.read. That updates the existing entry; distinct:true does not.',
             summary: 'already known (' + dupe.id + ')'
-          };
+          }, echoTaint([dupe]));
         }
         // the receipt for THIS run, registered before memory.write tells COMMS to fetch it
         if (onSaved && runId) onSaved(aid, runId, {
@@ -363,14 +375,14 @@
             'previousBody set to its exact text above, and this same title/body — StarNet folds ' + note.id + ' into it, so only ' +
             'the corrected belief stays active. If they are separate facts, leave both.';
         }
-        return { content: (args.replaceId ? 'Updated' : 'Saved') + ' note "' + note.title + '" (' + note.id + ').' + (args.replaceId ? ' The previous text is archived and is no longer active recall.' : '') + where + proof + tail, summary: (args.replaceId ? 'updated ' : 'wrote ') + note.id };
+        return Object.assign({ content: (args.replaceId ? 'Updated' : 'Saved') + ' note "' + note.title + '" (' + note.id + ').' + (args.replaceId ? ' The previous text is archived and is no longer active recall.' : '') + where + proof + tail, summary: (args.replaceId ? 'updated ' : 'wrote ') + note.id }, echoTaint(similar));
       }
     };
 
     const readTool = {
       name: 'notebook.read', capability: 'memory', scope: 'read', requiresConsent: false,
       description: 'Read your notebook (your durable memory). Optional `query` returns the matching entries ranked by relevance (the same ' +
-        'BM25 + trust + recency order auto-recall uses); omit it to list everything. Each line is prefixed with the entry id ([note_N]) ' +
+        'BM25 + trust + recency order auto-recall uses); omit it to list all available entries. Project notes stay within their project. Each line is prefixed with the entry id ([note_N]) ' +
         'you can pass to notebook.feedback. Shared standing preferences use [shared:agent/id], are read-only, and can be found by that key.',
       schema: { type: 'object', properties: { query: { type: 'string' } } },
       run: async (args, ctx) => {
@@ -387,6 +399,9 @@
             list = list.concat(foreign);
           } catch (_) { sharedUnavailable = true; }
         }
+        // Apply scope before every selector, including list-all and singleton reads without a ranker.
+        const notebookTotal = list.length;
+        list = list.filter(n => retrieval.memoryAllowedInProject(n, (ctx && ctx.projectRoot) || null));
         const total = list.length;
         const q = args && args.query;
         if (q) {
@@ -401,9 +416,9 @@
           // explicit read silently lost every project lesson even inside its own project (the gate had admitted it).
           if (rank && list.length > 1) list = rank(list, String(q), { now: clock.now(), k: list.length, floor: false, projectRoot: (ctx && ctx.projectRoot) || null });
         }
-        if (!list.length) return { content: (q ? 'No notes match "' + q + '".' : 'Your notebook is empty.') + (sharedUnavailable ? ' Shared preferences could not be read; their absence is unverified.' : ''), summary: '0 notes' };
+        if (!list.length) return { content: (q ? 'No notes match "' + q + '".' : notebookTotal ? 'No notes are available in this project.' : 'Your notebook is empty.') + (sharedUnavailable ? ' Shared preferences could not be read; their absence is unverified.' : ''), summary: '0 notes' };
         const body = list.map(n => '- [' + (n.foreign ? 'shared:' + n.sourceAgentId + '/' + n.sourceRecordId : n.id) + '] ' + n.title + (n.foreign ? ' (read-only shared preference)' : '') + ': ' + n.body).join('\n');
-        // report the SIZE of the whole store on a filtered read, so the agent knows how much memory it is holding
+        // report the SIZE of the available notebook on a filtered read, so the count matches its project boundary
         // (the reference harness puts a usage percentage in the system prompt; we have no cap to measure against,
         // but the count is the honest half of that signal — and it is the number a crowded notebook shows up in).
         const foot = (q ? '\n\n(' + list.length + ' of ' + total + ' entries in memory)' : '') + (sharedUnavailable ? '\n[Shared preferences could not be read; these results are partial.]' : '');
@@ -447,14 +462,14 @@
           if (!list.length) throw new Error('your notebook is empty — nothing to rate');
           let idx = -1;
           if (args.id) {
-            idx = list.findIndex(n => n && n.id === String(args.id));
+            idx = list.findIndex(n => n && n.id === String(args.id) && retrieval.memoryAllowedInProject(n, (ctx && ctx.projectRoot) || null));
             if (idx < 0) throw new Error('no memory has id "' + args.id + '"');
           } else if (args.match) {
             const m = String(args.match).toLowerCase();
             const hits = [];
             for (let i = 0; i < list.length; i++) {
               const n = list[i]; const text = (n.title + ' ' + n.body + ' ' + (n.content || '')).toLowerCase();
-              if (text.indexOf(m) >= 0) hits.push(i);
+              if (retrieval.memoryAllowedInProject(n, (ctx && ctx.projectRoot) || null) && text.indexOf(m) >= 0) hits.push(i);
             }
             if (!hits.length) throw new Error('no memory matches "' + args.match + '"');
             if (hits.length > 1) throw new Error('ambiguous: ' + hits.length + ' memories match "' + args.match + '" — use a more specific substring or the id from notebook.read');

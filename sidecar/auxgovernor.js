@@ -96,5 +96,33 @@
     return { spend: ordered.filter(n => reservedSet.has(n) || spent.indexOf(n) >= 0), deferred: governed.slice(budget), reserved, budget: budget, unlimited: false };
   }
 
-  return { PRIORITY: PRIORITY.slice(), DEFAULT_BUDGET, parseBudget, rank, decide };
+  // pickAuxEffort(allowed) -> 'none' | 'minimal' | 'low' | null. The reasoning effort for REASON-ONLY aux work (the
+  // post-run passes and internal self-talk runs) when the operator configured no aux tier: the LOWEST effort the
+  // provider verifiably offers for that model. Aux work is a strict-format extraction (a title, a PREFERENCE line, a
+  // JSON plan); thinking is billed as output and the Commander never sees it — measured live on haiku-4.5, a title
+  // spent 483 reasoning tokens at the chat's 'medium' and 0 at 'none' for the same title. `allowed` is the provider's
+  // own reasoningEfforts(model) list; no list, or no low tier on it, -> null = no override (the provider default).
+  const AUX_EFFORT_LADDER = ['none', 'minimal', 'low'];
+  function pickAuxEffort(allowed) {
+    if (!Array.isArray(allowed)) return null;
+    for (let i = 0; i < AUX_EFFORT_LADDER.length; i++) if (allowed.indexOf(AUX_EFFORT_LADDER[i]) >= 0) return AUX_EFFORT_LADDER[i];
+    return null;
+  }
+
+  // effortAsRan(want, allowed) -> the rung a run that asked for `want` actually ran on, read from the model's list AFTER
+  // the run. A self-talk pick the endpoint refused mid-run was resent at the nearest rung it keeps — down first, then up,
+  // the OpenRouter adapter's clamp — and the list now says so (test/openrouter-effort-heal.test.js). `want` itself when
+  // it is still on the list, or when there is no list to read.
+  const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  function effortAsRan(want, allowed) {
+    if (!want) return null;
+    if (!Array.isArray(allowed) || !allowed.length || allowed.indexOf(want) >= 0) return want;
+    const at = EFFORT_ORDER.indexOf(want);
+    if (at < 0) return want;
+    for (let i = at; i >= 0; i--) if (allowed.indexOf(EFFORT_ORDER[i]) >= 0) return EFFORT_ORDER[i];
+    for (let i = at + 1; i < EFFORT_ORDER.length; i++) if (allowed.indexOf(EFFORT_ORDER[i]) >= 0) return EFFORT_ORDER[i];
+    return want;
+  }
+
+  return { PRIORITY: PRIORITY.slice(), DEFAULT_BUDGET, parseBudget, rank, decide, pickAuxEffort, effortAsRan, AUX_EFFORT_LADDER: AUX_EFFORT_LADDER.slice() };
 });

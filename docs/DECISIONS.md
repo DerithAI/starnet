@@ -179,6 +179,24 @@ many of these — they win on any wording conflict.
   every candidate-bound wave W0–W7 passes. Neither verdict authorizes publishing, deployment,
   credential rotation, or any other external release operation; those still require the owner's
   explicit authorization.
+- **Transcript row provenance is one rule: `rowTaint` in `sidecar/transcriptstore.js`** (review
+  memory-learning-07, 2026-10-13). A stored row with `taint` taints whatever reads it. A row is clean
+  only when its writer stamped it (`taintKnown`, recorded whenever a taint value is passed, `null`
+  included). Every other row is "taint unverifiable", whatever its age: a date cutoff is unsafe
+  (an older build kept writing un-stamped tainted rows for anyone who upgraded late), and a
+  per-install "stamped since" marker could only clear a row whose writer forgot the stamp. So every
+  transcript write outside the store itself (`append`, `appendStrict`, `appendNew`, `appendNewStrict`,
+  in any sidecar module) must pass `taint`; test/recall.test.js scans all of sidecar/ and locks it.
+  recall_conversation and the repeat-work owner proof (`trusted-learning.js` cleanOwnerRows) read
+  rows by this rule. No released build (through v0.13.3) wrote the clean stamp, so after the update
+  every recall hit on older history taints the run: on COMMS a later command asks first even with a
+  standing grant (Full Access excepted), and on autonomy runs and channel chats without `/approvals`
+  it is refused. Replay (`transcriptStore.taintOf`) and the earlier-conversation note count only an
+  explicit `taint`, so they treat those same rows as clean: applying the rule there would start
+  every older conversation tainted. **OPEN: Andrew decides before the next cut** (raised 2026-10-13,
+  release review): ship strict recall with a release-note line ("Recalling a chat from before this
+  update now asks before running commands."), or pick another split. Until he answers, the branch
+  ships strict recall.
 
 
 ## Build mode / conveyors (Andrew, 2026-10-10/11)
@@ -188,3 +206,4 @@ many of these — they win on any wording conflict.
 - THE HAND: Conveyors hotbar keys 1–8 pick pieces, right-click removes, Q copies the pointed piece. PICK WHAT GOES HERE is a docked station window, never a popover.
 - Hold Alt for the floor’s junction settings and SEND TO overlay; keep the one-voice display rule.
 - No belt may close a work-line circle except a LOOP’s valid back lane. Copying a line preserves its internal settings and crew, not external SEND TOs, project folders or triggers.
+- A PARTIAL JOIN IS A DELIVERED REPLY, NOT A SHIPMENT (2026-10-12, conveyor runtime review). A JOINER that sends on without every branch (one failed, or never arrived before its timeout) still delivers the merged reply, marked PARTIAL, so the job is never swallowed. The job is not a product: no line-output at the OUTBOX, no SHIPPED receipt, no SEND TO hand-off, no 'delivered' verdict. SEND TO still hears of it as partial, so the next line's record says why nothing came.

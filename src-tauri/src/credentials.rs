@@ -15,7 +15,19 @@ pub(crate) const KEYCHAIN_ACCOUNT: &str = "openrouter";
 pub(crate) fn connector_encryption_key() -> Result<String, String> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, "connectors:encryption:v1")
         .map_err(|e| format!("the system credential store is unavailable ({e})"))?;
-    match entry.get_password() {
+    connector_encryption_key_for_entry(&entry)
+}
+
+// Internal acceptance seam: the production wrapper above retains its fixed namespace.
+pub(crate) fn connector_encryption_key_for_entry(entry: &keyring::Entry) -> Result<String, String> {
+    connector_encryption_key_with(|| entry.get_password(), |value| entry.set_password(value))
+}
+
+fn connector_encryption_key_with(
+    read: impl Fn() -> keyring::Result<String>,
+    write: impl Fn(&str) -> keyring::Result<()>,
+) -> Result<String, String> {
+    match read() {
         Ok(value) => {
             if valid_connector_key(&value) {
                 Ok(value)
@@ -29,11 +41,9 @@ pub(crate) fn connector_encryption_key() -> Result<String, String> {
             let value: String = (0..8)
                 .map(|_| uuid::Uuid::new_v4().simple().to_string()[..8].to_string())
                 .collect();
-            entry
-                .set_password(&value)
+            write(&value)
                 .map_err(|e| format!("the system credential store refused to save the key ({e})"))?;
-            let saved = entry
-                .get_password()
+            let saved = read()
                 .map_err(|e| format!("the system credential store could not read back the key ({e})"))?;
             if saved == value {
                 Ok(saved)
@@ -487,6 +497,49 @@ mod tests {
         assert!(!valid_connector_key(&"a1".repeat(33)));
         assert!(!valid_connector_key(&"zz".repeat(32)));
         assert!(!valid_connector_key(&format!("{}\n", "a1".repeat(32))));
+    }
+
+    // Pure policy controls: no Entry, native keychain, profile, or child process.
+    #[test]
+    fn connector_key_policy_preserves_existing_and_malformed_values() {
+        for value in ["ab".repeat(32), "INVALID_SYNTHETIC_KEY".into()] {
+            let result = connector_encryption_key_with(|| Ok(value.clone()), |_| panic!("must not overwrite"));
+            assert_eq!(result.is_ok(), valid_connector_key(&value));
+        }
+    }
+
+    #[test]
+    fn connector_key_policy_creates_only_on_absence_and_checks_readback() {
+        use std::cell::RefCell;
+        let stored = RefCell::new(None::<String>);
+        let value = connector_encryption_key_with(
+            || stored.borrow().clone().ok_or(keyring::Error::NoEntry),
+            |value| { *stored.borrow_mut() = Some(value.into()); Ok(()) },
+        ).unwrap();
+        assert!(valid_connector_key(&value));
+        assert!(stored.borrow().as_deref() == Some(value.as_str()));
+        let reads = std::cell::Cell::new(0);
+        let mismatch = connector_encryption_key_with(
+            || { reads.set(reads.get() + 1); if reads.get() == 1 { Err(keyring::Error::NoEntry) } else { Ok("DIFFERENT_SYNTHETIC_VALUE".into()) } },
+            |_| Ok(()),
+        );
+        assert!(mismatch.unwrap_err().contains("different key"));
+    }
+
+    #[test]
+    fn connector_key_policy_refuses_simulated_store_errors() {
+        let denied = || keyring::Error::NoStorageAccess(Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied, "synthetic policy control",
+        )));
+        assert!(connector_encryption_key_with(|| Err(denied()), |_| panic!("must not write on refusal"))
+            .unwrap_err().contains("locked or refused"));
+        assert!(connector_encryption_key_with(|| Err(keyring::Error::NoEntry), |_| Err(denied()))
+            .unwrap_err().contains("refused to save"));
+        let reads = std::cell::Cell::new(0);
+        assert!(connector_encryption_key_with(
+            || { reads.set(reads.get() + 1); if reads.get() == 1 { Err(keyring::Error::NoEntry) } else { Err(denied()) } },
+            |_| Ok(()),
+        ).unwrap_err().contains("could not read back"));
     }
 
     #[test]

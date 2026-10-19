@@ -7,6 +7,7 @@
 // another design run becomes the newest approval; everything survives a sidecar restart; the personalization pause stops
 // keep-style and says so.
 const A = require('./_assert.js');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -37,7 +38,7 @@ const mock = http.createServer((req, res) => {
     seen.push(body);
     const msgs = Array.isArray(body.messages) ? body.messages : [];
     let lastUser = -1; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i] && msgs[i].role === 'user') { lastUser = i; break; }
-    const ask = lastUser >= 0 ? String(msgs[lastUser].content || '') : '';
+    const ask = lastUser >= 0 ? userWords(msgs[lastUser]) : '';
     const answered = msgs.slice(lastUser + 1).some(m => m && m.role === 'tool');
     const job = /DESIGN_JOB_(\w+)/.exec(ask);
     if (job && !answered) {
@@ -138,13 +139,33 @@ async function run(text, agentId) {
 
     // 5c. Keep first, then a real rejection, then PUT IT BACK: the rejection must reach the provider.
     A.ok((await api('/api/taste/keep-style', {runId: r3.runId})).body.ok, 'keep the second style again');
+    // memory-learning-11: a later run rewrote the rated run's page before the verdict. Its colours and fonts are the later
+    // run's work, so the rated run's reference keeps the path but must not record them.
+    const v2File = path.join(workspace, 'agent', 'site', 'v2.html');
+    fs.writeFileSync(v2File, PAGE('#00c2ff', 'Comic Neue'));
+    const later = new Date(Date.now() + 120000); fs.utimesSync(v2File, later, later);
     const miss = await api('/api/growth/ratings', {runId: r3.runId, verdict: 'miss', correction: 'wrong colors', epoch: 1});
     A.ok(miss.body.ok && miss.body.feedbackMemory && miss.body.feedbackMemory.stored, 'the real miss was stored');
+    const missRef = (miss.body.feedbackMemory || {}).reference || {};
+    A.ok((missRef.paths || []).indexOf('site/v2.html') >= 0, 'the rated run\'s page path stays in its reference: ' + JSON.stringify(missRef.paths));
+    A.ok((missRef.palette || []).indexOf('#00c2ff') < 0 && (missRef.fonts || []).indexOf('Comic Neue') < 0, 'a page rewritten after the run lends no colours or fonts to it: ' + JSON.stringify({palette: missRef.palette, fonts: missRef.fonts}));
     const undoMiss = await api('/api/taste/keep-style', {runId: r3.runId, undo: true});
     A.ok(undoMiss.body.undone && undoMiss.body.removed === false, 'unkeep retains the real verdict');
     const r7 = await run('Plan the quarterly planning meeting.');
     const arcadeLine = r7.prompt.split('\\n').find(line => line.includes('Design the arcade night flyer')) || '';
-    A.ok(/REJECTED .*Design the arcade night flyer.*wrong colors/.test(arcadeLine) && !/APPROVED|liked:/.test(arcadeLine), 'provider receives the rejection after unkeep: ' + arcadeLine);
+    A.ok(/REJECTED .*Design the arcade night flyer.*wrong colors/.test(arcadeLine) && !/APPROVED|(?:^|[^s])liked:/.test(arcadeLine), 'provider receives the rejection after unkeep: ' + arcadeLine);
+
+    // 5d. seams-03: the crew's memory cannot be written (here: the notebook path is a directory). KEEP must not report
+    // that the crew learned the style.
+    const nb = path.join(workspace, 'agent.notebook.json');
+    A.ok(fs.existsSync(nb), 'the agent notebook exists');
+    fs.renameSync(nb, nb + '.held'); fs.mkdirSync(nb);
+    try {
+      const unsaved = await api('/api/taste/keep-style', {runId: r1.runId});
+      A.eq(unsaved.body.ok, false, 'a keep that could not be saved is not ok: ' + JSON.stringify(unsaved.body));
+      A.ok(/could not be written/.test(String(unsaved.body.error || '')), 'and says the memory was not written');
+      A.eq(unsaved.body.feedbackMemory && unsaved.body.feedbackMemory.reason, 'could not save', 'with the store\'s own reason');
+    } finally { fs.rmdirSync(nb); fs.renameSync(nb + '.held', nb); }
 
     // 6. the personalization pause stops keep-style and says so
     A.ok((await api('/api/personalization', {enabled: false})).body.ok, 'personalization paused');

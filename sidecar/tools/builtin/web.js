@@ -39,6 +39,7 @@
                      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
   const FETCH_MAX_CHARS   = 6000;   // web_fetch truncation
   const net = require('node:net');
+  const responseProvenance = require('../response-provenance.js');
   /* RAW-BODY CEILING, applied BEFORE anything parses the response.
      htmlToText is a chain of lazy `[\s\S]*?` replaces — quadratic in the input — and the clamp to
      FETCH_MAX_CHARS ran AFTER it. Measured on a page of repeated "<script>": 64KB -> 55ms, 256KB -> 880ms,
@@ -116,6 +117,16 @@
      a key. Same shape as telegram.transport.js errOf. Returns e. */
   function nameTransport(e, host) {
     const c = e && e.cause;
+    // A response body can fail after headers arrived. Keep its distinct prefix;
+    // append only bounded machine metadata, never decoder text or cause URLs.
+    if (c && e instanceof Error && e.name !== 'AbortError' && e.message === 'terminated') {
+      const code = typeof c.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(c.code) ? c.code : '';
+      const h = typeof host === 'string' ? host : '';
+      const ip = h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
+      const hostname = h.length <= 253 && (/^[A-Za-z0-9.-]+$/.test(h) || net.isIP(ip)) ? h : '';
+      if (code) e.message += ' (' + [code, hostname].filter(Boolean).join(' ') + ')';
+      return e;
+    }
     if (c && e instanceof Error && /^fetch failed$/.test(e.message)) {
       const detail = [c.code || c.name || '', c.hostname || c.address || host || ''].filter(Boolean).join(' ');
       if (detail) e.message = 'fetch failed (' + detail + ')';
@@ -270,10 +281,13 @@
     else h = h.replace(/\.+$/, '');
     return h;
   }
+  // a refusal the HOST wrote: never taints the run, and its row says why (see browser.js hostRefusal)
+  function hostRefusal(msg, summary) { const e = new Error(msg); e.hostAuthored = true; if (summary) e.toolSummary = summary; return e; }
   function assertSafeUrl(raw) {
     let u;
-    try { u = new URL(raw); } catch (e) { throw new Error('invalid URL: ' + raw); }
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('only http(s) URLs are allowed');
+    try { u = new URL(raw); } catch (e) { throw hostRefusal('invalid URL: ' + raw, 'invalid URL'); }
+    if (u.protocol === 'file:') throw hostRefusal('only http(s) URLs are allowed. Files are read with fs_read — a worker\'s saved file at the exact path its dispatch row lists (artifacts[].abs).', 'not a web address (file://)');
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw hostRefusal('only http(s) URLs are allowed', 'not a web address');
     const h = hostOf(u);
     const blockedName =
       h === 'localhost' || h === '0.0.0.0' ||
@@ -505,6 +519,31 @@
     // behaves exactly as before. Availability is probed lazily per use (Chrome may not exist).
     const reader = deps.reader || null;
     const readerReady = () => { try { return !!(reader && reader.available().ok); } catch (_) { return false; } };
+    /* THE READER RUNG KEEPS TIME (live walk 10-14: a worker's search sat on "Searching …" for 80 s, then 185 s, while
+       Chromium failed to launch, and nobody was told). When a later rung can still answer (OpenRouter), the browser's
+       START gets READER_RUNG_MS; a browser not up by then is passed over, and while it is still starting no search
+       queues behind it. The budget bounds ONLY the start (review 10-14): once the browser has produced a page
+       (reader.search's onLaunched) the search waits for it as before, so a healthy-but-slow read never tips into the
+       PAID OpenRouter search. A browser that could not start is named in the answer (webreader holds it down a while). */
+    const READER_RUNG_MS = Number.isFinite(deps.readerBudgetMs) ? Math.max(1, deps.readerBudgetMs) : 15000;
+    let readerStarting = null;   // a reader search still running after its rung passed it over
+    const readerDown = () => { try { const a = reader && reader.available(); return a && !a.ok && a.launchFailed ? String(a.reason || 'the station browser could not start') : ''; } catch (_) { return ''; } };
+    // start(onLaunched) -> the reader's search promise; resolves LATE when the browser has not STARTED within ms
+    function readerWithin(start, ms) {
+      let timer = null, up = false, giveUp = null;
+      const late = new Promise(res => { giveUp = res; });
+      const p = start(() => { up = true; if (timer) { clearTimeout(timer); timer = null; } });
+      if (!up) timer = setTimeout(() => giveUp(LATE), ms);
+      return Promise.race([p, late]).then(v => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (v !== LATE) return v;
+        readerStarting = p;
+        const clear = () => { if (readerStarting === p) readerStarting = null; };
+        p.then(clear, clear);
+        return LATE;
+      });
+    }
+    const LATE = { late: true };
     const serviceKeys = {
       resolve: (name, sfc) => (typeof deps.resolveServiceKey === 'function'
         ? deps.resolveServiceKey(name, sfc)
@@ -594,11 +633,29 @@
       ];
       // The READER outranks the paid fallback: a real local Chrome sails past the fingerprint checks
       // that throttle the scrape endpoints, costs nothing, and keeps search working with zero keys.
-      if (readerReady()) chain.push(['browser', async () => {
-        const r = await reader.search(query, { signal: parent });
-        return (r && r.results) || [];
-      }]);
-      if (or && or.apiKey) chain.push(['openrouter', () => openrouterSearch(query, parent), 'openrouter.ai']);
+      // browserNote: what the Commander is told when this search reached the browser rung and the browser was
+      // down, still starting, or too slow — only when the rung was actually reached (an engine that answered first
+      // makes the browser irrelevant to this search).
+      let browserNote = '';
+      const laterRung = !!(or && or.apiKey);
+      if (reader) {
+        const down = readerDown();
+        const starting = !down && !!readerStarting && laterRung;
+        if (down || starting || readerReady()) chain.push(['browser', async () => {
+          if (down) { browserNote = down; throw new Error(down); }
+          if (starting) { browserNote = 'the station browser is still starting'; throw new Error(browserNote); }
+          const r = laterRung
+            ? await readerWithin(onLaunched => reader.search(query, { signal: parent, onLaunched }), READER_RUNG_MS)
+            : await reader.search(query, { signal: parent });
+          if (r === LATE) {
+            browserNote = 'the station browser was not ready within ' + (READER_RUNG_MS >= 1000 ? Math.round(READER_RUNG_MS / 1000) + ' s' : READER_RUNG_MS + ' ms');
+            throw new Error(browserNote);
+          }
+          if (r && r.launchFailed) { browserNote = String(r.reason || 'the station browser could not start'); throw new Error(browserNote); }
+          return (r && r.results) || [];
+        }]);
+      }
+      if (laterRung) chain.push(['openrouter', () => openrouterSearch(query, parent), 'openrouter.ai']);
       /* Throttling vs. no connection (2026-10-07). "Every engine declined" is web weather only if some engine
          ANSWERED (a status, an anomaly page, 0 results). When every HTTP engine failed before any server
          answered (offline, DNS down, TLS broken on this machine), calling that throttling would be the harness
@@ -610,7 +667,7 @@
         if (source !== 'browser') httpTried++;
         try {
           const results = await fn();
-          if (results && results.length) return { results: results.slice(0, (opts && opts.limit) || 8), source };
+          if (results && results.length) return { results: results.slice(0, (opts && opts.limit) || 8), source, browserNote };
           errors.push(source + ': 0 results');
         } catch (e) {
           if (parent && parent.aborted) throw e;
@@ -627,7 +684,7 @@
         : 'web_search failed (' + errors.join(' | ')
           + '). Search providers are temporarily unavailable; do not immediately repeat the same search. '
           + 'Use sources already returned, try a known direct URL with web_fetch, or finish with an explicit evidence limitation.');
-      e.__allFailed = true; e.__unreachable = unreachable; e.__errors = errors.slice(); throw e;
+      e.__allFailed = true; e.__unreachable = unreachable; e.__errors = errors.slice(); e.__browserNote = browserNote; throw e;
     }
 
     // ====================================================================
@@ -785,13 +842,22 @@
       schema: { type: 'object', required: ['query'], properties: { query: { type: 'string' } } },
       run: async (args, ctx) => {
         // visible tool activity is the loop's frozen agent.tool_call / agent.tool_result events
-        let results, source;
-        try { ({ results, source } = await webSearch(args.query, { signal: ctx && ctx.signal })); }
+        let results, source, browserNote = '';
+        try { ({ results, source, browserNote } = await webSearch(args.query, { signal: ctx && ctx.signal })); }
         catch (e) {
           // An exhausted keyless chain is the engines' weather, not a harness fault — answer it as
           // information (see softFetchAnswer's rationale above). webSearch itself still throws, so
           // programmatic callers and tests keep the strict contract. NOT when no engine could even be reached
           // (__unreachable: offline / TLS broken here) — that is a genuine fault and stays an isError result.
+          // …unless the station browser was DOWN (review 10-14): the browser is what gets past the engines' throttling, so a
+          // dead one is a station fault the Commander must hear about — named in the summary, never called web weather.
+          if (e && e.__allFailed && !e.__unreachable && e.__browserNote) return {
+            content: 'No results this time — the keyless engines declined (' + (e.__errors || []).filter(x => !/^browser:/.test(x)).join('; ') + '), and ' +
+                     e.__browserNote + ', so it could not search past them. Do not immediately repeat the same search: ' +
+                     'use sources already gathered, web_fetch a known URL directly, or finish and state the evidence ' +
+                     'limitation (name the station browser problem to the Commander).',
+            summary: 'no results · ' + e.__browserNote
+          };
           if (e && e.__allFailed && !e.__unreachable) return {
             content: 'No results this time — every search engine declined (' + (e.__errors || []).join('; ') + '). ' +
                      'This is temporary throttling of the keyless engines, not a malfunction. Do not immediately ' +
@@ -806,7 +872,9 @@
               results.map((r, i) => (i + 1) + '. ' + r.title + '\n   ' + r.url + (r.snippet ? '\n   ' + r.snippet : '')).join('\n'),
               'search results (titles/snippets are third-party text)')
           : 'No results.';
-        return { content, summary: results.length + ' result(s) via ' + source };
+        // the station's own note, outside the fence: why this search did not use the station browser
+        const note = browserNote ? 'Note: ' + browserNote + ', so this search used ' + source + '.\n' : '';
+        return { content: note + content, summary: results.length + ' result(s) via ' + source + (browserNote ? ' · ' + browserNote : '') };
       }
     };
 
@@ -873,9 +941,11 @@
        ~2.8M base64 chars, orders of magnitude past any context budget, so for months the harness simply could
        not carry the byte-bearing step of any API workflow. Same cure as ${KEY} headers: the model writes a
        REFERENCE (${file:relative/path}, or a multipart part naming a file), the host resolves it at send
-       time, and the payload never enters model context in either direction. Files resolve through the SAME
-       resolveInside jail as fs.* and browser.upload (deps.readWorkspaceFile), so a request can only ever
-       carry the agent's own workspace. Lowercase 'file:' can never collide with SECRET_REF's [A-Z] names. */
+       time, and the payload never enters model context in either direction. Files resolve through
+       deps.readWorkspaceFile: the per-agent workspace jail only (no project root, no absolute paths, no
+       path-trust), so a request can only ever carry the agent's own workspace. This is deliberately narrower
+       than fs.read and browser.upload, which also reach the run's trusted project: widening an outbound-network
+       tool is a decision, not a polish fix. Lowercase 'file:' can never collide with SECRET_REF's [A-Z] names. */
     const FILE_REF_RE = /\$\{file:([^}]*)\}/g;
     const FILE_REF_TEST = /\$\{file:/;
     const FILE_MAX_BYTES = 20 * 1024 * 1024;      // one referenced file
@@ -1185,7 +1255,7 @@
         const originOf = (x) => x.protocol + '//' + hostOf(x) + ':' + (x.port || (x.protocol === 'https:' ? '443' : '80'));
         const firstOrigin = originOf(u);
         const isCredential = (k) => secretHeaders.has(k.toLowerCase()) || /^(authorization|cookie|x-api-key)$/i.test(k);
-        let target = u, res = null;
+        let target = u, res = null, responseUrl = null;
         for (let hop = 0; hop < 5; hop++) {
           const sendHeaders = hop === 0 || originOf(target) === firstOrigin
             ? headers
@@ -1193,6 +1263,8 @@
           res = await withTimeout(signal => fetchPinned(target, {
             method, headers: sendHeaders, body: hasBody ? bodyPayload : undefined, redirect: 'manual', signal
           }), FETCH_TIMEOUT_MS, ctx && ctx.signal);
+          // Capture the URL that actually answered, before a redirect advances target (even on the last hop).
+          responseUrl = target.href;
           if (res.status >= 300 && res.status < 400 && res.loc) {
             const next = assertSafeUrl(new URL(res.loc, target.href).href);
             await assertResolvedSafe(next, doLookup);
@@ -1233,12 +1305,12 @@
           }
         }
         const fenced = fenceExternal(bodyText || '(empty response body)', label);
-        if (shown === bodyText) return { content: (note ? '[' + note + ']\n' : '') + fenced, summary: method + ' ' + hostOf(u) + ' ' + res.status };
-        return {
+        if (shown === bodyText) return responseProvenance.stamp({ content: (note ? '[' + note + ']\n' : '') + fenced, summary: method + ' ' + hostOf(u) + ' ' + res.status }, responseUrl);
+        return responseProvenance.stamp({
           content: '[' + note + ']\n' + fenceExternal(shown, label + ' (selected fields)'),
           fullContent: fenced,   // the registry parks this whole body and names the file in the result
           summary: method + ' ' + hostOf(u) + ' ' + res.status + ' (select)'
-        };
+        }, responseUrl);
       }
     };
 

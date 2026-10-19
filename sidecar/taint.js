@@ -79,14 +79,22 @@
     return null;
   }
 
-  // Once the run is tainted, may this tool still be called?
-  function allowedWhenTainted(tool) {
+  // Is this tool's taint lock on for THIS call? A function lock reads the call's args (action-aware): routine.manage
+  // and loop.manage leave pause/stop open, because stopping work is a de-escalation, not a way to schedule a rerun.
+  // Without a call the predicate sees {} (no action), which locks; a predicate that throws keeps the tool locked.
+  function lockedFor(tool, call) {
+    if (typeof tool.taintLocked !== 'function') return tool.taintLocked === true;
+    try { return tool.taintLocked((call && call.args) || {}) !== false; } catch (_) { return true; /* fail closed */ }
+  }
+
+  // Once the run is tainted, may this tool still be called? `call` (optional) lets an action-aware lock read the args.
+  function allowedWhenTainted(tool, call) {
     if (!tool) return true;                                  // unknown name -> let the ordinary unknown-tool path answer
     // a tool that PERSISTS text a later run obeys (team.configure rewrites a crew member's standing orders) would
     // launder this run's taint into every future run of that agent — past the per-run fence entirely. Same for a
     // routine/loop (its prompt fires later as a fresh, untainted run — with Full Access) and a skill (a procedure
     // later runs load and follow, scripts/ included): all taint-locked 2026-10-10.
-    if (tool.taintLocked === true) return false;
+    if (lockedFor(tool, call)) return false;
     const impact = impactOfTool(tool);
     if (impact === 'workspace-process') return false;        // shell.exec / verify.run
     if (impact === 'external-credentialed') return false;    // web_request — spends a stored key outward
@@ -97,11 +105,35 @@
     return true;
   }
 
+  // For an action-aware lock: which of the tool's OWN declared actions (schema action enum) a tainted run may still
+  // call, each probed alone through allowedWhenTainted. [] for a whole-tool lock, a tool without an action enum, or a
+  // predicate that throws, so nothing is ever offered as open that the gate would refuse.
+  function openActionsWhenTainted(tool) {
+    if (!tool || typeof tool.taintLocked !== 'function') return [];
+    const action = tool.schema && tool.schema.properties && tool.schema.properties.action;
+    const declared = action && Array.isArray(action.enum) ? action.enum : [];
+    return declared.filter(a => typeof a === 'string' && allowedWhenTainted(tool, { args: { action: a } }));
+  }
+
+  // The opening words of a taint lockout, as narrow as the lock. A whole-tool lock says the tool is gone; an action lock
+  // names only the refused action and the actions still open, so the model does not refuse "just pause it" believing the
+  // whole tool is gone. The action is echoed only when it is a plain word: it is model-written text. Pure.
+  function lockoutLead(tool, call) {
+    const name = String((call && call.name) || (tool && tool.name) || 'this tool');
+    const open = openActionsWhenTainted(tool);
+    if (!open.length) return '"' + name + '" is no longer available on this run.';
+    const raw = call && call.args && typeof call.args.action === 'string' ? call.args.action.trim() : '';
+    const subject = /^[A-Za-z][\w-]{0,29}$/.test(raw) ? 'Action "' + raw + '" of "' + name + '"' : 'This call to "' + name + '"';
+    const quoted = open.map(a => '"' + a + '"');
+    const still = quoted.length > 1 ? quoted.slice(0, -1).join(', ') + ' and ' + quoted[quoted.length - 1] + ' are' : quoted[0] + ' is';
+    return subject + ' is locked on this run; ' + still + ' still available.';
+  }
+
   // Pure state machine for the temporal confirmation boundary. Standing permission state is intentionally not
   // an input: only a decision obtained by the caller AFTER taint can yield a one-call recovery.
   function postTaintBoundary(tool, opts) {
     opts = opts || {};
-    if (!opts.taintedBy || allowedWhenTainted(tool)) return { allow: true, needsConfirmation: false, oneShot: false };
+    if (!opts.taintedBy || allowedWhenTainted(tool, opts.call)) return { allow: true, needsConfirmation: false, oneShot: false };
     // FULL ACCESS is the Commander's explicit zero-prompt posture. Taint still remains latched and fenced, but it
     // cannot silently downgrade Full Access into ASK mode. Hardline floors live outside this policy and still win.
     // EXCEPT when the run's ENTRY was untrusted third-party content (sec-taint2 09-25, owner decision): a webhook /
@@ -158,7 +190,9 @@
     if (!scope && opts.wasTainted) return { broad: true };          // tainted by something we did not scope
     if (scope && ownPark(tool, call, opts.runId)) return scope;
     const origin = isWebRequest(tool, call) ? requestOrigin(call) : '';
-    if (!origin) return { broad: true };
+    // The host proves which HTTPS origin authored the response. The requested URL alone cannot prove it:
+    // web_request may have followed a cross-origin redirect, and failed/replayed results may have no proof.
+    if (!origin || opts.responseOrigin !== origin) return { broad: true };
     const keys = requestKeys(call);
     if (!scope) return { origin, keys };
     if (scope.origin !== origin || !keys.every(k => scope.keys.indexOf(k) >= 0)) return { broad: true };
@@ -173,5 +207,5 @@
     return requestKeys(call).every(k => scope.keys.indexOf(k) >= 0);
   }
 
-  return { isUntrustedSource, allowedWhenTainted, postTaintBoundary, relayedTaint, firstTaint, scopeAfterSource, sameOriginContinuation, CONNECTOR_CAP, UNTRUSTED_PARK_PREFIX };
+  return { isUntrustedSource, allowedWhenTainted, openActionsWhenTainted, lockoutLead, postTaintBoundary, relayedTaint, firstTaint, scopeAfterSource, sameOriginContinuation, CONNECTOR_CAP, UNTRUSTED_PARK_PREFIX };
 });

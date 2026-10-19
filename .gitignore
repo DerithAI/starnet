@@ -34,6 +34,11 @@ dev/.scratch-adversarial/
 dev/.scratch-deliverables/
 # free-chain dev sidecar runtime state (seed-free-chain.js materializes it; never committed)
 dev/.scratch-free-chain/
+# builder-lend seed scratch from runs before it moved under .dogfood/, plus the mock-login and mock-reliability
+# seeds' scratch stations (seed-mock-login.js / seed-mock-reliability.js; never committed)
+dev/.scratch-builder-lend/
+dev/.scratch-mock-login/
+dev/.scratch-mock-reliability/
 dev/.shots-deliverables/
 dev/.shots-wallcorner/
 dev/.shots-walljoin/

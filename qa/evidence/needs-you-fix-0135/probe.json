@@ -1,0 +1,2014 @@
+{
+  "how": "Isolated dev station on :9893 (disposable profile, seeded workspace) and one headless Chrome WITHOUT --hide-scrollbars, so the section scrollbar takes its real width (10px thin, measured). Shots at 1x pixel density, Andrew's look (custom hue 216, TEXT SIZE per shot). Staged page state only: stage.js (the main waits), stageA.js (one approval: wants to use fs read: notes/a.md), stageB.js (MISS FORTUNE's 23 builds, a group of five with a long title, NOVA's approval). probe = the earlier lane probe; probe2 = 6 s of heartbeats sampled every frame (rebuilds, keys painted vs the line read whole), each row's name line, and the panel's edges.",
+  "before_72b4ab4ff": {
+    "note": "Same station, same probe2, before the fix (HEAD 72b4ab4ff), stage A, 200px rail at STANDARD, default rails, crew rows 2.",
+    "1440x900": {
+      "rebuilds6s": 0,
+      "approveOverCut": 0,
+      "overflow": false,
+      "whatWidth": 116,
+      "note": "room 252px: the Approve once row fits, no scrollbar"
+    },
+    "1440x800": {
+      "rebuilds6s": 12,
+      "approveOverCut": 269,
+      "samples": 269,
+      "keysSeen": [
+        "Approve once · Deny"
+      ],
+      "whatWidth": 106,
+      "gutter": 10,
+      "overflow": true,
+      "panelRight": 190,
+      "searchRight": 200
+    },
+    "1440x760": {
+      "rebuilds6s": 12,
+      "approveOverCut": 243,
+      "samples": 243,
+      "keysSeen": [
+        "Approve once · Deny"
+      ],
+      "whatWidth": 106,
+      "gutter": 10,
+      "overflow": true,
+      "panelRight": 190,
+      "searchRight": 200
+    },
+    "7-andrew-400rail-compact90-long-names": {
+      "MISS FORTUNE": {
+        "w": 67,
+        "h": 39.3,
+        "lines": 2,
+        "placeW": 231.1
+      },
+      "ULTRON, CYPHER +3": {
+        "w": 81.4,
+        "h": 39.3,
+        "lines": 2,
+        "placeW": 228.2
+      }
+    }
+  },
+  "after": {
+    "1b-andrew-400rail-compact90-expanded": {
+      "settings": {
+        "name": "1-andrew-400rail-compact90",
+        "W": 1920,
+        "H": 1040,
+        "scale": 90,
+        "crew": "400",
+        "stage": "main",
+        "expand": "1b-andrew-400rail-compact90-expanded"
+      },
+      "probe": {
+        "header": 26,
+        "shownWaits": 26,
+        "moreN": 0,
+        "sumOk": true,
+        "rebuilds4s": 0,
+        "zoom": 0.9,
+        "rail": 400,
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "n": 1,
+            "who": "ULTRON, CYPHER+3",
+            "line": "has an approval waiting",
+            "age": "",
+            "where": "in Launch war room",
+            "whereShown": true,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+            "tip": "has an approval waiting — in Launch war room",
+            "keys": [],
+            "portrait": true
+          },
+          {
+            "key": "ask:stage-ap1",
+            "n": 1,
+            "who": "NOVA",
+            "line": "wants to use fs read: notes.md",
+            "age": "3m",
+            "where": "in General",
+            "whereShown": true,
+            "whereDisplay": "block",
+            "whereAria": "NOVA wants to use fs read: notes.md — in General",
+            "tip": "use fs read: notes.md — in General — Review it on its card: the whole request, and its Always and Full access keys",
+            "keys": [
+              "Approve once 30.6px/34css",
+              "Deny 30.6px/34css"
+            ],
+            "portrait": true
+          },
+          {
+            "key": "build:stage-b0",
+            "n": 23,
+            "who": "ULTRON",
+            "line": "23 builds to keep or discard · Speedrun timer with checkpoint splits + test course",
+            "age": "13d",
+            "where": "in ⚒ Speedrun timer with checkpoint splits + test course",
+            "whereShown": true,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON 23 builds to keep or discard, the oldest first: \"Speedrun timer with checkpoint splits + test course\" — in ⚒ Speedrun timer with checkpoint splits + test course",
+            "tip": "23 builds to keep or discard, the oldest first: \"Speedrun timer with checkpoint splits + test course\" — in ⚒ Speedrun timer with checkpoint splits + test course",
+            "keys": [],
+            "count": {
+              "text": "23 builds",
+              "visible": true,
+              "line": 1,
+              "boxLines": 2
+            },
+            "portrait": true
+          },
+          {
+            "key": "routine:cron-kzfail",
+            "n": 1,
+            "who": "KAZE",
+            "line": "routine \"Nightly course scrape\" failed",
+            "age": "3h",
+            "where": "in ROUTINES",
+            "whereShown": true,
+            "whereDisplay": "block",
+            "whereAria": "KAZE routine \"Nightly course scrape\" failed — in ROUTINES",
+            "tip": "routine \"Nightly course scrape\" failed — in ROUTINES",
+            "keys": [
+              "Retry 30.6px/34css"
+            ],
+            "portrait": true
+          }
+        ],
+        "focusable": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "keyboardDoor": {
+          "focusVisible": true,
+          "active": true,
+          "position": "static",
+          "width": 175,
+          "rowOutline": "solid 1.11111px"
+        },
+        "needsH": 364,
+        "cut": true
+      },
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 157,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          359
+        ],
+        "gutter": [
+          11
+        ],
+        "overflowSeen": [
+          true
+        ],
+        "zoom": 0.9,
+        "rail": 400,
+        "needsH": 364,
+        "gutterVar": "11px",
+        "edges": {
+          "panel": {
+            "l": 21,
+            "r": 400,
+            "w": 379,
+            "h": 319.2
+          },
+          "crew": {
+            "l": 21,
+            "r": 391,
+            "w": 370,
+            "h": 66.8
+          },
+          "search": {
+            "l": 21,
+            "r": 401,
+            "w": 380,
+            "h": 16
+          },
+          "count": {
+            "l": 378.8,
+            "r": 391,
+            "w": 12.3,
+            "h": 14.4
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 67,
+              "r": 200.6,
+              "w": 133.6,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in Launch war room",
+            "whereShown": true,
+            "whereBox": {
+              "l": 207.8,
+              "r": 382.8,
+              "w": 175.1,
+              "h": 14
+            },
+            "whereCut": false,
+            "age": "",
+            "ageInside": true,
+            "line": "has an approval waiting",
+            "lineWhole": true,
+            "keys": []
+          },
+          {
+            "key": "ask:stage-ap1",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 67,
+              "r": 98.7,
+              "w": 31.7,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": true,
+            "whereBox": {
+              "l": 105.9,
+              "r": 371.3,
+              "w": 265.4,
+              "h": 14
+            },
+            "whereCut": false,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          },
+          {
+            "key": "build:stage-b0",
+            "who": "ULTRON",
+            "whoBox": {
+              "l": 67,
+              "r": 114.5,
+              "w": 47.5,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in ⚒ Speedrun timer with checkpoint splits + test course",
+            "whereShown": true,
+            "whereBox": {
+              "l": 121.7,
+              "r": 365.5,
+              "w": 243.8,
+              "h": 18
+            },
+            "whereCut": true,
+            "age": "13d",
+            "ageInside": true,
+            "line": "23 builds to keep or discard · Speedrun timer with checkpoint splits + test course",
+            "lineWhole": true,
+            "keys": []
+          },
+          {
+            "key": "routine:cron-kzfail",
+            "who": "KAZE",
+            "whoBox": {
+              "l": 67,
+              "r": 98.7,
+              "w": 31.7,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in ROUTINES",
+            "whereShown": true,
+            "whereBox": {
+              "l": 105.9,
+              "r": 371.3,
+              "w": 265.4,
+              "h": 14
+            },
+            "whereCut": false,
+            "age": "3h",
+            "ageInside": true,
+            "line": "routine \"Nightly course scrape\" failed",
+            "lineWhole": true,
+            "keys": [
+              "Retry 34css"
+            ]
+          }
+        ]
+      }
+    },
+    "1-andrew-400rail-compact90": {
+      "settings": {
+        "name": "1-andrew-400rail-compact90",
+        "W": 1920,
+        "H": 1040,
+        "scale": 90,
+        "crew": "400",
+        "stage": "main",
+        "expand": "1b-andrew-400rail-compact90-expanded"
+      },
+      "staged": {
+        "nova": "agent",
+        "ultron": "lead",
+        "kaze": "scout",
+        "cypher": "coder",
+        "mira": "research",
+        "needs": 26
+      },
+      "probe": {
+        "header": 26,
+        "shownWaits": 25,
+        "moreN": 1,
+        "sumOk": true,
+        "rebuilds4s": 0,
+        "zoom": 0.9,
+        "rail": 400,
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "n": 1,
+            "who": "ULTRON, CYPHER+3",
+            "line": "has an approval waiting",
+            "age": "",
+            "where": "in Launch war room",
+            "whereShown": true,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+            "tip": "has an approval waiting — in Launch war room",
+            "keys": [],
+            "portrait": true
+          },
+          {
+            "key": "ask:stage-ap1",
+            "n": 1,
+            "who": "NOVA",
+            "line": "wants to use fs read: notes.md",
+            "age": "3m",
+            "where": "in General",
+            "whereShown": true,
+            "whereDisplay": "block",
+            "whereAria": "NOVA wants to use fs read: notes.md — in General",
+            "tip": "use fs read: notes.md — in General — Review it on its card: the whole request, and its Always and Full access keys",
+            "keys": [
+              "Approve once 30.6px/34css",
+              "Deny 30.6px/34css"
+            ],
+            "portrait": true
+          },
+          {
+            "key": "build:stage-b0",
+            "n": 23,
+            "who": "ULTRON",
+            "line": "23 builds to keep or discard · Speedrun timer with checkpoint splits + test course",
+            "age": "13d",
+            "where": "in ⚒ Speedrun timer with checkpoint splits + test course",
+            "whereShown": true,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON 23 builds to keep or discard, the oldest first: \"Speedrun timer with checkpoint splits + test course\" — in ⚒ Speedrun timer with checkpoint splits + test course",
+            "tip": "23 builds to keep or discard, the oldest first: \"Speedrun timer with checkpoint splits + test course\" — in ⚒ Speedrun timer with checkpoint splits + test course",
+            "keys": [],
+            "count": {
+              "text": "23 builds",
+              "visible": true,
+              "line": 1,
+              "boxLines": 2
+            },
+            "portrait": true
+          }
+        ],
+        "focusable": [
+          true,
+          true,
+          true
+        ],
+        "keyboardDoor": {
+          "focusVisible": true,
+          "active": true,
+          "position": "static",
+          "width": 175,
+          "rowOutline": "solid 1.11111px"
+        },
+        "needsH": 313,
+        "cut": false
+      },
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 119,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          359
+        ],
+        "gutter": [
+          11
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 0.9,
+        "rail": 400,
+        "needsH": 313,
+        "gutterVar": "11px",
+        "edges": {
+          "panel": {
+            "l": 21,
+            "r": 400,
+            "w": 379,
+            "h": 224.8
+          },
+          "crew": {
+            "l": 21,
+            "r": 391,
+            "w": 370,
+            "h": 66.8
+          },
+          "search": {
+            "l": 21,
+            "r": 401,
+            "w": 380,
+            "h": 16
+          },
+          "count": {
+            "l": 378.8,
+            "r": 391,
+            "w": 12.3,
+            "h": 14.4
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 67,
+              "r": 200.6,
+              "w": 133.6,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in Launch war room",
+            "whereShown": true,
+            "whereBox": {
+              "l": 207.8,
+              "r": 382.8,
+              "w": 175.1,
+              "h": 14
+            },
+            "whereCut": false,
+            "age": "",
+            "ageInside": true,
+            "line": "has an approval waiting",
+            "lineWhole": true,
+            "keys": []
+          },
+          {
+            "key": "ask:stage-ap1",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 67,
+              "r": 98.7,
+              "w": 31.7,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": true,
+            "whereBox": {
+              "l": 105.9,
+              "r": 371.3,
+              "w": 265.4,
+              "h": 14
+            },
+            "whereCut": false,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          },
+          {
+            "key": "build:stage-b0",
+            "who": "ULTRON",
+            "whoBox": {
+              "l": 67,
+              "r": 114.5,
+              "w": 47.5,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in ⚒ Speedrun timer with checkpoint splits + test course",
+            "whereShown": true,
+            "whereBox": {
+              "l": 121.7,
+              "r": 365.5,
+              "w": 243.8,
+              "h": 18
+            },
+            "whereCut": true,
+            "age": "13d",
+            "ageInside": true,
+            "line": "23 builds to keep or discard · Speedrun timer with checkpoint splits + test course",
+            "lineWhole": true,
+            "keys": []
+          }
+        ]
+      }
+    },
+    "2-desktop-232rail-standard": {
+      "settings": {
+        "name": "2-desktop-232rail-standard",
+        "W": 1920,
+        "H": 1040,
+        "scale": 100,
+        "crew": "default",
+        "stage": "main"
+      },
+      "staged": {
+        "nova": "agent",
+        "ultron": "lead",
+        "kaze": "scout",
+        "cypher": "coder",
+        "mira": "research",
+        "needs": 26
+      },
+      "probe": {
+        "header": 26,
+        "shownWaits": 2,
+        "moreN": 24,
+        "sumOk": true,
+        "rebuilds4s": 0,
+        "zoom": 1,
+        "rail": 232,
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "n": 1,
+            "who": "ULTRON, CYPHER+3",
+            "line": "has an approval waiting",
+            "age": "",
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+            "tip": "has an approval waiting — in Launch war room",
+            "keys": [],
+            "portrait": true
+          },
+          {
+            "key": "ask:stage-ap1",
+            "n": 1,
+            "who": "NOVA",
+            "line": "wants to use fs read: notes.md",
+            "age": "3m",
+            "where": "in General",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "NOVA wants to use fs read: notes.md — in General",
+            "tip": "use fs read: notes.md — in General — Review it on its card: the whole request, and its Always and Full access keys",
+            "keys": [
+              "Approve once 34px/34css",
+              "Deny 34px/34css"
+            ],
+            "portrait": true
+          }
+        ],
+        "focusable": [
+          true,
+          true
+        ],
+        "keyboardDoor": {
+          "focusVisible": true,
+          "active": true,
+          "position": "absolute",
+          "width": 1,
+          "rowOutline": "solid 2px"
+        },
+        "needsH": 293,
+        "cut": false
+      },
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 154,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          148
+        ],
+        "gutter": [
+          10
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1,
+        "rail": 232,
+        "needsH": 293,
+        "gutterVar": "10px",
+        "edges": {
+          "panel": {
+            "l": 22,
+            "r": 232,
+            "w": 210,
+            "h": 229.5
+          },
+          "crew": {
+            "l": 22,
+            "r": 222,
+            "w": 200,
+            "h": 74
+          },
+          "search": {
+            "l": 22,
+            "r": 232,
+            "w": 210,
+            "h": 18
+          },
+          "count": {
+            "l": 207.4,
+            "r": 221,
+            "w": 13.6,
+            "h": 16
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 73,
+              "r": 213,
+              "w": 140,
+              "h": 43.7
+            },
+            "whoLines": 2,
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has an approval waiting",
+            "lineWhole": true,
+            "keys": []
+          },
+          {
+            "key": "ask:stage-ap1",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 73,
+              "r": 108.2,
+              "w": 35.2,
+              "h": 21.8
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          }
+        ]
+      }
+    },
+    "3-desktop-232rail-large": {
+      "settings": {
+        "name": "3-desktop-232rail-large",
+        "W": 1920,
+        "H": 1040,
+        "scale": 115,
+        "crew": "default",
+        "stage": "main"
+      },
+      "staged": {
+        "nova": "agent",
+        "ultron": "lead",
+        "kaze": "scout",
+        "cypher": "coder",
+        "mira": "research",
+        "needs": 26
+      },
+      "probe": {
+        "header": 26,
+        "shownWaits": 1,
+        "moreN": 25,
+        "sumOk": true,
+        "rebuilds4s": 0,
+        "zoom": 1.15,
+        "rail": 232,
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "n": 1,
+            "who": "ULTRON, CYPHER+3",
+            "line": "has an approval waiting",
+            "age": "",
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+            "tip": "has an approval waiting — in Launch war room",
+            "keys": [],
+            "portrait": true
+          }
+        ],
+        "focusable": [
+          true
+        ],
+        "keyboardDoor": {
+          "focusVisible": true,
+          "active": true,
+          "position": "absolute",
+          "width": 1,
+          "rowOutline": "solid 1.73913px"
+        },
+        "needsH": 168,
+        "cut": false
+      },
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 0,
+        "approveOverCut": 0,
+        "keysSeen": [],
+        "whatWidths": [],
+        "gutter": [
+          9
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1.15,
+        "rail": 232,
+        "needsH": 168,
+        "gutterVar": "9px",
+        "edges": {
+          "panel": {
+            "l": 23.5,
+            "r": 230.9,
+            "w": 207.4,
+            "h": 120
+          },
+          "crew": {
+            "l": 23.5,
+            "r": 220.5,
+            "w": 197,
+            "h": 84.8
+          },
+          "search": {
+            "l": 23.5,
+            "r": 230.5,
+            "w": 207,
+            "h": 21
+          },
+          "count": {
+            "l": 202.6,
+            "r": 218.2,
+            "w": 15.6,
+            "h": 18.4
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 82,
+              "r": 209.2,
+              "w": 127.2,
+              "h": 50.2
+            },
+            "whoLines": 2,
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has an approval waiting",
+            "lineWhole": true,
+            "keys": []
+          }
+        ]
+      }
+    },
+    "4b-laptop-200rail-keyboard-focus": {
+      "cls": "ny-where",
+      "focusVisible": true,
+      "aria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+      "rowOutline": "solid 2px rgb(163, 200, 255)"
+    },
+    "4-laptop-200rail-standard": {
+      "settings": {
+        "name": "4-laptop-200rail-standard",
+        "W": 1440,
+        "H": 900,
+        "scale": 100,
+        "crew": "default",
+        "stage": "main",
+        "focus": "4b-laptop-200rail-keyboard-focus"
+      },
+      "staged": {
+        "nova": "agent",
+        "ultron": "lead",
+        "kaze": "scout",
+        "cypher": "coder",
+        "mira": "research",
+        "needs": 26
+      },
+      "probe": {
+        "header": 26,
+        "shownWaits": 1,
+        "moreN": 25,
+        "sumOk": true,
+        "rebuilds4s": 0,
+        "zoom": 1,
+        "rail": 200,
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "n": 1,
+            "who": "ULTRON, CYPHER+3",
+            "line": "has an approval waiting",
+            "age": "",
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+            "tip": "has an approval waiting — in Launch war room",
+            "keys": [],
+            "portrait": true
+          }
+        ],
+        "focusable": [
+          true
+        ],
+        "keyboardDoor": {
+          "focusVisible": true,
+          "active": true,
+          "position": "absolute",
+          "width": 1,
+          "rowOutline": "solid 2px"
+        },
+        "needsH": 168,
+        "cut": false
+      },
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 0,
+        "approveOverCut": 0,
+        "keysSeen": [],
+        "whatWidths": [],
+        "gutter": [
+          10
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1,
+        "rail": 200,
+        "needsH": 168,
+        "gutterVar": "10px",
+        "edges": {
+          "panel": {
+            "l": 22,
+            "r": 200,
+            "w": 178,
+            "h": 104.7
+          },
+          "crew": {
+            "l": 22,
+            "r": 190,
+            "w": 168,
+            "h": 74
+          },
+          "search": {
+            "l": 22,
+            "r": 200,
+            "w": 178,
+            "h": 18
+          },
+          "count": {
+            "l": 175.4,
+            "r": 189,
+            "w": 13.6,
+            "h": 16
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 73,
+              "r": 181,
+              "w": 108,
+              "h": 43.7
+            },
+            "whoLines": 2,
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has an approval waiting",
+            "lineWhole": true,
+            "keys": []
+          }
+        ]
+      }
+    },
+    "5b-laptop-200rail-large-expanded": {
+      "settings": {
+        "name": "5-laptop-200rail-large",
+        "W": 1440,
+        "H": 900,
+        "scale": 115,
+        "crew": "default",
+        "stage": "main",
+        "expand": "5b-laptop-200rail-large-expanded"
+      },
+      "probe": {
+        "header": 26,
+        "shownWaits": 26,
+        "moreN": 0,
+        "sumOk": true,
+        "rebuilds4s": 0,
+        "zoom": 1.15,
+        "rail": 200,
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "n": 1,
+            "who": "ULTRON, CYPHER+3",
+            "line": "has an approval waiting",
+            "age": "",
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+            "tip": "has an approval waiting — in Launch war room",
+            "keys": [],
+            "portrait": true
+          },
+          {
+            "key": "ask:stage-ap1",
+            "n": 1,
+            "who": "NOVA",
+            "line": "wants to use fs read: notes.md",
+            "age": "3m",
+            "where": "in General",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "NOVA wants to use fs read: notes.md — in General",
+            "tip": "use fs read: notes.md — in General",
+            "keys": [
+              "Review 39.1px/34css",
+              "Deny 39.1px/34css"
+            ],
+            "portrait": true
+          },
+          {
+            "key": "build:stage-b0",
+            "n": 23,
+            "who": "ULTRON",
+            "line": "23 builds to keep or discard · Speedrun timer with checkpoint splits + test course",
+            "age": "13d",
+            "where": "in ⚒ Speedrun timer with checkpoint splits + test course",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON 23 builds to keep or discard, the oldest first: \"Speedrun timer with checkpoint splits + test course\" — in ⚒ Speedrun timer with checkpoint splits + test course",
+            "tip": "23 builds to keep or discard, the oldest first: \"Speedrun timer with checkpoint splits + test course\" — in ⚒ Speedrun timer with checkpoint splits + test course",
+            "keys": [],
+            "count": {
+              "text": "23 builds",
+              "visible": true,
+              "line": 1,
+              "boxLines": 2
+            },
+            "portrait": true
+          },
+          {
+            "key": "routine:cron-kzfail",
+            "n": 1,
+            "who": "KAZE",
+            "line": "routine \"Nightly course scrape\" failed",
+            "age": "3h",
+            "where": "in ROUTINES",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "KAZE routine \"Nightly course scrape\" failed — in ROUTINES",
+            "tip": "routine \"Nightly course scrape\" failed — in ROUTINES",
+            "keys": [
+              "Retry 39.1px/34css"
+            ],
+            "portrait": true
+          }
+        ],
+        "focusable": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "keyboardDoor": {
+          "focusVisible": true,
+          "active": true,
+          "position": "absolute",
+          "width": 1,
+          "rowOutline": "solid 1.73913px"
+        },
+        "needsH": 209,
+        "cut": true
+      },
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 244,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Review · Deny"
+        ],
+        "whatWidths": [
+          91
+        ],
+        "gutter": [
+          9
+        ],
+        "overflowSeen": [
+          true
+        ],
+        "zoom": 1.15,
+        "rail": 200,
+        "needsH": 209,
+        "gutterVar": "9px",
+        "edges": {
+          "panel": {
+            "l": 23.5,
+            "r": 198.9,
+            "w": 175.4,
+            "h": 638.6
+          },
+          "crew": {
+            "l": 23.5,
+            "r": 188.5,
+            "w": 165,
+            "h": 84.8
+          },
+          "search": {
+            "l": 23.5,
+            "r": 198.5,
+            "w": 175,
+            "h": 21
+          },
+          "count": {
+            "l": 170.6,
+            "r": 186.2,
+            "w": 15.6,
+            "h": 18.4
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 82,
+              "r": 177.2,
+              "w": 95.2,
+              "h": 50.2
+            },
+            "whoLines": 2,
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has an approval waiting",
+            "lineWhole": true,
+            "keys": []
+          },
+          {
+            "key": "ask:stage-ap1",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 82,
+              "r": 122.5,
+              "w": 40.5,
+              "h": 25.1
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes.md",
+            "lineWhole": false,
+            "keys": [
+              "Review 34css",
+              "Deny 34css"
+            ]
+          },
+          {
+            "key": "build:stage-b0",
+            "who": "ULTRON",
+            "whoBox": {
+              "l": 82,
+              "r": 142.7,
+              "w": 60.7,
+              "h": 25.1
+            },
+            "whoLines": 1,
+            "where": "in ⚒ Speedrun timer with checkpoint splits + test course",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "13d",
+            "ageInside": true,
+            "line": "23 builds to keep or discard · Speedrun timer with checkpoint splits + test course",
+            "lineWhole": false,
+            "keys": []
+          },
+          {
+            "key": "routine:cron-kzfail",
+            "who": "KAZE",
+            "whoBox": {
+              "l": 82,
+              "r": 122.5,
+              "w": 40.5,
+              "h": 25.1
+            },
+            "whoLines": 1,
+            "where": "in ROUTINES",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "3h",
+            "ageInside": true,
+            "line": "routine \"Nightly course scrape\" failed",
+            "lineWhole": true,
+            "keys": [
+              "Retry 34css"
+            ]
+          }
+        ]
+      }
+    },
+    "5-laptop-200rail-large": {
+      "settings": {
+        "name": "5-laptop-200rail-large",
+        "W": 1440,
+        "H": 900,
+        "scale": 115,
+        "crew": "default",
+        "stage": "main",
+        "expand": "5b-laptop-200rail-large-expanded"
+      },
+      "staged": {
+        "nova": "agent",
+        "ultron": "lead",
+        "kaze": "scout",
+        "cypher": "coder",
+        "mira": "research",
+        "needs": 26
+      },
+      "probe": {
+        "header": 26,
+        "shownWaits": 1,
+        "moreN": 25,
+        "sumOk": true,
+        "rebuilds4s": 0,
+        "zoom": 1.15,
+        "rail": 200,
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "n": 1,
+            "who": "ULTRON, CYPHER+3",
+            "line": "has an approval waiting",
+            "age": "",
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereDisplay": "block",
+            "whereAria": "ULTRON, CYPHER +3 has an approval waiting — in Launch war room",
+            "tip": "has an approval waiting — in Launch war room",
+            "keys": [],
+            "portrait": true
+          }
+        ],
+        "focusable": [
+          true
+        ],
+        "keyboardDoor": {
+          "focusVisible": true,
+          "active": true,
+          "position": "absolute",
+          "width": 1,
+          "rowOutline": "solid 1.73913px"
+        },
+        "needsH": 188,
+        "cut": false
+      },
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 0,
+        "approveOverCut": 0,
+        "keysSeen": [],
+        "whatWidths": [],
+        "gutter": [
+          9
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1.15,
+        "rail": 200,
+        "needsH": 188,
+        "gutterVar": "9px",
+        "edges": {
+          "panel": {
+            "l": 23.5,
+            "r": 198.9,
+            "w": 175.4,
+            "h": 143
+          },
+          "crew": {
+            "l": 23.5,
+            "r": 188.5,
+            "w": 165,
+            "h": 84.8
+          },
+          "search": {
+            "l": 23.5,
+            "r": 198.5,
+            "w": 175,
+            "h": 21
+          },
+          "count": {
+            "l": 170.6,
+            "r": 186.2,
+            "w": 15.6,
+            "h": 18.4
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 82,
+              "r": 177.2,
+              "w": 95.2,
+              "h": 50.2
+            },
+            "whoLines": 2,
+            "where": "in Launch war room",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has an approval waiting",
+            "lineWhole": true,
+            "keys": []
+          }
+        ]
+      }
+    },
+    "6-laptop-200rail-standard-one-approval": {
+      "settings": {
+        "name": "6-laptop-200rail-standard-one-approval",
+        "W": 1440,
+        "H": 800,
+        "scale": 100,
+        "crew": "default",
+        "stage": "A"
+      },
+      "staged": [
+        "ask:stage-one"
+      ],
+      "probe": null,
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 237,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          116
+        ],
+        "gutter": [
+          10
+        ],
+        "overflowSeen": [
+          true
+        ],
+        "zoom": 1,
+        "rail": 200,
+        "needsH": 204,
+        "gutterVar": "10px",
+        "edges": {
+          "panel": {
+            "l": 22,
+            "r": 200,
+            "w": 178,
+            "h": 165.8
+          },
+          "crew": {
+            "l": 22,
+            "r": 190,
+            "w": 168,
+            "h": 74
+          },
+          "search": {
+            "l": 22,
+            "r": 200,
+            "w": 178,
+            "h": 18
+          },
+          "count": {
+            "l": 182.2,
+            "r": 189,
+            "w": 6.8,
+            "h": 16
+          }
+        },
+        "rows": [
+          {
+            "key": "ask:stage-one",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 73,
+              "r": 108.2,
+              "w": 35.2,
+              "h": 21.8
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes/a.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          }
+        ]
+      }
+    },
+    "6b-desktop-232rail-large-one-approval": {
+      "settings": {
+        "name": "6b-desktop-232rail-large-one-approval",
+        "W": 1920,
+        "H": 1040,
+        "scale": 115,
+        "crew": "default",
+        "stage": "A"
+      },
+      "staged": [
+        "ask:stage-one"
+      ],
+      "probe": null,
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 159,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          119
+        ],
+        "gutter": [
+          9
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1.15,
+        "rail": 232,
+        "needsH": 206,
+        "gutterVar": "9px",
+        "edges": {
+          "panel": {
+            "l": 23.5,
+            "r": 230.9,
+            "w": 207.4,
+            "h": 190.3
+          },
+          "crew": {
+            "l": 23.5,
+            "r": 220.5,
+            "w": 197,
+            "h": 84.8
+          },
+          "search": {
+            "l": 23.5,
+            "r": 230.5,
+            "w": 207,
+            "h": 21
+          },
+          "count": {
+            "l": 210.4,
+            "r": 218.2,
+            "w": 7.8,
+            "h": 18.4
+          }
+        },
+        "rows": [
+          {
+            "key": "ask:stage-one",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 82,
+              "r": 122.5,
+              "w": 40.5,
+              "h": 25.1
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes/a.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          }
+        ]
+      }
+    },
+    "6c-andrew-400rail-compact90-one-approval": {
+      "settings": {
+        "name": "6c-andrew-400rail-compact90-one-approval",
+        "W": 1920,
+        "H": 1040,
+        "scale": 90,
+        "crew": "400",
+        "stage": "A"
+      },
+      "staged": [
+        "ask:stage-one"
+      ],
+      "probe": null,
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 159,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          359
+        ],
+        "gutter": [
+          11
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 0.9,
+        "rail": 400,
+        "needsH": 147,
+        "gutterVar": "11px",
+        "edges": {
+          "panel": {
+            "l": 21,
+            "r": 400,
+            "w": 379,
+            "h": 95.4
+          },
+          "crew": {
+            "l": 21,
+            "r": 391,
+            "w": 370,
+            "h": 66.8
+          },
+          "search": {
+            "l": 21,
+            "r": 401,
+            "w": 380,
+            "h": 16
+          },
+          "count": {
+            "l": 384.9,
+            "r": 391,
+            "w": 6.1,
+            "h": 14.4
+          }
+        },
+        "rows": [
+          {
+            "key": "ask:stage-one",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 67,
+              "r": 98.7,
+              "w": 31.7,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": true,
+            "whereBox": {
+              "l": 105.9,
+              "r": 371.3,
+              "w": 265.4,
+              "h": 14
+            },
+            "whereCut": false,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes/a.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          }
+        ]
+      }
+    },
+    "7-andrew-400rail-compact90-long-names": {
+      "settings": {
+        "name": "7-andrew-400rail-compact90-long-names",
+        "W": 1920,
+        "H": 1040,
+        "scale": 90,
+        "crew": "400",
+        "stage": "B"
+      },
+      "staged": {
+        "miss": "builder",
+        "names": [
+          "NOVA",
+          "ULTRON",
+          "KAZE",
+          "CYPHER",
+          "MIRA",
+          "MISS FORTUNE"
+        ],
+        "needs": 25
+      },
+      "probe": null,
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 126,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          359
+        ],
+        "gutter": [
+          11
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 0.9,
+        "rail": 400,
+        "needsH": 291,
+        "gutterVar": "11px",
+        "edges": {
+          "panel": {
+            "l": 21,
+            "r": 400,
+            "w": 379,
+            "h": 224.8
+          },
+          "crew": {
+            "l": 21,
+            "r": 391,
+            "w": 370,
+            "h": 66.8
+          },
+          "search": {
+            "l": 21,
+            "r": 401,
+            "w": 380,
+            "h": 16
+          },
+          "count": {
+            "l": 378.8,
+            "r": 391,
+            "w": 12.3,
+            "h": 14.4
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp2",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 67,
+              "r": 200.6,
+              "w": 133.6,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in Scout the speedrun community for course ideas and leaderboards",
+            "whereShown": true,
+            "whereBox": {
+              "l": 207.8,
+              "r": 382.8,
+              "w": 175.1,
+              "h": 14
+            },
+            "whereCut": true,
+            "age": "",
+            "ageInside": true,
+            "line": "has a question waiting",
+            "lineWhole": true,
+            "keys": []
+          },
+          {
+            "key": "ask:stage-ap1",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 67,
+              "r": 98.7,
+              "w": 31.7,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": true,
+            "whereBox": {
+              "l": 105.9,
+              "r": 371.3,
+              "w": 265.4,
+              "h": 14
+            },
+            "whereCut": false,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          },
+          {
+            "key": "build:stage-m0",
+            "who": "MISS FORTUNE",
+            "whoBox": {
+              "l": 67,
+              "r": 162,
+              "w": 95,
+              "h": 19.7
+            },
+            "whoLines": 1,
+            "where": "in ⚒ Speedrun timer with checkpoint splits + test course",
+            "whereShown": true,
+            "whereBox": {
+              "l": 169.2,
+              "r": 371.3,
+              "w": 202,
+              "h": 18
+            },
+            "whereCut": true,
+            "age": "2h",
+            "ageInside": true,
+            "line": "23 builds to keep or discard · Speedrun timer with checkpoint splits + test course",
+            "lineWhole": true,
+            "keys": []
+          }
+        ]
+      }
+    },
+    "7b-desktop-232rail-standard-long-names": {
+      "settings": {
+        "name": "7b-desktop-232rail-standard-long-names",
+        "W": 1920,
+        "H": 1040,
+        "scale": 100,
+        "crew": "default",
+        "stage": "B"
+      },
+      "staged": {
+        "miss": "builder",
+        "names": [
+          "NOVA",
+          "ULTRON",
+          "KAZE",
+          "CYPHER",
+          "MIRA",
+          "MISS FORTUNE"
+        ],
+        "needs": 25
+      },
+      "probe": null,
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 152,
+        "approveOverCut": 0,
+        "keysSeen": [
+          "Approve once · Deny"
+        ],
+        "whatWidths": [
+          148
+        ],
+        "gutter": [
+          10
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1,
+        "rail": 232,
+        "needsH": 293,
+        "gutterVar": "10px",
+        "edges": {
+          "panel": {
+            "l": 22,
+            "r": 232,
+            "w": 210,
+            "h": 229.5
+          },
+          "crew": {
+            "l": 22,
+            "r": 222,
+            "w": 200,
+            "h": 74
+          },
+          "search": {
+            "l": 22,
+            "r": 232,
+            "w": 210,
+            "h": 18
+          },
+          "count": {
+            "l": 207.4,
+            "r": 221,
+            "w": 13.6,
+            "h": 16
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp2",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 73,
+              "r": 213,
+              "w": 140,
+              "h": 43.7
+            },
+            "whoLines": 2,
+            "where": "in Scout the speedrun community for course ideas and leaderboards",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has a question waiting",
+            "lineWhole": true,
+            "keys": []
+          },
+          {
+            "key": "ask:stage-ap1",
+            "who": "NOVA",
+            "whoBox": {
+              "l": 73,
+              "r": 108.2,
+              "w": 35.2,
+              "h": 21.8
+            },
+            "whoLines": 1,
+            "where": "in General",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "3m",
+            "ageInside": true,
+            "line": "wants to use fs read: notes.md",
+            "lineWhole": true,
+            "keys": [
+              "Approve once 34css",
+              "Deny 34css"
+            ]
+          }
+        ]
+      }
+    },
+    "7c-laptop-200rail-standard-long-names": {
+      "settings": {
+        "name": "7c-laptop-200rail-standard-long-names",
+        "W": 1440,
+        "H": 900,
+        "scale": 100,
+        "crew": "default",
+        "stage": "B"
+      },
+      "staged": {
+        "miss": "builder",
+        "names": [
+          "NOVA",
+          "ULTRON",
+          "KAZE",
+          "CYPHER",
+          "MIRA",
+          "MISS FORTUNE"
+        ],
+        "needs": 25
+      },
+      "probe": null,
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 0,
+        "approveOverCut": 0,
+        "keysSeen": [],
+        "whatWidths": [],
+        "gutter": [
+          10
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1,
+        "rail": 200,
+        "needsH": 168,
+        "gutterVar": "10px",
+        "edges": {
+          "panel": {
+            "l": 22,
+            "r": 200,
+            "w": 178,
+            "h": 104.7
+          },
+          "crew": {
+            "l": 22,
+            "r": 190,
+            "w": 168,
+            "h": 74
+          },
+          "search": {
+            "l": 22,
+            "r": 200,
+            "w": 178,
+            "h": 18
+          },
+          "count": {
+            "l": 175.4,
+            "r": 189,
+            "w": 13.6,
+            "h": 16
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp2",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 73,
+              "r": 181,
+              "w": 108,
+              "h": 43.7
+            },
+            "whoLines": 2,
+            "where": "in Scout the speedrun community for course ideas and leaderboards",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has a question waiting",
+            "lineWhole": true,
+            "keys": []
+          }
+        ]
+      }
+    },
+    "7d-desktop-232rail-large-long-names": {
+      "settings": {
+        "name": "7d-desktop-232rail-large-long-names",
+        "W": 1920,
+        "H": 1040,
+        "scale": 115,
+        "crew": "default",
+        "stage": "B"
+      },
+      "staged": {
+        "miss": "builder",
+        "names": [
+          "NOVA",
+          "ULTRON",
+          "KAZE",
+          "CYPHER",
+          "MIRA",
+          "MISS FORTUNE"
+        ],
+        "needs": 25
+      },
+      "probe": null,
+      "probe2": {
+        "rebuilds6s": 0,
+        "samples": 0,
+        "approveOverCut": 0,
+        "keysSeen": [],
+        "whatWidths": [],
+        "gutter": [
+          9
+        ],
+        "overflowSeen": [
+          false
+        ],
+        "zoom": 1.15,
+        "rail": 232,
+        "needsH": 168,
+        "gutterVar": "9px",
+        "edges": {
+          "panel": {
+            "l": 23.5,
+            "r": 230.9,
+            "w": 207.4,
+            "h": 120
+          },
+          "crew": {
+            "l": 23.5,
+            "r": 220.5,
+            "w": 197,
+            "h": 84.8
+          },
+          "search": {
+            "l": 23.5,
+            "r": 230.5,
+            "w": 207,
+            "h": 21
+          },
+          "count": {
+            "l": 202.6,
+            "r": 218.2,
+            "w": 15.6,
+            "h": 18.4
+          }
+        },
+        "rows": [
+          {
+            "key": "group:stage-grp2",
+            "who": "ULTRON, CYPHER+3",
+            "whoBox": {
+              "l": 82,
+              "r": 209.2,
+              "w": 127.2,
+              "h": 50.2
+            },
+            "whoLines": 2,
+            "where": "in Scout the speedrun community for course ideas and leaderboards",
+            "whereShown": false,
+            "whereBox": null,
+            "whereCut": null,
+            "age": "",
+            "ageInside": true,
+            "line": "has a question waiting",
+            "lineWhole": true,
+            "keys": []
+          }
+        ]
+      }
+    },
+    "errors": {
+      "exceptions": [],
+      "console": []
+    }
+  }
+}

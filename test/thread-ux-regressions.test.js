@@ -117,7 +117,7 @@ function deliveryDom(pinned=false, count=4, scale=1, nativeAnchor=false) {
   for(let i=0;i<count;i++){const n=new Node();n.dataset.ts=String(first+i*1000);n.textContent='original '+i;log.appendChild(n);}
   const ws={id:'read'}, original=log.children.slice();
   const code=part(chat,'  function syncTimeBreaks()', '  // stamp: omitted')+part(chat,'  function pruneLog()', '  function row(')+part(chat,'  function deliverTurns(', '  // SWITCH-SURVIVAL:');
-  const c=ctx(code,{log,stick:pinned,insertingDelivery:false,LOG_DOM_CAP:400,TIME_BREAK_MS:1800000,document:{createElement:()=>new Node()},fmtBreak:at=>at.toISOString(),isActiveWs:w=>w===ws,cancelHistoryPin(){},autoscroll(){},Set,Array,Number,Date});
+  const c=ctx(code,{log,stick:pinned,insertingDelivery:false,LOG_DOM_CAP:400,TIME_BREAK_MS:1800000,document:{createElement:()=>new Node()},fmtBreak:at=>at.toISOString(),isActiveWs:w=>w===ws,cancelHistoryPin(){},autoscroll(){},noteDeliveryLanding(){},Set,Array,Number,Date});
   c.renderHistory=turns=>{for(const m of turns){const n=new Node();n.dataset.ts=String(m.ts);n.textContent=m.content;log.appendChild(n);if(nativeAnchor)log.scrollTop+=20;c.pruneLog();}};
   c.syncTimeBreaks();return {c,log,ws,original,first};
 }
@@ -150,6 +150,16 @@ test('reader anchoring composes with browser anchoring and scaled UI coordinates
   assert.ok(Math.abs(anchor.getBoundingClientRect().top-before)<0.001);
 });
 
+test('a finished worker with a failed finalization write shows retry instead of working forever',async()=>{
+  const c=ctx(part(delegated,'  async function loadReceipt(', '  function workHtml('),{
+    findRow:()=>({ws:{agentId:'mira',parentStreamId:'home'},lead:'lead'}),workerRunOf:()=> 'run-pending',
+    loadingReceipts:new Set(),receipts:new Map(),repaint(){},stateOf:()=>({cls:'done'}),foldReceipt:()=>({live:true}),
+    fetch:async(url)=>({ok:true,json:async()=>url.startsWith('/api/runs')?{runs:[{runId:'run-pending',dispatchDelivery:{state:'pending'}}]}:{turns:[]}})
+  });
+  await c.loadReceipt('worker');assert.equal(c.receipts.get('worker').status,'err');
+  assert.match(c.receipts.get('worker').error,/ended.*finalized result.*Try again/);
+});
+
 test('reader anchor survives reassignment of a time separator',()=>{
   const {c,log,ws,original,first}=deliveryDom();
   original[1].dataset.ts=String(first+3600000);original[2].dataset.ts=String(first+3660000);original[3].dataset.ts=String(first+3720000);
@@ -159,6 +169,43 @@ test('reader anchor survives reassignment of a time separator',()=>{
   assert.equal(divider.children[0].textContent,new Date(first+2700000).toISOString(),'the separator now belongs to the recovered earlier message');
   assert.equal(original[1].getBoundingClientRect().top,before,'the persistent message remains anchored');
 });
+
+
+test('delegated receipts reject a truncated or changed final projection and retry the full Unicode result',async()=>{
+  const Workstreams=require('../frontend/app/workstreams.js'), {createHash}=require('node:crypto');
+  const full=JSON.stringify({answer:'\u{1f680}redacted '.repeat(24000)+'COMPLETE_TAIL'});
+  const hash=createHash('sha256').update(full).digest('hex');
+  const row={runId:'receipt-integrity',streamId:'worker',dispatchDelivery:{state:'final',text:full.slice(0,24000),textLength:full.length,textSha256:hash,reason:'done'}};
+  const good={role:'assistant',dispatchState:'final',streamId:'worker',sourceRunId:row.runId,content:full,textLength:full.length,textSha256:hash};
+  let projection={...good,content:full.slice(0,200000)};
+  const c=ctx(part(delegated,'  async function loadReceipt(', '  function workHtml('),{
+    Workstreams,findRow:()=>({ws:{agentId:'mira',parentStreamId:'home'},lead:'lead'}),workerRunOf:()=>row.runId,
+    loadingReceipts:new Set(),receipts:new Map(),repaint(){},stateOf:()=>({cls:'done'}),foldReceipt:(r,t,text)=>({answer:text}),
+    fetch:async(url)=>({ok:true,json:async()=>url.startsWith('/api/runs')?{runs:[row]}:{turns:url.includes('delivery=1')?[projection]:[{role:'assistant',content:'rejected original'}]}})
+  });
+  await c.loadReceipt('worker');assert.equal(c.receipts.get('worker').status,'err');
+  assert.match(c.receipts.get('worker').error,/complete finalized result is unavailable/);
+  projection={...good,content:full.slice(0,-3)+'X"}'};
+  await c.loadReceipt('worker');assert.equal(c.receipts.get('worker').status,'err');
+  projection=good;await c.loadReceipt('worker');assert.equal(c.receipts.get('worker').status,'ok');
+  assert.equal(c.receipts.get('worker').data.answer,full);assert.equal(JSON.parse(full).answer.endsWith('COMPLETE_TAIL'),true);
+});
+
+
+test('complete output verification also works without WebCrypto',async()=>{
+  const ApiTicket=require('../frontend/app/apiticket.js'), {createHash}=require('node:crypto');
+  const full=JSON.stringify({answer:'\u{1f680}redacted '.repeat(24000)+'COMPLETE_TAIL'});
+  const hash=createHash('sha256').update(full).digest('hex');
+  const row={runId:'fallback-run',streamId:'fallback-worker',dispatchDelivery:{state:'final',text:full.slice(0,23999),textLength:full.length,textSha256:hash}};
+  const projection={role:'assistant',dispatchState:'final',streamId:row.streamId,sourceRunId:row.runId,content:full,textLength:full.length,textSha256:hash};
+  const source=fs.readFileSync('frontend/app/workstreams.js','utf8');
+  const c=ctx(part(source,'  async function finalDeliveryText(', '  return {\n    init, reset'),{crypto:{},ApiTicket});
+  assert.equal(await c.finalDeliveryText(row,[projection]),full);
+  c.crypto.subtle={digest:async()=>{throw Error('native digest unavailable');}};
+  assert.equal(await c.finalDeliveryText(row,[projection]),full);
+  projection.content=full.slice(0,-3)+'X"}';assert.equal(await c.finalDeliveryText(row,[projection]),null);
+});
+
 
 test('spoken delegated approvals await confirmed exact-prompt settlement and preserve siblings on failure',async()=>{
   const voice=fs.readFileSync('frontend/app/voice-live.js','utf8');
@@ -194,7 +241,103 @@ test('spoken delegated approvals await confirmed exact-prompt settlement and pre
   c.boundWsId=ws.id;Channels.setPending(ws.id,{promptId:'remote-wins',tool:'fs.write'});let reject;
   reply=new Promise((_resolve,no)=>{reject=no;});c.approvalCommand('approve');await drain();
   Channels.clearPending(ws.id,Date.now(),'remote-wins');reject(new Error('local network failed'));await drain();
-  assert.equal(spoken.length,0,'a failed local request does not claim a remotely handled prompt still waits');
+  assert.deepEqual(spoken,['That approval is no longer waiting.'],'a failed local request on a remotely handled prompt says so, never that it still waits (review app-shell-ui-08)');
+});
+
+test('COMMS prose resolves files where the speaking run wrote them (review comms-threads-ui-03)',()=>{
+  const renders=[], ws={id:'s',agentId:'nova',projectRoot:'C:/proj',history:[
+    {role:'assistant',content:'[open it](site/index.html)',ts:1,projectRoot:'C:/proj'},
+    {role:'assistant',content:'![chart](out/chart.png)',agentId:'mira',ts:2},
+    {role:'assistant',content:'[again](site/index.html)',agentId:'nova',ts:3,projectRoot:'C:/proj'}]};
+  const row=()=>({d:{classList:{add(){}},appendChild(){}},body:{textContent:'x',addEventListener(){}}});
+  const base={activeWs:ws,renderingHistory:false,row,renderProse:(el,text,opts)=>renders.push(opts&&opts.files),workspaceFileRefs:(...a)=>a,
+    addUser(){},toolLine(){},trimMarkerLine(){},offerTryAgain(){},offerRetry(){},isBusy:()=>false,endToolRail(){},autoscroll(){},
+    document:{hidden:true,createElement:()=>({remove(){}})}};
+  const refs=part(chat,'  function turnFileRefs(', '  function hydrateFileRefs(');
+  const c=ctx(refs+part(chat,'  function replayableDeliverables(', '  // A delivered/recovered answer'),base);
+  c.renderHistory();
+  assert.deepEqual(renders[0],['nova',null,'C:/proj'],'the session agent\'s reply resolves at the project root it wrote into');
+  assert.deepEqual(renders[1],['mira',null,undefined],'a work-line stage resolves in its own agent\'s workspace (the hop runs without the project root)');
+  assert.deepEqual(renders[2],['nova',null,'C:/proj'],'a reconciled turn stamped with the session agent is still the session\'s own reply');
+  renders.length=0;
+  const s=ctx(refs+part(chat,'  function streamingAgent(', '  // close the live paragraph (if any)'),base);
+  const own=s.streamingAgent(); own.append('see [it](site/index.html)'); own.done();
+  const hop=s.streamingAgent('MIRA','mira'); hop.append('see [it](out/chart.png)'); hop.done();
+  assert.deepEqual(renders[0],['nova',null,'C:/proj'],'live reply links resolve at the project root');
+  assert.deepEqual(renders[1],['mira',null,undefined],'a live work-line stage resolves in the stage agent\'s workspace');
+});
+
+test('a reply keeps the folder its own run used after the session joins a project (review follow-up, comms-threads-ui-03)',()=>{
+  // turn 1 ran before a path.trust ALWAYS anchored the session (at t=50); its files are in the agent's own workspace
+  const renders=[], ws={id:'s',agentId:'nova',projectRoot:'C:/proj',projectRootAt:50,history:[
+    {role:'assistant',content:'[a](site/index.html)',ts:10,projectRoot:null},
+    {role:'assistant',content:'[b](site/index.html)',ts:20},
+    {role:'assistant',content:'[c](site/index.html)',ts:60},
+    {role:'assistant',content:'[d](site/index.html)',ts:70,projectRoot:'C:/proj'},
+    {role:'assistant',content:'[e](out/x.png)',ts:80,agentId:'nova',projectRoot:null},
+    {role:'assistant',content:'[f](out/x.png)',ts:90,agentId:'mira',projectRoot:null}]};
+  const row=()=>({d:{classList:{add(){}},appendChild(){}},body:{textContent:'x',addEventListener(){}}});
+  const base={activeWs:ws,renderingHistory:false,row,renderProse:(el,text,opts)=>renders.push(opts&&opts.files),workspaceFileRefs:(...a)=>a,
+    addUser(){},toolLine(){},trimMarkerLine(){},offerTryAgain(){},offerRetry(){},isBusy:()=>false,endToolRail(){},autoscroll(){},
+    document:{hidden:true,createElement:()=>({remove(){}})}};
+  const refs=part(chat,'  function turnFileRefs(', '  function hydrateFileRefs(');
+  const c=ctx(refs+part(chat,'  function replayableDeliverables(', '  // A delivered/recovered answer'),base);
+  c.renderHistory();
+  assert.deepEqual(renders.map(r=>r[2]),[undefined,undefined,'C:/proj','C:/proj',undefined,undefined],
+    'stamped turns keep their own run\'s folder; an unstamped one uses the project only when it is newer than the anchor; a hop never does');
+  assert.deepEqual(renders[4],['nova',null,undefined],'a work-line stage run by the session\'s own agent still resolves in its workspace');
+  renders.length=0; delete ws.projectRootAt; c.renderHistory();
+  assert.deepEqual(renders[1],['nova',null,undefined],'with no record of when the session joined, an older unstamped reply resolves where it always did');
+  renders.length=0;
+  const s=ctx(refs+part(chat,'  function streamingAgent(', '  // close the live paragraph (if any)'),base);
+  for (const o of [s.streamingAgent(undefined,undefined,null),s.streamingAgent('NOVA','nova',null),s.streamingAgent()]) { o.append('see [it](site/index.html)'); o.done(); }
+  assert.deepEqual(renders.map(r=>r[2]),[undefined,undefined,'C:/proj'],'a live reply resolves at the folder its run was sent with (none for a hop)');
+  // every reply the send path persists records the folder that run was sent with; a hop records none
+  const p=ctx(part(chat,'  function persistPartial(', '  function isBusy(')+part(chat,'  function markStoppedTurn(', '  // WHY it stopped'),{capHistory(){},liveRunRoots:new Map([['a',null],['b','C:/proj']])});
+  const w={id:'a',history:[]}; p.persistPartial(w,'partial'); w.id='b'; p.markStoppedTurn(w,'');
+  assert.deepEqual(w.history.map(m=>m.projectRoot),[null,'C:/proj'],'a partial or stopped turn carries its in-flight run\'s folder');
+  const send=part(chat,'  async function send(text, opts) {', '  async function maybeRetitle(');
+  assert.match(send,/projectRoot: runRoot \|\| undefined,/,'the run body sends the same folder the turns record');
+  assert.equal((send.match(/error: true, ts: Date\.now\(\), projectRoot: runRoot \}/g)||[]).length,2,'both failure lines record the folder');
+  assert.match(send,/content: replyText, ts: Date\.now\(\), sourceRunId: thisRunId \|\| undefined, projectRoot: runRoot \}/,'the reply records the folder');
+  assert.match(send,/const runRoot = ws\.projectRoot \|\| null;\s+liveRunRoots\.set\(ws\.id, runRoot\);/,'the in-flight run\'s folder is what a partial or stopped turn records');
+  assert.match(part(chat,'  async function runWorkLine(', '  async function send(text, opts) {'),/content: hopText, agentId: nx, projectRoot: null, ts:/,'a work-line stage records that it ran without the project folder');
+});
+
+test('an explicit reveal survives the load\'s server-history repaint; a reader gesture forgets it (review comms-threads-ui-04)',async()=>{
+  const frames=[];let current=null;
+  const makeRow=()=>({hasAttribute:a=>a==='data-dg-row',getAttribute:a=>a==='data-dg-row'?'mira-ws':null,scrollIntoView(){log.scrollTop=700;}});
+  const log={scrollTop:0,scrollHeight:2000,clientHeight:400,contains:el=>!!el&&el===current,
+    querySelector:sel=>current&&sel==='[data-dg-row="mira-ws"]'?current:null,set innerHTML(v){current=null;this.scrollTop=0;}};
+  const ws={id:'home',agentId:'lead',history:[]};
+  const boot=()=>{
+    const read={history:[],repaint:false};
+    const c=ctx(part(chat,'  function cancelHistoryPin()', '  function positionNewPill(')+part(chat,'  async function reconcileServerHistory(', '  // swap the rendered conversation'),{
+      log,activeWs:ws,historyPinSeq:1,historyPinPending:1,stick:true,userScrollAt:0,revealKey:'',historyLoads:new Map([[ws,read]]),
+      requestAnimationFrame:fn=>frames.push(fn),nearBottom:()=>log.scrollHeight-log.scrollTop-log.clientHeight<40,hideNewPill(){},showNewPill(){},
+      Workstreams:{get:()=>ws},Channels:{isBusy:()=>false},noteContinuity(){},mergeCanonicalHistory:(a,t)=>t,App:{persist(){}},
+      fetch:async()=>({ok:true,json:async()=>({turns:[{role:'assistant',content:'the lead followed up '+Math.random()}]})}),
+      renderHistory(){},replayChannel(){},syncStatus(){},maybeEmptyState(){},Delegated:{presentFor:async()=>{current=makeRow();}},
+      AbortController,setTimeout,clearTimeout,Date,JSON,String,Promise});
+    return {c,read};
+  };
+  let {c,read}=boot();
+  current=makeRow();log.scrollTop=1600;
+  assert.equal(c.revealHistory(current),true);assert.equal(log.scrollTop,700);
+  await c.reconcileServerHistory(ws,1,read);while(frames.length)frames.shift()();
+  assert.equal(log.scrollTop,700,'the repaint finds the revealed worker row again instead of dropping the reader at the top');
+  assert.equal(c.stick,false);
+  ({c,read}=boot());current=makeRow();
+  assert.equal(c.revealHistory(current),true);c.forgetReveal();
+  await c.reconcileServerHistory(ws,1,read);while(frames.length)frames.shift()();
+  assert.equal(log.scrollTop,0,'after the reader scrolls on their own, a repaint does not jump them back to the old reveal');
+});
+
+test('a keyboard scroll forgets an earlier reveal like a wheel or touch does (review follow-up, comms-threads-ui-04)',()=>{
+  const wiring=chat.match(/\[([^\]]*)\]\.forEach\(type => log\.addEventListener\(type, forgetReveal\b/);
+  assert.ok(wiring,'the reader gestures that forget a reveal are wired on the log');
+  const gestures=wiring[1].match(/'[a-z]+'/g).map(s=>s.slice(1,-1));
+  for (const g of ['wheel','touchstart','pointerdown','keydown']) assert.ok(gestures.includes(g),g+' forgets the reveal (PageUp/arrow reading is a real gesture)');
 });
 
 test('a card settled by another surface says what was APPLIED and where it came from (voice "always" is not "once from your phone")', () => {
@@ -230,16 +373,20 @@ test('a delegated worker\'s question toasts in the WORKER\'s name, like its card
 });
 
 test('a worker question is ONE hop away: revealAsk lands on its question card, redrawing it from the open ask when it is not in the transcript', () => {
-  const cards = [], revealed = [], drawn = [];
-  const mkCard = id => ({ dataset: { clarifyPrompt: id }, focus() {} });
+  const cards = [], revealed = [], drawn = [], focused = [];
+  const mkCard = id => ({ dataset: { clarifyPrompt: id }, focus() { focused.push(id); } });
+  cards.push(mkCard('q-other'));   // another question's card is already showing: it is never the one revealed
   const log = { querySelectorAll: () => cards };
   const pend = [{ promptId: 'q1', tool: 'brief.ask', workerAgentId: 'MIRA' }, { promptId: 'p2', tool: 'fs.write' }];
   const c = ctx(part(chat, '  function revealAsk(promptId) {', '  function pinLoadedHistoryAfterLayout('), {
-    log, activeWs: { id: 'ws1' }, Channels: { pendingAllOf: () => pend },
+    log, activeWs: { id: 'ws1' }, Channels: { pendingAllOf: () => pend }, noteAskLanding() {},
     permissionRow: (p) => { drawn.push(p.promptId); cards.push(mkCard(String(p.promptId))); }, revealHistory: el => revealed.push(el.dataset.clarifyPrompt) });
   assert.equal(c.revealAsk('q1'), true, 'a missing card is drawn again from the open ask'); assert.deepEqual(drawn, ['q1']); assert.deepEqual(revealed, ['q1']);
   assert.equal(c.revealAsk('q1'), true); assert.deepEqual(drawn, ['q1'], 'a card already showing is revealed, never drawn twice');
-  assert.equal(c.revealAsk('p2'), false, 'an approval is not a question card'); assert.equal(c.revealAsk('gone'), false, 'an answered ask reveals nothing');
+  assert.deepEqual(focused, ['q1', 'q1'], 'focus lands on that exact card'); assert.ok(!revealed.includes('q-other'), 'never on the card of another question');
+  // (live walk 10-14) NEEDS YOU › Review on an APPROVAL lands on its approval card the same way, drawn from the open ask when missing
+  assert.equal(c.revealAsk('p2'), true, 'an approval lands on its approval card'); assert.deepEqual(drawn, ['q1', 'p2']);
+  assert.equal(c.revealAsk('gone'), false, 'an answered ask reveals nothing');
   assert.ok(/if \(typeof Chat !== 'undefined' && Chat\.revealAsk\) Chat\.revealAsk\(q\.dataset\.dgQuestion\);/.test(delegated), 'the row\'s Answer key uses it');
-  assert.ok(/i\.kind === 'question' && i\.p && typeof Chat !== 'undefined' && Chat\.revealAsk && Chat\.revealAsk\(i\.p\.promptId\)\) return;/.test(fs.readFileSync('frontend/app/needsyou.js', 'utf8')), 'NEEDS YOU Answer lands on the card, not the row');
+  assert.ok(/\(i\.kind === 'question' \|\| i\.kind === 'approval'\) && i\.p && typeof Chat !== 'undefined' && Chat\.revealAsk && Chat\.revealAsk\(i\.p\.promptId\)\) return(?: true)?;/.test(fs.readFileSync('frontend/app/needsyou.js', 'utf8')), 'NEEDS YOU Answer / Review lands on the card, not the row');
 });

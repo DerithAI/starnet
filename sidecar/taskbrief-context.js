@@ -67,4 +67,16 @@ function current(brief) {
   const last=latestAnswer(brief);
   return !!brief.context && brief.context.through===(last ? last.id : 'request');
 }
-module.exports={normalize,validate,latestAnswer,current,delegate,anchored,UNCONFIRMED};
+/* WHAT THE COMMANDER ALREADY ANSWERED (review 10-14), for crew seated mid-task with station.control group.add: the kickoff
+   turn in the group used to re-ask "What are we launching?" seconds after it was answered. Each answered question with the
+   Commander's own answer, in order, on one line — '' when nothing was answered. Bounded: a long answer is clipped (its
+   start is what tells the lead not to ask), and the whole line never passes `max`. */
+function answeredSoFar(brief, max = 600) {
+  const one = (x, n) => { const t = String(x == null ? '' : x).replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
+  const rows = ((brief && brief.questions) || []).filter(q => q && q.text && String(q.answer || '').trim())
+    .map(q => one(q.text, 120) + ' → ' + one(q.answer, 200));
+  let out = '';
+  for (const r of rows) { const next = out ? out + '; ' + r : r; if (next.length > max) break; out = next; }
+  return out;
+}
+module.exports={normalize,validate,latestAnswer,current,delegate,anchored,UNCONFIRMED,answeredSoFar};

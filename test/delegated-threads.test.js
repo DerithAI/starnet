@@ -84,6 +84,15 @@ const roster = new Map([['researcher', { system: 'R', name: 'MIRA' }], ['writer'
   A.eq(ro.calls[0].sessionTitle, made[0].title, 'with that thread\'s title');
   A.eq(ro.calls[1].streamId, 'thread_2', 'every worker, not just the first');
   A.eq(ro.calls[2].streamId, 'thread_3', 'and the second dispatch runs in its own new thread');
+  // review threads-backend-15: markdown and label-only header lines never become the thread title
+  await dispatchTool.run({ workers: [
+    { agentId: 'researcher', prompt: '## Task\nFind three JWST facts' },
+    { agentId: 'writer', prompt: '**Goal:** Find three JWST facts' },
+    { agentId: 'writer', prompt: 'Goal setting for Q4' }
+  ] }, { agentId: 'agent', streamId: 'home', runId: 'lead2' });
+  A.eq(made[3].title, 'Find three JWST facts', 'a "## Task" header line is skipped');
+  A.eq(made[4].title, 'Find three JWST facts', 'a bold "Goal:" label and its asterisks are dropped');
+  A.eq(made[5].title, 'Goal setting for Q4', 'a sentence that merely starts with a label word keeps its words');
 }
 {
   const ro = fakeRunOnce(); let asked = 0;
@@ -99,25 +108,67 @@ const roster = new Map([['researcher', { system: 'R', name: 'MIRA' }], ['writer'
   const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), coordinateResults: true, childThread: () => { asked++; return { id: 't' }; } });
   await dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'find X' }] }, { agentId: 'agent', streamId: 'global', runId: 'lead3' });
   A.eq(asked, 0, 'a global (channel) run has no conversation to file under');
-  const none = makeOrchestrationTools({ runOnce: fakeRunOnce(), roster: () => roster, key: 'k', model: 'm', newId: counter() });
+  const plainRo = fakeRunOnce();
+  const none = makeOrchestrationTools({ runOnce: plainRo, roster: () => roster, key: 'k', model: 'm', newId: counter() });
   await none.dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'find X' }] }, { agentId: 'researcher_lead', streamId: 'home', runId: 'lead4' });
-  A.ok(true, 'a non-coordinator lead (no childThread) dispatches unchanged');
+  A.eq(plainRo.calls.length + '|' + String(plainRo.calls[0] && plainRo.calls[0].streamId), '1|undefined', 'a non-coordinator lead (no childThread) dispatches unchanged: the worker runs once, in the lead stream, with no thread');
 }
 
 /* ---- 3. the card: row state, the worker's exact ask, the receipt ---- */
 {
   const busy = new Set(), pend = new Map(), runOf = new Map();
-  global.Channels = { pendingOf: id => (pend.get(id) || [])[0] || null, pendingAllOf: id => pend.get(id) || [], isBusy: id => busy.has(id), elapsedOf: () => 65000, runIdOf: id => runOf.get(id) || '' };
+  global.Channels = { pendingOf: id => (pend.get(id) || [])[0] || null, pendingAllOf: id => pend.get(id) || [], isBusy: id => busy.has(id), elapsedOf: (id, now) => (typeof now === 'number' ? 65000 : NaN) /* like the real one: no now, no number */, runIdOf: id => runOf.get(id) || '' };
   global.document = undefined;
+  // these rows read a ledger that HAS answered (no record for a foreground worker is then an answer); the rows before its
+  // first answer are pinned in delegated-ledger-first-read.test.js
+  const ANSWERED = { snapshot: () => ({ workers: [], threads: [] }), fresh: () => true };
+  global.Overseer = ANSWERED;
   const D = require('../frontend/app/delegated.js');
   const ws = (o) => Object.assign({ id: 'k', history: [], runIds: [] }, o);
   const st = (r, lead) => D.stateOf(r, 'home', lead || 'lead1');
   A.eq(st({ ws: ws(), worker: { status: 'running', startedAt: Date.now() - 5000, canInterrupt: true, id: 'w1', runId: 'r1' } }).cls, 'working', 'a running ledger worker is working');
   A.ok(st({ ws: ws(), worker: { status: 'running', startedAt: Date.now(), canInterrupt: true, id: 'w1', runId: 'r1' } }).stop, 'and STOP is offered only when the ledger says it can be interrupted');
+  // app-shell-ui-05: the station stopped answering (Overseer.fresh() false): the last ledger can no longer vouch for a
+  // running worker, so its row claims neither working nor stopped — no live clock, no Stop key, and the card says so
+  {
+    let fresh = false;
+    global.Overseer = { snapshot: () => ({ workers: [], threads: [] }), fresh: () => fresh };
+    global.App = { agentName: id => ({ researcher: 'MIRA' })[id] || id };
+    const runningRow = { ws: ws({ id: 'ko', agentId: 'researcher', title: 'Scan competitors' }), worker: { status: 'running', startedAt: Date.now() - 5000, canInterrupt: true, id: 'wo', runId: 'ro' } };
+    const down = st(runningRow);
+    A.eq([down.cls, down.live, down.t, !!down.stop], ['unknown', 'status unknown — station unreachable', '', false], 'a running worker the station cannot vouch for is neither working nor stopped');
+    const card = D._internals.lineHtml({ lead: 'outage1', rows: [runningRow] }, 'home');
+    A.ok(!/data-dg-stop=/.test(card) && /Status unknown — station unreachable/.test(card), 'its row offers no Stop and says why');
+    A.ok(/dg-line-sum[^>]*>1 status unknown</.test(card) && !/working|stopped/.test(card.replace(/Scan competitors/g, '')), 'the card header claims nothing it cannot prove');
+    fresh = true;
+    A.eq(st(runningRow).cls, 'working', 'once the station answers again the row is working');
+    global.Overseer = ANSWERED; delete global.App;
+  }
   const done = st({ ws: ws({ history: [{ role: 'system', sys: true, content: '— delegated —' }, { role: 'assistant', content: '## Found\n**Two** competitors undercut us.' }] }), worker: { status: 'done', startedAt: 1000, completedAt: 13000 } });
-  A.eq(done.cls + '|' + done.live + '|' + done.t, 'done|Found|0:12', 'a finished worker quotes the first line it delivered, with its real run time');
-  A.eq(st({ ws: ws(), worker: { status: 'error', reason: 'timeout' } }).live, 'failed · timeout', 'a failed worker says why');
+  // the card never repeats a worker's answer (calm version, 6aa3cd0b0): See work holds it
+  A.eq(done.cls + '|' + done.live + '|' + done.t, 'done|done|0:12', 'a finished worker is done, with its real run time');
+  A.eq(st({ ws: ws(), worker: { status: 'error', reason: 'timeout' } }).live, 'failed · ran out of time', 'a failed worker says why, in words');
+  A.eq(st({ ws: ws(), worker: { status: 'error', reason: 'refused' } }).live, 'failed · couldn\'t start (too many running, or a sign-in is needed)', 'a worker the crew cap refused never reads as a debug code, and says what stopped it');
+  // the sidecar's own explanation rides the row's hover tip: the refusal sentence, a run's error, the liveness check's
+  // receipt — read off the ledger, clipped, never invented. A timeout's result is its PARTIAL WORK, never a reason.
+  // (/api/overseer projects `failure` only for a refused or failed worker: these pin the page's half; the route's is below.)
+  const capRefused = { status: 'error', reason: 'refused', failure: 'subagent could not start — the concurrency cap (STARNET_MAX_CONCURRENT_AGENTS) is full or a sign-in is needed. Try fewer at once.' };
+  A.eq(D.tipOf(capRefused), capRefused.failure, 'a refused worker\'s tip is the sidecar\'s own refusal sentence');
+  A.eq(D.tipOf({ status: 'error', reason: 'error', failure: 'worker run failed: provider returned 401' }), 'worker run failed: provider returned 401', 'a failed run\'s tip is its error');
+  A.eq(D.tipOf({ status: 'error', reason: 'timeout', failure: 'Half the pricing table\n\n[STOPPED — this worker used up its 300s slice]' }), '', 'a timed-out worker\'s partial work is never shown as its reason');
+  A.eq(D.tipOf({ status: 'stale', reason: 'stalled: no progress for 450s — the liveness check stopped this worker (threshold 420s)' }), 'stalled: no progress for 450s — the liveness check stopped this worker (threshold 420s)', 'a stopped worker\'s tip is the liveness check\'s own receipt');
+  A.eq(D.tipOf({ status: 'done', reason: 'done', result: 'the answer' }) + D.tipOf(null), '', 'a finished worker has no failure tip');
+  A.eq(D.tipOf({ status: 'error', reason: 'error', failure: 'x'.repeat(300) }).length, 200, 'a long explanation is clipped');
+  A.eq(st({ ws: ws(), worker: { status: 'error', reason: 'error' } }).live, 'failed', 'a bare error adds nothing it cannot say');
+  A.eq(st({ ws: ws(), worker: { status: 'error', reason: 'some_new_code' } }).live, 'failed · some new code', 'a short unknown code still reads as words');
+  A.eq(st({ ws: ws(), worker: { status: 'error', reason: 'x'.repeat(60) } }).live, 'failed', 'a long free-text reason is not pasted into the one-line status');
+  A.eq(st({ ws: ws({ runIds: ['r9'], lastRunReason: 'empty' }), worker: null }).live, 'ended · the model sent an empty reply', 'a foreground worker that got nothing back says so');
+  A.eq(st({ ws: ws({ runIds: ['r9'], lastRunReason: 'x'.repeat(60) }), worker: null }).live, 'ended · before finishing', 'and an unreadable reason still says it did not finish');
   A.eq(st({ ws: ws(), worker: { status: 'stale' } }).live, 'stopped when the station restarted', 'a stale worker is honest about it');
+  A.eq(st({ ws: ws(), worker: { status: 'stale', reason: 'sidecar restarted before this worker finished' } }).live, 'stopped when the station restarted', 'a worker a restart cut off says so');
+  // the liveness check also settles a hung worker as stale (reason "stalled: …") while the station stays up
+  const hung = st({ ws: ws(), worker: { status: 'stale', reason: 'stalled: no progress for 450s while a tool call was still running — the liveness check stopped this worker (threshold 420s)' } });
+  A.eq(hung.cls + '|' + hung.live, 'stopped|stopped after making no progress', 'a worker the liveness check stopped never blames a restart that did not happen');
   const stale = { ws: ws({ runIds: ['r1', 'r2'], lastRunReason: 'done' }), worker: { status: 'done', reason: 'budget', runId: 'r1' } };
   A.eq(st(stale).cls, 'done', 'an older capped ledger run cannot override the newer completed run');
   A.eq(D._internals.workerRunOf(stale), 'r2', 'the receipt follows the newer recorded run');
@@ -148,6 +199,47 @@ const roster = new Map([['researcher', { system: 'R', name: 'MIRA' }], ['writer'
   A.eq(st({ ws: ws(), worker: { status: 'running', startedAt: Date.now() } }).cls, 'waiting', 'an ask on the worker\'s own thread outranks working');
   pend.clear(); busy.add('k');
   A.eq(st({ ws: ws(), worker: null }).cls + '|' + st({ ws: ws(), worker: null }).t, 'working|1:05', 'a foreground worker is working while its thread channel is live');
+  // Exact worker clocks are independent of the agent aggregate, and available only for the current channel run.
+  {
+    const calls = [], exact = new Map([['a', 120000], ['b', 60000]]);
+    global.CrewClock = {
+      elapsedOf: () => { throw new Error('a delegated row must never read the agent aggregate'); },
+      elapsedForRun: (id, now) => { calls.push({ id, now }); return exact.has(id) ? exact.get(id) : null; }
+    };
+    const a = { ws: ws({ id: 'ka', agentId: 'researcher', runIds: ['old-a'] }), worker: null };
+    const b = { ws: ws({ id: 'kb', agentId: 'researcher', runIds: ['old-b'] }), worker: null };
+    busy.add('ka'); busy.add('kb'); runOf.set('ka', 'a'); runOf.set('kb', 'b');
+    A.eq([st(a).t, st(b).t], ['2:00', '1:00'], 'same-agent foreground rows select their current run, never the oldest agent run');
+    A.eq(calls.map(x => x.id), ['a', 'b'], 'only the two current channel identities reached the exact clock');
+    A.ok(calls.every(x => Number.isFinite(x.now)), 'each exact clock receives an observation time');
+    exact.set('a', 0);
+    A.eq(st(a).t, '0:00', 'zero exact elapsed is valid and must not fall back to the thread clock');
+    exact.set('b', null);
+    A.eq(st(b).t, '1:05', 'unseen start or ambiguous accounting uses the existing thread clock with NOW');
+    exact.set('b', NaN);
+    A.eq(st(b).t, '1:05', 'invalid exact accounting cannot paint a fabricated zero');
+    runOf.delete('ka'); calls.length = 0;
+    A.eq(st(a).t, '1:05', 'a connecting channel cannot borrow a historical run clock');
+    A.eq(calls.length, 0, 'no exact lookup is attempted without current run identity');
+    delete global.CrewClock.elapsedForRun;
+    A.eq(st(b).t, '1:05', 'older or unavailable CrewClock API retains thread fallback, never aggregate fallback');
+    delete global.CrewClock;
+    busy.delete('ka'); busy.delete('kb'); runOf.delete('kb');
+  }
+  // The background ledger path retains its wall-time fallback, freshness check and Stop authority.
+  {
+    const realNow = Date.now;
+    Date.now = () => 100000;
+    global.CrewClock = { elapsedForRun: () => { throw new Error('background ledger clock must retain its existing fallback'); } };
+    try {
+      const worker = { status: 'running', startedAt: 30000, canInterrupt: true, id: 'bg', runId: 'background' };
+      const row = st({ ws: ws({ id: 'bg-thread', agentId: 'researcher' }), worker });
+      A.eq([row.cls, row.t, row.stop, row.worker.id], ['working', '1:10', true, 'bg'], 'background ledger timing and interrupt ownership are unchanged');
+      global.Overseer = { fresh: () => false };
+      const unknown = st({ ws: ws({ id: 'bg-thread' }), worker });
+      A.eq([unknown.cls, unknown.t, !!unknown.stop], ['unknown', '', false], 'an unreachable background worker still offers neither clock nor Stop');
+    } finally { Date.now = realNow; delete global.CrewClock; global.Overseer = ANSWERED; }
+  }
   busy.clear();
   A.eq(st({ ws: ws({ runIds: ['r9'], lastRunReason: 'done' }), worker: null }).cls, 'done', 'a confirmed completed foreground worker is done');
   A.eq(st({ ws: ws({ runIds: ['r9'] }), worker: null }).cls, 'recorded', 'a legacy delivery with unknown terminal reason is never claimed complete');
@@ -160,6 +252,8 @@ const roster = new Map([['researcher', { system: 'R', name: 'MIRA' }], ['writer'
   // OPEN WHILE IT RUNS: who has what + stop without a click until every worker settles; settled rows offer See work
   const L = D._internals;
   global.App = { agentName: id => ({ researcher: 'MIRA', writer: 'VEX' })[id] || id };
+  L.opened.add('cap1');   // a settled card folds: open it, as the Commander would
+  A.ok(/class="dg-li-st" data-tip="subagent could not start — the concurrency cap/.test(L.lineHtml({ lead: 'cap1', rows: [{ ws: ws({ id: 'kc', agentId: 'researcher', title: 'Scan' }), worker: capRefused }] }, 'home')), 'the refused row carries that sentence on its status');
   const running = { lead: 'b1', rows: [{ ws: ws({ id: 'k1', agentId: 'researcher', title: 'Scan competitors' }), worker: { status: 'running', startedAt: Date.now(), canInterrupt: true, id: 'w1', runId: 'r1' } },
     { ws: ws({ id: 'k2', agentId: 'writer', title: 'Write the email (3)', runIds: ['r2'] }), worker: { status: 'done', startedAt: 1000, completedAt: 5000 } }] };
   const live = L.lineHtml(running, 'home');
@@ -198,7 +292,7 @@ const roster = new Map([['researcher', { system: 'R', name: 'MIRA' }], ['writer'
   L.seen.add('k2'); L.receipts.set('k2', { status: 'loading', at: Date.now() });
   A.ok(/Loading VEX's work/.test(L.lineHtml({ lead: 'b2', rows: [running.rows[1]] }, 'home')), 'See work says it is loading, never an empty receipt');
   L.opened.clear(); L.seen.clear(); L.receipts.clear(); delete global.App;
-  delete global.Channels; delete global.document;
+  delete global.Channels; delete global.document; delete global.Overseer;
   // the receipt: the worker run's own record + transcript, nothing invented
   global.DeskScreen = { parseScreens: require('../frontend/app/deskscreen.js')._parseScreens || require('../frontend/app/deskscreen.js').parseScreens };
   const turns = [
@@ -217,8 +311,55 @@ const roster = new Map([['researcher', { system: 'R', name: 'MIRA' }], ['writer'
   A.eq(rec.files.map(f => f.name + '@' + f.agentId).join(','), 'competitors.md@researcher', 'the files it saved, opened from the WORKER\'s workspace (a sent message is not a file)');
   A.eq(rec.ms + '|' + rec.cost, '41000|$0.03', 'its own time and cost');
   A.eq(L.foldReceipt({ ...row, unmetered: true }, []).cost, 'subscription', 'a subscription run never shows a fake price');
+  // a call the Task Brief HELD did not run (rc review 2026-10-14): the receipt lists it neither as done nor as failed — the
+  // worker makes the same call again once its brief settles, and that one is the step
+  {
+    global.TaskIntent = require('../frontend/app/fork.js').TaskIntent;
+    const heldTurns = [
+      { role: 'assistant', toolCalls: JSON.stringify([{ id: 'h1', function: { name: 'fs_write', arguments: JSON.stringify({ path: 'tagline.md', content: 'x' }) } }]) },
+      { role: 'tool', toolCallId: 'h1', content: 'ERROR: ' + global.TaskIntent.GATE_HELD_LEAD + ' Settle the Task Brief with brief_proceed, then make this same call again.' },
+      { role: 'assistant', toolCalls: JSON.stringify([{ id: 'h2', function: { name: 'fs_write', arguments: JSON.stringify({ path: 'tagline.md', content: 'x' }) } }]) },
+      { role: 'tool', toolCallId: 'h2', content: 'wrote 1 KB' }
+    ];
+    A.eq(L.foldReceipt(row, heldTurns).steps.map(s => s.verb + ':' + s.arg + ':' + s.ok).join(' | '), 'wrote:tagline.md:true', 'a held call is not a step in the receipt (only the write that ran)');
+    const traced = L.foldReceipt({ ...row, toolTrace: [{ name: 'fs_write', isError: true, ok: false, summary: global.TaskIntent.GATE_HELD }, { name: 'fs_write', isError: false, ok: true, summary: 'wrote' }] }, []);
+    A.eq(traced.steps.map(s => s.verb + ':' + s.ok).join(' | '), 'wrote:true', 'and the record-only fallback drops it too (never a failed step)');
+    delete global.TaskIntent;
+  }
+  const provisional = L.foldReceipt({ ...row, deliveryText: 'invalid raw output', dispatchDelivery: { state: 'pending' } }, turns);
+  A.eq(provisional.answer, '', 'receipt never promotes provisional execution text');
+  A.eq(provisional.live, true, 'pending validation keeps an open receipt refreshing');
+  const finalized = L.foldReceipt({ ...row, dispatchDelivery: { state: 'final', text: '{"ok":true}', reason: 'done' } }, turns);
+  A.eq(finalized.answer, '{"ok":true}', 'receipt uses validated delivery instead of original transcript');
+  const fullRepaired = '{"answer":"' + 'validated '.repeat(3000) + '"}';
+  const capped = { ...row, dispatchDelivery: { state: 'final', text: fullRepaired.slice(0,24000), reason: 'done', repairRunId: 'repair' } };
+  A.eq(L.foldReceipt(capped, turns, fullRepaired).answer, fullRepaired, 'long repaired answers expand only from their own validated transcript');
+  A.eq(L.foldReceipt(capped, turns).answer, '', 'an unverified capped answer is never displayed as complete');
+  const rejected = L.foldReceipt({ ...row, dispatchDelivery: { state: 'final', text: '', reason: 'invalid-result' } }, turns);
+  A.eq(rejected.answer, '', 'rejected output cannot fall back to raw transcript');
+  A.eq(L.foldReceipt({ ...row, dispatchDelivery: { state: 'internal' } }, turns).answer, '', 'repair execution has no independent receipt answer');
   A.eq(L.foldReceipt(null, turns).live, true, 'no run record yet = still working (never "no work")');
   delete global.DeskScreen;
+}
+
+/* ---- 3b. two dispatch calls in one lead run: each call's workers in the order that call asked for them ---- */
+{
+  const D = require('../frontend/app/delegated.js');
+  const kid = (id, agentId, createdAt) => ({ id, agentId, title: id, worker: true, parentStreamId: 'home', createdAt, runIds: [] });
+  // MIRA + ROOK in the first call, VEX + KAI in a retry call: same lead run, slots restart at 0 for the second call.
+  // `call` is the field the card reads; /api/overseer does not send it yet (sidecar/overseer.js snapshot()), so this
+  // pins the page's half only.
+  global.Workstreams = { activeId: () => 'home', list: () => [kid('t_mira', 'researcher', 1000), kid('t_rook', 'designer', 1000), kid('t_vex', 'writer', 9000), kid('t_kai', 'coder', 9000)] };
+  global.Overseer = { snapshot: () => ({ workers: [], threads: [
+    { id: 't_mira', leadRunId: 'lead1', call: 'c1', slot: 0 }, { id: 't_rook', leadRunId: 'lead1', call: 'c1', slot: 1 },
+    { id: 't_vex', leadRunId: 'lead1', call: 'c2', slot: 0 }, { id: 't_kai', leadRunId: 'lead1', call: 'c2', slot: 1 }
+  ] }) };
+  const groups = D.batches('home');
+  A.eq(groups.length + '|' + groups[0].rows.map(r => r.ws.id).join(','), '1|t_mira,t_rook,t_vex,t_kai', 'one card per lead run, its calls in order, each call\'s workers by slot');
+  global.Workstreams.list = () => [kid('t_rook', 'designer', 1000), kid('t_mira', 'researcher', 1000)];
+  global.Overseer.snapshot = () => ({ workers: [], threads: [{ id: 't_mira', leadRunId: 'lead1', call: 'c1', slot: 0 }, { id: 't_rook', leadRunId: 'lead1', call: 'c1', slot: 1 }] });
+  A.eq(D.batches('home')[0].rows.map(r => r.ws.id).join(','), 't_mira,t_rook', 'threads made in the same instant still follow the order the lead asked');
+  delete global.Workstreams; delete global.Overseer;
 }
 
 /* ---- 4. wiring ---- */
@@ -239,9 +380,13 @@ const roster = new Map([['researcher', { system: 'R', name: 'MIRA' }], ['writer'
   A.ok(/Delegated\.presentFor\(activeWs\.id\)/.test(chat), 'Chat.load mounts the card');
   A.ok(html.indexOf('app/overseer.js') >= 0 && html.indexOf('app/delegated.js') > 0, 'the page loads the card module');
   A.ok(/agentId: w\.agentId, parentRunId: w\.parentRunId \|\| '', generation: w\.generation/.test(idx), 'the overseer route carries the card\'s fields');
+  // comms-threads-ui-06: and the refusal or error sentence tipOf shows, never a timeout's partial work
+  A.ok(/\? \{ failure: String\(w\.result \|\| ''\)\.slice\(0, 400\) \} : \{\}\)/.test(idx), 'the overseer route sends a refused or failed worker\'s own explanation');
   A.ok(/each worker\\'s work is filed on this conversation\\'s card/.test(idx), 'the lead prompt states the filing rule');
   A.ok(/childThread: require\('\.\/overseer\.js'\)\.isCoordinatorRun/.test(idx), 'only coordinator runs file child threads');
-  A.ok(/for \(let n = 1; n <= 99; n\+\+\)/.test(idx) && /return make\(a\.title \+ ' · ' \+ new Date\(\)\.toISOString\(\)/.test(idx), 'the same ask delegated again and again never runs out of thread titles');
+  // a worker thread asks overseer.create for a free title (count up, then the ask time: test/overseer.test.js runs this
+  // childThread body against a real store), so the same ask delegated again and again never runs out of thread titles
+  A.ok(/childThread: [^\n]*\n(?:[^\n]*\n){0,8}?\s*return overseer\.create\(\{[^}]*title: a\.title, worker: true \}\)/.test(idx), 'the same ask delegated again and again never runs out of thread titles');
   // Existing-row adoption and cache invalidation run behaviorally in thread-flow-navigation.test.js.
   A.ok(/const adoptedRow = Workstreams\.adopt\(row\)/.test(ov), 'polling adopts missing metadata through the participation-aware store');
   A.ok(/Chat\.answerConsent\(p, Workstreams\.get\(Workstreams\.activeId\(\)\), decision === 'deny' \? 'deny' : 'once', 'row'\)/.test(dg), 'a worker\'s ask is answered from its row through the approval card\'s own path, once or deny only');

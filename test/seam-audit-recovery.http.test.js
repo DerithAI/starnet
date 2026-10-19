@@ -17,7 +17,9 @@ const provider = http.createServer((req, res) => {
     SKYNET_OPENROUTER_BASE: base, STARNET_OPENROUTER_BASE: base,
     SKYNET_OPENROUTER_KEY: 'fixture', STARNET_OPENROUTER_KEY: 'fixture',
     SKYNET_DEFAULT_MODEL: 'test/model', STARNET_DEFAULT_MODEL: 'test/model',
-    SKYNET_CRON_ENABLED: '0', STARNET_CRON_ENABLED: '0'
+    SKYNET_CRON_ENABLED: '0', STARNET_CRON_ENABLED: '0',
+    // This direct-request transcript contract counts provider replies; quest refresh has its own suites.
+    SKYNET_QUEST_REFRESH: '0'
   } });
   try {
     await fixture.start();

@@ -1,5 +1,6 @@
-/* Thread UX regressions: delegated participation stays findable without exposing worker storage,
-   and polling that adopts thread metadata keeps that index current. Live DOM proof is separate. */
+/* Thread UX regressions: delegated participation stays findable without exposing worker storage, and polling that
+   adopts thread metadata keeps that index current; shared files keep their author and the version that belonged to
+   the reply. Live DOM proof is separate. */
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -63,7 +64,60 @@ A.eq(waiting('mira'), 'home', 'the second pending worker ask is found too');
 asks = [{ agentId: 'nova' }];
 A.eq(waiting('nova'), 'home', 'ordinary direct asks still route to the lead');
 
+/* Real group ledger shape: immutable versions append, each message carries author/run/sequence. */
+const g = { id: 'g', messages: [
+  { id: 'm1', author: 'mira', runId: 'r1', seq: 2, at: 20 },
+  { id: 'm2', author: 'mira', runId: 'r2', seq: 4, at: 40 },
+  { id: 'm3', author: 'rook', runId: 'r3', seq: 6, at: 60 },
+  { id: 'm4', author: 'mira', runId: 'r4', seq: 8, at: 80 },
+  { id: 'm0', author: 'mira', seq: 1, at: 1 }
+], artifacts: [
+  { id: 'mira-old', sourcePath: 'out/report.md', name: 'report.md', agentId: 'mira', runId: 'r1', messageSeq: 1, createdAt: 10 },
+  { id: 'mira-new', sourcePath: 'out/report.md', name: 'report.md', agentId: 'mira', runId: 'r2', messageSeq: 3, createdAt: 30 },
+  { id: 'rook-own', sourcePath: 'out/report.md', name: 'report.md', agentId: 'rook', runId: 'r3', messageSeq: 5, createdAt: 50 }
+] };
+const gc = read('frontend/app/group-chat.js');
+const sharedFor = new Function('group', fn(gc, 'sharedFor') + ';return sharedFor;')(g);
+const pick = (m, author = 'mira', p = 'out/report.md') => sharedFor('g', p, author, m)?.id || null;
+A.eq(pick('m1'), 'mira-old', 'old reply retains its published version after later edits');
+A.eq(pick('m2'), 'mira-new', 'new reply opens its own run\'s version');
+A.eq(pick('m3', 'rook'), 'rook-own', 'same path from another author resolves to that author\'s version');
+A.eq(pick('m4'), 'mira-new', 'a later reference can use the author\'s latest previously shared version');
+A.eq(pick('m0'), null, 'an earlier message never captures a file published later');
+A.eq(pick('m1', 'rook'), null, 'the resolver refuses a mismatched message author');
+A.eq(sharedFor('other', 'out/report.md', 'mira', 'm1'), null, 'a stale group resolver cannot read the active group\'s files');
+A.eq(pick('m2', 'mira', '.\\out\\report.md'), 'mira-new', 'equivalent separators and a leading dot normalize');
+A.eq(pick('m2', 'mira', 'report.md'), 'mira-new', 'a unique authored basename resolves its correct version');
+g.artifacts.push({ id: 'mira-other-path', sourcePath: 'draft/report.md', name: 'report.md', agentId: 'mira', runId: 'r2', messageSeq: 3, createdAt: 30 });
+A.eq(pick('m2', 'mira', 'report.md'), null, 'two authored paths with the same basename fall back instead of guessing');
+A.eq(pick('m2'), 'mira-new', 'an exact path remains usable despite another same-named file');
+g.artifacts.push({ id: 'mira-newer-same-run', sourcePath: 'out/report.md', name: 'report.md', agentId: 'mira', runId: 'r2', messageSeq: 3, createdAt: 30 });
+A.eq(pick('m2'), 'mira-newer-same-run', 'equal-timestamp publishes use the last immutable version in that run');
+g.artifacts.push({ id: 'rook-only', sourcePath: 'unique.png', name: 'unique.png', agentId: 'rook', runId: 'r3', messageSeq: 5, createdAt: 50 });
+A.eq(pick('m4', 'mira', 'unique.png'), null, 'another author\'s only basename is never a shared fallback');
+
+g.messages.push({ id: 'attachment-message', author: 'user', seq: 10, at: 100, artifactIds: ['user-old'] });
+g.artifacts.push(
+  { id: 'user-old', sourcePath: 'upload.txt', name: 'upload.txt', agentId: 'user', messageSeq: 9, createdAt: 90 },
+  { id: 'user-new', sourcePath: 'upload.txt', name: 'upload.txt', agentId: 'user', messageSeq: 9, createdAt: 91 });
+A.eq(pick('attachment-message', 'user', 'upload.txt'), 'user-old', 'an explicit attached artifact outranks a newer same-path upload');
+
+/* Both hyperlink capture and inline image hydration must pass the same origin to the resolver. */
+const opened = [], fallback = [], imageLoads = [];
+const makeRefs = new Function('Chat', 'sharedFor', 'openFile', 'showError', 'sharedBlobs', fn(gc, 'fileRefs') + ';return fileRefs;')({
+  workspaceFileRefs: author => ({ wire: (a, p) => { a.fallback = author + ':' + p; }, image: p => { fallback.push(author + ':' + p); return Promise.resolve('own'); } }),
+  imageBlobUrl: (url, p) => { imageLoads.push([url, p]); return Promise.resolve('immutable'); }
+}, sharedFor, async (id, artifact) => { opened.push([id, artifact.id]); }, e => { throw e; }, new Map());
 (async () => {
+  const link = { addEventListener: (_event, cb) => { link.click = cb; } };
+  const refs = makeRefs('g', 'rook', 'm3'); refs.wire(link, 'out/report.md');
+  link.click({ preventDefault() {}, stopImmediatePropagation() {} });
+  A.eq(opened, [['g', 'rook-own']], 'the clickable result opens the speaker\'s immutable artifact');
+  A.eq(await refs.image('out/report.md'), 'immutable', 'image uses the shared version too');
+  A.ok(imageLoads[0][0].includes('file=rook-own'), 'image fetch names the exact artifact id');
+  const own = makeRefs('g', 'mira', 'm4');
+  A.eq(await own.image('unique.png'), 'own', 'missing authored shared file uses its own workspace');
+  A.eq(fallback, ['mira:unique.png'], 'workspace fallback stays bound to the speaker');
   // Real Overseer.refresh: a delivered stream can exist before its worker metadata arrives.
   W.init({ generalId: 'poll-home', workstreams: [
     { id: 'poll-home', agentId: 'nova', title: null },

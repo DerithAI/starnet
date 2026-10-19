@@ -46,6 +46,43 @@
           : '<span class="dim">PROJECT ACCESS REVOKED · REAUTHORIZE THIS ROOT TO RESTORE</span>') + '</div>' +
         '</div>';
     }
+    // TRUTHFUL NET STATE: the paragraph above promises a point before every command, but a snapshot is fail-open —
+    // when one cannot be saved (a killed Git command's lock, a timeout on a huge workspace, a project file an IDE
+    // holds) the run goes on with no undo point. The server's health record (GET /api/checkpoint .health: the LAST
+    // automatic attempt of each root this boot) says so here, naming the root, instead of the list silently looking
+    // complete. No health yet = nothing attempted = no claim.
+    const rel = at => esc(fmtRel(new Date(at).toISOString()));
+    // the same root label a row prints: AGENT WORKSPACE · <name>'s agent workspace, or PROJECT ROOT · <path>
+    const rootLabel = r => (r && r.kind === 'project' && r.workTree)
+      ? '<b>PROJECT ROOT</b> · ' + esc(String(r.workTree)) : '<b>AGENT WORKSPACE</b> · ' + esc(nm + '\'s agent workspace');
+    // a row belongs to a root by scopeId ('' = the agent workspace); a never-authorized project root has no rows
+    const ownsRow = (r, s) => (r && r.kind === 'project') ? !!r.scopeId && String(s.scopeId || '') === String(r.scopeId) : !s.scopeId;
+    function healthNote(h, snaps) {
+      if (!h || !h.lastFailure) return '';
+      // fmtRel reads 'now' / '5m ago': keep each time in parentheses so every value reads as a sentence
+      const failureOf = r => {
+        const f = r.lastFailure || {};
+        return ' (' + (f.at ? rel(f.at) : 'recently') + '): ' + esc(String(f.reason || 'the restore point could not be saved').replace(/[.\s]+$/, ''));
+      };
+      if (h.ok === false) {
+        const roots = (Array.isArray(h.roots) ? h.roots : []).filter(r => r && r.ok === false && r.lastFailure);
+        if (!roots.length) roots.push(Object.assign({}, h.lastFailure, { lastFailure: h.lastFailure }));   // no per-root record: the top-level one
+        // Both halves are literal: restoring the newest point DOES roll back everything since it (in one step, with no
+        // finer point in between), and a restore first saves the current state through the same failing `add`, so it
+        // may be refused (safely, nothing changed) until a point saves.
+        const lines = roots.map(r => {
+          const newest = (snaps || []).find(s => ownsRow(r, s));   // snaps are newest first
+          const tail = newest
+            ? 'Nothing done in this root since its newest restore point' + (newest.ts ? ' (' + rel(newest.ts) + ')' : '') +
+              ' has a point of its own, and a restore here may be refused until one saves, because the current state is saved first.'
+            : 'It has no restore point yet, so nothing done there can be rolled back until one saves.';
+          return '<div data-kind="' + (r.kind === 'project' ? 'project' : 'workspace') + '">' + rootLabel(r) + ' · last attempt' + failureOf(r) + '. ' + tail + '</div>';
+        });
+        return '<div class="mc-detail" id="rw-health" data-state="failing">RESTORE POINTS ARE NOT SAVING' + lines.join('') + '</div>';
+      }
+      return '<div class="mc-url dim" id="rw-health" data-state="missed">A restore point could not be saved for ' + rootLabel(h.lastFailure) + failureOf(h) +
+        '. The change made right after it has no restore point of its own.</div>';
+    }
     async function refresh() {
       try {
         const j = await Harness.api.get('/api/checkpoint?agent=' + encodeURIComponent(agentId));
@@ -55,7 +92,7 @@
         const empty = (j && j.enabled)
           ? 'NO RESTORE POINTS YET.<br><span>They appear once this agent runs a command or edits a file at a WORKBENCH.</span>'
           : 'NO RESTORE POINTS YET.<br><span>They appear once this agent runs a <b>shell command</b>. File-edit snapshots aren\'t enabled on this station.</span>';
-        listEl.innerHTML = snaps.length ? snaps.map(row).join('') : '<div class="fb-empty">' + empty + '</div>';
+        listEl.innerHTML = healthNote(j && j.health, snaps) +(snaps.length ? snaps.map(row).join('') : '<div class="fb-empty">' + empty + '</div>');
       } catch (_) { listEl.innerHTML = '<div class="mc-detail">sidecar offline — start it to manage restore points.</div>'; }
     }
     let armTimer = 0;

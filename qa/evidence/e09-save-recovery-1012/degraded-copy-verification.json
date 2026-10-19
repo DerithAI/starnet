@@ -1,0 +1,24 @@
+{
+  "base": "691eb19f65d8396ff4a1bf03a9b2998e10e58d2d",
+  "scope": "Align measured degraded code/reason with actual Diag.copy page-side fallback; no loading/reset changes or original customer recovery claim.",
+  "before": "Live code/report mismatch for LOOP, OWNER and DEGRADED; literal &lt; decoded incorrectly on screen. Unit regression also failed: copied SAVE-READ instead of SAVE-LOOP.",
+  "after": "Actual seeded browser report-button clicks, failed diagnostics and clipboard, selectable report fallback passes LOOP -> OWNER -> DEGRADED -> NET. Clearing degraded health restores current request diagnosis. Exact non-secret reason text remains literal; existing report redaction remains in use.",
+  "checks": [
+    "node test/save-recovery-diagnosis.test.js: PASS",
+    "node test/unreachable-browser-mode.test.js: PASS (20 assertions)",
+    "node test/diagnostics-dead-engine.test.js: PASS (29 assertions)",
+    "node qa/evidence/e09-save-recovery-1012/degraded-copy-probe.mjs: PASS"
+  ],
+  "sourceHashes": {
+    "frontend/app/app.js": "bbc46fbe5564fdcc0077c5fc7386b360c52eb9e412ba2be34b0292d90b02f72c",
+    "frontend/app/cloudsave.js": "87ab0948b270e3b6c606f21f542812c3b6a1ad253aee8a43607a18ea96e2e791",
+    "sidecar/index.js": "81b317a22b56df8f0174650684642975d12e805ebae4f17a17422ab073e9be56",
+    "sidecar/savestore.js": "67af95bfe526a47a8f46706b833598b9d12b467f86af104f42ed05e5c7ab0edb"
+  },
+  "provenanceNotes": [
+    "Before artifact retained original probe metadata: command erroneously names live-probe.mjs and comparedRoot was inherited bbe1aa1; actual execution was degraded-copy-probe.mjs on base 691eb19f. After artifact corrects both.",
+    "Product code was uncommitted during proof; sourceHashes identify tested bytes.",
+    "Synthetic health faults and clipboard refusal; no installed acceptance or customer recovery.",
+    "No full gate or trunk merge in this lane."
+  ]
+}

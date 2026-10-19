@@ -262,7 +262,8 @@ const GhostLine = (() => {
        A CAPTION IS A PLATE (2026-09-30): it was bare cyan text with a glow, laid over machines and belts — hard to read and
        easy to lose. It is a small dark plate now, edged with a DASHED hairline in the projection's cyan (dashed = projected,
        the same way the ghost crate is a hologram), holding plain text; it is fully lit for most of its life and fades at the
-       end. `fit` (optional) lets the caller keep a plate on its visible glass: fit(box) answers the box to use. */
+       end. `fit` (optional) lets the caller keep a plate on its visible glass: fit(box) answers the box to use.
+       `say` answering false means it declined to paint that caption: its spot is then free for the next one. */
     function draw(ctx, nowMs, T, fontPx, say, fit) {
       if (!engine) return;
       engine.drawBoxes(ctx, nowMs, T);
@@ -271,12 +272,24 @@ const GhostLine = (() => {
       const font = fs + "px 'VT323','Courier New',monospace";
       const padX = fs * 0.45, padY = fs * 0.18, ph = fs + padY * 2;
       // the plate: above the tile (rising as it appears), or under it (a dock caption — its nameplate owns the space above)
+      /* LAID OUT, NEVER PILED (walk 10-14 #13: two captions printed on top of each other; one crossed the hull into space).
+         A caption drawn this frame is never covered by a later one: the later one tries the other side of its tile, then one
+         plate further out on either side. `fit(box, note)` is the caller's keep-it-on-the-station clamp; it may answer null
+         where a spot is taken by something real. With no clear spot a caption sits this pass out — it is only a projection. */
+      const placed = [];
+      const over = (a, o) => a.x < o.x + o.w && a.x + a.w > o.x && a.y < o.y + o.h && a.y + a.h > o.y;
       const boxOf = (n, rise) => {
         ctx.save(); ctx.font = font;
         const w = ctx.measureText(n.text).width + padX * 2;
         ctx.restore();
         const b = { x: (n.x + 0.5) * T - w / 2, y: n.below ? (n.y + 1) * T + 3 : n.y * T - 3 - rise - ph, w, h: ph };
-        return (fit && fit(b)) || b;
+        const above = n.y * T - 3 - rise - ph, below = (n.y + 1) * T + 3;
+        const ys = n.below ? [b.y, above, below + ph + 2, above - ph - 2] : [b.y, below, above - ph - 2, below + ph + 2];
+        for (const y of ys) {
+          const c = fit ? fit({ x: b.x, y, w, h: ph }, n) : { x: b.x, y, w, h: ph };
+          if (c && !placed.some(o => over(c, o))) return c;
+        }
+        return null;
       };
       const paintNote = (n, k, b) => {
         const tf = ctx.getTransform ? ctx.getTransform() : null, px1 = 1 / ((tf && tf.a) || 1);   // one screen pixel, in the caller's frame
@@ -294,7 +307,10 @@ const GhostLine = (() => {
         const n = notes[i], k = (nowMs - n.t0) / NOTE_MS;
         if (k >= 1 || k < 0) { notes.splice(i, 1); continue; }
         const b = boxOf(n, n.below ? 0 : Math.min(1, k * 4) * 3);
-        if (say) say(b, paintNote.bind(null, n, k, b)); else paintNote(n, k, b);
+        if (!b) continue;
+        // a caption holds its spot unless the arbiter says it was NOT painted (answers false) — then the next one may have it;
+        // an arbiter that paints later (BUILD MODE's voice queue answers nothing) keeps the spot reserved
+        if (say) { if (say(b, paintNote.bind(null, n, k, b)) !== false) placed.push(b); } else { paintNote(n, k, b); placed.push(b); }
       }
     }
 
@@ -311,7 +327,43 @@ const GhostLine = (() => {
     return { setContext, tick, draw, reset, peek };
   }
 
-  return { create };
+  /* ---------- ON THE STATION: where a WOULD-caption may sit (walk 10-14 #13, review 10-14) ----------
+     One law for the live floor (world.js) and BUILD MODE (build.js): a caption crossed the hull into space, and the first
+     cut held it inside the bounding box of every room — on a cross-shaped station mostly empty space between the wings.
+     `rooms` = roomBoxes(...) in the caller's px frame. A caption sits in its OWN room across when it fits (a caption wider
+     than its room stays centred on its tile and may run on over the floor beside it); `slide(box)` is the caller's keep-it-on-
+     the-visible-glass step (it may move the box across, and answers false for a spot off the glass); then every part of the
+     caption must be over some room's body (its tiles plus the north wall face standing above them), and it must overlap its
+     own tile across, so its "HERE" stays beside the machine it names. Answers the moved box, or null: that spot is off the
+     station — the caller's draw() tries the caption's next spot. */
+  function roomBoxes(rects, T, ox, oy, wallUp) {
+    return (rects || []).map(r => ({
+      floor: { x: (r.x1 + ox) * T + 2, y: (r.y1 + oy) * T + 2, w: (r.x2 - r.x1 + 1) * T - 4, h: (r.y2 - r.y1 + 1) * T - 4 },
+      body: { x: (r.x1 + ox) * T, y: (r.y1 + oy) * T - (wallUp || 0), w: (r.x2 - r.x1 + 1) * T, h: (r.y2 - r.y1 + 1) * T + (wallUp || 0) }
+    }));
+  }
+  function onStation(b, n, rooms, T, slide) {
+    if (!b || !rooms || !rooms.length) return b;
+    const px = n ? (Math.floor(n.x) + 0.5) * T : b.x + b.w / 2, py = n ? (Math.floor(n.y) + 0.5) * T : b.y + b.h / 2;
+    let room = null, bd = Infinity;
+    for (const r of rooms) {
+      const f = r.floor, dx = Math.max(f.x - px, 0, px - f.x - f.w), dy = Math.max(f.y - py, 0, py - f.y - f.h), d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; room = f; }   // the room holding its tile (distance 0), else the nearest one
+    }
+    if (room && b.w <= room.w) b.x = Math.max(room.x, Math.min(room.x + room.w - b.w, b.x));
+    if (slide && slide(b) === false) return null;
+    if (n && (b.x >= (Math.floor(n.x) + 1) * T || b.x + b.w <= Math.floor(n.x) * T)) return null;
+    // rooms are tile-aligned: a probe every half tile along the top and bottom edges finds any gap between them
+    const over = (x, y) => rooms.some(r => x >= r.body.x && x <= r.body.x + r.body.w && y >= r.body.y && y <= r.body.y + r.body.h);
+    const x2 = b.x + b.w - 0.5, ys = [b.y + 0.5, b.y + b.h - 0.5];
+    for (let x = b.x + 0.5; ; x = Math.min(x2, x + T / 2)) {
+      for (const y of ys) if (!over(x, y)) return null;
+      if (x >= x2) break;
+    }
+    return b;
+  }
+
+  return { create, roomBoxes, onStation };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = GhostLine;

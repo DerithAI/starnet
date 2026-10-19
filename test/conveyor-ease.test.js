@@ -14,6 +14,7 @@
 const A = require('./_assert.js');
 const fs = require('fs');
 const path = require('path');
+const vm = require('node:vm');
 const read = p => fs.readFileSync(path.join(__dirname, '..', p), 'utf8').replace(/\r\n/g, '\n');
 const panel = read('frontend/app/workflowpanel.js'), build = read('frontend/app/build.js'), css = read('frontend/css/workflow-panel.css'), sidecar = read('sidecar/index.js');
 const at = (src, from, to) => { const a = src.indexOf(from); return a < 0 ? '' : src.slice(a, to ? src.indexOf(to, a) : a + 4000); };
@@ -27,11 +28,11 @@ A.ok(/'<p class="wf-help wf-adds">' \+ addsOnTopHTML\(p\) \+ '<\/p>'/.test(panel
 
 /* ---------- SEND IT A JOB ---------- */
 const trig = at(panel, '  function paintTrigger(body, f, p) {', '  // LINE BUDGET: one save');
-A.ok(/const sendHTML = '<section class="wf-sec wf-send"><h3><span class="n">INBOX<\/span>Send it a job<\/h3>'/.test(trig) && /body\.innerHTML = sendHTML \+ '<section class="wf-sec"><h3>Or start it automatically<\/h3>'/.test(trig),
-  'the INBOX card opens on SEND IT A JOB; the automatic starts follow it');
+A.ok(/const sendHTML = '<section class="wf-sec wf-send"><h3><span class="n">INBOX<\/span>Send a job<\/h3>'/.test(trig) && /body\.innerHTML = sendHTML \+ '<section class="wf-sec" id="wf-starts"><h3>Or start it automatically<\/h3>'/.test(trig),
+  'the INBOX card opens on SEND IT A JOB; the automatic starts follow it (#wf-starts: WORKFLOWS\' ⊕ MAKE IT AUTOMATIC lands there, org P15)');
 const sendDyn = at(panel, '  function sendDynHTML(f) {', '  function jobResultHTML(');
-A.ok(/'▶ SEND IT DOWN THE LINE'/.test(sendDyn) && /H\.runSample\(cc, \{ text: t, onUpdate: \(\) => paint\(false\) \}\);/.test(sendDyn) && /if \(!t\) \{ refuse\('write the job first/.test(sendDyn),   // (refuse: said in the panel under the key — 2026-10-09)
-  '…the same real job as RUN ONE REAL JOB, with the typed text (an empty job is refused with the reason)');
+A.ok(/'▶ SEND A JOB'/.test(sendDyn) && /H\.runSample\(cc, \{ text: t, onUpdate: jobUpdate \}\);/.test(sendDyn) && /if \(!t\) \{ refuse\('write the job first/.test(sendDyn),   // (refuse: said in the panel under the key — 2026-10-09)
+  '…▶ SEND A JOB: the same real job as TEST › SEND A REAL JOB, with the typed text (an empty job is refused with the reason)');
 A.ok(/S\.testJob\[S\.lineKey\] = job\.value; saveTests\(\);/.test(trig) && !/id="wf-job"/.test(panel), '…and the typed job is the line\'s test job (one box, not two)');
 A.ok(/id="wf-send-stop"/.test(sendDyn) && /H\.stopSample\(\)/.test(sendDyn), '…and a job riding the line can be stopped from there');
 /* found walking a fresh station: the job ran, and a card whose job box kept the cursor never showed it riding or what came back */
@@ -46,7 +47,7 @@ A.ok(/job\.blur\(\);/.test(sendDyn) && /const nrIn = \$\('#wf-nr-in'\); if \(nrI
 const res = at(panel, '  function jobResultHTML(mine, f) {', '  function testModeNow() {');
 A.ok(/const runs = \(mine\.runs \|\| \[\]\)\.slice\(\)\.reverse\(\);/.test(res) && /THE RESULT/.test(res) && /HOW EACH STEP DID IT/.test(res), 'a job comes back as the whole result, then how each step did it, in line order');
 A.ok(/P\.stripVerdictLine\(out\)/.test(res) && !/slice\(0, 80\)/.test(res), '…the whole result (a reviewer\'s VERDICT line is the loop\'s signal, not the work) — never cut to 80 characters');
-A.ok(/const pr = r\.dockId \? prop\(r\.dockId\) : null, role = \(pr && pr\.role\) \|\| null,/.test(res), '…each step named by the BAY it ran at');
+A.ok(/const pr = r\.dockId \? prop\(r\.dockId\) : null, role = \(pr && \(pr\.label \|\| pr\.role\)\) \|\| null,/.test(res), '…each step named by the BAY it ran at (its NAME first, then its role — conveyor-ui-15)');
 const rd = at(panel, '  function readStep(r, streamId) {', '  function jobResultHTML(');
 A.ok(/api\('\/api\/transcript\?stream=' \+ encodeURIComponent\(streamId \|\| r\.streamId \|\| ''\) \+ '&agent=' \+ encodeURIComponent\(r\.agentId \|\| 'agent'\) \+ '&runId=' \+ encodeURIComponent\(r\.runId\) \+ '&limit=50'\)/.test(rd),
   'each step\'s reply is read from its own run (the transcript by runId — the OUTBOX window\'s read)');
@@ -55,11 +56,11 @@ A.ok((panel.match(/\? jobResultHTML\(mine, /g) || []).length === 2 && (panel.mat
 
 /* ---------- NOT RIGHT? — say what's wrong, get exact changes, use them, run the same job again ---------- */
 const nr = at(panel, '  function notRightHTML(mine, f) {', '  function testModeNow() {');
-A.ok(/notRightHTML\(mine, f\) \+ '<\/div>';/.test(res) && /NOT RIGHT\?/.test(nr) && /SUGGEST FIXES/.test(nr), 'under a delivered job: NOT RIGHT? — a box to say what is wrong');
+A.ok(/notRightHTML\(mine, f\) \+ '<\/div>';/.test(res) && /✎ NEEDS CHANGES/.test(nr) && /SUGGEST CHANGES/.test(nr) && !/NOT RIGHT\?<|SUGGEST FIXES'/.test(nr), 'under a delivered job: ✎ NEEDS CHANGES — a box to say what is wrong, then SUGGEST CHANGES (the WORKFLOWS words, org P17)');
 A.ok(/api\('\/api\/routing\/fix-suggest', 'POST', \{ complaint, job: mine\.text \|\| '', result: mine\.output \|\| '', steps \}\)/.test(nr), '…sent with the job, the result and every step (what it was told, what it produced)');
 A.ok(/for \(const r of \(mine\.runs \|\| \[\]\)\.slice\(\)\.reverse\(\)\) \{ if \(!r\.dockId\) continue; const got = stepOut\[r\.runId\]; byDock\.set\(r\.dockId/.test(nr), '…each BAY once, with its LAST reply (a looping line runs a BAY more than once)');
 A.ok(/const r = st\.setPropBrief\(x\.dockId, x\.does\);/.test(nr) && /st\.setPropHands\(x\.dockId, x\.hands\)/.test(nr) && /✓ USE THIS/.test(nr), 'USE THIS is the ordinary brief edit (saved, one UNDO) — nothing changes on its own');
-A.ok(/↻ RUN THE SAME JOB AGAIN/.test(nr) && /S\.prevJob = \{ text: mine\.text, output: mine\.output, stamp: mine\.stamp \};/.test(nr) && /H\.runSample\(cc, \{ text: mine\.text/.test(nr), '…then the same job runs again');
+A.ok(/↻ SEND IT AGAIN/.test(nr) && /S\.prevJob = \{ text: mine\.text, output: mine\.output, stamp: mine\.stamp \};/.test(nr) && /H\.runSample\(cc, \{ text: mine\.text/.test(nr), '…then the same job runs again');
 A.ok(/const prev = S\.prevJob && S\.prevJob\.stamp !== mine\.stamp && S\.prevJob\.text === mine\.text \? S\.prevJob : null;/.test(res) && /Last time, before your fix/.test(res), '…and what it gave last time stays one click away beside the new result');
 A.ok(/Suggested by ' \+ esc\(fx\.model/.test(nr) && /\$' \+ \(\+fx\.usd\)\.toFixed\(4\)/.test(nr), 'the suggestion says which model made it and what it cost');
 /* ---------- ★ KEEP AS THE EXAMPLE — consistency: the last step matches a result the Commander liked ---------- */
@@ -68,7 +69,7 @@ A.ok(/const last = \(mine\.runs \|\| \[\]\)\[0\], dockId = last && last\.dockId/
   'KEEP AS THE EXAMPLE writes the result into the instructions of the step whose reply shipped (the delivered run), one UNDO');
 A.ok(/replace\(\/\\n\*MATCH THIS EXAMPLE of a good result\[\\s\\S\]\*\$\/, ''\)/.test(ex) && /Math\.min\(1200, room\)/.test(ex) && /if \(room < 300\) return null;/.test(ex),
   '…as one marked block that replaces any earlier example, bounded to fit the 2000-character brief');
-A.ok(/★ KEEP AS THE EXAMPLE/.test(res) && /★ THE LINE’S EXAMPLE/.test(res), '…a key under the result, then a tag saying it is the line\'s example');
+A.ok(/★ KEEP THIS STYLE/.test(res) && /★ STYLE KEPT/.test(res) && !/KEEP AS THE EXAMPLE</.test(res), '…a key under the result (★ KEEP THIS STYLE, the WORKFLOWS word), then a tag saying the style is kept');
 A.ok(/keepTaste\(mine, last\.runId\);/.test(ex) && /api\('\/api\/taste\/keep-style', 'POST', \{ runId \}\)/.test(ex),
   '…and the same approval becomes the Commander\'s station-wide taste, with the delivered run\'s real reference (DESIGN ANCHOR 10-11)');
 A.ok(/k\.sent\.then\(stored => stored && api\('\/api\/taste\/keep-style', 'POST', \{ runId: k\.runId, undo: true \}\)/.test(ex) && /unkeepTasteIfUndone\(mine\);/.test(panel),
@@ -94,9 +95,28 @@ A.ok(/S\.exampleStamp === mine\.stamp && exampleKept\(mine\)/.test(panel) && /St
 A.ok(/if \(!el \|\| !sr \|\| !sr\.pending\) \{ clearInterval\(liveTimer\); liveTimer = 0; markWorking\(null\); return; \}/.test(panel) && /if \(n\) n\.textContent = now\.text;/.test(panel) && (panel.match(/startLive\(\);/g) || []).length >= 4,
   'the live read-out runs while a job is out whatever card is open, so the diagram\'s working lamp stays true');
 /* ---------- the header's numbers say what they count; the line sentence names the way to run it ---------- */
-const tips = at(panel, '  function todayTip(k) {', '  let todayTimer');
-A.ok(/'<span data-tip="' \+ esc\(todayTip\(c\[0\]\)\) \+ '">/.test(panel) && /one job through a 3-step line is 3 runs/.test(tips) && /A text-only answer is still delivered to the OUTBOX, but it is not counted here/.test(tips),
-  'each TODAY number has a tip saying what it counts (RUNS are step runs; SHIPPED is proven work — a text answer is delivered, not counted)');
+const tipSource = A.fnBody(panel, 'function todayTip(k, v)');
+A.ok(tipSource.length > 0 && tipSource.length < 2200, 'load the actual bounded TODAY tooltip helper');
+const todayTip = vm.runInNewContext(tipSource + '\ntodayTip');
+A.ok(/'<span data-tip="' \+ esc\(todayTip\(c\[0\], c\[1\]\)\) \+ '">/.test(panel), 'each TODAY number renders its own escaped tooltip, from its label and its value');
+// (runtime audit 2026-10-12) an unreadable shipment history reads ? — its tip says the count is unknown, never that nothing shipped
+const unknownTip = todayTip('SHIPPED', '?');
+A.ok(/unknown right now/.test(unknownTip) && /shipment history can't be read/.test(unknownTip) && !/recorded jobs that reached the OUTBOX/.test(unknownTip), 'an unknown SHIPPED says why it is unknown');
+A.eq(todayTip('SHIPPED', '3'), todayTip('SHIPPED'), 'a known SHIPPED keeps its meaning');
+// (runtime repair 2026-10-12) the ? tip promised "the number comes back" — a job that shipped while the history was unreadable is
+// held in memory only, so the tip names the restart that loses it; and a LOWER BOUND (N+) says the real number is higher
+A.ok(/counted once it can be read again, unless the station restarts first/.test(unknownTip) && !/the number comes back when/.test(unknownTip), 'the ? tip never promises the whole count back: ' + unknownTip);
+const atLeastTip = todayTip('SHIPPED', '5000+');
+A.ok(/^SHIPPED\nat least this many/.test(atLeastTip) && /the real number is higher/.test(atLeastTip) && !/recorded jobs that reached the OUTBOX/.test(atLeastTip), 'a lower-bound SHIPPED says it is at least that many: ' + atLeastTip);
+for (const key of ['RUNS', 'SHIPPED', 'FAILED', 'TESTS', 'MEDIAN', '$ TODAY (UTC)']) {
+  A.ok(todayTip(key).length > key.length, 'a meaning is available for the ' + key + ' number');
+}
+const shippedTip = todayTip('SHIPPED');
+A.ok(/step of this line ran today/.test(todayTip('RUNS')) && /one job through a 3-step line is 3 runs/.test(todayTip('RUNS')), 'RUNS counts step runs today, not whole jobs');
+A.ok(/recorded jobs that reached the OUTBOX/.test(shippedTip) && /tool succeeded or a file was saved/.test(shippedTip), 'SHIPPED requires recorded delivery plus productive proof');
+A.ok(/Earlier deliveries without a saved shipment record are not included/.test(shippedTip), 'SHIPPED explicitly excludes unrecorded history');
+A.ok(/Text-only answers still reach the OUTBOX, but do not count here/.test(shippedTip), 'plain answers are delivered but excluded from productive shipments');
+A.ok(/step run today/.test(todayTip('MEDIAN')) && /spent today, against its daily cap/.test(todayTip('$ TODAY (UTC)')), 'time and spending tips retain their daily scope');
 A.ok(/; it runs when you send it a job\. /.test(read('frontend/app/workflowline.js')) && !/runs when you test it/.test(read('frontend/app/workflowline.js') + panel),
   'a line nothing starts by itself "runs when you send it a job" (the INBOX card sends one), not only "when you test it"');
 /* ---------- a job whose steps ran but did not all finish clean (a real model: a RESEARCHER answered, then its model sent empty
@@ -109,8 +129,8 @@ A.ok(/empty: 'gave no final answer', error: 'hit an error', max_iters: 'ran out 
 A.ok(/placeholder="e\.g\. Find this week’s AI news and summarize the three biggest stories\.">' \+ esc\(S\.testJob\[S\.lineKey\] \|\| ''\) \+ '<\/textarea>'/.test(panel), 'a new schedule\'s task starts as the job this line was last sent ("do that every morning" is one click)');
 /* ---------- a READY line says what to do next — and its pill keeps the station's word (station-layout.e2e: panel pill == the status an
    agent reads with station.layout) ---------- */
-A.ok(/<button type="button" class="bb sm refit-primary" id="wf-sendnow" hidden>▶ SEND IT A JOB<\/button>/.test(panel) && /sendNow\.hidden = !sendTo \|\| S\.sel === sendTo; sendNow\.onclick = toSend;/.test(panel),
-  'a READY line shows ▶ SEND IT A JOB beside its pill, taking you to the send box (hidden while the INBOX card is open)');
+A.ok(/<button type="button" class="bb sm refit-primary" id="wf-sendnow" hidden>▶ SEND A JOB<\/button>/.test(panel) && /sendNow\.hidden = !sendTo \|\| S\.sel === sendTo; sendNow\.onclick = toSend;/.test(panel),
+  'a READY line shows ▶ SEND A JOB beside its pill, taking you to the send box (hidden while the INBOX card is open)');
 A.ok(/if \(r\) \{ pill\.textContent = W\.pillText\(r\);/.test(panel) && !/READY · SEND IT A JOB ▸/.test(panel), '…and the pill itself says exactly what an agent reads: READY TO RUN');
 /* ---------- the LAST stage is told its reply IS the result (found on a real model: a WRITER asked for three short stories wrote an
    essay about "the upstream report", because every stage was told to produce output "for the next stage … build on it") ---------- */
@@ -118,6 +138,11 @@ const P = require('../frontend/app/pipeline.js'), Chain = require('../sidecar/ro
 const mid = P.handoffPrompt('3 AI stories, keep it short', 'researcher', 'the notes', 1, 'Write it up.');
 const last = P.handoffPrompt('3 AI stories, keep it short', 'researcher', 'the notes', 1, 'Write it up.', '', true);
 A.ok(/produce the output for the next stage/.test(mid) && !/LAST stage/.test(mid), 'a middle stage keeps its hand-off (and every old caller composes byte-identical turns)');
+/* R27 (live, real model, 2026-10-12): a 4-step line of un-instructed bays handed a two-sentence fun fact LOST it — stage 2, told
+   "Do not restate the upstream output — build on it", answered with only its own new facts, and the next stage is handed nothing
+   but that reply, so the line's result held none of the work that came in. A middle stage hands on the whole work so far. */
+A.ok(/your reply is all the next stage receives/i.test(mid) && /whole work so far with your part done/.test(mid) && /never only your own addition/.test(mid) && !/Do not restate the upstream output/.test(mid),
+  'a middle stage hands on the whole work so far, never only its addition: ' + JSON.stringify(mid.slice(mid.lastIndexOf('\n\n') + 2)));
 A.ok(/You are the LAST stage: your reply is the finished result the requester receives\. Give them exactly what the original request asks for — its format, length and tone/.test(last) && !/next stage|build on it/.test(last),
   'the stage whose reply leaves the line is told it IS the result: the request\'s format, length and tone, never "for the next stage"');
 A.ok(P.parseHandoff(last) && P.parseHandoff(last).original === '3 AI stories, keep it short', '…and the OUTBOX still reads the original request out of it');

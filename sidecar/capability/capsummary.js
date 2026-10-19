@@ -133,7 +133,9 @@ function summarizeCapabilities(resolved, opts) {
         'are unavailable on this run -- each needs either a watched session or an explicit per-routine grant the ' +
         'Commander sets on the routine itself. Placing objects cannot change that here. ' +
         'Do NOT claim, promise, or pretend to do what you lack, and do NOT blame missing credentials for a power you were never granted. ' +
-        'Do everything you genuinely can, then state plainly what you could not do and why, so the Commander can finish it in a watched session.\n';
+        'Do everything you genuinely can, then state plainly what you could not do and why, so the Commander can finish it in a watched session. ' +
+        'Say it in the Commander\'s terms, in one short closing clause (e.g. "Not saved as a file — copy it from here."), and never open with or explain approval rules, run modes or station policy; ' +
+        'if a file could not be saved, put its content in your reply.\n';
     }
   }
 

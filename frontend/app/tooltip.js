@@ -41,13 +41,16 @@
   /* place(anchor, tip, viewport) → {left, top, below, arrowX} — ALL inputs and outputs in ZOOMED px.
      Prefers above the anchor; flips below when the card would clip the top edge; clamps horizontally and
      reports where the arrow must sit so it keeps pointing at the anchor's centre after clamping.
+     `preferBelow` (an anchor's `data-tip-below`) flips the preference for a tile in a grid, whose tip above
+     would sit on the VALUE of the tile over it; it still goes above when there is no room below.
      Pure — no DOM — so the geometry is unit-testable. */
-  function place(anchor, tip, viewport) {
+  function place(anchor, tip, viewport, preferBelow) {
     const centre = anchor.left + anchor.width / 2;
     let left = centre - tip.width / 2;
     left = Math.max(EDGE, Math.min(left, viewport.width - tip.width - EDGE));
     const roomAbove = anchor.top - tip.height - GAP;
-    const below = roomAbove < EDGE;
+    const fitsBelow = anchor.top + anchor.height + GAP + tip.height <= viewport.height - EDGE;
+    const below = preferBelow ? (fitsBelow || roomAbove < EDGE) : roomAbove < EDGE;
     const top = below ? (anchor.top + anchor.height + GAP) : roomAbove;
     // the arrow tracks the anchor centre, but never past the card's own rounded corners
     const arrowX = Math.max(10, Math.min(centre - left, tip.width - 10));
@@ -113,15 +116,21 @@
       // (2026-09-30) a Build Library tile's tip — and a Workflow panel tile's — is its name, then what it does, on lines of their
       // own, in the station glass
       card.classList.toggle('glass-tip', !!el.closest('.refit-dock, .wf-panel'));
+      // (org pass 10-14, P24) a saved-file key's tip carries a full path: a wider card that keeps its line breaks
+      card.classList.toggle('path-tip', el.hasAttribute('data-tip-path'));
       card.textContent = text;
       card.hidden = false;
       card.classList.remove('show');
       const z = zoom();
-      const a = el.getBoundingClientRect(), t = card.getBoundingClientRect();
+      /* (org pass 10-14, P28 polish) a tip on a thin part of a larger instrument — the topbar COMMANDER chip's 2px XP bar — places
+         against the instrument (its [data-tip-host]), so the card never lands on that instrument's own 'Lv 1' */
+      const host = el.closest ? el.closest('[data-tip-host]') : null;
+      const a = (host || el).getBoundingClientRect(), t = card.getBoundingClientRect();
       const p = place(
         { left: a.left / z, top: a.top / z, width: a.width / z, height: a.height / z },
         { width: t.width / z, height: t.height / z },
-        { width: window.innerWidth / z, height: window.innerHeight / z }
+        { width: window.innerWidth / z, height: window.innerHeight / z },
+        el.hasAttribute('data-tip-below')
       );
       card.style.left = p.left + 'px';
       card.style.top = p.top + 'px';

@@ -48,9 +48,12 @@ function observeSelection() {
       connected: input.isConnected, files: files(), events };
   } };
 }
+// A page-side refusal reaches the model as its one-line reason: V8 stack frames and the "Error:" prefix are noise.
 function pageError(reply, fallback) {
   const d = reply && reply.exceptionDetails;
-  return d ? new Error((d.exception && d.exception.description) || d.text || fallback) : null;
+  if (!d) return null;
+  const raw = (d.exception && d.exception.description) || d.text || fallback;
+  return new Error(String(raw).split('\n')[0].replace(/^(?:Uncaught\s+)?Error:\s*/, '') || fallback);
 }
 function matches(files, expected) {
   return Array.isArray(files) && files.length === expected.length
@@ -71,8 +74,20 @@ async function selectFiles({ cdp: c, node, paths, expected, settle }) {
     if (!monitorId || monitor.exceptionDetails) throw new Error('could not observe the file input; no file was selected');
     await c.send('DOM.setFileInputFiles', { files: paths, objectId });
     await settle(c);
-    const readback = await c.send('Runtime.callFunctionOn', { objectId: monitorId,
-      functionDeclaration: 'function () { return this.finish(); }', returnByValue: true });
+    /* A form that submits on change (onchange="this.form.submit()") navigates before the readback, and CDP answers
+       "Could not find object with given id". The files WERE handed to the input, so this is not a plain failure:
+       the upload may already have gone out, and a blind retry could send it twice. Tab loss keeps its own error. */
+    let readback;
+    try {
+      readback = await c.send('Runtime.callFunctionOn', { objectId: monitorId,
+        functionDeclaration: 'function () { return this.finish(); }', returnByValue: true });
+    } catch (e) {
+      if (e && (e.code === 'REF_TAB_CLOSED' || e.code === 'TARGET_DETACHED')) throw e;
+      const lost = new Error('the files were handed to the input, but the selection could not be read back (the page may have navigated or reloaded); the form may already have been submitted. Take a fresh browser.snapshot before retrying');
+      lost.effectUnknown = true;
+      lost.cause = e;
+      throw lost;
+    }
     if (readback.exceptionDetails) throw new Error('file selection could not be read back; inspect the page before retrying');
     const receipt = readback.result && readback.result.value;
     const wanted = expected || paths.map(p => ({ name: path.basename(p) }));

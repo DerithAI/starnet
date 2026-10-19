@@ -56,6 +56,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   // SAME ACCESS AS THE ORCHESTRATOR: a worker shares the lead's consent broker (its APPROVAL posture + grants)
   // and is handed the WORKBENCH, so shell/writes are available and gated by the lead's approvals — not auto-denied.
   A.ok(ro.calls[0].consent === leadBroker, "worker shares the lead's consent broker (same access as the orchestrator)");
+  A.ok(ro.calls[0].detachedConsent !== true, "a FOREGROUND worker's asks end with the lead's run (the lead is waiting on it)");
   A.ok(Array.isArray(ro.calls[0].extraObjects) && ro.calls[0].extraObjects.some(o => o.objectType === 'workbench'), 'worker is equipped with the workbench (terminal) on top of the office');
   A.eq(ro.calls[0].isTask, true, 'worker run is a task (tool-capable)');
   A.ok(ro.calls[0].runId && ro.calls[0].runId !== ro.calls[1].runId, 'each child gets a distinct runId');
@@ -134,6 +135,73 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   A.eq(row.durationMs, 12, 'dispatch result exposes worker elapsed time');
 }
 
+// ---- a FILE NAME in a worker's brief is not a one-host check: the worker keeps its ordinary budgets (soak 10-15) ----
+{
+  const ro = fakeRunOnce();
+  const roster = new Map([['coder', { system: 'C' }]]);
+  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), workerMaxIters: 16 });
+  await dispatchTool.run({ workers: [{ agentId: 'coder', prompt: 'Review main.py and fix the bug' }] }, { agentId: 'lead', runId: 'lead-run', emit: () => {} });
+  A.eq(ro.calls[0].maxIters, 16, 'a worker asked to fix main.py keeps the ordinary worker turn cap (not the 3-turn one-host cap)');
+  A.eq(ro.calls[0].maxToolCalls, undefined, 'a worker asked to fix main.py has no 3-tool one-host cap');
+}
+
+/* ---- ONE BRIEF, ONE ANSWER (review 10-15): the dispatcher classifies a worker's brief with the SAME file probe the
+   worker's own run uses (index.js runFileExists: that worker's workspace + the project it runs in). Before, a worker
+   briefed "check about.me" with about.me in its workspace was capped at 3 turns / 3 tools / 45s by the dispatcher
+   while its own run was not a one-host check. Dispatch, spawn and resume all ask the probe. ---- */
+{
+  const probed = [];
+  const fileProbe = (aid, root) => { probed.push([aid, root]); return name => name === 'about.me'; };
+  const ro = fakeRunOnce();
+  const roster = new Map([['coder', { system: 'C' }]]);
+  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), workerMaxIters: 16, fileProbe });
+  await dispatchTool.run({ workers: [{ agentId: 'coder', prompt: 'check about.me' }, { agentId: 'coder', prompt: 'check example.com' }] }, { agentId: 'lead', runId: 'lead-run', emit: () => {}, projectRoot: '/proj/site' });
+  A.eq(ro.calls[0].maxIters, 16, 'dispatch: a worker briefed on a file in its workspace keeps the ordinary turn cap');
+  A.eq(ro.calls[0].maxToolCalls, undefined, 'dispatch: a worker briefed on a file in its workspace has no 3-tool cap');
+  A.eq(ro.calls[1].maxToolCalls, 3, 'dispatch: a real one-host brief is still capped with the probe wired');
+  A.ok(probed.some(([aid, root]) => aid === 'coder' && root === '/proj/site'), 'dispatch: the probe is asked for the worker agent and the project it runs in');
+}
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-spawn-probe-'));
+  try {
+    const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'sub.json'), clock: { now: () => 1000 }, emit: () => {}, newId: counter() });
+    const probed = [];
+    const fileProbe = (aid, r) => { probed.push([aid, r]); return name => name === 'about.me'; };
+    const ro = fakeRunOnce();
+    const { spawnTool } = makeOrchestrationTools({ runOnce: ro, roster: () => new Map(), key: 'k', model: 'm', selfSystem: 'S', newId: counter(), workerMaxIters: 9, fileProbe, subagents });
+    await spawnTool.run({ tasks: [{ prompt: 'check about.me' }, { prompt: 'check example.com' }] }, { agentId: 'lead', emit: () => {} });
+    const fileRun = ro.calls.find(c => /about\.me/.test(JSON.stringify(c.messages)));
+    const siteRun = ro.calls.find(c => /example\.com/.test(JSON.stringify(c.messages)));
+    A.eq(fileRun && fileRun.maxIters, 9, 'spawn: a clone briefed on a file in its workspace keeps the ordinary turn cap');
+    A.eq(fileRun && fileRun.maxToolCalls, undefined, 'spawn: a clone briefed on a file in its workspace has no 3-tool cap');
+    A.eq(siteRun && siteRun.maxToolCalls, 3, 'spawn: a real one-host brief is still capped with the probe wired');
+    A.ok(!!fileRun && probed.some(([aid]) => aid === fileRun.agentId), "spawn: the probe is asked for the clone's own ephemeral agent id");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-orch-resume-probe-'));
+  try {
+    const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'subagents.json'), clock: { now: () => 1000 }, emit: () => {}, newId: counter() });
+    const first = subagents.start({ leadId: 'lead', agentId: 'researcher', prompt: 'check about.me', runId: 'run_a', projectRoot: '/original/project' }, async () => new Promise(() => {}));
+    await tick();
+    subagents.interrupt(first.id, 'lead');
+    const reloaded = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'subagents.json'), clock: { now: () => 1001 }, emit: () => {}, newId: counter() });
+    const probed = [];
+    const fileProbe = (aid, r) => { probed.push([aid, r]); return name => name === 'about.me'; };
+    const ro = fakeRunOnce(async () => ({ reason: 'done', messages: [{ role: 'assistant', content: 'resumed' }], usd: 0 }));
+    const { resumeTool } = makeOrchestrationTools({ runOnce: ro, roster: () => new Map([['researcher', { system: 'R' }]]), key: 'k', model: 'm', newId: counter(), subagents: reloaded, workerMaxIters: 7, fileProbe });
+    await resumeTool.run({ id: first.id }, { agentId: 'lead', emit: () => {} });
+    await tick(); await tick();
+    A.eq(ro.calls[0].maxIters, 7, 'resume: a worker briefed on a file in its workspace keeps the ordinary turn cap');
+    A.eq(ro.calls[0].maxToolCalls, undefined, 'resume: a worker briefed on a file in its workspace has no 3-tool cap');
+    A.ok(probed.some(([aid, r]) => aid === 'researcher' && r === '/original/project'), 'resume: the probe is asked for the stored worker and its stored project');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // ---- child emit forwarding: ONLY lifecycle/cost reach the lead bus (no token/COMMS pollution) ----
 {
   const ro = fakeRunOnce(async (o) => {
@@ -173,7 +241,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   A.ok(Array.isArray(row.artifacts) && row.artifacts.length === 1, 'the dispatch result carries the worker artifact ledger');
   A.eq(row.artifacts[0].workspace, 'designer', "each artifact is stamped with the owning WORKSPACE (the lead can answer 'where is it' truthfully)");
   A.eq(row.artifacts[0].path, 'images/x.png', 'the artifact keeps its jail-relative path');
-  A.ok(/private workspace/.test(dispatchTool.description) && /cannot fs\.read/.test(dispatchTool.description), "the tool contract teaches the lead that worker files are NOT in its own jail (the ghost-file reply)");
+  A.ok(/private workspace/.test(dispatchTool.description) && /fs_read EXACTLY the files a worker's row lists/.test(dispatchTool.description) && /never guess another path/.test(dispatchTool.description) && /ORDER: workers run one after another/.test(dispatchTool.description),
+    "the tool contract teaches the lead that worker files live in the worker's workspace and only the listed files are readable (the ghost-file reply)");
 }
 
 // ---- self / unknown targets are rejected WITHOUT a run ----
@@ -242,8 +311,13 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     const out = await dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'x' }], background: true }, { agentId: 'lead', emit: () => {} });
     const handle = JSON.parse(out.content)[0];
     A.ok(handle.id && handle.status === 'running', 'background dispatch returns a running durable handle immediately');
+    // the lead reads the handle it needs, never the run's internals (rc walk 10-14: "running under runId 8b7d03a9-…")
+    A.eq(Object.keys(handle).sort().join(','), 'agentId,generation,id,status', 'the start row is the handle (id, generation, who, state): ' + out.content);
+    A.ok(!/runId|parentRunId|leadId/.test(out.content), 'no run ids reach the model to be quoted');
     await tick();
     A.eq(ro.calls[0].maxIters, 0, 'background workers also have no default iteration ceiling');
+    // its asks outlive the lead's turn (index.js askHuman): the lead ends right after the hand-off, the worker runs on
+    A.eq(ro.calls[0].detachedConsent, true, "a BACKGROUND worker's asks are detached from the lead's turn");
     await tick(); await tick();
     const rec = subagents.get(handle.id);
     A.eq(rec.status, 'done', 'background worker completes into the durable record');
@@ -291,8 +365,9 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     subagents.interrupt(first.id, 'lead');
     const reloaded = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'subagents.json'), clock: { now: () => 1001 }, emit: () => {}, newId: counter() });
     const ro = fakeRunOnce(async () => ({ reason: 'done', messages: [{ role: 'assistant', content: 'resumed' }], usd: 0 }));
+    const finalized = [];
     const roster = new Map([['researcher', { system: 'R' }]]);
-    const { resumeTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), subagents: reloaded, workerMaxIters: 7 });
+    const { resumeTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), subagents: reloaded, workerMaxIters: 7, finalizeDispatchDelivery: (id, envelope) => finalized.push({ id, envelope }) });
     A.eq(resumeTool.preconditions[0].requiredTool, 'team.subagents', 'team.resume declares inspection as a machine-readable precondition');
     let missing = null;
     try { await resumeTool.run({ id: 'missing' }, { agentId: 'lead', emit: () => {} }); } catch (e) { missing = e; }
@@ -301,12 +376,43 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     A.eq(out.summary, 'resumed', 'team.resume restarts the interrupted worker');
     await tick(); await tick();
     A.eq(ro.calls[0].maxIters, 7, 'resumed worker receives the configured iteration cap');
+    // a resumed worker runs on in the background past the resuming lead's turn, so its asks must outlive that turn too
+    A.eq(ro.calls[0].detachedConsent, true, "a RESUMED background worker's asks are detached from the lead's turn");
+    A.eq(ro.calls[0].dispatchDelivery.state, 'pending', 'resumed execution is provisional until validated');
+    A.eq(finalized.length, 1, 'resumed worker finalizes once');
+    A.eq(finalized[0].id, ro.calls[0].runId, 'resumed finalization belongs to the current generation run');
+    A.eq(finalized[0].envelope.text, 'resumed', 'resume persists the validated answer');
     A.ok(!ro.calls[0].resumedTaint, 'a clean stored task carries no resumed taint');
     A.eq(ro.calls[0].projectRoot, '/original/project', 'resume retains the original project from its durable record');
     A.eq(ro.calls[0].workdir, '/original/project/package', 'resume retains the original execution directory');
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   }
+}
+
+// Resumed structured repair keeps worker-stream identity for exact evidence and finalized long-answer recovery.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-orch-resume-repair-'));
+  try {
+    const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'subagents.json'), clock: { now: () => 1000 }, emit: () => {}, newId: counter() });
+    const first = subagents.start({ leadId: 'lead', agentId: 'researcher', prompt: 'retry', runId: 'run_before', streamId: 'research', parentStreamId: 'home', resultSchema: { type: 'object' } }, async () => new Promise(() => {}));
+    await tick(); subagents.interrupt(first.id, 'lead');
+    const repaired = JSON.stringify({ answer: 'long result '.repeat(2500) });
+    const ro = fakeRunOnce(async o => ({ reason: 'done', messages: [{ role: 'assistant', content: o.outputOnly ? repaired : 'invalid JSON' }], usd: 0 }));
+    const finalized = [];
+    const { resumeTool } = makeOrchestrationTools({ runOnce: ro, roster: () => new Map([['researcher', { system: 'R' }]]), key: 'k', model: 'm', newId: counter(), subagents,
+      sessionContext: id => ({ title: 'Research title', messages: [] }), finalizeDispatchDelivery: (id, envelope) => finalized.push({ id, envelope }) });
+    await resumeTool.run({ id: first.id }, { agentId: 'lead', emit: () => {} });
+    await tick(); await tick();
+    A.eq(ro.calls.length, 2, 'resumed structured result performs one bounded repair');
+    A.eq(ro.calls.map(o => o.streamId), ['research', 'research'], 'resumed original and repair share the worker stream');
+    A.eq(ro.calls.map(o => o.sessionTitle), ['Research title', 'Research title'], 'resumed repair retains the stable session title');
+    A.eq(ro.calls[1].dispatchDelivery.state, 'internal', 'resumed repair remains internal execution evidence');
+    A.eq(finalized.length, 1, 'resumed repaired dispatch finalizes once');
+    A.eq(finalized[0].id, ro.calls[0].runId, 'resumed repair finalizes original generation identity');
+    A.eq(finalized[0].envelope.repairRunId, ro.calls[1].runId, 'resumed final envelope links exact repair evidence');
+    A.eq(finalized[0].envelope.text, repaired, 'resumed finalization receives full validated answer beyond 24k preview');
+  } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
 }
 
 // ---- (sweep 2026-10-02) team.resume NEVER WIDENS: a worker started under restrictions (phone / non-owner / payload)
@@ -415,6 +521,25 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   A.ok(!('workstation' in parsed), 'a bare-id ack claims NO desk (the station never said it placed one)');
   A.ok(!/desk/i.test(out.summary), 'and the summary stays silent about furniture it cannot source');
   A.ok(/team\.dispatch/.test(out.summary), 'the summary nudges the lead to delegate to the new worker');
+  /* CREW INTO THIS CHAT (rc walk 10-14): "bring two crew in to help me write a launch post" summoned two, then background-
+     dispatched them — the chat never got them. The result names both next steps by the Commander's words, and reveals the
+     deferred station.control so seating the hire here is one call away. */
+  A.ok(/to work IN this chat with the Commander: station\.control \{"action": "group\.add", "args": \{"agents": \["Researcher"\]\}\}; a job in its own thread: team\.dispatch/.test(parsed.next), 'the result names group.add for this chat and team.dispatch for a job: ' + parsed.next);
+  A.eq(out.control && out.control.revealTools, ['team.dispatch', 'station.control'], 'and reveals both');
+}
+
+// ---- the always-loaded descriptions say where a worker works, and what seats crew in this chat ----
+{
+  const { dispatchTool, summonTool } = makeOrchestrationTools({ runOnce: fakeRunOnce(), roster: () => new Map(), key: 'k', model: 'm', newId: counter() });
+  A.ok(/^Delegate subtasks to your specialist crew, each worker in its own thread \(never in this chat\)\./.test(dispatchTool.description), 'team.dispatch\'s first sentence (tool_search\'s gist) says a worker never sits in this chat');
+  A.ok(/To bring crew INTO this chat to work with the Commander, use station\.control group\.add instead \(tool_search "group add"\)/.test(dispatchTool.description), 'and names the call that does');
+  A.ok(/Returns the new agentId: bring it INTO this chat with station\.control group\.add, or hand it work with team\.dispatch/.test(summonTool.description), 'team.summon names both next steps');
+}
+// the declined summon is said to the Commander, never about them
+{
+  const { summonTool } = makeOrchestrationTools({ runOnce: fakeRunOnce(), roster: () => new Map(), key: 'k', model: 'm', newId: counter() });
+  const out = await summonTool.run({ name: 'Ghost' }, { agentId: 'agent', summon: async () => null });
+  A.ok(!/the Commander declined/i.test(out.content.replace(/never "the Commander declined"/, '')) && /say it to the Commander as "you"/.test(out.content), 'a declined summon is said to the Commander as "you": ' + out.content);
 }
 
 // ---- THE DESK RIDES ALONG: the station acks { agentId, desk } and the tool reports WHERE it landed ----
@@ -537,6 +662,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     A.ok(handle.id && handle.status === 'running', 'background spawn returns a running durable handle immediately');
     A.eq(handle.label, 'subagent 1', 'the handle carries the label');
     await tick(); await tick();
+    A.eq(ro.calls[0].detachedConsent, true, "a BACKGROUND clone's asks are detached from the lead's turn");
     A.eq(subagents.get(handle.id).status, 'done', 'the background clone completes into the durable record');
   } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
 }
@@ -674,7 +800,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 //      the Commander had paid for all of them. Now: one worker's slice ends ALONE, its siblings' work survives,
 //      and the row says so. Driven through the REAL registry (which owns the outer timeout). ----
 {
-  const finished = [];
+  const finished = [], finalized = [];
   let clock = 0;
   const runOnce = async (o) => {
     const slow = o.agentId === 'analyst';
@@ -688,7 +814,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   const roster = new Map([['researcher', {}], ['scribe', {}], ['analyst', {}]]);
   const tools = makeOrchestrationTools({
     runOnce, roster: () => roster, key: 'k', model: 'm', newId: counter(),
-    dispatchTimeoutMs: 600, now: () => clock
+    dispatchTimeoutMs: 600, now: () => clock, finalizeDispatchDelivery: (id, envelope) => finalized.push({ id, envelope })
   });
   const reg = makeRegistry();
   tools.register(reg);
@@ -704,6 +830,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   A.ok(/REAL WORK from researcher/.test(rows[0].result), "the finished worker's actual output SURVIVES the straggler (the escape)");
   A.ok(/REAL WORK from scribe/.test(rows[1].result), 'the second finished worker survives too');
   A.eq(rows[2].reason, 'timeout', 'the worker that blew its slice is reported as timeout, not as done');
+  A.eq(finalized.find(x => x.id === rows[2].runId).envelope.reason, 'timeout', 'the durable delivery keeps the timeout even if execution returned done');
+  A.eq(finalized.length, 3, 'each completed or timed-out worker finalizes exactly once');
   A.ok(/STOPPED/.test(rows[2].result) && /do not present it as complete/i.test(rows[2].result),
     'the timeout row tells the lead not to pass the unfinished part off as complete');
   A.ok(/out of time/.test(r.summary), 'the summary names the timeout so the model sees it before reading rows');
@@ -1033,6 +1161,99 @@ for (const reason of ['done', 'budget', 'max_iters', 'aborted']) {
   A.eq(row.validation.state, 'invalid', 'the terminal validation state is explicit');
 }
 
+// The execution ending is provisional until structured-result validation (including repair) finishes.
+{
+  const { makeRunStore } = require('../sidecar/runstore.js');
+  const lines = [], io = { readAll: () => lines.slice(), append: row => lines.push(row) };
+  const store = makeRunStore({ io, clock: { now: () => 1000 } });
+  let releaseRepair, calls = 0;
+  const ro = fakeRunOnce(async o => {
+    const first = ++calls === 1;
+    if (!first) await new Promise(resolve => { releaseRepair = resolve; });
+    const text = first ? 'not JSON' : '{"answer":"validated"}';
+    store.record({ ...o, reason: 'done', usd: first ? 0.2 : 0.1, deliveryText: text });
+    return { reason: 'done', messages: [{ role: 'assistant', content: text }], usd: first ? 0.2 : 0.1 };
+  });
+  const station = fakeStation(SESSIONS), timeline = [];
+  const request = station.request;
+  station.request = async (verb, args) => { timeline.push(verb); return request(verb, args); };
+  const roster = new Map([['researcher', { system: 'R' }]]);
+  const tools = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), station,
+    runRecord: id => store.latest(id), finalizeDispatchDelivery: (id, envelope) => { timeline.push('persist-final'); return store.finalizeDelivery(id, envelope); } });
+  const context = { agentId: 'lead', runId: 'lead-run', emit: () => {} };
+  const running = tools.dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'answer', session: 'research',
+    resultSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } }] }, context);
+  await tick();
+  A.ok(typeof releaseRepair === 'function', 'the structured repair is deliberately held in flight');
+  A.eq(store.latest(ro.calls[0].runId).dispatchDelivery.state, 'pending', 'raw output is durably provisional while repair is running');
+  A.eq(station.seen.filter(x => x.verb === 'station.dispatch_end').length, 0, 'no dispatch end is emitted before result validation');
+  A.eq(station.seen.filter(x => x.verb === 'station.deliver').length, 0, 'raw output is never delivered as the answer');
+  A.ok(/delivery pending/.test((await tools.subagentsTool.run({ runId: ro.calls[0].runId }, context)).summary), 'foreground verification does not call provisional delivery done');
+  releaseRepair();
+  const row = JSON.parse((await running).content)[0];
+  const final = store.latest(row.runId);
+  A.eq(final.dispatchDelivery.text, '{"answer":"validated"}', 'the original dispatch records only the validated answer as its final delivery');
+  A.eq(final.dispatchDelivery.reason, 'done', 'finalized dispatch stores the verified completion reason');
+  A.eq(store.latest(row.repairRunId).dispatchDelivery.state, 'internal', 'repair execution is marked as never independently deliverable');
+  A.eq(store.count(), 2, 'original plus repair remain exactly two real executions');
+  A.ok(Math.abs(store.all().reduce((sum, r) => sum + r.usd, 0) - 0.3) < 1e-9, 'delivery patch cannot double-count original or repair spend');
+  A.ok(timeline.indexOf('persist-final') < timeline.indexOf('station.dispatch_end'), 'durable finalization precedes live settlement');
+  const ended = station.seen.find(x => x.verb === 'station.dispatch_end');
+  A.eq(ended.args.runId, row.runId, 'validated settlement keeps the original run identity');
+  A.eq(ended.args.dispatchDelivery.text, final.dispatchDelivery.text, 'settlement and durable recovery share the same answer authority');
+  const delivered = station.seen.find(x => x.verb === 'station.deliver');
+  A.eq(delivered.args.text, final.dispatchDelivery.text, 'live delivery uses the same validated answer as recovery');
+  A.eq(delivered.args.runId, row.runId, 'repair never changes the delivery idempotency key');
+  const restarted = makeRunStore({ io, clock: { now: () => 2000 } });
+  A.eq(restarted.latest(row.runId).dispatchDelivery, final.dispatchDelivery, 'a headless/restarted reader recovers the final envelope');
+}
+
+// Invalid output, empty failures, and pre-run refusals settle truthfully without inventing a completed answer.
+for (const mode of ['invalid', 'error', 'refused']) {
+  const { makeRunStore } = require('../sidecar/runstore.js');
+  const store = makeRunStore({ clock: { now: () => 1000 } });
+  const ro = fakeRunOnce(async o => {
+    if (mode === 'refused') return null;
+    store.record({ ...o, reason: mode === 'error' ? 'error' : 'done', deliveryText: 'invalid' });
+    if (mode === 'error') throw new Error('provider failed');
+    return { reason: 'done', messages: [{ role: 'assistant', content: 'invalid' }], usd: 0 };
+  });
+  const station = fakeStation(SESSIONS), finals = [];
+  const tools = makeOrchestrationTools({ runOnce: ro, roster: () => new Map([['researcher', { system: 'R' }]]), key: 'k', model: 'm', newId: counter(), station,
+    finalizeDispatchDelivery: (id, envelope) => { finals.push({ id, envelope }); return store.finalizeDelivery(id, envelope); } });
+  const result = JSON.parse((await tools.dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'answer', session: 'research', resultSchema: { type: 'object' } }] }, leadCtx())).content)[0];
+  const expected = mode === 'invalid' ? 'invalid-result' : mode;
+  A.eq(result.reason, expected, mode + ' returns the real dispatch terminal');
+  const attempts = mode === 'refused' ? 2 : 1; // a saturated admission gate retries once, with a fresh run id
+  A.eq(finals.length, attempts, mode + ' finalizes each real attempt once');
+  A.eq(new Set(finals.map(x => x.id)).size, attempts, mode + ' retries retain distinct attempt identities');
+  A.eq(finals[0].envelope.reason, expected, mode + ' finalization never promotes a failure to done');
+  A.eq(station.seen.filter(x => x.verb === 'station.dispatch_end').length, attempts, mode + ' settles each attempt once after finalization');
+  A.eq(station.seen.find(x => x.verb === 'station.dispatch_end').args.reason, expected, mode + ' live end carries its explicit outcome');
+  A.eq(station.seen.filter(x => x.verb === 'station.deliver').length, 0, mode + ' never delivers raw output as completed work');
+  if (mode === 'refused') A.eq(store.count(), 0, 'a pre-run refusal never fabricates an execution/spend row');
+  else A.eq(store.latest(result.runId).dispatchDelivery.reason, expected, mode + ' durable outcome matches the live dispatch');
+}
+
+// Review threads-backend-08: a refused (never-started) worker filed no run row, so there is nothing to make
+// recoverable. It must not claim "The result is available now…" nor log a finalize failure per refusal.
+{
+  const { makeRunStore } = require('../sidecar/runstore.js');
+  const failopen = require('../sidecar/failopen.js');
+  const before = failopen.counts()['dispatch.finalize-delivery'] || 0;
+  const store = makeRunStore({ clock: { now: () => 1000 } });
+  const ro = fakeRunOnce(async () => null);
+  const tools = makeOrchestrationTools({ runOnce: ro, roster: () => new Map([['researcher', { system: 'R' }]]), key: 'k', model: 'm', newId: counter(), station: fakeStation(SESSIONS),
+    runRecord: id => store.latest(id),
+    // the production finalizer: it throws when the run filed no execution row
+    finalizeDispatchDelivery: (id, envelope) => require('../sidecar/dispatch-delivery.js').finalizeDispatchDelivery({ runStore: store, transcriptStore: null, redact: s => s, hash: s => s }, id, envelope) });
+  const out =(await tools.dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'answer', session: 'research' }] }, leadCtx())).content;
+  const result = JSON.parse(out)[0];
+  A.eq(result.reason, 'refused', 'the refusal is reported as such');
+  A.ok(!/result is available now|recovery record could not be saved/.test(out), 'a refused worker never claims a result exists: ' + out);
+  A.eq(failopen.counts()['dispatch.finalize-delivery'] || 0, before, 'no finalize failure is logged for a run that never started');
+}
+
 // ---- G6 spawn quality gate and generation-bound steering tool ----
 {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-orch-g6-'));
@@ -1079,7 +1300,12 @@ for (const reason of ['done', 'budget', 'max_iters', 'aborted']) {
   A.ok(opening.indexOf('[LEAD CONTEXT') === 0, 'the handoff block leads the opening message');
   A.ok(opening.indexOf('config lives at /srv/app/config.yaml') > 0, 'the lead-authored context rides to the worker verbatim');
   A.ok(opening.indexOf('[YOUR SUBTASK]') > 0 && opening.indexOf('summarize the config') > opening.indexOf('[YOUR SUBTASK]'), 'the ask itself stays LAST, under its own header');
-  A.eq(String(ro.calls[1].messages[0].content), 'no-context control', 'a worker without context gets the exact pre-G6 opening message (byte-identical)');
+  // the second worker of a SEQUENTIAL dispatch is now handed the first worker's output (the hand-off, below) — so
+  // the byte-identical control is a worker dispatched alone
+  const roSolo = fakeRunOnce();
+  const { dispatchTool: dSolo } = makeOrchestrationTools({ runOnce: roSolo, roster: () => roster, key: 'k', model: 'lead-model', newId: counter() });
+  await dSolo.run({ workers: [{ agentId: 'researcher', prompt: 'no-context control' }] }, ctx);
+  A.eq(String(roSolo.calls[0].messages[0].content), 'no-context control', 'a lone worker without context gets the exact pre-G6 opening message (byte-identical)');
 
   // context composes with a result contract: context first, prompt, then the JSON contract suffix.
   const ro2 = fakeRunOnce(async () => ({ reason: 'done', messages: [{ role: 'assistant', content: '{"ok":true}' }], usd: 0.1 }));
@@ -1167,6 +1393,106 @@ for (const reason of ['done', 'budget', 'max_iters', 'aborted']) {
     A.eq((await noHistory.run({ runId: row.runId }, ctx)).summary, 'unavailable', 'without a run-history reader the lookup says so instead of guessing');
   } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
 }
+// ---- THE HAND-OFF BETWEEN WORKERS (2026-10-13 live walkthrough): "a researcher finds 3 launch emails, a copywriter
+//      drafts ours from them" — the copywriter used to be told nothing and re-did the research. A later worker in a
+//      SEQUENTIAL dispatch opens with the earlier workers' output + the exact files they saved, may read those files,
+//      and inherits their taint; a parallel dispatch hands nothing on. ----
+{
+  const ro = fakeRunOnce(async (o) => o.agentId === 'researcher'
+    ? { reason: 'done', messages: [{ role: 'assistant', content: 'FOUND: LM Studio, Ollama, Claude launch emails' }], usd: 0.1,
+        artifacts: [{ kind: 'file', path: 'competitor-launch-emails.md', bytes: 6900 }], taintedBy: 'web.search' }
+    : { reason: 'done', messages: [{ role: 'assistant', content: 'DRAFT: launch email' }], usd: 0.1 });
+  const roster = new Map([['researcher', { name: 'Research' }], ['copywriter', { name: 'Copy' }]]);
+  const granted = [];
+  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(),
+    handoffFiles: async (aid, list) => list.map(a => ({ path: a.path, abs: '/ws/' + aid + '/' + a.path })),
+    grantReads: (paths) => granted.push(...paths) });
+  const r = await dispatchTool.run({ workers: [
+    { agentId: 'researcher', prompt: 'find 3 competitor launch emails' },
+    { agentId: 'copywriter', prompt: 'draft our launch email from the research' }
+  ] }, { agentId: 'lead', signal: { aborted: false }, emit: () => {}, consent: {} });
+  const first = String(ro.calls[0].messages[0].content), second = String(ro.calls[1].messages[0].content);
+  A.eq(first, 'find 3 competitor launch emails', 'the first worker is handed nothing (there is nothing before it)');
+  A.ok(second.indexOf('[EARLIER WORKERS IN THIS HAND-OFF') === 0, 'the second worker opens with the earlier workers\' output');
+  A.ok(/RESEARCH[^\n]*:\nFOUND: LM Studio, Ollama, Claude launch emails/.test(second), 'it is the researcher\'s actual result, under its name');
+  A.ok(second.indexOf('Files: /ws/researcher/competitor-launch-emails.md') > 0, 'with the exact file the researcher saved');
+  A.ok(second.indexOf('[YOUR SUBTASK]\ndraft our launch email from the research') > 0, 'and the copywriter\'s own ask stays last');
+  A.eq(JSON.stringify(ro.calls[1].handoffReads), JSON.stringify(['/ws/researcher/competitor-launch-emails.md']), 'the copywriter may read exactly that file');
+  A.eq(ro.calls[0].handoffReads, undefined, 'the first worker gets no read grant');
+  A.eq(ro.calls[1].initialTaint, 'web.search', 'the copywriter starts under the taint of what the researcher read');
+  A.ok(granted.indexOf('/ws/researcher/competitor-launch-emails.md') >= 0, 'the lead may read its worker\'s saved file after the dispatch');
+  const rows = JSON.parse(r.content);
+  A.eq(rows[0].artifacts[0].abs, '/ws/researcher/competitor-launch-emails.md', 'the row names the file\'s REAL location (no more guessed /tmp paths)');
+
+  const roP = fakeRunOnce();
+  const { dispatchTool: dp } = makeOrchestrationTools({ runOnce: roP, roster: () => roster, key: 'k', model: 'm', newId: counter(),
+    handoffFiles: async () => [] });
+  await dp.run({ parallel: true, workers: [{ agentId: 'researcher', prompt: 'a' }, { agentId: 'copywriter', prompt: 'b' }] },
+    { agentId: 'lead', signal: { aborted: false }, emit: () => {}, consent: {} });
+  A.eq(String(roP.calls[1].messages[0].content), 'b', 'parallel workers run at once, so nothing is handed between them');
+}
+
+// ---- A WORKER'S CLOCK STOPS WHILE IT WAITS ON THE COMMANDER, and the user never reads the lead's [STOPPED …] note ----
+{
+  let clock = 0;
+  const delivered = [];
+  // the worker asks for approval at once; the Commander answers 300 ms later; then it works 50 ms. Its slice is 200 ms.
+  const runOnce = async (o) => {
+    await o.consent({ name: 'fs.write' });
+    await new Promise(res => setTimeout(res, 50));
+    return { reason: 'done', messages: [{ role: 'assistant', content: 'SAVED the draft' }], usd: 0.1 };
+  };
+  const consent = async () => { await new Promise(res => setTimeout(res, 300)); clock += 300; return { allow: true }; };
+  const roster = new Map([['copywriter', {}]]);
+  const { dispatchTool } = makeOrchestrationTools({ runOnce, roster: () => roster, key: 'k', model: 'm', newId: counter(),
+    dispatchTimeoutMs: 200, now: () => clock });
+  const r = await dispatchTool.run({ workers: [{ agentId: 'copywriter', prompt: 'draft it' }] },
+    { agentId: 'lead', signal: { aborted: false }, emit: () => {}, consent });
+  const rows = JSON.parse(r.content);
+  A.eq(rows[0].reason, 'done', 'a 300 ms approval wait does not use up a 200 ms slice — the worker finishes its job');
+
+  // a worker that really does run out of time: the lead gets the note, the Commander's card gets only the partial work
+  const ro2 = async (o) => {
+    await new Promise(res => { const t = setTimeout(res, 2000); o.signal.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true }); });
+    return { reason: 'done', messages: [{ role: 'assistant', content: 'half a draft' }], usd: 0.1 };
+  };
+  const station = { request: async (verb, a) => { if (verb === 'station.dispatch_end' && a.dispatchDelivery) delivered.push({ streamId: a.streamId, text: a.dispatchDelivery.text, dispatchDelivery: a.dispatchDelivery }); return { ok: true, result: {} }; } };
+  const { dispatchTool: d2 } = makeOrchestrationTools({ runOnce: ro2, roster: () => roster, key: 'k', model: 'm', newId: counter(),
+    dispatchTimeoutMs: 60, now: () => 0, station, childThread: (a) => ({ id: 'ws_child', title: 'Copy task' }) });
+  const r2 = await d2.run({ workers: [{ agentId: 'copywriter', prompt: 'draft it' }] },
+    { agentId: 'lead', streamId: 'ws_parent', signal: { aborted: false }, emit: () => {}, consent: {} });
+  const row = JSON.parse(r2.content)[0];
+  await tick(); await tick();
+  A.eq(row.reason, 'timeout', 'the slice really ran out');
+  A.ok(/\[STOPPED/.test(row.result), 'the lead still gets the model-directed note');
+  const shown = delivered.find(d => d.streamId === 'ws_child');
+  A.ok(shown && shown.text === 'half a draft' && !/\[STOPPED/.test(shown.dispatchDelivery.text), 'the Commander\'s thread shows the partial work only, never the lead\'s instruction');
+}
+
+// ---- the path guard's hand-off exception: an exact granted file, read-only ----
+{
+  const { makePathTrust } = require('../sidecar/pathtrust.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-handoff-'));
+  try {
+    const ws = path.join(root, 'workspaces');
+    fs.mkdirSync(path.join(ws, 'researcher'), { recursive: true });
+    fs.mkdirSync(path.join(ws, 'copywriter'), { recursive: true });
+    const file = path.join(ws, 'researcher', 'competitor-launch-emails.md');
+    const other = path.join(ws, 'researcher', 'secret-notes.md');
+    fs.writeFileSync(file, 'emails'); fs.writeFileSync(other, 'private');
+    const trust = makePathTrust({ fsp: require('fs/promises'), pathMod: path, workspaceRoot: ws, roots: () => [] });
+    const grants = [fs.realpathSync(file)];
+    const ok = await trust.guard(file, { scope: 'read', agentId: 'copywriter', readGrants: grants });
+    A.ok(ok && ok.handoff === true, 'a granted file in another agent\'s workspace is readable');
+    let e1 = null; try { await trust.guard(other, { scope: 'read', agentId: 'copywriter', readGrants: grants }); } catch (e) { e1 = e; }
+    A.ok(e1 && /another agent workspace/.test(e1.message), 'any OTHER file in that workspace is still refused');
+    let e2 = null; try { await trust.guard(file, { scope: 'write', agentId: 'copywriter', readGrants: grants }); } catch (e) { e2 = e; }
+    A.ok(e2 && /another agent workspace/.test(e2.message), 'a grant never allows a write');
+    let e3 = null; try { await trust.guard(file, { scope: 'read', agentId: 'copywriter' }); } catch (e) { e3 = e; }
+    A.ok(e3 && /another agent workspace/.test(e3.message), 'without the host grant the private-workspace floor holds');
+  } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
+}
+
 A.report('orchestration.test');
 
 })();

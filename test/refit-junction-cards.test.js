@@ -117,6 +117,9 @@ const workflow = new Function(build.slice(build.indexOf('*/', wbi) + 2, build.la
   A.eq(ok.usd, 0.0123, 'the total is the server\'s totalUsd, never re-summed locally');
   A.ok(ok.reply.length <= 81 && ok.reply.endsWith('…') && ok.reply.startsWith('Approved.'), 'the reply is the LAST delivered text, cut to ~80 chars');
   A.eq(ok.reason, null, 'no reason on success');
+  // (org D7 polish) SAID reads plain words: markdown marks are dropped and lines joined, never '## … **…**'
+  const md = pure.sampleResultView({ ok: true, delivered: { runId: 'r3' }, runs: [], replies: ['## This week in AI\n\n1. **Open models** close the [gap](https://x.y) - `v2` ships'] }, 200, nameOf);
+  A.eq(md.reply, 'This week in AI · 1. Open models close the gap - v2 ships', 'SAID strips headings, bold, links and code marks: ' + md.reply);
 
   const notDelivered = pure.sampleResultView({ ok: true, delivered: null, runs: [], replies: [], totalUsd: 0 }, 200, nameOf);
   A.ok(!notDelivered.ok, 'HTTP 200 without `delivered` does NOT tick ③ — the card asserts only what the harness proved');
@@ -167,7 +170,7 @@ A.ok(!/sample job dispatched — watch the line/.test(fin), 'the old fire-and-fo
 // STEP (the panel's BAY editor): live line facts, compute rule, display names
 A.ok(/data-live="gets"/.test(panelSrc) && /data-live="to"/.test(panelSrc) && /function refreshLineFacts/.test(build) && /WorkflowPanel\.refresh\(\)/.test(build), 'the GETS/TO line facts are addressable and refresh off the recompiled plan');
 A.ok(/renderFinCard\(\);\n\s*refreshLineFacts\(\);/.test(build), 'line facts refresh after every plan recompile (click-connect lands on the open panel)');
-A.ok(/esc\(nameOf\(p\.agentId\)\) \+ ' needs an assigned workstation in this room/.test(panelSrc), 'the workstation requirement names the assigned agent and room');
+A.ok(/esc\(nameOf\(p\.agentId\)\) \+ ' needs a desk in this room/.test(panelSrc), 'the workstation requirement names the assigned agent and room');
 A.ok(/station\.addProp\(\{ t: 'desk', x, y, w: 2, h: 1, agentId: p\.agentId \}\)/.test(build) && /H\.requisitionPcFor\(S\.sel\)/.test(panelSrc), 'the one-click fix places a real desk in the room, bound to the agent (object=capability)');
 A.ok(/esc\(String\(a\.name \|\| a\.id\)\.toUpperCase\(\)\)/.test(panelSrc) && /H\.flashTip\('bay → ' \+ nameOf\(b\.dataset\.aid\)/.test(panelSrc), 'assignment shows the display name, never the raw id');
 
@@ -175,7 +178,7 @@ A.ok(/esc\(String\(a\.name \|\| a\.id\)\.toUpperCase\(\)\)/.test(panelSrc) && /H
 A.ok(/function finFocusLine\(propId\)/.test(build), 'a focus-line helper exists');
 A.ok(/cardCloseAll\(\);[^\n]*\n\s*finFocusLine\(bayId\);/.test(build), 'opening a STEP card focuses its line');
 A.ok(/cardCloseAll\(\);\s*\n\s*finFocusLine\(propId\);/.test(build), 'opening a flow card focuses its line');
-const pos = build.slice(build.indexOf('function positionFinCard'), build.indexOf('function noteLineDelivered'));
+const pos = build.slice(build.indexOf('function positionFinCard'), build.indexOf('function finLiveStation'));
 A.ok(!/tutorialCoaching\(\) \|\| \(root && root\.querySelector\('\.refit-firstrun'\)\)\) \{ finCardEl\.style\.display = 'none'/.test(pos), 'a coach bubble no longer hides the checklist');
 A.ok(/coach\.bottom \+ 10/.test(pos), '…it stacks the checklist under the bubble instead');
 A.ok(/querySelector\('\.refit-firstrun'\)\) \{ finCardEl\.style\.display = 'none'/.test(pos), 'the first-run guide (the whole-screen card) still hides it');

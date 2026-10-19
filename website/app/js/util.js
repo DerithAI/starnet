@@ -295,6 +295,14 @@ const SFX = {
     SFX.voice({ freq: 2719 * drift, dur: 0.02, type: 'sine', vol: 0.06, atk: 0.001, cut: 8000, pan });
     SFX.voice({ freq: 281, dur: 0.05, when: 0.012, type: 'sine', vol: 0.06, atk: 0.003, pan });
   },
+  // press: a COMMS control (send, chips, the model selector's rows + effort keys). Andrew 10-13: the
+  // bright Click_02 tick was annoying there — COMMS must sound exactly like the CREW/WORK/BUILD/SYSTEM
+  // docks, i.e. Data_Point_04 at full pitch — open() itself, gate included: a COMMS key that also opens a
+  // window in the same tick sounds ONCE, where a separate gate fired the same sample twice a few ms apart.
+  // A window that rises LATER (the browser globe awaits the station first) is outside that 80 ms gate;
+  // outputbrowser.js quietDoorEcho() keeps that rise silent so the press stays the only cue.
+  // A COMMS control that dismisses (a lightbox close, STOP) plays close() instead, like a dock going back.
+  press() { SFX.open(); },
   // toggle: a settings switch flipping — the click sample pitched up a hair so checkboxes and
   // radios feel related to but distinct from plain buttons. Used by the delegated UI layer.
   toggle() {

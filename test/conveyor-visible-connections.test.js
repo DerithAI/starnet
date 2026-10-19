@@ -137,7 +137,7 @@ const add = (s, t, x, y, w, h) => { const q = s.addProp({ t, x, y, w, h, block: 
   A.ok(/ghostLinks\(\{ props: bp\.props/.test(lg), 'the LINE (blueprint) ghost asks it too — machines AND belts');
   const dg = build.slice(build.indexOf('function drawGhost('), build.indexOf('/* ---------- tooltip ---------- */'));
   A.ok(/'WILL CONNECT TO ' \+ linkNames\(links\)/.test(dg), 'an amber ghost NAMES what it would join');
-  A.ok(/const warn = !!\(ok && \(links \|\| g\.leftBehind\)\)/.test(dg), 'amber = legal but connecting (or leaving belts behind) — never a refusal');
+  A.ok(/const warn = !!\(ok && \(links \|\| g\.leftBehind \|\| \(g\.v && g\.v\.checking\)\)\)/.test(dg), 'amber = legal but connecting (or leaving belts behind, or its route still being judged where the pointer only crossed — final floor lane M13) — never a refusal');
   A.ok(/ITS BELTS STAY HERE/.test(dg), 'the move ghost says the belts stay behind');
   A.ok(/drawBrushedHookups\(t\);/.test(build) && /function brushedHookups\(\)/.test(build), 'brushed hookups on an existing floor are drawn');
   A.ok(/brushedHookups\(\)\.some\(h => h\.propId === placed\.id\)/.test(build), '…and explained on the machine\'s hover card');

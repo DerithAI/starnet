@@ -49,8 +49,9 @@ function station(n) {
       lastStage: a => a === 'writer', onShipped: r => { fired.push(r); }, now: () => 0
     }, extra || {}));
     const c = mk();
-    const res = await c.advance({ agentId: 'researcher', text: 'notes', originalText: 'the job', lineId: 'L1', entryUsd: 0.02, streamId: 'sample-1', since: 5 });
+    const res = await c.advance({ agentId: 'researcher', text: 'notes', originalText: 'the job', lineId: 'L1', entryUsd: 0.02, streamId: 'sample-1', since: 5, runId: 'entry-proof' });
     A.eq(res.stopped, null, 'the line ran to its end');
+    A.eq(fired[0].entryRunId, 'entry-proof', 'shipment callback carries exact entry-run identity');
     A.eq(fired.length, 1, 'onShipped fired once for a job that left its line clean at the OUTBOX stage');
     A.ok(fired[0] && fired[0].lineId === 'L1' && fired[0].agentId === 'writer' && fired[0].text === 'writer work' && fired[0].originalText === 'the job' && fired[0].streamId === 'sample-1' && fired[0].since === 5 && Math.abs(fired[0].usd - 0.03) < 1e-9, '…with the line, the producer, the answer, the job as it arrived, its stream and its whole spend — ' + JSON.stringify(fired[0]));
     fired.length = 0;
@@ -78,8 +79,7 @@ function station(n) {
     const st2 = WM.create(d);
     const so = LE.placeBlueprint(st2, 'sorting_office', { x: 8, y: 4 });
     const sb = so.ids.filter(id => st2.propById(id).t === 'bay');
-    const o1 = st2.addProp({ t: 'outbox', x: 16, y: 1, w: 2, h: 2 }).id, o2 = st2.addProp({ t: 'outbox', x: 16, y: 6, w: 2, h: 2 }).id;
-    st2.connectBelt(sb[0], o1); st2.connectBelt(sb[1], o2);
+    const [o1, o2] = so.ids.filter(id => st2.propById(id).t === 'outbox');
     const rb = LE.placeBlueprint(st2, 'research_line', { x: 8, y: 24 });
     const bIn = rb.ids.find(id => st2.propById(id).t === 'intake');
     for (const p of st2.props()) if (p.t === 'bay' && !p.agentId) st2.assignPropAgent(p.id, 'ag_' + p.id);
@@ -217,6 +217,9 @@ function station(n) {
   J.start({ id: 'job-eeee5555', line: LA, name: 'A', text: 'A job E-STOP catches', streamId: 'sample-es', at: clock });
   const es = R.onShipped(fresh('sample-es', LA, lastA));
   A.ok(!es.ok && /E-STOP/.test(es.error) && hubCalls.length === callsBefore, 'E-STOP: nothing is sent on, nothing runs');
+  // (wave 2 review, conveyor-backend-09) the reason is bare: the record's 'not sent on: ' and every sender surface already say it
+  A.eq(es.error, 'automation is stopped (E-STOP)', 'E-STOP: the reason never repeats "nothing was sent on"');
+  A.eq(LineJobs.get(jobs, es.jobId).error, 'not sent on: automation is stopped (E-STOP)', 'E-STOP: the target record says "not sent on" once');
   const esA = LineJobs.get(jobs, 'job-eeee5555');
   A.ok(esA.sentTo && esA.sentTo.line === LB && /E-STOP/.test(esA.sentTo.refused || ''), 'the sending job says it was NOT sent on, and why (a plain sentTo reads as "SENT ON TO LINE B") — ' + JSON.stringify(esA.sentTo));
   const es2 = R.onShipped(fresh('sample-es2', LA, lastA));
@@ -231,6 +234,13 @@ function station(n) {
   R.onShipped(fresh('sample-mi', LA, lastA, 'max_iters'));
   await tick(30);
   A.ok(refusedOnB().some(x => /did not finish cleanly \(a step ended “max_iters”\)/.test(x)), 'a sending job with a step that did not end done is not sent on');
+  /* (runtime repair 2026-10-12) a PARTIAL joined job — a COPY branch the host refused before it ran, so it wrote NO run row and every
+     row that exists ended done — is not sent on either: the chain marks it (rec.partial) and the next line says why */
+  const hubBeforePartial = hubCalls.length;
+  const pr = R.onShipped(Object.assign(fresh('sample-pj', LA, lastA), { partial: 'crew0 failed' }));
+  A.ok(!pr.ok && /did not finish cleanly \(its joiner sent on without every branch: crew0 failed\)/.test(pr.error) && hubCalls.length === hubBeforePartial,
+    'a partial joined job is refused at once, nothing runs on the next line — ' + JSON.stringify(pr));
+  A.ok(refusedOnB().some(x => /joiner sent on without every branch: crew0 failed/.test(x)), '…and the next line\'s record says why');
   // an uncrewed target
   const unplan = plan;
   for (const id of b.bays) st.assignPropAgent(id, '');
@@ -256,6 +266,7 @@ function station(n) {
   /* (fix-runtime 24) …and SAYS so on both lines: the dropped jobs never vanish. LINE B's newest record is ONE failed "not sent on"
      record counting every dropped hand-off; every dropped sending job reads NOT sent on — E-STOP (never "delivered" with no word) */
   const esB = jobs.jobs.filter(j => j.line === LB).pop();
+  A.eq(esB && esB.error, 'not sent on: automation is stopped (E-STOP)', 'E-STOP drop: the default reason is bare too');
   A.ok(esB && esB.status === 'failed' && /^not sent on: .*E-STOP/.test(esB.error) && esB.repeats === MAX_PENDING, 'E-STOP: LINE B gets one failed record for the dropped hand-offs, counting all ' + MAX_PENDING + ' — ' + JSON.stringify(esB && { status: esB.status, error: esB.error, repeats: esB.repeats }));
   const dropped = [];
   for (let i = 1; i <= MAX_PENDING; i++) dropped.push(LineJobs.get(jobs, 'job-burst' + i + 'aaaa'));
@@ -383,6 +394,165 @@ function station(n) {
     halted = true; release(); await tick(30); halted = false;
     const rec6 = jobs.jobs.filter(j => j.line === LB).pop();
     A.ok(rec6 && rec6.status === 'stopped' && /E-STOP/.test(rec6.error), 'E-STOP: the hand-off’s record is STOPPED — ' + JSON.stringify(rec6 && { status: rec6.status, error: rec6.error }));
+  }
+
+  /* THE STATION'S OWN FAULT (wave 2 review, conveyor-backend-08): a process-fault containment quiesced the station while LINE B ran a
+     handed-on job — its record says the station's fault stopped it, never an E-STOP the Commander did not press; and a hand-off refused
+     while the station is quiesced says the same */
+  {
+    let release = null, stop = false;
+    const R7 = makeHandoffRunner({ makeHub: (hooks) => ({ onInbound() {
+        const docks = crewedDocksOnLine(plan, hooks.lineId()).sort(P.propIdCmp), agentId = plan.agentOfDock[docks[0]];
+        hooks.onRouted({ agentId, dockId: docks[0] }); hooks.onResolved({ agentId, lineId: hooks.lineId(), dockId: docks[0] });
+        const sid = hooks.streamId();
+        return new Promise(res => { release = () => { runsByStream[sid] = [{ runId: 'q' + (++n), agentId, dockId: docks[0], reason: 'cancelled', usd: 0.002, streamId: sid, startedAt: clock }]; res(); }; });
+      } }), plan: () => plan, jobs: J, shipsToOutbox: () => true, halted: () => stop, faulted: () => stop, runsFor: sid => runsByStream[sid] || [], now: () => clock,
+      newId: () => 'id' + (++n) + 'abcdef0123456789', warn: () => {} });
+    const s7 = R7.onShipped(fresh('sample-fault', LA, lastA));
+    await tick();
+    A.ok(s7.ok && typeof release === 'function', 'fault: the hand-off is running on LINE B');
+    stop = true; release(); await tick(30);
+    const rec7 = jobs.jobs.filter(j => j.line === LB).pop();
+    A.ok(rec7 && rec7.status === 'stopped' && /internal fault/.test(rec7.error) && !/E-STOP/.test(rec7.error), 'fault: the record says the station stopped it, not E-STOP — ' + JSON.stringify(rec7 && { status: rec7.status, error: rec7.error }));
+    const f2 = R7.onShipped(fresh('sample-fault2', LA, lastA));
+    A.ok(!f2.ok && /internal fault/.test(f2.error) && !/E-STOP/.test(f2.error), 'fault: a hand-off refused meanwhile says the fault, not E-STOP — ' + f2.error);
+    stop = false;
+  }
+
+  /* A DISPATCH THAT THROWS is said, never a console line only (wave 2 review, conveyor-backend-11): the target record it already started
+     says why instead of staying "running" */
+  {
+    const R9 = makeHandoffRunner({ makeHub: () => { throw new Error('hub down'); }, plan: () => plan, jobs: J, shipsToOutbox: () => true,
+      runsFor: sid => runsByStream[sid] || [], now: () => clock, newId: () => 'id' + (++n) + 'abcdef0123456789', warn: () => {} });
+    const onB9 = jobs.jobs.filter(j => j.line === LB).length;
+    const s9 = R9.onShipped(fresh('sample-hubdown', LA, lastA));
+    await tick(30);
+    const rec9 = jobs.jobs.filter(j => j.line === LB).pop();
+    A.ok(s9.ok && rec9 && rec9.status === 'failed' && rec9.error === 'the hand-off could not start (hub down)', 'a dispatch that threw finishes its record with why — ' + JSON.stringify(rec9 && { status: rec9.status, error: rec9.error }));
+    A.eq(jobs.jobs.filter(j => j.line === LB).length, onB9 + 1, '…on the ONE record it started (never a second refusal record, never one left "running")');
+    const after9 = R9.onShipped(fresh('sample-hubdown2', LA, lastA));
+    A.ok(after9.ok, 'the line is not wedged: the next hand-off is admitted');
+    await tick(30);
+    // (wave 2 repair) …and the SENDING job is told: it read "Sent on to LINE B — that line works on this result next" for a hand-off
+    // that never started. A throw before the target line was entered is NOT sent on, with why, linked to the record that says so
+    J.start({ id: 'job-hubdown3', line: LA, name: 'A', text: 'a job whose hand-off could not start', streamId: 'sample-hubdown3', at: clock });
+    R9.onShipped(fresh('sample-hubdown3', LA, lastA));
+    await tick(30);
+    const rec9b = jobs.jobs.filter(j => j.line === LB).pop(), snd9 = jobs.jobs.find(j => j.id === 'job-hubdown3');
+    A.ok(rec9b && rec9b.error === 'the hand-off could not start (hub down)', 'the target record says why');
+    A.ok(snd9 && snd9.sentTo && snd9.sentTo.refused === 'the hand-off could not start (hub down)' && snd9.sentTo.jobId === rec9b.id,
+      'the sending job reads NOT sent on, with why, linked to that record — ' + JSON.stringify(snd9 && snd9.sentTo));
+  }
+
+  /* A DISPATCH THAT BREAKS AFTER THE TARGET LINE WAS ENTERED (wave 2 repair): the work did reach LINE B, so the record says it broke
+     after it started — never "could not start" — and the sending job keeps its plain link to that record (it WAS sent on) */
+  {
+    const RE = makeHandoffRunner({ makeHub: (hooks) => ({ onInbound() {
+        const docks = crewedDocksOnLine(plan, hooks.lineId()).sort(P.propIdCmp), agentId = plan.agentOfDock[docks[0]];
+        hooks.onRouted({ agentId, dockId: docks[0] }); hooks.onResolved({ agentId, lineId: hooks.lineId(), dockId: docks[0] });
+        return Promise.resolve();
+      } }), emit: (nm) => { if (nm === 'workitem.placed') throw new Error('bus down'); },
+      plan: () => plan, jobs: J, shipsToOutbox: () => true, runsFor: sid => runsByStream[sid] || [], now: () => clock,
+      newId: () => 'id' + (++n) + 'abcdef0123456789', warn: () => {} });
+    J.start({ id: 'job-busdown1', line: LA, name: 'A', text: 'a job whose hand-off broke after it started', streamId: 'sample-busdown1', at: clock });
+    RE.onShipped(fresh('sample-busdown1', LA, lastA));
+    await tick(30);
+    const recE = jobs.jobs.filter(j => j.line === LB).pop(), sndE = jobs.jobs.find(j => j.id === 'job-busdown1');
+    A.ok(recE && recE.status === 'failed' && recE.error === 'the hand-off broke after it started (bus down)', 'entered, then broke: said as such — ' + JSON.stringify(recE && { status: recE.status, error: recE.error }));
+    A.ok(sndE && sndE.sentTo && !sndE.sentTo.refused && sndE.sentTo.jobId === recE.id, 'the sending job keeps its link to the record that says what happened — ' + JSON.stringify(sndE && sndE.sentTo));
+  }
+
+  /* THE HUB'S STOP NOTICE IS NOT THE JOB'S OUTPUT (wave 2 repair, conveyor-backend-08): a killed hub run tells its chat it was stopped
+     ("⏹ Stopped — E-STOP was pressed in the station…", or the fault's own words) through the same send hook the job's replies use. The
+     STOPPED card showed that notice under "What came out" and offered NEEDS CHANGES against it. Once the station is stopped, nothing
+     more is this job's output (the sample route's rule); what was said before the stop stays. */
+  {
+    for (const fault of [false, true]) {
+      let release = null, stop = false;
+      const RN = makeHandoffRunner({ makeHub: (hooks) => ({ onInbound() {
+          const docks = crewedDocksOnLine(plan, hooks.lineId()).sort(P.propIdCmp), agentId = plan.agentOfDock[docks[0]];
+          hooks.onRouted({ agentId, dockId: docks[0] }); hooks.onResolved({ agentId, lineId: hooks.lineId(), dockId: docks[0] });
+          const sid = hooks.streamId();
+          hooks.send('the first part of the answer');
+          return new Promise(res => { release = () => {
+            runsByStream[sid] = [{ runId: 'nt' + (++n), agentId, dockId: docks[0], reason: 'cancelled', usd: 0.001, streamId: sid, startedAt: clock }];
+            hooks.send(fault ? '⏹ Stopped — the station hit an internal fault and stopped this run. This message got no reply and nothing further will run for it.'
+              : '⏹ Stopped — E-STOP was pressed in the station. This message got no reply and nothing further will run for it.');
+            res();
+          }; });
+        } }), plan: () => plan, jobs: J, shipsToOutbox: () => true, halted: () => stop, faulted: () => stop && fault, runsFor: sid => runsByStream[sid] || [], now: () => clock,
+        newId: () => 'id' + (++n) + 'abcdef0123456789', warn: () => {} });
+      const sN = RN.onShipped(fresh('sample-notice-' + fault, LA, lastA));
+      await tick();
+      A.ok(sN.ok && typeof release === 'function', (fault ? 'fault' : 'E-STOP') + ' notice: the hand-off is running on LINE B');
+      stop = true; release(); await tick(30); stop = false;
+      const recN = jobs.jobs.filter(j => j.line === LB).pop();
+      A.ok(recN && recN.status === 'stopped', (fault ? 'fault' : 'E-STOP') + ' notice: the record is STOPPED');
+      A.ok(!/⏹|E-STOP|Stopped —/.test(recN.output || ''), (fault ? 'fault' : 'E-STOP') + ' notice: the hub\'s stop notice is not the job\'s output — ' + JSON.stringify(recN.output));
+      A.ok(/the first part of the answer/.test(recN.output || ''), (fault ? 'fault' : 'E-STOP') + ' notice: what was said before the stop stays');
+    }
+  }
+
+  /* THE STATION IS QUITTING (wave 2 repair, conveyor-backend-03): the graceful shutdown drains the waiting hand-offs, but a hub-driven
+     job on another line can still finish inside the shutdown window (runs are booked for up to ~3 s before exit) — its onShipped used
+     to queue a NEW hand-off behind the running one, and process.exit dropped it with no record on either line. haltAll(why,
+     { close: true }) closes admission too: every later hand-off goes through the refusal path with the same reason. */
+  {
+    let release = null;
+    const RQ = makeHandoffRunner({ makeHub: (hooks) => ({ onInbound() {
+        const docks = crewedDocksOnLine(plan, hooks.lineId()).sort(P.propIdCmp), agentId = plan.agentOfDock[docks[0]];
+        hooks.onRouted({ agentId, dockId: docks[0] }); hooks.onResolved({ agentId, lineId: hooks.lineId(), dockId: docks[0] });
+        const sid = hooks.streamId();
+        return new Promise(res => { release = () => {
+          runsByStream[sid] = [{ runId: 'qt' + (++n), agentId, dockId: docks[0], reason: 'done', usd: 0.001, streamId: sid, startedAt: clock }];
+          hooks.onLineOutcome({ agentId, dockId: docks[0], stopped: null, hops: [] });
+          res();
+        }; });
+      } }), plan: () => plan, jobs: J, shipsToOutbox: () => true, runsFor: sid => runsByStream[sid] || [], now: () => clock,
+      newId: () => 'id' + (++n) + 'abcdef0123456789', warn: () => {} });
+    J.start({ id: 'job-quit0001', line: LA, name: 'A', text: 'running when the station quit', streamId: 'sample-quit1', at: clock });
+    const q1 = RQ.onShipped(fresh('sample-quit1', LA, lastA));
+    await tick();
+    A.ok(q1.ok && typeof release === 'function', 'quit: one hand-off is running on LINE B');
+    const why = 'the station stopped before this hand-off ran — send the job again';
+    A.eq(RQ.haltAll(why, { close: true }), 0, 'quit: nothing was waiting yet');
+    J.start({ id: 'job-quit0002', line: LA, name: 'A', text: 'finished while the station was quitting', streamId: 'sample-quit2', at: clock });
+    const q2 = RQ.onShipped(fresh('sample-quit2', LA, lastA));
+    A.ok(!q2.ok && q2.error === why, 'quit: a job that ships after the quit began is refused with the quit reason, never queued — ' + JSON.stringify(q2));
+    A.eq((RQ.status().lines.find(x => x.line === LB) || {}).queued, 0, 'quit: nothing waits in memory to vanish at exit');
+    const snd = jobs.jobs.find(j => j.id === 'job-quit0002');
+    A.ok(snd && snd.sentTo && snd.sentTo.refused === why, 'quit: the sending job reads NOT sent on, with why — ' + JSON.stringify(snd && snd.sentTo));
+    const onB = jobs.jobs.filter(j => j.line === LB && j.status === 'failed').pop();
+    A.ok(onB && onB.error === 'not sent on: ' + why, 'quit: LINE B has the refusal on record');
+    release(); await tick(30);
+    const ran = jobs.jobs.find(j => j.line === LB && j.from && j.from.jobId === 'job-quit0001');
+    A.ok(ran && ran.status === 'delivered', 'quit: the one already running finishes on its own record — ' + JSON.stringify(ran && { status: ran.status, error: ran.error }));
+    // an E-STOP drain (no close) never closes admission: after RESUME the next hand-off goes
+    const RO = makeHandoffRunner({ makeHub: () => ({ onInbound: () => new Promise(() => {}) }), plan: () => plan, jobs: J, shipsToOutbox: () => true,
+      runsFor: sid => runsByStream[sid] || [], now: () => clock, newId: () => 'id' + (++n) + 'abcdef0123456789', warn: () => {} });
+    RO.haltAll();
+    A.ok(RO.onShipped(fresh('sample-after-estop', LA, lastA)).ok, 'an E-STOP drain alone leaves admission open');
+    // the host's graceful shutdown is what closes it (sidecar/index.js gracefulShutdown — never require it: it boots a sidecar)
+    const shut = A.fnBody(require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8'), 'function gracefulShutdown(signal)');
+    A.ok(/handoffRunner\.haltAll\('the station stopped before this hand-off ran — send the job again', \{ close: true \}\)/.test(shut), 'gracefulShutdown drains AND closes SEND TO admission');
+  }
+
+  /* THE CAP WON THE RACE: the hand-off passed its dispatch preflight, then LINE B's own work reached the day limit before the entry
+     ran — runOnceCore refuses before any run row exists and the hub replies with the reason. The record says that reason, never
+     the bare "no step ran" (the trigger runner's pattern: the hub's ⚠ reply is the only witness when no run was recorded) */
+  {
+    const capWords = 'The line reached its $1.00 daily limit — raise its LINE BUDGET or try again tomorrow.';
+    const R8 = makeHandoffRunner({ makeHub: (hooks) => ({ onInbound() {
+        const docks = crewedDocksOnLine(plan, hooks.lineId()).sort(P.propIdCmp), agentId = plan.agentOfDock[docks[0]];
+        hooks.onRouted({ agentId, dockId: docks[0] }); hooks.onResolved({ agentId, lineId: hooks.lineId(), dockId: docks[0] });
+        hooks.send('⚠ ' + capWords);
+        return Promise.resolve();
+      } }), plan: () => plan, jobs: J, shipsToOutbox: () => true, runsFor: sid => runsByStream[sid] || [], now: () => clock,
+      newId: () => 'id' + (++n) + 'abcdef0123456789', warn: () => {} });
+    const s8 = R8.onShipped(fresh('sample-cap-race', LA, lastA));
+    await tick(30);
+    const rec8 = jobs.jobs.filter(j => j.line === LB).pop();
+    A.ok(s8.ok && rec8 && rec8.status === 'failed' && rec8.error === capWords, 'a hand-off the day cap refused at the run says the cap, not "no step ran" — ' + JSON.stringify(rec8 && { status: rec8.status, error: rec8.error }));
   }
 }
 )().then(() => {

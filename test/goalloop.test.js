@@ -134,10 +134,27 @@ A.eq(s.turnsUsed, 0, 'a paused loop burns no turns on evaluate');
 // clear makes it inert + statusLine reflects "no loop"
 L.clear(s);
 A.eq(s.status, 'cleared', 'clear marks the loop cleared');
-A.ok(L.statusLine(s).indexOf('No goal loop') >= 0, 'a cleared loop reads as no loop');
+A.ok(L.statusLine(s).indexOf('No session goal') >= 0, 'a cleared loop reads as no session goal');
 A.eq(L.hasGoal(s), false, 'a cleared loop has no goal');
 
 // statusLine variants
 A.ok(L.statusLine(L.create('sl', { maxTurns: 9 })).indexOf('active') >= 0, 'active status line');
+
+// org P29: /goal is a per-session goal, a different mechanism from AUTOMATE › GOAL LOOPS — every line this state
+// machine hands the user (evaluate messages, statusLine) says "session goal", never "goal loop"
+{
+  const seen = [];
+  const st = L.create('msgs', { maxTurns: 2 });
+  seen.push(L.statusLine(st));
+  seen.push(L.evaluate(st, { verdict: 'continue', reason: 'x', parseFailed: false }).message);
+  seen.push(L.evaluate(st, { verdict: 'continue', reason: 'x', parseFailed: false }).message);   // budget spent → auto-pause
+  seen.push(L.statusLine(st));
+  const pre = L.create('pre', { maxTurns: 9 }); seen.push(L.evaluate(pre, null, { preempt: true }).message);
+  const dn = L.create('dn', { maxTurns: 9 }); seen.push(L.evaluate(dn, { verdict: 'done', reason: 'ok', parseFailed: false }).message, L.statusLine(dn));
+  const bad = L.create('bad', { maxTurns: 99 }); let m = '';
+  for (let i = 0; i < 10 && L.isActive(bad); i++) m = L.evaluate(bad, { verdict: 'continue', reason: 'no verdict', parseFailed: true }).message;
+  seen.push(m);
+  A.ok(seen.every(x => /session goal/.test(x) && !/goal loop/i.test(x)), 'every GoalLoop user line says session goal: ' + JSON.stringify(seen));
+}
 
 A.report('goalloop');

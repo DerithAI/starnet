@@ -286,13 +286,16 @@ const VoiceLive = (() => {
     if (el.id === 'lv-agent') el.classList.toggle('on', !!el.textContent.trim());
   }
 
+  // the name the rail shows (Workstreams.titleOf): only the General home is "General" — an untitled other session is a
+  // "New session", so the voice model never hears two Generals or a run "in General" the rail calls something else
+  const sessionName = ws => (typeof Workstreams !== 'undefined' && Workstreams.titleOf) ? Workstreams.titleOf(ws) : ((ws && ws.title) || 'General');
   function statusSnapshot() {
     if (typeof Workstreams === 'undefined' || typeof Channels === 'undefined') return { active: null, workstreams: [] };
     const current = Workstreams.active();
     return {
       active: current ? current.id : null,
       workstreams: Workstreams.list().slice(0, 12).map(ws => ({
-        id: ws.id, title: ws.title || 'General', lane: ws.lane || null,
+        id: ws.id, title: sessionName(ws), lane: ws.lane || null,
         busy: Channels.isBusy(ws.id), status: Channels.statusOf(ws.id),
         approvalRequired: !!Channels.pendingOf(ws.id)
       }))
@@ -342,16 +345,25 @@ const VoiceLive = (() => {
 
   function availabilityFailure(response) {
     if (!response || response.ok !== false) return null;
+    // a page the station KEPT its key from (Harness.tokenWithheld) gets the same 403, but it is not a restart: a reload
+    // only re-runs the same ownership check, so it carries the withheld notice instead (review threads-backend-05)
+    const withheld = response.status === 403 && typeof Harness !== 'undefined' && Harness
+      && typeof Harness.tokenWithheld === 'function' && Harness.tokenWithheld()
+      ? ((typeof Harness.tokenWithheldNotice === 'function' && Harness.tokenWithheldNotice())
+        || 'StarNet could not confirm this browser is yours — see the station notice.')
+      : '';
     return {
       probeFailed: true,
-      staleSession: response.status === 403,
+      staleSession: response.status === 403 && !withheld,
+      tokenWithheld: withheld,
       status: Number(response.status) || 0
     };
   }
 
   // One read of the sidecar's installation verdict. A failed probe is a first-class result: every Live
   // Voice engine needs the sidecar, so opening the microphone after a 403/5xx only creates a convincing
-  // but silent session. In particular, 403 means this page still carries the token from before a restart.
+  // but silent session. In particular, 403 means this page still carries the token from before a restart,
+  // or (tokenWithheld) the station never gave this page its key.
   async function probeAvailability() {
     try {
       const response = await fetch('/api/local-voice/status', { cache: 'no-store' });
@@ -455,7 +467,13 @@ const VoiceLive = (() => {
      but the ASK happens aloud, and the call never depends on the Commander looking at the screen. */
   let spokenApprovalId = null;
   function chipButtons() {
-    return Array.from(document.querySelectorAll('#chat-log .choice-row button.choice')).filter(b => !b.disabled);
+    // a pending question's one-tap answers come first (chat.js clarifyRow: the run is paused on them). A multi-select
+    // card is left to the screen: its keys only toggle, so a spoken pick there would answer nothing
+    const asks = Array.from(document.querySelectorAll('#chat-log [data-clarify-prompt] .consent-btns'))
+      .filter(row => !row.querySelector('.consent-confirm'))
+      .reduce((all, row) => all.concat(Array.from(row.querySelectorAll('button'))), []);
+    const buttons = asks.length ? asks : Array.from(document.querySelectorAll('#chat-log .choice-row button.choice'));
+    return buttons.filter(b => !b.disabled);
   }
   function chipLabel(b) {
     // strip the leading glyph (▤, ◈, …) chips carry — nobody SAYS the icon
@@ -467,21 +485,6 @@ const VoiceLive = (() => {
      The first version of this narrated whatever chip row happened to be on screen, so opening a call over a
      re-rendered old beat blurted "say one: confirm, or not quite…" out of nowhere. Rows that pre-date the
      call can still be answered by voice (chipCommand) — they are just never read at anyone. */
-  /* What a waiting ask says out loud (2026-10-13 review: a question was read as "Approval needed: brief.ask — {raw
-     JSON}. Say approve…" and then "approve" was refused for it). Names who asks — a delegated worker, not the lead —
-     and the request in the card's own words. A question is answered on screen; a worker's request is once-or-deny only,
-     exactly like its row (a standing grant is the lead's to give, from its own card). */
-  function spokenAsk(p, ws) {
-    const who = (typeof App !== 'undefined' && App.agentName && App.agentName(p.workerAgentId || (ws && ws.agentId) || p.agentId || 'agent')) || 'An agent';
-    if (p.tool === 'brief.ask') {
-      let q = '';
-      try { q = String((JSON.parse(p.argsSummary || '{}') || {}).question || ''); } catch (_) { q = ''; }
-      q = q.trim().slice(0, 160);
-      return who + ' has a question for you' + (q ? ': ' + q : '') + (/[.?!]$/.test(q) ? ' ' : '. ') + 'Answer it on screen.';
-    }
-    const what = typeof Chat !== 'undefined' && Chat.consentPhrase ? Chat.consentPhrase(p) : String(p.tool || 'act');
-    return who + ' needs approval to ' + String(what).slice(0, 160) + '. Say approve' + (p.workerAgentId ? '' : ', always allow,') + ' or deny.';
-  }
   function announceWaits() {
     if (!active) return;
     // only when the DISPLAYED session is the call's own — cards in a browsed session are not ours to read
@@ -495,6 +498,35 @@ const VoiceLive = (() => {
         speakLocal(spokenAsk(pending, ws));
       }
     } else spokenApprovalId = null;
+  }
+  /* What a waiting ask says out loud (2026-10-13 review: a question was read as "Approval needed: brief.ask — {raw
+     JSON}. Say approve…" and then "approve" was refused for it). Names who asks — a delegated worker, not the lead —
+     and what for, in the card's own words without its fine print (review app-shell-ui-08). A question is read as the
+     question (questionLine). Offers only the answers the card has: a once-only ask has no Always (review
+     app-shell-ui-03), and a worker's request is once-or-deny, exactly like its row (a standing grant is the lead's to
+     give, from its own card). */
+  function spokenAsk(p, ws) {
+    if (p.tool === 'brief.ask') return questionLine(p, ws);
+    const ask = askParts(p, ws);
+    return (ask.what ? (ask.who ? ask.who + ' needs approval to ' : 'Approval needed to ') + ask.what
+      : 'Approval needed: ' + (p.tool || 'an action') + (p.argsSummary ? ' — ' + String(p.argsSummary).slice(0, 120) : '')) +
+      (ONCE_ONLY.has(p.tool) || p.workerAgentId ? '. Say approve or deny.' : '. Say approve, always allow, or deny.');
+  }
+  // a brief.ask is a question, not a grade: say the question and only the answers voice can give — the card's one-tap
+  // options, which chipCommand presses — never approve/always/deny (approvalCommand leaves brief.ask alone)
+  function questionLine(pending, ws) {
+    let q = null;
+    try { q = JSON.parse(pending.argsSummary || '{}'); } catch (e) { q = null; }   // unreadable: the plain line below
+    q = q && typeof q === 'object' ? q : {};
+    const id = pending.workerAgentId || pending.agentId || (ws && ws.agentId) || '';
+    const who = (id && typeof App !== 'undefined' && App.agentName && App.agentName(id)) || 'The agent';
+    let question = String(q.question || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!question) return who + ' has a quick question for you. Answer on the card.';
+    if (!/[.?!]$/.test(question)) question += '.';
+    // the same keys chat.js clarifyRow draws: up to six single-pick options plus "use your judgment"
+    const opts = (Array.isArray(q.options) ? q.options.slice(0, 6) : []).map(o => String(o).trim()).filter(Boolean);
+    if (q.mode === 'conversation' || (q.multiSelect === true && opts.length > 1)) return who + ' asks: ' + question + ' Answer on the card.';
+    return who + ' asks: ' + question + (opts.length ? ' Say ' + opts.join(', ') + ', or use your judgment.' : ' Say use your judgment, or answer on the card.');
   }
   /* Answer visible chips by voice. Clicks the REAL button (chat.js binds the pick to it), so this is the
      mouse path with a different finger. Matching is deliberately conservative — exact, then prefix/containment
@@ -534,6 +566,17 @@ const VoiceLive = (() => {
   }
 
   const approvalSubmissions = new Set();
+  // asks the station grants one call at a time whatever grade arrives (no Always key: the leash, the login window; the
+  // plugin install): a spoken "always allow" approves this one call and says so (review app-shell-ui-02/03)
+  const ONCE_ONLY = new Set(['station.power', 'browser.login', 'browser.login.done', 'plugin.submit']);
+  // which ask a spoken line is about, in the card's own words (Chat.consentPhrase): who asks (the worker, else the lead) and
+  // what for, without the card's fine print. what = '' when there is no phrase, and the line keeps its plain form
+  function askParts(pending, ws) {
+    const what = typeof Chat !== 'undefined' && Chat.consentPhrase
+      ? String(Chat.consentPhrase(pending) || '').split(' — ')[0].replace(/\s*\([^()]*\)?\s*$/, '').trim().slice(0, 140) : '';
+    const id = pending.workerAgentId || pending.agentId || (ws && ws.agentId) || '';
+    return { what, who: (what && id && typeof App !== 'undefined' && App.agentName && App.agentName(id)) || '' };
+  }
   function approvalCommand(lower) {
     if (typeof Workstreams === 'undefined' || typeof Channels === 'undefined') return false;
     const ws = Workstreams.active();
@@ -544,6 +587,8 @@ const VoiceLive = (() => {
     else if (/^(?:always allow|approve always|always approve)$/.test(lower)) decision = 'always';
     else if (/^(?:deny|deny it|do not allow|don't allow|reject)$/.test(lower)) decision = 'deny';
     if (!decision) return false;
+    const onceOnly = decision === 'always' && ONCE_ONLY.has(pending.tool);
+    if (onceOnly) decision = 'once';
     if (decision === 'always' && pending.workerAgentId) {   // the worker's row grants this request only — so does voice
       speakLocal('A delegated worker\'s request can only be approved once or denied. Say approve, or deny.');
       return true;
@@ -557,17 +602,21 @@ const VoiceLive = (() => {
     approvalSubmissions.add(id);
     const seq = sessionSeq;
     const ownsFeedback = () => active && sessionSeq === seq && boundWsId === ws.id;
+    // with several asks open, the outcome names the one it answered (review app-shell-ui-08)
+    const ask = askParts(pending, ws), about = ask.what ? ': ' + (ask.who ? ask.who + ' to ' : '') + ask.what + '.' : '.';
     // Every surface uses the same confirmed, exact-prompt path. A delegated ask may have no ordinary card.
     Promise.resolve().then(() => Chat.answerConsent(pending, ws, decision, 'voice')).then(result => {
       if (!ownsFeedback()) return;
       const applied = result && result.appliedDecision;
-      if (applied === 'deny') speakLocal('Denied.');
-      else if (applied === 'always') speakLocal('Always allowed.');
-      else if (applied === 'once') speakLocal('Approved once.');
+      if (applied === 'deny') speakLocal('Denied' + about);
+      else if (applied === 'always') speakLocal('Always allowed' + about);
+      else if (applied === 'once') speakLocal((onceOnly ? 'This one can only be approved once. ' : '') + 'Approved once' + about);
       else speakLocal('The station did not confirm your answer. Please try again.');
     }).catch(() => {
+      if (!ownsFeedback()) return;
+      // settled elsewhere meanwhile (timed out, answered on the card or the phone): say so, never leave the call silent
       const stillPending = Channels.pendingAllOf(ws.id).some(p => String(p.promptId || '') === id);
-      if (ownsFeedback() && stillPending) speakLocal('I could not submit that answer. The approval is still waiting; please try again.');
+      speakLocal(stillPending ? 'I could not submit that answer. The approval is still waiting; please try again.' : 'That approval is no longer waiting.');
     }).finally(() => {
       approvalSubmissions.delete(id);
       if (ownsFeedback()) refreshTask();
@@ -1211,13 +1260,15 @@ const VoiceLive = (() => {
     if (readiness && readiness.probeFailed) {
       $('live-voice-panel').hidden = false;
       setState('offline');
-      caption('user', readiness.staleSession
-        ? 'This page lost its connection when the station restarted.'
+      const withheld = readiness.tokenWithheld;   // not a restart: a reload only re-runs the same check
+      caption('user', withheld ? 'StarNet could not confirm this browser is yours.'
+        : readiness.staleSession ? 'This page lost its connection when the station restarted.'
         : 'Local Live could not reach the station.');
-      caption('agent', readiness.staleSession
-        ? 'Reload this page to reconnect, then start Local Live again.'
+      caption('agent', withheld ? 'Voice cannot start on this page.'
+        : readiness.staleSession ? 'Reload this page to reconnect, then start Local Live again.'
         : 'Confirm the station is running, then try again.');
-      if (readiness.staleSession) {
+      if (withheld) setUnrecoverableError(withheld);
+      else if (readiness.staleSession) {
         setUnrecoverableError('The station restarted — reload this page to reconnect voice.');
       } else {
         setError('Local voice could not reach the station.');
@@ -1383,9 +1434,9 @@ const VoiceLive = (() => {
       lines.push('The crew on this station: ' + ctx.crew.map(a => (a.name || a.id) + (a.role ? ' (' + a.role + ')' : '')).join('; ') + '.');
     }
     if (ctx.streams.length) {
-      lines.push('Open sessions: ' + ctx.streams.slice(0, 12).map(w => (w.title || 'General')).join('; ') + '.');
+      lines.push('Open sessions: ' + ctx.streams.slice(0, 12).map(sessionName).join('; ') + '.');
     }
-    if (ctx.activeWs) lines.push('The active session is "' + (ctx.activeWs.title || 'General') + '".');
+    if (ctx.activeWs) lines.push('The active session is "' + sessionName(ctx.activeWs) + '".');
     lines.push('Call get_starnet_status before answering any question about what is running, what is waiting for approval, or what the crew is doing — never guess or invent task state, tool results, approvals or files.');
     lines.push('For anything requiring research, code, file changes, tools or sustained work, call start_starnet_task rather than claiming you did it yourself. Afterwards confirm in one short sentence and note that the work is visible in the session.');
     lines.push('Use interrupt_starnet_task only when the Commander clearly asks to stop or change direction.');
@@ -1776,7 +1827,8 @@ const VoiceLive = (() => {
         if (!track || track.readyState === 'ended') scheduleReconnect('Audio device changed.');
       });
     }
-    document.addEventListener('keydown', event => { if (event.key === 'Escape' && active) end(); });
+    // an Esc that ended Local Live is marked used: an offer panel over COMMS must not ALSO read it as its NOT NOW (review 10-15)
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && active) { event.preventDefault(); end(); } });
   }
 
   // The built-in catalogue is sidecar-owned. Agent assignments share Voice's persistent
@@ -1787,6 +1839,7 @@ const VoiceLive = (() => {
     try {
       const r = await fetch('/api/local-voice/status', { cache: 'no-store' });
       const j = await r.json();
+      if (Voice.rememberVoiceLabels) Voice.rememberVoiceLabels(j.voices);   // (org P21 wire) the dossier names a choice by this word
       return { available: j.voices || [], current: cur || j.voice || '', assigned, engine: 'built-in', appliesOn: 'the next spoken reply or new Live Voice session' };
     } catch (_) {
       return { available: [], current: cur, assigned, engine: 'built-in', appliesOn: 'the next spoken reply or new Live Voice session' };

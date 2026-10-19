@@ -60,8 +60,9 @@ import { spawnSync } from 'node:child_process';
 import { sleep, launchChrome, connectCDP, evalJS, capture, collectDiagnostics } from '../lib/cdp.mjs';
 import { materializeSeedWorkspace, bootSeededSidecar, isUp, waitUp, waitDevReady, DEFAULT_MODEL } from '../lib/seed.mjs';
 import { closeOnly, openSel, openTermFallback } from '../lib/states.mjs';
-import { messageContentText } from '../lib/message-content.mjs';
 import { makeLedger, fingerprintOf } from './ledger.mjs';
+// the run's opening prompt on every route (a Claude route carries the host notes as their own user turns before it)
+const { firstUserWords } = createRequire(import.meta.url)('../../test/helpers/host-notes.js');
 
 /* ── Dismissed/known journey gate (mirror of golden.mjs's per-frame review-clean) ──────────────
  * A journey assertion can be TRIAGED-and-DISMISSED in the QA ledger (e.g. J2b/panel-close's busy-
@@ -200,9 +201,11 @@ function startControllableMock(model) {
           // '[WORKSHOP_SHIFT]' marker — for those we emit the file-writing tool calls that BUILD the deliverable
           // (mirrors test/workshop.e2e.test.js's mock), so /workshop-run has real bytes to serve. All OTHER runs
           // (the interactive chat directives J1-J3 fire) use the hold/quick behavior.
+          // The marker is matched on the run's OWN opening words (test/helpers/host-notes.js firstUserWords): the
+          // <run_context> note and recall ride the user side of the wire — on this Claude model as their own user
+          // turns BEFORE the shift prompt — so "the first user message" is a host note, never the shift (J4 red, 10-15).
           let msgs = []; try { msgs = (JSON.parse(body).messages) || []; } catch (_) {}
-          const userMsg = msgs.find(m => m && m.role === 'user');
-          const prompt = messageContentText(userMsg && userMsg.content);
+          const prompt = firstUserWords(msgs);
           const isWorkshop = prompt.indexOf('[WORKSHOP_SHIFT]') === 0;
           const tool = (id, name, args) => {
             res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }) + '\n\n');
@@ -441,10 +444,26 @@ const PARITY_PROBE = `(() => {
   return out;
 })()`;
 
-async function parityCheck(cdp, A, step) {
-  const res = await evalJS(cdp, PARITY_PROBE).catch((e) => ({ checks: [{ name: 'parity/probe', ok: false, detail: 'threw: ' + e.message }], snap: {} }));
+// Keep a failed CDP read separate from the state it was meant to observe.
+async function observeJS(cdp, expression) {
+  const started = performance.now();
+  try {
+    const value = await evalJS(cdp, expression);
+    return { ok: true, value, elapsedMs: Math.round(performance.now() - started) };
+  } catch (error) {
+    return { ok: false, error: String(error && error.message || error), elapsedMs: Math.round(performance.now() - started) };
+  }
+}
+function observationFailure(observation) {
+  return `observation failed after ${observation.elapsedMs}ms: ${observation.error}`;
+}
+
+async function parityCheck(cdp, A, step, { observation, detailPrefix = '' } = {}) {
+  const res = observation
+    ? (observation.ok ? observation.value : { checks: [{ name: 'parity/probe', ok: false, detail: observationFailure(observation) }], snap: {} })
+    : await evalJS(cdp, PARITY_PROBE).catch((e) => ({ checks: [{ name: 'parity/probe', ok: false, detail: 'threw: ' + e.message }], snap: {} }));
   const checks = (res && Array.isArray(res.checks)) ? res.checks : [{ name: 'parity/probe', ok: false, detail: 'no checks returned' }];
-  for (const c of checks) A.ok(`${step}::${c.name}`, c.ok, c.detail);
+  for (const c of checks) A.ok(`${step}::${c.name}`, c.ok, detailPrefix ? detailPrefix + '; ' + c.detail : c.detail);
   return res;
 }
 
@@ -494,7 +513,8 @@ async function journeyTaskLifecycle(cdp, A, mock) {
   A.ok('J1/run-in-flight', !!busyId, busyId ? 'busy on ' + busyId : 'no run went in-flight (mock/provider?)');
   await waitCrewBusyProjection(cdp);
   await parityCheck(cdp, A, 'J1.2-run-live');
-  // Internal lane identity stays `active`; the customer-facing heading is IN PROGRESS / REVIEW.
+  // Internal lane identity stays `active`; the customer-facing heading is IN PROGRESS (org P11 dropped
+  // the old " / REVIEW" suffix, so a heading that still carries REVIEW fails here).
   // Check both authorities so a wording correction cannot conceal a misplaced or idle card.
   const activeLane = await evalJS(cdp, `(() => {
     const c=document.querySelector('.kb-card[data-id="${tid}"]');
@@ -503,7 +523,8 @@ async function journeyTaskLifecycle(cdp, A, mock) {
     return { lane:task&&task.lane, heading:h&&h.textContent.trim(), running:!!(c&&c.querySelector('.kb-state.running')), busy:!!Channels.isBusy(${J(tid)}) };
   })()`).catch(() => null);
   A.ok('J1/assigned-card-active', !!activeLane && activeLane.lane === 'active' &&
-    /^IN PROGRESS \/ REVIEW\b/.test(String(activeLane.heading)) && activeLane.running && activeLane.busy,
+    /^IN PROGRESS\b/.test(String(activeLane.heading)) && !/REVIEW/.test(String(activeLane.heading)) &&
+    activeLane.running && activeLane.busy,
     'assigned card state = ' + J(activeLane));
 
   // step 2b: A LIVE RUN OUTRANKS THE LANE (regression guard, 2026-08-14). ↩ QUEUE (and ✓ SHIP, and a
@@ -662,14 +683,14 @@ async function journeyInterruptReload(cdp, A, mock) {
   const testReady = ready && await evalJS(cdp, '!!(window.__SKYNET_TEST__ && window.__SKYNET_TEST__.ready())').catch(() => false);
   A.ok('J2/reload/floor-back', !!testReady, testReady ? 'floor + testapi ready after reload' : 'never came back in-game after reload');
   if (!testReady) return;
-  const anyBusy = await evalJS(cdp, "(typeof Channels!=='undefined' && Channels.anyBusy && Channels.anyBusy())").catch(() => true);
-  A.ok('J2/reload/nothing-busy-after-reload', !anyBusy, anyBusy ? 'a channel is busy after a fresh reload (impossible truthfully)' : 'no transient run survived the reload');
+  const anyBusy = await observeJS(cdp, "(typeof Channels!=='undefined' && Channels.anyBusy && Channels.anyBusy())");
+  A.ok('J2/reload/nothing-busy-after-reload', anyBusy.ok && !anyBusy.value, anyBusy.ok ? (anyBusy.value ? 'a channel is busy after a fresh reload (impossible truthfully)' : 'no transient run survived the reload') : observationFailure(anyBusy));
   await openBoard(cdp);
   await parityCheck(cdp, A, 'J2.reload-after');
   // the task the run was on persisted (Workstreams IS persisted), but its card must NOT claim RUNNING.
   if (tid && tid.indexOf && tid.indexOf('ws_') === 0) {
-    const running = await evalJS(cdp, `!!document.querySelector('.kb-card[data-id="${tid}"] .kb-state.running')`).catch(() => false);
-    A.ok('J2/reload/no-running-chip-after-reload', !running, running ? 'card still shows RUNNING after reload' : 'reloaded card shows an honest (non-running) state');
+    const running = await observeJS(cdp, `!!document.querySelector('.kb-card[data-id="${tid}"] .kb-state.running')`);
+    A.ok('J2/reload/no-running-chip-after-reload', running.ok && !running.value, running.ok ? (running.value ? 'card still shows RUNNING after reload' : 'reloaded card shows an honest (non-running) state') : observationFailure(running));
   }
 }
 
@@ -701,11 +722,12 @@ async function journeyDoubleSend(cdp, A, mock, diag) {
   A.ok('J3/no-duplicate-board-rows', dupCount === 0, dupCount ? dupCount + ' duplicate card id(s): ' + boardIds.join(',') : boardIds.length + ' unique card(s)');
 
   // let both runs finish, then assert no stuck RUNNING + still no dupes.
-  await waitIdle(cdp, 60);
+  const idle = await waitIdle(cdp, 60);
+  const idleDetail = 'waitIdle=' + idle + (idle ? ' (idle observed)' : ' (idle not observed within polling window)');
   await openBoard(cdp);
-  await parityCheck(cdp, A, 'J3.settled');
-  const stuck = await evalJS(cdp, "Array.from(document.querySelectorAll('.kb-card .kb-state.running')).length").catch(() => -1);
-  A.ok('J3/no-stuck-running', stuck === 0, stuck + ' card(s) still RUNNING after both runs settled');
+  await parityCheck(cdp, A, 'J3.settled', { observation: await observeJS(cdp, PARITY_PROBE), detailPrefix: idleDetail });
+  const stuck = await observeJS(cdp, "Array.from(document.querySelectorAll('.kb-card .kb-state.running')).length");
+  A.ok('J3/no-stuck-running', stuck.ok && stuck.value === 0, idleDetail + '; ' + (stuck.ok ? stuck.value + ' card(s) RUNNING' : observationFailure(stuck)));
 
   // exactly two NEW workstreams were created (no phantom extra rows from the rapid fire).
   const afterIds = await evalJS(cdp, "(typeof Workstreams!=='undefined') ? Workstreams.all().map(w=>w.id) : []").catch(() => []);

@@ -243,6 +243,10 @@ function boot(port, workspaces, attemptsLeft, extraEnv) {
     const creditsUnconf = await j('GET', '/api/credits');
     A.eq(creditsUnconf.status, 404, 'GET /api/credits with no credits backend configured -> 404 (no surface)');
     A.eq(creditsUnconf.body.configured, false, 'the 404 body honestly reports configured:false');
+    // the boot "configured?" probe (Harness init) reads the same answer as a 200, so a page load logs no 404
+    const creditsProbe = await j('GET', '/api/credits?history=0&probe=1');
+    A.eq([creditsProbe.status, creditsProbe.body && creditsProbe.body.configured], [200, false], 'GET /api/credits?probe=1 unconfigured -> 200 { configured:false } (no console 404 on load)');
+    A.eq((await j('GET', '/api/credits?history=0')).status, 404, '…every other read keeps the no-surface 404');
 
     // ---- managed credits: ACCOUNT-SIDE UNLINK INVALIDATES THE LOCAL "LINKED" CLAIM -----------------
     // Reproduce the 0.10.8 field escape over real sockets: the station first caches a valid $0, then the

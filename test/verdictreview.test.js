@@ -150,6 +150,53 @@ A.ok(VERDICTS_THAT_TEACH.has('ok') && VERDICTS_THAT_TEACH.has('miss') && !VERDIC
   A.eq(c2.restore(null) + c2.restore([{ runId: '', at: 1, packet: {} }, { runId: 'x', packet: {} }]), 0, 'malformed rows are skipped');
 }
 
+/* ---------- the HOST's persistence (sidecar/index.js), run for real against stub stores ----------
+   skills-eval-09 / sidecar-index-08 / sidecar-index-12: every run end used to rewrite, fsync, read back and compare the
+   whole packet file synchronously on the event loop. A stash/take (meta.ack === false: nobody waits on it) is batched
+   again (1 s, unref'd); an acknowledged transition (arm, correct, fire, complete, retry) still writes and verifies
+   synchronously and drops any pending batch first, so a stale stash snapshot can never overwrite it; shutdown's flush
+   writes a pending batch instead of being a no-op. */
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const from = src.indexOf('const VERDICT_PACKETS_FILE'), to = src.indexOf('function launchVerdictReview(');
+  A.ok(from > 0 && to > from, 'index.js: the verdict packet persistence block is where this test reads it');
+  const writes = [], timers = [];
+  let disk = null;
+  const host = new Function('path', 'WORKSPACES', 'saveResilient', 'loadResilient', 'failNote', 'setTimeout', 'clearTimeout',
+    src.slice(from, to) + '\nreturn { persistVerdictPackets, flushVerdictPackets };')(
+    require('path'), '/ws',
+    (file, value) => { writes.push(JSON.parse(JSON.stringify(value))); disk = JSON.parse(JSON.stringify(value)); },
+    () => disk,
+    () => {},
+    (fn, ms) => { const t = { fn, ms, cleared: false, unref() { this.unrefd = true; } }; timers.push(t); return t; },
+    t => { if (t) t.cleared = true; });
+  const live = () => timers.filter(t => !t.cleared && !t.fired);
+  const fire = () => { for (const t of live()) { t.fired = true; t.fn(); } };
+  A.eq(host.persistVerdictPackets([{ runId: 'r1' }], { ack: false }), true, 'a stash is accepted');
+  A.eq(writes.length, 0, 'a stash does not write the whole file on the event loop at run end');
+  host.persistVerdictPackets([{ runId: 'r1' }, { runId: 'r2' }], { ack: false });
+  A.eq(live().length, 1, 'several stashes share one pending write');
+  const batch = live()[0] || {};
+  A.ok(batch.unrefd === true && batch.ms <= 1000, 'the batch timer is short and never holds the process open');
+  fire();
+  A.eq(writes.length, 1, 'the batch writes once');
+  A.eq(((writes[0] || {}).rows || []).map(r => r.runId), ['r1', 'r2'], 'with the newest snapshot');
+  host.persistVerdictPackets([{ runId: 'r3' }], { ack: false });
+  A.eq(host.persistVerdictPackets([{ runId: 'r3', state: 'held' }], { ack: true }), true, 'an acknowledged transition is written and verified');
+  A.eq(writes.length, 2, 'synchronously');
+  A.eq(live().length, 0, 'and the pending stash batch is dropped (its snapshot is older)');
+  host.persistVerdictPackets([{ runId: 'r4' }]);
+  A.eq(writes.length, 3, 'a transition with no meta is treated as acknowledged');
+  host.persistVerdictPackets([{ runId: 'r5' }], { ack: false });
+  host.flushVerdictPackets();
+  A.eq(writes.length, 4, 'shutdown flushes a pending batch');
+  A.eq((((writes[3] || {}).rows || [])[0] || {}).runId, 'r5', 'the flushed batch is the newest');
+  host.flushVerdictPackets();
+  A.eq(writes.length, 4, 'a flush with nothing pending writes nothing');
+  A.ok(/redactGeneration:/.test(src.slice(src.indexOf('const verdictReview = makeVerdictReview('), src.indexOf('const verdictReview = makeVerdictReview(') + 900)),
+    'the host keys cached compact packets to its known-secret generation, so a newly saved key leaves saved rows');
+}
+
 // ---- an ARMED review is never evicted by the cap or aged out by its run's TTL (audit 10-11) ----
 {
   let t = 1000, timers = [];

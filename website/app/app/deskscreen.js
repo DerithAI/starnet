@@ -85,7 +85,8 @@ const DeskScreen = (() => {
       let s = null;
       for (let i = rec.steps.length - 1; i >= 0; i--) { const x = rec.steps[i]; if (!x.done && (!p.callId || !x.callId || x.callId === p.callId)) { s = x; break; } }
       if (!s) return;
-      s.done = true; s.ok = !p.isError && p.ok !== false;
+      // a call the Task Brief gate held never ran: no outcome (null), never a failed step
+      s.done = true; s.ok = (typeof TaskIntent !== 'undefined' && TaskIntent.isGateHeld && TaskIntent.isGateHeld(p)) ? null : (!p.isError && p.ok !== false);
       if (typeof p.ms === 'number' && isFinite(p.ms)) s.ms = p.ms;
       if (p.summary) s.summary = String(p.summary);
     } else if (name === 'agent.token') {
@@ -158,7 +159,11 @@ const DeskScreen = (() => {
           if (Channels.runIdOf(w.id) !== rec.runId) continue;
           rec.wsId = w.id;
           const h = Array.isArray(w.history) ? w.history : [];
-          for (let i = h.length - 1; i >= 0; i--) if (h[i] && h[i].role === 'user' && h[i].content) { rec.task = String(h[i].content); break; }
+          for (let i = h.length - 1; i >= 0; i--) if (h[i] && h[i].role === 'user' && h[i].content) {
+            // a goal-loop step is the station's prompt, not the Commander's words: the task is the GOAL it works toward
+            const step = (typeof GoalLoop !== 'undefined' && GoalLoop.stepOfTurn) ? GoalLoop.stepOfTurn(h[i]) : null;
+            rec.task = step != null ? step : String(h[i].content); break;
+          }
           if (rec.task) return { text: rec.task, known: true };
         }
       }
@@ -200,14 +205,23 @@ const DeskScreen = (() => {
       } else if (r.role === 'tool' && r.toolCallId) {
         const s = byId.get(String(r.toolCallId)); if (!s) continue;
         const body = String(r.content == null ? '' : r.content);
-        s.done = true; s.isError = /^ERROR: /.test(body); s.result = s.isError ? body.slice(7) : body;
+        s.done = true;
+        // a call the Task Brief held did not run: not a failure, and its text is the gate's note to the model, never a screen
+        if (typeof TaskIntent !== 'undefined' && TaskIntent.isGateHeldBody && TaskIntent.isGateHeldBody(body)) { s.held = true; s.isError = false; s.result = ''; continue; }
+        s.isError = /^ERROR: /.test(body); s.result = s.isError ? body.slice(7) : body;
       }
     }
     return out;
   }
 
-  // one step → what its screen shows: { app, target, kind: 'code'|'diff'|'term'|'text', body, note }
+  // one step → what its screen shows: { app, target, kind: 'code'|'diff'|'term'|'text', body, note }. A held step shows what it
+  // was asked to do, with the honest status: it has not run yet (it runs once the task brief settles).
   function screenOf(s) {
+    const sc = stepScreen(s);
+    if (s && s.held) sc.note = (typeof TaskIntent !== 'undefined' && TaskIntent.GATE_HELD) || 'not run yet';
+    return sc;
+  }
+  function stepScreen(s) {
     const a = s.args || {}, app = appOf(s.name), n = String(s.name || '').replace(/_/g, '.');
     const res = s.result == null ? '' : String(s.result);
     const waiting = !s.done ? 'working…' : '';
@@ -241,13 +255,18 @@ const DeskScreen = (() => {
       .then(async r => { let j = null; try { j = await r.json(); } catch (_) {} return { status: r.status, ok: r.ok, body: j }; })
       .catch(() => ({ status: 0, ok: false, body: null }));
   }
+  // this agent's server-live runs, minus the harness's own self-talk (`internal`: session ideas, a title, a goal plan) —
+  // it is not the agent's job, exactly as the run history below leaves it out. null = the snapshot could not be read.
+  function liveRowsFor(runs, agentId) {
+    return Array.isArray(runs) ? runs.filter(r => r && r.agentId === agentId && !r.internal) : null;
+  }
   function pollSnap(force) {
     if (!cur || snapBusy || (!force && clock() - snapAt < 4000)) return;
     snapBusy = true; const want = cur;
     getJson('/api/state/snapshot').then(j => {
       snapBusy = false; if (cur !== want) return;
       snapAt = clock();
-      snap = j && Array.isArray(j.runs) ? j.runs.filter(r => r && r.agentId === want.agentId) : null;
+      snap = liveRowsFor(j && j.runs, want.agentId);
       paint();
     });
   }
@@ -299,8 +318,9 @@ const DeskScreen = (() => {
     if (v.live) {
       const have = new Set(list.map(s => s.callId));
       for (const st of v.live.steps) {
-        if (have.has(st.callId)) { const s = list.find(x => x.callId === st.callId); if (s && !s.done && st.done) { s.done = true; s.isError = st.ok === false; if (s.result == null) s.result = st.summary || ''; } continue; }
-        list.push({ callId: st.callId, name: st.name, args: argsObj(st.args), result: st.done ? (st.summary || '') : null, isError: st.ok === false, done: st.done, partial: true });
+        // a done step with no outcome (ok null) is one the Task Brief held: it stays held, never "ok" or "bad"
+        if (have.has(st.callId)) { const s = list.find(x => x.callId === st.callId); if (s && !s.done && st.done) { s.done = true; s.isError = st.ok === false; s.held = !!(st.done && st.ok === null); if (s.result == null) s.result = s.held ? '' : (st.summary || ''); } continue; }
+        list.push({ callId: st.callId, name: st.name, args: argsObj(st.args), result: st.done ? (st.ok === null ? '' : (st.summary || '')) : null, isError: st.ok === false, held: !!(st.done && st.ok === null), done: st.done, partial: true });
       }
     }
     return list;
@@ -315,7 +335,7 @@ const DeskScreen = (() => {
         : '<pre class="ds-' + (sc.kind === 'term' ? 'term' : 'page') + '">' + (esc(sc.body) || '<span class="ds-dim">' + (s.done ? '(nothing came back)' : '…') + '</span>') + '</pre>';
     const partial = s.partial && !(s.args && Object.keys(s.args).length)
       ? '<p class="ds-dim ds-partial">' + (v.src && v.src.stream ? 'Loading this step…' : 'This run was started outside this window, so its full screen is available once it ends. For now the station reports only the tool name.') + '</p>' : '';
-    return '<div class="ds-app" data-app="' + sc.app.toLowerCase() + '" data-s="' + (!s.done ? 'run' : s.isError ? 'bad' : 'ok') + '">'
+    return '<div class="ds-app" data-app="' + sc.app.toLowerCase() + '" data-s="' + (!s.done ? 'run' : s.held ? 'held' : s.isError ? 'bad' : 'ok') + '">'
       + '<div class="ds-bar"><span class="ds-appname">' + esc(sc.app) + '</span><span class="ds-target">' + esc(clip(sc.target, 120)) + '</span>'
       + (canOpenPage(s, sc) ? '<button type="button" class="bb xs ds-openpage" data-a="page" data-path="' + esc(sc.target) + '">OPEN PAGE</button>' : '')
       + '<span class="ds-pager"><button type="button" class="bb xs" data-a="prev"' + (idx <= 0 ? ' disabled' : '') + ' aria-label="Previous screen">‹</button>'
@@ -509,7 +529,7 @@ const DeskScreen = (() => {
   const text = () => (isOpen() ? cur.body.innerText : null);
   const agentOfOpen = () => (isOpen() ? cur.agentId : null);
   return { init, open, isOpen, text, agentOfOpen, parseScreens, _deskTitle: deskTitle,
-    _fold: fold, _currentOf: currentOf, _lastEndedOf: lastEndedOf, _argDigest: argDigest, _taskOf: taskOf,
+    _fold: fold, _currentOf: currentOf, _lastEndedOf: lastEndedOf, _argDigest: argDigest, _taskOf: taskOf, _liveRowsFor: liveRowsFor,
     _parseScreens: parseScreens, _screenOf: screenOf,
     _handoffOf: aid => handoffs.get(aid) || null,
     _reset: () => { runs.clear(); byAgent.clear(); asks.clear(); handoffs.clear(); } };

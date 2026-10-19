@@ -62,7 +62,7 @@ function validateSuite(suite) {
     if (!Array.isArray(c.checks) || !c.checks.length || c.checks.length > MAX_CHECKS) throw new Error('each case needs bounded independent task checks');
     const checkIds = new Set();
     for (const check of c.checks) {
-      if (!check || !identifier(check.id) || checkIds.has(check.id) || !['json_equal', 'artifact_json_equal', 'artifact_sha256', 'tool_call', 'process_exit'].includes(check.kind)) throw new Error('invalid task check');
+      if (!check || !identifier(check.id) || checkIds.has(check.id) || !['json_equal', 'artifact_json_equal', 'artifact_sha256', 'tool_call', 'process_exit'].includes(check.kind)) throw new Error('invalid task check (each needs a unique id and a kind of json_equal, artifact_json_equal, artifact_sha256 or tool_call)');
       checkIds.add(check.id);
       if (check.kind.endsWith('equal') && (!Object.hasOwn(check, 'expected') || jsonSize(check.expected) > 8192)) throw new Error('task equality check needs a bounded declared expected value');
       if (check.kind === 'json_equal' && check.path != null && (!Array.isArray(check.path) || check.path.length > 16 || check.path.some(p => !(typeof p === 'string' && p.length <= 120 && !unsafeKeys.has(p)) && !(Number.isInteger(p) && p >= 0)))) throw new Error('invalid JSON check path');
@@ -124,7 +124,8 @@ function compareCases(cases) {
 function validatePromotionReceipt(receipt, options) {
   const o = options || {};
   if (jsonSize(receipt) > MAX_RECEIPT_BYTES || !validJson(receipt)) return { ok: false, reason: 'invalid or oversized evaluation receipt' };
-  if (!receipt || receipt.schemaVersion !== SCHEMA || receipt.status !== 'passed') return { ok: false, reason: 'behavioral evaluation has not passed' };
+  // insufficient_evidence is read on only so a complete tie can reach the owner-acknowledgement exit below.
+  if (!receipt || receipt.schemaVersion !== SCHEMA || !['passed', 'insufficient_evidence'].includes(receipt.status)) return { ok: false, reason: 'behavioral evaluation has not passed' };
   if (!o.suite) return { ok: false, reason: 'trusted evaluation test set is unavailable' };
   let suite;
   try { suite = validateSuite(o.suite); } catch (_) { return { ok: false, reason: 'invalid evaluation test set' }; }
@@ -133,6 +134,9 @@ function validatePromotionReceipt(receipt, options) {
   if (receipt.testSetDigest !== digest(suite) || receipt.suiteId !== suite.id) return { ok: false, reason: 'evaluation test set changed' };
   if (!['provider', 'executable'].includes(receipt.evidenceClass)) return { ok: false, reason: 'fixture evidence cannot authorize promotion' };
   if (!Array.isArray(receipt.cases) || receipt.cases.length !== suite.cases.length) return { ok: false, reason: 'incomplete evaluation cases' };
+  // An unfinished run has no checks to compare; refuse it for what it is before the check-level validation.
+  if (receipt.status === 'insufficient_evidence' && receipt.cases.some(c => c && c.before && c.after && (c.before.completed !== true || c.after.completed !== true)))
+    return { ok: false, reason: 'not every evaluation run finished; evaluate again' };
   const rebuilt = [];
   for (let i = 0; i < suite.cases.length; i++) {
     const c = suite.cases[i], saved = receipt.cases[i];
@@ -151,8 +155,24 @@ function validatePromotionReceipt(receipt, options) {
     }
     rebuilt.push(saved);
   }
-  if (compareCases(rebuilt).status !== 'passed') return { ok: false, reason: 'candidate did not improve without regression' };
-  return { ok: true, receiptId: receipt.receiptId };
+  const comparison = compareCases(rebuilt);
+  if (receipt.status === 'passed' && comparison.status === 'passed') return { ok: true, receiptId: receipt.receiptId };
+  // The honest exit when a capable baseline leaves nothing to measure: every run finished, nothing regressed and
+  // every candidate case passed. Only the owner's explicit acknowledgement accepts it, and the result says so;
+  // failed, regressed and incomplete evaluations never qualify.
+  const tie = receipt.status === 'insufficient_evidence' && comparison.status === 'insufficient_evidence' && !comparison.regressions.length &&
+    comparison.allCandidatePassed && rebuilt.every(c => c.before.completed && c.after.completed);
+  if (!tie) return { ok: false, reason: 'candidate did not improve without regression' };
+  if (o.acknowledgedNoImprovement !== true) return { ok: false, reason: 'the evaluation showed no measurable improvement; approve it without measured improvement to accept it' };
+  return { ok: true, receiptId: receipt.receiptId, acknowledged: true };
+}
+/* Only an executable runner observes a process exit. The provider and fixture runners work in an isolated file
+   workspace, so a process_exit check there could never pass: refuse it before any run, and say why. Exported so the
+   suite-registration route refuses it too (it validates without an evaluator). Returns the suite. */
+const PROCESS_EXIT_REFUSAL = 'process_exit checks need an executable runner; this station evaluates in an isolated file workspace, so use json_equal, artifact_json_equal, artifact_sha256 or tool_call checks';
+function assertSuiteRunnable(suite, evidenceClass) {
+  if (evidenceClass !== 'executable' && suite.cases.some(c => c.checks.some(check => check.kind === 'process_exit'))) throw new Error(PROCESS_EXIT_REFUSAL);
+  return suite;
 }
 function makeSkillEvaluator(options) {
   const o = options || {}, suites = new Map((o.suites || []).map(s => { const suite = validateSuite(s); return [suite.id, suite]; }));
@@ -164,9 +184,11 @@ function makeSkillEvaluator(options) {
   if (evidenceClass === 'executable' && (!runnerIdentity.implementation || !runnerIdentity.version)) throw new Error('executable evaluation requires versioned runner identity');
   const runnerDigest = digest(runnerIdentity);
   const active = new Set();
+  // Suites already stored still load above; one this runner cannot observe fails at evaluate, before any run.
   async function evaluate(input) {
     const p = input || {}, suite = suites.get(p.suiteId);
     if (!suite) throw new Error('unknown host evaluation suite');
+    assertSuiteRunnable(suite, evidenceClass);
     if (!p.candidate) throw new Error('candidate required');
     const candidate = clone(p.candidate.skill || p.candidate), baseline = p.baseline ? clone(p.baseline.skill || p.baseline) : null;
     if (!candidate || candidate.name !== suite.skillName || (baseline && baseline.name !== candidate.name)) throw new Error('test set does not govern this skill');
@@ -212,7 +234,10 @@ function makeSkillEvaluator(options) {
     if (!stored || (supplied && !isDeepStrictEqual(supplied, stored))) return { ok: false, reason: 'unknown or altered host evaluation receipt' };
     return validatePromotionReceipt(stored, { ...expected, runnerDigest, suite: suites.get(stored.suiteId) });
   }
-  function registerSuite(value) { const suite = validateSuite(value); suites.set(suite.id, suite); return suite.id; }
+  function registerSuite(value) {
+    const suite = assertSuiteRunnable(validateSuite(value), evidenceClass);
+    suites.set(suite.id, suite); return suite.id;
+  }
   return { evaluate, verifyReceipt, getReceipt, registerSuite, listSuites: () => Array.from(suites.values()).map(s => ({ id: s.id, skillName: s.skillName, cases: s.cases.length })) };
 }
-module.exports = { SCHEMA, digestSkill, digestTestSet: digest, validateSuite, assessCase, compareCases, validatePromotionReceipt, makeSkillEvaluator };
+module.exports = { SCHEMA, digestSkill, digestTestSet: digest, validateSuite, assertSuiteRunnable, PROCESS_EXIT_REFUSAL, assessCase, compareCases, validatePromotionReceipt, makeSkillEvaluator };

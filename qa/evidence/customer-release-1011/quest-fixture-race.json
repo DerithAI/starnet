@@ -1,0 +1,69 @@
+{
+  "source": "fbeb93bd7cfa35704bc4417874d447fea9e0f249",
+  "scope": "Controlled private reproduction; does not attribute either original intermittent failure",
+  "reproduction": {
+    "assertions": "original unchanged",
+    "replyCounter": "original unchanged",
+    "profile": "original SidecarFixture profile environment unchanged",
+    "injection": "4500ms delay only before first foreground OpenRouter fetch after directive persistence",
+    "result": "original answer1 assertion fails with answer2",
+    "order": [
+      "quest master POST consumes reply1",
+      "First request A consumes reply2",
+      "Later request B consumes reply3"
+    ]
+  },
+  "repair": {
+    "files": [
+      "test/seam-audit-recovery.http.test.js",
+      "test/spend-authority.http.test.js"
+    ],
+    "change": "SKYNET_QUEST_REFRESH=0 only in these two direct-request fixture envs",
+    "assertions": "all original assertion lines compared byte-for-byte after trimming; unchanged",
+    "production": "unchanged"
+  },
+  "validation": [
+    {
+      "test": "seam recovery with same 4500ms delay",
+      "entry": "frozen root backend",
+      "result": "PASS",
+      "log": "fixed-seam.log"
+    },
+    {
+      "test": "spend authority",
+      "entry": "frozen root fault host/backend",
+      "result": "PASS",
+      "log": "fixed-spend.log"
+    }
+  ],
+  "limits": "No installer/customer recovery claim. No full gates. Quest suites remain independently registered.",
+  "at": "2026-10-12T04:25:36.470Z",
+  "testFixCommit": "f912479f02ade7ece5c4ba37c2c992a42d251146",
+  "retainedPrivateArtifacts": [
+    {
+      "name": "receipt.json",
+      "sha256": "f380dabef0986c18d63e39aaedab5b1eebfed5c1434c6ec3511c4aa42cce7493"
+    },
+    {
+      "name": "run.log",
+      "sha256": "4b1b9a3089d63112c01ea533cd3abcab05fd2de9ab40da3a1f331e1e91f01e2b"
+    },
+    {
+      "name": "probe.cjs",
+      "sha256": "2bd3a4fc28b85c78e9d6d6f9b20ac3684c3c35e21711995b6826ffdb9d9147c0"
+    },
+    {
+      "name": "delay-first.cjs",
+      "sha256": "9b9ac58a3a3b1b2b06c5b18c1cac60a40cd00cf524150444c7e483857fb897c1"
+    },
+    {
+      "name": "fixed-seam.log",
+      "sha256": "b9bbf6ff38c3bc4f19cca096823e87008691bc490b706d187d918773be3f8aaf"
+    },
+    {
+      "name": "fixed-spend.log",
+      "sha256": "c6631ae32263a3925f5281d1aed2c6edba29c015b20c65cf245125ec5739e7ee"
+    }
+  ],
+  "originalFailureLimit": "Neither original failure captured the extra request body. The controlled replay establishes that this race can produce the exact seam assertion failure, without retrospectively attributing the two original failures."
+}

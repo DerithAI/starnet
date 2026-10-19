@@ -1,6 +1,6 @@
 {
   "name": "starnet-harness",
-  "version": "0.13.2",
+  "version": "0.13.5",
   "private": true,
   "description": "A local-first, gamified desktop harness for building and running real AI-agent teams.",
   "license": "MIT",
@@ -137,6 +137,7 @@
     "qa:product-perfect": "node scripts/qa/product-perfect.mjs --run",
     "qa:smoke:installed": "node scripts/qa/installed-smoke.mjs",
     "qa:input-isolation": "node scripts/qa/input-isolation-smoke.mjs",
+    "qa:window-leaks": "node scripts/qa/window-leaks.mjs",
     "qa:lifecycle:packaged": "node scripts/qa/packaged-lifecycle.mjs",
     "qa:soak": "node scripts/qa/soak.mjs --minutes=20",
     "qa:soak:release": "node scripts/qa/soak.mjs --minutes=720",

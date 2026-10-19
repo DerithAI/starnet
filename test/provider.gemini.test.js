@@ -110,6 +110,23 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.eq(models[0].id, 'gemini-x', 'models/ prefix stripped for UI');
     A.eq(p.contextLimit('gemini-x'), 1000, 'context limit from inputTokenLimit');
     A.eq(_internals.modelPath('gemini-x'), 'models/gemini-x', 'modelPath restores models/ prefix');
+    // GitHub #98: the routed id 'google/gemini-2.5-flash' (the OpenRouter spelling a station keeps after switching to the
+    // native GEMINI provider) names the native model, never a 'google/…' resource path Google answers 404 for
+    A.eq(_internals.modelPath('google/gemini-x'), 'models/gemini-x', 'the routed google/ spelling reaches the native model');
+    A.eq(_internals.modelPath('tunedModels/abc'), 'tunedModels/abc', 'a real resource path is untouched');
+    // an OpenRouter variant suffix (':free', ':thinking', …) is a routing option, not part of the native model's name —
+    // left on, it reads as the ':method' half of the native URL
+    A.eq(_internals.modelPath('google/gemini-2.0-flash-exp:free'), 'models/gemini-2.0-flash-exp', 'the routed variant suffix is dropped for the native model');
+    A.eq(p.contextLimit('google/gemini-x:free'), 1000, 'a routed variant still finds the native catalog row');
+    A.eq(JSON.stringify(p.priceOf('google/gemini-2.5-flash:thinking')), JSON.stringify(p.priceOf('gemini-2.5-flash')), 'and is priced as the native model');
+    A.eq(p.contextLimit('google/gemini-x'), 1000, 'the routed spelling finds the native catalog row');
+    A.eq(JSON.stringify(p.priceOf('google/gemini-2.5-flash')), JSON.stringify(p.priceOf('gemini-2.5-flash')), 'and is priced as the native model, so spend limits see it');
+    const wireUrls = [];
+    const wire = makeGeminiProvider({ key: 'KEY', baseUrl: 'https://gemini.test/v1beta', fetch: async (url) => { wireUrls.push(url);
+      if (/\/models(\?|$)/.test(url)) return new Response(JSON.stringify({ models: [{ name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] }] }), { status: 200 });
+      return new Response('data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }) + '\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }); } });
+    await collect(wire, { model: 'google/gemini-2.5-flash', messages: [{ role: 'user', content: 'hi' }] });
+    A.eq(wireUrls.filter(u => /:streamGenerateContent/.test(u)), ['https://gemini.test/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse'], 'the native wire carries the native model path: ' + wireUrls.join(' | '));
   }
 
   // Issue #19: a model on a later Google catalog page must remain selectable.
@@ -164,6 +181,16 @@ async function collect(provider, req) { const out = []; for await (const e of pr
 
     const plain = _internals.messagesToGemini([{ role: 'user', content: 'hello' }]);
     A.eq(plain.contents[0].parts[0], { text: 'hello' }, 'plain string user turn unchanged');
+  }
+
+  // RUN CONTEXT NOTE (lean-prompt 2026-10-12): never hoisted into systemInstruction, even on a conversation's first
+  // message — it rides the user turn, so the system instruction is identical across the conversation's messages.
+  {
+    const note = require('../sidecar/providers/provider.js').runContextNote('[RUNTIME]\nRun id: r1');
+    const first = _internals.messagesToGemini([{ role: 'system', content: 'S' }, { role: 'system', content: note }, { role: 'user', content: 'hi' }]);
+    A.eq(first.systemInstruction, { parts: [{ text: 'S' }] }, 'first message: systemInstruction is the system prompt alone');
+    A.eq(first.contents.map(c => c.role), ['user'], 'first message: the note joins the user turn');
+    A.eq(first.contents[0].parts.map(p => p.text), [note, 'hi'], 'note text precedes the request, verbatim');
   }
 
   A.eq(_internals.finishFor('MAX_TOKENS', false), 'length', 'MAX_TOKENS -> length');

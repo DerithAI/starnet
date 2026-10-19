@@ -21,7 +21,7 @@ A.ok(!/<select/.test(code), 'no bare <select> (the OS arrow cannot be themed)');
 
 // feature detection + the fallback
 A.ok(/api\('\/api\/routing\/steptest'\)\.then\(r => \{\s*S\.seam = !!\(r && r\.status !== 404 && r\.status !== 405/.test(panel), 'the step-test route is probed; a 404/405 means an older sidecar');
-A.ok(/return m === 'step' && S\.seam !== true \? 'real' : m;/.test(panel) && /H\.runSample\(c, \{ text: t \|\| undefined/.test(panel) && /\? jobResultHTML\(mine, flow\(\)\) : ''/.test(panel) && /H\.sampleHTML\(v\)/.test(panel), 'without the route the TEST view keeps the whole-line real job (STEP THROUGH is off, RUN ONE REAL JOB stays)');
+A.ok(/return m === 'step' && stepTestUnavailable\(\) \? 'real' : m;/.test(panel) && /H\.runSample\(c, \{ text: t \|\| undefined/.test(panel) && /\? jobResultHTML\(mine, flow\(\)\) : ''/.test(panel) && /H\.sampleHTML\(v\)/.test(panel), 'without the route the TEST view keeps the whole-line real job (STEP THROUGH is off, RUN ONE REAL JOB stays)');
 A.ok(/if \(!c \|\| !p\.agentId \|\| S\.seam !== true\) return none;/.test(panel), 'Try this step is hidden unless the route answered');
 
 // the contract
@@ -34,7 +34,7 @@ A.ok(/H\.planGate\(c\)\.then/.test(panel), 'every test run posts THIS floor firs
 
 // the trigger — no provider: the routine inherits its agent's model AND provider together (freezing the dock's current
 // wire paired one provider with another's model, #24 class)
-A.ok(/api\('\/api\/cron', 'POST', \{ name, prompt, schedule, agentId, dockId, tz, runsLine: true \}\)/.test(panel), 'a schedule made here runs the line (runsLine), FIRES AT the chosen bay (dockId), carries no unattended grants and no frozen provider');
+A.ok(/api\('\/api\/cron', 'POST', \{ name, prompt, schedule, agentId, dockId, tz, runsLine: true, arm: true \}\)/.test(panel), 'a schedule made here runs the line (runsLine), asks the one arm rule (arm:true, org P16), FIRES AT the chosen bay (dockId), carries no unattended grants and no frozen provider');
 // SAVE SCHEDULE once threw a ReferenceError: the create handler called paintTrigger's local trgAgent(). The agent is
 // resolved inside wireScheduleForm from its OWN docks (the general scope law lives in test/sibling-scope.test.js)
 const wsf = (code.match(/function wireScheduleForm\(p, docks, dockHint\) \{[\s\S]*?\n  \}/) || [''])[0];

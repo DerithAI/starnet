@@ -165,6 +165,10 @@
     [/\b\d{8,10}:[A-Za-z0-9_\-]{30,}\b/g, '[redacted-token]'],          // Telegram bot token (this app uses these)
     [/sk-[A-Za-z0-9_\-]{16,}/g, '[redacted-key]'],                      // generic OpenAI-style (broad — keep last)
     [/\bBearer\s+[A-Za-z0-9._\-]{12,}/g, 'Bearer [redacted-key]'],      // Authorization: Bearer <token>
+    // The password in a URL's `user:pass@host` part (git remotes, proxies, database URLs). The user name and host stay
+    // readable; the password runs to the LAST '@' of the authority, because a password may itself hold an '@'. A vendor
+    // key or known secret already scrubbed in that slot keeps its own tag. A port (`host:8080/…`) is never touched.
+    [/\b([a-z][a-z0-9+.-]*:\/\/[^\s:\/?#@]*:)(?!\[redacted-)[^\s\/?#]+(?=@)/gi, '$1[redacted-secret]'],
     // Synthetic/local connectors frequently use ordinary canaries rather than vendor-shaped tokens. Scrub
     // explicit credential assignments too, including URL query strings, so upstream diagnostics cannot turn a
     // `password=...` or `client_secret: ...` value into a credential disclosure.
@@ -309,11 +313,15 @@
 
   // Only explicit, proven standing preferences cross agent boundaries. A profile label alone can
   // describe private biographical facts; a global scope alone says nothing about provenance.
+  // The text test accepts every opening TrustedLearning.preferences() saves (an explicit standing marker: "Remember that
+  // always…", "For all future tasks, …") and the "I (strongly) prefer…" forms an agent saves with notebook.write;
+  // test/trusted-learning.test.js locks writer and reader together.
+  // The stored `standing` flag is not trusted: it outlives a later correction of the words.
   function isStandingMemory(r) {
     if (!r || r.origin === 'feedback' || r.scope !== 'global' || r.projectRoot || r.streamId || r.taintedBy) return false;
     if (r.confirmation !== 'user-stated' && r.confirmation !== 'user-confirmed') return false;
     const text = String(r.content != null ? r.content : r.body || '');
-    const standing = /(?:^|[.!?]\s+)(?:(?:the\s+)?(?:i|we|user|commander)\s+(?:would\s+)?prefers?\b|prefers?\b|always\b|never\b|from now on\b|going forward\b|by default\b|every time\b|whenever\b)/i.test(text.trim());
+    const standing = /(?:^|[.!?]\s+)(?:(?:please\s+)?remember(?:\s+that)?[,:]?\s+)?(?:(?:the\s+)?(?:i|we|user|commander)\s+(?:would\s+|strongly\s+|generally\s+)?prefers?\b|prefers?\b|always\b|never\b|from now on\b|going forward\b|by default\b|every time\b|whenever\b|for (?:all|every) future (?:tasks?|chats?|conversations?)\b)/i.test(text.trim());
     return standing && (r.kind === 'profile' || r.pinned === true);
   }
 
@@ -348,7 +356,10 @@
     const meta = records.recallMeta || {};
     const priority = new Set(meta.priority || records.filter(r => r && (r.pinned || isStandingMemory(r))));
     const priorityLimit = recallOpts.priorityLimit == null ? 4000 : Math.max(0, Math.min(8000, Number(recallOpts.priorityLimit) || 0));
-    let regularUsed = 0, priorityUsed = 0, omitted = Number(meta.omitted) || 0, shortened = 0;
+    // omitted/shortened = cut HERE to fit the budget. notShown = ranked below the top-k by rank(): ordinary ranking,
+    // disclosed as such, never as an omission (review memory-learning-04: it read as "52 memories omitted" every run).
+    let regularUsed = 0, priorityUsed = 0, omitted = 0, shortened = 0;
+    const notShown = Math.max(0, Math.floor(Number(meta.notShown) || 0));
     // Priority records have a separate bounded allowance. Never clip a requirement into an apparently
     // complete instruction: an omitted suffix may contain its exception or negation.
     for (const r of records) {
@@ -369,14 +380,23 @@
       if (!blocked && r && r.id) usedIds.push(r.id);
     }
     if (!lines.length && !omitted) return out;
-    const notice = omitted || shortened
-      ? '\n[' + omitted + ' matching saved memor' + (omitted === 1 ? 'y' : 'ies') + ' omitted; ' + shortened + ' shortened to fit the prompt. Use notebook.read to retrieve the full records before relying on a requirement not shown here.]'
-      : '';
+    const memories = n => n + ' saved memor' + (n === 1 ? 'y' : 'ies');
+    const parts = [];
+    if (omitted) parts.push(memories(omitted) + ' omitted' + (shortened ? ' and ' + shortened + ' shortened' : '') + ' to fit the prompt');
+    else if (shortened) parts.push(memories(shortened) + ' shortened to fit the prompt');
+    if (notShown) parts.push(typeof recallOpts.notShownText === 'function' ? recallOpts.notShownText(notShown)
+      : notShown + ' more ' + (meta.queried ? 'matching ' : '') + 'saved memor' + (notShown === 1 ? 'y' : 'ies') + ' ranked lower');
+    // The pointer is for a cut that can hide a requirement: a budget cut, or a pinned/standing record past rank's cap.
+    const pointer = recallOpts.pointer !== false && (omitted || shortened || Number(meta.priorityNotShown) > 0)
+      ? ' Use notebook.read with a query to check for a requirement not shown here.' : '';
+    const notice = recallOpts.notice !== false && parts.length ? '\n[' + parts.join('; ') + '.' + pointer + ']' : '';
     out.text = '<recalled-memory>\n' + header + '\n' + lines.join('\n') + notice + '\n</recalled-memory>';
     out.count = lines.length;
     out.chars = out.text.length;
     out.usedIds = usedIds;
-    if (omitted || shortened) { out.omitted = omitted; out.shortened = shortened; }
+    // out.omitted counts every record left out of the prompt (budget + ranking); out.notShown is the ranking part
+    if (omitted || shortened || notShown) { out.omitted = omitted + notShown; out.shortened = shortened; }
+    if (notShown) out.notShown = notShown;
 
     return out;
   }
@@ -523,6 +543,18 @@
     return /^[a-z]:\//i.test(k) ? k.toLowerCase() : k;   // Windows drive paths are case-insensitive; POSIX paths are not
   }
 
+  // notebook.write stores project notes as stream + the host's projectRoot.
+  // Give those existing records the same boundary as the explicit project tier, without
+  // migrating history or reclassifying global/agent records with incidental project metadata.
+  function memoryProjectKey(record) {
+    return record && (record.scope === 'project' || record.scope === 'stream') ? projectKey(record.projectRoot) : '';
+  }
+
+  function memoryAllowedInProject(record, root) {
+    const key = memoryProjectKey(record);
+    return !key || key === projectKey(root);
+  }
+
   function rank(records, query, rankOpts) {
     rankOpts = rankOpts || {};
     const now = typeof rankOpts.now === 'number' ? rankOpts.now : 0;
@@ -539,14 +571,13 @@
     const k = rankOpts.k || 8;
     const halfLife = rankOpts.halfLifeMs || 6048e5;   // 7 days (usage recency)
     const trustHalfLife = rankOpts.trustHalfLifeMs || 2592e6;   // 30 days (endorsement fade — mirrors memcore.TRUST_HALFLIFE_MS)
-    // PROJECT TIER: a record scoped 'project' belongs to ONE root — it is NEVER injected into a different project
-    // (or an unscoped run): a lesson about repo A's flaky registry must not steer work in repo B. Global records
-    // (no projectRoot, or scope global/stream) always compete, exactly as before. Same-project records get the
-    // same-stream boost below so a project's own lessons float up inside it.
+    // Project notes (including legacy stream + projectRoot) belong to ONE root, even on an
+    // explicit read or an unscoped run with the same stream id. Unanchored streams still compete
+    // across conversations; explicit global/agent scopes keep their existing audience semantics.
     // A proven correction retires its older exact copy from AUTO-recall only. An explicit read (floor:false) keeps
     // every record its own gate admitted: that search is how the agent finds the stale copy to correct or forget.
     const recs = (rankOpts.floor === false ? (Array.isArray(records) ? records.filter(Boolean) : []) : activeMemoryRecords(records))
-      .filter(r => !(r.scope === 'project' && projectKey(r.projectRoot) && projectKey(r.projectRoot) !== project));
+      .filter(r => memoryAllowedInProject(r, project));
     if (!recs.length) return [];
     const rel = lexicalScores(recs, query, rankOpts);   // exact and bounded lexical expansion; vectors below remain semantic
     let scored = recs.map((r, i) => {
@@ -570,20 +601,22 @@
       // unchanged) and a pinned record keeps its hard top.
       const rawDistrust = Math.max(0, Math.min(1, Number(r.distrust) || 0));
       const distrust = rawDistrust > 0 ? rawDistrust * Math.pow(0.5, tAge / trustHalfLife) : 0;
-      // M-mem.2b: same-stream working memory floats up; global records always compete; OTHER streams stay
-      // searchable (no boost, not filtered) — "global always-on, workstream-scoped, cross-stream searchable".
+      // Unanchored working memory remains cross-stream searchable. Project eligibility was
+      // applied above, independently of this relevance boost or whether the record is pinned.
       const sameStream = (streamId && r.scope === 'stream' && r.streamId === streamId) ? 0.5 : 0;
       const inProject = !!(project && r.projectRoot && projectKey(r.projectRoot) === project);
       const sameProject = inProject ? 0.5 : 0;   // this project's own lessons float up (memory-compound lane)
       const pinnedHere = r.pinned && (r.scope !== 'stream' || (streamId && r.streamId === streamId) || inProject);
-      const standing = isStandingMemory(r);
+      // standing:false — the host's withheld (guest / group) runs: the owner's standing preferences get no forced
+      // priority there and compete on relevance like any note (the owner-only boundary; review memory-learning-10)
+      const standing = rankOpts.standing !== false && isStandingMemory(r);
       const semantic = queryVec && r.id != null && vectors[r.id] ? Math.max(0, cosine(queryVec, vectors[r.id])) : 0;
       const score = relevance + SEMANTIC_WEIGHT * semantic + 0.5 * recency + 0.3 * trust - DISTRUST_WEIGHT * distrust + sameStream + sameProject + (pinnedHere ? 1000 : 0);
       const eligible = !(r.pinned && r.projectRoot) || inProject || (!project && streamId && r.streamId === streamId);
       return { r: r, i: i, written: written, score: score, relevance: relevance, semantic: semantic, pinnedHere: pinnedHere, standing: standing, eligible: eligible };
     });
-    // Approved project requirements are not generic facts for another project.
-    // Explicit notebook searches remain able to retrieve them (floor:false).
+    // Keep the existing pin eligibility rule for other record shapes. The project boundary
+    // above applies to both automatic recall and explicit notebook searches (floor:false).
     if (rankOpts.floor !== false) scored = scored.filter(s => s.eligible);
     // RELEVANCE FLOOR: under a query with at least one significant token, a record with ZERO term overlap is
     // dropped unless pinned — slice(0, k) alone injected 8 memories into EVERY run even at relevance 0. A
@@ -597,24 +630,29 @@
     if (rankOpts.floor === false) {
       const explicit = scored.slice(0, k);
       const selected = explicit.map(s => s.r);
-      Object.defineProperty(selected, 'recallMeta', { value: { priority: explicit.filter(s => s.pinnedHere || s.standing).map(s => s.r), omitted: scored.length - selected.length } });
+      const shownPriority = explicit.filter(s => s.pinnedHere || s.standing);
+      Object.defineProperty(selected, 'recallMeta', { value: { priority: shownPriority.map(s => s.r), notShown: scored.length - selected.length, queried: rel.queried,
+        priorityNotShown: scored.filter(s => s.pinnedHere || s.standing).length - shownPriority.length } });
       return selected;
     }
     // PRIORITY ALLOWANCE: auto-recall (no explicit k) adds up to 32 pinned/standing records on top of k ordinary ones;
     // renderRecall's priority budget bounds them. A caller that names its own k gets at most k (the skill reviewer
     // lists every record it is handed: "top-12" must stay 12) unless it opts back in with priorityMax.
     const priorityMax = rankOpts.priorityMax != null ? Math.max(0, Math.min(32, Number(rankOpts.priorityMax) || 0)) : (rankOpts.k ? 0 : 32);
+    const allPriority = scored.filter(s => s.pinnedHere || s.standing);
     if (!priorityMax) {
       const top = scored.slice(0, k);
       const selected = top.map(s => s.r);
-      Object.defineProperty(selected, 'recallMeta', { value: { priority: top.filter(s => s.pinnedHere || s.standing).map(s => s.r), omitted: scored.length - selected.length } });
+      const shownPriority = top.filter(s => s.pinnedHere || s.standing);
+      Object.defineProperty(selected, 'recallMeta', { value: { priority: shownPriority.map(s => s.r), notShown: scored.length - selected.length, queried: rel.queried,
+        priorityNotShown: allPriority.length - shownPriority.length } });
       return selected;
     }
-    const priority = scored.filter(s => s.pinnedHere || s.standing).slice(0, priorityMax);
+    const priority = allPriority.slice(0, priorityMax);
     const ordinary = scored.filter(s => !(s.pinnedHere || s.standing)).slice(0, k);
     const chosen = new Set(priority.concat(ordinary));
     const selected = scored.filter(s => chosen.has(s)).map(s => s.r);
-    Object.defineProperty(selected, 'recallMeta', { value: { priority: priority.map(s => s.r), omitted: scored.length - selected.length } });
+    Object.defineProperty(selected, 'recallMeta', { value: { priority: priority.map(s => s.r), notShown: scored.length - selected.length, queried: rel.queried, priorityNotShown: allPriority.length - priority.length } });
     return selected;
   }
 
@@ -624,13 +662,14 @@
   // PREPEND to the summarizer's input — so a summary can never silently drop "user prefers X". Returns '' when
   // there is nothing to preserve (caller prepends nothing → byte-identical to a memoryless compaction). `now`
   // injected (deterministic). Reuses rank + renderRecall so the selection matches live recall exactly.
+  // `standing` passes through to rank: a withheld (guest / group) run's fold sends standing:false, like its live recall.
   function compactionMemoryBlock(records, recentText, opts) {
     opts = opts || {};
     const now = typeof opts.now === 'number' ? opts.now : 0;
-    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, priorityMax: 32, streamId: opts.streamId || null, projectRoot: opts.projectRoot || null, vectors: opts.vectors || null, queryVec: opts.queryVec || null });
+    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, priorityMax: 32, streamId: opts.streamId || null, projectRoot: opts.projectRoot || null, vectors: opts.vectors || null, queryVec: opts.queryVec || null, standing: opts.standing });
     if (!ranked.length) return '';
     const rr = renderRecall(ranked, {
-      limit: opts.limit || 800, priorityLimit: 0,
+      limit: opts.limit || 800, priorityLimit: 0, notice: false,   // the summarizer has no tools: no notebook.read pointer
       header: '[durable memory — preserve any of these still-relevant facts in the summary below]'
     });
     return rr.text || '';
@@ -840,5 +879,5 @@
     return api;
   }
 
-  return { makeContext, redact, setKnownSecretSource, renderRecall, injectRecall, rank, bm25, lexicalScores, expandRecallQuery, isStandingMemory, activeMemoryRecords, projectKey, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens, RUN_CONTEXT_DEFAULTS, REARM_MIN_FREED, foldFreedEnough };
+  return { makeContext, redact, setKnownSecretSource, renderRecall, injectRecall, rank, bm25, lexicalScores, expandRecallQuery, isStandingMemory, activeMemoryRecords, projectKey, memoryProjectKey, memoryAllowedInProject, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens, RUN_CONTEXT_DEFAULTS, REARM_MIN_FREED, foldFreedEnough };
 });

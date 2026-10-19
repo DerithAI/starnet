@@ -50,7 +50,7 @@
        have nothing to show until they do (this is a sandbox product; nothing is locked). */
     const secStart =
       '<div class="lp-wiz">' +
-        '<div class="lp-step-h">Choose a workflow</div>' +
+        '<div class="lp-step-h">Choose a kind of loop</div>' +
         '<div id="lp-shapes" class="lp-shapes"></div>' +
         '<div id="lp-s2" class="lp-stage" hidden>' +
           '<div class="lp-step-h">Your goal</div>' +
@@ -69,7 +69,7 @@
     // the querySelector wiring below resolves exactly as it always did.
     const sections = [
       { id: 'loops', label: 'ACTIVE LOOPS', glyph: '∞', desc: 'Work that repeats toward a goal. Check its progress, review each result, or pause it here.', build: frag(secActive) },
-      { id: 'loops-start', label: 'START A LOOP', glyph: '✦', desc: 'Choose a workflow and describe your goal. Review the stopping condition and daily budget before starting.', build: frag(secStart) }
+      { id: 'loops-start', label: 'START A LOOP', glyph: '✦', desc: 'Choose a kind of loop and your goal, then review its stopping condition and daily budget.', build: frag(secStart) }
     ];
     function wire() {
     const listEl = body.querySelector('#lp-list'), gateEl = body.querySelector('#lp-gate');
@@ -287,6 +287,9 @@
         if (generation !== refreshGeneration || !body.isConnected) return;
         if (!j || !Array.isArray(j.loops)) throw new Error('invalid loops response');
         const loops = (j && j.loops) || [];
+        // the same read says what waits on review: an APPROVE / REJECT / DELETE here (each ends in this refresh) clears the
+        // NEEDS YOU row, the bell and the AUTOMATE badge at once, never up to 25 s later on the watcher's next sweep
+        applyReview(loops);
         // HONEST ARM STATE. `armed` is whether a timer is genuinely running — not whether loops exist. A halted
         // station must say so loudly, with the one-click lift, rather than showing loops that will never advance.
         if (j && j.halted) {
@@ -349,7 +352,7 @@
         }
         else {
           listEl.innerHTML = '<div class="empty-state"><span class="es-glyph">∞</span>' +
-            '<b>NO LOOPS YET</b><span>A loop keeps working at one objective and stops for your verdict. Choose a workflow to define its goal and stopping condition.</span>' +
+            '<b>NO LOOPS YET</b><span>A loop keeps working at one objective and stops for your verdict. Choose a kind of loop to define its goal and stopping condition.</span>' +
             '<button class="es-cta" id="lp-empty-cta" type="button">✦ START A LOOP</button></div>';
           const cta = listEl.querySelector('#lp-empty-cta');
           if (cta) cta.addEventListener('click', () => {
@@ -474,10 +477,10 @@
     function shapeCards() {
       const tpl = T(); if (!tpl) { shapesEl.innerHTML = '<div class="mc-detail">loop shapes unavailable</div>'; return; }
       shapesEl.innerHTML = tpl.list().map(t =>
-        '<button type="button" class="lp-shape' + (t.id === pickedId ? ' on' : '') + '" aria-pressed="' + (t.id === pickedId) + '" data-tpl="' + esc(t.id) + '">' +
+        // (org D10 polish) a picker tile is glyph + name + one short stat: what the loop does is its tip, never a sentence under the name
+        '<button type="button" class="lp-shape' + (t.id === pickedId ? ' on' : '') + '" aria-pressed="' + (t.id === pickedId) + '" data-tpl="' + esc(t.id) + '" data-tip="' + esc(t.tagline) + '" aria-description="' + esc(t.tagline) + '">' +
           '<span class="lp-shape-e">' + esc(t.emoji) + '</span>' +
           '<span class="lp-shape-n">' + esc(t.name) + '</span>' +
-          '<span class="lp-shape-t">' + esc(t.tagline) + '</span>' +
           // rigor is on the CARD, not buried — it is the difference between a proof and a convention.
           '<span class="lp-shape-r ' + (t.rigor === 'hard' ? 'hard' : 'soft') + '">' +
             (t.rigor === 'hard' ? '✓ ends on a real check' : '~ ends on its own report') + '</span>' +
@@ -750,6 +753,29 @@
     dot.title = n + ' loop result' + (n === 1 ? '' : 's') + ' waiting on you';
   }
 
+  let reviewWaiting = [];
+  if (typeof window !== 'undefined') window.LoopsReview = { waiting: () => reviewWaiting.map(l => Object.assign({}, l)) };
+  /* what waits on review, from ANY /api/loops read: this 25 s watcher's, and the GOAL LOOPS window's own (every 4 s while it
+     is open, and right after an APPROVE / REJECT / DELETE). One place sets the AUTOMATE badge, settles the bell and feeds
+     NEEDS YOU, so a verdict clears all three together. */
+  function applyReview(loops) {
+    let waiting = 0;
+    for (const l of loops) waiting += (l && l.pendingCount) || 0;
+    paintBadge(waiting);
+    // every result reviewed: the bell's "waiting on your review" leaves NEEDS YOU (it stayed lit for good)
+    if (!waiting && typeof StationUI !== 'undefined' && StationUI.settleNotifs) StationUI.settleNotifs('loops-review');
+    // org P01: NEEDS YOU lists each loop with results waiting on review, from this same read (never the bell's entry)
+    const before = JSON.stringify(reviewWaiting);
+    reviewWaiting = loops.filter(l => l && l.id && (l.pendingCount || 0) > 0).map(l => ({ id: l.id, name: l.name || '', agentId: l.agentId || '', count: l.pendingCount,
+      since: Math.min(...(l.pending || []).map(p => Number(p.endedAt) || Infinity)) }))
+      .map(l => Object.assign(l, { since: isFinite(l.since) ? l.since : 0 }));
+    // the list moved: the rail (SESSIONS only — NeedsYou.render keeps itself hidden elsewhere) and the bell follow now, not on
+    // the rail's next heartbeat
+    if (JSON.stringify(reviewWaiting) !== before) {
+      if (typeof NeedsYou !== 'undefined' && NeedsYou.render) NeedsYou.render();
+      if (typeof StationUI !== 'undefined' && StationUI.badges) StationUI.badges();
+    }
+  }
   async function watch() {
     let j;
     try {
@@ -759,19 +785,15 @@
     }
     catch (_) { return; }                       // station offline — say nothing rather than guess
     const loops = (j && j.loops) || [];
-    let waiting = 0;
     const seen = loadSeen();
     const fresh = [];
     for (const l of loops) {
-      waiting += (l.pendingCount || 0);
       for (const p of (l.pending || [])) {
         const key = l.id + ':' + p.n;
         if (!seen.has(key)) { seen.add(key); fresh.push({ l, p }); }
       }
     }
-    paintBadge(waiting);
-    // every result reviewed: the bell's "waiting on your review" leaves NEEDS YOU (it stayed lit for good)
-    if (!waiting && typeof StationUI !== 'undefined' && StationUI.settleNotifs) StationUI.settleNotifs('loops-review');
+    applyReview(loops);
     saveSeen(seen);
     // announce at most one line per sweep — N new candidates at once is one event to a human, not N.
     if (fresh.length && typeof StationUI !== 'undefined' && StationUI.h && StationUI.h.notify) {

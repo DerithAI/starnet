@@ -192,7 +192,7 @@
         return {
           offer: {
             kind: 'initiative', to: to,
-            why: snap.tasksDone + ' tasks, ' + snap.confidence + '% satisfaction — earned a longer leash',
+            why: snap.tasksDone + ' tasks, ' + snap.confidence + '% satisfaction — ready for more',
             provenance: provenance(s, snap, earnedAt)
           }
         };
@@ -249,7 +249,7 @@
     if (toRank >= rankInit(from)) return { demote: null };             // already at/below the floor — nothing to take
     const to = INITIATIVE[toRank];
     const why = badStreak
-      ? 'stepping back to a shorter leash after ' + s.negStreak + ' rough results — earn it back'
+      ? 'stepping back a rung after ' + s.negStreak + ' rough results'
       : 'confidence slipped to ' + snap.confidence + '% — easing off until it recovers';
     return { demote: { from: from, to: to, why: why } };
   }

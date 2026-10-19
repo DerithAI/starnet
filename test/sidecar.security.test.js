@@ -45,6 +45,11 @@ async function tokenFromIndex(base) {
     const tauriGet = await fetch(B + '/api/budget/status', { headers: { Origin: tauriOrigin, 'X-StarNet-Token': browserToken } });
     A.eq(tauriGet.status, 200, 'Tauri trusted origin with boot token authorizes sensitive GET');
     A.eq(tauriGet.headers.get('access-control-allow-origin'), tauriOrigin, 'Tauri CORS still mirrors the app origin');
+    // the desktop page is cross-origin: without an expose list it cannot read which engine spoke a clip, so every
+    // built-in voice resolved as the keyed recipe (machine shell, browser re-pacing on top of Kokoro's own)
+    const exposed = String(tauriGet.headers.get('access-control-expose-headers') || '').toLowerCase().split(/\s*,\s*/);
+    A.ok(exposed.includes('x-voice-provider'), 'Tauri CORS exposes X-Voice-Provider to the app page');
+    A.ok(exposed.includes('x-voice-cache'), 'Tauri CORS exposes X-Voice-Cache to the app page');
 
     fs.mkdirSync(path.join(ws, 'agent', 'reports'), { recursive: true });
     fs.writeFileSync(path.join(ws, 'agent', 'reports', 'active.html'), '<script>fetch("/api/session",{method:"POST"})</script>');

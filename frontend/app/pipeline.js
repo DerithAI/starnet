@@ -1014,6 +1014,10 @@
     const lines = [], lineOfProp = {}, lineOfAgent = {}, lineLimits = {}, budgetIntake = {};
     for (const c of lineComponents(geo)) {
       const lineId = c.key, rec = { lineId, propIds: c.props.slice(), intakes: c.intakes.slice(), outboxes: c.outboxes.slice(), agents: [] };
+      // The step tester carries one crate. Advertise its limitation before any paid step starts.
+      const gates = Object.keys(junctionProp).filter(k => c.props.indexOf(junctionProp[k]) >= 0).map(k => junctions[k]);
+      if (gates.some(j => j.kind === 'split' && j.fanout)) rec.stepTestBarrier = 'fanout';
+      else if (gates.some(j => j.kind === 'join')) rec.stepTestBarrier = 'join';
       for (const pid of c.props) lineOfProp[pid] = lineId;
       // an agent is on EVERY line it crews a dock of (multi-bay): rec.agents lists each crew member once
       for (const b of c.bays) if (b.agentId) { if (!lineOfAgent[b.agentId]) lineOfAgent[b.agentId] = lineId; if (rec.agents.indexOf(b.agentId) < 0) rec.agents.push(b.agentId); }
@@ -1077,11 +1081,7 @@
     const onCircle = Object.keys(sendTo).filter(k => sendReaches(sendTo[k].toLine, sendTo[k].fromLine)).sort(propIdCmp);
     for (const k of onCircle) { errors.push({ code: 'SEND_TO_LOOP', propId: k, lineId: sendTo[k].fromLine, toLine: sendTo[k].toLine, warn: true }); delete sendTo[k]; }
     const sendKeys = Object.keys(sendTo).sort(propIdCmp);
-    // Absolute paths identify the files, but a private agent workspace is not granted to the next line's crew.
-    for (const k of sendKeys) {
-      const source = lines.find(l => l.lineId === sendTo[k].fromLine);
-      if (!source || !source.projectRoot) errors.push({ code: 'SEND_TO_PRIVATE_FILES', propId: k, lineId: sendTo[k].fromLine, toLine: sendTo[k].toLine, warn: true });
-    }
+    // (whether the next crew can OPEN the files this line makes is advice, never a routing finding: sendToFileAdvice below)
     if (sendKeys.length) {
       plan.sendTo = {};
       for (const k of sendKeys) plan.sendTo[k] = sendTo[k];
@@ -1507,10 +1507,17 @@
       if (reach && rec && rec.tile) walk(rec.tile);   // terminal: only to learn which OUTBOX the job lands in
       return null;
     }
+    /* THE LOOK PAST A JOINER (runtime repair 2026-10-12): a join answer's `next` is a LOOK-AHEAD, never the merged job's walk. It
+       used to walk on with the caller's advancing pick and write ctx.reach on EVERY branch's arrival, so a TAKE TURNS splitter after
+       the joiner moved once per arriving branch (2 branches = 2 moves of a 2-exit splitter: stuck on one OUTBOX) and the OUTBOX was
+       the last branch's, by that branch's tag. The merged job walks on from the joiner itself, once, by its own tag (the runner
+       resumes at ctx.fromTile). A quiet walk reads splitters with the pick's non-advancing `peek` (lane 0 without one) and never
+       writes ctx.reach. */
+    const peekPick = (pick && typeof pick.peek === 'function') ? pick.peek : null;
     // walk one lane to the first foreign dock, honouring filters/merges; stops at a join, a loop or a fan-out split
-    function walk(start, startDir) {
+    function walk(start, startDir, quiet) {
       let t = start, forced = startDir || null, guard = 0, lastOut = null; const seen = {};
-      const ended = () => { if (reach && lastOut) reach.outboxId = lastOut; return null; };
+      const ended = () => { if (reach && lastOut && !quiet) reach.outboxId = lastOut; return null; };
       while (t && guard++ < 4096) {
         const k = key(t.x, t.y);
         if (dockAt[k] && dockAt[k] !== dockId) return nodeOf(L, dockAt[k]);
@@ -1524,7 +1531,7 @@
         else if (j && j.kind === 'join') {
           const ex = outLanes(map, t.x, t.y)[0] || here, v = DIRV[ex];
           const nt = { x: t.x + v[0], y: t.y + v[1] };
-          return { join: k, expect: j.expect || 0, timeoutMin: j.timeoutMin || 10, next: map[key(nt.x, nt.y)] ? walkNode(walk(nt)) : null };
+          return { join: k, expect: j.expect || 0, timeoutMin: j.timeoutMin || 10, next: map[key(nt.x, nt.y)] ? walkNode(walk(nt, null, true)) : null };
         } else if (j && j.kind === 'loop') {
           const ll = loopLanes(map, t.x, t.y, j), vd = ll.done ? DIRV[ll.done] : null;
           const nt = vd ? { x: t.x + vd[0], y: t.y + vd[1] } : null;
@@ -1533,7 +1540,7 @@
           // the runner sends a verdict-exhausted crate THERE instead of annotating it onto the done lane
           // a DONE lane that meets a JOINER (a reviewed branch of a COPY split, 2026-10-10 audit): the walk's join answer rides
           // as `afterJoin` — walkNode alone dropped it, so the reviewed work never reached the barrier and the joiner timed out
-          const after = (nt && map[key(nt.x, nt.y)]) ? walk(nt) : null;
+          const after = (nt && map[key(nt.x, nt.y)]) ? walk(nt, null, quiet) : null;
           const ls = { loop: k, max: j.max || LOOP_MAX_DEFAULT, backTo: gateNode(g.backTo), when: j.when || null, esc: gateNode(g.escTo), next: walkNode(after) };
           if (after && after.join) ls.afterJoin = after;
           return ls;
@@ -1546,7 +1553,7 @@
           const has = d0 => branches.some(b => b.dockId === d0);
           for (const ld of lanes) {
             const v = DIRV[ld], nt = { x: t.x + v[0], y: t.y + v[1] }; if (!map[key(nt.x, nt.y)]) continue;
-            const r = walk(nt);
+            const r = walk(nt, null, quiet);
             if (r && r.branches) { for (const b of r.branches) if (!has(b.dockId)) branches.push(b); }
             else if (r && r.dockId && !has(r.dockId)) branches.push(walkNode(r));
           }
@@ -1556,7 +1563,7 @@
           d = (want && lanes.indexOf(want) >= 0) ? want : (j.def && lanes.indexOf(j.def) >= 0) ? j.def : (lanes[0] || here);
         } else if (j && j.kind === 'split') {
           const lanes = splitLanes(map, junctions, dockAt, t.x, t.y);
-          if (lanes.length) d = pickLane(lanes, k, pick);
+          if (lanes.length) d = pickLane(lanes, k, quiet ? peekPick : pick);
         }
         const v = DIRV[d], nx = t.x + v[0], ny = t.y + v[1];
         if (!map[key(nx, ny)]) return ended();   // the belt ends: shipped out (into the OUTBOX it passed last) or sank
@@ -1868,8 +1875,12 @@
         ? 'You are the LAST stage: your reply is the finished result the requester receives. Give them exactly what the original '
           + 'request asks for — its format, length and tone — using the upstream work above. Answer with the result itself; never '
           + 'mention stages, the line or the upstream work.'
-        : 'Do YOUR part of this work and produce the output for the next stage. Do not restate the upstream '
-          + 'output — build on it. Answer with the work itself, not a description of what you would do.');
+        /* R27 (live, real model, 2026-10-12): "Do not restate the upstream output — build on it" made an un-instructed middle stage
+           answer with ONLY its own addition, and the next stage is handed nothing but that reply — a fun fact that came in was gone
+           two stages later. The reply is all the next stage gets, so it carries the whole work so far. */
+        : 'Do YOUR part of this work and produce the output for the next stage. Your reply is all the next stage receives: '
+          + 'hand on the whole work so far with your part done, never only your own addition. Answer with the work itself, '
+          + 'not a description of what you would do.');
   }
 
   /* parseHandoff(text) -> { stage, original, from } | null — the INVERSE of handoffPrompt, for surfaces that show a work line's
@@ -2159,6 +2170,31 @@
     const rec = m && typeof m === 'object' ? m[String(lineId)] : null;
     return rec && typeof rec === 'object' ? rec : null;
   }
+  function stepTestRefusal(plan, lineId) {
+    const line = plan && Array.isArray(plan.lines) ? plan.lines.find(l => l && String(l.lineId) === String(lineId)) : null;
+    if (!line) return null;
+    let barrier = line.stepTestBarrier;
+    // Persisted plans and older clients predate the marker. Read their existing belt
+    // topology without advancing a splitter or trusting a stale availability flag.
+    if (!barrier) {
+      const ids = new Set(line.propIds || []), starts = [];
+      for (const source of (plan.sources || [])) if ((line.intakes || []).indexOf(source.propId) >= 0) starts.push(...srcTiles(source));
+      for (const bay of (plan.dockBays || []).concat(plan.bays || [])) if (ids.has(bay.propId)) starts.push(...(bay.tiles || []));
+      for (const agentId of (line.agents || [])) { if (!plan.lineOfAgent || String(plan.lineOfAgent[agentId]) !== String(line.lineId)) continue; const c = plan.chains && plan.chains[agentId]; if (c && c.tile) starts.push(c.tile); }
+      const seen = new Set(), map = plan.belts || {}, junctions = plan.junctions || {};
+      for (let i = 0; i < starts.length; i++) {
+        const t = starts[i]; if (!t) continue;
+        const k = key(t.x, t.y); if (seen.has(k)) continue; seen.add(k);
+        const j = junctions[k];
+        if (j && j.kind === 'split' && j.fanout) { barrier = 'fanout'; break; }
+        if (j && j.kind === 'join') barrier = 'join';
+        starts.push(...nextTiles(map, junctions, t));
+      }
+    }
+    if (!barrier) return null;
+    return 'STEP THROUGH carries one crate at a time and cannot finish this ' + (barrier === 'fanout' ? 'parallel' : 'joined')
+      + ' line. Use SEND A REAL JOB to test the whole line, or TEST THIS STEP on a single BAY.';   // (the BAY card's key reads TEST THIS STEP)
+  }
   /* THE HAND's ALT VIEW (build mode, 2026-10-10): how many stages one job on a line can run, and its ceiling — the same count
      LINE_TOO_LONG makes (jobStages from every INBOX feed mouth of the line), for a line that is NOT over budget too, so the
      floor can say n/max on every INBOX. Pure over a compiled plan; null for a line it cannot count (no INBOX on it, or routing
@@ -2186,11 +2222,51 @@
     return { stages, worst, max: maxHops + 1, maxHops };
   }
 
-  // Per-line evidence that an INBOX is fed: a compiled hand-off or a recorded real run, never a doc pointer.
-  function fedLineIds(plan, stats) {
+  /* SEND TO FILE ADVICE (final floor lane M19 / M26 / M29, 2026-10-12) — whether the next line's crew can OPEN the files this line
+     makes. Only the finished TEXT is guaranteed to ride on; a file rides as its absolute path (handoff-runner), and opening it is
+     the receiving agent's own file access (sidecar pathtrust): a line with a project folder makes its files there, a station
+     project the next crew may read; a line with none makes them in each agent's PRIVATE workspace, which only that same agent can
+     open. So the advice is TRUE only when the sending line has no project folder AND some crew member on it is not the agent the
+     next line hands the job to (any agent on either line differs) — never for the default SEND TO of one agent's own two lines, and
+     never as a floor nag at rest: it is not a routing finding (plan.errors stays clean, a clean SEND TO is no finding), it is
+     advice the OUTBOX's own card and the lead's refit card say. -> [{ code: 'SEND_TO_PRIVATE_FILES', propId: outboxId, lineId,
+     toLine, agents: [the sending line's crew] }] for the compiled SEND TOs it is true of. Pure. */
+  function sendToFileAdvice(plan) {
+    const out = [], lines = (plan && Array.isArray(plan.lines)) ? plan.lines : [], st = (plan && plan.sendTo) || {};
+    for (const k of Object.keys(st).sort(propIdCmp)) {
+      const s = st[k], src = lines.find(l => l && l.lineId === s.fromLine), dst = lines.find(l => l && l.lineId === s.toLine);
+      if (!src || src.projectRoot) continue;   // files in a project folder: the next crew can open them
+      const from = (src.agents || []).filter(Boolean), to = (dst && dst.agents || []).filter(Boolean);
+      if (from.some(a => to.some(b => b !== a))) out.push({ code: 'SEND_TO_PRIVATE_FILES', propId: k, lineId: s.fromLine, toLine: s.toLine, agents: from.slice(), warn: true });
+    }
+    return out;
+  }
+
+  /* the lines whose SEND TO hands work on to `toLine` AND that can run: a sender is a line with an INBOX (wave 2 repair, build-12 — a
+     BAY → OUTBOX fragment whose INBOX is not laid yet compiles a hand-off, but no job can ever start on it, so it feeds nothing). A plan
+     with no line records (a hand-made one) cannot say, and keeps every compiled sender. Sorted lineIds, each once. */
+  function senderRuns(plan, fromLine) {
+    const lines = plan && Array.isArray(plan.lines) ? plan.lines : null;
+    if (!lines) return true;
+    const rec = fromLine == null ? null : lines.find(l => l && String(l.lineId) === String(fromLine));
+    return !!(rec && Array.isArray(rec.intakes) && rec.intakes.length);
+  }
+  function lineSenders(plan, toLine) {
+    const out = [];
+    for (const s of Object.values((plan && plan.sendTo) || {})) {
+      if (!s || s.fromLine == null || s.toLine == null || String(s.toLine) !== String(toLine) || !senderRuns(plan, s.fromLine)) continue;
+      if (out.indexOf(String(s.fromLine)) < 0) out.push(String(s.fromLine));
+    }
+    return out.sort(propIdCmp);
+  }
+  /* Per-line evidence that an INBOX is fed: a compiled hand-off into it from a line that can run — never a run count or a doc
+     pointer (2026-10-12, M7). A line's runs include the Commander's SEND IT A JOB and the lead's station.test_line — neither starts
+     the line by itself, so a run count cleared NO FEED for a line nothing is wired to start; a BAY → OUTBOX fragment with no INBOX
+     compiles a hand-off no job can ever start (build-12). Channels, armed routines, folders and webhooks are the station-wide feed
+     (world.js feedState), not this. A second argument (old callers passed line stats) is ignored. */
+  function fedLineIds(plan) {
     const out = {};
-    for (const s of Object.values((plan && plan.sendTo) || {})) if (s && s.toLine) out[s.toLine] = true;
-    if (stats && stats.known) for (const id of Object.keys(stats.byLine || {})) if (stats.byLine[id] && stats.byLine[id].runs > 0) out[id] = true;
+    for (const s of Object.values((plan && plan.sendTo) || {})) if (s && s.toLine && senderRuns(plan, s.fromLine)) out[s.toLine] = true;
     return out;
   }
 
@@ -2255,19 +2331,77 @@
     const bare = raw.replace(/^line\b[\s:·.\-–—]*/i, '').trim() || raw;
     return 'LINE ' + bare.toUpperCase();
   }
+  /* lineLetterOf(intakeId) -> 'N' — an unnamed line's LETTER, from its INBOX's persistent id (p14 -> N), never its index among
+     surviving lines (worldmodel.lineLetter is this, for an INBOX). Pure. */
+  function lineLetterOf(id) {
+    const digits = /^p([1-9][0-9]*)$/.exec(String(id));
+    let n = digits ? Number(digits[1]) : 0;
+    if (!Number.isSafeInteger(n) || n <= 0) { n = 0; for (const c of String(id)) n = (Math.imul(n, 31) + c.charCodeAt(0)) >>> 0; n++; }
+    let name = ''; do { n--; name = String.fromCharCode(65 + n % 26) + name; n = Math.floor(n / 26); } while (n > 0);
+    return name;
+  }
+  /* lineNames(lines) -> { [lineId]: 'LINE …' } — THE LINE NAME every surface shows (final floor lane, 2026-10-12 repair), from
+     line records { lineId, intakes, name } (the compiled plan's own lines, or worldmodel's components): a line is called by its
+     first NAMED INBOX (lineWord of `name`), else LINE <the letter of its first INBOX> — and no two lines share a name: an unnamed
+     line whose LINE <letter> a named line already shows (a line called 'F', then a new INBOX p6 = F) is LINE F 2, the next free
+     number, never a second LINE F that neither the Commander nor the lead can tell apart. A line with no INBOX has no name here.
+     Pure — the floor (worldmodel.lineName) and the sidecar (the hand-off runner's words) name a line by this one rule. */
+  function lineNames(lines) {
+    const out = {}, taken = new Set(), unnamed = [];
+    for (const l of lines || []) {
+      if (!l || l.lineId == null || !Array.isArray(l.intakes) || !l.intakes.length) continue;
+      const nm = typeof l.name === 'string' ? l.name.trim() : '';
+      if (nm) { const w = lineWord(nm); out[l.lineId] = w; taken.add(w); } else unnamed.push(l);
+    }
+    for (const l of unnamed) {
+      const base = 'LINE ' + lineLetterOf(l.intakes[0]);
+      let w = base; for (let n = 2; taken.has(w); n++) w = base + ' ' + n;
+      out[l.lineId] = w; taken.add(w);
+    }
+    return out;
+  }
+  /* uniqueLineName(wanted, taken) -> the name a NEW line gets: `wanted` when no line shows it yet, else numbered on — from the name's
+     own trailing number ('BATCH 7' → 'BATCH 8'), else from 2 ('RESEARCH' → 'RESEARCH 2') — never longer than 48. `taken(name)` is the
+     floor's own duplicate test (worldmodel lineNameTaken: judged by the shown word). THE ONE numbering rule (wave 2, worldmodel-07):
+     a paste, a stamped or laid shelf line and the lead's planned line are all numbered by it — a paste made 'BATCH 2' of 'BATCH 7'
+     while the lead made 'BATCH 7 2', and a stamped ALLOWANCE DESK was never numbered at all. Pure. */
+  function uniqueLineName(wanted, taken) {
+    const base = String(wanted == null ? '' : wanted).trim().slice(0, 48);
+    if (!base || typeof taken !== 'function' || !taken(base)) return base;
+    const m = /^(.*\S)\s+(\d{1,6})$/.exec(base), stem = m ? m[1] : base;
+    for (let n = m ? Number(m[2]) + 1 : 2, i = 0; i < 1000; n++, i++) {
+      const tail = ' ' + n, nm = stem.slice(0, 48 - tail.length).trimEnd() + tail;
+      if (!taken(nm)) return nm;
+    }
+    return base;   // (a floor holds far fewer lines than the candidates above)
+  }
   function handoffInput(o) {
     const x = o || {};
     const nm = String(x.fromName == null ? '' : x.fromName).replace(/\s+/g, ' ').trim().slice(0, 48);
     const who = lineWord(nm, 'the line before this one');
     const original = String(x.original == null ? '' : x.original).trim().slice(0, 4000);
+    /* what was delivered: the same 12000 characters the receiving job's record keeps as handedIn (linejobs MAX_OUTPUT), never fewer —
+       the next line builds on all of it (runtime repair 2026-10-12: an 11700 cut dropped 300 unmarked characters for a 12400 frame
+       bound no consumer has). The frame is bounded by its parts: name 48, the job 4000, the work 12000, 20 file paths, fixed text. */
     const output = String(x.output == null ? '' : x.output).trim().slice(0, 12000);
     const files = (Array.isArray(x.files) ? x.files : []).map(f => String(f == null ? '' : f).trim()).filter((f, i, a) => f && a.indexOf(f) === i).slice(0, 20);
-    const parts = ['[HAND-OFF — ' + who + ' finished its part of this job and sent its result on to this line. Do this line’s part of the job, working from that result, and answer with the full finished work itself (what the job asks for), never a note on whether the job is done.]'];
+    /* R27 (live, real model, 2026-10-12): "working from that result" alone let an un-instructed line write a NEW answer of its own
+       (A's fun fact → B's different fact → C's third), so the end of a chain held none of the work sent on — and an instruction
+       only in the opening, read BEFORE the job, still lost to "Write a fun fact" on a small model. What was delivered is the work
+       so far; the frame CLOSES with what this line does with it: its standing brief, or — with none — hand that work on as the
+       result, corrected only where it falls short; the finished work itself, never a note on whether the job is done. */
+    const parts = ['[HAND-OFF — ' + who + ' finished its part of this job and sent its result on to this line. That result is the work so far.]'];
+    /* NOT APPROVED (GitHub #122): the sending line's review loop used all its passes without the verdict it waits for and sent the work
+       on anyway (the LOOP card's rule) — the next line is told so, in the sending job's own words, never handed it as approved work */
+    const unapproved = String(x.unapproved == null ? '' : x.unapproved).replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '').slice(0, 300);
+    if (unapproved) parts.push('[NOT APPROVED — on ' + who + ', ' + unapproved + '.]');
     if (original) parts.push('THE JOB AS IT FIRST ARRIVED:\n' + original);
     parts.push('WHAT ' + who.toUpperCase() + ' DELIVERED:\n' + (output || '(no text came back)'));
     if (files.length) parts.push('FILES IT MADE (paths on this machine):\n' + files.map(f => '- ' + f).join('\n'));
+    parts.push(HANDOFF_PART_HEAD + 'build on the work ' + who + ' delivered above, never start the job over with new work of your own. Do what your standing brief for this station says to it; with no brief, hand that work on as the finished result, corrected only where it falls short of the job. Answer with the full finished work itself (what the job asks for), never a note on whether the job is done.]');
     return parts.join('\n\n');
   }
+  const HANDOFF_PART_HEAD = '[THIS LINE’S PART — ';
   // parseHandoffInput(text) -> { fromName, original, output } | null — the reader of handoffInput's frame (the OUTBOX titles a
   // handed-on job by the job as it first arrived, never by the frame)
   function parseHandoffInput(text) {
@@ -2275,11 +2409,12 @@
     const m = /^\[HAND-OFF — (?:LINE (.+?)|the line before this one) finished its part/.exec(s);
     if (!m) return null;
     const orig = /THE JOB AS IT FIRST ARRIVED:\n([\s\S]*?)(?:\n\nWHAT [^\n]* DELIVERED:\n|$)/.exec(s);
-    const out = /DELIVERED:\n([\s\S]*?)(?:\n\nFILES IT MADE \(|$)/.exec(s);
+    // what was delivered ends at the files, or at the closing THIS LINE'S PART (a frame from before R27 has none)
+    const out = /DELIVERED:\n([\s\S]*?)(?:\n\nFILES IT MADE \(|\n\n\[THIS LINE’S PART — |$)/.exec(s);
     return { fromName: m[1] || '', original: orig ? orig[1] : '', output: out ? out[1] : '' };
   }
 
-  return { lineStages, fedLineIds, rejoinOf, deriveLinks, reconcileLinks, compileRoutingPlan, sendToOf, sendsReachedOf, outboxesReached, lineWord, handoffInput, parseHandoffInput, composeStageBrief, HANDS_LEAD, resolveTarget, lineOf, lineOriginOf, lineLimitsOf, normalizeLineLimits, LINE_LIMIT_DEFAULTS, LINE_LIMIT_CEILINGS, sourceFor, ok, liveTiles, routeFrom, junctionLaneOwners, chainNext, chainStep, fanSiblings, handoffPrompt, parseHandoff, isHandoff, stripVerdictLine, joinPayload, divideJob, partTurn, partHandoff, divideBrief, divideAfterDock, splitFedByDock, lineComponents, LOOP_MAX_DEFAULT, LOOP_MAX_CEILING,
+  return { stepTestRefusal, lineStages, fedLineIds, lineSenders, sendToFileAdvice, rejoinOf, deriveLinks, reconcileLinks, compileRoutingPlan, sendToOf, sendsReachedOf, outboxesReached, lineWord, lineLetterOf, lineNames, uniqueLineName, handoffInput, parseHandoffInput, composeStageBrief, HANDS_LEAD, resolveTarget, lineOf, lineOriginOf, lineLimitsOf, normalizeLineLimits, LINE_LIMIT_DEFAULTS, LINE_LIMIT_CEILINGS, sourceFor, ok, liveTiles, routeFrom, junctionLaneOwners, chainNext, chainStep, fanSiblings, handoffPrompt, parseHandoff, isHandoff, stripVerdictLine, joinPayload, divideJob, partTurn, partHandoff, divideBrief, divideAfterDock, splitFedByDock, lineComponents, LOOP_MAX_DEFAULT, LOOP_MAX_CEILING,
     // THE DOCK LAYER (multi-bay agents, 2026-09-22) — the dock-keyed truth the agent readings above are views of
     resolveDock, chainNextDock, chainStepDock, fanSiblingsDock, junctionLaneDocks, lineOfDock, lineOriginOfDock, entryDockOf, docksOf, dockOf, agentOfDock: agentOfDockIn, deriveDockLayer, dockLayer, hasDockLayer, stepToAgents, propIdCmp,
     _internals: { DIRV, OPP, LANE_ORDER, key, buildBeltMap, outLanes, inLanes, loopLanes, beltTileNear, ringBelts, junctionAnchor, dirBetween, linkTilesByProp, linkedBeltMap, nextTiles, splitLanes, detectCycle, hashStr, compileChains, compileDockChains, chainCycle, shipFrom, propIdCmp, entryDocksOf, agentChainsView } };

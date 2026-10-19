@@ -36,5 +36,18 @@
     return halted;
   }
 
-  return { killAll };
+  /* markFaulted(...hubInflights) — the stop about to land is the station's OWN process-fault containment, never the Commander's
+     E-STOP (wave 2 repair, conveyor-backend-08): call it on the same hub maps right BEFORE killAll. It stops nothing itself; it
+     only sets `faulted` on each record, so whoever reads `halted` (the hub's chat notice, the step test, the hand-off records)
+     names the fault instead of an E-STOP nobody pressed. Tolerant like killAll; returns the number of records marked. */
+  function markFaulted(...hubInflights) {
+    let marked = 0;
+    for (const hubInflight of hubInflights) {
+      if (!hubInflight || typeof hubInflight.values !== 'function') continue;
+      for (const rec of hubInflight.values()) { if (rec && typeof rec === 'object') { rec.faulted = true; marked++; } }
+    }
+    return marked;
+  }
+
+  return { killAll, markFaulted };
 });

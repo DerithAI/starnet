@@ -25,6 +25,8 @@ const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+// the run-context note is the leading text of the newest user message on a non-Claude chat wire: match the Commander's own words
+const { userWords } = require('./helpers/host-notes.js');
 const Phone = require('../relay/app/phone-client.js');
 
 const HOST = '127.0.0.1';
@@ -54,7 +56,7 @@ function startMockModel() {
         requests.push(parsed);
         const msgs = parsed.messages || [];
         const lastUser = [...msgs].reverse().find(m => m && m.role === 'user');
-        const text = String((lastUser && (typeof lastUser.content === 'string' ? lastUser.content : JSON.stringify(lastUser.content))) || '');
+        const text = lastUser ? userWords(lastUser) : '';
         const after = msgs.slice(msgs.lastIndexOf(lastUser) + 1);
         const tools = after.filter(m => m && m.role === 'tool');
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -97,6 +99,41 @@ function startMockModel() {
     STARNET_REMOTE_PORT: String(lanPort), STARNET_REMOTE_LAN: '1', STARNET_REMOTE_RELAY: 'off',
     STARNET_REMOTE_PUSH_HOSTS: '127.0.0.1'
   } });
+  // Seed the same durable markers the dispatch host writes, then use the real sealed phone routes.
+  const { makeSegmentedTranscriptIo } = require('../sidecar/transcript-history.js');
+  const { makeTranscriptStore } = require('../sidecar/transcriptstore.js');
+  const hash = text => require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+  let stamp = 100;
+  const seeded = makeTranscriptStore({ io: makeSegmentedTranscriptIo({ fs, path, root: path.join(fx.workspace, 'transcript-history-v2') }), clock: { now: () => ++stamp } });
+  const accepted = '{"answer":"PHONE_ACCEPTED"}';
+  // A pre-fix desk save can outlive the rejected execution and must not reintroduce it on merge.
+  const staleDispatchSession = { id: 'dispatch_phone', title: 'Research', agentId: 'forge', conversationMode: 'direct', lastActiveAt: 0,
+    history: [{ role: 'user', content: 'Research request', sourceRunId: 'phone_original', ts: 99 },
+      { role: 'assistant', content: 'RAW_REJECTED_SAVED_DESK', sourceRunId: 'phone_original', ts: 100 }] };
+  const saveWithSessions = workstreams => fx.json('POST', '/api/save', { schema: 'starnet.save', version: 6,
+    agent: { id: 'agent', name: 'ULTRON', createdAt: 1 }, workstreams });
+  const append = (streamId, sourceRunId, dispatchState, role, content, extra) => seeded.appendStrict({ streamId, sourceRunId, dispatchState, role, content, agentId: 'forge', ...extra });
+  append('dispatch_phone', 'phone_original', 'pending', 'user', 'RAW_CONTRACT_PROMPT');
+  append('dispatch_phone', 'phone_original', 'pending', 'assistant', 'RAW_INVALID_OUTPUT');
+  append('dispatch_phone', 'phone_repair', 'internal', 'user', '[STRUCTURED RESULT REPAIR] INTERNAL_REPAIR_PROMPT');
+  append('dispatch_phone', 'phone_repair', 'internal', 'assistant', 'INTERNAL_REPAIR_REPLY');
+  append('dispatch_phone', 'phone_original', 'final', 'assistant', accepted, { dispatchPrompt: 'Research request', dispatchReason: 'done', dispatchRepairRunId: 'phone_repair', textLength: accepted.length, textSha256: hash(accepted) });
+  append('dispatch_phone', 'phone_repair', 'internal', 'user', '[STRUCTURED RESULT REPAIR] LATE_INTERNAL_PROMPT');
+  seeded.appendStrict({ streamId: 'pending_phone', agentId: 'forge', role: 'user', content: 'Pending user request' });
+  append('pending_phone', 'phone_pending', 'pending', 'assistant', 'PENDING_RAW_OUTPUT');
+  append('pending_phone', 'phone_pending_repair', 'internal', 'user', '[STRUCTURED RESULT REPAIR] PENDING_INTERNAL_PROMPT');
+  async function checkDispatchPhone(phone, phase, preview) {
+    const thread = await phone.call('thread', { streamId: 'dispatch_phone' });
+    A.eq(thread.ok, true, phase + ': phone reads accepted dispatch thread');
+    A.eq(thread.data.filter(t => t.content === accepted).length, 1, phase + ': phone displays accepted answer exactly once');
+    A.ok(!/RAW_CONTRACT|RAW_INVALID|RAW_REJECTED|INTERNAL_REPAIR|LATE_INTERNAL/.test(JSON.stringify(thread.data)), phase + ': phone thread excludes raw and repair evidence');
+    const pending = await phone.call('thread', { streamId: 'pending_phone' });
+    A.eq(pending.data.map(t => t.content), ['Pending user request'], phase + ': pending raw answer and repair prompt stay out of phone history');
+    const listed = await phone.call('threads', { limit: 100 });
+    A.eq(listed.data.find(t => t.streamId === 'dispatch_phone').preview, preview, phase + ': phone preview follows visible conversation topic');
+    A.eq(listed.data.find(t => t.streamId === 'pending_phone').preview, 'Pending user request', phase + ': pending repair cannot overwrite phone preview');
+    console.log('phone projection proof: ' + JSON.stringify({ phase, acceptedCount: thread.data.filter(t => t.content === accepted).length, rawEvidenceVisible: /RAW_CONTRACT|RAW_INVALID|RAW_REJECTED|INTERNAL_REPAIR|LATE_INTERNAL/.test(JSON.stringify(thread.data)), pendingContents: pending.data.map(t => t.content), preview: listed.data.find(t => t.streamId === 'dispatch_phone').preview }));
+  }
   const lan = 'http://' + HOST + ':' + lanPort;
   let client = null;
   const deskEvents = [];
@@ -115,6 +152,8 @@ function startMockModel() {
 
     const roster = await fx.json('POST', '/api/roster', { agents: [{ agentId: 'forge', name: 'FORGE', system: 'You are FORGE, a builder.', model: 'test/model' }] });
     A.eq(roster.status, 200, 'roster saved');
+    const persistedDispatch = await saveWithSessions([staleDispatchSession]);
+    A.ok(persistedDispatch.status === 200 && persistedDispatch.body.ok, 'pre-fix saved dispatch history persisted');
 
     // 2. switch on, pair, open a sealed session
     const on = await fx.json('POST', '/api/remote/enable', { on: true });
@@ -143,6 +182,14 @@ function startMockModel() {
     client.onEvent(e => events.push(e));
     const listening = client.listen();
     await waitUntil(async () => (await fx.json('GET', '/api/remote')).body.connected.some(c => c.live), 5000, 'phone event stream attached');
+
+    await checkDispatchPhone(client, 'before restart', 'Research request');
+    const followDispatch = await client.call('send', { agentId: 'forge', streamId: 'dispatch_phone', text: 'Continue the accepted phone result' });
+    A.eq(followDispatch.ok, true, 'phone can continue a finalized dispatch conversation');
+    await waitUntil(() => events.some(e => e.type === 'run.ended' && e.runId === followDispatch.data.runId), 20000, 'phone dispatch continuation');
+    const contextRequest = llm.requests.find(r => (r.messages || []).some(m => m.role === 'user' && userWords(m) === 'Continue the accepted phone result'));
+    A.ok(contextRequest && contextRequest.messages.some(m => m.role === 'assistant' && m.content === accepted), 'phone send context contains the accepted answer');
+    A.ok(!/RAW_CONTRACT|RAW_INVALID|RAW_REJECTED|INTERNAL_REPAIR|LATE_INTERNAL/.test(JSON.stringify(contextRequest.messages)), 'phone send context excludes raw output and repair instructions');
 
     // 3. a real task from the phone, with an approval answered on the phone
     const sent = await client.call('send', { agentId: 'forge', text: 'remote shell proof' });
@@ -207,8 +254,8 @@ function startMockModel() {
     A.eq((await client.call('approvals')).data.length, 0, 'nothing left waiting');
 
     // 9. session parity with the desk
-    const saved = await fx.json('POST', '/api/save', { schema: 'starnet.save', version: 6, agent: { id: 'agent', name: 'ULTRON', createdAt: 1 },
-      workstreams: [
+    const saved = await fx.json('POST', '/api/save', { schema: 'starnet.save', version: 6, _saveRevision: persistedDispatch.body.revision, agent: { id: 'agent', name: 'ULTRON', createdAt: 1 },
+      workstreams: [staleDispatchSession,
         { id: 'ws_desk_launch', title: 'Launch plan', agentId: 'forge', conversationMode: 'direct', lane: 'active', kind: 'chat', archived: false, lastActiveAt: Date.now() - 5000,
           history: [{ role: 'user', content: 'remember the code word is HELIX' }, { role: 'assistant', content: 'Noted. The code word is HELIX.' }] },
         { id: 'ws_desk_blank', title: null, agentId: 'forge', conversationMode: 'direct', lane: 'active', kind: 'chat', archived: false, lastActiveAt: Date.now() - 9000, history: [] },
@@ -312,6 +359,16 @@ function startMockModel() {
     A.eq(after.body.devices.map(d => d.name), ['Tablet'], 'the paired phone survived the restart');
     const c3 = Phone.connect({ base: lan, deviceId: paired2.deviceId, stationPub: pr2.body.stationPub, key: key2 });
     A.eq((await c3.call('status')).ok, true, 'the phone reconnects after a restart with the same station key');
+
+    await checkDispatchPhone(c3, 'after restart', 'Continue the accepted phone result');
+    const restartText = 'Continue the accepted phone result after restart';
+    const restartFollow = await c3.call('send', { agentId: 'forge', streamId: 'dispatch_phone', text: restartText });
+    A.eq(restartFollow.ok, true, 'phone resumes the saved dispatch session after restart');
+    await waitUntil(async () => (await fx.json('GET', '/api/remote/recent')).body.runs.some(r => r.runId === restartFollow.data.runId && r.live === false), 20000, 'post-restart dispatch continuation');
+    const restartedContext = llm.requests.find(r => (r.messages || []).some(m => m.role === 'user' && userWords(m) === restartText));
+    A.eq(restartedContext && restartedContext.messages.filter(m => m.role === 'assistant' && m.content === accepted).length, 1, 'post-restart provider receives accepted answer once');
+    A.ok(!/RAW_CONTRACT|RAW_INVALID|RAW_REJECTED|INTERNAL_REPAIR|LATE_INTERNAL/.test(JSON.stringify(restartedContext && restartedContext.messages)), 'post-restart provider receives no rejected saved answer');
+    console.log('phone saved-history follow-up proof: ' + JSON.stringify({ phase: 'after restart', acceptedCount: restartedContext.messages.filter(m => m.content === accepted).length, savedRejectedVisible: /RAW_REJECTED/.test(JSON.stringify(restartedContext.messages)) }));
 
     // 12. E-STOP reaches a phone run: while it works it is on the station's run list (a reconnect keeps the agent
     //     working on the floor), and the halt aborts it and counts it

@@ -70,6 +70,22 @@ const Updates = (() => {
   function snapshot() {
     return Object.assign({}, state, { prefs: Object.assign({}, prefs) });
   }
+  // The Commander pressed SKIP VERSION on exactly this release. Automatic paths (startup, open, 6 h, a webview reload's
+  // native pending update) leave it un-armed; only CHECK NOW shows it again. A critical release is never skippable.
+  function isSkipped(update) {
+    return !!(update && !update.critical && update.version && String(update.version) === prefs.ignoredVersion);
+  }
+  // true only when version a is a later release than b (dotted numbers); an unreadable pair is never "newer"
+  function isNewerVersion(a, b) {
+    const pa = String(a || '').split('.').map(n => parseInt(n, 10));
+    const pb = String(b || '').split('.').map(n => parseInt(n, 10));
+    if (!pa.length || !pb.length || pa.some(n => !Number.isFinite(n)) || pb.some(n => !Number.isFinite(n))) return false;
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
   function emit() {
     paintBadge();
     try { rerender('updates'); } catch (_) {}
@@ -108,7 +124,10 @@ const Updates = (() => {
       state.desktop = !!r.desktop;
       state.currentVersion = r.currentVersion || '';
       state.target = r.target || '';
-      if (r.pending) {
+      if (r.pending && isSkipped(r.pending)) {
+        state.update = null;
+        state.phase = 'skipped';
+      } else if (r.pending) {
         state.update = r.pending;
         state.phase = 'available';
       } else if (state.phase === 'idle') {
@@ -166,7 +185,11 @@ const Updates = (() => {
       const r = await invoke('starnet_update_check');
       prefs = CORE.recordCheckResult(prefs, r, Date.now());
       state.lastCheckedAt = r.checkedAt || Date.now();
-      if (r.available && r.update) {
+      if (r.available && r.update && !manual && isSkipped(r.update)) {
+        // Found the release the Commander skipped: stay skipped (no card, no NEW chip, no toast).
+        state.update = null;
+        state.phase = 'skipped';
+      } else if (r.available && r.update) {
         state.update = r.update;
         state.phase = 'available';
         if (CORE.shouldNotify(prefs, r.update.version, Date.now(), !!r.update.critical)) {
@@ -206,13 +229,21 @@ const Updates = (() => {
   async function preInstallDrain(ms) {
     const budget = Math.max(250, +ms || 3000);
     const failed = { ok: false, timeout: true };
+    // #121: queue the LIVE station first. persist() always hands its envelope to the station file, even when the browser
+    // cache is full, so the flush below proves the newest state — not merely the last one the cache could hold. A persist
+    // that throws leaves the newest state unqueued: that is an unproven save and blocks the install.
+    let queued = true;
+    if (typeof App !== 'undefined' && App && typeof App.persist === 'function') {
+      try { App.persist(); } catch (_) { queued = false; }
+    }
     // flushForUpdate distinguishes "nothing pending" from "pending write failed"; only the latter blocks.
     const save = (typeof CloudSave !== 'undefined' && CloudSave && typeof CloudSave.flushForUpdate === 'function')
       ? await withTimeout(CloudSave.flushForUpdate(), budget, failed) : failed;
+    const saveConfirmed = queued && !!(save && save.ok === true);
     // App.pushRoster() returns true only after the sidecar accepts and parses the full roster replacement.
     const roster = (typeof App !== 'undefined' && App && typeof App.pushRoster === 'function')
       ? await withTimeout(App.pushRoster(), budget, false) : false;
-    return { ok: !!(save && save.ok === true && roster === true), save, roster: roster === true };
+    return { ok: !!(saveConfirmed && roster === true), save, saveConfirmed, roster: roster === true };
   }
 
   function browserStoreSnapshot() {
@@ -304,9 +335,12 @@ const Updates = (() => {
     const drained = await preInstallDrain();
     if (!drained.ok) {
       state.phase = 'available';
-      state.error = 'State could not be verified on disk. The update was not installed; your current StarNet remains open.';
+      // #121: name the save when it is the save that was not proven — the user's newest edits are the thing at risk
+      state.error = drained.saveConfirmed === false
+        ? 'Your latest station changes are not confirmed in the station file yet, so the update was not installed. StarNet stays open; try again in a moment.'
+        : 'State could not be verified on disk. The update was not installed; your current StarNet remains open.';
       busy = false;
-      notify('Update paused - state verification failed', 'warn');
+      notify(drained.saveConfirmed === false ? 'Update paused - latest station changes are not confirmed in the station file' : 'Update paused - state verification failed', 'warn');
       emit();
       return snapshot();
     }
@@ -378,6 +412,9 @@ const Updates = (() => {
   }
   function remindLater() {
     if (!state.update) return;
+    // REMIND TOMORROW on the version the Commander skipped (CHECK NOW brought it back) is the newer choice: cancel the
+    // skip, or the automatic check a day later would find it still skipped and the promised reminder never arrives.
+    if (prefs.ignoredVersion && prefs.ignoredVersion === String(state.update.version)) prefs = CORE.ignoreVersion(prefs, '');
     prefs = CORE.remindLater(prefs, state.update.version, Date.now());
     savePrefs();
     notify('Update reminder moved to tomorrow', '');
@@ -389,7 +426,7 @@ const Updates = (() => {
     prefs = CORE.ignoreVersion(prefs, state.update.version);
     savePrefs();
     state.update = null;
-    state.phase = 'idle';
+    state.phase = 'skipped';
     notify('StarNet v' + prefs.ignoredVersion + ' will be skipped', 'warn');
     schedule();
     emit();
@@ -404,8 +441,10 @@ const Updates = (() => {
     if (state.phase === 'installing') return 'preparing installer';
     if (state.phase === 'restarting') return 'restarting';
     if (state.phase === 'current') return 'up to date';
+    if (state.phase === 'skipped') return 'update skipped';
     if (state.phase === 'error') return 'check failed';
-    return 'not checked yet';
+    // idle = no check this launch: say whether one ever ran, never "not checked yet" over a dated last check
+    return state.lastCheckedAt ? 'not checked this launch' : 'never checked';
   }
 
   function settingsHtml() {
@@ -435,7 +474,7 @@ const Updates = (() => {
     // The window is the "check it now" place: opening it checks unless this launch already checked recently.
     // Deferred out of this render's stack; check() stamps sessionCheckAt and busy first, so its rerenders never re-enter. AUTO-CHECK off means
     // no request the Commander didn't click (PRIVACY.md §6) — CHECK NOW stays the manual path.
-    if (TAURI && CORE && !busy && !installing && prefs.autoCheck !== false && (state.phase === 'idle' || state.phase === 'current' || state.phase === 'error') &&
+    if (TAURI && CORE && !busy && !installing && prefs.autoCheck !== false && (state.phase === 'idle' || state.phase === 'current' || state.phase === 'skipped' || state.phase === 'error') &&
         CORE.shouldCheckOnOpen(sessionCheckAt, Date.now())) {
       Promise.resolve().then(() => check(false, 'open'));
     }
@@ -476,14 +515,23 @@ const Updates = (() => {
       }
     } else if (state.phase === 'current') {
       out += '<div class="up-empty">You have the latest StarNet (checked ' + esc(fmtTime(state.lastCheckedAt)) + ').</div>';
+    } else if (state.phase === 'skipped') {
+      // Never "latest": a newer release exists, the Commander chose to skip it.
+      out += '<div class="up-empty">v' + esc(prefs.ignoredVersion) + ' is skipped. Press CHECK NOW to see it again.</div>';
     } else if (state.phase === 'checking') {
       out += '<div class="up-empty">Checking for a newer StarNet...</div>';
     } else if (state.phase === 'idle') {
       // Not checked this launch: say only what is known — when the last check ran and what it found.
       const known = prefs.availableVersion && prefs.availableVersion !== state.currentVersion && prefs.availableVersion !== prefs.ignoredVersion ? prefs.availableVersion : '';
+      // the last check found the release the Commander skipped: say so, as the skipped phase does — but only while it
+      // is still newer than the running build (an install of that version, or a later one, makes the skip stale)
+      const skipped = !known && prefs.ignoredVersion && prefs.availableVersion === prefs.ignoredVersion &&
+        isNewerVersion(prefs.ignoredVersion, state.currentVersion) ? prefs.ignoredVersion : '';
       out += '<div class="up-empty">' + (known
         ? 'The last check found v' + esc(known) + '. Press CHECK NOW to get it ready to install.'
-        : 'Not checked since ' + esc(fmtTime(state.lastCheckedAt)) + '. Press CHECK NOW to look for a newer StarNet.') + '</div>';
+        : skipped ? 'v' + esc(skipped) + ' is skipped. Press CHECK NOW to see it again.'
+        : (state.lastCheckedAt ? 'Not checked since ' + esc(fmtTime(state.lastCheckedAt)) + '.' : 'Never checked for updates.') +
+          ' Press CHECK NOW to look for a newer StarNet.') + '</div>';
     }
     if (state.phase === 'preparing' || state.phase === 'downloading' || state.phase === 'installing' || state.phase === 'restarting') {
       out += '<div class="up-progress"><div style="width:' + pct + '%"></div></div>' +

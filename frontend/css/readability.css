@@ -114,6 +114,16 @@ body #terms :is(.settings-choice-help,.settings-toggle-copy .dim,.set-sub-d,
  .prov-ep,.key-meta,.sn-menu-nav-note,.sn-menu-note,.sp-tz) { color: var(--text); }
 body #terms .settings-jumps button { color: var(--text); }
 body #terms .settings-jumps button:hover { color: var(--ph-bright); }
+/* PERMISSIONS and QUESTS small print (walk 10-14 #14) read at the 14px floor: a reach chip's house name was 9px, the
+   per-agent mode and the posture state ("SET TO CHECK WITH ME") 10px, a goal's "nothing passed" 9px. The per-agent state
+   line wraps instead of cutting off mid-word ("returns to FU…"): the sentence IS the row's answer. A class sits here only
+   while nothing sets it LARGER anywhere (this floor beats every context rule): the gx-* titles and tags meet 14px from their
+   own base rules in app.css, so the dossier's 18px titles and the quests overview's 16px tags keep their size. */
+body #terms :is(.pc-rh,.pa-mode,.pa-state,.pp-state,.pp-who,.pp-foot,.pp-q,.pc-q,.pc-ovr,.perm-label,.perm-m-chip,
+ .q-outcome,.q-journal-eyebrow,.q-section-note,.q-ns-eyebrow) {
+  font-size: var(--sn-type-meta) !important; line-height: 1.35;
+}
+body #terms .perm-crew-row .pc-head .pa-state { white-space: normal; overflow: visible; text-overflow: clip; }
 body #terms .sn-menu select.key-input { padding-right: 28px; }
 /* Build tools: keep compact dimensions, but give their captions real text sizes. */
 body .refit-dock :is(.refit-toolset-label,.refit-section-label,.refit-category-label,.refit-hint-keys,

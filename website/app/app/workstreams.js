@@ -76,6 +76,10 @@
       // records saved before this field existed simply read null. The PROJECTS rail uses it to list the
       // sessions attached to each project — a REAL stored link, never a guessed title match.
       projectRoot: opts.projectRoot != null ? String(opts.projectRoot) : null,
+      // WHEN this session joined that project (ms). chat.js resolves an unstamped reply's relative links at the root only
+      // when the reply is newer than this. create/adopt stamp a session born in a project with its createdAt and
+      // setProjectRoot stamps a later join; a record saved before this field existed keeps null, never an invented time.
+      projectRootAt: Number(opts.projectRootAt) > 0 ? Number(opts.projectRootAt) : null,
       parentStreamId: opts.parentStreamId ? String(opts.parentStreamId) : null,
       // a delegated WORKER's own thread (team.dispatch files one per worker). Only these fold under their parent in
       // SESSIONS; a session the agent opened with session.create (it records its parent too) keeps its own row.
@@ -206,6 +210,14 @@
     return !!w && w.worker === true && !!w.parentStreamId && w.parentStreamId !== w.id && !!find(w.parentStreamId);
   }
   function homeOf(id) { const w = find(id); return w && isHidden(w) ? w.parentStreamId : id; }
+  /* THE NAME A SESSION IS SHOWN BY (rc walk 2026-10-13: the rail read "General" twice). Only the General home is "General";
+     any other session without a title yet — a +NEW session nothing was sent in, a session made for an agent — is a
+     "New session" until its first message names it (autoTitle). One word everywhere a session is named. */
+  function titleOf(w) {
+    w = (w && w.id) ? w : find(w);
+    if (!w) return '';
+    return w.title || (w.id === generalId ? 'General' : 'New session');
+  }
 
   // display order: pinned first, then most-recently-active; archived hidden unless asked; delegated workers'
   // threads hidden unless asked (includeWorkers: the delegation card and the busy-peer chip read them).
@@ -223,6 +235,7 @@
     // create() always mints a 'todo' record, so make()'s lane-inference would read it as a task — pass an
     // EXPLICIT kind so a freshly-created stream is 'chat' UNLESS the caller is a board directive (kind:'task').
     const w = make({ title: title || null, lane: 'todo', agentId: opts.agentId, kind: opts.kind === 'task' ? 'task' : 'chat', projectRoot: opts.projectRoot });   // summon binds a stream to its NEW agent
+    if (w.projectRoot) w.projectRootAt = w.createdAt;   // born in the project: every turn of it ran with the root
     ws.push(w);
     if (opts.activate !== false) activeId = w.id;   // board "add" passes {activate:false} so it won't hijack the active chat
     return w;
@@ -238,16 +251,31 @@
     const scoped = Object.prototype.hasOwnProperty.call(opts, 'projectRoot');
     const wantedRoot = scoped && opts.projectRoot != null ? String(opts.projectRoot) : null;
     const sameScope = !scoped || ((cur && cur.projectRoot) || null) === wantedRoot;
-    const c = cur && cur.cost || {};
-    const untouched = !!cur && cur.conversationMode !== 'group' && !cur.archived && cur.kind === 'chat' && cur.title == null
-      && cur.titleAuto !== false && !cur.pinned && cur.roomId == null && !cur.goalLoop
-      && (!cur.history || cur.history.length === 0)
-      && (!cur.runIds || cur.runIds.length === 0)
-      && (!cur.deliverables || cur.deliverables.length === 0)
-      && !(+c.tokens || +c.usd || +c.calls)
-      && sameScope;
-    if (opts.reuseActive !== false && untouched) return cur;
+    if (opts.reuseActive !== false && isUntouched(cur) && sameScope) return cur;
+    /* …and an untouched blank already in the rail, just not the open one, is the same blank line (org live walk 10-14:
+       +NEW from another session minted a SECOND empty 'New session' row beside it). Same untouched test, same scope rule
+       — scoped: the exact stored root; unscoped (+NEW on the sessions rail): an unanchored blank only. Never the General
+       home (its own row, not a 'New session'), a worker's hidden thread or an automation's session. The newest wins and
+       is focused here, exactly as create() focuses a fresh one (activate:false leaves the focus to the caller). */
+    if (opts.reuseActive !== false) {
+      const blank = ws.filter(w => w !== cur && w.id !== generalId && !w.worker && !w.parentStreamId && !w.automation
+        && isUntouched(w) && ((w.projectRoot || null) === wantedRoot) && (!opts.agentId || (w.agentId || 'agent') === opts.agentId)).pop();
+      if (blank) { if (opts.activate !== false) switchTo(blank.id); return blank; }
+    }
     return create(null, opts);
+  }
+  // UNTOUCHED = a plain chat nobody has used or shaped yet: no messages, runs, deliverables or spend, and no
+  // title / pin / room / goal loop / task-card kind someone gave it. The ONE blank test every "reuse the open session
+  // instead of minting a row" seam shares (+NEW above, COMMS starter ideas in chat.js), so a titled task card or a
+  // pinned empty session is never taken over by a different conversation.
+  function isUntouched(w) {
+    const c = (w && w.cost) || {};
+    return !!w && w.conversationMode !== 'group' && !w.archived && w.kind === 'chat' && w.title == null
+      && w.titleAuto !== false && !w.pinned && w.roomId == null && !w.goalLoop
+      && (!w.history || w.history.length === 0)
+      && (!w.runIds || w.runIds.length === 0)
+      && (!w.deliverables || w.deliverables.length === 0)
+      && !(+c.tokens || +c.usd || +c.calls);
   }
   // ADOPT a workstream with a CALLER-CHOSEN id (idempotent): if one already exists with opts.id it is
   // keeps its content and adopts only missing thread metadata; otherwise a new record is minted WITHOUT stealing the active
@@ -264,7 +292,7 @@
         let threadChanged = false;
         if (!ex.parentStreamId && opts.parentStreamId) { ex.parentStreamId = String(opts.parentStreamId); threadChanged = true; }
         if (opts.worker === true && ex.worker !== true) { ex.worker = true; threadChanged = true; }
-        if (!ex.projectRoot && opts.projectRoot) ex.projectRoot = String(opts.projectRoot);
+        if (!ex.projectRoot && opts.projectRoot) { ex.projectRoot = String(opts.projectRoot); ex.projectRootAt = now(); }
         if (threadChanged) delegatedAgents = null;
         return ex;
       }
@@ -277,6 +305,7 @@
       }
     }
     const w = make(opts);
+    if (w.projectRoot && !w.projectRootAt) w.projectRootAt = w.createdAt;   // born in the project (a caller's own stamp wins)
     ws.push(w);
     if (w.worker) delegatedAgents = null;
     return w;
@@ -298,7 +327,14 @@
   function setLane(id, lane) { const w = find(id); if (!w || LANES.indexOf(lane) < 0) return false; w.lane = lane; return true; }
   // anchor (or re-anchor) a session to a blessed project root — the Projects rail's "Work here" stamps the
   // session it jumps into so the project row can truthfully list its sessions. null/'' clears the anchor.
-  function setProjectRoot(id, root) { const w = find(id); if (!w) return false; w.projectRoot = root ? String(root) : null; return true; }
+  // The join time moves only when the root actually changes (naming the same root again keeps it).
+  function setProjectRoot(id, root) {
+    const w = find(id); if (!w) return false;
+    const next = root ? String(root) : null;
+    if (next !== (w.projectRoot || null)) w.projectRootAt = next ? now() : null;
+    w.projectRoot = next;
+    return true;
+  }
   function pin(id, val) { const w = find(id); if (!w) return false; w.pinned = val !== false; return true; }
   function touch(id) { const w = find(id); if (w) { w.lastActiveAt = now(); if (id === activeId) w.lastReadAt = w.lastActiveAt; } return !!w; }
   // re-flag REAL unseen state WITHOUT lying about when the work happened: unlike touch(), this never
@@ -345,6 +381,19 @@
     return n;
   }
 
+  // ---------- goal steps (org P29-sys wiring) ----------
+  // A goal-loop continuation rides history as a user-role turn, but the Commander never typed it. GoalLoop.stepOfTurn is
+  // the ONE predicate every reader shares (a browser global; the sibling pure module under node). Every reader here that
+  // means "the Commander's words" (titles, export) asks it, so the internal prompt never names or speaks for a session.
+  function goalLoopApi() {
+    if (typeof GoalLoop !== 'undefined' && GoalLoop && GoalLoop.stepOfTurn) return GoalLoop;
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') return require('./goalloop.js');
+    return null;
+  }
+  function goalStepOf(m) { const g = goalLoopApi(); return g ? g.stepOfTurn(m) : null; }
+  // the words a user turn stands for: a goal step stands for its goal, anything else for its own text
+  function userWordsOf(m) { const g = goalStepOf(m); return g != null ? g : m.content; }
+
   // ---------- titles ----------
   function deriveTitle(text) {
     let t = String(text == null ? '' : text).trim().replace(/\s+/g, ' ');
@@ -374,8 +423,10 @@
   // stays (an honest "hey" beats a minted "Casual Greeting Exchange" that locks in forever).
   function titleBasis(id, fallbackText) {
     const w = find(id);
-    const msgs = w ? (w.history || []).filter(m => m && m.role === 'user' && typeof m.content === 'string').map(m => m.content) : [];
+    // a goal step counts as its GOAL (never the station's continuation prompt): a /goal session is titled from what it is for
+    const msgs = w ? (w.history || []).filter(m => m && m.role === 'user' && typeof m.content === 'string').map(userWordsOf) : [];
     let subs = msgs.filter(t => !isLowSignal(t));
+    if (fallbackText != null) fallbackText = userWordsOf({ role: 'user', content: String(fallbackText) });
     if (!subs.length && fallbackText != null && !isLowSignal(fallbackText)) subs = [String(fallbackText)];
     if (!subs.length) return null;
     const pick = [];
@@ -403,7 +454,7 @@
     if (w.titleStrong) return false;   // already model-titled from real content — the ladder's terminal rung
     const first = (w.history || []).find(m => m && m.role === 'user' && typeof m.content === 'string');
     if (!first) return false;
-    if (w.title === deriveTitle(first.content)) return true;
+    if (w.title === deriveTitle(userWordsOf(first))) return true;   // a goal step's placeholder was derived from its goal
     // HEAL a weak model title: a session OPENED with small talk wears whatever the model made of "hey"
     // (pre-upgrade builds minted "Casual Greeting Exchange"-style titles from it). Once the session
     // holds a substantive user message, it earns one upgrade pass — which lands strong and stops here.
@@ -527,20 +578,32 @@
     for (const re of SECRET_RES) out = out.replace(re, '[redacted]');
     return out;
   }
-  function safeTitle(w) { return scrubSecrets((w && w.title) || 'General'); }
+  // the exported file's heading / name and the search title are the name the rail shows (titleOf): an untitled
+  // session exports as "New session", never as a second "General"
+  function safeTitle(w) { return scrubSecrets(titleOf(w) || 'New session'); }
 
   function exportConversation(id, format, opts) {
     const w = find(id); if (!w) return null;
     opts = opts || {};
     const title = safeTitle(w);
-    const messages = visibleMessages(w).map(m => ({ role: m.role, content: scrubSecrets(m.content) }));
+    // a goal step keeps its record (role + the prompt the model received) and is NAMED as one: the readable export writes it
+    // as the station's line, never under "## Commander" (org P29-sys wiring)
+    const messages = visibleMessages(w).map(m => {
+      const out = { role: m.role, content: scrubSecrets(m.content) };
+      const step = goalStepOf(m);
+      if (step != null) out.goalStep = scrubSecrets(step);
+      return out;
+    });
     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48) || 'general';
     if (format === 'json') {
       const doc = { schema: 'starnet.conversation', version: 1, exportedAt: opts.exportedAt != null ? opts.exportedAt : now(), title, messages, secretsIncluded: false };
       return { format: 'json', mime: 'application/json', filename: 'starnet-' + slug + '.json', text: JSON.stringify(doc, null, 2), doc };
     }
     const lines = ['# ' + title, '', '_Exported from StarNet. Hidden/system data and obvious credentials are excluded._', ''];
-    for (const m of messages) lines.push('## ' + (m.role === 'user' ? 'Commander' : 'Agent'), '', m.content, '');
+    for (const m of messages) {
+      if (m.goalStep != null) { lines.push('## Station', '', 'Goal step: ' + m.goalStep, ''); continue; }
+      lines.push('## ' + (m.role === 'user' ? 'Commander' : 'Agent'), '', m.content, '');
+    }
     return { format: 'markdown', mime: 'text/markdown', filename: 'starnet-' + slug + '.md', text: lines.join('\n') };
   }
   function parseConversationExport(text) {
@@ -549,7 +612,7 @@
     if (!doc || doc.schema !== 'starnet.conversation' || doc.version !== 1 || !Array.isArray(doc.messages)) return null;
     const messages = doc.messages.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
       .map(m => ({ role: m.role, content: scrubSecrets(m.content) }));
-    return { title: scrubSecrets(doc.title || 'General'), messages, secretsIncluded: false };
+    return { title: scrubSecrets(doc.title || 'New session'), messages, secretsIncluded: false };
   }
 
   function clone(v) { return JSON.parse(JSON.stringify(v)); }
@@ -713,14 +776,43 @@
   }
 
 
+  // A run preview cannot prove the end of a recovered answer. Both conversation recovery and
+  // delegated receipts use this identity/completeness check before reserving its run id.
+  async function finalDeliveryText(row, turns) {
+    const d = row && row.dispatchDelivery;
+    if (!d || d.state !== 'final') return null;
+    const preview = String(d.text || '');
+    const t = (turns || []).find(t => t && t.role === 'assistant' && t.dispatchState === 'final'
+      && t.sourceRunId === row.runId && t.streamId === row.streamId && typeof t.content === 'string');
+    if (!t || !t.content.startsWith(preview)) return null;
+    if (d.textLength == null && d.textSha256 == null) {
+      // Older projections were silently capped here; they cannot prove completion at that boundary.
+      return t.content.length < 200000 ? t.content : null;
+    }
+    if (!Number.isSafeInteger(d.textLength) || t.content.length !== d.textLength
+      || !/^[a-f0-9]{64}$/.test(d.textSha256 || '')
+      || t.textLength !== d.textLength || t.textSha256 !== d.textSha256) return null;
+    try {
+      let hash;
+      try {
+        if (globalThis.crypto && globalThis.crypto.subtle) {
+          const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(t.content));
+          hash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+        }
+      } catch (_) { /* a browser without a usable native digest can use the same byte-tested JS digest */ }
+      if (!hash && typeof ApiTicket !== 'undefined' && ApiTicket.sha256Text) hash = ApiTicket.sha256Text(t.content);
+      return hash === d.textSha256 ? t.content : null;
+    } catch (_) { return null; }
+  }
+
   return {
     init, reset, serialize, all, list, search, setConnectorHandoff, connectorHandoff, automationOf, railGroups,
     exportConversation, parseConversationExport, clearConversation,
     previewArchive, archivePreview, canUndo, undoLast,
-    create, startSession, adopt, get, active, activeId: getActiveId, generalId: getGeneralId, isHidden, homeOf,
+    create, startSession, isUntouched, adopt, get, active, activeId: getActiveId, generalId: getGeneralId, isHidden, homeOf, titleOf,
     switch: switchTo, rename, setAgent, setLane, setProjectRoot, pin, archive, del, removeByAgent, isDeleted, touch, markUnread, markRead, unread: isUnread,
     autoTitle, retitle, deriveTitle, needsModelTitle, isLowSignal, titleBasis,
-    appendRun, noteRunEnd, recordDeliverable, addCost, costOf, noteModel, modelOf,
+    finalDeliveryText, appendRun, noteRunEnd, recordDeliverable, addCost, costOf, noteModel, modelOf,
     // the rail's INBOX row reads these directly: the same sys/hidden/internal filter search and
     // export already trust, so the count and the preview can never surface machine chatter.
     visibleMessages, latestVisibleMessage, hasAgent,

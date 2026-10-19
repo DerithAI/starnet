@@ -16,7 +16,11 @@ const path = require('path');
 const src = fs.readFileSync(path.resolve(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
 const once = (needle, label) => { A.eq(src.split(needle).length - 1, 1, label + ' (exactly one occurrence)'); };
 
-once("if (isTask && resolved.tools.includes('team.dispatch')) {", 'the [ORCHESTRATION] briefing follows actual delegation authority on task turns');
+// 600ab235c hoisted a project-conversation lookup behind the same gate, so the crew>0 briefing is now the else-branch
+// of the crewless one (CrewDiet.isCrewlessLead requires isTask + team.dispatch too): lock each gate exactly once.
+once("} else if (isTask && resolved.tools.includes('team.dispatch')) {", 'the [ORCHESTRATION] briefing follows actual delegation authority on task turns');
+once("  if (isTask && resolved.tools.includes('team.dispatch')) {\n    try { projectConversation = ", 'the project-conversation lookup rides the same delegation gate');
+once("const crewless = CrewDiet.isCrewlessLead({ isTask, ", 'the crewless briefing is gated on isTask too');
 once("const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())", 'the operator manual is gated on isTask (index form only when manual.read is on the wire)');
 // self-driving lane 2 (2026-10-05): an owner-trusted chat-app task turn gets only the short pointer to manual.read — still task-only
 once("    : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';", 'the owner chat-app pointer is gated on isTask too (and only when manual.read is on the wire)');

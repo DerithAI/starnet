@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>STARNET</title>
+<!-- no favicon file ships: an empty data: icon stops a full browser probing /favicon.ico (a 404 in the console on every load) -->
+<link rel="icon" href="data:,">
 <!-- VT323 — THE STARNET FONT — has exactly ONE source: the local @font-face in css/style.css
      (frontend/assets/fonts/vt323.woff2, SIL OFL, U+0-10FFFF — the whole range, no subsets).
      There is NO remote font link here and there must never be one again. The Google Fonts
@@ -126,8 +128,8 @@
            initConnect(name, true, agent) unhides this and disables the identity fields; a fresh create hides it. -->
       <div id="cc-recovery" class="ov-recovery hidden" role="status"></div>
       <nav class="ov-setup-nav" aria-label="Overseer setup">
-        <button type="button" data-setup-step="identity" aria-controls="ov-identity"><span>01</span> Your Overseer</button>
-        <button type="button" data-setup-step="brain" aria-controls="ov-brain"><span>02</span> Connect a brain</button>
+        <button type="button" data-setup-step="identity" aria-controls="ov-identity">Your Overseer</button>
+        <button type="button" data-setup-step="brain" aria-controls="ov-brain">Connect a brain</button>
       </nav>
     </header>
 
@@ -135,7 +137,7 @@
 
       <!-- COLUMN 1 — THE HERO: the agent in its genesis pod (appearance) -->
       <div class="ov-hero">
-        <div class="ov-step"><b>01</b> APPEARANCE <span class="dim">— pick a face</span></div>
+        <div class="ov-step">APPEARANCE <span class="dim">— pick a face</span></div>
         <span class="ov-leadtag">YOUR FIRST AGENT</span>
         <div class="ov-pod">
           <figure class="ov-stage" aria-live="polite">
@@ -185,7 +187,7 @@
 
       <!-- COLUMN 3 — THE BRAIN: the only REQUIRED step; sits last, beside the WAKE it feeds. -->
       <div class="ov-cfg ov-col-brain" id="ov-brain">
-        <div class="ov-step"><b>03</b> THE BRAIN <span class="ov-req">REQUIRED</span></div>
+        <div class="ov-step">THE BRAIN <span class="ov-req">REQUIRED</span></div>
         <div class="ov-field ov-field-brain">
           <div class="ov-section-heading" id="ov-provider-intro"><h3>Connect a brain</h3><p>Start with StarNet, or use a provider you already have.</p></div>
           <!-- BEGINNER FUNNEL: lead with the no-API-key path. A ChatGPT Plus/Pro login (Codex OAuth) needs
@@ -569,7 +571,7 @@
       <!-- INSTRUMENT CLUSTER (topbar.js) — one cockpit gauge group: STATION (level + XP sliver) ·
            the session-status instruments (UPLINK / ONLINE / save) moved up from
            #bottombar .bb-right with their ids intact so their existing writers keep working. -->
-      <div class="tb-stat station tb-inst" id="tb-station" title="Your Commander level grows through recorded progress toward your life goals. Open the quest log to see the achievements behind it.">
+      <div class="tb-stat station tb-inst" id="tb-station" data-tip-host title="Your Commander level grows through recorded progress toward your life goals. Open the quest log to see the achievements behind it.">
         <svg class="tb-station-mark" viewBox="0 0 24 28" aria-hidden="true"><path d="M12 2 22 8v12l-10 6-10-6V8Z"/><path d="m6 11 6-4 6 4M6 16l6-4 6 4M6 21l6-4 6 4"/></svg>
         <span class="tb-lbl">COMMANDER</span>
         <b class="tb-val" id="gt-station">—</b>
@@ -650,7 +652,7 @@
       <div class="comms-portrait" aria-hidden="true"><img id="comms-agent-portrait" alt="" hidden></div>
       <div class="comms-identity">
       <span class="comms-overline">ON THE LINE</span>
-      <label class="comms-agent-wrap" title="Who you're talking to">
+      <label class="comms-agent-wrap" data-tip-below data-tip="Who you’re talking to. Another agent opens its latest session; an empty session, not General, takes that agent.">
         <span class="comms-agent-sigil" aria-hidden="true">▸</span>
         <select id="comms-agent-select" class="comms-agent-select" aria-label="Select agent on the line"></select>
       </label>
@@ -688,7 +690,7 @@
       <!-- INTERRUPT: cancel just the active stream's run (also bound to Esc while COMMS is focused); hidden unless busy -->
       <!-- the HALT KEY glyph: ONE solid square, nothing around it. app.css flashes it on the station's
            1s steps(1) caret cadence while a run is live. The old ring-and-dot read as RECORD, not STOP. -->
-      <button id="chat-stop" class="chat-stop" type="button" title="Stop the running turn (Esc)" aria-label="Stop the running turn" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" fill="currentColor"/></svg></button>
+      <button id="chat-stop" class="chat-stop" type="button" data-tip="Stop the running turn (Esc)" aria-label="Stop the running turn" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" fill="currentColor"/></svg></button>
       <!-- ATTACH: open the file picker; also served by paste + drag-drop onto the composer (chat.js) -->
       <button id="chat-attach" class="chat-attach-btn" type="button" title="Attach a photo or file" aria-label="Attach a photo or file"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.6 5 6.9 9.7a1.5 1.5 0 0 0 2.1 2.1l4.9-4.8a2.9 2.9 0 0 0-4.1-4.1L4.9 7.8a4.3 4.3 0 0 0 6.1 6.1l4.2-4.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="miter"/></svg></button>
       <!-- data-no-tip + NO title: this owns the richer .model-dock-tip, so the station tooltip must not
@@ -736,7 +738,7 @@
       <button class="bb-grp" data-hint="crew" aria-haspopup="menu" aria-expanded="false" title="Your agents — dossiers, recruitment, and your own Commander file"><span class="bb-gi">☻</span>CREW<span id="bb-crew-stepin-badge" class="bb-grp-badge" aria-label="agents waiting for you in STEP-IN" hidden></span></button>
       <div class="bb-menu" role="menu">
         <button class="bb" data-term="agents"><span class="bb-i">◉</span><span class="bb-tx"><b>AGENTS</b><small>each crew member's dossier — config, memory, record</small></span></button>
-        <button class="bb" id="bb-recruit" data-hint="recruit"><span class="bb-i">＋</span><span class="bb-tx"><b>RECRUIT</b><small>grow the crew — summon a class, or re-spec your agent</small></span></button>
+        <button class="bb" id="bb-recruit" data-hint="recruit"><span class="bb-i">＋</span><span class="bb-tx"><b>RECRUIT</b><small>pick a class, or re-spec your agent</small></span></button>
         <button class="bb" data-term="commander"><span class="bb-i">◈</span><span class="bb-tx"><b>YOU</b><small>what the station has learned about you</small></span></button>
         <!-- STEP-IN shows ONLY while an agent is waiting for you (stepin.js badge); saved sign-ins live in SETTINGS › BROWSER -->
         <button class="bb" data-term="stepin" hidden><span class="bb-i">⇆</span><span class="bb-tx"><b>STEP-IN</b><small>take an agent's browser when it needs you to sign in — and your saved sign-ins</small></span><span id="si-badge" class="badge" style="display:none"></span></button>
@@ -746,10 +748,10 @@
       <button class="bb-grp" data-hint="work" aria-haspopup="menu" aria-expanded="false" title="The station's work — tasks, recipes, automation, quests"><span class="bb-gi">▤</span>WORK</button>
       <div class="bb-menu" role="menu">
         <!-- ONE MENU (front doors, 2026-10-01): the WORK dock is three doors. MY WORK = one window with tabs TASKS ·
-             DELIVERABLES · OUTBOX · RECIPES; AUTOMATE = WORKFLOWS · SCHEDULES · GOAL LOOPS · AWAY WORK (stationui.js
+             DELIVERABLES · RECIPES; AUTOMATE = WORKFLOWS · SCHEDULES · GOAL LOOPS · AWAY WORK (stationui.js
              FAMILIES). Each tab is still its own window, so every deep link and slash command lands exactly as before. -->
         <button class="bb" id="bb-mywork" data-family="mywork" data-hint="mywork"><span class="bb-i">☑</span><span class="bb-tx"><b>MY WORK</b><small>tasks, finished work &amp; ready-made jobs</small></span></button>
-        <button class="bb" id="bb-automate" data-family="automate" data-hint="automate"><span class="bb-i">∞</span><span class="bb-tx"><b>AUTOMATE</b><small>workflows, schedules &amp; goal loops</small></span></button>
+        <button class="bb" id="bb-automate" data-family="automate" data-hint="automate"><span class="bb-i">∞</span><span class="bb-tx"><b>AUTOMATE</b><small>workflows, schedules, loops &amp; away&nbsp;work</small></span></button>
         <button class="bb" data-term="quests" data-hint="quest"><span class="bb-i">⚑</span><span class="bb-tx"><b>QUESTS</b><small>small steps toward your goals &amp; recorded progress</small></span></button>
       </div>
     </div>
@@ -759,7 +761,7 @@
         <button class="bb" id="bb-build" data-hint="refit"><span class="bb-i">⌂</span><span class="bb-tx"><b>BUILD MODE</b><small>rooms, corridors, gear &amp; workflow lines</small></span></button>
         <!-- ONE MENU (front doors, 2026-10-01; back in BUILD 10-02 — Andrew): CONNECT = one window with tabs ABILITIES (the agents' tools OUT — toolsets,
              connectors, skills) · CHANNELS (YOUR way in — Telegram, Slack, Discord). Two tabs, never one card grid. -->
-        <button class="bb" id="bb-connect" data-family="connect" data-hint="connect"><span class="bb-i">⇄</span><span class="bb-tx"><b>CONNECT</b><small>tools &amp; apps your agents use, and where you message them</small></span></button>
+        <button class="bb" id="bb-connect" data-family="connect" data-hint="connect"><span class="bb-i">⇄</span><span class="bb-tx"><b>CONNECT</b><small>services your agents use, and where you message them</small></span></button>
         <!-- APPS: the way to the FIRST app (the APPS dock itself only appears once one exists) -->
         <button class="bb" id="bb-newapp-build" data-hint="app"><span class="bb-i">＋</span><span class="bb-tx"><b>NEW APP</b><small>describe anything — a dashboard, a tracker, a tool, a game — and your crew builds it in its own window</small></span></button>
       </div>
@@ -781,7 +783,7 @@
              (LOGBOOK / RESTORE tabs); openTerm keeps the old keys as deep links. UPDATES stays
              its own window (Andrew's call — check-it-now, not a setting). -->
         <button class="bb" data-term="manual" data-hint="manual"><span class="bb-i">§</span><span class="bb-tx"><b>FIELD MANUAL</b><small>first mission, controls &amp; station handbook</small></span></button>
-        <button class="bb" data-term="settings" data-hint="settings"><span class="bb-i">⚙</span><span class="bb-tx"><b>SETTINGS</b><small>keys, models, voice, data</small></span></button>
+        <button class="bb" data-term="settings" data-hint="settings"><span class="bb-i">⚙</span><span class="bb-tx"><b>SETTINGS</b><small>models, keys, permissions, spending &amp; more</small></span></button>
         <button class="bb" data-term="updates" data-hint="update"><span class="bb-i">↑</span><span class="bb-tx"><b>UPDATES</b><small>version &amp; release notes</small></span><span id="up-badge" class="badge" style="display:none"></span></button>
         <button class="bb" data-term="notifs" data-hint="notification"><span class="bb-i">▲</span><span class="bb-tx"><b>NOTIFICATIONS</b><small>alerts &amp; unread events</small></span><span id="nf-badge" class="badge"></span></button>
       </div>
@@ -807,7 +809,7 @@
 
   <!-- one-time coach teaching the new grouped-dock model; dismissed on first dock open / ✕ (navdock.js) -->
   <div id="nav-coach" class="nav-coach" hidden>
-    <span>Everything you run lives in these <b>4 docks</b> — click one to open it. Talk to your agent up in <b>COMMS ▸</b></span>
+    <span>Everything you run lives in these <b>docks</b>&nbsp;— click one to open it. Talk to your agent up in <b>COMMS ▸</b></span>
     <!-- systems.js: a fresh station's dock grows as it is used; a returning power user can have it all now -->
     <button id="nav-coach-all" class="nav-coach-x" data-tip="Bring every station system online in the dock now" hidden>SHOW EVERYTHING</button>
     <button id="nav-coach-x" class="nav-coach-x" aria-label="dismiss hint">GOT IT ✕</button>

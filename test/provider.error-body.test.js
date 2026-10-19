@@ -66,6 +66,141 @@ const line = o => 'data: ' + JSON.stringify(o);
     A.eq(classifyApiError(mid, { model: 'm' }).reason, 'context_overflow', 'openai-compatible: …and classifies by its code');
   }
 
+  // Error headers do not end a response: a partial error body must still time out or cancel. A stalled body keeps
+  // the HTTP status already received (review providers-tools-07): it is that status, never a no-bytes stall.
+  {
+    const priorIdle = process.env.SKYNET_PROVIDER_IDLE_MS;
+    process.env.SKYNET_PROVIDER_IDLE_MS = '180';
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    try {
+      for (const partial of [false, true]) {
+        for (const cancel of [false, true]) {
+          let controller, cancelled = 0, calls = 0;
+          const response = new Response(new ReadableStream({
+            start(c) { controller = c; if (partial) c.enqueue(new TextEncoder().encode('{"error":')); },
+            cancel() { cancelled++; }
+          }), { status: 400 });
+          const ac = new AbortController();
+          const p = makeOpenAICompatibleProvider({ baseUrl: 'http://127.0.0.1:11434/v1',
+            fetch: async (_url, init) => { if (!init || !init.body) return new Response('{"data":[]}'); calls++; return response; } });
+          const pending = thrown(p, Object.assign({}, REQ, { signal: ac.signal }));
+          // Wait for the actual error-body reader, so cancellation is strictly after response headers.
+          while (!response.body.locked) await sleep(1);
+          if (cancel) ac.abort();
+          const observed = await Promise.race([pending.then(error => ({ settled: true, error })), sleep(700).then(() => ({ settled: false }))]);
+          if (!observed.settled) { controller.close(); await pending; }
+          const label = 'compatible error ' + (partial ? 'partial body' : 'headers only') + (cancel ? ' cancel' : ' idle');
+          A.eq(observed.settled, true, label + ': settles before fixture cleanup');
+          A.eq(cancelled, 1, label + ': cancels the response body');
+          A.eq(calls, 1, label + ': no adapter retry');
+          A.eq(response.body.locked, false, label + ': releases its reader');
+          if (cancel) A.eq(observed.error, null, label + ': caller cancellation returns cleanly');
+          else {
+            A.eq(observed.error && observed.error.status, 400, label + ': the received HTTP status survives the stalled body');
+            A.ok(observed.error && observed.error.code !== 'PROVIDER_STREAM_TIMEOUT', label + ': it is not reported as a no-bytes stall');
+            A.ok(observed.error && /http 400/.test(observed.error.message) && /error body did not finish/.test(observed.error.message), label + ': the message says the status and that the body stalled');
+            A.eq(classifyApiError(observed.error, { model: 'm' }).retryable, false, label + ': a 400 routes as a 400, not a retryable timeout');
+          }
+        }
+      }
+      // Total duration may exceed the idle ceiling while bytes keep arriving. Split a UTF-8 codepoint.
+      const body = { error: { message: 'café refused Bearer fixture-token-value with a long diagnostic message', type: 'fixture_error', code: 'fixture_refusal' } };
+      const bytes = new TextEncoder().encode(JSON.stringify(body));
+      const accent = bytes.indexOf(0xc3);
+      const cuts = [0, accent + 1, accent + 2, accent + 20, accent + 40, bytes.length];
+      let part = 0, cancelled = 0;
+      const response = new Response(new ReadableStream({
+        async pull(c) {
+          if (part === cuts.length - 1) { c.close(); return; }
+          await sleep(60);
+          c.enqueue(bytes.slice(cuts[part], cuts[++part]));
+        }, cancel() { cancelled++; }
+      }), { status: 422, headers: { 'x-request-id': 'error-progress-99' } });
+      const started = Date.now();
+      const err = await thrown(makeOpenAICompatibleProvider({ baseUrl: 'http://127.0.0.1:11434/v1', fetch: async (_url, init) => (!init || !init.body) ? new Response('{"data":[]}') : response }));
+      A.ok(Date.now() - started > 180, 'progressing error body outlives a single idle window');
+      A.eq(err && err.status, 422, 'progressing body keeps the real HTTP status');
+      A.eq(err && err.body, body, 'stream decoding preserves structured error and split UTF-8');
+      A.ok(err && err.message.includes('request error-progress-99') && err.message.includes('type fixture_error') && err.message.includes('code fixture_refusal'), 'correlation and structured diagnostics survive');
+      A.ok(err && err.message.includes('café') && !err.message.includes('fixture-token-value'), 'readable UTF-8 and message redaction survive');
+      A.eq(cancelled, 0, 'progressing error body is not cancelled');
+      A.eq(response.body.locked, false, 'completed error body releases its reader');
+    } finally {
+      if (priorIdle === undefined) delete process.env.SKYNET_PROVIDER_IDLE_MS;
+      else process.env.SKYNET_PROVIDER_IDLE_MS = priorIdle;
+    }
+  }
+
+  // A proxy streaming a huge error page is read only up to a cap, then cancelled: 500 characters are kept anyway.
+  {
+    let sent = 0, cancelled = 0;
+    const chunk = new TextEncoder().encode('<html>' + 'x'.repeat(8192));
+    const response = new Response(new ReadableStream({
+      pull(c) { sent += chunk.byteLength; c.enqueue(chunk); if (sent > 8 * 1024 * 1024) c.close(); },
+      cancel() { cancelled++; }
+    }), { status: 502 });
+    const err = await thrown(makeOpenAICompatibleProvider({ baseUrl: 'https://proxy.test/v1', fetch: async (_url, init) => (!init || !init.body) ? new Response('{"data":[]}') : response }));
+    A.eq(err && err.status, 502, 'a huge error page keeps its status');
+    A.eq(cancelled, 1, 'a huge error page is cancelled at the cap');
+    A.ok(sent < 1024 * 1024, 'and is never read whole (read ' + sent + ' bytes)');
+    A.eq(response.body.locked, false, 'the capped body releases its reader');
+  }
+
+  // Cleanup failure must be observable without replacing the original result or exposing its error text.
+  {
+    const failopen = require('../sidecar/failopen.js');
+    const tag = 'providers.openai_compatible.error_reader_release';
+    const initialCount = failopen.counts()[tag] || 0;
+    const priorIdle = process.env.SKYNET_PROVIDER_IDLE_MS;
+    const priorWarn = console.warn;
+    const warnings = [];
+    const cleanupSecret = 'https://fixture-user:fixture-pass@fixture.invalid/?token=fixture-url-secret body=fixture-body-secret';
+    process.env.SKYNET_PROVIDER_IDLE_MS = '40';
+    try {
+      for (const mode of ['complete', 'idle', 'cancel', 'cancel-logger-throws']) {
+        const response = new Response(mode === 'complete' ? '{"error":{"message":"original refusal","code":"fixture_refusal"}}' : new ReadableStream({
+          start(c) { c.enqueue(new TextEncoder().encode('{"error":')); }
+        }), { status: 422 });
+        const getReader = response.body.getReader.bind(response.body);
+        response.body.getReader = () => {
+          const reader = getReader();
+          return { read: () => reader.read(), cancel: () => reader.cancel(),
+            releaseLock() { reader.releaseLock(); throw new Error(cleanupSecret); } };
+        };
+        console.warn = (...args) => {
+          if (mode === 'cancel-logger-throws') throw new Error('fixture logger unavailable');
+          warnings.push(args.map(String).join(' '));
+        };
+        const ac = new AbortController();
+        const p = makeOpenAICompatibleProvider({ baseUrl: 'http://127.0.0.1:11434/v1',
+          fetch: async (_url, init) => (!init || !init.body) ? new Response('{"data":[]}') : response });
+        const pending = thrown(p, Object.assign({}, REQ, { signal: ac.signal }));
+        if (mode.startsWith('cancel')) {
+          while (!response.body.locked) await new Promise(resolve => setTimeout(resolve, 1));
+          ac.abort();
+        }
+        const err = await pending;
+        if (mode.startsWith('cancel')) A.eq(err, null, mode + ': release failure cannot replace cancellation');
+        else if (mode === 'idle') {
+          A.eq(err && err.status, 422, 'release failure cannot replace the status of a stalled error body');
+          A.ok(err && err.code !== 'PROVIDER_STREAM_TIMEOUT', 'a stalled error body is not a no-bytes stall');
+        } else {
+          A.eq(err && err.status, 422, 'release failure cannot replace HTTP status');
+          A.eq(err && err.body && err.body.error.code, 'fixture_refusal', 'original structured error survives cleanup failure');
+        }
+        A.eq(response.body.locked, false, mode + ': reader release was attempted');
+      }
+      A.eq((failopen.counts()[tag] || 0) - initialCount, 4, 'every cleanup failure is counted, even when logging throws');
+      A.eq(warnings.length, 3, 'cleanup failures emit throttled diagnostics');
+      A.ok(warnings.every(w => w.includes(tag) && w.endsWith('error response reader release failed')), 'diagnostics carry the fixed cleanup tag and message');
+      A.ok(warnings.every(w => !/fixture-user|fixture-pass|fixture-url-secret|fixture-body-secret|fixture.invalid/.test(w)), 'cleanup exception URL, credentials and response text never reach diagnostics');
+    } finally {
+      console.warn = priorWarn;
+      if (priorIdle === undefined) delete process.env.SKYNET_PROVIDER_IDLE_MS;
+      else process.env.SKYNET_PROVIDER_IDLE_MS = priorIdle;
+    }
+  }
+
   // ---- OpenRouter: code only in the body (the message is generic) ----
   {
     const calls = [];

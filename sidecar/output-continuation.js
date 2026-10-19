@@ -26,11 +26,12 @@
     return finishReason === 'length' && used < max;
   }
 
-  function prompt(hadPartialToolCall) {
+  // `extra` (the host's split advice for a cut tool call) rides inside the tag, so the nudge reads as one directive.
+  function prompt(hadPartialToolCall, extra) {
     const toolNote = hadPartialToolCall
-      ? ' A tool call was cut off and was NOT executed. Reissue the complete tool call through the tool API; do not continue or assume the partial arguments.'
+      ? ' A tool call was cut off and was NOT executed. Do not continue it or assume its partial arguments.'
       : '';
-    return '<output_continuation>The provider reached its output-token limit. Continue exactly where the previous response ended. Do not repeat text already produced.' + toolNote + '</output_continuation>';
+    return '<output_continuation>The provider reached its output-token limit. Continue exactly where the previous response ended. Do not repeat text already produced.' + toolNote + (extra ? String(extra) : '') + '</output_continuation>';
   }
 
   // Return only the novel suffix of `next`. Models commonly restart the last sentence after a max-token stop;

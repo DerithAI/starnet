@@ -101,10 +101,18 @@
        undocumented), non-blank text only (Anthropic 400s an empty text block), and copies — never stamps a
        caller's message or part in place. Anthropic-through-OpenRouter only (supportsExplicitCache above);
        every other upstream sees the exact prior wire shape. */
+    /* ONE ANCHOR PER USER TURN (lean-prompt, 2026-10-12). Consecutive user messages are ONE turn upstream, and the newest
+       one is now routinely preceded by host notes made user-side for Claude (the per-run <run_context>, recall). Stamping
+       those notes spent the two tail anchors on bytes no later request repeats, so the PREVIOUS assistant reply — the
+       last thing the next message's request shares — was never written, and history was never read back. Only the last
+       message of a consecutive user run is stamped; the next anchor slides back to that reply. */
+    // KILL SWITCH: STARNET_STABLE_PREFIX=0 (the run-context switch, index.js) restores per-message stamping.
+    const oneAnchorPerTurn = String((typeof process !== 'undefined' && process.env && (process.env.STARNET_STABLE_PREFIX != null ? process.env.STARNET_STABLE_PREFIX : process.env.SKYNET_STABLE_PREFIX)) || '').trim() !== '0';
     let stamped = 0;
     for (let i = out.length - 1; i > idx && stamped < 4 - systemAnchors; i--) {
       const m = out[i];
       if (!m || m.role === 'system') continue;
+      if (oneAnchorPerTurn && m.role === 'user' && out[i + 1] && out[i + 1].role === 'user') continue;
       if (typeof m.content === 'string' && m.content.trim()) {
         out[i] = Object.assign({}, m, { content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }] });
         stamped++;
@@ -123,7 +131,9 @@
 
   const repairToolPairs = provider.repairToolPairs;
 
-  const preserveClaudeContinuations = provider.preserveClaudeContinuations;
+  // A Claude model keeps its continuation placement; every other upstream gets the host notes user-side (provider.js
+  // chatRoleProjection — strict upstream chat templates refuse a system message after index 0).
+  const chatRoleProjection = provider.chatRoleProjection;
 
   function normalizeReasoningEffort(value) {
     const key = String(value || 'medium').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -165,14 +175,39 @@
     const family = modelFamily(model, meta);
     return family === 'gpt' || family === 'anthropic' || family === 'google';
   }
-  function reasoningEffortsForModel(model, meta) {
+  // `learned` (optional): what the endpoint itself said this model takes, from a refusal (effortRefusal below). It
+  // outranks the catalog and the guess — it is the only rung list on this route the model has actually stated.
+  function reasoningEffortsForModel(model, meta, learned) {
+    if (Array.isArray(learned) && learned.length) return learned.slice();
     const declared = normalizeEffortList(meta && (meta.reasoningEfforts || meta.reasoning_efforts || meta.supportedReasoningEfforts || meta.supported_reasoning_efforts));
     if (declared.length) return declared;
     if (!modelSupportsReasoning(model, meta)) return OFF_ONLY_EFFORTS.slice();
     return OPENROUTER_REASONING_EFFORTS.slice();
   }
-  function clampReasoningEffortForModel(model, effort, meta) {
-    const allowed = reasoningEffortsForModel(model, meta);
+  /* EFFORT REFUSALS (10-14). /models never states a model's reasoning levels, so every reasoning model is GUESSED the
+     whole ladder above — and many refuse a rung of it. Measured live with the real key: gpt-5-mini, gemini-2.5-pro,
+     deepseek-r1, claude-sonnet-5.5, claude-opus-5.5, gemini-3.8-flash, grok-4.7 and glm-5.3-flash answer effort 'none'
+     with 400 "Reasoning is mandatory for this endpoint and cannot be disabled." (each took 'minimal'); o4-mini answers
+     'none' and 'minimal' with 400 "Provider returned error", the provider's own sentence in error.metadata.raw:
+     "Unsupported value: 'none' is not supported with the 'o4-mini-2025-04-16' model. Supported values are: 'low',
+     'medium', and 'high'." Either refusal is the endpoint's truth about that model: it is learned (per endpoint + model,
+     capability facts only — no key) and the request resent at the nearest rung it keeps (requestWithRetry). Returns
+     { refused, supported } or null. Only a refusal of the effort WE sent qualifies; any other 400 stands as-is. */
+  const LEARNED_EFFORTS = new Map();   // baseUrl + '\n' + model -> levels the endpoint said it takes
+  function effortRefusal(status, errBody, detail, sent) {
+    if (!sent || (status !== 400 && status !== 422)) return null;
+    const e = errBody && errBody.error;
+    const raw = e && e.metadata && typeof e.metadata.raw === 'string' ? e.metadata.raw : '';
+    const text = String(detail || '') + '\n' + String((e && e.message) || '') + '\n' + raw;
+    const mandatory = sent === 'none' && /reasoning is mandatory|cannot be disabled/i.test(text);
+    const unsupported = /reasoning[ ._]?effort/i.test(text) && /unsupported|not supported|invalid value/i.test(text);
+    if (!mandatory && !unsupported) return null;
+    const m = /supported values are:?\s*([^.\n"]*)/i.exec(text);
+    const named = m ? (m[1].match(/'[^']+'/g) || []).map(s => s.slice(1, -1).toLowerCase()).filter(v => REASONING_EFFORT_ORDER.indexOf(v) >= 0) : [];
+    return { refused: sent, supported: normalizeEffortList(named) };
+  }
+  function clampReasoningEffortForModel(model, effort, meta, learned) {
+    const allowed = reasoningEffortsForModel(model, meta, learned);
     const normalized = normalizeReasoningEffort(effort);
     if (allowed.indexOf(normalized) >= 0) return normalized;
     const set = new Set(allowed);
@@ -221,13 +256,13 @@
       // streaming). Without it tokens still tally but usd stays 0 unless priceOf(model) resolves — so SPEND
       // reads $0 for any custom/uncatalogued slug. cost.js then takes this authoritative cost over the estimate.
       const meta = findModel(req.model);
-      const allowed = reasoningEffortsForModel(req.model, meta);
-      const effort = clampReasoningEffortForModel(req.model, req.reasoningEffort || reasoningEffort, meta);
+      const allowed = reasoningEffortsForModel(req.model, meta, learnedFor(req.model));
+      const effort = clampReasoningEffortForModel(req.model, req.reasoningEffort || reasoningEffort, meta, learnedFor(req.model));
       // ONE pre-send normalization (provider.js prepareWireMessages) — for this wire, exactly repairToolPairs.
       // Strict upstreams behind OpenRouter must never see StarNet's own bookkeeping keys on a message (ts, streamId,
       // agentId, sourceRunId, error, stopped, attachments) — only Chat Completions message keys leave, projected
       // BEFORE applyCacheControl so its cache_control anchors are stamped inside the content parts of clean copies.
-      const body = { model: req.model, messages: applyCacheControl(provider.chatWireMessages(preserveClaudeContinuations(provider.prepareWireMessages(req.messages, 'chat'), req.model)), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
+      const body = { model: req.model, messages: applyCacheControl(provider.chatWireMessages(chatRoleProjection(provider.prepareWireMessages(req.messages, 'chat'), req.model)), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
       if (effort !== 'none' || allowed.length > 1) body.reasoning = { effort };
       if (req.tools && req.tools.length) {
         // Grammar-safe property keys on every tool (OpenRouter fronts Anthropic/Bedrock, which 400 the whole request
@@ -368,7 +403,8 @@
     }
     // true/false once the catalog is warm; null = unknown (cold catalog) so callers don't false-refuse.
     function supportsTools(id) { const m = findModel(id); return m ? !!m.supportsTools : null; }
-    function reasoningEfforts(id) { return reasoningEffortsForModel(id, findModel(id)); }
+    function reasoningEfforts(id) { return reasoningEffortsForModel(id, findModel(id), learnedFor(id)); }
+    function learnedFor(id) { return LEARNED_EFFORTS.get(baseUrl + '\n' + String(id || '')) || null; }
 
     // POST the chat request, retrying transient failures (429/5xx + network resets) BEFORE the stream
     // starts — safe because no tokens have been emitted yet. Aborts propagate at once. Returns an ok Response.
@@ -378,6 +414,7 @@
       const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
       let waited = 0;
       let lowCreditHealed = false;   // one-shot: a 402 affordability refusal retries ONCE with a clamped max_tokens
+      let effortHeals = 0;           // a refused reasoning rung resends at the nearest one kept (each heal drops a rung; capped)
       for (let attempt = 0; ; attempt++) {
         if (signal && signal.aborted) throw abortError();
         let res;
@@ -405,6 +442,23 @@
         let detail = res.statusText || '', errBody = null;
         try { const j = await res.json(); errBody = j; detail = (j && j.error && j.error.message) || JSON.stringify(j); }
         catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
+        // EFFORT SELF-HEAL (400): the model refused the reasoning rung we sent (effortRefusal). Learn what it takes and
+        // resend at the nearest rung it keeps — before any token streams, so nothing is billed twice. Does not consume
+        // a transient-retry attempt. A refusal that removes nothing new stands as the honest error.
+        const refusal = effortHeals < 3 ? effortRefusal(res.status, errBody, detail, body.reasoning && body.reasoning.effort) : null;
+        if (refusal) {
+          const meta = findModel(body.model);
+          const before = reasoningEffortsForModel(body.model, meta, learnedFor(body.model));
+          const kept = refusal.supported.length ? refusal.supported : before.filter(x => x !== refusal.refused);
+          if (kept.indexOf(refusal.refused) < 0) {
+            effortHeals++;
+            LEARNED_EFFORTS.set(baseUrl + '\n' + String(body.model || ''), kept.slice());
+            const next = kept.length ? clampReasoningEffortForModel(body.model, refusal.refused, meta, kept) : '';
+            body = Object.assign({}, body);
+            if (next) body.reasoning = { effort: next }; else delete body.reasoning;   // no rung left: the model's own default
+            attempt--; continue;
+          }
+        }
         // LOW-CREDIT SELF-HEAL (402): with max_tokens unset, OpenRouter reserves the model's FULL output
         // ceiling against the account balance — a low-credit account gets "requires more credits, or fewer
         // max_tokens … can only afford N" even though the actual reply needs a fraction of N. That stranded

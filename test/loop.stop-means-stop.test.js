@@ -162,5 +162,37 @@ function threeWrites() {
     A.ok(Math.abs(res.usd - 0.002) < 1e-9, 'its usage is on the ledger: ' + res.usd);
   }
 
+  // ---- (c-stop-cuts-backoff) STOP during a LONG retry backoff ends the run at once (stall report 2026-10-13). The rung's
+  //      sleep (up to 60 s, or a server-stated Retry-After) ignored the stop: the page showed the run stopped while the
+  //      run kept its conversation's turn, so the next message sat on "connecting" until the sleep ran out. ----
+  {
+    const { emit } = setup();
+    const ac = new AbortController();
+    let attempts = 0;
+    const provider = scriptedProvider(async function* () { attempts++; throw timeoutErr(); });
+    const rung = ms => new Promise(r => setTimeout(r, Math.min(ms, 3000) || 3000));   // a real timer, like the host's sleep
+    setTimeout(() => ac.abort(), 40);
+    const t0 = Date.now();
+    const res = await runAgentLoop({ messages: [{ role: 'user', content: 'x' }], provider, emit, cost: cost(), model: 'm', agentId: 'a', runId: 'r', signal: ac.signal,
+      sleep: () => rung(3000) });
+    const ms = Date.now() - t0;
+    A.eq([res.reason, attempts], ['cancelled', 1], 'a stop during the backoff ends cancelled, and the turn is never re-sent');
+    A.ok(ms < 1000, 'the stop cuts the backoff short instead of sleeping it out (' + ms + ' ms)');
+  }
+  // ...and the truncated-stream retry's backoff too
+  {
+    const { emit } = setup();
+    const ac = new AbortController();
+    let attempts = 0;
+    const provider = scriptedProvider(async function* () { attempts++; yield { type: 'text', delta: 'half' }; yield { type: 'done', finishReason: 'stop', truncated: true }; });
+    setTimeout(() => ac.abort(), 40);
+    const t0 = Date.now();
+    const res = await runAgentLoop({ messages: [{ role: 'user', content: 'x' }], provider, emit, cost: cost(), model: 'm', agentId: 'a', runId: 'r', signal: ac.signal,
+      sleep: () => new Promise(r => setTimeout(r, 3000)) });
+    const ms = Date.now() - t0;
+    A.eq([res.reason, attempts], ['cancelled', 1], 'a stop during the truncation retry backoff ends cancelled');
+    A.ok(ms < 1000, 'the truncation backoff is cut short by the stop (' + ms + ' ms)');
+  }
+
   A.report('loop.stop-means-stop');
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });

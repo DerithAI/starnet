@@ -26,7 +26,8 @@ const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
       return res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'NONE' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
     }
     wires.push({ native, messages: body.messages });
-    if (body.messages.some((m, i) => m.role === 'system' && i !== 0)) {
+    const tail = body.messages.at(-1);
+    if (body.messages.some((m, i) => m.role === 'system' && i !== 0) || (tail && tail.role === 'assistant' && !tail.tool_calls)) {
       refusals.push(body.messages.map(m => m.role));
       // A nonretryable fixture status keeps the failing baseline bounded; production report was HTTP 500.
       res.statusCode = 400; return res.end(JSON.stringify({ error: 'Jinja Exception: System message must be at the beginning' }));

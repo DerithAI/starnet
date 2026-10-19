@@ -1,0 +1,72 @@
+{
+  "status": "SOURCE_TRIAGE_CONTRACT_PREPARED_NOT_RUN",
+  "issue": 118,
+  "ownerThread": "01a12ce1-53da-7a50-a7f8-12fccba769e6",
+  "worktree": "C:/Users/andro/gen-trees/issue118-image-host-1014",
+  "branch": "agent/issue118-image-host-1014",
+  "base": "cbf01f528f1286da588e410c78756fea234259c3",
+  "ownershipCheck": "Registry and recent active chat inventory inspected before creation; no issue118/image-host repair lane observed. Existing provider-triage-1011 at 52dc95fff1ff492ef29492eceb0f863e281e7928 has unrelated recent voice/crew work. Coordinator explicitly assigned this issue; source edits remain unapproved pending contract review. Foreign RC/build and frozen spend lanes untouched.",
+  "freeDiskBytesBeforeCreation": 81947844608,
+  "intake": {
+    "commit": "62e85760ddc0c9d7e6abd4431a0fd40e0dc64cdb",
+    "directory": "qa/evidence/github-intake-delta-1013/2026-10-14T174404135Z",
+    "issueFile": "issue-118-observed.json",
+    "issueBlob": "5eaa9fb1a7ed7a327e2e95dbddabdd132f50e786",
+    "commentFile": "comment-6174602865-post-cutoff.json",
+    "commentBlob": "37346a0a8e96bd292e0ea4b772d8390ea59af658",
+    "cutoff": "2026-10-14T17:44:04.135Z",
+    "createdAt": "2026-10-14T17:18:28Z",
+    "issueBodyObservedAt": "2026-10-14T17:46:44.709Z",
+    "commentCreatedAt": "2026-10-14T17:44:43Z",
+    "commentObservedAt": "2026-10-14T17:46:44.575Z",
+    "boundary": "Issue identity creation is in-window. Latest body and comment are explicitly later observations, not reconstructed cutoff-time content. Installed artifact, account availability, backend response and recovery were not independently verified."
+  },
+  "comparedRevisions": [
+    { "commit": "54899e5ff3f2b002b457757916b3977818db6fc1", "role": "reported release source", "imageBlob": "19a09dd924f973a596efc13c563f9672874be246", "codexBlob": "f457898785f2ed9c1657ff0f66ab4156dd82ed95" },
+    { "commit": "b35cf4ee31c61aa327109ad771723621196d8069", "role": "reported release source", "imageBlob": "19a09dd924f973a596efc13c563f9672874be246", "codexBlob": "f457898785f2ed9c1657ff0f66ab4156dd82ed95" },
+    { "commit": "cbf01f528f1286da588e410c78756fea234259c3", "role": "pinned RC", "imageBlob": "e5cf60725d94163893e4c6c259ce06cc3164a5de", "codexBlob": "f457898785f2ed9c1657ff0f66ab4156dd82ed95" },
+    { "commit": "fa5a9ffdf024b55d67c7e308b8a946373d3560d9", "role": "pinned trunk snapshot", "imageBlob": "e5cf60725d94163893e4c6c259ce06cc3164a5de", "codexBlob": "f457898785f2ed9c1657ff0f66ab4156dd82ed95" }
+  ],
+  "rcAdditionalBlobs": {
+    "sidecar/index.js": "0b8e8bf35884bb6de662a82f06907582c44268bb",
+    "sidecar/image-task.js": "b38b36be7cd0f02501b96772a46a1d5b9ac26439",
+    "test/image.test.js": "39eb3b670a1c448614281abab761f94c31f9a215",
+    "test/image-reference.test.js": "9724e6c17b946bec7772b22f131f3bbda537ab3a",
+    "test/provider.codex.test.js": "f48fb796ba91488ce2489ac8162e76dc2ab65df1"
+  },
+  "sourceTrace": [
+    "All four snapshots fix CODEX_HOST_MODEL to gpt-5.5 in image.js:50. Release request uses it at line 428; RC/trunk at line 481.",
+    "RC index.js:20136 calls ImageTask.resolveRoute from provider/auth/key state; a signed-in Codex run chooses codex-responses before other key routes. Route availability establishes authentication configuration, not current image-host capability.",
+    "RC index.js:20240 injects route, conversation model, ensureCodexAccessToken and forceRefreshCodexAccessToken into makeImageTools; no host-selection result or catalog is injected.",
+    "image.js:364 configuredImageModel and generation args choose the image model; codexImagePost puts that model in tools[0].model while CODEX_HOST_MODEL fills top-level body.model. or.model participates in VISION_MODEL, not this image host.",
+    "image.js:475-511 posts to the chosen Codex responses endpoint, renews once only on 401, throws on other non-2xx before output publication. No post-error API-key fallback is present in this path.",
+    "codex.js:55 DEFAULT_MODEL is separately gpt-5.5; line 198 uses req.model or that default for conversation streams. Changing it alone cannot change image.js's private constant.",
+    "codex.js:442 listModels requests account-scoped /models?client_version=1.0.0, filters hidden entries and sorts by backend priority. It projects slug/id, display name, description, context/output limits, reasoning levels/descriptions/default, supportsTools=true and pricing=null. Offline/failure returns static entries with fallback=true at line 493.",
+    "The catalog projection has no image-host capability field; supportsTools is set true and is not measured hosted-image support. Backend priority is not an image-host eligibility ranking. Static fallback proves no account availability.",
+    "image.js:42-50 explains the fixed host using a historical Pro-sign-in probe comment. This is historical source commentary, not current account evidence. Scoped searches of sidecar/shared/frontend/test/docs found no alternative image-host policy or selector; no repair was found in inspected file history."
+  ],
+  "decisionGap": "No current local policy establishes which account-visible host supports image_generation for this authenticated route, or how to choose it when the pinned host is rejected. Neither the selected conversation model, catalog membership, backend priority nor generic supportsTools closes that gap. No replacement model is proposed.",
+  "repairContract": {
+    "phaseA": "After independent contract review, a narrowly scoped unsupported-host diagnostic improvement is independently useful. Preserve request routing, model constants, credentials, retry limits and output semantics. For a response explicitly rejecting the exact dispatched host model, identify the host separately from the requested image model, retain bounded provider status/detail, and say this attempt produced no image. Do not label unrelated 400s or image-model errors as host rejection, and do not claim global model unavailability.",
+    "proposedCopy": "ChatGPT rejected image host <dispatched host> for this request (HTTP 400). Requested image model: <image model>. No image was produced by this attempt. Provider detail: <bounded safe detail>.",
+    "phaseB": "Host selection is a separate reviewed change. Inject an explicit host-selection result at media composition only after an account/route-specific image-host capability policy is established. Preserve requested image model and authorization; do not substitute a guessed current slug, blindly use the conversation model, or treat an offline list as proof. Decide offline/unknown behavior explicitly and state inability to verify capability honestly.",
+    "invariants": [
+      "Distinguish conversation model, image model and host model in diagnostics and acceptance evidence.",
+      "Stay on the same authorized account route; no automatic move to separately billed OpenAI/OpenRouter/managed routes after host rejection.",
+      "Keep the existing maximum one auth renewal on 401; unsupported-host 400 does not trigger auth refresh or repeated generation attempts.",
+      "Failure does not publish an artifact or overwrite an existing destination. No token/account-id/prompt disclosure added to diagnostics.",
+      "Do not claim image generation repaired by an error-message-only change."
+    ]
+  },
+  "controls": [
+    { "id": "wire-model-distinction", "spec": "Stub the same account route with differing conversation selections; capture top-level host model and nested image model independently. Preserve the requested image model. Use no real credentials/provider." },
+    { "id": "explicit-host-rejection", "spec": "Return the reported 400 shape naming the dispatched host. Assert both model roles, status and no-produced-image wording; one request, zero auth renewals, no route fallback, no new or overwritten output." },
+    { "id": "unrelated-error-controls", "spec": "Return unrelated 400, image-model rejection, 403 plan limit, malformed response and network error. No fabricated host-capability classification; preserve honest failure and existing publication safeguards." },
+    { "id": "auth-renewal-bound", "spec": "401 then success, and repeated 401: at most one renewal and two sends on the same account/endpoint, unchanged model roles; no credential data in diagnostics." },
+    { "id": "existing-image-paths", "spec": "Retain reference-image, text-only response, partial-preview failure, incomplete stream, transparency, cancellation and existing-destination controls; retain unchanged API-key route behavior." },
+    { "id": "selection-policy-gates", "spec": "For a later reviewed selector: live/hidden/empty/offline-fallback catalog, account change, explicit host absence and unknown hosted-tool capability. None of membership, priority or supportsTools alone authorizes a capability claim." },
+    { "id": "real-acceptance-later", "spec": "Only in an authorized serialized slot: exact source and installed artifact, actual approved account route and models, successful returned image saved/read back, or truthful refusal. No customer recovery inferred from synthetic tests." }
+  ],
+  "execution": "NO_TESTS_NO_SYNTAX_NO_RUNTIME_NO_PROVIDER_NO_IMAGE_GENERATION; controls are specifications only, production source unmodified.",
+  "limits": "Current account-specific availability and original customer cause/recovery remain unknown. No current public model recommendation is made; no external documentation claim is needed for this local-source contract. Spend contracts and frozen lanes remain untouched. RC ancestry and release acceptance are not granted by this evidence commit."
+}

@@ -31,7 +31,7 @@ body #chat-panel .cmsg:is(.turnin,.nudge,.consent) :is(.turnin-text,.ws-line,.ws
 body #chat-panel .cmsg:is(.turnin,.nudge,.consent) :is(.ws-k,.ws-fhead,.turnin-kind,.ws-kindchip,.turnin-queue) {
   font-size: var(--sn-type-meta) !important; line-height: 1.35; letter-spacing: .65px;
 }
-body #chat-panel .cmsg:is(.turnin,.nudge,.consent) :is(.turnin-evidence,.work-rate-hint,.work-rate-reference,.consent-result,.ws-verline,.ws-vcmd,.ws-vexit,.tq-reason,.tq-hint) {
+body #chat-panel .cmsg:is(.turnin,.nudge,.consent) :is(.turnin-evidence,.work-rate-hint,.work-rate-reference,.consent-result,.consent-hint,.ws-verline,.ws-vcmd,.ws-vexit,.tq-reason,.tq-hint) {
   font-size: var(--sn-type-control) !important; line-height: 1.45;
   color: var(--text); opacity: 1; letter-spacing: .15px;
 }
@@ -419,11 +419,9 @@ body #chat-panel #chat-log > .dg-line .dg-line-list {
 body #chat-panel #chat-log > .dg-line .dg-li {
   grid-column: 1 / -1; display: grid; grid-template-columns: 10px auto minmax(0, 1fr) auto; grid-template-columns: subgrid;
   align-items: center; column-gap: 10px; row-gap: 2px;
-  padding: 9px 12px 9px 14px; cursor: pointer; transition: background-color var(--t-fast) var(--ease-soft);
+  padding: 9px 12px 9px 14px;
 }
 body #chat-panel #chat-log > .dg-line .dg-li + .dg-li { border-top: 1px solid rgba(var(--ph-rgb), .08); }
-body #chat-panel #chat-log > .dg-line .dg-li:hover { background: rgba(var(--ph-rgb), .06); }
-body #chat-panel #chat-log > .dg-line .dg-li:focus-visible { outline: 2px solid var(--ph); outline-offset: -2px; }
 body #chat-panel #chat-log > .dg-line .dg-li > .dg-lamp { grid-column: 1; grid-row: 1; }
 body #chat-panel #chat-log > .dg-line .dg-li-who { grid-column: 2; grid-row: 1; font-size: var(--sn-type-control) !important; letter-spacing: 1px; color: var(--ph); }
 body #chat-panel #chat-log > .dg-line .dg-li-task {
@@ -438,6 +436,11 @@ body #chat-panel #chat-log > .dg-line .dg-li.waiting .dg-li-st { color: var(--go
 body #chat-panel #chat-log > .dg-line .dg-li:is(.failed, .stopped) .dg-li-st { color: var(--bad); opacity: 1; }
 body #chat-panel #chat-log > .dg-line .dg-li > :is(.dg-key, .dg-keys) { grid-column: 4; grid-row: 1 / span 2; margin-left: 4px; }
 body #chat-panel #chat-log > .dg-line .dg-keys { display: flex; gap: 6px; }
+/* A WORKER WAITING ON YOU (rc walk 10-14: "Needs you · change taglin…" — its two answer keys took the width its ask needed):
+   the task and the ask take the whole row and the ask wraps rather than cut the path it names; the keys sit under them. */
+body #chat-panel #chat-log > .dg-line .dg-li.waiting .dg-li-task { grid-column: 3 / -1; }
+body #chat-panel #chat-log > .dg-line .dg-li.waiting .dg-li-st { grid-column: 3 / -1; white-space: normal; overflow-wrap: anywhere; }
+body #chat-panel #chat-log > .dg-line .dg-li.waiting > :is(.dg-key, .dg-keys) { grid-column: 3 / -1; grid-row: 3; justify-self: start; margin: 4px 0 0; }
 /* the key: the Build Library / Workflow panel glass key, at COMMS's 34px */
 body #chat-panel #chat-log .dg-line .dg-key {
   min-height: 34px; padding: 6px 14px; font-family: inherit; font-size: var(--sn-type-control) !important; line-height: 1.15; letter-spacing: .4px;
@@ -464,6 +467,15 @@ body #chat-panel #chat-log > .dg-line .dg-work-answer {
   margin: 8px 0 10px; padding: 2px 0 2px 12px; border-left: 2px solid rgba(var(--ph-rgb), .35);
   font-size: var(--sn-type-control) !important; line-height: 1.5; color: var(--text); overflow-wrap: anywhere;
 }
+/* a worker's report renders with the same report markdown as COMMS (Chat.renderProse): its headings are spans that are
+   block-level only under .cmsg .body, so here they ran inline into the text around them — "Here's what I found:3
+   Competitor Launch Emails — Desktop AI Agent SpaceI've sourced…" (live walkthrough 2026-10-13) */
+body #chat-panel #chat-log > .dg-line .dg-work-answer .md-p { display: block; white-space: pre-wrap; margin: .5em 0; }
+body #chat-panel #chat-log > .dg-line .dg-work-answer .md-h { display: block; margin: .65em 0 .3em; color: var(--ph-bright); letter-spacing: .5px; }
+body #chat-panel #chat-log > .dg-line .dg-work-answer > .md-h:first-child,
+body #chat-panel #chat-log > .dg-line .dg-work-answer > .md-p:first-child { margin-top: .2em; }
+body #chat-panel #chat-log > .dg-line .dg-work-answer .md-list { white-space: normal; margin: .4em 0; padding-left: 1.6em; }
+body #chat-panel #chat-log > .dg-line .dg-work-answer .md-quote { display: block; white-space: normal; margin: .5em 0; padding: .3em .7em; border-left: 2px solid var(--ph-faint); }
 body #chat-panel #chat-log > .dg-line .dg-work-note { margin: 8px 0; font-size: var(--sn-type-meta) !important; color: var(--text); opacity: .75; }
 body #chat-panel #chat-log > .dg-line .dg-work-note.bad { color: var(--bad); opacity: 1; }
 body #chat-panel #chat-log > .dg-line .dg-receipt {

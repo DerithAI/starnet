@@ -10,7 +10,12 @@ const hand = P.handoffInput({ fromName: 'Line A', original: 'write the report', 
 A.ok(hand.startsWith('[HAND-OFF — LINE A finished'), 'hand-off carries no duplicate LINE prefix');
 A.ok(hand.includes('full finished work itself'), 'receiving line must hand on the work rather than completion commentary');
 A.eq(P.parseHandoffInput(P.parseHandoff(P.handoffPrompt(hand, 'nova', 'revised body', 1)).original).original, 'write the report', 'nested later-stage hand-off retains the human job');
-A.eq(P.fedLineIds({sendTo:{out:{toLine:'B'}}}, {known:true,byLine:{A:{runs:1},C:{runs:0}}}), {B:true,A:true}, 'compiled hand-off and real run independently prove a fed line');
+/* M7 (2026-10-12): the old expectation {B:true,A:true} was WRONG — a run count is not a feed. A line's runs include the
+   Commander's own SEND IT A JOB and the lead's station.test_line, and neither starts the line by itself: counting them cleared
+   the NO FEED nag and ticked the finish card's "what starts this line" for a line nothing is wired to start. Per-line feed
+   evidence is a compiled hand-off into it (SEND TO); channels/routines/folders/webhooks come through the station-wide feed. */
+A.eq(P.fedLineIds({sendTo:{out:{toLine:'B'}}}, {known:true,byLine:{A:{runs:1},C:{runs:0}}}), {B:true}, 'a compiled hand-off proves a fed line; a run count does not');
+A.eq(P.fedLineIds({}, {known:true,byLine:{A:{runs:3,tests:2}}}), {}, 'a line with sample/test runs and nothing wired to start it is NOT fed');
 A.eq(P.fedLineIds({}, {known:false,byLine:{A:{runs:5}}}), {}, 'unknown stats cannot assert real runs');
 function fresh() { const d=WM.starterDoc(); for(const r of Object.values(d.rooms)) for(const b of r.rects) {b.x2=64;b.y2=48;} return WM.create(d); }
 function crew(st) { for(const p of st.props()) if(p.t==='bay') st.assignPropAgent(p.id,'ag_'+p.id); }
@@ -25,12 +30,31 @@ for(const [bp,worst] of [['revision_loop',8],['deep_dive',12]]) {
  A.ok(st.setSendTo(ob,ib).ok,'two independent lines linked by SEND TO');
  st.setPropLabel(ib,'Line B'); A.eq(st.sendToChoices(ob).find(c=>c.on).name,'LINE B','model SEND TO choices use the same normalized label');
  const p=P.compileRoutingPlan(st.projectGeometry());
- A.ok(p.errors.some(e=>e.code==='SEND_TO_PRIVATE_FILES'&&e.propId===ob&&e.warn),'private source files carry an advisory warning');
- A.ok(P.ok(p)&&!!p.sendTo[ob],'file-access warning does not disable hand-off');
+ // PRIVATE FILES is advice, never a routing finding (final floor lane M19 / M29): no floor nag at rest, and TRUE only where it is
+ A.ok(!p.errors.some(e=>/^SEND_TO/.test(e.code)),'a clean SEND TO compiles no finding (no PRIVATE FILES nag on the floor)');
+ const adv=P.sendToFileAdvice(p);
+ A.ok(adv.length===1&&adv[0].code==='SEND_TO_PRIVATE_FILES'&&adv[0].propId===ob&&adv[0].warn,'a folderless line handing on to a DIFFERENT crew: its files sit in private workspaces the next crew cannot open — advice');
+ A.ok(P.ok(p)&&!!p.sendTo[ob],'file-access advice does not disable hand-off');
  st.setPropProject(ia,'C:/projects/source'); st.setPropProject(ib,'C:/projects/target');
  const q=P.compileRoutingPlan(st.projectGeometry());
- A.ok(!q.errors.some(e=>e.code==='SEND_TO_PRIVATE_FILES'),'two named project folders need no private-workspace warning');
+ A.ok(!q.errors.some(e=>e.code==='SEND_TO_PRIVATE_FILES')&&!P.sendToFileAdvice(q).length,'two named project folders need no private-workspace warning');
  A.eq(q.hash,p.hash,'private-file legibility does not change the routing hash');
+ st.setPropProject(ib,'');
+ A.eq(P.sendToFileAdvice(P.compileRoutingPlan(st.projectGeometry())),[],'the SENDING line project folder is what makes its files reachable (the target needs none)');
+ st.setPropProject(ia,''); st.setPropProject(ib,'C:/projects/target');
+ A.eq(P.sendToFileAdvice(P.compileRoutingPlan(st.projectGeometry())).map(x=>x.propId),[ob],'…a project folder only on the receiving line does not reach the sender private files');
+}
+// one agent on both lines: its own private workspace — the files ARE reachable, so no advice (M29: the old warning was false here)
+{
+ const st=fresh(), a=LE.placeBlueprint(st,'research_line',{x:8,y:4}), b=LE.placeBlueprint(st,'research_line',{x:8,y:22});
+ for(const pr of st.props()) if(pr.t==='bay') st.assignPropAgent(pr.id,'writer');
+ const find=(r,t)=>r.ids.find(id=>st.propById(id).t===t), ob=find(a,'outbox'), ib=find(b,'intake');
+ A.ok(st.setSendTo(ob,ib).ok,'one agent, two lines, SEND TO');
+ const p=P.compileRoutingPlan(st.projectGeometry());
+ A.ok(!!p.sendTo[ob]&&!p.errors.some(e=>/^SEND_TO/.test(e.code))&&P.sendToFileAdvice(p).length===0,'the same agent on both lines opens its own files: no PRIVATE FILES advice');
+ // a second agent joins the receiving line: that crew member cannot open the writer's private files
+ const bayB=b.ids.find(id=>st.propById(id).t==='bay'); st.assignPropAgent(bayB,'coder');
+ A.eq(P.sendToFileAdvice(P.compileRoutingPlan(st.projectGeometry())).map(x=>x.propId),[ob],'…a different agent on the next line makes it true');
 }
 
 // Placement checks the complete footprint and calls the same insertion verdict as the click.
@@ -47,5 +71,29 @@ for(const [bp,worst] of [['revision_loop',8],['deep_dive',12]]) {
  A.eq(ctx.check('bay',1,1,{w:2,h:2}),null,'clear floor keeps ordinary placement');
  links.push({from:{prop:'c'},to:{prop:'d'},path:[{x:5,y:5}]});
  A.ok(!ctx.check('bay',4,4,{w:2,h:2}).v.ok,'shared belt tile refuses ambiguous insertion');
+}
+// A BAY dropped on a belt: the ghost stands where the click LANDS it (final floor lane M4). The insert picks its spot near the
+// lane's middle, wherever on the belt you point — so the ghost, its art and the landing flash read the model's own dry run.
+{
+ const fs=require('fs'),vm=require('vm'),build=fs.readFileSync(require.resolve('../frontend/app/build.js'),'utf8');
+ const start=build.indexOf('  function beltUnderFoot('),end=build.indexOf('  function commitPropStamp(',start);
+ const s=WM.create();s.projectGeometry();s.addRoom({kind:'hab',rect:{x1:30,y1:0,x2:120,y2:60}});
+ const add=(t,x,y)=>s.addProp({t,x,y,w:2,h:2,block:true}).id,I=add('intake',32,4),B=add('bay',42,4),O=add('outbox',76,4);
+ A.ok(s.connectBelt(I,B).ok&&s.connectBelt(B,O).ok,'insert rig');
+ const ctx={CONNECT_TYPES:{bay:1,outbox:1,splitter:1},JUNCTION_TAG_TYPES:{splitter:1},linkedFloor:()=>true,linksMemoed:()=>s.links(),station:s};
+ vm.createContext(ctx);vm.runInContext(build.slice(start,end)+'this.check=beltUnderFoot;this.land=landRect;',ctx);
+ const lane=s.links().find(l=>l.from.prop===B),size={w:2,h:2};
+ for(const t of [lane.path[2],lane.path[Math.floor(lane.path.length/2)],lane.path[lane.path.length-3]]){
+  const foot=ctx.check('bay',t.x,t.y,size),ghost=ctx.land(foot,{x1:t.x,y1:t.y,x2:t.x+1,y2:t.y+1},size);
+  A.ok(foot&&foot.v.ok&&foot.v.x!=null,'hovering belt tile '+t.x+','+t.y+' offers an insert with its landing spot');
+  const before=JSON.stringify(s.serialize()),r=s.insertBayBetween(lane.from.prop,lane.to.prop,{w:2,h:2,block:true});
+  A.ok(r.ok,'…the click inserts');
+  A.eq(ghost,{x1:r.x,y1:r.y,x2:r.x+1,y2:r.y+1},'…and the ghost rect IS the committed BAY (pointer '+t.x+','+t.y+')');
+  A.eq({x:foot.v.x,y:foot.v.y},{x:r.x,y:r.y},'…the dry run and the insert agree');
+  s.undo();A.eq(JSON.stringify(s.serialize()),before,'(undo)');
+ }
+ A.eq(ctx.land(null,{x1:1,y1:2,x2:2,y2:3},size),{x1:1,y1:2,x2:2,y2:3},'off a belt the ghost stays at the pointer');
+ A.ok(/if \(foot && res && res\.ok && res\.x != null\) \{ px = res\.x; py = res\.y; \}[^\n]*\n\s*if \(res && res\.ok\) \{\s*pushFlash\(\[\{ x1: px, y1: py/.test(build),'the landing flash marks the BAY where it landed');
+ A.ok((build.match(/rects: ?\[landRect\(foot, rect, s\)\]/g)||[]).length===2,'both the hover ghost and the stamp drag stand at the landing spot');
 }
 A.report('conveyor-ui-truth.test');

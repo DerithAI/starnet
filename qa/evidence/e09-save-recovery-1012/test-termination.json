@@ -1,0 +1,30 @@
+{
+  "scope": "Test-only termination compatibility; lint unmodified; mutation copies compiled with original module resolution, repository source not mutated by red probes.",
+  "results": [
+    {
+      "name": "helper assertion fails after async retries",
+      "exitCode": 1,
+      "stdout": "FAIL: reason is not interpreted as markup\nFAIL: reason is not interpreted as markup\nFAIL: reason is not interpreted as markup\nsave recovery diagnosis: retry codes, report context, degraded precedence and successful recovery: 3 problem(s), 3 ok",
+      "stderr": ""
+    },
+    {
+      "name": "throwing assertion fails after async retries",
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "AssertionError [ERR_ASSERTION]: definitive recovered save reloads once\n\n1 !== 2\n\n    at C:\\Users\\andro\\gen-trees\\memory-proof-1011\\test\\save-recovery-diagnosis.test.js:23:89 {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: 1,\n  expected: 2,\n  operator: 'strictEqual',\n  diff: 'simple'\n}"
+    },
+    {
+      "name": "unchanged real test",
+      "exitCode": 0,
+      "stdout": "save recovery diagnosis: retry codes, report context, degraded precedence and successful recovery: OK (6 assertions)",
+      "stderr": ""
+    }
+  ],
+  "lint": {
+    "command": "node test/lint-gate-can-fail.js",
+    "exitCode": 0,
+    "output": "lint-gate-can-fail: 1104 asserting gate step(s) can all turn the gate red; OK"
+  },
+  "testSha256": "d9943794e6c0d355ff5d82035ca133376d04621f5842d6a8d4adecc411942207",
+  "note": "Original Node assertions already threw and catch set exitCode=1. Lint recognized _assert import plus assert.ok but required helper counter settlement. Boolean assertions now use A.ok and async completion calls A.report; Node match/equality assertions and catch remain. Six reported assertions are helper checks; Node assertions execute too."
+}

@@ -6,8 +6,8 @@
        the OAuth story) mints nothing (the honesty guard: placement must be able to close every quest);
      • sync() resolves a gap the instant the floor grants the cap (placement = completion, no claim);
      • dismissal is permanent ACROSS RELOAD (own localStorage key) and blocks re-minting forever;
-     • the standing OUTBOX candidate fires on ReturnStore.pendingCount()>0 with no outbox placed, and
-       resolves when one lands;
+     • the old standing OUTBOX candidate is RETIRED (org P14): unattended work never mints "place a OUTBOX",
+       and one an older build left open is waved off on load (never celebrated as done);
      • THE LAW: station quests never mint XP and the store never emits on U.bus — tripwire stubs throw
        if touched (the queststatestore.test.js idiom). Plus source-level locks on the browser wiring. */
 'use strict';
@@ -116,17 +116,27 @@ fire('image_generate', 'nova');
 A.eq(StationQuestStore.quests().some(q => q.id === 'sq:nova:studio'), false, 'the same reach after reload NEVER re-mints (stop forever)');
 A.eq(StationQuestStore.quests().find(q => q.id === 'sq:nova:dish').status, 'done', 'completion history survives the reload too');
 
-/* ---------- the standing OUTBOX candidate: real signal in, placement out ---------- */
+/* ---------- the retired OUTBOX candidate (org P14): a station-wide pending count is no OUTBOX's work ---------- */
 StationQuestStore.sync();
 A.eq(StationQuestStore.quests().some(q => q.id.indexOf(':outbox') > 0), false, 'no unattended work → no OUTBOX quest');
 pendingCrates = 2;
 StationQuestStore.sync();
-const ob = StationQuestStore.quests().find(q => q.id === 'sq:hero:outbox');
-A.ok(ob && ob.status === 'open', 'unattended work + no outbox placed → the OUTBOX quest fires (keyed to the hero)');
-A.ok(/OUTBOX/.test(ob.title), 'it names the OUTBOX prop');
-doc = { props: [{ t: 'outbox', x: 1, y: 1 }] };
-StationQuestStore.sync();
-A.eq(StationQuestStore.quests().find(q => q.id === 'sq:hero:outbox').status, 'done', 'placing the OUTBOX completes it');
+A.eq(StationQuestStore.quests().some(q => q.id.indexOf(':outbox') > 0), false, 'unattended work + no outbox placed → STILL no OUTBOX quest (away/cron/chat runs wait in DELIVERABLES › TO REVIEW, never on a chute)');
+{
+  // an OPEN one an older build saved is waved off on load — never flipped done (nothing was closed), never re-minted
+  const saved = JSON.parse(global.localStorage.getItem('starnet.stationquests.v1'));
+  saved.gaps['sq:hero:outbox'] = { agentId: 'hero', cap: 'outbox', capLabel: 'DELIVERY', propLabel: 'OUTBOX', agentLabel: 'The station', firstSeenAt: 1, lastSeenAt: 1, hits: 1, completedAt: null, dismissedAt: null };
+  global.localStorage.setItem('starnet.stationquests.v1', JSON.stringify(saved));
+  StationQuestStore.init();
+  A.eq(StationQuestStore.quests().some(q => q.id === 'sq:hero:outbox'), false, 'a saved OPEN OUTBOX quest is retired on load');
+  A.eq(StationQuestStore.isDismissed('sq:hero:outbox'), true, '…as a dismissal (it is not celebrated as done)');
+  A.ok(JSON.parse(global.localStorage.getItem('starnet.stationquests.v1')).gaps['sq:hero:outbox'].dismissedAt != null, '…and the retirement is saved');
+  doc = { props: [{ t: 'outbox', x: 1, y: 1 }] };
+  StationQuestStore.sync();
+  A.eq(StationQuestStore.quests().some(q => q.id === 'sq:hero:outbox'), false, 'placing an OUTBOX later never resurrects it');
+}
+const sqSrc = fs.readFileSync(path.join(__dirname, '../frontend/app/stationqueststore.js'), 'utf8');
+A.ok(!/evalOutboxCandidate/.test(sqSrc) && !/pendingCount/.test(sqSrc), 'the store no longer reads the station-wide pending count at all');
 
 /* ---------- reset: the new-hero clean slate ---------- */
 StationQuestStore.reset();

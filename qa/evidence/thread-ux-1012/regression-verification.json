@@ -1,0 +1,208 @@
+{
+  "candidate": "a69664135e4983fe624ec11bea6b2bd4666ee651",
+  "previousCandidate": "09e6afba0179fe4aa6930fa5fe5b68a433d4934d",
+  "date": "2026-10-12",
+  "scope": "Source audit only; no integration, installed-build or customer recovery acceptance.",
+  "changes": [
+    "Validated final delivery owns recovery, separate from immutable execution outcome/spend.",
+    "Pending/internal execution rows never become conversation answers; exact-run evidence remains available.",
+    "Full finalized delivery endpoint prevents 24k previews from deduplicating or corrupting longer answers.",
+    "Recovery updates only changed conversation turns in place; reader nodes, disclosure, focus, selection and draft survive.",
+    "Terminal workers with an unavailable final save show retry, and resumed repairs retain thread identity."
+  ],
+  "servedFrontend": {
+    "candidate": "a69664135e4983fe624ec11bea6b2bd4666ee651",
+    "files": [
+      {
+        "path": "frontend/app/app.js",
+        "sourceSha256": "cadea93203644183c77985c2319195c6a900698484dbe2dea0b55365266e0b8c",
+        "servedSha256": "cadea93203644183c77985c2319195c6a900698484dbe2dea0b55365266e0b8c",
+        "status": 200,
+        "match": true
+      },
+      {
+        "path": "frontend/app/chat.js",
+        "sourceSha256": "2b4de3d88a2106ab67722710c0609edb64430bb1952a6df248398a217152a8ea",
+        "servedSha256": "2b4de3d88a2106ab67722710c0609edb64430bb1952a6df248398a217152a8ea",
+        "status": 200,
+        "match": true
+      },
+      {
+        "path": "frontend/app/delegated.js",
+        "sourceSha256": "9f0976e62aca39c2a93da5b08c8d3329a26c4406ab97552e3805ef9739e40e3d",
+        "servedSha256": "9f0976e62aca39c2a93da5b08c8d3329a26c4406ab97552e3805ef9739e40e3d",
+        "status": 200,
+        "match": true
+      },
+      {
+        "path": "frontend/app/group-chat.js",
+        "sourceSha256": "8e7db27539662294525d53879fb8e8811971ba13e31c41a606b9d9d390f56c67",
+        "servedSha256": "8e7db27539662294525d53879fb8e8811971ba13e31c41a606b9d9d390f56c67",
+        "status": 200,
+        "match": true
+      },
+      {
+        "path": "frontend/app/overseer.js",
+        "sourceSha256": "cb554074f4775742a81f9e9a76dfa16aa491dd9ba48ed0a388c142c0fe7ea12b",
+        "servedSha256": "cb554074f4775742a81f9e9a76dfa16aa491dd9ba48ed0a388c142c0fe7ea12b",
+        "status": 200,
+        "match": true
+      },
+      {
+        "path": "frontend/app/stationcommands.js",
+        "sourceSha256": "14baa57706d837b98dbd0d6cafeadaa71dcc6a2c96017bd035a45696e0440887",
+        "servedSha256": "14baa57706d837b98dbd0d6cafeadaa71dcc6a2c96017bd035a45696e0440887",
+        "status": 200,
+        "match": true
+      },
+      {
+        "path": "frontend/app/workstreams.js",
+        "sourceSha256": "934b6a6820c1bcfb43fba11535cb119317ba98607280616b77be32e97be20d33",
+        "servedSha256": "934b6a6820c1bcfb43fba11535cb119317ba98607280616b77be32e97be20d33",
+        "status": 200,
+        "match": true
+      },
+      {
+        "path": "frontend/css/beat-cards.css",
+        "sourceSha256": "a0b1eca440f88160bf3ed8679d9f829f4a4ebd479c4a95ce149087ea0b04129c",
+        "servedSha256": "a0b1eca440f88160bf3ed8679d9f829f4a4ebd479c4a95ce149087ea0b04129c",
+        "status": 200,
+        "match": true
+      }
+    ],
+    "pageErrors": []
+  },
+  "reader": {
+    "fixture": "Isolated seeded station; synthetic finalized run route exercises actual page Workstreams/StationCommands/Chat",
+    "hidden": {
+      "sameNode": true,
+      "open": true,
+      "focus": true,
+      "selection": true,
+      "topDelta": 0,
+      "draft": "draft stays here",
+      "active": "ws_mv4zeir1eilk"
+    },
+    "inserted": {
+      "sameNode": true,
+      "open": true,
+      "focus": true,
+      "selection": true,
+      "topDelta": 0.28125,
+      "draft": "draft stays here",
+      "validatedOnce": 1,
+      "rawAbsent": true,
+      "firstMessage": "MIRAOct 10, 4:19 AM{\"validated\":true}⧉",
+      "historyFirst": "{\"validated\":true}",
+      "separators": [
+        {
+          "label": "Oct 10 · 4:19 AM",
+          "next": "1791620391277"
+        },
+        {
+          "label": "Yesterday · 4:19 AM",
+          "next": "1791706791277"
+        }
+      ]
+    },
+    "after700ms": {
+      "topDelta": 0.28125,
+      "selection": true
+    },
+    "pageErrors": []
+  },
+  "longRecovery": {
+    "fixture": "Actual seeded browser page with synthetic finalized run index and full delivery endpoint responses; real sidecar endpoint/restart separately covered by e2e.dispatch-session",
+    "messages": 1,
+    "characters": 26026,
+    "expectedCharacters": 26026,
+    "jsonValid": true,
+    "tailPresent": true,
+    "renderedTail": true,
+    "rawAbsent": true,
+    "runIds": [
+      "live-long-original"
+    ],
+    "pageErrors": []
+  },
+  "focused": {
+    "nodeTestCases": 29,
+    "stationCommands": 229,
+    "delegatedThreads": 107,
+    "workstreams": 212,
+    "threadNavigation": 47,
+    "historyOrder": 13,
+    "historyReconcile": 13,
+    "historyPin": 6,
+    "declutter": 52,
+    "overseerBatch": 30,
+    "runstore": 148,
+    "orchestration": 342,
+    "transcript": 77,
+    "taintLineage": 69,
+    "overseerUI": "PASS",
+    "changedJavaScriptSyntax": 36,
+    "mirrors": 8,
+    "whitespace": "PASS"
+  },
+  "realSidecar": {
+    "dispatchSessionAssertions": 117,
+    "overseerScenarios": 2,
+    "details": "Real sidecar with local scripted provider: blocked repair, >28k validated JSON, complete delivery=1 projection, raw exact-run evidence, invalid-result, restart, unchanged execution count/spend; delayed worker and single parent report/restart.",
+    "fixture": "Isolated temporary station/profile, no real provider spend. HTTP suites ran on 71c06fc3c; a69664135 only normalizes one test-file line ending."
+  },
+  "logs": {
+    "final-thread-ux-tests.log": {
+      "sha256": "c43369e7994d09b4fea2280f60d24f45e2e22a74f7bfe0d3b6c2d7ba67846649",
+      "tail": [
+        "✔ reader anchor survives reassignment of a time separator (1.2448ms)",
+        "ℹ tests 29",
+        "ℹ suites 0",
+        "ℹ pass 29",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ todo 0",
+        "ℹ duration_ms 116.165"
+      ]
+    },
+    "final-station-tests.log": {
+      "sha256": "1bbe9d063d4ce268db54c5ef670a20a657926027dbdd57a64a8c45ed40dfa6bc",
+      "tail": [
+        "station-commands.test: OK (229 assertions)"
+      ]
+    },
+    "final-delegated-tests.log": {
+      "sha256": "c173b1a4825197b53c51b1cd472744e27aac94af9f92cc1e0a022a37a95a52fa",
+      "tail": [
+        "[failopen] dispatch.child-thread (x1): no such session",
+        "delegated-threads.test: OK (107 assertions)"
+      ]
+    },
+    "final-dispatch-http.log": {
+      "sha256": "3a9c30552a6f549352dd95e4cf143d89aa7e2aeaebf734f726a6c041a0314b22",
+      "tail": [
+        "e2e.dispatch-session.test: OK (117 assertions)"
+      ]
+    },
+    "final-overseer-http.log": {
+      "sha256": "2f24a4a78f9d7408f3d67cb5c986074f8330ea9dee0ad1d91ab2d13f2d995a9d",
+      "tail": [
+        "e2e.overseer: delayed second dispatch -> ONE two-worker report -> restart PASS",
+        "e2e.overseer: headless create -> background dispatch -> automatic parent review -> restart PASS"
+      ]
+    }
+  },
+  "fullGates": {
+    "lastAttemptCandidate": "09e6afba0179fe4aa6930fa5fe5b68a433d4934d",
+    "fast": "NOT GREEN: 293/1140 passed, Skill Market catalog fixture failure (sparse checkout lacks license/signature/zip data).",
+    "http": "NOT GREEN: 48/209 passed, station-layout offered-tool assertion. Auxiliary-request selection is suspected but baseline causality unproven.",
+    "finalCandidate": "Focused and relevant HTTP checks rerun; complete combined gates still required in a complete checkout before merge."
+  },
+  "limitations": [
+    "Browser edge proofs use actual page modules with synthetic finalized-run/delivery route responses; real backend endpoint and restart are proved separately by the actual sidecar HTTP suites.",
+    "Original three-worker/report, approvals, files, filter and navigation live audit remains in verification.json bound to its original candidate; new evidence does not relabel those historical runs.",
+    "Customer 082ee8e5 remains OPEN: original reported acceptance and installed-app recovery are not proven here.",
+    "No branch merge, installer test, customer recovery or release-readiness claim."
+  ]
+}

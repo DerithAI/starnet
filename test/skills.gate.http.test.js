@@ -149,6 +149,20 @@ function seedSkills(ws) {
     A.eq(L.withheld, 1, 'only the blocked one remains withheld');
     A.ok(fs.existsSync(path.join(ws, 'skills-allowed.json')), 'the decision was written to disk, not held in a variable');
 
+    // ---- 3b. a package edited ON DISK can be re-approved from the panel (sidecar-index-05 / seams-02) ----
+    // The panel used to send the stored stamp while the route compared the live digest, so every ALLOW answered 409
+    // and the skill stayed withheld forever.
+    const riskyMd = path.join(ws, 'skill-packages', 'agent', riskyId, 'SKILL.md');
+    A.ok(fs.existsSync(riskyMd), 'the seeded skill has a package on disk');
+    fs.writeFileSync(riskyMd, fs.readFileSync(riskyMd, 'utf8').replace(/\s*$/, '\nStep 3. a line someone added on disk\n'));
+    L = await list();
+    A.eq(L.by['Risky Deploy'].withheld, true, 'the drifted package is withheld again');
+    A.eq(L.by['Risky Deploy'].guardTampered, true, 'and reported as changed after review');
+    const reapproved = await api('/api/agent-skills/allow', { method: 'POST', body: JSON.stringify({ agentId: 'agent', id: riskyId, digest: L.by['Risky Deploy'].guardDigest }) });
+    A.eq(reapproved.status, 200, 'ALLOW with the digest the panel was given succeeds: ' + JSON.stringify(reapproved.body));
+    L = await list();
+    A.eq(L.by['Risky Deploy'].withheld, false, 'the re-approved package reaches the agent');
+
     // ---- 4. a pinned skill refuses an unforced edit through the route ----
     const pinnedId = L.by['Pinned Ritual'].id;
     const unforced = await api('/api/agent-skills/manage', { method: 'POST', body: JSON.stringify({ agentId: 'agent', action: 'edit', target: pinnedId, body: 'clobbered' }) });
@@ -208,9 +222,9 @@ function seedSkills(ws) {
     A.eq(drifted.guardDigest, digestOf(drifted), 'guardDigest is the digest of the bytes the panel was just served');
     const stale = await api('/api/agent-skills/allow', { method: 'POST', body: JSON.stringify({ agentId: 'agent', id: safeId, digest: drifted.contentDigest }) });
     A.eq(stale.status, 409, 'an approval of the STORED stamp (bytes nobody reviewed) is still refused');
-    const reapproved = await api('/api/agent-skills/allow', { method: 'POST', body: JSON.stringify({ agentId: 'agent', id: safeId, digest: drifted.guardDigest }) });
-    A.eq(reapproved.status, 200, 'the panel\'s Approve (digest: guardDigest) on the drifted package succeeds: ' + JSON.stringify(reapproved.body));
-    A.eq(reapproved.body && reapproved.body.digest, drifted.guardDigest, 'and is bound to exactly that digest');
+    const reapprovedSafe = await api('/api/agent-skills/allow', { method: 'POST', body: JSON.stringify({ agentId: 'agent', id: safeId, digest: drifted.guardDigest }) });
+    A.eq(reapprovedSafe.status, 200, 'the panel\'s Approve (digest: guardDigest) on the drifted package succeeds: ' + JSON.stringify(reapprovedSafe.body));
+    A.eq(reapprovedSafe.body && reapprovedSafe.body.digest, drifted.guardDigest, 'and is bound to exactly that digest');
     L = await list();
     A.eq(L.by['Safe Deploy'].withheld, false, 'the re-approved bytes are given to the agent');
     // ...and the approval still binds bytes: a second rewrite after the read 409s the now-stale guardDigest.

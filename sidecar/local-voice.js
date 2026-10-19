@@ -202,10 +202,28 @@ async function loadAsr() {
    q4 export the engine used to load (326 vs 305 MB — Kokoro is mostly convolution, which q4 leaves alone,
    so q4 bought almost no size while 4-bit MatMuls added an audible buzz). q8 stays out: it fails to
    initialize in onnxruntime-node on some Windows machines. q4 remains the fallback so a machine where fp32
-   cannot load still speaks. STARNET_KOKORO_DTYPE pins one precision (no fallback) for diagnosis. */
-function kokoroDtypes() {
+   cannot load still speaks. STARNET_KOKORO_DTYPE pins one precision (no fallback) for diagnosis.
+   A machine that already holds the q4 copy (an install from before fp32) and not fp32 keeps speaking from it:
+   loading fp32 first would make its next reply wait on a ~326 MB download and keep two copies on disk. */
+function kokoroOnnxDir(root) {
+  return path.join(root, 'transformers-kokoro', 'onnx-community', 'Kokoro-82M-v1.0-ONNX', 'onnx');
+}
+function kokoroDtypes(root = cacheRoot) {
   const pinned = String(process.env.STARNET_KOKORO_DTYPE || process.env.SKYNET_KOKORO_DTYPE || '').trim();
-  return pinned ? [pinned] : ['fp32', 'q4'];
+  if (pinned) return [pinned];
+  const dir = kokoroOnnxDir(root);
+  if (fs.existsSync(path.join(dir, 'model_q4.onnx')) && !fs.existsSync(path.join(dir, 'model.onnx'))) return ['q4', 'fp32'];
+  return ['fp32', 'q4'];
+}
+
+/* Is the Kokoro model this machine would load first already on disk? Then a cold engine loads it in seconds;
+   otherwise its first load is a ~326 MB download. The station voice (media-service) waits for a disk load but
+   never for a download. Checks the file of the precision kokoroDtypes puts first (the transformers file names). */
+const KOKORO_FILE_SUFFIX = { fp32: '', fp16: '_fp16', q8: '_quantized', int8: '_int8', uint8: '_uint8', q4: '_q4', q4f16: '_q4f16', bnb4: '_bnb4' };
+function kokoroCached(root = cacheRoot) {
+  const first = kokoroDtypes(root)[0];
+  if (!Object.prototype.hasOwnProperty.call(KOKORO_FILE_SUFFIX, first)) return false;
+  return fs.existsSync(path.join(kokoroOnnxDir(root), 'model' + KOKORO_FILE_SUFFIX[first] + '.onnx'));
 }
 
 async function loadTts() {
@@ -482,5 +500,5 @@ function status() {
   };
 }
 
-module.exports = { warm, transcribe, synthesize, status, voices: () => LOCAL_VOICES.slice(), defaultVoice: () => DEFAULT_LOCAL_VOICE, normalizeLocalVoice, edgeVoiceFor, _hardenSharpImageDecoders: hardenSharpImageDecoders,
-  _speechPieces: speechPieces, _renderSpeech: renderSpeech, _kokoroDtypes: kokoroDtypes };
+module.exports = { warm, transcribe, synthesize, status, ttsCached: () => kokoroCached(), voices: () => LOCAL_VOICES.slice(), defaultVoice: () => DEFAULT_LOCAL_VOICE, normalizeLocalVoice, edgeVoiceFor, _hardenSharpImageDecoders: hardenSharpImageDecoders,
+  _speechPieces: speechPieces, _renderSpeech: renderSpeech, _kokoroDtypes: kokoroDtypes, _kokoroCached: kokoroCached };

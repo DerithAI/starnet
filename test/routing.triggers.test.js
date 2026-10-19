@@ -157,7 +157,7 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
           if (!hooks.entryAllowed(agentId)) { hooks.send('⚠ ' + 'this trigger\'s line routed the work to no crewed dock'); return; }
           const reason = hubMode === 'fail' ? 'error' : 'done';
           runsByStream[sid] = [{ runId: 'r1', agentId: 'agent-a', reason: 'done', usd: 0.01, streamId: sid }, { runId: 'r2', agentId: 'agent-b', reason, usd: 0.02, streamId: sid }];
-          hooks.onLineOutcome({ agentId: 'agent-b', dockId: 'b2', stopped: null, hops: [1] });
+          hooks.onLineOutcome(Object.assign({ agentId: 'agent-b', dockId: 'b2', stopped: null, hops: [1] }, hubMode === 'partial' ? { partial: 'agent-c failed' } : {}));
         });
       }, close() {}
     };
@@ -192,6 +192,17 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
   await new Promise(r => setTimeout(r, 30));
   v = R.view(wid);
   A.ok(v.lastOutcome.ok === false && /agent-b\) ended "error"/.test(v.lastError || ''), 'a failed stage is recorded honestly: ' + v.lastError);
+  /* (runtime repair 2026-10-12) a PARTIAL joined job: every recorded row ended done (a COPY branch the host refused before it ran
+     writes none), but the joiner sent on without it — not a clean fire, and the reason says so */
+  hubMode = 'partial';
+  const deliveredBefore = emitted.filter(e => e.nm === 'workitem.delivered' && e.p.finalQueueId === 'outbox').length;
+  const pw = R.create({ kind: 'webhook', lineId: 'L1', name: 'hook-partial', maxPerHour: 3 }, { secretHash: T.hashSecret('kp') });   // its own hourly budget
+  A.ok(pw.ok, 'a second webhook for the partial job');
+  R.enqueue(pw.trigger.id, { text: 'job partial' });
+  await new Promise(r => setTimeout(r, 30));
+  v = R.view(pw.trigger.id);
+  A.ok(v.lastOutcome.ok === false && /joiner sent on without every branch \(agent-c failed\)/.test(v.lastError || ''), 'a partial joined job is not a clean fire: ' + v.lastError);
+  A.eq(emitted.filter(e => e.nm === 'workitem.delivered' && e.p.finalQueueId === 'outbox').length, deliveredBefore, '…and nothing is delivered to the OUTBOX for it');
   hubMode = 'noroute';
   const placedBefore = emitted.filter(e => e.nm === 'workitem.placed').length;
   R.enqueue(wid, { text: 'job three' });

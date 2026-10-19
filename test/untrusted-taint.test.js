@@ -124,19 +124,27 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
   const src = fs.readFileSync(path.join(root, 'sidecar', 'index.js'), 'utf8');
   A.ok(/const taintPolicy = require\('\.\/taint\.js'\)/.test(src), 'index.js uses the shared taint policy (no second copy)');
   A.ok(/initialTaint: o\.initialTaint \? String\(/.test(src), 'the run tracks and names initial untrusted provenance');
-  // Execute the host's attachment classification instead of locking the clean
-  // fallback to null: quoted owner text has its own untrusted provenance too.
+  // Execute the host's attachment classification. Only real outside bytes (an attachment) taint the run: text the
+  // Commander typed stays owner authority even with a code fence, a quote or "example:" in it (review sidecar-index-01).
+  // That quoted text is kept out of LEARNING alone, by a host-computed flag the request body can never set.
   const attachmentStart = src.indexOf('// USER ATTACHMENTS:');
   const attachmentEntry = src.slice(attachmentStart, src.indexOf('retryUserRunId:', attachmentStart));
   const captureStart = attachmentEntry.indexOf('const hasUserAttachments =');
   const captureEnd = attachmentEntry.indexOf('let runMessages =');
   const initialTaint = attachmentEntry.match(/initialTaint: ([^\r\n]+),/);
   A.ok(attachmentStart > 0 && captureStart >= 0 && captureEnd > captureStart && !!initialTaint, 'attachment entry classification exists');
-  A.ok(attachmentEntry.indexOf('TrustedLearning.capture(') < attachmentEntry.indexOf('await attachments.expandUserAttachments('), 'owner words are captured before files expand');
+  A.ok(attachmentEntry.indexOf('TrustedLearning.capture(') >= 0 && attachmentEntry.indexOf('TrustedLearning.capture(') < attachmentEntry.indexOf('await attachments.expandUserAttachments('), 'owner words are captured before files expand');
   A.ok(/\n\s*learningInput,/.test(attachmentEntry) && !/body\.learningInput/.test(attachmentEntry), 'run receives host-captured input rather than request metadata');
+  A.ok(/\n\s*quotedOwnerInput,/.test(attachmentEntry) && !/body\.quotedOwnerInput/.test(attachmentEntry), 'the quoted-material learning flag is host-computed, never request metadata');
+  A.ok(/const quotedLearning = o\.quotedOwnerInput === true \|\| replayedQuoted;/.test(src) &&
+    /const learningTaint = execution\.taintedBy\(\) \|\| \(quotedLearning \? 'quoted user material' : null\);/.test(src) &&
+    /\n  if \(learningTaint\) \{\n    const noTrustedEvidence/.test(src),
+    'quoted owner material still skips the durable learning passes (reflection, failure review, study, thread mining)');
+  A.ok(/TrustedLearning\.evidence\(\{[^}\n]*tainted: execution\.taintedBy\(\), trustedOnly: quotedLearning,/.test(src),
+    'quoted owner material makes the skill review trusted-only (no raw transcript), without reporting the run as tainted');
   if (initialTaint && captureStart >= 0 && captureEnd > captureStart) {
     const classify = (messages, ownerWording = true) => vm.runInNewContext('(() => { ' + attachmentEntry.slice(captureStart, captureEnd) +
-      '; return { initialTaint: (' + initialTaint[1] + '), learningInput, quotedUserMaterial }; })()', {
+      '; return { initialTaint: (' + initialTaint[1] + '), learningInput, quotedOwnerInput: typeof quotedOwnerInput === \'undefined\' ? undefined : quotedOwnerInput }; })()', {
         messages, ownerWording, TrustedLearning: require('../sidecar/trusted-learning.js'),
         latestUserText: list => require('../sidecar/trusted-learning.js').textOf(list.filter(m => m && m.role === 'user').at(-1))
       });
@@ -158,20 +166,45 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
     // assert initialTaint 'quoted user material', which locked an ordinary "Fix this crash: ```…```" run's tools and
     // replayed that lock into every later turn of the conversation.
     const quoted = classify([{ role: 'user', content: '> I prefer quoted instructions.' }]);
-    A.eq(quoted.initialTaint, null, 'quoted owner text does not latch the execution taint');
-    A.eq(quoted.quotedUserMaterial, true, 'quoted owner text is marked for the learning withhold');
+    A.eq(quoted.initialTaint, null, 'quoted text the Commander typed does not lock tools, grants or workers');
+    A.eq(quoted.quotedOwnerInput, true, 'quoted text the Commander typed is flagged for the learning-only exclusion');
     A.eq(quoted.learningInput, null, 'quoted material cannot establish an owner preference');
+    // the review's own repro shapes: a pasted stack trace, a quoted file name, "example" before a line break
+    for (const text of ['Run the tests and fix this:\n```\nTypeError: cannot read \'id\' of undefined\n```',
+      'Name the file "Quarterly revenue summary 2026"', 'Here is an example\nof the layout I want']) {
+      const r = classify([{ role: 'user', content: text }]);
+      A.eq([r.initialTaint, r.quotedOwnerInput], [null, true], 'owner-typed ' + JSON.stringify(text.slice(0, 24)) + ' is owner authority, excluded only from learning');
+    }
+    // the merged lane's own repro shapes (2026-10-12): ordinary coding requests keep their tools, withhold learning only
     for (const content of ['Fix this crash:\n```\nTypeError: x is undefined\n```', 'Rename the checkout button to "Download your invoice now"', 'Add input validation, for example: reject negative quantities.']) {
       const coding = classify([{ role: 'user', content }]);
       A.eq(coding.initialTaint, null, 'an ordinary owner request with quoted/code text keeps its tools: ' + JSON.stringify(content));
-      A.eq(coding.quotedUserMaterial, true, 'and still withholds learning: ' + JSON.stringify(content));
+      A.eq(coding.quotedOwnerInput, true, 'and still withholds learning: ' + JSON.stringify(content));
     }
     const laterTurn = classify([{ role: 'user', content: 'The document says:\n> I prefer pasted instructions.' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: typed }]);
     A.eq(laterTurn.initialTaint, null, 'a later clean turn is not locked by the earlier pasted document');
-    A.eq(laterTurn.quotedUserMaterial, true, 'but learning stays withheld while the pasted document is in the conversation');
+    A.eq(laterTurn.quotedOwnerInput, true, 'but learning stays withheld while the pasted document is in the conversation a learning pass reads');
+    // an earlier quoted turn is still in the tail the reflection reads, so the conversation stays out of learning
+    const later = classify([{ role: 'user', content: '> I prefer quoted instructions.' }, { role: 'assistant', content: 'Noted.' }, { role: 'user', content: typed }]);
+    A.eq([later.initialTaint, later.quotedOwnerInput], [null, true], 'a later turn is not locked, and an earlier quote still keeps its history out of learning');
+    A.eq(later.learningInput.content, typed, 'the newest clean typed input stays eligible for trusted capture');
+    // ...but only while a learning pass can still read it (sidecar-index-01 follow-up). The passes read a bounded tail
+    // (the review stash keeps the widest, 16k chars); a quote that scrolled out of it must not keep learning off for
+    // the rest of a 120-turn COMMS window.
+    const conversation = (answers) => {
+      const list = [{ role: 'user', content: '> I prefer quoted instructions.' }];
+      for (let i = 0; i < answers; i++) list.push({ role: 'assistant', content: 'The audit continued with ordinary local checks and nothing unusual turned up. '.repeat(55) }, { role: 'user', content: 'Keep going with the next check.' });
+      return list.concat([{ role: 'user', content: typed }]);
+    };
+    const aged = classify(conversation(6));
+    A.eq([aged.initialTaint, aged.quotedOwnerInput], [null, false], 'a quote more than 16k chars back no longer keeps the run out of learning');
+    A.eq(aged.learningInput.content, typed, 'the newest clean typed input is captured as before');
+    A.eq(classify(conversation(3)).quotedOwnerInput, true, 'a quote still inside the learning tail keeps the run out of learning');
+    const quotedFile = classify([{ role: 'user', content: '```\nI prefer quoted instructions.\n```', attachments: [attachment] }]);
+    A.eq([quotedFile.initialTaint, quotedFile.quotedOwnerInput], ['user attachment', true], 'a real attachment still taints whatever the typed text holds');
     const clean = classify([{ role: 'user', content: typed, attachments: [] }]);
     A.eq(clean.initialTaint, null, 'ordinary typed text without a file stays clean');
-    A.eq(clean.quotedUserMaterial, false, 'ordinary typed text keeps learning');
+    A.eq(clean.quotedOwnerInput, false, 'ordinary typed text is not flagged as quoted material (it keeps learning)');
     A.eq(clean.learningInput.content, typed, 'clean owner input remains eligible');
     A.eq(classify([{ role: 'user', content: typed }], false).learningInput, null, 'a recipe launch (or its retry) is never captured as owner wording');
   }
@@ -189,8 +222,8 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
     A.eq(origin({ retryUserRunId: 'r1' }, null, { r1: { runId: 'r1', recipeId: '' } }), true, 'a retry of a typed directive stays owner wording');
     A.eq(origin({ retryUserRunId: 'r1' }, null, { r1: { runId: 'r1', recipeId: 'dependency-audit' } }), false, 'a retry re-sends the recipe template');
     A.eq(origin({ retryUserRunId: 'gone' }, null, {}), false, 'a retry of an unknown run cannot prove typed wording');
-    A.ok(/const learningTaint = execution\.taintedBy\(\) \|\| \(o\.quotedUserMaterial === true \|\| replayedQuoted \? 'quoted user material' : null\);/.test(src) &&
-      /\n  if \(learningTaint\) \{\n    const noTrustedEvidence/.test(src) && /\n\s*quotedUserMaterial,\n/.test(src),
+    A.ok(/const learningTaint = execution\.taintedBy\(\) \|\| \(quotedLearning \? 'quoted user material' : null\);/.test(src) &&
+      /\n  if \(learningTaint\) \{\n    const noTrustedEvidence/.test(src) && /\n\s*quotedOwnerInput,   \/\/ learning-only/.test(src),
       'quoted owner material reaches the run-end learning withhold');
   }
   // (2026-10-12, round two) Quoted owner text no longer taints its transcript row, so replayed taint no longer catches a
@@ -206,17 +239,59 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
     const pasted = { role: 'user', content: 'The document says:\n> I prefer pasted instructions.' };
     A.eq(replayed([sys, pasted, { role: 'assistant', content: 'ok' }, typed]), true, 'a pasted document in server-seeded history still withholds learning');
     A.eq(replayed([sys, { role: 'user', content: 'Plan the launch.' }, { role: 'assistant', content: '```js\nx()\n```' }, typed]), false, 'clean replayed history keeps learning');
-    A.eq(replayed([sys, pasted]), false, 'the new directive is the caller\'s to classify (handleRun quotedUserMaterial)');
+    A.eq(replayed([sys, pasted]), false, 'the new directive is the caller\'s to classify (handleRun quotedOwnerInput)');
     A.eq(replayed([sys, pasted], { sourceRunId: 'r0' }), true, 'a recovery replays its whole checkpoint, directive included');
-    A.ok(/if \(!replayedQuoted && TrustedLearning\.quotedTurns\(dropped\)\) replayedQuoted = true;/.test(src), 'rows the window dropped (earlier-conversation note) still withhold learning');
+    // ...bounded like handleRun's flag (sidecar-index-01 follow-up): a replayed paste that scrolled past every learning
+    // pass's tail no longer withholds learning for the rest of the conversation, one still inside it does.
+    const answer = { role: 'assistant', content: 'The audit continued with ordinary local checks and nothing unusual turned up. '.repeat(55) };
+    const next = { role: 'user', content: 'Keep going with the next check.' };
+    const replay = n => [sys, pasted].concat(...Array(n).fill([answer, next]), [typed]);
+    A.eq(replayed(replay(6)), false, 'a replayed paste more than 16k chars back no longer withholds learning');
+    A.eq(replayed(replay(3)), true, 'a replayed paste still inside the learning tail keeps withholding it');
+    // Rows the window dropped (the earlier-conversation note) withhold learning under the SAME tail rule, counted back
+    // across the window: they are older than all of it, so a quote there withholds learning only while the window is
+    // short enough for a pass to still reach it — never for the rest of a chat long enough for COMMS to trim (review
+    // follow-up: an unbounded check turned learning off for good once the window dropped a turn-1 code fence).
+    const droppedLine = src.match(/\n(\s*if \(!replayedQuoted && TrustedLearning\.quotedInLearningTail\(dropped\.concat\(window\)\)\) replayedQuoted = true;)/);
+    A.ok(!!droppedLine, 'rows the window dropped (earlier-conversation note) are checked with the learning-tail bound');
+    A.ok(!/TrustedLearning\.quotedTurns\(dropped\)/.test(src), 'no unbounded dropped-rows check keeps learning off for the rest of a long chat');
+    const droppedQuoted = (dropped, window, already) => vm.runInNewContext('(() => { let replayedQuoted = ' + !!already + '; ' + droppedLine[1] + ' return replayedQuoted; })()', {
+      dropped, window, TrustedLearning: require('../sidecar/trusted-learning.js') });
+    const droppedRows = [pasted, { role: 'assistant', content: 'noted' }];
+    const longWindow = [].concat(...Array(6).fill([next, answer]));
+    A.eq(droppedQuoted(droppedRows, longWindow), false, 'a dropped quote behind a window over 16k chars no longer withholds learning');
+    A.eq(droppedQuoted(droppedRows, [next, { role: 'assistant', content: 'ok' }]), true, 'a dropped quote behind a short window still withholds learning');
+    A.eq(droppedQuoted([{ role: 'user', content: 'Plan the launch.' }], [next]), false, 'clean dropped rows keep learning');
+    A.eq(droppedQuoted([{ role: 'user', content: 'Plan the launch.' }], longWindow, true), true, 'the dropped-rows check never clears a quote the replay check already found');
+  }
+  // WHOSE WORDS (review memory-learning-06): the earlier-conversation note of a run a non-owner or a group chat started
+  // (tasteWithheld, host-minted, inherited by its workers) never presents the dropped messages as the Commander's words.
+  {
+    const renderLine = src.match(/\n\s*(const earlier = EarlierConversation\.render\(dropped, \{ windowTokens: ctxMgr\.contextLimit, searchTool, ownerVoice: !tasteWithheld \}\);)/);
+    A.ok(!!renderLine, 'the earlier-conversation render call passes ownerVoice: !tasteWithheld');
+    const note = (tasteWithheld) => vm.runInNewContext('(() => { ' + renderLine[1] + ' return earlier && earlier.note; })()', {
+      EarlierConversation: require('../sidecar/earlier-conversation.js'), ctxMgr: { contextLimit: 200000 }, searchTool: '', tasteWithheld,
+      dropped: [{ role: 'user', content: 'Always ship the dark theme first.' }, { role: 'assistant', content: 'Will do.' }] });
+    A.ok(/not the Commander's instructions/.test(note(true)) && !/from the Commander/.test(note(true)), 'a group or guest run carries the dropped messages as chat context, not the Commander\'s words');
+    A.ok(/from the Commander/.test(note(false)) && /still holds/.test(note(false)), 'the Commander\'s own chat still carries their dropped words as standing');
   }
   A.ok(/revokedByTaint\.isSource\(liveTool, c\)/.test(src), 'taint is latched from the tool and path that produced the content');
   // A result with real content taints WHETHER OR NOT the call succeeded. The old rule required !r.isError on
   // the reasoning that "a failed fetch put nothing in front of the model" — true for web_fetch (it throws a
   // bare `http <status>`), FALSE for an MCP connector whose failure text IS the server's payload and reaches
   // the model verbatim. `isError: true` was therefore a one-flag bypass of the whole taint rule.
-  A.ok(/if \(r && typeof r\.content === 'string' && r\.content\.length && revokedByTaint\.isSource\(liveTool, c\)\) \{\s*taintScope = [^\n]*\n\s*if \(!execution\.taintedBy\(\)\) latchRunTaint\(c\.name\);/.test(src),
-    'any untrusted-source result carrying real content taints — an isError flag is not an exemption');
+  A.ok(/if \(r && typeof r\.content === 'string' && r\.content\.length && !\(r\.isError && r\.hostAuthored === true\) && revokedByTaint\.isSource\(liveTool, c\)\) \{\s*taintScope = [^\n]*\n\s*if \(!execution\.taintedBy\(\)\) latchRunTaint\(c\.name\);/.test(src),
+    'any untrusted-source result carrying real content taints — an isError flag is not an exemption; only a refusal the HOST wrote is');
+  // hostAuthored is minted only by StarNet's own URL guards — never by a connector, whose failure text IS third-party bytes
+  {
+    const tools = path.join(__dirname, '..', 'sidecar');
+    const minted = ['tools/builtin/browser.js', 'tools/builtin/web.js'];
+    for (const rel of minted) A.ok(/e\.hostAuthored = true/.test(fs.readFileSync(path.join(tools, rel), 'utf8')), rel + ' marks its own URL refusals hostAuthored');
+    const mcpDir = path.join(tools, 'mcp');
+    const mcpFiles = fs.readdirSync(mcpDir).filter(f => /\.js$/.test(f));
+    A.ok(mcpFiles.length > 0, 'the connector client sources are scanned');
+    for (const f of mcpFiles) A.ok(!/hostAuthored/.test(fs.readFileSync(path.join(mcpDir, f), 'utf8')), 'mcp/' + f + ' never marks a connector failure hostAuthored');
+  }
   A.ok(!/!r\.isError && typeof r\.content === 'string' && r\.content\.length && revokedByTaint\.isSource/.test(src),
     'the isError exemption is gone (a hostile connector cannot opt out of taint by failing)');
   A.ok(/taintedBy: taintSource, surface: effectSurface, hasPrompt:/.test(src),
@@ -250,7 +325,9 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
   A.ok(/terminalGrant: \(call, tool\) => !execution\.taintedBy\(\)/.test(src), 'the terminal standing grant never survives taint');
   A.ok(/connectorGrant: \(call, tool\) => !execution\.taintedBy\(\)/.test(src), 'the connector standing grant never survives taint');
   // enforcement must run BEFORE the tool executes
-  A.ok(src.indexOf('let postTaint = revokedByTaint.boundary') < src.indexOf('r = await registry.dispatch(c, dctx)'),
+  const gateAt = src.indexOf('let postTaint = sameOriginApi ?');
+  const dispatchAt = src.indexOf('r = await registry.dispatch(c, dctx)');
+  A.ok(gateAt >= 0 && dispatchAt > gateAt,
     'the lockout is checked BEFORE dispatch, so a revoked power never executes');
 }
 
@@ -275,7 +352,7 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
   const call = (url, extra) => ({ name: 'web_request', args: Object.assign({ url }, extra || {}) });
   const P = 'https://api.printify.com/v1/shops/1/products/5de6593ebff03b5313567d22.json';
   const key = { headers: { Authorization: 'Bearer ${PRINTIFY_API_KEY}' } };
-  let s = taint.scopeAfterSource(null, wr, call(P, key), { wasTainted: false, runId: 'r1' });
+  let s = taint.scopeAfterSource(null, wr, call(P, key), { wasTainted: false, runId: 'r1', responseOrigin: 'https://api.printify.com' });
   A.eq(JSON.stringify(s), '{"origin":"https://api.printify.com","keys":["PRINTIFY_API_KEY"]}', 'the first API read scopes the run to that origin + key');
   A.ok(taint.sameOriginContinuation(s, wr, call(P, Object.assign({ method: 'PUT', body: '{}' }, key))), 'a PUT back to the same API with the same key continues without a card');
   A.ok(taint.sameOriginContinuation(s, wr, call('https://api.printify.com/v1/uploads/images.json', Object.assign({ method: 'POST' }, key))), 'any path on the same origin');
@@ -291,16 +368,18 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
   A.eq(taint.scopeAfterSource(s, fsRead, { name: 'fs.read', args: { path: '.output/untrusted-web_request-r1-0.txt' } }, { wasTainted: true, runId: 'r1' }), s, 'reading this run\'s own park keeps the scope');
   A.ok(taint.scopeAfterSource(s, fsRead, { name: 'fs.read', args: { path: '.output/untrusted-web_fetch-OTHERRUN-0.txt' } }, { wasTainted: true, runId: 'r1' }).broad, 'another run\'s park broadens');
   A.ok(taint.scopeAfterSource(s, { name: 'web_fetch', capability: 'web' }, { name: 'web_fetch', args: { url: 'https://blog.example' } }, { wasTainted: true }).broad, 'a web page broadens');
-  A.ok(taint.scopeAfterSource(s, wr, call('https://api.stripe.com/v1/x', key), { wasTainted: true }).broad, 'a second API origin broadens');
-  A.ok(taint.scopeAfterSource(s, wr, call(P, { headers: { Authorization: 'Bearer ${OTHER_API_KEY}' } }), { wasTainted: true }).broad, 'a new key on the same origin broadens');
+  A.ok(taint.scopeAfterSource(s, wr, call('https://api.stripe.com/v1/x', key), { wasTainted: true, responseOrigin: 'https://api.stripe.com' }).broad, 'a second API origin broadens');
+  A.ok(taint.scopeAfterSource(s, wr, call(P, { headers: { Authorization: 'Bearer ${OTHER_API_KEY}' } }), { wasTainted: true, responseOrigin: 'https://api.printify.com' }).broad, 'a new key on the same origin broadens');
   A.ok(taint.scopeAfterSource(null, wr, call(P, key), { wasTainted: true }).broad, 'a run tainted before its first API read (start/inherited/replay) is broad');
+  A.eq(taint.scopeAfterSource(s, wr, call(P, key), { wasTainted: true, responseOrigin: 'https://api.printify.com' }), s, 'another proven same-origin response with the same key retains scope');
+  A.ok(taint.scopeAfterSource(s, wr, call(P, key), { wasTainted: true }).broad, 'missing response proof broadens even an existing scope');
   const broad = { broad: true };
   A.eq(taint.scopeAfterSource(broad, wr, call(P, key), { wasTainted: true }), broad, 'broad never narrows again');
   A.ok(!taint.sameOriginContinuation(broad, wr, call(P, key)), 'a broad scope never continues');
   // wiring: one gate, before the boundary; the scope follows every source and relayed taint
   const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
   A.ok(/const sameOriginApi = !!taintSource && !inheritedTaint && taintSource === execution\.taintedBy\(\)\s*&& taintPolicy\.sameOriginContinuation\(taintScope, liveTool, c, \{ untrustedEntry: untrustedEntryRun \}\);\s*let postTaint = sameOriginApi \?/.test(idx), 'the dispatch gate consults the scope (never for an inherited taint)');
-  A.ok(/taintScope = taintPolicy\.scopeAfterSource\(taintScope, liveTool, c, \{ wasTainted: !!execution\.taintedBy\(\), runId \}\);/.test(idx), 'every untrusted result updates the scope, not only the first');
+  A.ok(/taintScope = taintPolicy\.scopeAfterSource\(taintScope, liveTool, c, \{ wasTainted: !!execution\.taintedBy\(\), runId, responseOrigin: responseProvenance\.originOf\(r\) \}\);/.test(idx), 'every untrusted result updates the scope, not only the first');
   A.ok(/if \(relayed\) \{ latchRunTaint\(relayed\); taintScope = \{ broad: true \}; \}/.test(idx), 'relayed worker taint makes the scope broad');
 }
 

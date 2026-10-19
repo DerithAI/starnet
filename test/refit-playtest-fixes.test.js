@@ -86,7 +86,7 @@ const tutorialSrc = read('tutorial.js');
   const live = renderLines({ refitNames: () => names });
   A.ok(live.length > 200, 'the LINES chapter rendered with REFIT\'s names');
   A.ok(/CONVEYORS › MACHINES/.test(live) && /CONVEYORS › CONVEYOR LINES/.test(live) && /19 ready-made layouts/.test(live), 'LINES names the real tab, shelf, tool and live line count');
-  A.ok(/▸ PREVIEW FLOW/.test(live) && /STEP THROUGH/.test(live) && /RUN ONE REAL JOB/.test(live) && /Workflow panel/.test(live), 'LINES explains the one TEST control and its modes (2026-09-28: WATCH IT · STEP THROUGH · RUN ONE REAL JOB)');
+  A.ok(/▸ PREVIEW FLOW/.test(live) && /STEP THROUGH/.test(live) && /SEND A REAL JOB/.test(live) && /Workflow panel/.test(live), 'LINES explains the one TEST control and its modes (2026-09-28: WATCH IT · STEP THROUGH · SEND A REAL JOB — org P17)');
   A.ok(/<b>JOINER<\/b>/.test(live) && /<b>LOOP<\/b>/.test(live) && /<b>SPLITTER<\/b>/.test(live), 'BRANCHES lists every junction the shelf offers (JOINER and LOOP included)');
   A.ok(!/<b>INBOX<\/b>:/.test(live), '…and only junctions, not the docks');
   for (const stale of ['PROPS › WORKFLOW', 'for <b>LAYOUTS</b>', 'Use <b>TEST</b>']) A.ok(live.indexOf(stale) < 0, 'LINES no longer says "' + stale + '"');
@@ -141,8 +141,11 @@ const tutorialSrc = read('tutorial.js');
   // a machine moved away from its belts: the ghost and the drop both say the belts stay
   const cm = build.slice(build.indexOf('function commitPropMove('), build.indexOf('function commitPaint('));
   const mm = build.slice(build.indexOf('  function moveMsg('), build.indexOf('  function ghostInfo('));
-  A.ok(/beltsLeftBehind\(mp, mp\.x \+ dx, mp\.y \+ dy\)/.test(cm) && /feedback\(moved, ev, moveMsg\(moved, left, okMsg\)\)/.test(cm) && /its belts stayed behind/.test(mm), 'dropping a moved machine away from its belts says they stayed behind (a ring-rule floor)');
-  A.ok(/came with it/.test(mm) && /found no clear route/.test(mm) && /linkedFloor\(\)\) return 0;/.test(build), '…and on a linked floor that its belts came with it, or which found no route (conveyor links phase B)');
+  A.ok(/beltsLeftBehind\(mp, mp\.x \+ dx, mp\.y \+ dy\)/.test(cm) && /feedback\(moved, ev, moveMsg\(moved, left, 'relocated'\)\)/.test(cm) && /its belts stayed behind/.test(mm), 'dropping a moved machine away from its belts says they stayed behind (a ring-rule floor)');
+  // (wave 2, worldmodel-09: a belt that finds no route now REFUSES the move in its own words — moveProp's LINK_LOST, "Its belt finds no
+  //  clear route from there" — so the drop never lands with a belt taken up; test/floor-wave2 drives the refusal for real)
+  const wm = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'worldmodel.js'), 'utf8');
+  A.ok(/came with it/.test(mm) && /if \(lost && lost\.length\) return Object\.assign\(sendFail\('LINK_LOST', 'Its belt finds no clear route from there/.test(wm) && /linkedFloor\(\)\) return 0;/.test(build), '…and on a linked floor that its belts came with it, or the move is refused because one found no route (conveyor links phase B)');
 }
 
 A.report('refit-playtest-fixes.test');

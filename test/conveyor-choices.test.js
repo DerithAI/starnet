@@ -13,6 +13,7 @@
 const A = require('./_assert.js');
 const fs = require('fs');
 const path = require('path');
+const vm = require('node:vm');
 const WM = require('../frontend/app/worldmodel.js');
 const P = require('../frontend/app/pipeline.js');
 const W = require('../frontend/app/workflowline.js');
@@ -63,6 +64,13 @@ const splitOf = plan => Object.keys(plan.junctions).find(k => plan.junctions[k].
   A.ok(/for \(const id of step\.swap\) \{ const r = station\.swapJoinerMerger\(id\)/.test(build) && /station\.setSplitDivide\(splitId, mode === 'divide'\)/.test(build) && /splitModeInfo: id => splitModeInfo\(id\)/.test(build) && /setSplitMode: \(id, mode\) => setSplitMode\(id, mode\)/.test(build), 'the panel reaches it through the host');
   A.ok(/const LABEL = \{ copy: 'COPY TO EACH', divide: 'SPLIT THE JOB', turns: 'TAKE TURNS' \}/.test(panel) && /pick\('copy',/.test(panel) && /pick\('divide',/.test(panel) && /pick\('turns',/.test(panel) && /class="wf-why"/.test(panel) && /H\.setSplitMode\(p\.id, b\.dataset\.smode\)/.test(panel), 'the SPLITTER section carries the switch');
   A.ok(/aria-disabled="true" data-tip="' \+ esc\(\(step && step\.msg\)/.test(panel), 'a choice the floor cannot make is greyed with its reason');
+  // the public guide teaches the same choices by the panel's own labels (review docs-claims-03: it said the mode was no choice)
+  const guide = read('website/docs/guides/splitter-joiner.html');
+  const labels = (panel.match(/const LABEL = \{ copy: '([^']+)', divide: '([^']+)', turns: '([^']+)' \}/) || []).slice(1);
+  A.ok(labels.length === 3 && labels.every(l => guide.includes('<b>' + l + '</b>')) && !/choose between the two modes/.test(guide) && /PLANNER/.test(guide),
+    'the splitter guide names the three choices the panel offers, and that SPLIT THE JOB can add a PLANNER step');
+  // a JOINER is where COPY TO EACH and SPLIT THE JOB both meet: the guide must not say a JOINER alone gives every lane the same job
+  A.ok(!/WITH A JOINER: EVERYONE|splitter switches to <b>fan-out<\/b>/.test(guide), 'the splitter guide never says a JOINER alone means every lane gets the same job');
 }
 
 /* ---------- 3b: one TEST control ---------- */
@@ -71,8 +79,51 @@ const splitOf = plan => Object.keys(plan.junctions).find(k => plan.junctions[k].
   const ot = build.slice(build.indexOf('  function openTest(e) {'), build.indexOf('  function sendTestBoxes(ev, auto, agentId) {'));
   A.ok(/WP\.showTest\('watch'\)/.test(ot) && /return sendTestBoxes\(e\);/.test(ot), 'TEST opens the TEST view AND plays the free walkthrough (one click, as before)');
   A.ok(/preview: \(\) => sendTestBoxes\(null\)/.test(build), 'WATCH IT drives the same walkthrough');
-  A.ok(/\['watch', 'WATCH IT · FREE'/.test(panel) && /\['step', 'STEP THROUGH · REAL'/.test(panel) && /\['real', 'RUN ONE REAL JOB'/.test(panel), 'three named modes');
-  A.ok(/return m === 'step' && S\.seam !== true \? 'real' : m;/.test(panel), 'no step-test seam: STEP THROUGH steps aside for RUN ONE REAL JOB');
+  A.ok(/\['watch', 'WATCH IT · FREE'/.test(panel) && /\['step', 'STEP THROUGH · REAL'/.test(panel) && /\['real', 'SEND A REAL JOB'/.test(panel), 'three named modes');
+  // Exercise the production decision AND its render entry point. A source spelling
+  // check missed a correct fallback helper hidden behind a seam-only panel guard.
+  const headers = ['function stepTestUnavailable()', 'function testModeNow()', 'function testPickerHTML(s)', 'function paintBodyInner(body, f)', 'function onwardNote()'];   // (onwardNote: RUN ONE REAL JOB's SEND TO line — conveyor-ui-01; these lines send nowhere, so it adds nothing)
+  const helpers = headers.map(h => {
+    const src = A.fnBody(panel, h);
+    A.ok(src.length > 0 && src.length < 9000, 'bounded actual panel helper: ' + h);
+    return src;
+  }).join('\n');
+  const modes = (panel.match(/const TEST_MODES = \[[\s\S]*?\n  \];/) || [''])[0];
+  A.ok(modes.length > 0 && modes.length < 1000, 'actual named test modes are loaded');
+  function renderChoice(plan, seam, mode, pipeline) {
+    const S = { view: 'test', seam, testMode: mode, lineKey: plan.lines[0].lineId, testJob: {}, pauseMode: 'every' };
+    const context = {
+      S, H: { plan: () => plan, sampleState: () => null }, Pipeline: pipeline, WL: () => require('../frontend/app/workflowline.js'),   // (onwardNote reads WorkflowLine.onwardPromise)
+      comp: () => ({ key: S.lineKey }), esc: value => String(value == null ? '' : value),
+      restoreDrafts: () => {}, prop: () => ({ t: 'intake' }),
+      paintTrigger: body => { body.innerHTML = 'INBOX editor'; }
+    };
+    const api = vm.runInNewContext(modes + '\n' + helpers + '\n({ testModeNow, stepTestUnavailable, testPickerHTML, paintBodyInner })', context);
+    context.paintTest = body => { body.innerHTML = api.testPickerHTML(null); };
+    const body = { innerHTML: '' }; api.paintBodyInner(body, null);
+    return { mode: api.testModeNow(), refusal: api.stepTestUnavailable(), html: body.innerHTML };
+  }
+  const simple = P.compileRoutingPlan(stampCrewed('load_balancer').projectGeometry());
+  const parallel = P.compileRoutingPlan(stampCrewed('second_opinion').projectGeometry());
+  for (const seam of [false, null, 'probing']) for (const requested of [undefined, 'step']) {
+    const r = renderChoice(simple, seam, requested, P);
+    A.eq(r.mode, 'real', 'unavailable/probing step endpoint selects real-job fallback: ' + seam);
+    A.ok(r.html.includes('id="wf-real"') && !r.html.includes('id="wf-st-go"'), 'fallback renders RUN ONE REAL JOB, never a paid step start: ' + seam);
+    A.ok(/data-tmode="step"[^>]*aria-disabled="true"/.test(r.html), 'unavailable STEP THROUGH explains its disabled choice: ' + seam);
+  }
+  for (const requested of [undefined, 'step']) {
+    const r = renderChoice(simple, true, requested, P);
+    A.eq(r.mode, 'step', 'supported simple line keeps default and explicit STEP THROUGH');
+    A.ok(r.html.includes('id="wf-st-go"') && !r.refusal, 'supported line renders the step-start control');
+    const blocked = renderChoice(parallel, true, requested, P);
+    A.eq(blocked.mode, 'real', 'unsupported parallel line offers a real whole-line job');
+    A.ok(blocked.html.includes('id="wf-real"') && !blocked.html.includes('id="wf-st-go"') && /parallel/.test(blocked.refusal), 'parallel refusal remains truthful and prevents step start');
+  }
+  for (const seam of [false, true]) {
+    A.ok(renderChoice(parallel, seam, 'watch', P).html.includes('id="wf-watch"'), 'explicit WATCH IT stays free and available: ' + seam);
+    A.ok(renderChoice(simple, seam, 'real', P).html.includes('id="wf-real"'), 'explicit RUN ONE REAL JOB remains selected: ' + seam);
+  }
+  A.eq(renderChoice(simple, true, 'step', undefined).mode, 'step', 'older compiler without refusal helper preserves supported step choice');
   A.ok(/id="wf-test">' \+ \(s && W\.isLive\(s\) \? '▶ TEST · '/.test(panel) && !/id="wf-steptest"/.test(panel) && !/id="wf-sample"/.test(panel), 'the footer has ONE TEST button (the step-test and sample buttons are gone)');
   A.ok(/showTest, _state: S/.test(panel), 'the panel exposes showTest for the top bar');
   A.ok(/'TEST IT AGAIN' : 'TEST THIS STEP'/.test(panel), 'the per-step button says what it tests');
@@ -99,13 +150,15 @@ const splitOf = plan => Object.keys(plan.junctions).find(k => plan.junctions[k].
   A.ok(/FOR YOUR GOAL/.test(build) && /addLineCell\(grid, goal\.bp, '“' \+ goal\.quote \+ '” — ' \+ goal\.why, true\)/.test(build) && /b\.dataset\.tip = name [^\n]*\(why \? '\\n' \+ why : ''\)/.test(build), 'the card quotes them and is the same line card (fit + MAKE ROOM included)');
 }
 
-/* ---------- 4b: save, and turn scheduling on ---------- */
+/* ---------- 4b: ONE ARM RULE (org P16, 2026-10-14): one SAVE SCHEDULE key; the server turns a never-set switch on ---------- */
 {
-  A.ok(/\(S\.cron && !S\.cron\.enabled && !S\.cron\.halted\)/.test(panel) && /id="trg-create" data-arm="1"/.test(panel) && /▸ SAVE · TURN SCHEDULING ON/.test(panel) && /id="trg-create-only"/.test(panel), 'scheduling off: the save button turns it on too, SAVE ONLY beside it');
-  A.ok(/Turning it on lets every saved schedule run at its time\./.test(panel), '…and says the switch is station-wide');
-  A.ok(/if \(arm && !armedNow && !cur\.halted && saved\.enabled\) \{/.test(panel) && /api\('\/api\/cron\/arm', 'POST', \{ enabled: true \}\)/.test(panel), 'it arms on the same route the switch uses, never lifting an E-STOP');
-  A.ok(/'✓ schedule saved and scheduling is on — fires at '/.test(panel) && /could not be turned on: press TURN SCHEDULING ON above/.test(panel), 'the result is said as it happened');
-  A.ok(/\$\('#trg-create'\)\.onclick = \(\) => create\(!!\$\('#trg-create'\)\.dataset\.arm\);/.test(panel) && /createOnly\.onclick = \(\) => create\(false\)/.test(panel), 'both buttons share one save path');
+  A.ok(!/id="trg-create-only"/.test(panel) && !/SAVE ONLY/.test(panel) && !/SAVE · TURN SCHEDULING ON/.test(panel), 'the INBOX pair collapsed: no SAVE ONLY, no second save key');
+  A.ok(/id="trg-create"[^\n]*>▸ SAVE SCHEDULE<\/button>/.test(panel), 'one SAVE SCHEDULE key');
+  A.ok(/S\.cron\.armSet \? 'Scheduling is off — you turned it off\. Saving keeps it off; press ▶ TURN SCHEDULING ON when you want it to run\.'/.test(panel)
+    && /'Scheduling is off\. Saving turns it on for the whole station, so every saved schedule runs at its time\.'/.test(panel), 'the help line says what this save will do: on when never set, off kept after an explicit OFF');
+  A.ok(/runsLine: true, arm: true \}\)/.test(panel) && !/api\('\/api\/cron\/arm', 'POST', \{ enabled: true \}\)\.catch/.test(panel), 'the save asks the server (arm:true, the SCHEDULES form\'s rule) — no second arm call from the form');
+  A.ok(/'✓ saved · scheduling is now on — fires at '/.test(panel) && /scheduling is off \(you turned it off\), so it will not run: press ▶ TURN SCHEDULING ON above/.test(panel), 'the result is said as it happened');
+  A.ok(/\$\('#trg-create'\)\.onclick = \(\) => create\(\);/.test(panel), 'one save path');
 }
 
 /* ---------- 2026-09-28: the shelf by kind of work, plain names, and SET UP BEFORE YOU PLACE ---------- */

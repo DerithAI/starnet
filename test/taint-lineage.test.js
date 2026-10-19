@@ -299,7 +299,7 @@ const leadCtx = (extra) => makeCapCtx({ agentId: 'lead', room: 'office', hasComp
   A.ok(/initialTaint: taintPolicy\.relayedTaint\(\{ taintedBy: taintPolicy\.firstTaint\(members\) \|\| '' \}\) \|\| undefined/.test(src), 'the overseer hand-back review starts tainted by a tainted worker');
   A.ok(/taintPolicy\.UNTRUSTED_PARK_PREFIX/.test(src), 'the host parker names untrusted parks');
   A.ok(/taint: \(\) => execution\.taintedBy\(\)/.test(src), 'transcript rows are written with the run\'s live taint');
-  A.ok(/appendNew\(o\.streamId, agentId, result\.messages, \{ taint: execution\.taintedBy\(\) \}\)/.test(src), 'the run-end transcript fallback writes taint too');
+  A.ok(/appendNew\(o\.streamId, agentId, result\.messages, \{ taint: execution\.taintedBy\(\)(?:, [^}]+)? \}\)/.test(src), 'the run-end transcript fallback writes taint too');
   A.ok(/const replayed = replayedTaint\(\{ recovery: o\.recovery, streamId, msgs \}\);\s*if \(replayed\) execution\.latchTaint\(replayed\);/.test(src), 'a run latches replayed taint before its first model call');
   A.ok(/catch \(e\) \{ failNote\('taint\.replay', e\); execution\.latchTaint\('replayed context \(taint check failed\)'\); \}/.test(src), 'a replay check that throws starts the run tainted (fail closed), still noted for diagnostics');
   A.ok(src.indexOf("initialTaint: execution.taintedBy() || ''") > 0, 'the journal begin meta records the start taint');

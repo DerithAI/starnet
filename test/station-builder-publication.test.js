@@ -17,11 +17,15 @@ function boot(options = {}) {
     planStatus: () => Object.assign({ station: true, pending: false }, LIVE, options.state, typeof options.current === 'function' ? options.current() : options.current)
   };
   const context = {
-    App: { station: () => st, agents: () => [], heroId: () => null }, WorldModel: {}, Pipeline: {}, WorkflowLine: {}, Build: { isOpen: () => false },
+    App: Object.assign({ station: () => st, agents: () => [], heroId: () => null }, options.persist ? { persist: options.persist } : {}),
+    WorldModel: {}, Pipeline: {}, WorkflowLine: {}, Build: { isOpen: () => false },
+    CloudSave: options.cloud,
     World: options.noWorld ? undefined : world,
     StationBuilder: {
       plan: () => ({ ok: true, plan: { spec: { kind: 'line' }, summary: 'Build SHIP IT', ready: true } }),
-      apply: () => { applies++; return result; }, sigOf: () => 'sig-' + applies,
+      apply: () => { applies++; return result; }, sigOf: options.sigOf || (() => 'sig-' + applies),
+      // the receipt's body is the builder's own (the page answers station.build with it), so the real one shapes it here too
+      receipt: require('../frontend/app/stationbuilder.js').receipt,
       lineRef: () => ({ ok: true, lineId: 'p12', name: 'SHIP IT', steps: [], crewed: true }),
       mapOf: () => ({ ok: true, map: { rooms: [] } })
     },
@@ -105,5 +109,40 @@ function boot(options = {}) {
   const invalid = boot({ result: { ok: false, error: 'floor changed' } });
   const invalidAck = await invalid.call('station.build', { planId: await invalid.plan() });
   A.ok(!invalidAck.ok && invalid.counts().syncs === 0, 'failed floor application never posts or reports built');
+
+  /* #121 (I121-4): a build is reported SAVED only when the station file holds it. Like station.update_agent: queue the
+     live save, flush it, read the station file back and compare the floor; otherwise durable:false with a reason. */
+  A.ok(ack.result.durable === false && /station file has not confirmed/.test(ack.result.durability || ''), 'without durable storage on the page a build is never reported saved');
+  const order = [];
+  const sigOf = doc => JSON.stringify(doc);
+  const durableCase = (cloud) => boot({ sigOf, persist: () => { order.push('persist'); return false; }, cloud });
+  {
+    const b = durableCase({ flush: async o => { order.push('flush:' + !!(o && o.force)); return true; }, pull: async () => { order.push('pull'); return { station: { revision: 1 } }; } });
+    const r = (await b.call('station.build', { planId: await b.plan() })).result;
+    A.ok(r.built === true && r.durable === true && !r.durability, 'a build the station file reads back is reported durable');
+    A.eq(order, ['persist', 'flush:true', 'pull'], 'the live save is queued, force-flushed, then read back from the station file');
+  }
+  for (const [name, cloud] of [
+    ['refused flush', { flush: async () => false, pull: async () => ({ station: { revision: 1 } }) }],
+    ['read-back shows the old floor', { flush: async () => true, pull: async () => ({ station: { revision: 0 } }) }],
+    ['read-back has no station', { flush: async () => true, pull: async () => null }],
+    ['flush throws', { flush: async () => { throw new Error('network'); }, pull: async () => null }]
+  ]) {
+    const b = durableCase(cloud);
+    const a = await b.call('station.build', { planId: await b.plan() });
+    A.ok(a.ok && a.result.built === true && a.result.durable === false && /could revert after a restart/.test(a.result.durability || ''), name + ': the build stands but is reported durable:false with the reason');
+    A.eq(b.counts().applies, 1, name + ': an unconfirmed save never undoes or repeats the build');
+  }
+  {
+    const hung = durableCase({ flush: () => new Promise(() => {}), pull: async () => null });
+    const pending = hung.call('station.build', { planId: await hung.plan() });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    const wait = [...hung.timers.values()].find(t => t.ms === 3000);
+    A.ok(!!wait, 'the station-file proof has its own deadline inside the six-second bridge timeout');
+    if (wait) wait.fn();
+    const a = await pending;
+    A.ok(a.ok && a.result.built && a.result.durable === false, 'a hung station file answers durable:false through the bridge');
+    A.ok(![...hung.timers.values()].some(t => t.ms === 3000), 'the proof clears its deadline once settled');
+  }
   A.report();
 })().catch(e => { console.error(e); process.exit(1); });

@@ -150,8 +150,8 @@
           const a = b.querySelector('#sg-account'); if (a && !a.value && st && st.account) a.value = st.account;
         },
         urlField: 'sg-endpoint', urlScheme: 'http',
-        emptyMsg: 'enter the signal-cli REST URL and the registered number first',
-        okMsg: '✓ connected — message the agent on Signal' }
+        emptyMsg: 'enter the bridge URL and your Signal number first',
+        okMsg: '✓ connected — chat in Note to Self (or message the spare number) on Signal' }
     ];
 
     // ---- console shell (the SETTINGS layout): left platform rail, one pane per platform ----
@@ -210,7 +210,7 @@
           '<div class="set-save">' +
             '<button class="bb sm" id="' + c.pre + '-connect">⏼ CONNECT</button> ' +
             '<button class="bb sm danger" id="' + c.pre + '-disconnect" style="display:none">⏏ DISCONNECT</button> ' +
-            '<button class="bb xs danger" id="' + c.pre + '-forget" style="display:none" title="' + (c.id === 'signal' ? 'removes the saved bridge URL and registered number from this machine' : 'permanently deletes the saved token from this machine (record + OS keychain) — you’d have to set it up again') + '">' + (c.id === 'signal' ? '✕ REMOVE CONFIGURATION' : '⌫ FORGET') + '</button>' +
+            '<button class="bb xs danger" id="' + c.pre + '-forget" style="display:none" title="' + (c.id === 'signal' ? 'removes the saved bridge URL and Signal number from this machine' : 'permanently deletes the saved token from this machine (record + OS keychain) — you’d have to set it up again') + '">' + (c.id === 'signal' ? '✕ REMOVE CONFIGURATION' : '⌫ FORGET') + '</button>' +
           '</div>' +
           '<div id="' + c.pre + '-msg" class="msg"></div>' +
           '</section>' + (c.extraHtml || '') +
@@ -255,7 +255,10 @@
     // channel.connect event cannot replace it with a generic success line (the live-reported lost-code bug).
     const pairingInstruction = {};
     const savedPlaceholder = {};
+    // Signal has no bot account on the recommended linked-device path: the pair message goes in Note to Self
+    const signalPair = code => 'To activate DMs, send this exact message in Note to Self (bridge linked to your number) or to the bridge\'s spare number: pair ' + code + ' (expires in 10 minutes).';
     function pairInstruction(c, code) {
+      if (c.id === 'signal') return signalPair(code);
       return c.id === 'telegram'
         ? 'Telegram poller starting. To activate DMs, send this exact message to your bot: /pair ' + code + ' (expires in 10 minutes).'
         : 'To activate DMs, send this exact message to your ' + c.title + ' bot from your own account: pair ' + code + ' (expires in 10 minutes).';
@@ -272,6 +275,14 @@
       if (!el) return;
       el.className = 'msg' + (kind === 'ok' ? ' ok' : kind === 'info' ? ' info' : '');
       el.textContent = text || '';
+    }
+    // A thrown request never got an answer. Say that in words — the browser's bare "Failed to fetch" read like the
+    // user's own network or a bad token, so people regenerated tokens and restarted for nothing (2026-10-15).
+    function noAnswerText(e, fallback) {
+      const raw = String((e && e.message) || '');
+      if (!raw) return fallback;
+      if (/failed to fetch|networkerror|load failed/i.test(raw)) return 'StarNet did not answer this request (the connection dropped) — try again; if it keeps happening, restart StarNet';
+      return raw;
     }
 
     // ---- multi-bot telegram: paint the AGENT BOTS list from status.bots (per-instance transport truth) ----
@@ -477,12 +488,7 @@
     buildMessaging._refresh = refreshAll;
     // live transport health: channel.connect (up/down/error) is emitted + SSE-broadcast by every hub — one
     // subscription refreshes whichever card it names, the moment health changes (not only on panel reopen).
-    if (!buildMessaging._wired && typeof U !== 'undefined' && U.bus) {
-      buildMessaging._wired = true;
-      U.bus.on('channel.connect', p => {
-        if (p && p.channel && buildMessaging._refresh && document.querySelector('.ch-card')) buildMessaging._refresh();
-      });
-    }
+    wireChannelHealth();
     // 30s heartbeat re-poll while the panel is open — a background reconnect/drop repaints without a manual reopen.
     // Self-terminating: the moment this panel's body leaves the DOM (window closed / rerendered) the timer clears.
     if (buildMessaging._poll) { clearInterval(buildMessaging._poll); }
@@ -574,7 +580,7 @@
             sfx('click');
             try { c.clear(body); } catch (_) {}
           }
-        } catch (e) { delete pendingConnect[c.id]; setMsg(msgEl, '✕ ' + ((e && e.message) || 'failed to reach the sidecar'), ''); sfx('bad'); }
+        } catch (e) { delete pendingConnect[c.id]; setMsg(msgEl, '✕ ' + noAnswerText(e, 'failed to reach the sidecar'), ''); sfx('bad'); }
         refreshAll();
       });
       // DISCONNECT — armed (2s) so a stray click can't drop a live channel; never fires on a never-connected card
@@ -589,7 +595,7 @@
             const j = r.j;
             if (!r.ok || !j || j.connected !== false || j.persisted !== true) throw new Error((j && j.error) || 'disconnect was not durably confirmed — refresh and retry');
             setMsg(msgEl, 'disconnected — token kept; RESUME to reconnect', 'info'); sfx('click');
-          } catch (e) { setMsg(msgEl, '✕ ' + ((e && e.message) || 'could not confirm disconnect'), ''); }
+          } catch (e) { setMsg(msgEl, '✕ ' + noAnswerText(e, 'could not confirm disconnect'), ''); }
           refreshAll();
         });
       });
@@ -658,7 +664,7 @@
           const r = await Harness.api.post('/api/channels/' + c.id + '/owner/pair', {});
           const j = r.j || {};
           if (!r.ok || j.error || !j.code) { setMsg(msgEl, 'could not issue a pairing code: ' + (j.error || ('HTTP ' + r.status)), ''); sfx('bad'); return; }
-          pairingInstruction[c.id] = 'DM your ' + c.title + ' bot from your own account: pair ' + j.code + ' (code expires in 10 minutes).';
+          pairingInstruction[c.id] = c.id === 'signal' ? signalPair(j.code) : 'DM your ' + c.title + ' bot from your own account: pair ' + j.code + ' (code expires in 10 minutes).';
           setMsg(msgEl, pairingInstruction[c.id], 'info');
           sfx('click'); refreshAll();
         } catch (_) { setMsg(msgEl, 'could not reach the sidecar', ''); sfx('bad'); }
@@ -756,7 +762,7 @@
               setMsg(msgEl, '✓ @' + (j.username || 'bot') + (j.rebound ? ' re-bound' : ' added') + ' — connecting as the paired owner' + (localFallback ? ' (token saved locally, not the OS keychain)' : ''), 'ok');
             }
           }
-        } catch (e) { sfx('bad'); setMsg(msgEl, '✕ ' + ((e && e.message) || 'failed to reach the sidecar'), ''); }
+        } catch (e) { sfx('bad'); setMsg(msgEl, '✕ ' + noAnswerText(e, 'failed to reach the sidecar'), ''); }
         refreshAll();
       });
       // row actions by delegation (rows re-render on every status paint)
@@ -818,5 +824,23 @@
     refreshAll();
   }
 
-  StationUI.registerWindow('messaging', 'CHANNELS', buildMessaging, { console: true, className: 'channels-console' });   // console mode = the wide SETTINGS-style two-pane window; the className scopes the no-glyph rail; dock label = window title (it's Telegram/external channels, not COMMS)
+  /* THE ONE SUBSCRIPTION LIVES AT MODULE SCOPE (night-leak, 2026-10-15). It used to be created inside the FIRST buildMessaging
+     call, so its closure context was that call's scope — the one holding `body` — and the bus kept the first CHANNELS window ever
+     opened alive for the rest of the session (heap snapshot: U.bus._h['channel.connect'][1] -> context -> body -> div.term). */
+  function onChannelConnect(p) {
+    if (p && p.channel && buildMessaging._refresh && document.querySelector('.ch-card')) buildMessaging._refresh();
+  }
+  function wireChannelHealth() {
+    if (buildMessaging._wired || typeof U === 'undefined' || !U.bus) return;
+    buildMessaging._wired = true;
+    U.bus.on('channel.connect', onChannelConnect);
+  }
+  // a closed CHANNELS window lets go: the refresh hook and the 30s poll both close over its body (the poll only noticed the
+  // window was gone at its next tick, and _refresh held the last closed window until the next open)
+  function closed() {
+    buildMessaging._refresh = null;
+    if (buildMessaging._poll) { clearInterval(buildMessaging._poll); buildMessaging._poll = null; }
+  }
+
+  StationUI.registerWindow('messaging', 'CHANNELS', buildMessaging, { console: true, className: 'channels-console', onClose: closed });   // console mode = the wide SETTINGS-style two-pane window; the className scopes the no-glyph rail; dock label = window title (it's Telegram/external channels, not COMMS)
 })();

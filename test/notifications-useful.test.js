@@ -77,10 +77,12 @@ A.ok(/pruneLegacyNotifs\(\)/.test(win), 'pre-10-02 toast-shaped history is clear
 A.ok(/function badges\(\)[\s\S]{0,200}isWaiting\(x\) \|\| !x\.read/.test(win), 'the badge counts everyone waiting on you + anything new');
 
 /* ---- the call sites that matter carry a kind and a door ---- */
-A.ok(/needs approval to ' \+ actionPhrase\(p\)[^\n]*kind: 'needs', go: \{ ws: ws\.id \}, key: 'needs:' \+ ws\.id/.test(chat), 'an approval (open session) is a NEEDS YOU door to its session');
+A.ok(/ wants to ' \+ actionPhrase\(p\)[^\n]*kind: 'needs', go: \{ ws: ws\.id \}, key: 'needs:' \+ ws\.id/.test(chat), 'an approval (open session) is a NEEDS YOU door to its session');
 A.ok(/function backgroundPermissionNotify[\s\S]{0,900}kind: 'needs', go: \{ ws: ws\.id \}, key: 'needs:' \+ ws\.id/.test(chat), 'an approval (background session) is a NEEDS YOU door');
 A.ok(/' finished'\) \+ sessionNote\(ws\)/.test(chat) && /kind: 'result', go: \{ ws: ws\.id \}/.test(chat), 'a background session that finished says so and opens it');
-A.ok(/settleNotifs\('needs:' \+ ws\.id\);   \/\/ the run is over/.test(chat), 'a run that ends clears what it was waiting on');
+// (2026-10-14) through settleRunNeeds: the run's own waits end with it; a background worker's ask filed on the same
+// conversation keeps the entry (test/background-asks-ui.test.js executes it)
+A.ok(/settleRunNeeds\(ws\.id\);   \/\/ the run is over/.test(chat) && /function settleRunNeeds\(wsId\)[\s\S]{0,400}keepNeeds\(wsId,/.test(chat), 'a run that ends clears what it was waiting on');
 A.ok(/StationUI\.seenSession\(id\)/.test(app.slice(app.indexOf('function switchWorkstream'), app.indexOf('function switchWorkstream') + 300)), 'switching to a session reads its entries');
 A.ok(/budget cap hit[^\n]*kind: 'alert'[^\n]*go: \{ term: 'settings', section: 'budget' \}/.test(world), 'budget alerts open SPENDING LIMITS');
 A.ok(/settleNotifs\(toastKey\)/.test(world), 'a channel that reconnects settles its outage entry');
@@ -105,7 +107,8 @@ A.ok(!/hudNote\('◈ recalled[^\n]*kind:/.test(world) && !/hudNote\('✎ memory 
       r: { body: { appendChild: tag => tags.push(tag) } }, document: { createElement: () => ({}) },
       Harness: { consent: async () => { calls++; return reply; }, consentAnswer: async () => { calls++; return reply; } },
       Channels, StationUI: N, askerName: row => row.workerAgentId || 'lead', actionPhrase: () => 'write a file',
-      U: { bus: { emit: (name, data) => events.push([name, data.promptId]) } }, isActiveWs: () => false, renderPresence() {}, syncStatus() {} });
+      U: { bus: { emit: (name, data) => events.push([name, data.promptId]) } }, isActiveWs: () => false, renderPresence() {}, syncStatus() {},
+      askAnswerers: new Map() /* chat.js: open questions the composer may answer (answer() retires its own entry) */ });
     const handler = mode === 'question' ? 'async function answer(text, doneLabel, key)' : 'async function decide(decision, doneLabel, isDeny)';
     const body = A.fnBody(chat, handler);
     A.ok(body.length > 200 && body.length < 4000, mode + ' submission function is bounded');

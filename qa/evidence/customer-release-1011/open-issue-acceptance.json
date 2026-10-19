@@ -1,0 +1,393 @@
+{
+  "schemaVersion": 1,
+  "candidate": "2c366fd8ffbf18a40cdec41db09986ac022aef6c",
+  "reviewedAtUtc": "2026-10-12T10:18:06.056375+00:00",
+  "scope": "Bounded read-only review of the 20 canonical open records at the pinned candidate. Repository source and retained evidence only; no new reproduction, account access, installed acceptance, customer contact or disposition changes.",
+  "ownershipScope": "Owner boundaries describe responsibilities recorded in docs/NEXT.md at the pinned candidate; they are not a live availability claim or a new assignment.",
+  "counts": {
+    "open": 20,
+    "claimed": 0,
+    "P0": 0,
+    "P1": 10,
+    "P2": 10,
+    "customer": 17,
+    "owner": 1,
+    "audit": 1,
+    "canonicalOriginUnknownInternalLiveObservation": 1
+  },
+  "conclusions": [
+    "No whole original incident has sufficient exact acceptance evidence for closure in this bounded review. This does not mean 20 demonstrated current production defects.",
+    "0db3e69c has directly verified controlled source repair; preserve its separate integrated/native/owner acceptance condition. Several other rows have independently repaired narrower defects, not established customer causes.",
+    "Unknown provenance/charges, stale diagnostic tails, report absence and adjacent green suites must not be promoted to current defect/cause/recovery evidence.",
+    "Canonical source status, installer verification and customer recovery are distinct; no customer confirmation or installed release coverage is inferred from source gates."
+  ],
+  "statusSemantics": {
+    "open": "An unresolved acceptance or causal question, not automatically a demonstrated current production defect.",
+    "sourceVerified": "A specifically reproduced source defect has repair evidence within the stated fixture/runtime scope. It does not establish delivery or recovery of a different original incident.",
+    "unknown": "Cause or affected-condition acceptance remains unproved; adjacent source changes and passing checks are insufficient.",
+    "closure": "No whole original incident in these 20 has sufficient exact acceptance evidence for closure in this review. Installer verification and customer recovery remain separate fields."
+  },
+  "historicalDetectorBoundary": {
+    "notIncludedInCanonical20": [
+      "7f25ecb7",
+      "dd2fd9c0",
+      "fd87bfd9"
+    ],
+    "observed": "Machine-local J3 CDP timeout, J2 observation-error/busy conflation and J3 -1 sentinel. Later passes and observation-helper repair are retained separately.",
+    "currentEvidence": "J2/J3 observation repair has 14 negative controls and 35 focused live assertions; no exact-source full journey/Guardian or current installed defect claim follows.",
+    "recommendation": "Preserve original detector receipts and unresolved causal limits. Do not inflate canonical 20 count or describe observation failures as freshly verified stuck UI.",
+    "evidencePaths": [
+      "qa/evidence/customer-release-1011/readiness-review.md",
+      "qa/evidence/customer-release-1011/journey-observation-diagnostics.json"
+    ]
+  },
+  "records": [
+    {
+      "id": "f2ac6356",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/f2ac6356-google-drive-authorization-is-hard-blocked-for-a.md",
+      "sourceEvidenceDisposition": "External OAuth rejection; no causal source defect established. Source flow checks do not establish Google publisher/deployment state.",
+      "remainingAcceptance": "Exact shipped OAuth client/scopes and current publisher configuration; consent on supported account, bounded permitted Drive read, quit/restart continued access.",
+      "ownerBoundary": "Investigate Google Drive authorization block; external Google publisher/account authorization.",
+      "dispositionRecommendation": "Keep open; source flow may be marked investigated, not fixed.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/f2ac6356-google-drive-authorization-is-hard-blocked-for-a.md",
+        "qa/evidence/customer-release-1011/follow-up-investigations.json"
+      ]
+    },
+    {
+      "id": "e7b2ffcd",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/e7b2ffcd-connector-sign-in-is-lost-after-credential-store.md",
+      "sourceEvidenceDisposition": "Narrow runtime lock-status/reset defects repaired and synthetic connector persistence proven; original Higgsfield/native persistence failure not reproduced.",
+      "remainingAcceptance": "Exact artifact; same OS account/key availability on both launches; non-secret vault reasons; disposable native Windows standard-user reconnect, quit/restart and write-failure proof. Preserve sealed originals.",
+      "ownerBoundary": "Review StarNet handoff process; Windows native keychain and Higgsfield acceptance.",
+      "dispositionRecommendation": "Keep original open. Disposition reproduced lock-status and runtime reset subdefects as source repaired only.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/e7b2ffcd-connector-sign-in-is-lost-after-credential-store.md",
+        "qa/evidence/credential-recovery-e7b2ffcd/README.md"
+      ]
+    },
+    {
+      "id": "a5060cc3",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/a5060cc3-funded-account-runs-fail-again-after-a-credit-li.md",
+      "sourceEvidenceDisposition": "Temporary lower-cap recovery was followed by an explicit recurrence; funded balance does not identify admission or mid-run refusal cause.",
+      "remainingAcceptance": "Affected authoritative available/held balance, exact cap and refusal identity; per-run receipt/charge reconciliation; repeat original entry point and restart.",
+      "ownerBoundary": "Review Claude session context / managed billing authority; authorized affected-account evidence.",
+      "dispositionRecommendation": "Keep open; do not substitute zero-credit-warning or spend-provenance fixes.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/a5060cc3-funded-account-runs-fail-again-after-a-credit-li.md",
+        "docs/NEXT.md"
+      ]
+    },
+    {
+      "id": "1d3ac09a",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/1d3ac09a-reported-macos-web-fetch-tls-decode-and-socket-f.md",
+      "sourceEvidenceDisposition": "Post-header cause/host diagnostic loss repaired independently; Mac TLS/socket cause remains unknown. Run error tail does not identify failed tool.",
+      "remainingAcceptance": "Fresh expanded failing tool result with cause/host/status; same-Mac/network curl comparison; exact artifact and affected-platform retry/restart.",
+      "ownerBoundary": "Investigate Mac web fetch failures; affected Mac/network access.",
+      "dispositionRecommendation": "Keep original open. Diagnostic repair is independently dispositionable, not a TLS cure.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/1d3ac09a-reported-macos-web-fetch-tls-decode-and-socket-f.md",
+        "qa/evidence/customer-release-1011/web-body-diagnostics.json"
+      ]
+    },
+    {
+      "id": "d688ea20",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/d688ea20-unavailable-spend-history-blocks-work-without-us.md",
+      "sourceEvidenceDisposition": "Seven independent reports grouped by symptom. Legacy unknown billing provenance/guidance repaired; no common cause or reconciled amounts established.",
+      "remainingAcceptance": "Per-report pending receipt, provider/trigger/refusal; verified settlement amount and cap where applicable; original interactive/specialist/scheduled entry point and restart.",
+      "ownerBoundary": "Review Claude session context; affected receipts and authorized billing evidence.",
+      "dispositionRecommendation": "Keep original open. Source guidance repair verified; retain unknown provenance, unknown charges and original append-fault ambiguity.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/d688ea20-unavailable-spend-history-blocks-work-without-us.md",
+        "qa/evidence/legacy-spend-recovery-1011/verification.json",
+        "qa/evidence/legacy-spend-recovery-1011/before.json",
+        "qa/evidence/legacy-spend-recovery-1011/after.json"
+      ]
+    },
+    {
+      "id": "85f602c4",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/85f602c4-windows-0132-packaged-backend-startup.md",
+      "sourceEvidenceDisposition": "Signed public 0.13.2 archive has nonempty source-equivalent shell/index/loop. Customer installed identity/bytes/resource path and stack unverified; zero-byte CommonJS alone does not explain MODULE_NOT_FOUND.",
+      "remainingAcceptance": "Read-only exact customer installer/hash/signature and installed file hash/size/resource root/full stack comparison; then disposable exact-artifact startup/task/restart and upgrade data continuity.",
+      "ownerBoundary": "Review StarNet handoff process + coordination; affected artifact/native installation.",
+      "dispositionRecommendation": "Keep open. Public archive inspection can be dispositioned complete; no justified installed repair/cause.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/85f602c4-windows-0132-packaged-backend-startup.md",
+        "qa/evidence/customer-release-1011/windows-0132-artifact.json"
+      ]
+    },
+    {
+      "id": "082ee8e5",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/082ee8e5-shell-approvals-and-history-hide-full-command-ar.md",
+      "sourceEvidenceDisposition": "Reviewed source worker approvals show full redacted owned request, with focused/live proof; original shell/history report acceptance remains separate and unverified.",
+      "remainingAcceptance": "Harmless long shell beginning/middle/end in Ask ON/Full Access OFF: pre-approval preview/expand/copy and post-execution history/copy; redaction/truncation markers and exact installed build. Historical unretained bytes cannot be reconstructed.",
+      "ownerBoundary": "Review thread UX changes; exact shell/history acceptance and installed release.",
+      "dispositionRecommendation": "Keep original open. Source worker-approval repair verified; do not infer historical shell completeness from it.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/082ee8e5-shell-approvals-and-history-hide-full-command-ar.md",
+        "qa/evidence/thread-ux-1012/HANDOFF.md",
+        "qa/evidence/thread-ux-1012/verification.json",
+        "qa/evidence/thread-ux-1012/regression-verification.json"
+      ]
+    },
+    {
+      "id": "4c0efd8c",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/4c0efd8c-saved-station-opening-is-blocked-despite-a-reach.md",
+      "sourceEvidenceDisposition": "Save-recovery diagnosis/copy refresh repaired with synthetic stall/retry/restart proof; original attachments now inspected. Actual SAVE REQUEST LOST cause remains unknown.",
+      "remainingAcceptance": "Failed saved-state request status/timing and sanitized logs; actual resource/workspace paths/artifact hash; non-destructive current-build open/restart/reopen acceptance.",
+      "ownerBoundary": "Review Claude session context; affected saved-station request/native context.",
+      "dispositionRecommendation": "Keep original open. Attachment review and narrow diagnostic repairs completed; health 200 is not save acceptance or data-integrity proof.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/4c0efd8c-saved-station-opening-is-blocked-despite-a-reach.md",
+        "qa/evidence/e09-save-recovery-1012/verification.json",
+        "qa/evidence/e09-save-recovery-1012/degraded-copy-verification.json",
+        "qa/evidence/customer-release-1011/e09-attachment-review.json"
+      ]
+    },
+    {
+      "id": "f702f2f6",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/f702f2f6-approved-skill-is-withheld-from-autonomous-worke.md",
+      "sourceEvidenceDisposition": "Active-approved version preservation and explicit worker sharing are repaired/covered in memory lane; no exact customer guard-decision/digest correlation.",
+      "remainingAcceptance": "Compare identical skill owner/content digest, approval scope and guard verdict for watched lead versus autonomous fresh worker, including restart; preserve authority restrictions.",
+      "ownerBoundary": "Investigate StarNet memory gaps; customer skill/worker authority evidence.",
+      "dispositionRecommendation": "Keep open. Do not conflate proposed-skill policy or sharing scope with loss of valid approval.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/f702f2f6-approved-skill-is-withheld-from-autonomous-worke.md",
+        "qa/evidence/memory-harness-audit-1011/EXECUTION.md",
+        "qa/evidence/memory-harness-audit-1011/final-live-verification.txt"
+      ]
+    },
+    {
+      "id": "0db3e69c",
+      "severity": "P1",
+      "statusAtCandidate": "open",
+      "provenance": "owner",
+      "canonicalOrigin": "owner",
+      "canonicalPath": "qa/bugs/0db3e69c-gpu-loss-replaces-authored-props-with-legacy-art.md",
+      "sourceEvidenceDisposition": "Controlled original renderer loses authored pixels permanently; repaired renderer retains/rebuilds pixels and floor recovery in real seeded app. This is a verified source repair, not an unrepaired current production reproduction.",
+      "remainingAcceptance": "Final combined gate identity; rebuilt exact installed native app driver/context-loss lifecycle and owner retest. Real OS/GPU exhaustion prevention and model residency are separate.",
+      "ownerBoundary": "Fix StarNet prop and texture bugs; coordination release gate and native Windows/hardware acceptance.",
+      "dispositionRecommendation": "Do not close whole incident yet under its explicit integration/release condition. Honest subdisposition: source repair verified; installer unverified and owner recovery unconfirmed.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/0db3e69c-gpu-loss-replaces-authored-props-with-legacy-art.md",
+        "qa/audits/2026-10-12-qwen-render-loss.md"
+      ]
+    },
+    {
+      "id": "abd75bb4",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/abd75bb4-credit-usage-during-mac-boot-failure.md",
+      "sourceEvidenceDisposition": "Historical requested credit accounting during Mac boot trouble; no charge validity/invalidation demonstrated. Boot repair cannot explain prior charges.",
+      "remainingAcceptance": "Authorized account charge/run ledger aligned to boot times, linked stations and scheduled work; explicit reconciliation, separate from any adjustment.",
+      "ownerBoundary": "Account/billing investigation; affected ledger and separate authority for refunds/messages.",
+      "dispositionRecommendation": "Keep open as accounting investigation, not demonstrated billing defect.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/abd75bb4-credit-usage-during-mac-boot-failure.md"
+      ]
+    },
+    {
+      "id": "acb47320",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/acb47320-idle-usage-customer-unexplained.md",
+      "sourceEvidenceDisposition": "Historical uncorrelated usage/idle report. Other-station idle canaries passed; affected ledger/background work was never supplied.",
+      "remainingAcceptance": "Affected provider receipts/run ledger and armed routines/loops/night shift; reconcile actual cadence and costs.",
+      "ownerBoundary": "Reliability/account investigation; affected-account evidence.",
+      "dispositionRecommendation": "Keep open uncertainty. Not a fresh current scheduler/billing regression or automatically a desktop release blocker.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/acb47320-idle-usage-customer-unexplained.md",
+        "docs/releases/0.11.2/FOLLOWTHROUGH.md"
+      ]
+    },
+    {
+      "id": "f8d479d9",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/f8d479d9-repeated-project-verification-reportedly-consume.md",
+      "sourceEvidenceDisposition": "Material reported overnight verification cost, without run/tool ledger. Existing dry-stop/red-streak coverage does not establish incident cause.",
+      "remainingAcceptance": "Affected-night run/tool/provider receipts, parent IDs, routine/loop settings; distinguish scheduled passes from within-run continuation.",
+      "ownerBoundary": "Autonomy/reliability and authorized account reconciliation.",
+      "dispositionRecommendation": "Keep open as separate cost investigation; do not deduplicate into generic idle usage or fabricate reproduction.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/f8d479d9-repeated-project-verification-reportedly-consume.md"
+      ]
+    },
+    {
+      "id": "54564ff9",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/54564ff9-zoho-mail-bootstrap-tool-reportedly-requires-und.md",
+      "sourceEvidenceDisposition": "Remote bootstrap schema versus connector/projection cause unresolved; no authenticated raw schema captured.",
+      "remainingAcceptance": "Sanitized authenticated remote tools/list, registry schema and emitted provider schema; documented allowed bootstrap call against authorized Zoho server.",
+      "ownerBoundary": "MCP/schema lane; external authenticated Zoho schema/account.",
+      "dispositionRecommendation": "Keep open. Do not remove required fields by tool-name guess.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/54564ff9-zoho-mail-bootstrap-tool-reportedly-requires-und.md"
+      ]
+    },
+    {
+      "id": "6bb9d2a1",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/6bb9d2a1-visibility-failure-without-diagnostics.md",
+      "sourceEvidenceDisposition": "Uncorrelated visibility report has no platform/build/screenshot/entry point. No particular boot/graphics defect established.",
+      "remainingAcceptance": "Screenshot and entry point, version/platform/scaling, Boot Guard/native diagnostics; bounded same-symptom retest.",
+      "ownerBoundary": "Customer diagnostic intake, then appropriate UI/native owner after identification.",
+      "dispositionRecommendation": "Keep open uncertainty; current graphics checks do not establish this report recovery.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/6bb9d2a1-visibility-failure-without-diagnostics.md"
+      ]
+    },
+    {
+      "id": "fd9c4b4d",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/fd9c4b4d-managed-sonnet-400-unresolved.md",
+      "sourceEvidenceDisposition": "Historical v0.10.13 Sonnet 400 remains uncorrelated. Later positive reply concerned different routing/selection evidence; deployed diagnostics and other Sonnet request repairs are distinct.",
+      "remainingAcceptance": "Fresh sanitized run/request/relay identity plus error body; deployed-route trace and exact affected configuration/retest.",
+      "ownerBoundary": "Provider/gateway reliability; authorized production trace and affected artifact.",
+      "dispositionRecommendation": "Keep open historical uncertainty. Neither newly reproduced on current source nor proven recovered.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/fd9c4b4d-managed-sonnet-400-unresolved.md",
+        "docs/RELEASE_FOLLOWTHROUGH_2026-09-06.md",
+        "docs/releases/0.11.2/FOLLOWTHROUGH.md"
+      ]
+    },
+    {
+      "id": "5274c7b7",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/5274c7b7-ollama-chat-request-not-observed.md",
+      "sourceEvidenceDisposition": "Separate controlled error-body idle/cancel defect repaired; nine final-source sidecar cases pass. Older 0.11.2/Ollama0.5.7 case differs from #99; server access-log silence does not prove no POST.",
+      "remainingAcceptance": "Actual loopback wire capture matched to run; startup/provider config and payload size; affected Ollama/runtime pre-header/token/terminal behavior.",
+      "ownerBoundary": "Review open StarNet issues; affected local model/runtime. Graphics allocation handling remains separate.",
+      "dispositionRecommendation": "Keep original open; controlled transport repair can be marked source verified. Do not infer cause from 605s duration or newer models.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/5274c7b7-ollama-chat-request-not-observed.md",
+        "qa/evidence/deep-sweep-2026-10-11/ollama-comms-followup.json"
+      ]
+    },
+    {
+      "id": "ff3fb4cb",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "customer",
+      "canonicalOrigin": "customer",
+      "canonicalPath": "qa/bugs/ff3fb4cb-mac-unsupported-installation-uncorrelated.md",
+      "sourceEvidenceDisposition": "Unsupported-Mac report lacks architecture, macOS, asset and app identity. Availability of Intel/ARM builds does not prove recovery.",
+      "remainingAcceptance": "Exact CPU/macOS/downloaded filename/app version; matched-asset launch and required installed lifecycle on affected platform.",
+      "ownerBoundary": "Release/native Mac compatibility; affected machine/asset details.",
+      "dispositionRecommendation": "Keep open uncertainty; do not assert a current universal Mac installer defect.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/ff3fb4cb-mac-unsupported-installation-uncorrelated.md"
+      ]
+    },
+    {
+      "id": "6e29727c",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "internal audit",
+      "canonicalOrigin": "audit",
+      "canonicalPath": "qa/bugs/6e29727c-windows-node-24-http-test-exits-with-a-native-li.md",
+      "sourceEvidenceDisposition": "Two historical Windows Node24.19.0 native crashes after nine passing assertions; Node22 passes. New test cleanup ordering defect independently fixed, causal link to native crash not demonstrated.",
+      "remainingAcceptance": "Exact Node24 runtime and teardown/shutdown reproduction with actual exit code; minimize/isolate cause and compare cleanup-fixed source. Preserve original crash receipts.",
+      "ownerBoundary": "QA/runtime infrastructure; test/update-preparation.http.test.js and Node/libuv boundary, not installed-app product proof.",
+      "dispositionRecommendation": "Keep open validation-runtime finding; cleanup repair dispositionable separately. Passing assertions or Node22 does not erase native nonzero exit.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/6e29727c-windows-node-24-http-test-exits-with-a-native-li.md",
+        "qa/evidence/customer-release-1011/update-preparation-cleanup.json",
+        "qa/digests/2026-09-19-reliability-audit.md"
+      ]
+    },
+    {
+      "id": "e47efecf",
+      "severity": "P2",
+      "statusAtCandidate": "open",
+      "provenance": "internal live observation (canonical origin unknown)",
+      "canonicalOrigin": "unknown",
+      "canonicalPath": "qa/bugs/e47efecf-first-file-write-in-a-fresh-station-can-time-out.md",
+      "sourceEvidenceDisposition": "Historical intermittent first-write timeout under host load; checkpoint duration not measured. Current fs.js still awaits checkpointMutation during resolution and fs.write still declares 10s. Nearby checkpoint/#107 fixes do not prove resolution.",
+      "remainingAcceptance": "Measure checkpoint versus total tool duration under affected cold/load conditions; controlled delayed checkpoint/abort proof must preserve write/undo safety and truthful effect status; establish budget policy before change.",
+      "ownerBoundary": "Data-safety/file-tools/checkpoint lane; host load and measured first mutation boundary.",
+      "dispositionRecommendation": "Keep open unattributed timing observation. No basis to call Ollama defect or to claim checkpoint cause/repair.",
+      "wholeIncidentClosureSupported": false,
+      "evidencePaths": [
+        "qa/bugs/e47efecf-first-file-write-in-a-fresh-station-can-time-out.md",
+        "sidecar/tools/builtin/fs.js",
+        "sidecar/tools/registry.js",
+        "qa/evidence/customer-release-1011/product-coverage.json"
+      ]
+    }
+  ],
+  "privacy": "Sanitized summaries only. Original customer text, identities, emails, account identifiers, private URLs, machine-local paths and raw diagnostics are excluded."
+}

@@ -1,0 +1,141 @@
+{
+  "source": "691eb19f65d8396ff4a1bf03a9b2998e10e58d2d",
+  "comparedRoot": "bbe1aa1",
+  "startedAt": "2026-10-12T07:51:16.593Z",
+  "command": "node qa/evidence/e09-save-recovery-1012/live-probe.mjs",
+  "scope": "Seeded real browser: synthetic degraded health responses and failed diagnostics/clipboard, actual report button, Diag.copy and selectable fallback; no customer recovery claim",
+  "events": [
+    {
+      "mode": "headers",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:51:20.804Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:23.314Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:51:23.489Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:25.995Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:26.190Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:51:26.446Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:28.955Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:29.081Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:51:29.342Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:31.853Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:31.967Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/save",
+      "method": "GET",
+      "at": "2026-10-12T07:51:32.226Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:34.732Z"
+    },
+    {
+      "mode": "headers",
+      "url": "/api/health",
+      "method": "GET",
+      "at": "2026-10-12T07:51:34.860Z"
+    }
+  ],
+  "initialHash": "bf54f72606039c41f7e477afd7e742eab08c485a25b3ae102d140888fd888225",
+  "sourceHashes": {
+    "frontend/app/app.js": "e1e2f49c3c2ab1cabe075b239a44b5ab7955cedb7f409f759a229791e3a07722",
+    "frontend/app/cloudsave.js": "87ab0948b270e3b6c606f21f542812c3b6a1ad253aee8a43607a18ea96e2e791",
+    "sidecar/index.js": "81b317a22b56df8f0174650684642975d12e805ebae4f17a17422ab073e9be56",
+    "sidecar/savestore.js": "67af95bfe526a47a8f46706b833598b9d12b467f86af104f42ed05e5c7ab0edb"
+  },
+  "cases": [
+    {
+      "visible": "RECOVERY CODE: SAVE-LOOP · STATION SERVICE CRASH LOOPdegraded: crash-loop <probe> < literalSend a screenshot of this code to support.",
+      "report": "STARNET DIAGNOSTICS (page-side fallback — the local engine did not answer, so this report was\nassembled by the app window itself and is SHORTER than a normal report.)\n\nwhen:          2026-10-12T07:51:26.192Z\nbuild:         unknown (browser session — no binary provenance)\nlocal engine:  REACHABLE (GET /api/health answered)\nengine addr:   same-origin (browser build)\ndiagnostics:   GET /api/diagnostics returned nothing — the sidecar report is missing\nclassified as: SAVE-NET · SAVE REQUEST LOST\nfailure text:  the app loaded, but its saved-station request did not return\nwebview:       Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36\n\nNOTE FOR SUPPORT: \"local engine: REACHABLE\" means the sidecar is fine and the fault is upstream\n(the model provider stream, or a request the sidecar accepted and never answered) — a restart or\nreinstall will NOT help. \"NOT REACHABLE\" is the case where restarting the app is the right step.\npage errors:   none recorded since page load\nsession continuity (page-local identities; no message text): []\napp screen:    screen-unreachable",
+      "markupInjected": false,
+      "status": "＋ degraded: crash-loop <probe> &lt; literal — retrying every 5s (attempt 1). Your save is untouched. the station service isn't answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.",
+      "expected": "SAVE-LOOP",
+      "reason": "degraded: crash-loop <probe> &lt; literal",
+      "pass": false
+    },
+    {
+      "visible": "RECOVERY CODE: SAVE-OWNER · WORKSPACE OWNED BY ANOTHER PROCESSdegraded: owner unavailable <workspace> < literalSend a screenshot of this code to support.",
+      "report": "STARNET DIAGNOSTICS (page-side fallback — the local engine did not answer, so this report was\nassembled by the app window itself and is SHORTER than a normal report.)\n\nwhen:          2026-10-12T07:51:29.082Z\nbuild:         unknown (browser session — no binary provenance)\nlocal engine:  REACHABLE (GET /api/health answered)\nengine addr:   same-origin (browser build)\ndiagnostics:   GET /api/diagnostics returned nothing — the sidecar report is missing\nclassified as: SAVE-NET · SAVE REQUEST LOST\nfailure text:  the app loaded, but its saved-station request did not return\nwebview:       Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36\n\nNOTE FOR SUPPORT: \"local engine: REACHABLE\" means the sidecar is fine and the fault is upstream\n(the model provider stream, or a request the sidecar accepted and never answered) — a restart or\nreinstall will NOT help. \"NOT REACHABLE\" is the case where restarting the app is the right step.\npage errors:   none recorded since page load\nsession continuity (page-local identities; no message text): []\napp screen:    screen-unreachable",
+      "markupInjected": false,
+      "status": "＋ degraded: owner unavailable <workspace> &lt; literal — retrying every 5s (attempt 2). Your save is untouched. the station service isn't answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.",
+      "expected": "SAVE-OWNER",
+      "reason": "degraded: owner unavailable <workspace> &lt; literal",
+      "pass": false
+    },
+    {
+      "visible": "RECOVERY CODE: SAVE-DEGRADED · STATION SERVICE DEGRADEDdegraded: fixture holdSend a screenshot of this code to support.",
+      "report": "STARNET DIAGNOSTICS (page-side fallback — the local engine did not answer, so this report was\nassembled by the app window itself and is SHORTER than a normal report.)\n\nwhen:          2026-10-12T07:51:31.968Z\nbuild:         unknown (browser session — no binary provenance)\nlocal engine:  REACHABLE (GET /api/health answered)\nengine addr:   same-origin (browser build)\ndiagnostics:   GET /api/diagnostics returned nothing — the sidecar report is missing\nclassified as: SAVE-NET · SAVE REQUEST LOST\nfailure text:  the app loaded, but its saved-station request did not return\nwebview:       Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36\n\nNOTE FOR SUPPORT: \"local engine: REACHABLE\" means the sidecar is fine and the fault is upstream\n(the model provider stream, or a request the sidecar accepted and never answered) — a restart or\nreinstall will NOT help. \"NOT REACHABLE\" is the case where restarting the app is the right step.\npage errors:   none recorded since page load\nsession continuity (page-local identities; no message text): []\napp screen:    screen-unreachable",
+      "markupInjected": false,
+      "status": "＋ degraded: fixture hold — retrying every 5s (attempt 3). Your save is untouched. the station service isn't answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.",
+      "expected": "SAVE-DEGRADED",
+      "reason": "degraded: fixture hold",
+      "pass": false
+    },
+    {
+      "visible": "RECOVERY CODE: SAVE-NET · SAVE REQUEST LOSTthe app loaded, but its saved-station request did not return. Send a screenshot of this code to support.",
+      "report": "STARNET DIAGNOSTICS (page-side fallback — the local engine did not answer, so this report was\nassembled by the app window itself and is SHORTER than a normal report.)\n\nwhen:          2026-10-12T07:51:34.861Z\nbuild:         unknown (browser session — no binary provenance)\nlocal engine:  REACHABLE (GET /api/health answered)\nengine addr:   same-origin (browser build)\ndiagnostics:   GET /api/diagnostics returned nothing — the sidecar report is missing\nclassified as: SAVE-NET · SAVE REQUEST LOST\nfailure text:  the app loaded, but its saved-station request did not return\nwebview:       Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36\n\nNOTE FOR SUPPORT: \"local engine: REACHABLE\" means the sidecar is fine and the fault is upstream\n(the model provider stream, or a request the sidecar accepted and never answered) — a restart or\nreinstall will NOT help. \"NOT REACHABLE\" is the case where restarting the app is the right step.\npage errors:   none recorded since page load\nsession continuity (page-local identities; no message text): []\napp screen:    screen-unreachable",
+      "markupInjected": false,
+      "status": "＋ still unreachable — retrying every 5s (attempt 4). Your save is untouched. the station service isn't answering. if you launched with `npm start`, check that terminal; otherwise open the desktop app.",
+      "expected": "SAVE-NET",
+      "reason": "",
+      "pass": true
+    }
+  ],
+  "pass": false,
+  "finishedAt": "2026-10-12T07:51:35.120Z",
+  "exitCode": 1
+}

@@ -49,4 +49,63 @@ A.ok(/maxPendingDeliveries = (j && Number(j.maxPendingDeliveries)) || 0;/.test(s
 A.ok(/data-edit-prompt rows="5" maxlength="' \+ EDIT_PROMPT_MAX \+ '"/.test(src) && /EDIT_BODY_MAX = 1 << 16/.test(src), 'EDIT TASK is capped under the 64 KB update body');
 const idx = fs.readFileSync(path.join(__dirname, '../sidecar/index.js'), 'utf8');
 A.ok(/maxPendingDeliveries: cronStore.MAX_PENDING_DELIVERIES/.test(idx), 'GET /api/cron exposes the backlog ceiling');
+
+/* ---------- org P16 (2026-10-14): one arm rule, a true status line, one switch name, RUN BY ---------- */
+{
+  // the create-state line tells the truth for each of the four states (never "will not run until you enable" while saving arms)
+  A.ok(src.includes("'Scheduling is off. Saving turns it on for the whole station, so every saved schedule runs at its time.'"), 'a never-set switch: the line says scheduling is off and saving turns it on — the INBOX form\'s own words');
+  A.ok(src.includes('id="rt-add">▸ SAVE SCHEDULE<'), 'the SCHEDULES save key wears the INBOX key\'s ▸');
+  A.ok(src.includes("(j && j.armSet) ? 'Scheduling is off — you turned it off. Saving keeps it off"), 'an explicit OFF: saving keeps it off (armSet from GET /api/cron)');
+  A.ok(!src.includes('it will not run automatically until you enable scheduling'), 'the old line that contradicted arm-on-save is gone');
+  // (org wire AUTO-P16-2) the lines send the Commander to a page that exists, by its key: AUTOMATE calls the routines page 'Scheduled jobs'
+  const autoSrc = fs.readFileSync(path.join(__dirname, '../frontend/app/windows/automation.js'), 'utf8');
+  const jobsPage = (autoSrc.match(/const labels = \{ routines: '([^']+)'/) || [])[1];
+  A.eq(jobsPage, 'Scheduled jobs', 'fixture: AUTOMATE labels the routines page Scheduled jobs');
+  A.ok(!/Active Routines/.test(src), 'no line sends the Commander to an "Active Routines" no page is called');
+  A.ok(src.includes('Saving keeps it stopped: it runs only after you press ▶ TURN SCHEDULING ON in ' + jobsPage + '.') && src.includes('Saving keeps it off: press ▶ TURN SCHEDULING ON in ' + jobsPage + ' when'), 'the E-STOP and OFF lines name the key and the page it is on');
+  A.ok(src.includes('nothing fires until you press ▶ TURN SCHEDULING ON in AUTOMATE › SCHEDULES › ' + jobsPage + "'") && !/until you resume it in AUTOMATE/.test(src), 'the E-STOP save toast names the key, never a RESUME there is none of');
+  // one switch name: ▶ TURN SCHEDULING ON / ⏸ TURN SCHEDULING OFF
+  A.ok(!/ENABLE SCHEDULING<|RESUME SCHEDULING<|DISABLE SCHEDULING</.test(src), 'no ENABLE / RESUME / DISABLE SCHEDULING keys remain');
+  A.eq((src.match(/>▶ TURN SCHEDULING ON</g) || []).length >= 3, true, 'E-STOP, OFF and the save note all offer ▶ TURN SCHEDULING ON');
+  A.ok(src.includes('>⏸ TURN SCHEDULING OFF</button>'), 'the armed state offers ⏸ TURN SCHEDULING OFF');
+  // the save says what it did: armedNow → "scheduling is now on"; offByChoice → the switch, never a silent override
+  A.ok(src.includes("msgEl.textContent = '✓ saved · scheduling is now on'") && src.includes('r.scheduler.offByChoice') && src.includes('id="rt-msg-arm"'), 'the save confirm follows the server verdict');
+  // RUN BY: agents, then workflows; a workflow posts its first step's agent + BAY + runsLine:true
+  A.ok(src.includes("'<label class=\"sn-menu-field\">Run by<select id=\"rt-agent-select\"") && /optgroup label="AGENTS"[\s\S]*optgroup label="WORKFLOWS"/.test(src), 'RUN BY lists agents, then workflows');
+  A.ok(src.includes("dockId: line ? line.dockId : undefined, runsLine: line ? true : undefined,"), 'a workflow choice posts dockId + runsLine:true (the line-schedule path)');
+  /* (org wire AUTO-P16-3) a draft opened into the form never inherits a WORKFLOW picked earlier: the REAL applyDraftAgent over a fake form */
+  {
+    const autoSrc = fs.readFileSync(path.join(__dirname, '../frontend/app/windows/automation.js'), 'utf8');
+    const m = autoSrc.match(/\n  function applyDraftAgent\(body, agentId\) \{[\s\S]*?\n  \}\n/);
+    A.ok(!!m && /applyDraftAgent\(body, draft\.agentId\);/.test(autoSrc), 'openDraft applies the draft\'s agent through applyDraftAgent');
+    const applyDraftAgent = new Function('Event', m[0] + '; return applyDraftAgent;')(class { constructor(t) { this.type = t; } });
+    const form = (selValue) => {
+      const clicked = [], changes = [];
+      const btns = ['nova', 'ada'].map(id => ({ dataset: { agent: id }, click: () => clicked.push(id) }));
+      const sel = { value: selValue, options: [{ value: 'nova' }, { value: 'ada' }, { value: 'line:L1' }], dispatchEvent: e => changes.push([e.type, sel.value]) };
+      return { clicked, changes, sel, body: { querySelectorAll: q => (q === '.rt-agent-btn' ? btns : []), querySelector: q => (q === '#rt-agent-select' ? sel : null) } };
+    };
+    let f = form('line:L1'); applyDraftAgent(f.body, 'ada');
+    A.ok(f.clicked.join() === 'ada' && !f.changes.length, 'a draft naming an agent aboard picks that agent (its button clears the workflow pick)');
+    f = form('line:L1'); applyDraftAgent(f.body, undefined);
+    A.ok(f.sel.value === 'nova' && f.changes.length === 1 && f.changes[0][0] === 'change', 'a draft naming no agent puts RUN BY back on an agent when a workflow was picked: ' + JSON.stringify(f.changes));
+    f = form('line:L1'); applyDraftAgent(f.body, 'ghost');
+    A.ok(f.sel.value === 'nova' && f.changes.length === 1, '…and so does a draft whose agent is not aboard');
+    f = form('ada'); applyDraftAgent(f.body, 'ghost');
+    A.ok(f.sel.value === 'ada' && !f.changes.length && !f.clicked.length, 'an agent already picked is kept as before');
+    A.ok(/if \(v\.indexOf\('line:'\) === 0\) \{ routineLineKey = v\.slice\(5\);[^\n]*\n\s*routineLineKey = null;/.test(src), 'the select\'s change handler clears the workflow pick for an agent value (what the reset relies on)');
+  }
+  const wfw = fs.readFileSync(path.join(__dirname, '../frontend/app/windows/workflows.js'), 'utf8');
+  A.ok(/function startLines\(\)[\s\S]*Wl\.entryDocksOf/.test(wfw) && /showJob, startLines,/.test(wfw), 'WORKFLOWS exports each line\'s schedule entry (its first routed step) for RUN BY');
+  // the server: one rule for the form, the INBOX form and station.start_line
+  A.ok(/function armOnSaveIfUnset\(\) \{\n  if \(cronArmed \|\| cronArmSet\) return false;/.test(idx), 'arm on save only when the switch was never set');
+  // (org wire AUTO-P16-1) every SAVE path: handleCronCreate, startLineFor, routine.create's armScheduler and /routine add's host create
+  A.ok((idx.match(/armOnSaveIfUnset\(\)/g) || []).length === 5, 'handleCronCreate, startLineFor, routine.create and /routine add all use the one rule (definition + 4 callers)');
+  A.ok(/if \(enabled === true\) \{ armOnSaveIfUnset\(\); return cronArmed; \}/.test(idx), 'routine.create\'s default arm never overrides an explicit OFF');
+  const mkt = fs.readFileSync(path.join(__dirname, '../frontend/app/marketplace.js'), 'utf8');
+  const mr = mkt.slice(mkt.indexOf('function makeRoutine(r, values, schedule) {'), mkt.indexOf('function makeRoutine(r, values, schedule) {') + 4200);
+  A.ok(/\n\s*arm: true\n\s*\};/.test(mr) && /const sch = \(d && d\.scheduler\) \|\| null/.test(mr), 'RECIPES › SCHEDULE IT saves with arm:true and reads the server\'s scheduler verdict');
+  A.ok(/else if \(sch && !sch\.armed\) note\('routine saved: '/.test(mr) && /sch\.offByChoice \? ' \(you turned it off\)' : ''/.test(mr) && /sch && sch\.armedNow \? ' · scheduling is now on' : ''/.test(mr), '…and never says "routine scheduled" about one that cannot fire');
+  A.ok(/armSet: !!cronArmSet/.test(idx) && /armedNow: armedNow, offByChoice: !cronArmed && !!cronArmSet/.test(idx), 'GET /api/cron and the create reply carry armSet / armedNow / offByChoice');
+}
 A.report('autojobs-ui.test');

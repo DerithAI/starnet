@@ -58,7 +58,8 @@ async function check(label, action) {
   c.station.renameRoom(c.station.spawnRoomId(), 'Quota failure'); await tick();
   assert.equal(cache.get('starnet.save'), lastGood, 'failed cache write preserves previous save');
   assert.equal(flashes, flashCount, 'failed write cannot flash saved');
-  assert.match(notices[0][0], /Could not save station/);
+  assert.match(notices[0][0], /Browser storage for this window is full/, '#121: the notice names the browser cap');
+  assert.doesNotMatch(notices[0][0], /free storage/, '#121: freeing disk space cannot raise a browser cap; the notice no longer asks for it');
   assert.equal(vm.runInContext('persist()', c), false);
   assert.equal(notices.length, 1, 'storage failures do not flood notifications');
   fail = false; assert.equal(vm.runInContext('persist()', c), true);

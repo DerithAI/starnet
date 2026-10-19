@@ -3,6 +3,7 @@
 'use strict';
 const { redact: defaultRedact } = require('./context.js');
 const { SECRET_KEY } = require('./secret-values.js');
+const { textOf, quotedMaterial } = require('./trusted-learning.js');
 const SCHEMA = 'starnet.learning-evidence.v1';
 const MAX_ITEMS = 40;
 const MAX_ARGS = 2400;
@@ -85,7 +86,8 @@ function buildLearningEvidence(input, redact) {
     return boundedPacket(clean);
   }
   const host = p.learningEvidence && p.learningEvidence.version === 1 && p.learningEvidence.source === 'host' ? p.learningEvidence : null;
-  const trustedOnly = !!(p.trustedOnly || (host && host.tainted));
+  // host.trustedOnly: the owner typed quoted material. The run is not tainted, but its transcript is not owner evidence.
+  const trustedOnly = !!(p.trustedOnly || (host && (host.tainted || host.trustedOnly)));
   const messages = trustedOnly ? [] : (Array.isArray(p.messages) ? p.messages : []);
   const hostMessages = host && Array.isArray(host.trustedUserMessages) ? host.trustedUserMessages : [];
   const verifiedMessages = hostMessages.filter(m => m && ['interactive-owner', 'channel-owner'].includes(m.source));
@@ -105,7 +107,10 @@ function buildLearningEvidence(input, redact) {
   for (let index = 0; index < messages.length; index++) {
     const m = messages[index];
     if (!m) continue;
-    if (m.role === 'user') appendBounded(trusted.has(index) ? directives : unattributedDirectives, Object.assign({
+    // Quoted material (a fence, a "> " line, "the email says:") is never learning evidence, even typed by the owner.
+    // This packet keeps a conversation's FIRST turns too, so the quote is left out here wherever it sits; the host's
+    // quotedOwnerInput flag covers only the raw transcript tails. Counted in omissions.directives below.
+    if (m.role === 'user' && (trusted.has(index) || !quotedMaterial(textOf(m)))) appendBounded(trusted.has(index) ? directives : unattributedDirectives, Object.assign({
       messageIndex: index, provenance: trusted.has(index) ? 'commander' : 'unattributed-input', durableInstructionEligible: trusted.has(index)
     }, bounded(m.content, MAX_TEXT, scrub)));
     if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {

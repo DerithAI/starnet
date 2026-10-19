@@ -12,6 +12,7 @@
 const A = require('./_assert.js');
 const http = require('node:http');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+const { hostText } = require('./helpers/host-notes.js');   // system + the user-side <run_context> note (per-run ids)
 const { AVAILABILITY_SIGNALS, unavailableTools, unavailableLine } = require('../sidecar/capability/effective-toolsets.js');
 const { CAP_REGISTRY } = require('../sidecar/capability/registry.js');
 const { makeRegistry } = require('../sidecar/tools/registry.js');
@@ -123,7 +124,8 @@ const HOST = '127.0.0.1';
     A.ok(sys.indexOf('routine_notepad') < 0, 'routine_notepad is never announced');
     const partial = (sys.match(/These exist and you CAN use them: ([^.]*)\./) || [])[1] || '';
     A.ok(partial.length > 0 && partial.indexOf('image_generate') < 0 && partial.indexOf('spotify_') < 0, 'a dead tool is never listed under "you CAN use them"');
-    A.ok(sys.lastIndexOf('Run id:') > sys.indexOf('Granted tools that CANNOT work right now'), 'the line rides before the per-run ids (prompt-cache prefix law)');
+    const host = hostText(t1.messages);   // the per-run ids ride the run-context note, after the system prompt
+    A.ok(host.indexOf('Granted tools that CANNOT work right now') >= 0 && host.lastIndexOf('Run id:') > host.indexOf('Granted tools that CANNOT work right now'), 'the line rides before the per-run ids (prompt-cache prefix law)');
     const result = t2.messages.filter(m => m.role === 'tool').map(m => String(m.content)).join('\n');
     A.ok(result.indexOf('image_generate') >= 0 && result.indexOf('NOT USABLE RIGHT NOW') >= 0 && result.indexOf('OpenAI or OpenRouter') >= 0,
       'tool_search finds image_generate and says why it cannot work and how to enable it');

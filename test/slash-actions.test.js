@@ -103,6 +103,21 @@ const mk = (over) => { const d = deps(over); return { S: makeSlashActions(d), ca
   }
 
   {
+    // (org wire AUTO-P16-1) ONE ARM RULE: the host's save turns a never-set switch on (scheduler.armedNow) and keeps an explicit OFF
+    let armedS = false;
+    const { S } = mk({ cron: { armed: () => armedS, create: async (spec) => { armedS = true; return { ok: true, job: job({ name: spec.name }), scheduler: { armed: true, armedNow: true, offByChoice: false } }; } } });
+    const r = await S.run('routine', 'add every 30m | check the build');
+    A.ok(/Scheduling is now on\./.test(r.text) && !/NOT armed/.test(r.text), '/routine add says the save turned scheduling on: ' + r.text);
+    const off = await mk({ cron: { armed: () => false, offByChoice: () => true, create: async (spec) => ({ ok: true, job: job({ name: spec.name }), scheduler: { armed: false, armedNow: false, offByChoice: true } }) } })
+      .S.run('routine', 'add every 30m | check the build');
+    A.ok(/Scheduling is off \(you turned it off\), so nothing will fire — \/cron on to turn it on\./.test(off.text) && !/now on/.test(off.text), 'an explicit OFF is kept and said as the Commander\'s choice: ' + off.text);
+    const fs = require('fs'), path = require('path');
+    const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+    const host = idx.slice(idx.indexOf('const slashActions = slashActionsMod.makeSlashActions({'), idx.indexOf('const slashActions = slashActionsMod.makeSlashActions({') + 2400);
+    A.ok(/armedNow = armOnSaveIfUnset\(\) && !cronHalted;/.test(host) && /offByChoice: \(\) => !cronArmed && !!cronArmSet,/.test(host), 'the host\'s /routine add create goes through the one arm rule and exposes the explicit OFF');
+  }
+
+  {
     const { S } = mk({ cron: { create: async () => ({ ok: true, duplicate: true, job: job({ name: 'check build' }) }) } });
     const r = await S.run('routine', 'add every 30m | check build');
     A.ok(/already exists/.test(r.text), 'a mint-gate duplicate is reported as existing, not created');
@@ -261,8 +276,9 @@ const mk = (over) => { const d = deps(over); return { S: makeSlashActions(d), ca
     });
     const r = await S.run('away', 'list');
     A.ok(/2 queued/.test(r.title), 'the listing counts the backlog');
-    A.ok(/built — waiting in DELIVERABLES › TO REVIEW/.test(r.lines[1]), 'a finished build is marked as waiting');
-    A.ok(r.lines.some(l => /waiting for your keep\/discard/.test(l)), 'pending builds are surfaced');
+    A.ok(/built — waiting in DELIVERABLES › NEEDS A DECISION/.test(r.lines[1]), 'a finished build is marked as waiting where it is decided (the library\'s NEEDS A DECISION)');
+    A.ok(!r.lines.some(l => /TO REVIEW/.test(l)), 'never sent to TO REVIEW: that rating list has no KEEP IT or DISCARD (org P12)');
+    A.ok(r.lines.some(l => /waiting for your KEEP IT or DISCARD — open MY WORK › DELIVERABLES \(NEEDS A DECISION\)/.test(l)), 'pending builds are surfaced, with where they are decided');
     A.ok(r.lines.some(l => /Build while away: OFF/.test(l)), 'the grant state is always stated');
   }
 
@@ -285,7 +301,7 @@ const mk = (over) => { const d = deps(over); return { S: makeSlashActions(d), ca
     const failed = await mk({ workshop: { shiftNow: async () => ({ ok: true, fired: true, reason: 'no-manifest', parked: false }) } })
       .S.run('away', 'now');
     A.eq(failed.ok, false, 'a shift that produced nothing is a failure, not a success');
-    A.ok(!/waits in (OUTBOX|DELIVERABLES)/.test(failed.text), 'a failed shift never claims work is waiting in DELIVERABLES › TO REVIEW');
+    A.ok(!/waits in (OUTBOX|DELIVERABLES)/.test(failed.text), 'a failed shift never claims work is waiting in DELIVERABLES');
     A.ok(/nothing usable/.test(failed.text), 'it says the shift produced nothing usable');
     // a PARKED item will never be retried — the user must be told, or the work silently disappears
     const parked = await mk({ workshop: { shiftNow: async () => ({ ok: true, fired: true, reason: 'run-failed', parked: true }) } })
@@ -295,7 +311,7 @@ const mk = (over) => { const d = deps(over); return { S: makeSlashActions(d), ca
     const built = await mk({ workshop: { shiftNow: async () => ({ ok: true, fired: true, reason: 'built', manifest: { title: 'a build-time dashboard' } }) } })
       .S.run('away', 'now');
     A.ok(/a build-time dashboard/.test(built.text), 'a real build names itself from the manifest');
-    A.ok(/DELIVERABLES › TO REVIEW/.test(built.text), 'a real build points at DELIVERABLES › TO REVIEW (the OUTBOX folded into it)');
+    A.ok(/MY WORK › DELIVERABLES \(NEEDS A DECISION\) for KEEP IT or DISCARD/.test(built.text) && !/TO REVIEW/.test(built.text), 'a real build points at the library\'s NEEDS A DECISION, where KEEP IT / DISCARD live, never TO REVIEW (org P12): ' + built.text);
   }
 
   {

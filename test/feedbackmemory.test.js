@@ -184,16 +184,22 @@ A.eq(block.usedIds.length, 2, 'both count as used');
   A.ok(selected.some(r => r.sourceRunId === 'standing'), 'older explicit standing feedback survives newer bare approvals');
   A.ok(selected.some(r => r.sourceRunId === 'old-database'), 'relevant older feedback competes with current verdicts');
   A.eq(selected[0].sourceRunId, 'new9', 'newest verdict remains first when older feedback is selected');
-  // the omission notice says "Use notebook.read": it may only count records the READER's notebook.read can return.
-  // These all live in another agent's notebook, so neither the lead nor an unnamed reader gets that promise.
+  const rendered = FM.renderTaste(selected, renderRecall);
+  A.ok(rendered.omitted > 0 && /\[\d+ older verdicts? not shown\.\]/.test(rendered.text), 'feedback selection discloses the older verdicts it left out');
+  A.ok(!/notebook\.read/.test(rendered.text), 'no notebook.read pointer: a shared verdict has no id it could fetch (review memory-learning-04)');
+  // a notebook.read retrieval path may only be offered for records the READER's notebook.read can return.
+  // These all live in another agent's notebook, so neither the lead nor an unnamed reader gets that promise; the cut is
+  // still disclosed truthfully as older verdicts not shown (out.omitted counts every record left out of the prompt).
   for (const [opts, label] of [[{ agentId: 'lead' }, 'a named reader'], [undefined, 'an unnamed reader (a delegated worker)']]) {
     const foreignOnly = FM.renderTaste(selected, renderRecall, opts);
-    A.ok(!foreignOnly.omitted && !/omitted|notebook\.read/.test(foreignOnly.text), 'another agent\'s left-out verdicts promise no notebook.read retrieval to ' + label);
+    A.ok(!/omitted|notebook\.read/.test(foreignOnly.text), 'another agent\'s left-out verdicts promise no notebook.read retrieval to ' + label);
+    A.ok(/\[\d+ older verdicts? not shown\.\]/.test(foreignOnly.text), 'and are disclosed as older verdicts not shown to ' + label);
   }
   const ownSelected = FM.stationTaste([old, topical].concat(recent), [], { query: 'postgres database query performance' });
   const own = FM.renderTaste(ownSelected, renderRecall, { agentId: 'lead' });
-  A.ok(own.omitted > 0 && /omitted.*notebook\.read/.test(own.text), 'the reader\'s OWN left-out feedback records are disclosed with the notebook.read path');
-  A.ok(!/omitted/.test(FM.renderTaste(ownSelected, renderRecall).text), 'a prompt with no named reader never promises a notebook.read it cannot serve');
+  A.ok(own.omitted > 0 && /notebook\.read with a query/.test(own.text), 'the reader\'s OWN left-out feedback records are disclosed with a query-bound notebook.read path');
+  A.ok(!/omitted/.test(own.text), 'a ranking cut of the reader\'s own verdicts is never called an omission (review memory-learning-04)');
+  A.ok(!/omitted|notebook\.read/.test(FM.renderTaste(ownSelected, renderRecall).text), 'a prompt with no named reader never promises a notebook.read it cannot serve');
   A.eq(FM.stationTaste([], [[Object.assign({}, old, { projectRoot: 'C:/private' })]]).length, 0, 'project-private feedback cannot enter the station taste block');
 }
 

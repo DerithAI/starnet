@@ -168,7 +168,7 @@ main > * { flex: none; }   /* the page scrolls; nothing in it is squeezed to fit
 .md .li { display: flex; gap: 8px; } .md .li::before { content: "·"; color: var(--ph); flex: none; }
 .step { align-self: flex-start; display: flex; gap: 8px; align-items: center; font-size: 16px; letter-spacing: .5px; padding: 5px 9px; border-radius: 4px;
   border: 1px solid var(--gd-comms-edge); background: color-mix(in srgb, var(--panel2) 65%, transparent); box-shadow: inset 0 1px 0 var(--gd-light); }
-.step b { font-weight: 400; color: var(--ok); } .step b.x { color: var(--bad); } .step b.w { color: var(--gold); }
+.step b { font-weight: 400; color: var(--ok); } .step b.x { color: var(--bad); } .step b.w { color: var(--gold); } .step b.h { color: var(--ph-dim); }
 .working { align-self: flex-start; display: flex; align-items: center; gap: 8px; font-size: 16px; letter-spacing: 1px; color: var(--gold); padding: 2px 4px; text-transform: uppercase; }
 .working i { width: 7px; height: 7px; border-radius: 50%; background: var(--gold); animation: beat 1.6s var(--ease-soft) infinite; }
 

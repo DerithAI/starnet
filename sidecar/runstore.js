@@ -69,6 +69,19 @@
   const DELIVERABLE_KINDS = new Set(['doc', 'data', 'page', 'patch', 'image', 'files']);   // mirrors tools/builtin/deliverable.js
   const DELIVERY_PROMPT_MAX = 4000;
   const DELIVERY_TEXT_MAX = 24000;
+  // Dispatch completion is assessed AFTER the execution loop (including one optional result repair).
+  // Its envelope is separate from the immutable execution outcome and spend.
+  const DELIVERY_PATCH_KIND = 'dispatch-delivery';
+  function dispatchDelivery(v) {
+    if (!v || !['pending', 'internal', 'final'].includes(v.state)) return null;
+    if (v.state !== 'final') return { state: v.state };
+    const out = { state: 'final', text: str(v.text).slice(0, DELIVERY_TEXT_MAX),
+      reason: str(v.reason).trim().slice(0, 80) || 'error', repairRunId: str(v.repairRunId).slice(0, 100) };
+    if (Number.isSafeInteger(v.textLength) && v.textLength >= out.text.length && /^[a-f0-9]{64}$/.test(str(v.textSha256))) {
+      out.textLength = v.textLength; out.textSha256 = v.textSha256;
+    }
+    return out;
+  }
   const TOOL_TRACE_MAX = 200;
   const TOOL_SUMMARY_MAX = 240;
   const FAILURE_FIELD_MAX = 80;
@@ -113,6 +126,27 @@
       kind: DELIVERABLE_KINDS.has(kind) ? kind : 'files',
       main: str(v.main).trim().slice(0, ARTIFACT_STR_MAX)
     };
+  }
+
+  // the page-closed note (record's `pageClosed`), bounded at the persistence boundary like every other host field
+  function pageClosedOf(v) {
+    if (!v || typeof v !== 'object') return null;
+    const waitingOn = (Array.isArray(v.waitingOn) ? v.waitingOn : []).slice(0, 16)
+      .map(s => str(s).replace(/\s+/g, ' ').trim().slice(0, 200)).filter(Boolean).slice(0, 4);
+    return { at: nonnegative(v.at), waitingOn };
+  }
+
+  // the run's SEND NOW ledger (record's `steerNotes`, from steer-buffer ledgerOf): which page-made note ids it read.
+  // Ids only (the page keeps the words); bounded like every other host field.
+  function steerNotesOf(v) {
+    if (!Array.isArray(v)) return [];
+    const out = [];
+    for (const n of v.slice(0, 256)) {
+      if (out.length >= 32) break;
+      if (!n || typeof n !== 'object' || !/^[A-Za-z0-9_-]{1,64}$/.test(str(n.id))) continue;
+      out.push({ id: str(n.id), applied: n.applied === true });
+    }
+    return out;
   }
 
   function toolTraceList(v) {
@@ -232,19 +266,33 @@
     // `updates` holds the later rows of those chains, which are never served on their own (see header).
     let chains = new Map();
     let updates = new Set();
+    let deliveries = new Map();
+    const unpersisted = new Set();
     function track(r) {
       const id = r && r.runId;
       if (!id) return;
+      if (r.kind === DELIVERY_PATCH_KIND) {
+        updates.add(r);
+        const envelope = dispatchDelivery(r.dispatchDelivery);
+        if (envelope && envelope.state === 'final' && !deliveries.has(id)) deliveries.set(id, envelope);
+        return;
+      }
       const c = chains.get(id);
       if (c) { c.latest = r; updates.add(r); return; }
       if (r.reason === 'interrupted') chains.set(id, { first: r, latest: r });
     }
-    function reindex() { chains = new Map(); updates = new Set(); for (const r of rows) track(r); }
+    function reindex() {
+      chains = new Map(); updates = new Set(); deliveries = new Map(); for (const r of rows) track(r);
+      if (unpersisted.size) { const retained = new Set(rows.map(r => r.runId)); for (const id of unpersisted) if (!retained.has(id)) unpersisted.delete(id); }
+    }
     reindex();
     function view(r) {
       const c = r.runId ? chains.get(r.runId) : null;
-      if (!c || c.first !== r || c.latest === r) return Object.assign({}, r);
-      return Object.assign({}, c.latest, { ts: r.ts });
+      const out = !c || c.first !== r || c.latest === r ? Object.assign({}, r) : Object.assign({}, c.latest, { ts: r.ts });
+      const final = deliveries.get(r.runId);
+      if (out.dispatchDelivery && out.dispatchDelivery.state === 'pending' && final) out.dispatchDelivery = Object.assign({}, final);
+      else if (out.dispatchDelivery) out.dispatchDelivery = Object.assign({}, out.dispatchDelivery);
+      return out;
     }
 
     function record(e) {
@@ -254,6 +302,9 @@
         provider: str(e.provider).trim().slice(0, 60),
         reason: REASONS.has(e.reason) ? e.reason : 'done',     // clamp to the known enum (matches agent.run.end)
         turns: num(e.turns), tokens: num(e.tokens), usd: num(e.usd),
+        // (additive, token-burn audit 2026-10-17) how much of `tokens`' input the provider served from its prompt cache —
+        // `tokens` counts a cache read at full weight. Present only when > 0, so every other row stays byte-identical.
+        ...(num(e.cachedTokens) > 0 ? { cachedTokens: num(e.cachedTokens) } : {}),
         title: str(e.title).slice(0, TITLE_MAX),
         streamId: str(e.streamId),     // H3.2: the run's workstream — joins this outcome row to its transcript (GET /api/transcript?stream=)
         // Durable session-delivery envelope. The page bridge is best-effort (and multiple open pages may disagree
@@ -261,6 +312,7 @@
         sessionTitle: str(e.sessionTitle).trim().slice(0, SESSION_TITLE_MAX),
         deliveryPrompt: str(e.deliveryPrompt).slice(0, DELIVERY_PROMPT_MAX),
         deliveryText: str(e.deliveryText).slice(0, DELIVERY_TEXT_MAX),
+        ...(dispatchDelivery(e.dispatchDelivery) ? { dispatchDelivery: dispatchDelivery(e.dispatchDelivery) } : {}),
         recipeId: str(e.recipeId).slice(0, 60),   // provenance spine (additive): WHICH recipe launched this run ('' for non-recipe runs; old rows lack it and default '')
         projectRoot: str(e.projectRoot).slice(0, PROJECT_ROOT_MAX),   // deliverable organization (additive): the BLESSED project folder this run was scoped to ('' when unscoped/unblessed)
         deliverable: deliverableNote(e.deliverable),                  // deliverable organization (additive): the agent's own PROSE name for the work (null when it never named it)
@@ -296,6 +348,15 @@
         // orchestration — parentRunId alone also links overseer reviews and connector continuations, which are not
         // delegated work. Present only when set, so every other row stays byte-identical.
         ...(ID_RE.test(str(e.delegatedBy)) ? { delegatedBy: str(e.delegatedBy) } : {}),
+        // PAGE CLOSED (additive, rc-walk #60, 2026-10-13): the page watching this desk run closed or reloaded while the run
+        // was live, so the station cancelled it (the disconnect law). `waitingOn` names, in plain words, the approvals
+        // still open at that moment — the disconnect denied them, so none of them was granted. Set only by the host that
+        // saw its stream close (index.js handleRun); present only on such a run, so every other row stays byte-identical.
+        ...(pageClosedOf(e.pageClosed) ? { pageClosed: pageClosedOf(e.pageClosed) } : {}),
+        // SEND NOW LEDGER (additive, 0.13.5 live walk 2026-10-14): which of the page's tracked steering notes this run
+        // read (applied) or ended without reading — so GET /api/run/steer still answers a page that lost its memory after
+        // a station restart. Present only on a run that took a tracked note, so every other row stays byte-identical.
+        ...(steerNotesOf(e.steerNotes).length ? { steerNotes: steerNotesOf(e.steerNotes) } : {}),
         toolTrace: toolTraceList(e.toolTrace),
         failureStage: str(e.failureStage).trim().slice(0, FAILURE_FIELD_MAX),
         failureCode: str(e.failureCode).trim().slice(0, FAILURE_FIELD_MAX),
@@ -338,7 +399,8 @@
       // query horizon (≤1000), so no list()/insights query is ever short-changed within the window it reads.
       if (rows.length > ramMax) { rows.splice(0, rows.length - ramMax); reindex(); }
       else track(entry);
-      try { io.append(entry); } catch (e) { failNote('runstore.append', e); }
+      try { io.append(entry, entry.dispatchDelivery ? { strict: true } : undefined); }
+      catch (e) { if (entry.dispatchDelivery) unpersisted.add(entry.runId); failNote('runstore.append', e); }
       return entry;
     }
 
@@ -376,8 +438,29 @@
       if (!id) return null;
       const c = chains.get(id);
       if (c) return view(c.first);
-      for (let i = rows.length - 1; i >= 0; i--) if (rows[i].runId === id) return Object.assign({}, rows[i]);
+      for (let i = rows.length - 1; i >= 0; i--) if (rows[i].runId === id && !updates.has(rows[i])) return view(rows[i]);
       return null;
+    }
+
+    // Append a final dispatch envelope without adding a second execution/spend row. Only the host-created
+    // pending original is eligible; an internal repair or missing run can never become a new execution here.
+    // Persist first: a failed append leaves the provisional state honest and can be retried safely.
+    function deliverySource(runId) {
+      const row = latest(runId);
+      if (!row || !row.dispatchDelivery || row.dispatchDelivery.state === 'internal') return null;
+      if (unpersisted.has(row.runId)) throw new Error('The original dispatch run was not durably recorded.');
+      return row;
+    }
+    function finalizeDelivery(runId, value) {
+      const row = deliverySource(runId), envelope = dispatchDelivery(Object.assign({}, value, { state: 'final' }));
+      if (!row) return null;
+      if (row.dispatchDelivery.state === 'final') return row;
+      const patch = { kind: DELIVERY_PATCH_KIND, runId: row.runId, dispatchDelivery: envelope, ts: clock.now() };
+      io.append(patch, { strict: true });
+      rows.push(patch);
+      if (rows.length > ramMax) { rows.splice(0, rows.length - ramMax); reindex(); }
+      else track(patch);
+      return latest(runId);
     }
 
     /* settleSpend(runId, usd, how) — the Commander settled an interrupted run's unknown spend (POST /api/budget/settle,
@@ -395,7 +478,7 @@
     }
 
     return {
-      record, list, latest, settleSpend,
+      record, list, latest, settleSpend, finalizeDelivery, deliverySource,
       all() { return rows.filter(r => !updates.has(r)).map(view); },
       count() { return rows.length - updates.size; }
     };

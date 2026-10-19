@@ -37,10 +37,25 @@
   // silently admits every Object.prototype key — and these keys come off persisted/model-supplied data.
   const ROLES = new Set(['user', 'assistant', 'tool', 'system']);
   const DEFAULT_LIMIT = 400;        // a sane cap so history() never returns an unbounded transcript
+  const FINAL_CONTENT_MAX = 1048576; // matches the structured result validator; final writes reject oversize, never truncate
   const CONTENT_MAX = 200000;       // per-turn guard against a pathological payload bloating the file
   const RAM_ROWS_MAX = 3000;        // global ceiling across many short streams; disk keeps lifetime truth
   function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; }
   function str(v) { return v == null ? '' : String(v); }
+
+  /* ROW PROVENANCE — the one rule for reading a stored row's taint (review memory-learning-07; docs/DECISIONS.md).
+     A row with `taint` was written by a run that had read untrusted content: that is its source. A row whose writer
+     passed a taint value (null included) carries the clean stamp, taintKnown (buildEntry), and is clean. Any other row
+     has no provenance — written before the clean stamp existed, or by a writer that passed no taint value — and its
+     age proves nothing (an older build kept writing un-stamped tainted rows after the stamping release for anyone who
+     upgraded late), so it is unverifiable, never clean. A browse preview reads the same way through
+     { taint: previewTaint, taintKnown: previewTaintKnown }. */
+  const UNVERIFIED_ROW = 'historical conversation (taint unverifiable: missing row provenance)';
+  function rowTaint(row) {
+    if (!row || typeof row !== 'object') return UNVERIFIED_ROW;
+    if (row.taint) return str(row.taint).slice(0, 200);
+    return row.taintKnown === true ? null : UNVERIFIED_ROW;
+  }
 
   // an OpenAI-format message's content is either a plain string or a multimodal parts array
   function flattenContent(c) {
@@ -74,6 +89,90 @@
       catch (_) { /* frozen/sealed message: it just stays eligible — a duplicate row beats a lost transcript */ }
     }
     return n;
+  }
+
+  // Conversation display uses the finalized dispatch answer; run-specific reads keep raw execution evidence.
+  // Durable row markers stay authoritative after the bounded run log expires. A final transcript projection
+  // retains the complete answer, independently of the run envelope's 24k delivery-text cap.
+  function conversationPreview(row) {
+    if (!row) return '';
+    if (row.dispatchState === 'final') return str(row.dispatchPrompt);
+    return !row.dispatchState && row.role === 'user' ? str(row.content) : '';
+  }
+  function isFinalDeliveryRow(row, hash, expected) {
+    if (!row || row.dispatchState !== 'final' || row.role !== 'assistant' || !row.sourceRunId || typeof row.content !== 'string') return false;
+    const hasIntegrity = row.textLength != null || row.textSha256 != null;
+    const verified = hasIntegrity ? Number.isSafeInteger(row.textLength) && row.textLength === row.content.length
+      && /^[a-f0-9]{64}$/.test(String(row.textSha256 || '')) && (typeof hash !== 'function' || hash(row.content) === row.textSha256)
+      : row.content.length < CONTENT_MAX; // old rows at the historical cap may be truncated
+    if (!verified) return false;
+    if (expected && expected.state === 'final') {
+      if (!row.content.startsWith(String(expected.text || '')) || row.dispatchReason !== expected.reason
+          || (row.dispatchRepairRunId != null && row.dispatchRepairRunId !== expected.repairRunId)) return false;
+      if (hasIntegrity || expected.textLength != null || expected.textSha256 != null) {
+        if (row.textLength !== expected.textLength || row.textSha256 !== expected.textSha256) return false;
+      }
+    }
+    return true;
+  }
+  function projectConversation(turns, readRun, hash) {
+    const rows = Array.isArray(turns) ? turns : [];
+    const finals = new Map(), records = new Map(), prompts = new Set(), emitted = new Set();
+    const record = id => { if (!records.has(id)) records.set(id, typeof readRun === 'function' ? readRun(id) : null); return records.get(id); };
+    for (const row of rows) {
+      const id = String(row.sourceRunId || '');
+      if (row.dispatchState === 'final') { if (!finals.has(id)) finals.set(id, row); }
+    }
+    const out = [];
+    const closedAfter = new Map();   // runId -> out index just past that run's last row (page-closed line goes there)
+    for (const row of rows) {
+      const id = String(row.sourceRunId || '');
+      if (row.dispatchState === 'final') { if (isFinalDeliveryRow(row, hash, (record(id) || {}).dispatchDelivery) && !emitted.has(id)) { out.push(row); emitted.add(id); } continue; }
+      const run = id ? record(id) : null, delivery = run && run.dispatchDelivery;
+      const state = row.dispatchState || (delivery && delivery.state);
+      if (!state) { out.push(row); if (pageClosedLine(run)) closedAfter.set(id, out.length); continue; } // pre-envelope history keeps its exact existing shape
+      if (state === 'internal') continue;
+      const final = finals.get(id);
+      // A run StarNet stopped before it finished was never finalized and never will be. Show its directive and one
+      // plain interrupted line, so the thread is not silently empty; its raw partial output stays hidden. A run whose
+      // record still says pending may be mid-finalize, so it stays hidden until its accepted answer lands.
+      // The line is the station's, re-sent on every read: transcriptPending tells the desk and phone merges
+      // (chat.js mergeCanonicalHistory, remote/host.js mergeCanonical) to drop their saved copy and take this one,
+      // so reopening the thread never stacks it, and it goes away once the station stops reporting it.
+      if (!final && run && run.reason === 'interrupted' && !(delivery && (delivery.state === 'final' || delivery.state === 'pending'))) {
+        if (row.role === 'user' && !prompts.has(id)) {
+          out.push(row); prompts.add(id);
+          out.push({ streamId: row.streamId, agentId: row.agentId, role: 'assistant', sys: true, error: true, transcriptPending: true, sourceRunId: id,
+            dispatchState: 'interrupted', ts: row.ts, content: str(run.error) || (run.continuedRunId
+              ? 'interrupted: StarNet stopped before this delegated run finished; it was continued as another run'
+              : 'interrupted: StarNet stopped before this delegated run finished; no result was accepted') });
+        }
+        continue;
+      }
+      const finalPrompt = final ? final.dispatchPrompt : delivery && delivery.state === 'final' && run.deliveryPrompt;
+      if (row.role === 'user' && finalPrompt && !prompts.has(id)) {
+        out.push(Object.assign({}, row, { content: finalPrompt })); prompts.add(id);
+      }
+    }
+    // THE PAGE WENT AWAY MID-ASK (rc-walk #60): one station line after the run's last row, saying it ended there and
+    // that nothing it waited on was approved. Same shape and rule as the interrupted line above (transcriptPending: the
+    // merges take the station's copy on every read, so it never stacks). Inserted back to front so indexes stay true.
+    const at = Array.from(closedAfter.entries()).sort((a, b) => b[1] - a[1]);
+    for (const [id, idx] of at) {
+      const run = record(id), last = out[idx - 1] || {};
+      out.splice(idx, 0, { streamId: last.streamId, agentId: last.agentId, role: 'assistant', sys: true, error: true, transcriptPending: true, sourceRunId: id,
+        dispatchState: 'page-closed', ts: num(run.pageClosed.at) || num(run.endedAt) || num(last.ts), content: pageClosedLine(run) });
+    }
+    return out;
+  }
+  // the line for a desk run cancelled because its page closed while approvals waited ('' = no line: nothing waited,
+  // or the run was not cancelled). Words come from the run record only (runstore `pageClosed`), never from the page.
+  function pageClosedLine(run) {
+    const pc = run && run.reason === 'cancelled' && run.pageClosed;
+    const waiting = pc && Array.isArray(pc.waitingOn) ? pc.waitingOn.map(str).filter(Boolean) : [];
+    if (!waiting.length) return '';
+    // "reconnected": the page's own teardown (App.disconnect → Chat.abort, then re-entry) drops the stream like a reload does
+    return '■ the run ended when this page closed, reloaded or reconnected while it waited for ' + waiting.join(' and ') + ' — nothing was approved';
   }
 
   function makeTranscriptStore(opts) {
@@ -188,9 +287,9 @@
         if (!e) { e = { streamId: r.streamId, turns: 0, lastAt: 0, preview: '' }; by.set(r.streamId, e); }
         e.turns++;
         if (r.ts >= e.lastAt) e.lastAt = r.ts;
-        // last USER line wins the preview — the assistant's reply is the answer, the user's line is the topic.
-        if (r.role === 'user' && r.content) {
-          e.preview = str(r.content).replace(/\s+/g, ' ').trim().slice(0, previewMax);
+        const preview = conversationPreview(r);
+        if (preview) {
+          e.preview = preview.replace(/\s+/g, ' ').trim().slice(0, previewMax);
           e.previewTaint = r.taint || ''; e.previewTaintKnown = r.taintKnown === true || !!r.taint;
         }
       }
@@ -227,8 +326,11 @@
 
     function buildEntry(e) {
       e = e || {};
-      let content = str(e.content).slice(0, CONTENT_MAX);
-      try { content = str(redact(content)).slice(0, CONTENT_MAX); } catch (e) { failNote('transcript.redact', e); }
+      const final = e.dispatchState === 'final';
+      let content = final ? str(e.content) : str(e.content).slice(0, CONTENT_MAX);
+      try { content = str(redact(content)); } catch (error) { if (final) throw error; failNote('transcript.redact', error); }
+      if (final && content.length > FINAL_CONTENT_MAX) throw new Error('Final dispatch transcript exceeds the 1 MiB persistence limit');
+      if (!final) content = content.slice(0, CONTENT_MAX);
       const entry = {
         streamId: normStream(e.streamId),
         agentId: str(e.agentId),
@@ -247,6 +349,15 @@
       // Recovery provenance is deliberately an opaque run id, never tool arguments. It lets boot reconciliation
       // prove that a journal's final rows already reached durable transcript storage before retiring the journal.
       if (e.sourceRunId != null) { const id = str(e.sourceRunId).slice(0, 200); if (id) entry.sourceRunId = id; }
+      if (['pending', 'internal', 'final'].includes(e.dispatchState)) entry.dispatchState = e.dispatchState;
+      if (e.dispatchState === 'final') {
+        entry.dispatchPrompt = str(redact(str(e.dispatchPrompt))).slice(0, 4000);
+        entry.dispatchReason = str(e.dispatchReason).slice(0, 80);
+        entry.dispatchRepairRunId = str(e.dispatchRepairRunId).slice(0, 100);
+        if (Number.isSafeInteger(e.textLength) && /^[a-f0-9]{64}$/.test(str(e.textSha256))) {
+          entry.textLength = e.textLength; entry.textSha256 = e.textSha256;
+        }
+      }
       // WHO wrote a user-role row that the Commander did not type: the agent that delegated this run (display only —
       // the row stays a user turn for the model). Absent on every Commander turn.
       if (e.from != null) { const f = str(e.from).slice(0, 80); if (f) entry.from = f; }
@@ -307,7 +418,7 @@
         if (!m || typeof m !== 'object' || m[PERSISTED]) continue;
         markPersisted([m]);                                    // mark BEFORE the role filter so fences aren't re-checked
         if (!ROLES.has(m.role) || m.role === 'system') continue;
-        append({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id, taint: taint });
+        append({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id, taint: taint, sourceRunId: opts && opts.sourceRunId, dispatchState: opts && opts.dispatchState });
         n++;
       }
       return n;
@@ -323,7 +434,7 @@
       for (const m of messages) {
         if (!m || typeof m !== 'object' || m[PERSISTED]) continue;
         if (!ROLES.has(m.role) || m.role === 'system') { markPersisted([m]); continue; }
-        appendStrict({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id, sourceRunId: opts.sourceRunId, taint: opts.taint || null });
+        appendStrict({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id, sourceRunId: opts.sourceRunId, dispatchState: opts.dispatchState, taint: opts.taint || null });
         markPersisted([m]);
         n++;
       }
@@ -389,7 +500,10 @@
             the stream's newest rows covering as many user/assistant turns as were replayed are checked too.
        Decay is structural, never silent: once tainted rows fall outside what is replayed (a new session, a history
        window that no longer reaches them) the next run starts clean, because the untrusted text is no longer in its
-       context. Returns the first taint source found, else null. */
+       context. Returns the first taint source found, else null.
+       Only an explicit `taint` counts here: a replayed row with no provenance (rowTaint's unverifiable case — all
+       history from before the clean stamp) does not taint the run, or every older conversation would start tainted
+       after an update. recall_conversation does treat it as unverifiable; docs/DECISIONS.md records the split. */
     function taintOf(streamId, messages, o) {
       o = o || {};
       const prior = (Array.isArray(messages) ? messages : []).filter(m => m && typeof m === 'object' && ROLES.has(m.role) && m.role !== 'system');
@@ -419,13 +533,13 @@
       // durable index/segments first so an old, idle conversation still resumes exactly.
       if (typeof io.history === 'function') {
         try {
-          const found = io.history(want, { limit, sourceRunId });
+          const found = io.history(want, { limit, sourceRunId, dispatchState: o.dispatchState, strict: o.strict, since: num(o.since) });
           if (Array.isArray(found)) return found.map(r => Object.assign({}, r));
-        } catch (e) { failNote('transcript.io', e); }
+        } catch (e) { if (o.strict) throw e; failNote('transcript.io', e); }
       }
       const out = [];
       for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) {
-        if (rows[i].streamId === want && (!sourceRunId || rows[i].sourceRunId === sourceRunId)) out.push(Object.assign({}, rows[i]));
+        if (rows[i].streamId === want && (!sourceRunId || rows[i].sourceRunId === sourceRunId) && (!o.dispatchState || rows[i].dispatchState === o.dispatchState)) out.push(Object.assign({}, rows[i]));
       }
       out.reverse();   // newest-first scan -> chronological for replay
       return out;
@@ -439,6 +553,7 @@
       const rows = history(streamId, o);   // chronological, capped
       const out = [];
       for (const r of rows) {
+        if (r.dispatchState === 'final') continue; // display projection; the execution already appears above
         if (r.role === 'user') out.push({ role: 'user', content: r.content });
         else if (r.role === 'assistant') {
           const m = { role: 'assistant', content: r.content || '' };
@@ -462,5 +577,5 @@
     };
   }
 
-  return { makeTranscriptStore, markPersisted, _internals: { SID_RE, ROLES, PERSISTED, flattenContent } };
+  return { makeTranscriptStore, projectConversation, conversationPreview, isFinalDeliveryRow, markPersisted, rowTaint, UNVERIFIED_ROW, _internals: { SID_RE, ROLES, PERSISTED, flattenContent } };
 });

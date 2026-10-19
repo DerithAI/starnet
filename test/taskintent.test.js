@@ -53,7 +53,46 @@ A.eq(valid.ok, true, 'a concrete researched material decision passes host valida
 A.eq(Policy.validateQuestion(material({ question: 'What does good look like?', options: ['simple', 'detailed'] }), { questions: [] }).ok, false, 'vague quality prompts fail closed');
 A.eq(Policy.validateQuestion(material({ options: ['operators', 'Operators'] }), { questions: [] }).ok, false, 'duplicate options do not masquerade as distinct choices');
 A.eq(Policy.validateQuestion(material({ discoverable: true }), { questions: [] }).ok, false, 'a discoverable gap must be researched instead of asked');
-A.eq(Policy.validateQuestion(material({ recommended: 'not listed' }), { questions: [] }).ok, false, 'recommended default must be one of the visible choices');
+// a recommendation that matches no visible choice is DROPPED (no ★), never a rejection — a rejection sent the model to
+// the marker fallback and it asked the same question twice, in prose and as a card (live walkthrough 2026-10-13)
+{
+  const unlisted = Policy.validateQuestion(material({ recommended: 'not listed' }), { questions: [] });
+  A.eq(unlisted.ok, true, 'an unlisted recommendation does not reject the question');
+  A.eq(unlisted.question.recommended, '', 'and no chip is starred for it — the host never guesses which one was meant');
+}
+// hiring is setup, not the deliverable: a briefExempt tool passes an unsettled brief; every other write still waits
+A.eq(Policy.canMutate({ status: 'ready' }, { scope: 'write', briefExempt: true }).ok, true, 'team.summon (briefExempt) is never held behind the Task Brief');
+A.eq(Policy.canMutate({ status: 'ready' }, { scope: 'write' }).ok, false, 'any other consequential tool still waits for brief_proceed');
+A.ok(/name: 'team\.summon'[^\n]*\n\s*briefExempt: true/.test(require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'tools', 'builtin', 'orchestration.js'), 'utf8')),
+  'team.summon is the tool that carries briefExempt');
+// …and the REGISTERED tool keeps it: the host's gate reads registry.get(name), whose makeTool used to drop the flag, so every hire
+// was still "paused — settling the task first" on a live station (final-rc-seams live proof, 2026-10-14)
+{
+  const { makeRegistry } = require('../sidecar/tools/registry.js');
+  const reg = makeRegistry();
+  const hire = reg.register({ name: 'team.summon', capability: 'orchestrator', scope: 'write', requiresConsent: true, briefExempt: true, run: async () => ({ content: 'ok' }) });
+  const write = reg.register({ name: 'fs.write', capability: 'files', scope: 'write', requiresConsent: true, run: async () => ({ content: 'ok' }) });
+  A.eq(Policy.canMutate({ status: 'ready' }, reg.get('team.summon')).ok, true, 'the registered team.summon passes an unsettled brief (the flag survives registration)');
+  A.eq([hire.briefExempt, write.briefExempt], [true, false], 'only a tool that opts in is exempt');
+  A.eq(Policy.canMutate({ status: 'ready' }, reg.get('fs.write')).ok, false, 'a registered write still waits for brief_proceed');
+}
+/* SEATING CREW IS SETUP TOO (rc walk 10-14, Haiku 4.5): "bring two crew in to help me write a launch post" picked
+   station.control group.add and the gate refused it until a brief interview finished. The registered station.control
+   exempts group.add by its args — every other station change, and station.power, still waits. */
+{
+  const { makeRegistry } = require('../sidecar/tools/registry.js');
+  const { makeStationControlTools } = require('../sidecar/tools/builtin/station-control.js');
+  const reg = makeRegistry();
+  makeStationControlTools({}).register(reg);
+  const control = reg.get('station.control'), power = reg.get('station.power');
+  const ready = { status: 'ready' };
+  A.eq(Policy.canMutate(ready, control, { name: 'station.control', args: { action: 'group.add', args: { agents: ['COPY', 'STRATEGY'] } } }).ok, true, 'group.add passes an unsettled brief');
+  A.eq(Policy.canMutate(ready, control, { name: 'station.control', args: { setting: 'group.add', agents: 'COPY' } }).ok, true, 'however the model spells the call (readCall)');
+  A.eq(Policy.canMutate(ready, control, { name: 'station.control', args: { action: 'session.delete' } }).ok, false, 'any other station change still waits');
+  A.eq(Policy.canMutate(ready, control).ok, false, 'no call, no exemption (fail closed)');
+  A.eq(Policy.canMutate(ready, power, { name: 'station.power', args: { action: 'group.add' } }).ok, false, 'station.power never qualifies');
+  A.ok(/const gate = TaskBriefPolicy\.canMutate\(taskBriefState\.brief, liveTool, c\);/.test(require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8')), 'the host gate hands the call to the policy');
+}
 
 // RECOMMENDATION MATCHING — a formatting slip must not silently cost the Commander the ★ suggestion, and a
 // rescue must never resolve to the WRONG chip. Every accepted form returns the CANONICAL option text.
@@ -388,7 +427,8 @@ A.eq(Policy.canMutate({ status: 'executing' }, { scope: 'execute' }).ok, true, '
     A.eq(Fork.strip('x\nFORK: q? || a | b\nFORK: r? || c | d'), 'x', 'Fork.strip removes every FORK line');
     const chatSrcT = fs.readFileSync(path.join(__dirname, '../frontend/app/chat.js'), 'utf8');
     A.ok(/const forkAsked = [^\n]*Fork\.parse\(replyText\)/.test(chatSrcT) && chatSrcT.indexOf('const forkAsked') < chatSrcT.indexOf('replyText = shown;'), 'the FORK is parsed from the raw reply before the markers are stripped');
-    A.ok(/renderProse\(r\.body, shownText\)/.test(chatSrcT) && /const shownText = [^\n]*Fork\.stripMarkers\(m\.content\)/.test(chatSrcT), 'history re-renders strip markers from server-synced rows');
+    // (the stripped text may be split around folded [steering] lines first — every prose part still comes from shownText)
+    A.ok((/renderProse\(r\.body, shownText[,)]/.test(chatSrcT) || (/renderProse\(r\.body, parts\[pi\][,)]/.test(chatSrcT) && /const parts = [^\n]*shownText\.split\(/.test(chatSrcT))) && /const shownText = [^\n]*Fork\.stripMarkers\(m\.content\)/.test(chatSrcT), 'history re-renders strip markers from server-synced rows');
   }
 
   const cx = CommanderContext.compose({ brief: resumed, dossier: 'COMMANDER DOSSIER\n- Goals: ship', existingSystem: '', patterns: s2.patterns(5) });

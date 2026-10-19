@@ -53,10 +53,15 @@ const lineOf = (pl, id) => pl.lineOfProp[id];
   A.eq(recA.sendTo, [{ outboxId: a.outbox, intakeId: b.intake, toLine: lineOf(p1, b.intake) }], 'LINE A’s record names where it sends');
   A.ok(recA.name === 'A' && typeof recA.stages === 'number' && recA.stages >= 1 && recA.maxHops === P.LINE_LIMIT_DEFAULTS.maxHops, 'the line record carries its name and stages n / max — ' + JSON.stringify({ name: recA.name, stages: recA.stages, maxHops: recA.maxHops }));
   A.eq(p1.hash, hash0, 'plan.hash never moves with a SEND TO (dispatch topology is unchanged; SPLITTER counters keep)');
-  A.ok(P.ok(p1) && !p1.errors.some(e => /^SEND_TO_(MISSING|SELF|LOOP)$/.test(e.code)), 'a clean SEND TO has no disabling finding (private-file access may still need a shared project)');
+  // RESTORED (final floor lane M19 / M29): e2f430f6e narrowed this to /^SEND_TO_(MISSING|SELF|LOOP)$/ so a PRIVATE FILES warning
+  // could ride every default SEND TO. Whether the next crew can open this line's files is advice (Pipeline.sendToFileAdvice), never
+  // a routing finding: a clean SEND TO is no finding at all.
+  A.ok(P.ok(p1) && !p1.errors.some(e => /^SEND_TO/.test(e.code)), 'a clean SEND TO is no finding');
 
   // the same pointer again burns no undo slot
-  st.undo(); A.eq(st.propById(a.outbox).sendTo, undefined, 'UNDO takes the pointer back');
+  const again = st.setSendTo(a.outbox, b.intake);
+  A.ok(again.ok && again.sendTo === b.intake, 'the same SEND TO again answers ok');
+  st.undo(); A.eq(st.propById(a.outbox).sendTo, undefined, 'ONE UNDO takes the pointer back (the repeat burned no slot)');
   st.redo(); A.eq(st.propById(a.outbox).sendTo, b.intake, 'REDO puts it back');
 
   // refusals
@@ -82,6 +87,9 @@ const lineOf = (pl, id) => pl.lineOfProp[id];
   // NOWHERE
   const nw = st.setSendTo(b.outbox, null);
   A.ok(nw.ok && st.propById(b.outbox).sendTo === undefined, 'NOWHERE clears it');
+  A.ok(st.setSendTo(b.outbox, null).ok, 'NOWHERE again is ok');
+  st.undo(); A.eq(st.propById(b.outbox).sendTo, c.intake, 'a second NOWHERE burned no slot: one UNDO restores B → C');
+  st.redo(); A.eq(st.propById(b.outbox).sendTo, undefined, '…and REDO clears it again');
   A.ok(st.setSendTo(c.outbox, a.intake).ok, 'with B → C gone, C → A is no circle (C → A → B)');
 }
 
@@ -171,8 +179,27 @@ const lineOf = (pl, id) => pl.lineOfProp[id];
   A.eq(P.sendToOf(pl, null, last), null, 'no line, no hand-off (a direct order)');
   const txt = P.handoffInput({ fromName: 'research', original: 'Find three facts.', output: 'Fact 1. Fact 2. Fact 3.', files: ['C:/w/a.md', 'C:/w/a.md', ''] });
   A.ok(/^\[HAND-OFF — LINE RESEARCH finished its part/.test(txt) && /THE JOB AS IT FIRST ARRIVED:\nFind three facts\./.test(txt) && /WHAT LINE RESEARCH DELIVERED:\nFact 1\./.test(txt), 'handoffInput: who, the job, what came back — ' + JSON.stringify(txt));
-  A.ok(/FILES IT MADE \(paths on this machine\):\n- C:\/w\/a\.md$/.test(txt), '…and each file once');
-  A.ok(P.handoffInput({ output: 'x'.repeat(20000) }).length < 12400, 'bounded');
+  A.ok(/FILES IT MADE \(paths on this machine\):\n- C:\/w\/a\.md\n\n\[THIS LINE’S PART — /.test(txt) && (txt.match(/C:\/w\/a\.md/g) || []).length === 1, '…and each file once');
+  /* R27 (live, real model, 2026-10-12): an un-instructed line handed "a two-sentence fun fact" wrote a NEW fact of its own on every
+     line (A's fact → B's different fact → C's third one), so the end of the chain held none of the work that was sent on. The frame
+     says what was delivered IS the work so far, and CLOSES (after the job and the work — an instruction read before the job lost to
+     it on a small model) with what this line does: build on it, never start the job over; its brief, or with none hand the work on;
+     the finished work itself, never a note on whether the job is done (the earlier rubber stamp). */
+  const head = txt.slice(0, txt.indexOf('\n\n')), tail = txt.slice(txt.lastIndexOf('\n\n') + 2);
+  A.ok(/work so far/.test(head), 'the frame opens: what was delivered is the work so far — ' + JSON.stringify(head));
+  A.ok(/^\[THIS LINE’S PART — build on the work LINE RESEARCH delivered above, never start the job over/.test(tail) && /with no brief, hand that work on as the finished result/.test(tail)
+    && /full finished work itself/.test(tail) && /never a note on whether the job is done\.\]$/.test(tail),
+    'the frame closes with this line\'s part: build on it, never start over, the finished work — ' + JSON.stringify(tail));
+  A.ok(/\[THIS LINE’S PART — build on the work the line before this one delivered above/.test(P.handoffInput({ output: 'x' })), '…naming an unnamed sender in words');
+  /* BOUNDED BY ITS PARTS (runtime repair 2026-10-12): the old "< 12400" held only for a frame with no job and no closing block — every
+     real hand-off carries the job, and R27's 11700 cut to meet it dropped 300 unmarked characters of the work the next line builds on.
+     What was delivered is cut exactly where the job record keeps it (handedIn, 12000); the job at 4000; the whole frame is those plus
+     its fixed text, with a full-size job and a long sender name present. */
+  const big = P.handoffInput({ fromName: 'N'.repeat(80), original: 'o'.repeat(5000), output: 'x'.repeat(20000) });
+  const back = P.parseHandoffInput(big);
+  A.eq([back.output.length, back.original.length], [12000, 4000], 'the work handed on is the 12000 characters the record keeps, the job its 4000');
+  A.ok(big.length > 16000 && big.length < 4000 + 12000 + 1200, 'bounded by its parts with the job present: ' + big.length);
+  A.ok(P.handoffInput({ output: 'x'.repeat(20000) }).length < 12000 + 1200, 'bounded with no job too');
   A.eq(P.parseHandoffInput(P.handoffInput({ fromName: 'a', original: 'Find facts.\nTwo.', output: 'F1\n\nF2', files: ['x'] })), { fromName: 'A', original: 'Find facts.\nTwo.', output: 'F1\n\nF2' }, 'parseHandoffInput reads the frame back (the OUTBOX titles a handed-on job by the job as it first arrived)');
   A.eq(P.parseHandoffInput('[LOOP — pass 2] x'), null, '…and nothing else');
 }
@@ -183,11 +210,11 @@ const lineOf = (pl, id) => pl.lineOfProp[id];
   for (const id in d.rooms) for (const r of d.rooms[id].rects) { r.x2 = 60; r.y2 = 44; }
   const st = WM.create(d);
   const add = o => { const r = st.addProp(o); if (!r.ok) throw new Error('addProp ' + JSON.stringify(r)); return r.id; };
-  // a SORTING OFFICE (INBOX ▸ FILTER ▸ two BAYs), each BAY belted into its OWN OUTBOX
+  // a SORTING OFFICE, whose two finished lanes each ship into their OWN OUTBOX
   const so = LE.placeBlueprint(st, 'sorting_office', { x: 8, y: 4 });
   const sb = so.ids.filter(id => st.propById(id).t === 'bay');
-  const o1 = add({ t: 'outbox', x: 16, y: 1, w: 2, h: 2 }), o2 = add({ t: 'outbox', x: 16, y: 6, w: 2, h: 2 });
-  A.ok(st.connectBelt(sb[0], o1).ok && st.connectBelt(sb[1], o2).ok, 'two BAYs, two OUTBOXes, one line');
+  const [o1, o2] = so.ids.filter(id => st.propById(id).t === 'outbox');
+  A.ok(o1 && o2, 'two BAYs, two OUTBOXes, one line');
   const rb = LE.placeBlueprint(st, 'research_line', { x: 8, y: 24 });
   const bIn = rb.ids.find(id => st.propById(id).t === 'intake');
   for (const p of st.props()) if (p.t === 'bay' && !p.agentId) st.assignPropAgent(p.id, 'ag_' + p.id);
@@ -232,8 +259,13 @@ const lineOf = (pl, id) => pl.lineOfProp[id];
   const src = f => fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', f), 'utf8');
   const build = src('build.js'), panel = src('workflowpanel.js'), world = src('world.js'), cmds = src('stationcommands.js'), outbox = src('windows/outbox.js'), wfw = src('windows/workflows.js');
   A.ok(/const fo = station\.propById\(connectFrom\);\s*if \(fo && fo\.t === 'outbox' && pp\.t === 'intake'\) \{ connectFrom = null; commitSendTo\(fo\.id, pid, ev\); return; \}/.test(build), 'BELT tool: the armed OUTBOX’s click on an INBOX is a SEND TO (before connectBelt is ever asked)');
-  A.ok(/const so = station\.propById\(d\.propId\), si = !d\.add && !ev\.shiftKey && so && so\.t === 'outbox' \? intakeAt\(d\.cur\.tx, d\.cur\.ty\) : null;\s*if \(si\) \{ commitSendTo\(so\.id, si\.id, ev\); return; \}/.test(build), 'SELECT: an OUTBOX let go on another line’s INBOX is a SEND TO (it does not move)');
-  A.ok(/const sendTo = !drag\.add && !drag\.forceMove && p\.t === 'outbox' && \(dx \|\| dy\) \? intakeAt\(drag\.cur\.tx, drag\.cur\.ty\) : null;/.test(build) && /if \(g\.sendTo\) \{ drawSendGhost\(t, now, g\); return; \}/.test(build), '…its ghost is the SEND TO arc + the verdict, before the drop');
+  // (wave 2, build-13: the SELECT drag's SEND TO is THE HAND's — planHandGesture's 'send' plan and commitHandGesture's setSendTo; the
+  //  propmove copy of it was unreachable but by a Shift let go before the release, and then sent against its own ghost)
+  const plan2 = build.slice(build.indexOf('function planHandGesture('), build.indexOf('// R mid-drag: the corner turns'));
+  const commit2 = build.slice(build.indexOf('function commitHandGesture('), build.indexOf('/* PICK WHAT GOES HERE'));
+  A.ok(/if \(A\.t === 'outbox' && T\.t === 'intake' && typeof station\.setSendTo === 'function'\)/.test(plan2) && /return \{ ok: true, kind: 'send', to: T, why: 'SEND EVERY RESULT TO ' \+ mName\(T\.id\) \};/.test(plan2), 'SELECT: an OUTBOX dragged onto another line’s INBOX plans a SEND TO (it does not move)');
+  A.ok(/else if \(plan\.kind === 'send'\) \{ res = station\.setSendTo\(d\.propId, plan\.to\.id\);/.test(commit2) && /strokeSendArc\(sendArc\(t, A, plan\.to\), col, now, 0\.95\)/.test(build), '…its release sets the SEND TO, and its ghost is the SEND TO arc + the verdict, before the drop');
+  A.ok(!/intakeAt|commitSendTo/.test(build.slice(build.indexOf('function commitPropMove('), build.indexOf('function commitPaint('))), '…and a plain MOVE never sends');
   A.ok(/const r = typeof station\.setSendTo === 'function' \? station\.setSendTo\(outboxId, intakeId\) : null;/.test(build), 'one writer: station.setSendTo');
   A.ok(/drawLayer\('sendTo', \(\) => drawSendLinks\(t, now\)\);/.test(build) && /if \(!near\) continue;   \/\/ ONE-VOICE LAW/.test(build), 'build mode draws each SEND TO as an arc; its words only when you look at either end');
   A.ok(/if \(p\.t === 'outbox'\) return paintOutbox\(body, f, p\);/.test(panel) && /const r = H\.station\(\)\.setSendTo\(p\.id, b\.dataset\.sendto \|\| null\);/.test(panel) && /wf-sendwhy/.test(panel), 'the Workflow panel’s OUTBOX card: SEND TO chips (+ NOWHERE), a circle disabled with its reason inline');
@@ -241,7 +273,7 @@ const lineOf = (pl, id) => pl.lineOfProp[id];
     && /' is off, so nothing is sent on — ' \+ esc\(ss\.why\)/.test(panel) && /\(sendsTo\.off \? ' · OFF' : ''\)/.test(panel), 'NOWHERE reads the doc pointer; a SEND TO the compiler has off is said OFF on the card and the tile (never "rides on")');
   A.ok(/\+ '\|' \+ JSON\.stringify\(plan\.sendTo \|\| \{\}\)\) : '';/.test(world), 'the plan poster re-posts on a SEND TO edit (outside plan.hash)');
   A.ok(/if \(p\.kind === 'handoff' && placeSendCrate\(p\)\) return;/.test(world) && /noteOutboxSink\(bx\.x, bx\.y\);/.test(world) && /fnow - c\.born >= HANDOFF_GRACE_MS/.test(world), 'the hand-off crate: held until the sending line’s crate sinks (or the grace runs out), then flown OUTBOX → INBOX');
-  A.ok(/drawSendPlates\(\);/.test(world) && /const text = 'SENDS TO ' \+ Pipeline\.lineWord\(nm,/.test(world) && /for \(const s of stat\) if \(s\.box\) taken\.push\(s\.box\);/.test(world), 'the OUTBOX plate SENDS TO LINE B, placed in the line plates’ own pass');
+  A.ok(/drawSendPlates\(\);/.test(world) && /const text = 'SENDS TO ' \+ \(\(station && station\.lineName \? station\.lineName\(st\.toLine\) \|\| station\.lineName\(st\.intakeId\) : null\) \|\| 'ANOTHER LINE'\);/.test(world) && /for \(const s of stat\) if \(s\.box\) taken\.push\(s\.box\);/.test(world), 'the OUTBOX plate SENDS TO LINE B, placed in the line plates’ own pass');
   A.ok(/: 'OUTBOX, then on to ' \+ to \+ ' \(SEND TO: that line’s own crew and budget work it next\)';/.test(cmds) && /out\.sendsWorkTo = /.test(cmds) && /P\.sendsReachedOf\(plan, lineId, pid\)/.test(cmds), 'station.map tells the agent where a line’s work goes after its OUTBOX — from the OUTBOX each step’s lane really ships into');
   A.ok(/const jobStream = \/\^\(sample\|handoff\)-\/\.test/.test(outbox) && /: 'SENT ON TO ' \+ word\(sj\.sentTo\)/.test(outbox) && /'FROM ' \+ word\(sj\.from\)/.test(outbox), 'DELIVERABLES: a handed-on job opens in WORKFLOWS and says FROM / SENT ON TO');
   A.ok(/sj\.sentTo\.refused \? 'NOT SENT ON TO ' \+ word\(sj\.sentTo\) \+ ' — ' \+ sj\.sentTo\.refused/.test(outbox), '…and a REFUSED hand-off says NOT SENT ON TO, with why (10-11 repair)');

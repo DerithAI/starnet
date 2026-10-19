@@ -224,7 +224,7 @@ const WorldLight = (() => {
     let resourcesDirty = false, retryResourcesAt = 0;
     const metrics = { geometryRevision: 0, staticBuilds: 0, dynamicBuilds: 0, visibilityBuilds: 0,
       frames: 0, preparations: 0, beamBuilds: 0, lastBuildMs: 0, droppedSources: 0, supported: true, contextLosses: 0, contextRecoveries: 0,
-      configRevision: 0, sampleCacheHits: 0, sampleCacheMisses: 0, sampleSourcesWalked: 0, sampleCacheEvictions: 0, sampleCacheInvalidations: 0 };
+      configRevision: 0, groundClipBuilds: 0, sampleCacheHits: 0, sampleCacheMisses: 0, sampleSourcesWalked: 0, sampleCacheEvictions: 0, sampleCacheInvalidations: 0 };
     const sampleLimit = () => clamp(Math.floor(finite(config.sampleCacheLimit, 512)), 0, 2048);
     /* GEOMETRY-SCOPED VISIBILITY (2026-10-07, a 207-source station drew at ~22ms): an emitter's area origins, and
        the wall-occlusion fraction a point sees from them, depend only on the walls (segments) and the emitter's
@@ -693,7 +693,7 @@ const WorldLight = (() => {
       if (groundPolyFor !== segments) { groundPolyFor = segments; groundPolys.clear(); }
       const k = x + ',' + y + ',' + r; let p = groundPolys.get(k);
       if (!p) {
-        p = visibilityPolygon({ x, y, r }, segments, 24);
+        p = visibilityPolygon({ x, y, r }, segments, 24); metrics.groundClipBuilds++;
         if (groundPolys.size >= GROUND_POLY_LIMIT) groundPolys.delete(groundPolys.keys().next().value);
         groundPolys.set(k, p);
       }
@@ -713,8 +713,10 @@ const WorldLight = (() => {
         }
         const s = shadowFor(body, currentLights, segments, sample(bx, by)); if (!s) continue;
         ctx.save();
-        // The silhouette can spread around a foot, but never through a bulkhead.
-        const polygon = groundPolygon(s.x, s.y, s.length + s.width);
+        // The silhouette can spread around a foot, but never through a bulkhead. The clip is keyed on the body's MAXIMUM reach
+        // (shadowFor caps length at height * 0.7), not this frame's length: a flickering screen nearby moves the length every
+        // frame, and must not re-cast the 24 wall rays for a body standing still. Walls still bound the larger clip.
+        const polygon = groundPolygon(s.x, s.y, clamp(finite(body.height, 18), 2, 90) * 0.7 + s.width);
         ctx.beginPath(); polygon.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); ctx.clip();
         const ex = s.x + s.dx * s.length, ey = s.y + s.dy * s.length;
         // Nested low-opacity silhouettes form a bounded penumbra without a blur

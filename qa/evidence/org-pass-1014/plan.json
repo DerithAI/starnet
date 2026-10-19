@@ -1,0 +1,1215 @@
+{
+ "diagnosis": "StarNet already has every part it needs. The problem is that most jobs have three to fifteen doors, and those doors go to different places and use different words.\n\n**Output.** One WORKFLOWS job shows up in LAST JOBS, on the floor OUTBOX, in DELIVERABLES › TO REVIEW and in the library (windows/workflows.js:172,643,883; sidecar/index.js:16904). A new user's first chat output appears in none of the MY WORK tabs, because MY WORK opens on an empty TASKS board (stationui.js:1212-1213,4659-4665).\n\n**Attention.** The rail NEEDS YOU and NOTIFICATIONS › NEEDS YOU read different sources, so their counts differ (needsyou.js:50-88 vs stationui.js:9392-9418). Pending builds, PROPOSALS and quest confirmations appear in neither list. Loop reviews and STEP-IN appear only in NOTIFICATIONS. The agent manual sends users to the other list (sidecar/manual.js:87,197,252).\n\n**Vocabulary.** It drifts exactly where users get stuck:\n- A scheduled job has about 7 names.\n- \"workflow\", \"loop\" and \"goal\" each mean several things.\n- The create screen still offers ASK FOR APPROVAL / FULL POWER (app.js:1787). Its ASK writes the LET IT WORK posture.\n- The approval card and /yolo say \"Full access\" but only change approval mode (sidecar/index.js:2054-2060).\n\n**Help and first-run copy.** They name doors that are hidden or wrong:\n- The manual names CREW › RECRUIT and BUILD › CONNECT while the staged dock has them offline (systems.js:31,39).\n- Model failures say \"check CONNECT\" (onboarding.js:953).\n- Autonomy copy reads like an unlock ladder (nightreport.js:255-289).\n\n**Verifiers corrected several premises:**\n- Refusals already name their cause. The gap is four door labels that land unfocused, plus a RECONNECT that only navigates (friendlyerror.js:744-782).\n- The desk stop was removed on purpose twice (418b3d95a, b0c57d5dc).\n- Saving in SCHEDULES already turns the scheduler on (routines.js:798; sidecar/index.js:15590-15598). The INBOX form offers SAVE ONLY instead, so one action follows two rules, and the SCHEDULES status line wrongly says it won't run (routines.js:334).\n\n**Top customer asks.** They line up with these seams: what pays for a run and why it stopped, how to connect a model, where to start, where files went, and where a key or control lives.\n\n**The fix.** Nothing new needs inventing. The fix has five parts:\n- Name one front door per job and point the other doors at it, keeping every capability.\n- Use one word per concept.\n- Fix a few defaults. Every default change is gated on Andrew's open calls.\n- Put a one-line, truthful explanation at the exact spot each user gets blocked.\n- Sequence the work after the in-flight final-* lanes (approval-truth, rc-seams, small-ports, customer-p1, build-ux) merge.",
+ "coreJobs": [
+  {
+   "job": "Talk to an agent / start work",
+   "todayDoors": [
+    "+ NEW",
+    "START ONE",
+    "/new /clear /branch /background",
+    "ON THE LINE pick",
+    "starter idea click (creates a session)",
+    "QUESTS START (own session, by decision)",
+    "RECIPES launch",
+    "NEW APP",
+    "OUTBOX follow-up",
+    "@mention / + Add agents",
+    "hire auto-session"
+   ],
+   "oneFrontDoor": "COMMS composer in the open SESSION; + NEW in SESSIONS for a fresh one. A starter idea fills the open session when that session is blank. A quest START keeps its own session, per Andrew's locked 09-28 call (stationui.js:10088-10104).",
+   "why": "Side-effect sessions fill the rail. A hire creates one (app.js:1175) and a starter click creates one (chat.js:2301-2303). The COMMS title never names the open session (index.html:645), so users type without knowing which conversation they are in (FINDINGS #8/#18/#19)."
+  },
+  {
+   "job": "Answer what is waiting on me",
+   "todayDoors": [
+    "NEEDS YOU rail",
+    "NOTIFICATIONS › NEEDS YOU",
+    "SYSTEM badge",
+    "CREW gold card",
+    "COMMS card",
+    "delegated row",
+    "group row",
+    "toast",
+    "HUD",
+    "DESK SCREEN",
+    "DELIVERABLES NEEDS A DECISION",
+    "QUESTS PROPOSALS / Confirm",
+    "GOAL LOOPS 'waiting on your review'",
+    "STEP-IN"
+   ],
+   "oneFrontDoor": "NEEDS YOU at the top of SESSIONS lists every BLOCKING item. NOTIFICATIONS › NEEDS YOU shows the same model. The optional piles (TO REVIEW, PROPOSALS) keep their own homes and counts.",
+   "why": "NOTES_DRAFT promises one list. Today there are two, with different sources and counts. Builds and quest confirmations are in neither list, and loop reviews and STEP-IN are missing from the rail (needsyou.js:50-88; stationui.js:9392-9418)."
+  },
+  {
+   "job": "Find finished work and its files",
+   "todayDoors": [
+    "COMMS ◈ delivered / ▤ saved",
+    "DELIVERABLES",
+    "TO REVIEW",
+    "TASKS OPEN RESULT",
+    "WORKFLOWS LAST JOBS",
+    "floor OUTBOX",
+    "While you were away",
+    "⚒ sessions",
+    "NOTIFICATIONS Finished",
+    "RECORD › RUNS",
+    "Delegated See work",
+    "DESK",
+    "QUESTS LAST RESULT"
+   ],
+   "oneFrontDoor": "MY WORK › DELIVERABLES, opened first on a fresh station, with TO REVIEW on top for work that finished unattended. COMMS ▤ saved rows keep their reveal and copy-path keys. The floor OUTBOX stays line-only under the OUTBOX LAW.",
+   "why": "Customer ask #5, 'where are my files'. The DELIVERABLES drawer has no reveal or copy-path key (deliverables.js:308-311), and the manual gives three different answers (tutorial.js:1193,1244)."
+  },
+  {
+   "job": "Connect a model and know what pays for it",
+   "todayDoors": [
+    "onboarding Connect a brain",
+    "AI & MODELS provider card ＋ ADD KEY",
+    "API KEYS add row",
+    "KeyCTA",
+    "error doors (4 labels)",
+    "ABILITIES router",
+    "COMMS model dock",
+    "dossier MODEL",
+    "/model"
+   ],
+   "oneFrontDoor": "SYSTEM › SETTINGS › AI & MODELS, where each provider card is the one key box. SPENDING LIMITS holds the caps. Every money or connection refusal already names its cause, and its door lands on the right card.",
+   "why": "These are the top two customer themes (about 22 and 27 reports). The causes are named, but the four door labels land at the top of a long page, and RECONNECT never starts sign-in (friendlyerror.js:660-666,744-782)."
+  },
+  {
+   "job": "Connect a service or chat app",
+   "todayDoors": [
+    "BUILD › CONNECT › ABILITIES",
+    "CONNECT › CHANNELS",
+    "＋ ADD AN ABILITY router",
+    "FIELD MANUAL CONNECT PLATFORMS",
+    "widget 'Connect another app'",
+    "error door ⇄ OPEN ABILITIES",
+    "floor NO FEED"
+   ],
+   "oneFrontDoor": "BUILD › CONNECT (ABILITIES for outgoing services, CHANNELS for incoming chat apps). Online on day one if Andrew answers call #23 yes.",
+   "why": "CONNECT is offline on a fresh station and only chat-app words reveal it (systems.js:39,58), while the help names it (tutorial.js:1157-1161). Service keys live in a different window from model keys (connectors.js:211-232)."
+  },
+  {
+   "job": "Get or configure an agent",
+   "todayDoors": [
+    "CREW › RECRUIT",
+    "custom class",
+    "IMPORT AGENT",
+    "bay suggestions",
+    "COMMS 'meet them'/'show me'",
+    "ask overseer",
+    "workflow + RECRUIT",
+    "preset + RECRUIT",
+    "CREW › AGENTS",
+    "crew row/DOSSIER/right-click",
+    "floor sprite",
+    "settings scattered (voice, skills, away)"
+   ],
+   "oneFrontDoor": "CREW › RECRUIT adds agents. The AGENT DOSSIER is the one file per agent, and its BRIEF setup strip (MODEL / PERSONALITY / ACCESS / PROFILE / AWAY WORK, stationui.js:2066-2078) indexes every per-agent setting. VOICE and SKILLS rows are added there only on Andrew's yes. A DOSSIER key that is always visible keeps the dossier door in one place.",
+   "why": "Per-agent voice, skills and away work live in three docks (stationui.js:7651-7654, 3723-3734, 2705). RECRUIT is hidden on day one. The DOSSIER key on a crew row appears only on hover and only from 2 agents up (stationui.js:1833; interface.css:143-144)."
+  },
+  {
+   "job": "Make work run by itself",
+   "todayDoors": [
+    "AUTOMATE (4 tabs)",
+    "BUILD MODE INBOX 'Or start it automatically'",
+    "SETTINGS › AUTONOMY",
+    "/routine /cron /loop /goal /away /background",
+    "RECIPES ◷ MAKE ROUTINE",
+    "APPS AUTO-UPDATE",
+    "takeover nudge"
+   ],
+   "oneFrontDoor": "WORK › AUTOMATE (WORKFLOWS, SCHEDULES, GOAL LOOPS, AWAY WORK). A workflow's page in WORKFLOWS shows how it starts and links into its one trigger editor. Every slash command replies with a door into its tab.",
+   "why": "There are 9 mechanisms. The WORKFLOWS page can't show or set a start trigger (workflows.js:617-626 vs workflowpanel.js:1052-1083). LAST JOBS leaves out runs started by a trigger (sidecar/index.js:12580). Saving a schedule follows two arm rules (routines.js:798 vs workflowpanel.js:1074-1081)."
+  },
+  {
+   "job": "Build the station / a line",
+   "todayDoors": [
+    "BUILD › BUILD MODE",
+    "EDIT WORKFLOW",
+    "FIX IT IN THE EDITOR",
+    "More ready-made lines…",
+    "▦ Presets",
+    "floor NO AGENT"
+   ],
+   "oneFrontDoor": "BUILD › BUILD MODE: the Conveyors tab for line pieces, ▦ Presets for whole layouts. WORKFLOWS is where lines are run and started. Both editors use one label set.",
+   "why": "The two editors use different words for the same actions (workflows.js:697-727 vs workflowpanel.js:1888-1992). SET IT UP FOR ME only sees 4 of the 20 lines (workflows.js:421; linedraft.js:16)."
+  },
+  {
+   "job": "Decide how much agents do alone, and stop everything",
+   "todayDoors": [
+    "onboarding Working style",
+    "awakening cadence",
+    "SETTINGS › PERMISSIONS",
+    "SETTINGS › AUTONOMY",
+    "AUTOMATE CHANGE",
+    "dossier ACCESS",
+    "approval card Full access",
+    "/yolo",
+    "phone ALWAYS ASK",
+    "override",
+    "tray Pause Automation (E-STOP)",
+    "top-bar RESUME AUTOMATION (shows while halted)"
+   ],
+   "oneFrontDoor": "SETTINGS › PERMISSIONS for the three posture answers (CHECK WITH ME / LET IT WORK / FULL POWER), with the per-agent expert knob ASKS FIRST / NEVER ASKS. SETTINGS › AUTONOMY for ON ITS OWN. The station-wide stop stays in the tray, as decided (418b3d95a, b0c57d5dc). The top-bar RESUME AUTOMATION is the clear way to lift it.",
+   "why": "There are 8 access vocabularies. The create screen's ASK writes LET IT WORK, and 'Full access' / FULL POWER labels sit on approval-only switches (app.js:3252; sidecar/index.js:2054-2060). Dial clicks lift a halt with no receipt (autonomystore.js:64-67)."
+  },
+  {
+   "job": "See goals and progress",
+   "todayDoors": [
+    "COMMANDER gauge",
+    "WORK › QUESTS",
+    "MISSION BOARD",
+    "GROWTH",
+    "TROPHY CASE",
+    "STATION RECORD",
+    "FIELD MANUAL PROGRESS",
+    "toasts"
+   ],
+   "oneFrontDoor": "WORK › QUESTS (NOW · GOALS · PROGRESS · HISTORY). Per-agent growth lives in each dossier's GROWTH. YOU › AIMS stays a separate, distinct tab for what agents know about you, and it already links to QUESTS › GOALS.",
+   "why": "Station level shows twice under two names, one of them false: 'AGENT GROWTH' is station XP (stationui.js:10786-10788 vs 2153-2166; queststore.js:14-15)."
+  },
+  {
+   "job": "Learn / get unstuck",
+   "todayDoors": [
+    "FIELD MANUAL",
+    "QUICK TOUR",
+    "hints",
+    "coachmarks",
+    "BUILD QUICK GUIDE",
+    "ask the agent (manual.read)"
+   ],
+   "oneFrontDoor": "SYSTEM › FIELD MANUAL, plus asking the agent (station.show). Both must match the on-screen labels, and every chapter that names a staged dock carries the staged-dock note.",
+   "why": "The help names hidden or retired doors. Model-fix copy points at CONNECT, and the manual points waiting items only at NOTIFICATIONS (onboarding.js:953; sidecar/manual.js:87-88; tutorial.js:1157-1191)."
+  }
+ ],
+ "vocabulary": [
+  {
+   "concept": "A conversation",
+   "canonicalWord": "SESSION",
+   "retire": [
+    "workstream",
+    "stream",
+    "chat thread",
+    "thread",
+    "current stream",
+    "Untitled (use final-rc-seams 'New session' via Workstreams.titleOf)"
+   ],
+   "evidence": "index.html:606 vs sidecar/slash.js:38, chat.js:8350, app.js:1212, marketplace.js:426, glossary.js:45"
+  },
+  {
+   "concept": "A blocking item waiting on the user",
+   "canonicalWord": "NEEDS YOU",
+   "retire": [
+    "needs your OK",
+    "NEEDS YOUR OK",
+    "Waiting on you (NOTIFICATIONS tag)",
+    "Approval needed (as a separate label)",
+    "awaiting your confirmation"
+   ],
+   "evidence": "needsyou.js:117; crewcards.js:87; hudmode.js:215; stationui.js:9411,10751. TO REVIEW and PROPOSALS are optional and not NEEDS YOU."
+  },
+  {
+   "concept": "Scheduled job (PENDING Andrew untangle call #4; 'Routines = WHEN' is locked in docs/DECISIONS.md:60)",
+   "canonicalWord": "SCHEDULE",
+   "retire": [
+    "routine",
+    "ROUTINES",
+    "ACTIVE ROUTINES",
+    "+ ADD A ROUTINE",
+    "SUGGEST ROUTINES",
+    "MAKE ROUTINE",
+    "standing jobs",
+    "/cron (as a label; command and routine.create tool names stay)"
+   ],
+   "evidence": "stationui.js:1088; routines.js:73,135,403-404; apps.js:266; needsyou.js:83; emergency-control.js:6; tutorial.js:1228"
+  },
+  {
+   "concept": "Station-wide scheduler switch",
+   "canonicalWord": "SCHEDULING ON / OFF",
+   "retire": [
+    "ENABLE SCHEDULING",
+    "RESUME SCHEDULING",
+    "DISABLE SCHEDULING",
+    "TURN SCHEDULING ON (as a third name)",
+    "TURN ON ROUTINES",
+    "scheduler armed / disarmed"
+   ],
+   "evidence": "routines.js:368-377; workflowpanel.js:1059,1074-1081; apps.js:266; chat.js:4572"
+  },
+  {
+   "concept": "A chain of agents on belts",
+   "canonicalWord": "WORKFLOW",
+   "retire": [
+    "production line",
+    "conveyor line (in prose)",
+    "Layouts",
+    "line of agents",
+    "work line"
+   ],
+   "evidence": "stationui.js:1088; tutorial.js:1175-1176,1219; build.js:41. 'line' stays only as the floor noun inside BUILD MODE (CONVEYOR LINES)."
+  },
+  {
+   "concept": "Goal-loop template",
+   "canonicalWord": "KIND OF LOOP",
+   "retire": [
+    "Choose a workflow (in GOAL LOOPS)",
+    "loop shape"
+   ],
+   "evidence": "windows/loops.js:53,72,352. The newuser verifier rejected 'loop shape' as jargon."
+  },
+  {
+   "concept": "What the user plans to achieve",
+   "canonicalWord": "GOAL",
+   "retire": [
+    "north star",
+    "DIRECTION (in QUESTS)",
+    "goal loop (for /goal's per-session goal; becomes SESSION GOAL)"
+   ],
+   "evidence": "stationui.js:10395,10844; chat.js:8406-8438. YOU › AIMS deliberately stays AIMS, since it holds what agents know about you (stationui.js:9800-9806; front-doors 10-01). DIRECTION stays only in SETTINGS › AUTONOMY."
+  },
+  {
+   "concept": "Ask-first vs act-alone posture (the ONE ACCESS answers)",
+   "canonicalWord": "CHECK WITH ME / LET IT WORK / FULL POWER",
+   "retire": [
+    "ASK FOR APPROVAL",
+    "Working style (for access)",
+    "YES — ASK ME / NO — JUST DO IT"
+   ],
+   "evidence": "app.js:1787-1790,3252; stationui.js:2763-2779,2816-2830; index.html:180-182"
+  },
+  {
+   "concept": "Approval-mode-only switch (no reach change)",
+   "canonicalWord": "ASKS FIRST / NEVER ASKS (card key 'Never ask')",
+   "retire": [
+    "Full access (approval card key)",
+    "full-access approval mode (/yolo)",
+    "FULL POWER (on approval-only chips)",
+    "'/yolo is the Full Power shortcut'"
+   ],
+   "evidence": "chat.js:3983,8292,8891-8906; sidecar/slash.js:186; stationui.js:2847-2850; sidecar/index.js:2054-2060. FULL POWER is reserved for the posture that also sets reach."
+  },
+  {
+   "concept": "Unattended initiative rungs (rung rename PENDING Andrew call #57)",
+   "canonicalWord": "ON ITS OWN: WAIT / SUGGEST / SMALL JOBS / FREE",
+   "retire": [
+    "LEASH (user copy)",
+    "PROPOSE (user copy)",
+    "BUILD (as a rung; clashes with the BUILD dock)",
+    "longer/shorter leash",
+    "earned (autonomy)"
+   ],
+   "evidence": "stationui.js:7458-7463; chat.js:6156,6188; trust.js:36,195,252. DRAFT was rejected because the rung builds real work when the workshop grant is on (autonomy.js:57,130). Renaming the NIGHT SHIFT trophy (xp.js:231) is a separate Andrew call."
+  },
+  {
+   "concept": "Work queued for when the user is away",
+   "canonicalWord": "AWAY WORK",
+   "retire": [
+    "WHILE I’M AWAY → AUTOMATE (as a label)",
+    "away shift",
+    "away workshop",
+    "build list",
+    "Queued builds",
+    "/build-away (in help copy; the alias still works)"
+   ],
+   "evidence": "automation.js:40,44; stationui.js:2705,2725; chat.js:8285; slash.js:254-255"
+  },
+  {
+   "concept": "Pile of unattended finished runs awaiting a rating",
+   "canonicalWord": "TO REVIEW",
+   "retire": [
+    "OUTBOX (for the pile)",
+    "OUTBOX crate (for away runs)",
+    "crate on the floor (for away runs)",
+    "collect crate",
+    "work to rate"
+   ],
+   "evidence": "outbox.js:42-86,279; workflows.js:648; chat.js:4508,4560,4618; returnstore.js:133. OUTBOX stays only as the floor machine with its line-only count."
+  },
+  {
+   "concept": "Where away drafts and away builds land",
+   "canonicalWord": "LAST REPORT (SETTINGS › AUTONOMY) for drafts; a new ⚒ session for builds",
+   "retire": [
+    "'leave on my desk'",
+    "'drafts on your desk'",
+    "'leave them in TO REVIEW' (false today)"
+   ],
+   "evidence": "onboarding.js:99; autonomy.js:148; nightnudge.js:72-84; nightreport.js:255-257; stationui.js:7546. Moving drafts into TO REVIEW is a separate Andrew behavior call."
+  },
+  {
+   "concept": "Finished output library",
+   "canonicalWord": "DELIVERABLES",
+   "retire": [
+    "Logbook (as where work opens)",
+    "OUTPUT LIBRARY"
+   ],
+   "evidence": "build.js:2981; stationui.js:1081"
+  },
+  {
+   "concept": "Agent's file",
+   "canonicalWord": "AGENT DOSSIER",
+   "retire": [
+    "AGENT RECORD (back label)",
+    "LOGBOOK (as a window)"
+   ],
+   "evidence": "stationui.js:11350,11502; outbox.js:50"
+  },
+  {
+   "concept": "The task board",
+   "canonicalWord": "TASKS",
+   "retire": [
+    "TASK BOARD (back label, ABOUT, BUILDERS title, glossary)",
+    "Your tasks",
+    "REVIEW / READY TO REVIEW (as board lanes)",
+    "REVIEW RESULT"
+   ],
+   "evidence": "stationui.js:1080,4657,4791,4806,4879,4887,7824,11362,11502"
+  },
+  {
+   "concept": "Adding an agent",
+   "canonicalWord": "RECRUIT (verb) / CLASS (noun)",
+   "retire": [
+    "summon (as a button verb)",
+    "commission",
+    "hire",
+    "specialty",
+    "specialist",
+    "YOUR SPECIALISTS",
+    "RECRUITMENT (empty state)",
+    "DEPLOY TO (becomes RE-SPEC <AGENT> INSTEAD)",
+    "deployed to (toast)"
+   ],
+   "evidence": "marketplace.js:424-431,657-719,1121-1148,2286,2297; stationui.js:1814,3395; index.html:739; sidecar/manual.js:257"
+  },
+  {
+   "concept": "The first agent",
+   "canonicalWord": "OVERSEER",
+   "retire": [
+    "orchestrator (user-facing)",
+    "'the station itself' (glossary definition)"
+   ],
+   "evidence": "index.html:121-122; glossary.js:46-47; marketplace.js:760-761,864"
+  },
+  {
+   "concept": "Model and provider",
+   "canonicalWord": "MODEL (in SETTINGS › AI & MODELS)",
+   "retire": [
+    "brain (in fix and error copy; may stay as the genesis flavor header)",
+    "CONNECT (as where models live)",
+    "⚙ Open Settings / ＋ Add a key (as error door labels)"
+   ],
+   "evidence": "onboarding.js:953; firstvalue.js:135; keycta.js:165; friendlyerror.js:744-782"
+  },
+  {
+   "concept": "Custom provider endpoint editor",
+   "canonicalWord": "✎ ENDPOINT URL",
+   "retire": [
+    "✎ STATION LINK"
+   ],
+   "evidence": "stationui.js:5746-5760; GitHub #113"
+  },
+  {
+   "concept": "An agent's workstation",
+   "canonicalWord": "DESK",
+   "retire": [
+    "workstation",
+    "PC",
+    "computer",
+    "ADD A WORKSTATION (becomes GIVE <NAME> A DESK)"
+   ],
+   "evidence": "build.js:2972; workflowpanel.js:788; workflows.js:587; deskscreen.js:500"
+  },
+  {
+   "concept": "Sending one real paid job down a line",
+   "canonicalWord": "▶ SEND A JOB",
+   "retire": [
+    "SEND IT A JOB",
+    "SEND IT DOWN THE LINE",
+    "RUN ONE REAL JOB",
+    "RUN THE SAMPLE JOB",
+    "test job / sample job"
+   ],
+   "evidence": "workflows.js:513,622; workflowpanel.js:1892,2148; build.js:2976"
+  },
+  {
+   "concept": "Result and follow-up on a line job",
+   "canonicalWord": "✓ DELIVERED / ✎ NEEDS CHANGES → SUGGEST CHANGES / ★ KEEP THIS STYLE / ↻ SEND IT AGAIN",
+   "retire": [
+    "✓ DONE (for a finished job; ✓ DONE stays the panel's close key)",
+    "NOT RIGHT?",
+    "SUGGEST FIXES",
+    "KEEP AS THE EXAMPLE",
+    "RUN THE SAME JOB AGAIN"
+   ],
+   "evidence": "workflows.js:608,658,697-727; workflowpanel.js:705,1965-1992. Verifiers chose DELIVERED to avoid the panel's ✓ DONE close key and to match the SHIPPED wording in final-rc-seams."
+  },
+  {
+   "concept": "Station export",
+   "canonicalWord": "STATION BACKUP",
+   "retire": [
+    "Backup models (becomes FALLBACK MODELS)",
+    "↻ BACKUPS (becomes ↻ SPARE KEYS)",
+    "EXPORT AGENT (becomes EXPORT STATION)"
+   ],
+   "evidence": "stationui.js:7610,7948,5771,7785; index.html:381-382"
+  },
+  {
+   "concept": "Restricted unattended reach",
+   "canonicalWord": "LOCAL ONLY",
+   "retire": [
+    "REACH: SANDBOX (label only; data-reach='sandbox' and the stored value stay)"
+   ],
+   "evidence": "stationui.js:7469-7470; nightreport.js:259"
+  },
+  {
+   "concept": "Crew-built apps vs outside services",
+   "canonicalWord": "APPS (built) / SERVICES (connected)",
+   "retire": [
+    "Connected apps",
+    "tools & apps your agents use",
+    "Connect another app"
+   ],
+   "evidence": "index.html:757-774; systems.js:39-44; widgets.js:554,742"
+  },
+  {
+   "concept": "Clearing",
+   "canonicalWord": "CLEAR (hide, undoable) / DELETE (remove records) / MARK ALL REVIEWED (TO REVIEW)",
+   "retire": [
+    "✓ CLEAR ALL N (in TO REVIEW)",
+    "CLEAR ALL — SURE? (TO REVIEW armed label)",
+    "CLEAN OLD RECORDS (becomes DELETE FAILED & DISCARDED RECORDS)",
+    "collect crate"
+   ],
+   "evidence": "outbox.js:47,76-86,279; deliverables.js:244,617-618"
+  },
+  {
+   "concept": "Notification preferences",
+   "canonicalWord": "ALERTS",
+   "retire": [
+    "NOTIFICATIONS (as the heading inside SETTINGS › ALERTS)"
+   ],
+   "evidence": "stationui.js:7755,7961"
+  },
+  {
+   "concept": "Thumbs-up count",
+   "canonicalWord": "THUMBS-UP",
+   "retire": [
+    "N APPROVALS (Station prestige)"
+   ],
+   "evidence": "stationui.js:2166; xp.js:315,369-372"
+  },
+  {
+   "concept": "Station-wide level",
+   "canonicalWord": "STATION XP",
+   "retire": [
+    "AGENT GROWTH (in QUESTS › Progress; it is station XP)",
+    "Station prestige"
+   ],
+   "evidence": "stationui.js:2153-2166,10786-10788; queststore.js:14-15"
+  },
+  {
+   "concept": "Achievements",
+   "canonicalWord": "MILESTONES",
+   "retire": [
+    "Achievements",
+    "Station milestones",
+    "HONOURS (trophy window heading)"
+   ],
+   "evidence": "stationui.js:10805-10809; windows/trophies.js:56"
+  },
+  {
+   "concept": "Station-wide stop",
+   "canonicalWord": "Pause Automation (tray) / RESUME AUTOMATION (top bar)",
+   "retire": [
+    "E-STOP (as if it were a desk button)"
+   ],
+   "evidence": "src-tauri/src/main.rs:5123; emergency-control.js:1,24-30; friendlyerror.js:226-227"
+  }
+ ],
+ "proposals": [
+  {
+   "id": "P31",
+   "area": "first-run-learning",
+   "title": "First ten minutes: labels match what happens (#56 #58 #59)",
+   "today": "The create screen has three numbering schemes: a journey strip 01-03 (index.html:124), setup-nav buttons 01/02 that work as a two-page stepper (index.html:128-131; overseer-setup.js:85-96), and column numerals like '01 APPEARANCE' and '03 THE BRAIN' (index.html:138,188). 'Quick setup — two questions' (onboarding.js:637) and the greeting 'start with two setup questions' (:635) undercount. runQuickSetup counts '1 of 2'/'2 of 2' with beatTotal=2 (:614-622), then pickStation asks 'one more question' (:885,903). The pace labels don't say how they differ: loose asks 1 follow-up, deep asks up to FOLLOWUP_BUDGET 3 plus mirror offers (:402,699-701,728). The nav coach shows as soon as screen-game is active, during the awakening (navdock.js:105-118). The closing handoff is a menu path (onboarding.js:923). READY TO BEGIN (:947) and YOUR FIRST TASK (pitchstore.js:282) come back to back.",
+   "problem": "The first screens contradict themselves: question counts, step numbers, and a coach that talks over the arrival. Every question stays, per the INTERVIEW DEPTH law; only labels and timing change.",
+   "change": "Copy and timing:\n(a) index.html: keep the journey strip as the only numbering. Remove only the digits from the ov-setup-nav buttons (128-131), which stay as navigation, and remove the column numerals (138,188).\n(b) onboarding.js: say 'Quick setup — three questions' at :637, use 'three setup questions' in the greeting at :635, and set stage counters to 1/2/3 of 3 including the station pick (beatTotal and :885/:903).\n(c) Put short pace hints inside the option labels at onboarding.js:637-639, with counts checked against the real loose/deep step lists: 'one follow-up' / 'up to three follow-ups'. No sentences under the choices.\n(d) navdock.js: show the nav coach (showCoachOnce) only after the awakening releases (World.releaseAwakening). Shoot it with the interview layers.\n(e) Fold READY TO BEGIN (onboarding.js:947) into the YOUR FIRST TASK header (pitchstore.js:282).\n\nNeeds Andrew's yes, as separate lines:\n- A closing choice key using the existing Dialogue.node options. It replaces the menu path at onboarding.js:923 and lands on the line's row in WORKFLOWS (a new button).\n- #53: keep the hero hidden unless the cloud is linkable (app.js:2524-2534). First reproduce on a clean install why /api/credits/linkable was false.\n- #54: check which model the live OpenRouter catalog preselects (app.js:1634) before picking a balanced default.",
+   "kind": "copy",
+   "files": [
+    "frontend/index.html",
+    "frontend/app/onboarding.js",
+    "frontend/app/navdock.js",
+    "frontend/app/pitchstore.js",
+    "frontend/app/overseer-setup.js"
+   ],
+   "size": "M",
+   "priority": 1,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 6 (beginner path) and theme 2 (first connection); FINDINGS #53 #54 #56 #58 #59",
+   "collidesWithLane": "final-rc-seams (navdock.js toast reseat in the same toggle/dismissCoach code; index.html)",
+   "verifierNotes": "Items (a)-(e) are copy and timing. Forcing START WITH STARNET to open first was dropped: it would advertise a path the build can't link (truthful telemetry). The setup-nav buttons are a working stepper, so only their numerals go. The OPEN WORKFLOWS key, #53 and #54 are Andrew lines."
+  },
+  {
+   "id": "P10",
+   "area": "dock-windows",
+   "title": "Day-one dock: CONNECT and RECRUIT start online (answer to call #23)",
+   "today": "On a fresh, staged station, RECRUIT waits for jobs:2 (systems.js:31), AUTOMATE for jobs:3 + crew:2 (:35), and CONNECT for jobs:2 (:39). STEP-IN appears only while an agent waits (stepin.js:105-107). Only chat-app words bring CONNECT online (CHANNEL_RX, systems.js:58), so 'connect my Gmail' never shows the door. The manual's CONNECT PLATFORMS buttons already go through openTerm and the door law (tutorial.js:1123-1128). FIELD MANUAL › CREW names 'CREW › RECRUIT' as plain text (tutorial.js:1191), and the staged-dock note prints only in FIRST MISSION (tutorial.js:1172-1173). The crew and dossier empty states say 'Commission one from RECRUITMENT' (stationui.js:1814,3395). The nav coach says 'these 4 docks' while APPS can make 5 (index.html:810). The RECRUIT and CONNECT tips use retired words: 'summon a specialist class' (systems.js:31; index.html:739-741) and 'Tools and apps your agents use' (systems.js:39-44; index.html:757-762). index.html:746-748 has a stale OUTBOX tab comment.",
+   "problem": "The two doors customers ask for on day one, connecting a service and adding an agent, are invisible. The help names them anyway, so the dock reads as gated.",
+   "change": "Recommended answer to Andrew's call #23. Ship only on his yes; it reverses the 10-02 front-doors staging (1a125f9f6).\n(1) systems.js:31,39: set start:true on 'recruit' and 'connect' and drop their 'how' lines. AUTOMATE and STEP-IN stay staged. GROW WITH ME and SHOW EVERYTHING stay.\n(2) tutorial.js: print the existing staged fm-note, same sentence and class as :1173, in every FIELD MANUAL chapter that names a staged system (CREW, LINES, HELP). No new routing: the manual's actions already use openTerm.\n(3) stationui.js:1814,3395: 'NO AGENTS ON STATION' / 'RECRUIT one from the CREW dock.' Copy only, no new key.\n(4) index.html:810: 'these docks'.\n(5) Fix the two tips: RECRUIT reads 'recruit a class, or re-spec your agent' (systems.js:31; index.html:739-741). CONNECT reads 'services your agents use' (systems.js:39-44; index.html:757-762).\n(6) Fix the stale OUTBOX comment at index.html:746-748.\n(7) test/dialogue-doorlaw.test.js:3,19,29: move the staged fixture to AUTOMATE.\nRe-pin the manual hash if manual text moves. Shoot a fresh staged station at 145% text size and check the QUESTS › Progress tile and how-lines. Existing staged stations pick up the new start flags automatically (systems.js:81-82).",
+   "kind": "default",
+   "files": [
+    "frontend/app/systems.js",
+    "frontend/app/tutorial.js",
+    "frontend/app/stationui.js",
+    "frontend/index.html",
+    "test/dialogue-doorlaw.test.js"
+   ],
+   "size": "S",
+   "priority": 2,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 6 (beginner path, about 22 reports); FINDINGS #23; NO GATING law",
+   "collidesWithLane": "final-rc-seams (stationui.js, index.html; different hunks)",
+   "verifierNotes": "The 'route manual buttons through openTerm' step was dropped because it already happens. An empty-state key was rejected as a new surface. The stale OUTBOX comment was folded in from the killed P34."
+  },
+  {
+   "id": "P03",
+   "area": "connect-settings",
+   "title": "Model and sign-in error doors: one label, landing on the right card",
+   "today": "Refusals already name what stopped them: quota_exhausted, billing, managed_credit*, spend_unknown (friendlyerror.js:93-146,367-376), budget stops with scope and cap (chat.js:8118-8160), and LINE BUDGET (chat.js:9618-9631; workflowpanel.js:295-301). Card status already shows the probe's reason (#62 statWhy, stationui.js:5548-5555). The doors are what's broken. Four labels ('⚙ Open Settings', '＋ Add a key', '▸ OPEN AI & MODELS', '⏼ RECONNECT CHATGPT/GROK/KIMI', friendlyerror.js:744-782) all call openSettings('providers') with no provider focus (:660-666), so they land at the top of a long page. RECONNECT only navigates and never starts the card's prov-oauth-signin flow (stationui.js:5581-5582). The 'billing' message doesn't name the provider (friendlyerror.js:101-103).",
+   "problem": "About 22 money reports and 27 connection reports end with 'I can't tell what to do'. The cause is stated, but the fix key lands far from the lever and a sign-in key doesn't sign in.",
+   "change": "friendlyerror.js:\n- Every door that sends the user to AI & MODELS reads ▸ OPEN AI & MODELS and calls openSettings('providers', provider). Retire the '⚙ Open Settings' and '＋ Add a key' labels.\n- Sign-in doors keep the provider name: '⏼ SIGN IN TO <P>' when never signed in, '⏼ RECONNECT <P>' when expired. Their run() opens AI & MODELS and fires that card's existing prov-oauth-signin action. If that can't be wired, they read ▸ OPEN AI & MODELS.\n- The 'billing' message names the provider ('Your OPENROUTER account is out of credit').\n- Keep every other door: ▸ PICK A MODEL for no_model/model_not_found, ⇄ OPEN ABILITIES, ↻ RELOAD & RECONNECT, ✦ OPEN SKILL LIBRARY, and $ OPEN SPENDING LIMITS for spend_unknown scrolled to #budget-unsettled.\n\nstationui.js:\n- openSettings accepts a provider and scrolls to and highlights prov-card[data-provider].\n- When health.error is empty, print a fallback reason instead of a bare NOT VERIFIED.\n\nUpdate test/friendlyerror.test.js and test/errorclass.test.js. Land after final-customer-p1, which is rewriting spendUnknownMessage and the SPENDING LIMITS unsettled rows.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/friendlyerror.js",
+    "frontend/app/stationui.js",
+    "test/friendlyerror.test.js",
+    "test/errorclass.test.js"
+   ],
+   "size": "S",
+   "priority": 3,
+   "needsAndrewYes": false,
+   "userEvidence": "Customer themes 1-2 (email E04 x7, E05, E58, E53; GitHub #92, #106, #90, #62)",
+   "collidesWithLane": "final-customer-p1",
+   "verifierNotes": "The 'Stopped by: <ENUM>' prefix was dropped: truth and newuser found the cause is already named, and law allows it only where proven. The ▸ SETTLE door was dropped because settling needs a typed $ amount. The card-status rewrite was dropped (#62 shipped) except for the empty-error case."
+  },
+  {
+   "id": "P08",
+   "area": "first-run-learning",
+   "title": "Onboarding uses the three access answers; approval-only switches say so",
+   "today": "The create screen offers 'Working style: ASK FOR APPROVAL / FULL POWER' (index.html:180-182; app.js:1787-1790), and ASK writes approval ask + trusted-project, which is LET IT WORK (app.js:3252; stationui.js:2768-2779). The dossier ACCESS card already leads with 'How much can it do?' and the three answers (stationui.js:2816-2830). Its More options fold still shows ASK FOR APPROVAL / FULL POWER (2849-2850), and that FULL POWER only sets approvalMode. The approval card's 'Full access' key (chat.js:3983) and /yolo (chat.js:8292,8891-8906; sidecar/slash.js:186) also set approvalMode only (sidecar/index.js:2054-2060), so PERMISSIONS then reads CUSTOM. 'Working style' also names a YOU › PREFERENCES dimension (dossier.js:28). Recovery mode re-seeds from approvalMode alone (app.js:2852).",
+   "problem": "This breaks the ONE ACCESS law. Users can't map what they picked to what was applied, and two switches are labelled FULL POWER while only changing whether the agent asks.",
+   "change": "(1) Create screen (index.html:180-182,149,182; app.js:1787-1790,3252):\n- Retitle 'Working style' to 'How much can it do?'.\n- Show the three STATION_POSTURES using their agentBlurb text, not the station blurb that promises away drafts.\n- CHECK WITH ME writes ask + station-gear. LET IT WORK, preselected and matching today's real default, writes ask + trusted-project. FULL POWER writes full + this-computer and keeps its two-press arm.\n- Create never writes ON ITS OWN; the awakening question (onboarding.js:94-101) stays the one place for that.\n- Recovery (app.js:2852) seeds from agentPostureOf. A custom mix selects no card and reads 'custom — change it in the dossier'.\n- Update the np-mode nameplate and the crew note.\n\n(2) Dossier fold (stationui.js:2849-2850): ASKS FIRST / NEVER ASKS. NEVER ASKS keeps its two-press confirm, and its data-tip warns that it covers the whole computer.\n\n(3) The approval card key 'Full access' (chat.js:3983) becomes 'Never ask', with receipt '✓ never asks'. The /yolo description (chat.js:8292; sidecar/slash.js:186) becomes 'toggle never-ask'. stationui.js:2847 says '/yolo is the never-ask shortcut'. FULL POWER is reserved for the posture that also sets reach.\n\n(4) The PERMISSIONS posture notify (stationui.js:8770-8775) adds 'also set ON ITS OWN to <rung label>', using P09's rendered labels.\n\nUpdate sidecar/manual.js:87-88 and its length/sha256 pin, plus test/permissions-ui.test.js, ask-cards-readable.test.js and consent-full-request.test.js.",
+   "kind": "copy",
+   "files": [
+    "frontend/index.html",
+    "frontend/app/app.js",
+    "frontend/app/stationui.js",
+    "frontend/app/chat.js",
+    "sidecar/slash.js",
+    "sidecar/manual.js",
+    "test/permissions-ui.test.js",
+    "test/ask-cards-readable.test.js",
+    "test/consent-full-request.test.js"
+   ],
+   "size": "M",
+   "priority": 4,
+   "needsAndrewYes": false,
+   "userEvidence": "FINDINGS NEW-access-vocab; Andrew 'it was simple, now very confusing' (permissions lane)",
+   "collidesWithLane": "final-approval-truth (chat.js approval cards)",
+   "verifierNotes": "All three lenses rejected labelling the card key and /yolo FULL POWER, since that would be false telemetry. The create cards must not set the unattended level. This is not a default change, so Andrew's #16/#55 stays separate."
+  },
+  {
+   "id": "P01",
+   "area": "comms",
+   "title": "One NEEDS YOU list for blocking items",
+   "today": "The rail NEEDS YOU is built live from Channels pending, group asks, failed overseer workers and failed crons (needsyou.js:50-88). It shows only in the SESSIONS view (app.js:4065-4073). NOTIFICATIONS › NEEDS YOU is built from stored notifs (stationui.js:9392,9399-9418), so its count and dismiss differ. GOAL LOOP reviews (windows/loops.js:781), STEP-IN (stepin.js:94) and pending extensions (app.js:5763) post kind 'needs', so they appear in NOTIFICATIONS but not on the rail. Pending builds (deliverables.js:354-355), PROPOSALS (stationui.js:10790-10803) and quest confirmations (stationui.js:10749-10755) appear in neither list. The agent manual points only at NOTIFICATIONS › NEEDS YOU (sidecar/manual.js:87,197,221,252). BUILD MODE hides the rail (FINDINGS #34).",
+   "problem": "A user who clears NEEDS YOU believes nothing is waiting while decisions sit in other windows. The two lists disagree, so neither can be trusted.",
+   "change": "Step 1 (S-M):\n- In stationui.js, the NOTIFICATIONS waiting section renders NeedsYou.items(), so count, dismiss and OPEN match the rail. Its Handled history stays below.\n- Rename its 'Waiting on you' tag to NEEDS YOU.\n- The bell badge keeps counting unread finished results and adds the live waiting count; it never replaces one with the other.\n- sidecar/manual.js:87,197,221,252 say 'NEEDS YOU at the top of SESSIONS (also NOTIFICATIONS › NEEDS YOU)'.\n- Add a 'needs-you' place id in places.js.\n- Re-pin the manual length/sha256 (test/manual.on-demand) and CONCEPTS in the same commit.\n\nStep 2 (M): in needsyou.js add the blocking kinds as ordinary rows. Each reads a LIVE source, never the stored notifs, and keeps its existing action words:\n- STEP-IN (StepIn live list) → Open\n- pending extension → Open\n- pending build (deliverables summary.pending / AutoJobStore.pendingList) → Open, landing in DELIVERABLES filtered to NEEDS A DECISION\n- quest attest → Confirm / Not yet\n- goal loop awaiting review (the loops 'fresh' set) → Open GOAL LOOPS\nDo NOT add TO REVIEW, which is an optional rating pile.\n\nStep 3, a separate placement line that needs Andrew's yes:\n- Reuse the existing ny-head (lamp · Needs you · count) as a door to SESSIONS on the collapsed crew handle and in the PROJECTS view.\n- Keep a BUILD MODE ask toast up until it is answered, rebased onto final-rc-seams' reseatToasts seat.\n\nBuild only after final-approval-truth (worker asks filed into Channels) and final-rc-seams merge.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/needsyou.js",
+    "frontend/app/stationui.js",
+    "frontend/app/app.js",
+    "frontend/app/places.js",
+    "frontend/app/navdock.js",
+    "sidecar/manual.js",
+    "test/manual.on-demand.test.js"
+   ],
+   "size": "L",
+   "priority": 5,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 9 (receipts/trust); FINDINGS #1, #28, #34; NOTES_DRAFT.md:29,51,98 promise one list",
+   "collidesWithLane": "final-approval-truth, final-rc-seams",
+   "verifierNotes": "'Today' was corrected: loop reviews, STEP-IN and extensions already appear in NOTIFICATIONS. All lenses dropped the TO REVIEW row. On PROPOSALS, law would add them as Approve/Decline rows while newuser calls them optional; they stay in QUESTS, and adding them is offered to Andrew as an option. The badge keeps its unread signal. The handle, PROJECTS and BUILD MODE parts change the decided rail placement (app.js:4067-4068), so they are an Andrew line."
+  },
+  {
+   "id": "P11",
+   "area": "work-output",
+   "title": "MY WORK opens on DELIVERABLES the first time (calls #45/#46)",
+   "today": "With no saved tab, toggleFamily falls back to fam.tabs[0] = TASKS (stationui.js:1212-1213,1079-1081). The board lists only kind:'task' streams (4659-4665) and reads NO TASKS after real COMMS work. Its empty note points elsewhere (4895). The tutorial says 'TASKS — everything i’m doing' (tutorial.js:716). The board says 'review' four times: 'IN PROGRESS / REVIEW' (4657), 'Ongoing work and results to review.' (4887), the non-clickable 'FINISHED — REVIEW RESULT' (4791) and 'N READY TO REVIEW' (4806). It also uses 'Your tasks' (4879). The 'N deliverables' chip is a passive span (4842). DELIVERABLES can scope only to one runId (deliverables.js:257-259,624).",
+   "problem": "A new user's first click on MY WORK shows an empty board and a paragraph explaining that their work lives somewhere else.",
+   "change": "Recommended answer to Andrew's open call #3 (#45/#46/#47).\n- stationui.js toggleFamily: when famLast['mywork'] is unset, open DELIVERABLES; after that, use the last tab. Leave the FAMILIES order, TERM_ALIAS and deep links unchanged.\n- Board copy: 4657 'IN PROGRESS'; 4887 'Ongoing work and results to open.'; 4791 'FINISHED — RESULT READY' (a label, not a key); 4806 'N READY'; 4879 'TASKS'.\n- tutorial.js:716 becomes 'TASKS — planned work you track'. Align the FAMILIES TASKS tip (stationui.js:1080) and glossary mywork (glossary.js:63).\n- Separate Andrew line (new key): the 'N deliverables' chip becomes a key calling the existing Deliverables.showRun(latest runId). No new task filter.\n- Re-shoot qa:journeys J4 and the dock shot harness.",
+   "kind": "default",
+   "files": [
+    "frontend/app/stationui.js",
+    "frontend/app/tutorial.js",
+    "frontend/app/glossary.js"
+   ],
+   "size": "S",
+   "priority": 6,
+   "needsAndrewYes": true,
+   "userEvidence": "FINDINGS #45 #46; customer ask #5 'where are my files'",
+   "collidesWithLane": "final-small-ports, final-rc-seams, final-customer-p1 (stationui.js hotfile; disjoint hunks)",
+   "verifierNotes": "'Filtered to that task' does not exist, so it was dropped. 'OPEN RESULT' on a non-clickable div was rejected. All four 'review' words are retired, not just one. A chat that writes no file still leaves DELIVERABLES empty; the default makes the empty state honest, not full."
+  },
+  {
+   "id": "P30",
+   "area": "first-run-learning",
+   "title": "Help, glossary and the agent manual match the screen",
+   "today": "Copy that doesn't match the screen:\n- Model-failure fixes point at CONNECT (onboarding.js:953; firstvalue.js:135, as a fallback).\n- The glossary calls the overseer 'the station itself' (glossary.js:46-47), says 'workstream' (:45), and sends 'capability' to a SKILLS tab that doesn't exist (:74; the dossier tabs are GROWTH/RECORD/MEMORY/CONFIG, stationui.js:3468-3484).\n- CONTROLS calls key 9 'Layouts' (tutorial.js:1175) while BUILD says CONVEYOR LINES (build.js:41). It also omits APPS and the global keys F11, Ctrl+Shift+H, Alt+H, Ctrl +/-/0, Esc and Shift+F10.\n- The manual sends waiting items to NOTIFICATIONS only (sidecar/manual.js:87-88).\n- places.js:76 lists START FRESH under APP & BACKUP, but it exists only on the boot recovery screen (app.js:5689-5704).\n- ABOUT says TASK BOARD (stationui.js:7824), and WORK_LABELS / BUILDERS titles read back TASK BOARD / AGENT RECORD (11362,11502; station.show 3666-3671).\n- BROWSER promises 'or in your own Chrome' (7965), which is not offered (outputbrowser.js:656).\n- Error copy names an 'E-STOP' that isn't on the desk (friendlyerror.js:226-227).\n- FIND shipped in public v0.13.2 and is gone, with no notes line.",
+   "problem": "Instructions don't match the screen, and agents name windows that never appear.",
+   "change": "One copy commit:\n- onboarding.js:953 and the firstvalue.js:135 fallback say 'SETTINGS › AI & MODELS'.\n- glossary.js: the overseer is 'your first agent; it leads and delegates'. 'workstream' becomes SESSION/TASKS as appropriate. 'capability' points to ABILITIES.\n- tutorial.js CONTROLS: key 9 is CONVEYOR LINES. List APPS, F11, Ctrl+Shift+H, Alt+H, Ctrl +/-/0, Esc and Shift+F10.\n- sidecar/manual.js:87-88 and tutorial.js:1241 say 'NEEDS YOU at the top of SESSIONS (also NOTIFICATIONS › NEEDS YOU)'. Keep the APPROVALS line in step with P08's key label.\n- places.js:76: delete 'START FRESH' from the APP & BACKUP row; ERASE EVERYTHING stays.\n- stationui.js: ABOUT says 'MY WORK › TASKS'. Change only the WORK_LABELS display strings (11502) and the BUILDERS title (11362) to 'TASKS' / 'AGENT DOSSIER'; never the keys.\n- Remove 'or in your own Chrome' (7965).\n- friendlyerror.js:227 and the glossary/manual stop wording: 'Pause Automation in the StarNet tray menu'.\n- NOTES_DRAFT.md: add a FIND removal line.\nKeep the STEP-IN 'saved sign-ins' promise: it is true (stepin.js:139,255; stationui.js:7967-7971). Re-pin the manual length/sha256 and manual-concepts, update qa:journeys, then run sync:website and the claims re-lock.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/onboarding.js",
+    "frontend/app/firstvalue.js",
+    "frontend/app/glossary.js",
+    "frontend/app/tutorial.js",
+    "sidecar/manual.js",
+    "frontend/app/places.js",
+    "frontend/app/stationui.js",
+    "frontend/app/friendlyerror.js",
+    "docs/releases/next/NOTES_DRAFT.md",
+    "test/manual.on-demand.test.js"
+   ],
+   "size": "M",
+   "priority": 7,
+   "needsAndrewYes": false,
+   "userEvidence": "Customer note: users point newcomers to FIELD MANUAL and to asking the agent (GitHub #17 peers)",
+   "collidesWithLane": "final-rc-seams (stationui.js, index.html; different hunks)",
+   "verifierNotes": "The STEP-IN removal was dropped (the promise is true). START FRESH is deleted rather than renamed, so two different actions aren't merged. tutorial.js:1241 already names the job's session, so it only gets the NEEDS YOU addition. The E-STOP copy fix was folded in from the killed P07."
+  },
+  {
+   "id": "P25",
+   "area": "comms",
+   "title": "Fewer empty sessions (Andrew call #4: #18/#19)",
+   "today": "Each hire creates an inactive bound session (app.js:1172-1175). A starter idea click creates and switches even when the open session is blank (chat.js:2299-2303). Quest START creates or reuses its own 'quest: <title>' session bound to the quest's agent; that was Andrew's 09-28 call (stationui.js:10088-10106). 'ALSO RUNNING IN' renders in the transcript whenever a peer is busy (chat.js:2198-2212). 'No sessions with NAME yet · START ONE' already exists (app.js:4278-4281). final-rc-seams fixes the duplicate 'General' titles (965051c7b, 43ee253c9).",
+   "problem": "The rail fills with empty rows, and COMMS is pulled away from the chat the user is in.",
+   "change": "Recommendation for Andrew's call #4; build on his yes.\n(1) chat.js starter click: if the open session is blank (no history, not busy), prefill it. Otherwise keep today's create. No 'draft session' state.\n(2) app.js hire: stop creating the home session at summon; it is created by the first message through START ONE or ON THE LINE. Do this only after a grep proves every reader handles 'no session yet': App.waitingSessionOf, crew card open, Telegram/channel bindings and agent routing, group add, the summon toast's 'switch to its stream', Chat.refreshIdBar, App.summonForRequest (team.summon). If any reader can't, keep the session but leave it off the rail until it has a message.\n(3) Quest START: no change.\n(4) Keep 'ALSO RUNNING IN' visible in empty sessions, since it explains why a first message queues. Reword it to '<NAME> is busy in <SESSION> · VIEW ACTIVE RUN'.\nRebase onto final-rc-seams' Workstreams.titleOf.",
+   "kind": "default",
+   "files": [
+    "frontend/app/chat.js",
+    "frontend/app/app.js",
+    "frontend/app/workstreams.js"
+   ],
+   "size": "M",
+   "priority": 8,
+   "needsAndrewYes": true,
+   "userEvidence": "FINDINGS #8 #18 #19; customer 774641dc (session switched underneath)",
+   "collidesWithLane": "final-rc-seams",
+   "verifierNotes": "The quest change was dropped because it would undo Andrew's locked 09-28 call. The draft-session mechanism was dropped as a new concept. Hiding 'ALSO RUNNING IN' was reversed per the newuser lens: it explains queueing exactly when needed."
+  },
+  {
+   "id": "P26",
+   "area": "comms",
+   "title": "Name the open session in the COMMS title",
+   "today": "#comms-title is a static 'COMMS' (index.html:645). Only project-home.js:50,79 writes it (the project name, then a reset to 'COMMS'), and hudmode.js:846,946-948 saves and restores it as '▮ ACTIVITY' in titleWas. Chat.load never touches it. The session name shows only on the highlighted rail row. #chat-status shares the header and may show faults.",
+   "problem": "Combined with auto-created sessions and ON THE LINE switching, users type without knowing which conversation they are in.",
+   "change": "Andrew has guarded the COMMS header five times; get his explicit yes on this line first. Single writer:\n- Chat.load sets 'COMMS · <title>' from Workstreams.titleOf (after final-rc-seams merges).\n- project-home.js owns the title only while a project home is shown. On exit it restores the session title, not 'COMMS'.\n- hudmode.js titleWas save/restore still works.\n- An untitled group follows the rail grammar 'ULTRON, CYPHER +3', with no GROUP chip.\n- Clamp to one line with ellipsis. #chat-status (faults) keeps priority over the title's width.\n- Shoot at the 360px panel and at 145% text size.\n- The ON THE LINE tip goes in a data-tip ('switch to <agent>’s latest session'), never a native title.\nA title is not run-state, so test/comms-header-no-run-state.test.js holds.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/chat.js",
+    "frontend/app/project-home.js",
+    "frontend/app/hudmode.js",
+    "frontend/index.html"
+   ],
+   "size": "S",
+   "priority": 9,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer 774641dc (wrong conversation); COMMS census (high)",
+   "collidesWithLane": "final-rc-seams (Workstreams.titleOf / 'New session')",
+   "verifierNotes": "Single-writer coordination with project-home and hudmode was added. Group naming follows the NO SHRUNKEN CHIPS rail grammar."
+  },
+  {
+   "id": "P02",
+   "area": "comms",
+   "title": "Ask rows offer a review path, and asks state their real timer",
+   "today": "The COMMS card has Approve once / Always / Full access / Deny (chat.js:3976-3983); station.power, plugin.submit and browser.login get no Always or Full (3966-3978). NEEDS YOU already shows Review in place of Approve once when the rail line hides detail (needsyou.js:96-111) and refuses to approve blind (:177). Delegated rows have Approve once / Deny + INSPECT (delegated.js:215-225); a worker ask has no full card by design (chat.js:3921-3927). Group rows have Approve once / Deny, and the sidecar accepts only once/deny (sidecar/group-sessions.js:653). The deadline is 120 s for an unseen card and extends to 5× (cap 15 min) once the page acks it (sidecar/index.js:889-895); the user is never told. CONSENT TIMEOUT (MS) appears only in APP & BACKUP › Runtime limits (stationui.js:7197).",
+   "problem": "Jobs stall or are auto-denied with no explanation. Users can't reach the full answer from a direct-chat row, and they aren't taught that Always exists.",
+   "change": "(1) needsyou.js: for a direct-chat ask, every row shows Approve once · Deny · Review, not only when detail is hidden. Review lands on the existing COMMS card. Delegated rows keep INSPECT (dg-inspect) as their review; group rows are unchanged.\n(2) chat.js approval card, one hint line: the timer from the sidecar's real deadline (unacked or acked bound), or a numberless 'auto-denies if left unanswered'. Never a hard-coded '2 min'. On the second ask for the same tool in the same direct-chat session, that hint line instead reads 'Always stops asking for <tool> here'. Never stack the two hints, and never show the Always hint for freshConsent tools.\n(3) stationui.js: add a data-tip to the existing STANDING APPROVALS heading in SETTINGS › PERMISSIONS: 'unanswered asks are denied after N min · change it in APP & BACKUP › Runtime limits'. Minutes, not MS. No new row.\nKey labels follow P08 ('Never ask').\nSeparate Andrew calls, not built here: Always/FULL POWER on worker and group asks (needs sidecar support); onboarding default posture (#16/#55).\nSequence after final-approval-truth merges.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/needsyou.js",
+    "frontend/app/chat.js",
+    "frontend/app/stationui.js"
+   ],
+   "size": "S",
+   "priority": 10,
+   "needsAndrewYes": false,
+   "userEvidence": "FINDINGS #16 #28 #55; customer theme 9 (approvals hide detail)",
+   "collidesWithLane": "final-approval-truth, final-small-ports",
+   "verifierNotes": "'Review opens the full card with Always/FULL POWER' is impossible for group and delegated rows, so it was dropped. The fixed '2 min' was false. The default-posture switch was split out to Andrew's #16/#55. The CONSENT TIMEOUT line became a data-tip on an existing heading."
+  },
+  {
+   "id": "P04",
+   "area": "connect-settings",
+   "title": "One key box per provider, and plain names in AI & MODELS",
+   "today": "For the active provider without a key, its card shows ＋ ADD KEY (stationui.js:5553,5578,5582-5589), and API KEYS also renders an 'Add a <provider> key' row (addKeyHtml 5487-5499; the empty state at 5667, plus 5787). Before save, the CUSTOM endpoint is entered on the card (5584) and in the API KEYS add form (5492-5495). After save, ✎ STATION LINK is the only endpoint editor (5746-5760). 'Backup models' (7610 and the AI & MODELS desc at 7948), '↻ BACKUPS' (a key pool, 5771-5782) and STATION BACKUP (7785) all say backup. The onboarding OPENAI chip deliberately covers ChatGPT sign-in and an API key (index.html:218-224), while Settings has CHATGPT (CODEX) and OPENAI API cards (stationui.js:4999-5006).",
+   "problem": "Users don't know which box counts, can't find the custom URL after setup (#113), and look for a station backup inside AI & MODELS.",
+   "change": "stationui.js:\n- Drop the API KEYS add row (5787) whenever that provider's card shows ＋ ADD KEY / ⏼ SIGN IN.\n- The empty state at 5667 becomes one line: 'Add a key on a provider card above.'\n- Drop the CUSTOM add form under API KEYS (5492-5495); the CUSTOM card's ＋ ADD KEY already takes the endpoint.\n- Keep ✎ UPDATE / ↻ / ✕ REMOVE / ⏼ RE-SIGN-IN on saved rows.\n- Rename ✎ STATION LINK to ✎ ENDPOINT URL in place; do not move it.\n- Rename 'Backup models' to FALLBACK MODELS (heading and the 7948 desc), and ↻ BACKUPS to ↻ SPARE KEYS.\nDo not split the onboarding OPENAI chip. As part of Andrew's #53/#54 call, it may be relabelled 'OPENAI / CHATGPT' (index.html).\nUpdate test/fallback-chain.test.js:135, test/provider-connections-ui.test.js:28, test/settings-codex-row.test.js and test/settings-oauth-rows.test.js, plus any manual, CONCEPTS or glossary text that quotes 'Backup models'. Coordinate the STATION LINK rename with final-small-ports ('retry STATION LINK', harness.js:739 on that branch).",
+   "kind": "removal",
+   "files": [
+    "frontend/app/stationui.js",
+    "frontend/index.html",
+    "test/fallback-chain.test.js",
+    "test/provider-connections-ui.test.js",
+    "test/settings-codex-row.test.js",
+    "test/settings-oauth-rows.test.js"
+   ],
+   "size": "S",
+   "priority": 11,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 2 and hidden-doors theme (GitHub #113 endpoint URL, email E44 relink)",
+   "collidesWithLane": "final-small-ports",
+   "verifierNotes": "'Edit endpoint only on the CUSTOM card' would have removed the only post-save editor, so the editor stays and is renamed. Splitting the onboarding chip would undo a decided merge, so it is dropped."
+  },
+  {
+   "id": "P09",
+   "area": "first-run-learning",
+   "title": "Autonomy copy says what will happen, not what unlocks (call #57)",
+   "today": "Unlock-ladder copy:\n- The awakening readout: 'set REACH to SANDBOX under FINE-TUNE' and 'still learning you … knows N of M areas … reaching either lets it act' (nightreport.js:252-289; spoken via onboarding.js:556-564).\n- Trust offers print the internal rung id: 'raises the dial to LEASH' and '◈ earned — autonomy raised' (chat.js:6156,6188; trust.js:36). Also 'earned a longer leash' and 'shorter leash … earn it back' (trust.js:195,252).\n- The dial rung BUILD (data-init='leash', stationui.js:7462) clashes with the BUILD dock. It builds real deliverables when the workshop grant is on (autonomy.js:57,130; nightreport.js:255-257).\n- REACH SANDBOX means 'nothing leaves the machine' (stationui.js:7469-7470).\n- Desk phrases: 'Quietly build & leave on my desk' (onboarding.js:99), autonomy.js:148, nightnudge.js:81.\nAway drafts actually surface in SETTINGS › AUTONOMY › LAST REPORT (nightnudge.js:72-81; stationui.js:7546), and builds arrive as ⚒ sessions.",
+   "problem": "The copy reads as an unlock ladder, which contradicts NO GATING. 'Sandbox' here means restricted, and 'desk' points to no real place.",
+   "change": "Recommended answer to Andrew's #57.\n(1) nightreport.js: keep the readout composed from the status fields, in the present tense.\n- Build mode: 'While you’re away I’ll do up to {leashPerDay} small jobs a day; each arrives as a new ⚒ session.'\n- Draft mode: '…I’ll draft them, not build — see LAST REPORT in SETTINGS › AUTONOMY.'\n- When readiness is what holds it back: one plain reason with no counter, e.g. 'I’ll do more once I’ve seen a few of your runs.'\n- The exact N-of-M counts move to LAST REPORT; they are never dropped.\n(2) REACH SANDBOX becomes LOCAL ONLY on the button and in modeText. data-reach='sandbox' and the stored value stay.\n(3) The rung label BUILD becomes SMALL JOBS, its own tip's words. Andrew line item; DRAFT is rejected as untrue in build mode.\n(4) chat.js/trust.js: trust offers map offer.to through the dial's rendered labels. 'earned' becomes 'raised to'. trust.js:195/252 become 'ready for more' / 'stepping back a rung'.\n(5) Desk phrases (onboarding.js:99 option label, autonomy.js:148, nightnudge.js:81) name the real destination, SETTINGS › AUTONOMY › LAST REPORT or a new ⚒ session, not TO REVIEW. The interview question itself stays.\nSeparate Andrew calls: route away drafts into TO REVIEW (a behavior change); rename the NIGHT SHIFT trophy (xp.js:231), which counts away channel deliveries.\nUpdate the autonomy-ui and nightshift test pins.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/nightreport.js",
+    "frontend/app/onboarding.js",
+    "frontend/app/stationui.js",
+    "frontend/app/chat.js",
+    "frontend/app/trust.js",
+    "frontend/app/autonomy.js",
+    "frontend/app/nightnudge.js"
+   ],
+   "size": "S",
+   "priority": 12,
+   "needsAndrewYes": true,
+   "userEvidence": "FINDINGS #57 (WAITING ON ANDREW)",
+   "collidesWithLane": "final-small-ports",
+   "verifierNotes": "'Leave them in TO REVIEW' was false, BUILD to DRAFT was false in build mode, and a fixed '3 jobs' would drift from leashPerDay; all were corrected. The trust.js leash lines were added to scope. The NIGHT SHIFT to ON ITS OWN rename was dropped."
+  },
+  {
+   "id": "P05",
+   "area": "connect-settings",
+   "title": "'Where do I paste my key?' has one answer per kind of key",
+   "today": "Model keys live in SETTINGS › AI & MODELS › API KEYS. Service keys live in CONNECT › ABILITIES › SAVED API CONNECTIONS (connectors.js:211-232,360). Bot tokens live in CHANNELS. The SETTINGS dock tip says 'Keys, models, voice, data' (systems.js:43), and the dock subtitle repeats it (index.html:784). Stale tab names remain: 'MCP CONNECTORS' and 'KEYS' (connectors.js:192), 'TOOLSETS' (:228; the tab is BUILT-IN ABILITIES, :347), and 'managed in … MCP CONNECTORS' (:1781; the tab is CONNECTED SERVICES, :361; CATALOG there is correct). The ＋ ADD AN ABILITY router already says model keys live in SETTINGS › AI & MODELS (connectors.js:320-321).",
+   "problem": "Keys are stored in several windows, and the obvious one (Settings) is wrong for most services.",
+   "change": "(1) systems.js:43 and index.html:784 share one line: 'AI models & keys, permissions, spending, look & sound'.\n(2) connectors.js: :192 becomes CONNECTED SERVICES / SAVED API CONNECTIONS; :228 becomes BUILT-IN ABILITIES; :1781 MCP CONNECTORS becomes CONNECTED SERVICES (CATALOG stays).\n(3) stationui.js:7436-7438: extend the existing set-about line under API KEYS with 'Keys for Gmail, Notion and other services' and a door key labelled ▸ SAVED API CONNECTIONS. It uses openTerm('connectors','keys'), the places.js:45 target, and is the one Andrew-yes item here. No mirror line in SAVED API CONNECTIONS: the router already says it.\nRe-pin manual/CONCEPTS if they quote these strings.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/systems.js",
+    "frontend/index.html",
+    "frontend/app/stationui.js",
+    "frontend/app/windows/connectors.js"
+   ],
+   "size": "S",
+   "priority": 13,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer asks #4 and #8 (email H04 x2, GitHub #10, E44)",
+   "collidesWithLane": "",
+   "verifierNotes": "The proposed tip dropped PERMISSIONS, SPENDING and voice, so it was corrected. The subtitle duplicate at index.html:784 was added. CATALOG is not stale. The mirror line already exists in the router."
+  },
+  {
+   "id": "P16",
+   "area": "automation-build",
+   "title": "Schedules: one arm rule, a true status line, and lines in the one form",
+   "today": "The SCHEDULES form already arms the scheduler on save (arm:true, routines.js:798). The sidecar arms whenever it is not already armed (handleCronCreate, sidecar/index.js:15590-15598), so this also overrides an explicit ⏸ DISABLE SCHEDULING. Yet its create-state line says 'Scheduling is off… it will not run automatically until you enable scheduling' (routines.js:334). The INBOX form offers '▸ SAVE · TURN SCHEDULING ON' / 'SAVE ONLY' (workflowpanel.js:1074-1081), Andrew's 09-28 'offer' ask. The switch has many names: ENABLE / RESUME / DISABLE SCHEDULING (routines.js:368-377), '▶ TURN SCHEDULING ON' (workflowpanel.js:1059; chat.js:4572) and 'TURN ON ROUTINES' (apps.js:266). The pane mixes 'Scheduled jobs / New schedule' (automation.js:44) with ✦ SUGGEST ROUTINES, NO ROUTINES YET, + ADD A ROUTINE and ACTIVE ROUTINES (routines.js:73,135,403-404). The New schedule form picks only an agent (routines.js:77-85), so it can't run a whole line; the INBOX form can (runsLine; cron-store.js:61,206-212). A missing cron.armed.json and armed:false can be told apart (sidecar/index.js:6200-6213).",
+   "problem": "One action follows two arm rules. A status line contradicts what saving does, and an explicit OFF is silently overridden. The same word, schedule, behaves two ways depending on where it was made.",
+   "change": "Now (copy):\n- Fix routines.js:334 to tell the truth: 'Saving turns scheduling on unless you turned it off.'\n- Unify the switch labels to SCHEDULING ON / OFF: '▶ TURN SCHEDULING ON' / '⏸ TURN SCHEDULING OFF' at routines.js:368-377, apps.js:266, chat.js:4572 and workflowpanel.js:1059.\n\nRecommended to Andrew, as one rule for both forms:\n- When the scheduler was never set (no cron.armed.json), the first save turns SCHEDULING ON and prints '✓ saved · scheduling is now on'.\n- After an explicit OFF (armed:false), save does not arm and shows '▶ TURN SCHEDULING ON' instead.\n- An E-STOP is never lifted from either form.\n- Backend: handleCronCreate checks the file's existence before arming.\n- The INBOX pair collapses to the same rule, which removes SAVE ONLY.\n\nIn the New schedule form, rename the 'Agent' field to 'RUN BY', listing agents then workflows. A workflow choice posts agentId = the entry dock's agent + dockId + runsLine:true through the existing line-schedule path (sidecar/index.js:6656,12905-12919).\n\nThe routine → SCHEDULE noun sweep is Andrew's untangle call #4. It covers needsyou.js:83, emergency-control.js:6, the SCHEDULES pane strings and tutorial.js:1228-1229. If he says yes, update docs/DECISIONS.md:60 ('Routines = WHEN'), the manual hash, the glossary and DECISIONS together. Slash commands and routine.create keep their names.",
+   "kind": "default",
+   "files": [
+    "frontend/app/windows/routines.js",
+    "frontend/app/workflowpanel.js",
+    "frontend/app/apps.js",
+    "frontend/app/chat.js",
+    "frontend/app/needsyou.js",
+    "frontend/app/emergency-control.js",
+    "frontend/app/tutorial.js",
+    "sidecar/index.js",
+    "docs/DECISIONS.md"
+   ],
+   "size": "M",
+   "priority": 14,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 3 (scheduled run differs from chat, GitHub #77, E26); untangle call 'arm scheduler on first save'",
+   "collidesWithLane": "",
+   "verifierNotes": "Verified on the branch: routines.js:798 sends arm:true and sidecar/index.js:15590-15598 arms on create. The law and truth lenses' premise ('off, port the offer pair') was outdated. Removing SAVE ONLY and the noun rename are Andrew calls. 'WHO RUNS IT' was renamed 'RUN BY' per the newuser lens."
+  },
+  {
+   "id": "P15",
+   "area": "automation-build",
+   "title": "A workflow's page shows how it starts, and LAST JOBS lists every run",
+   "today": "The WORKFLOWS line page has only 'Send it a job' and 'Last jobs' (windows/workflows.js:617-626). Schedule, channel, folder and webhook starts live only in EDIT WORKFLOW › INBOX › 'Or start it automatically' (workflowpanel.js:1052-1083, wired at :1103-1106). LineJobs.start is called only by the sample route (sidecar/index.js:12580) and SEND TO hand-offs (sidecar/routing/handoff-runner.js:65). Cron runsLine fires (index.js:6656-6662) and sidecar/routing/trigger-runner.js never record a line job, so LAST JOBS says 'No jobs yet' for a scheduled line. WorkflowLine.lineStarts (workflowline.js:695ff) already composes a line's start summary.",
+   "problem": "The 'easy' window can't show or reach how a workflow starts. Once a line runs on a schedule, LAST JOBS looks empty.",
+   "change": "Frontend (S), on Andrew's yes because it adds a line and a key to an existing window:\n- On the windows/workflows.js line page, between 'Send it a job' and 'Last jobs', add one read-only line 'STARTS: …' built from WorkflowLine.lineStarts, e.g. 'by hand · every day 9:00 · when a file lands in X' or 'by hand only'.\n- Beside it, a '⊕ MAKE IT AUTOMATIC' key opens EDIT WORKFLOW with the INBOX scrolled to 'Or start it automatically'. It reuses the existing editor; no second trigger editor.\n- Working folder and LINE BUDGET stay editable only in EDIT WORKFLOW.\n- Until the backend lands, LAST JOBS' empty state says scheduled and channel runs are filed in DELIVERABLES.\n\nBackend (M), a separate lane under starnet-backend-law: record LineJobs.start/finish from the cron runsLine fire (sidecar/index.js ~6656) and from sidecar/routing/trigger-runner.js, carrying an additive `source` field (schedule / channel / folder / webhook / hand) in sidecar/routing/linejobs.js. Then LAST JOBS shows the source as row meta. WORKFLOWS' one-sample-slot logic (runningJob/S.out, workflows.js:611-614) must treat trigger runs separately.\n\nSync workflowpanel.js with final-rc-seams first.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/windows/workflows.js",
+    "frontend/app/workflowpanel.js",
+    "frontend/app/workflowline.js",
+    "sidecar/index.js",
+    "sidecar/routing/trigger-runner.js",
+    "sidecar/routing/linejobs.js"
+   ],
+   "size": "M",
+   "priority": 15,
+   "needsAndrewYes": true,
+   "userEvidence": "Andrew 'I constantly get messages of people confused about conveyors'; customer asks #5-#6",
+   "collidesWithLane": "final-rc-seams",
+   "verifierNotes": "Copying the full trigger block, folder and budget into WORKFLOWS was rejected as a duplicate door (law) and as a third place to make a schedule (newuser). The backend fix lives in index.js and trigger-runner.js, not only linejobs.js."
+  },
+  {
+   "id": "P14",
+   "area": "automation-build",
+   "title": "Floor OUTBOX and WORKFLOWS tell the truth about where results go",
+   "today": "The floor OUTBOX hover reads 'N TO REVIEW — CLICK', a true count of THIS line's pending crates (world.js:8586-8639), but the click opens the WORKFLOWS line view (app.js:3355; workflows.js:848-858). That view has no rating control (workflows.js:695-704), so a crate can only clear in DELIVERABLES › TO REVIEW (outbox.js:274-282). Its meta says 'in the OUTBOX' (workflows.js:624,647-649). The DELIVERY station-gap quest mints 'place a OUTBOX in its bay' from the station-wide ReturnStore.pendingCount, which includes away, cron and chat runs that never sit on a chute (stationqueststore.js:118-141). Away-run copy says '◈ OUTBOX crate' (chat.js:4508,4560,4618). build.js:2981 says 'opens in the Logbook'.",
+   "problem": "The tag promises a review the click can't do, the crate count looks stuck, and retired models are still being taught.",
+   "change": "Copy now:\n- Keep the hover's 'N TO REVIEW — CLICK' (line-only, true).\n- workflows.js:624,648-649: the meta becomes a door labelled 'waiting in DELIVERABLES › TO REVIEW' that opens the existing TO REVIEW deep link.\n- chat.js:4508,4560,4618: away-run titles read '◈ finished while you were away:' with no 'OUTBOX crate'.\n- build.js:2981: 'Finished work lands in its OUTBOX and in DELIVERABLES.'\n- Retire the DELIVERY quest's OUTBOX candidate (evalOutboxCandidate, stationqueststore.js:118-141). It is a false promise under the OUTBOX LAW and does not depend on P01.\n- Change the panel's '· in the OUTBOX' (workflowpanel.js:1965) only after final-rc-seams merges, and update test/rc-final-seams.test.js:41,45.\n\nAndrew line (an existing control reused on a new surface): mount the existing Chat.awayRate + ReturnStore.resolve rate control in the WORKFLOWS delivered result, exactly as outbox.js:274-282 does, so rating there clears the crate.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/windows/workflows.js",
+    "frontend/app/stationqueststore.js",
+    "frontend/app/build.js",
+    "frontend/app/chat.js",
+    "frontend/app/workflowpanel.js",
+    "test/rc-final-seams.test.js"
+   ],
+   "size": "S",
+   "priority": 16,
+   "needsAndrewYes": true,
+   "userEvidence": "Andrew 'outbox shows ONLY that system … ALSO in deliverables'; customer theme 4",
+   "collidesWithLane": "final-rc-seams",
+   "verifierNotes": "The always-'THIS LINE’S RESULTS' hover was reversed because it would drop a true count. Rating in WORKFLOWS is an Andrew yes. The quest retirement was decoupled from P01. The chat.js OUTBOX-crate lies were added (newuser)."
+  },
+  {
+   "id": "P12",
+   "area": "work-output",
+   "title": "TO REVIEW says what it holds, and its clear key says what it does",
+   "today": "TO REVIEW reads ReturnStore.pendingRows (outbox.js:42-43). That covers runs that finished while the user was away, schedules included (returns.js:57-68), and line jobs, workflow samples and SEND TO hand-offs folded in, even watched ones (workflows.js:170-172,880-883; build.js:4541; chat.js:4611). Its dim line says 'finished work waiting for your verdict' (outbox.js:46,75-77). The glossary says 'finished runs waiting for your rating' (glossary.js:63-64). '✓ CLEAR ALL N' (outbox.js:47,76) has the armed label 'CLEAR ALL — SURE?' (:86) and the toast 'Cleared N from TO REVIEW' (:81-83); it resolves reminders without rating (returnstore.js:196-201). It sits above the library's different CLEAR ALL (deliverables.js:244). The away digest says 'the crate on the floor holds these…' (returnstore.js:133, rendered by chat.js:4479-4480), which is false under the OUTBOX LAW. The collect-crate fallback is at outbox.js:279.",
+   "problem": "Attended chat work never appears in TO REVIEW, so the section looks broken. Two stacked CLEAR ALL keys lose different things.",
+   "change": "outbox.js:46,75-77 dim line and the glossary.js mywork entry: 'Away runs and workflow jobs waiting for your rating — they’re already in the library below. Chats are rated in COMMS.'\n\nRename all four strings:\n- the key '✓ CLEAR ALL N' (47,76) becomes 'MARK ALL REVIEWED N', in the current glass key style, with a data-tip (not title=) saying it files them without a rating\n- the armed label (86) becomes 'MARK ALL REVIEWED — SURE?'\n- the toast (81-83) becomes 'Marked N reviewed. The work stays in your library.'\n- the collect-crate fallback (279) becomes '✓ mark reviewed'\nKeep ArmConfirm.wire (test/declutter-strips.test.js:47).\n\nreturnstore.js:133 becomes 'they wait in TO REVIEW until you rate them'. No menu path: the digest foot already carries the '▸ review it in DELIVERABLES' door (chat.js:4471-4473).\n\nRun declutter-strips and the manual/glossary/CONCEPTS pins.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/windows/outbox.js",
+    "frontend/app/glossary.js",
+    "frontend/app/returnstore.js",
+    "test/declutter-strips.test.js"
+   ],
+   "size": "S",
+   "priority": 17,
+   "needsAndrewYes": false,
+   "userEvidence": "FINDINGS #46; work-output census (high)",
+   "collidesWithLane": "",
+   "verifierNotes": "'Work that finished without you watching' was false, since watched samples land there. 'Rate each to file it' was false, since it is already filed. All four CLEAR strings are renamed, not one. The digest line avoids a menu path."
+  },
+  {
+   "id": "P22",
+   "area": "crew",
+   "title": "RECRUIT speaks one language",
+   "today": "The bay mixes 'summon a new agent', 'choose a specialist to wake your agent as' and 'deploy a specialty' (marketplace.js:424-431) with YOUR SPECIALISTS / SPECIALIST ARCHIVE / CLASS ROSTER / BUILD A CUSTOM CLASS (657-719), '⏼ SUMMON <name>' (1121-1122), '⏼ DEPLOY TO <agent>' (1146-1148) and 'deployed to' toasts (2286,2297). The secondary target is the focused agent, possibly the overseer (app.js:1313-1315), and its confirm already reads 'RE-SPEC <AGENT>?' (marketplace.js:2290-2296). The dock subtitle says 'summon a class' (index.html:739), the manual says 'Recruitment Bay and SUMMON one' (sidecar/manual.js:257), and the model copy says 'Same as the orchestrator' (marketplace.js:760-761,864), although an unpinned summon copies agent.model at summon time. The bay summon gets no desk on purpose (marketplace.js:2257; test/summon-desk-prompt.test.js:3), while team.summon and workflow RECRUIT seed one (app.js:1154-1163,1549; build.js:3107).",
+   "problem": "Users can't tell whether DEPLOY creates an agent, and the same act has six verbs.",
+   "change": "marketplace.js:\n- The primary key reads RECRUIT <NAME>.\n- The secondary reads 'RE-SPEC <AGENT> INSTEAD ▸', in place, in normal flow below the primary (never sticky), with the sub-line 'replaces <AGENT>’s purpose — no new agent'. Its existing armed confirm stays.\n- Nouns: CLASS, YOUR CLASSES, CLASS ARCHIVE.\n- Subtitles at 424-431: 'recruit … its own session', 'choose a class'.\n- Toasts at 2286/2297 say 're-specced'.\n- Model copy at 760-761 and 864: 'Same as the station default' ONLY after confirming an unpinned agent tracks the live default (stationui.js:2904-2911). Otherwise 'copies the overseer’s model now'.\nAlso index.html:739 'recruit a class, or re-spec your agent' and sidecar/manual.js:257 with its hash pin. Re-check test/agent-model-select.test.js.\nThe crew empty state is covered by P10.\nAndrew call (separate line): a bay recruit gets a desk through the same ensureWorkstation path, with PLACE ITS DESK kept as the full-floor fallback, and the activate toast says where the desk landed. This reverses a documented decision and needs summon-desk-prompt and recruit-identity test changes.\n'Suggestions for your station' stays folded where 572ed71c7 put it.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/marketplace.js",
+    "frontend/index.html",
+    "sidecar/manual.js",
+    "frontend/app/app.js"
+   ],
+   "size": "M",
+   "priority": 18,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 5 (GitHub #15 'expected my first agent to help me build')",
+   "collidesWithLane": "final-rc-seams (app.js, disjoint hunks)",
+   "verifierNotes": "All lenses dropped opening Suggestions by default, since it undoes Andrew's 572ed71c7 and pushes CLASS ROSTER below the fold. Desk parity reverses a documented decision, so it is an Andrew call. The re-spec confirm already exists."
+  },
+  {
+   "id": "P20",
+   "area": "crew",
+   "title": "The DOSSIER key on a crew row is always there",
+   "today": "A crew-row click opens the dossier with one agent and filters SESSIONS with two or more (stationui.js:1838-1846). The DOSSIER key renders only when present.length > 1 (stationui.js:1832-1833) and stays at opacity 0 until hover (interface.css:143-144; crew-glass.css:160-164), so touch can't reach it. The filter chip already names the agent (app.js:4021-4040). The manual says a row click 'focuses' the agent (sidecar/manual.js:53,188,256), which no path does. The current behavior is pinned in test/agent-threads-rail.test.js:9,74-78.",
+   "problem": "After the first recruit, the dossier door a user learned on day one moves under a hover-only key.",
+   "change": "stationui.js:1832-1833: render the DOSSIER key at every crew size. interface.css:143-144: visible without hover, using current-material key metrics rather than the 12px faint chip. With one agent, the key and the row both open the dossier. Right-click, Shift+F10 and the floor sprite stay. Apply crew-glass.css:164 padding to every row. Shoot it with the crewcards clock and step text at 145% text size and against the 49px crew-rail-fit rows, with long names ellipsizing and never clipping the key. Fix sidecar/manual.js:53,188,256 to describe the real behavior (with 2+ agents the row shows that agent's sessions; DOSSIER, right-click or the sprite open its file; none of them changes who COMMS talks to) and re-pin test/manual.on-demand. Update test/agent-threads-rail.test.js:74-78 and the aria-label branch (stationui.js:1818-1819).\nAndrew option (not built): row click filters at every crew size, which Andrew asked for on 10-01. The cost: on day one the click only shows a chip.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/stationui.js",
+    "frontend/css/interface.css",
+    "frontend/css/crew-glass.css",
+    "sidecar/manual.js",
+    "test/agent-threads-rail.test.js",
+    "test/manual.on-demand.test.js"
+   ],
+   "size": "S",
+   "priority": 19,
+   "needsAndrewYes": true,
+   "userEvidence": "Crew census (high); dock census (medium)",
+   "collidesWithLane": "final-small-ports, final-rc-seams (crewcards.js on the same row)",
+   "verifierNotes": "Law and truth would unify the click to filter at every size. The newuser lens showed that makes the day-one click look dead, so the buildable part is the always-visible key and click unification goes to Andrew. It reverses a pinned lane choice."
+  },
+  {
+   "id": "P17",
+   "area": "automation-build",
+   "title": "Both workflow editors use the same words",
+   "today": "WORKFLOWS uses ✓ DONE (workflows.js:608,658), ✎ NEEDS CHANGES / ★ KEEP THIS STYLE / ↻ SEND IT AGAIN (697-701), SUGGEST CHANGES (715), ↻ RUN THE SAME JOB AGAIN (727) and ▶ SEND IT A JOB (622); its list says ▶ SEND A JOB (513). The Workflow panel uses ✓ DELIVERED (workflowpanel.js:1965), NOT RIGHT? (1986), SUGGEST FIXES (1988), ★ KEEP AS THE EXAMPLE (1971), ↻ RUN THE SAME JOB AGAIN (1992), ▶ SEND IT DOWN THE LINE (1892) and ▶ RUN ONE REAL JOB (2148). The panel's ✓ DONE is its close key (705). build.js says RUN THE SAMPLE JOB (2976), + ADD A WORKSTATION (2972; also workflowpanel.js:788) and USE X FOR EVERY STEP (2973), while WORKFLOWS says X DOES EVERY STEP (601). GOAL LOOPS says 'Choose a workflow' (loops.js:53,72,352). About 16 tests pin these labels.",
+   "problem": "The same line looks like two products, and 'test'/'sample' make a paid job look free.",
+   "change": "Use one label set in workflows.js, workflowpanel.js and build.js:\n- ▶ SEND A JOB (in the TEST view: '▶ SEND A REAL JOB · costs a run')\n- ✓ DELIVERED for a finished job (workflows.js:608,658); the panel's ✓ DONE close key stays\n- ✎ NEEDS CHANGES, then SUGGEST CHANGES\n- ★ KEEP THIS STYLE\n- ↻ SEND IT AGAIN, replacing RUN THE SAME JOB AGAIN at workflows.js:727 and workflowpanel.js:1992\n- FINISH SETUP, replacing FINISH THE LINE\n- '<NAME> DOES EVERY STEP' (build.js:2973)\n- GIVE <NAME> A DESK (build.js:2972; workflowpanel.js:788)\nwindows/loops.js:53,72,352: 'Choose a kind of loop'. Leave 'SET UP YOUR STATION' (build.js:2947); it is a different surface. SPLITTER modes go in its data-tip only, never a sentence under the tile.\nRebase onto final-rc-seams first and keep its 'not counted in SHIPPED' note under ✓ DELIVERED. Update every pinned test in the same commit (conveyor-*, workflows-window, workflow-panel-*, linefix, tasteref, rc-final-seams, and workflow-panel-done-reframe on final-build-ux) and re-lock the manual and agent-eval label pins.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/windows/workflows.js",
+    "frontend/app/workflowpanel.js",
+    "frontend/app/build.js",
+    "frontend/app/windows/loops.js"
+   ],
+   "size": "M",
+   "priority": 20,
+   "needsAndrewYes": false,
+   "userEvidence": "Andrew 'simplest friendliest UI possible, no confusion' (conveyor lane)",
+   "collidesWithLane": "final-rc-seams, final-build-ux, final-build-lag",
+   "verifierNotes": "✓ DONE was changed to ✓ DELIVERED to avoid the panel's close key (truth). KEEP THIS STYLE beat KEEP AS THE EXAMPLE, and 'loop shape' became 'kind of loop', both per the newuser lens. SET UP YOUR STATION was left alone."
+  },
+  {
+   "id": "P18",
+   "area": "automation-build",
+   "title": "SET IT UP FOR ME sees every line; Conveyors opens calm (call #32)",
+   "today": "NEW WORKFLOW offers 4 STARTERS plus 'More ready-made lines are in the Build Library ›' (windows/workflows.js:384-386,520-540), and SET IT UP FOR ME sends only those 4 (:421). The sidecar caps starters at 8 (sidecar/routing/linedraft.js:16,26). The 20 BLUEPRINTS (worldmodel.js:491) sit on BUILD MODE › Conveyors › LINES, which already leads with FOR YOUR GOAL (build.js:1552-1567). The Conveyors tab opens on all shelves (#32). MACHINE_ORDER (build.js:1653) differs from the HOTBAR (build.js:1761). Onboarding says 'BUILD › Presets' (onboarding.js:908,917,922), but the key is '▦ Presets' (build.js:433).",
+   "problem": "The beginner's assistant can only choose among 4 lines, the builder opens on a wall, and onboarding names a path that doesn't exist.",
+   "change": "(1) windows/workflows.js:\n- Keep the 4 starter tiles, rendered as Build Library tiles (addLineCell art + name; the tip is the purpose).\n- When the Commander's FOR YOUR GOAL line (build.js goalLine) isn't among the 4, show it first.\n- Keep the 'More ready-made lines' link.\n(2) SET IT UP FOR ME sends the whole catalog, still in one billed call. Raise MAX.starters in sidecar/routing/linedraft.js to the catalog size and update its test.\n(3) build.js:1653: MACHINE_ORDER follows the hotbar order (BAY first). Check the manual/guide tests that read it.\n(4) onboarding.js:908,917,922: 'BUILD MODE › ▦ Presets'.\n(5) Andrew's call #32, built only after final-build-ux merges: the Conveyors tab opens with LINES showing FOR YOUR GOAL + ANY JOB and the other shelves folded, every group one click away.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/windows/workflows.js",
+    "frontend/app/build.js",
+    "frontend/app/onboarding.js",
+    "sidecar/routing/linedraft.js"
+   ],
+   "size": "M",
+   "priority": 21,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 6 (starter templates, GitHub #15); FINDINGS #32",
+   "collidesWithLane": "final-build-ux (build.js:1536-1567), final-build-lag, final-rc-seams",
+   "verifierNotes": "Putting all 20 tiles in NEW WORKFLOW was rejected because it rebuilds the wall in the calm window and creates a second catalog home. The sidecar starter cap was added to the files."
+  },
+  {
+   "id": "P06",
+   "area": "connect-settings",
+   "title": "A settings click that lifts a halt says so",
+   "today": "setInitiative, setReach, setLeash (PACE) and applyPreset send resumeHalt:true (autonomystore.js:64-67), and PERMISSIONS posture clicks go through applyPreset (permissionsstore.js:138-143). The sidecar then lifts the nightshift and cron halts (sidecar/index.js:23445-23460). This is deliberate ('Lane 4D symmetry'). The HALTED card tells the user to press an ON ITS OWN rung (nightreport.js:210-221), and tests pin it (test/autonomystore.test.js:21; test/nightshift-halt.e2e.test.js:12,84). App Quit posts /api/halt (src-tauri/src/main.rs:2794-2797, post_sidecar_halt), so a blanket resumeHalt:false would leave autonomy halted after every relaunch. The agent path already writes resumeHalt:false (test/station-control.test.js:82).",
+   "problem": "A user who pressed stop and then nudges PACE or REACH restarts schedules and away work with no receipt. This breaks trust.",
+   "change": "(a) autonomystore.js and stationui.js: when a dial or posture write actually lifts a halt (the route reports it), notify 'Automation resumed — schedules and away work will run again'.\n(b) nightreport.js:220-221 why-line: 'press an ON ITS OWN rung, or RESUME AUTOMATION in the top bar'.\n(c) autonomystore.js: send resumeHalt:false for setLeash (PACE) and setReach (REACH) only. ON ITS OWN rungs and RESUME AUTOMATION remain the stated lifts.\nUpdate test/autonomystore.test.js:21 and the stationui.js:8579-8582 comment. nightshift-halt.e2e still holds, because the route keeps accepting resumeHalt:true.\nAndrew call (own line): should PERMISSIONS posture clicks, or every dial click, also stop lifting the halt? If yes, autonomy stays halted after every Quit until RESUME AUTOMATION is pressed.",
+   "kind": "default",
+   "files": [
+    "frontend/app/autonomystore.js",
+    "frontend/app/stationui.js",
+    "frontend/app/nightreport.js",
+    "test/autonomystore.test.js"
+   ],
+   "size": "S",
+   "priority": 22,
+   "needsAndrewYes": true,
+   "userEvidence": "Connect census (high); stranded-user law",
+   "collidesWithLane": "",
+   "verifierNotes": "Lenses split. The newuser lens kept the blanket false; truth also accepted it but as an Andrew line. Law showed the quit→halt consequence, confirmed in main.rs:2794-2797. Only the narrow version is built; the blanket change goes to Andrew."
+  },
+  {
+   "id": "P27",
+   "area": "comms",
+   "title": "Queued messages and group stop say what they do",
+   "today": "Typing while busy queues a ⤷ pill that sends after the run, and its tip is a native title (chat.js:7891-7946). /steer exists separately (chat.js:9177). A reply typed while a question is open answers that question first (chat.js:7909-7912). In a group, ■ stops every agent (stop-all; chat.js:7829; group-chat.js:1084-1090), but its tip says 'Stop the running turn (Esc)' (index.html:691). Every group transcript already opens with a masthead '@name talks to one agent · without an @, <LEAD> answers' (group-chat.js:445-457). An @name from General opens a NEW group beside it (group-chat.js:801-810; chat.js:1290-1292). The placeholder has about a 217px budget and must stay byte-identical between index.html:675-680 and chat.js:10468.",
+   "problem": "Users added context mid-run and got a duplicate paid job later (FINDINGS #42), and the group ■ tip understates what it stops.",
+   "change": "(1) chat.js (~8227, where #chat-stop is toggled): in a group session the data-tip and aria-label read 'Stop every agent in this chat'. A direct chat keeps today's wording.\n(2) chat.js queued strip: replace the native title with a data-tip, 'sends after this run · /steer changes the running task'.\n(3) chat.js @-mention picker: when the open session is General, its tip says 'opens a group chat with <NAME> beside General'. No new transcript line.\nNo new masthead line, since one already exists. Busy placeholder is optional: only while busy with no question open, it must fit about 34 VT323 characters (e.g. 'queued · /steer to redirect') and be measured; the idle placeholder stays byte-identical.\nSync chat.js after final-small-ports and final-approval-truth land.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/chat.js",
+    "frontend/index.html"
+   ],
+   "size": "S",
+   "priority": 23,
+   "needsAndrewYes": false,
+   "userEvidence": "FINDINGS #11 #42; GitHub #11 (/steer existed but unfound)",
+   "collidesWithLane": "final-small-ports, final-approval-truth",
+   "verifierNotes": "The masthead line was dropped because it already exists. The 51-character placeholder broke the PLACEHOLDER WIDTH LAW. The General case was corrected: General opens a new group rather than converting."
+  },
+  {
+   "id": "P24",
+   "area": "work-output",
+   "title": "DELIVERABLES file rows can reveal and copy their real path",
+   "today": "COMMS '▤ saved' rows already show the filename with the full path on hover, a folder key (reveal on desktop, copy path in the browser) and a copy-path key (chat.js:3064-3160, 88, 3293). Showing the filename rather than the path is deliberate (chat.js:3153). In the DELIVERABLES drawer, FILES rows show only the relative f.path + OPEN + size (deliverables.js:307-311), and an open failure tells users to look in 'its session or workspace folder' (deliverables.js:80). Andrew cut a printed 'filed-under' path in round 3 (output-organization lane). final-rc-seams dc8bb00b2 already removes the 'the agent did not name this one' line.",
+   "problem": "'Where did my output go?' (GitHub #60, #81, #87, #88, E57). The library that is meant to answer it can't point at the folder.",
+   "change": "Export Chat's existing folderButton/copyPathButton from chat.js and place them beside OPEN on DELIVERABLES drawer FILES rows (deliverables.js:307-311). The full resolved path goes in the data-tip, not printed on the card. When run.projectRoot proves the file is outside the item's project, the tip reads 'saved in <agent> workspace, not in <project>'. Replace the deliberables.js:80 copy with that key's action. Leave COMMS rows unchanged. The WORKFLOWS working-folder line rides with P15. Rebase after final-rc-seams, whose deliverables.js hunks at 303-340 sit next to FILES rows. This is a new key on an existing surface, so it needs Andrew's yes.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/deliverables.js",
+    "frontend/app/chat.js"
+   ],
+   "size": "S",
+   "priority": 24,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 4 and ask #5",
+   "collidesWithLane": "final-rc-seams",
+   "verifierNotes": "The COMMS half already exists. The inline full path was dropped because Andrew cut a printed path. The unnamed-file fix is already on final-rc-seams."
+  },
+  {
+   "id": "P13",
+   "area": "work-output",
+   "title": "DELIVERABLES toolbar: maintenance folds, filters stay (#47)",
+   "today": "The toolbar has search, ONE status <select> with 7 options, REFRESH, CLEAN OLD RECORDS (old .bb sm keys) and CLEAR ALL/THESE, which appears only on filtered views (deliverables.js:244,373), plus the 'N need a decision' route (355). KIND chips print raw kinds such as 'files' and 'workflow' (359-364); they were added in Andrew's 08-13 organization round as the second axis. Per-bucket CLEAR sits on each heading (388). Cards carry OPEN IN WORKFLOWS / ↗ OPEN THE FULL CONVERSATION / KEEP IT / DISCARD / ✓ DONE · CLEAR, a single action (313-319). CLEAN OLD RECORDS removes discarded AND failed records, with a preview and UNDO (617-618). final-rc-seams dc8bb00b2 already fixes the raw-markdown preview and the UNFILED apology.",
+   "problem": "The maintenance keys look like the main actions, and raw kind words and old-style keys don't match the current glass look.",
+   "change": "deliverables.js:\n- Keep search, the project rail, the status select, KIND chips and CLEAR ALL/THESE in view. Chips get a label map in renderKinds: FILES, WORKFLOW JOBS, BUILDS and so on.\n- Fold only REFRESH and the cleanup key into one MORE fold, in current glass keys.\n- Rename CLEAN OLD RECORDS to 'DELETE FAILED & DISCARDED RECORDS'; its preview and UNDO stay.\n- Per-bucket CLEAR stays visible as a quiet glass key. Never hover-only.\n- In the drawer, the main file's OPEN (dlv-hero, 309) comes first and the single '✓ DONE · CLEAR' key comes last. Move its 'files stay on disk' tip from title= to data-tip.\nStyle the keys in frontend/css/app.css. Re-run qa:journeys J4 and declutter-strips/declutter-recovery. Rebase onto final-rc-seams first.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/deliverables.js",
+    "frontend/css/app.css"
+   ],
+   "size": "S",
+   "priority": 25,
+   "needsAndrewYes": true,
+   "userEvidence": "FINDINGS #47 #48; Andrew 'it lacks organization' (output lane)",
+   "collidesWithLane": "final-rc-seams",
+   "verifierNotes": "There are not '7 pills'. Folding the KIND chips or CLEAR ALL breaks FOLD BY FREQUENCY and Andrew's 10-10 ask. Hover-only CLEAR breaks HOVER = GLANCE and touch. 'DELETE DISCARDED' was untrue. The markdown/UNFILED items are already done."
+  },
+  {
+   "id": "P21",
+   "area": "crew",
+   "title": "The AGENT DOSSIER says where each per-agent setting lives",
+   "today": "The BRIEF setup strip lists MODEL / PERSONALITY / ACCESS / PROFILE / AWAY WORK (stationui.js:2066-2078), all with a native title 'change this in CONFIG' (2075), but AWAY WORK opens AutomationWindow.openAway (3281). CONFIG ends with 'WHILE I’M AWAY → AUTOMATE' (2705, wired at 3139). Spoken voice is a per-agent VOICE FOR select only in SETTINGS › LOOK & SOUND (7651-7654). AGENT SKILLS reads present[sel] and never names the agent (3723-3734,3750,3770). The BUILT-IN ABILITIES switch sits under a 'Capabilities for agent' picker (connectors.js:95), but its POST flips the station-wide kill-switch (sidecar/index.js:14437), its desc says 'Inspect an agent's capability grants… ASK mode / Full Access' (connectors.js:347), and its toast prints the raw id (850). In the per-agent MEMORY tab, 'REFLECTION ON' is ambiguous, though the code is station-wide (2396-2403). The ACCESS summary says 'ASK · standing grants apply' (2331). workshopCard() (2714) is never called.",
+   "problem": "Users can approve a skill without seeing which agent it is for, or switch a tool off for everyone while believing it is per-agent.",
+   "change": "Line A (copy, buildable now), in stationui.js and connectors.js:\n- The BRIEF strip's title= becomes a per-row data-tip naming the real destination. AWAY WORK: 'opens AUTOMATE › AWAY WORK'.\n- Rename 'WHILE I’M AWAY → AUTOMATE' (2705) to 'AWAY WORK ▸', same door.\n- connectors.js:347 desc, the switch tip and the toast (850) say '<t.label> … for every agent'. The desc uses ONE ACCESS words.\n- MEMORY's REFLECTION label reads 'REFLECTION (all agents)'.\n- AGENT SKILLS' intro line names the agent it shows.\n- The ACCESS summary (2331) uses the posture words (CHECK WITH ME / LET IT WORK / FULL POWER / custom).\n- Delete the dead workshopCard() (2714).\nLine B (new-surface, Andrew's yes):\n- VOICE and SKILLS rows in the existing BRIEF ag-setup strip, routed through jumpToConfig (3281). VOICE opens LOOK & SOUND with VOICE FOR preselected; SKILLS opens AGENT SKILLS for this agent.\n- An agent picker in AGENT SKILLS, reusing #ts-agent restyled off .key-input into a glass field.\nNo OVERSEER role word in this item.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/stationui.js",
+    "frontend/app/windows/connectors.js"
+   ],
+   "size": "M",
+   "priority": 26,
+   "needsAndrewYes": true,
+   "userEvidence": "Customer theme 5 ('where is personality configured', H08); crew census",
+   "collidesWithLane": "",
+   "verifierNotes": "An 'AWAY WORK ▸' row already exists, so it is renamed rather than added. Link rows were moved from CONFIG to the existing BRIEF strip, which is already the index. The OVERSEER role word was dropped: newuser found no evidence, and law and truth want it as its own line."
+  },
+  {
+   "id": "P23",
+   "area": "crew",
+   "title": "Say where each instruction applies, at the moment of writing",
+   "today": "The DOES field already names its reach. addsOnTopHTML (workflowpanel.js:806-816,850), written for GitHub #28, quotes the agent's PURPOSE and says DOES is 'added on top, for every job at this step'. PURPOSE says 'colours everything it does' (stationui.js:1965-1967). The INSTRUCTIONS (operating-manual) card says 'House rules appended to every run' (1971-1973) without saying it is this agent's only. YOU › PREFERENCES Standing orders (stationui.js:9790-9810; dossier.js:29) reaches every agent through DossierStore.composeBlock (app.js:394,462-467,700-708) and is seeded from the overseer's operating manual (dossier.js:39-41), but it carries no hint about reach.",
+   "problem": "Two 'house rules' fields with different reach, one agent versus all agents, carry no word saying which is which (H08, customer ask #6).",
+   "change": "stationui.js, using the existing desc/tip slots, one line each, no new keys or links:\n- PURPOSE desc adds 'only <NAME> · a workflow step’s DOES can add to it'.\n- The INSTRUCTIONS card desc becomes 'only <NAME> follows these · rules for every agent live in YOU › PREFERENCES'.\n- Standing orders adds 'every agent follows these', after confirming it reaches worker, cron and away runs (cron uses withDossier, sidecar/index.js:2568).\nLeave DOES alone. Any clickable 'PURPOSE ▸' link would be a new control and needs Andrew's yes.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/stationui.js"
+   ],
+   "size": "S",
+   "priority": 27,
+   "needsAndrewYes": false,
+   "userEvidence": "GitHub #28; email H08 x2; customer ask #6",
+   "collidesWithLane": "",
+   "verifierNotes": "The DOES premise was stale; the #28 fix already ships. Tips can't hold links. dossier.js was removed from the files because the copy renders from stationui.js."
+  },
+  {
+   "id": "P19",
+   "area": "automation-build",
+   "title": "Automation slash replies and help land in the right AUTOMATE tab",
+   "today": "The /loop status already says 'It stops if you close StarNet; /routine makes it permanent' (chat.js:8692). /goal is a per-session goal loop that survives a reload (chat.js:8247,8412-8432). /routine, /cron and /away replies are dispatched by the server (chat.js:8282). The AWAY WORK queue's help names the quest's 'Build while away' action and the alias /build-away, not /away (stationui.js:2725; sidecar/slash.js:254-255). The autonomy-draft toast that opens AWAY WORK is only a fallback when the COMMS nudge can't render (app.js:3840-3845), and drafts are never filed in TO REVIEW (autopilotstore.js:20,26). FIELD MANUAL LINES ends with 'OPEN AUTOMATION', which lands on SCHEDULES (tutorial.js:1229-1230). The AUTOMATE subtitle 'workflows, schedules & goal loops' omits away work (index.html:752-753).",
+   "problem": "With nine run-by-itself mechanisms, several doors land in the wrong tab or nowhere.",
+   "change": "(1) chat.js, client-local replies, using one door key each (Friendly.actionButton / openTerm, never a new card):\n- /loop keeps its note and adds a door to SCHEDULES, the lasting form.\n- /goal says it runs while StarNet is open (it survives a reload) and adds a door to GOAL LOOPS.\n(2) For server-dispatched /routine, /cron and /away, append a SCHEDULES or AWAY WORK door client-side only if that works without changing sidecar/slash.js. Otherwise leave them.\n(3) stationui.js:2725: name /away (canonical) alongside the quest's 'Build while away'.\n(4) tutorial.js:1229-1230: the key reads 'OPEN WORKFLOWS' (openTerm workflows). Keep 'Routines = WHEN' (1228) in step with P16's call #4.\n(5) index.html:752-753: 'workflows, schedules, goal loops & away work'.\nLeave the draft fallback toast as it is. Re-pin test/manual.on-demand, run the shot harness and the claims re-lock.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/chat.js",
+    "frontend/app/stationui.js",
+    "frontend/app/tutorial.js",
+    "frontend/index.html",
+    "test/manual.on-demand.test.js"
+   ],
+   "size": "S",
+   "priority": 28,
+   "needsAndrewYes": false,
+   "userEvidence": "Automation census (9 mechanisms, high)",
+   "collidesWithLane": "final-rc-seams, final-small-ports (chat.js/stationui.js/index.html; disjoint hunks)",
+   "verifierNotes": "The 'drafts → TO REVIEW' toast retarget was dropped because drafts are not filed there. The /loop door points to SCHEDULES, not GOAL LOOPS, since its lasting form is a schedule. The AWAY WORK empty state already explains how to add work."
+  },
+  {
+   "id": "P29",
+   "area": "work-output",
+   "title": "One meaning for 'goal loop', and QUESTS tabs match every other strip",
+   "today": "YOU › AIMS deliberately holds what agents know about your aims and pain points (stationui.js:9800-9808), renamed from GOALS on 10-01, and already carries an 'OPEN QUESTS › GOALS' door (9804-9806). /goal replies '⊙ goal loop set: … Working toward it…' (chat.js:8436-8437) for a per-session loop (8245,8406-8438), which is a different mechanism from AUTOMATE › GOAL LOOPS. QUESTS tabs read 'Now / Goals / Progress / History' (stationui.js:10843-10846), while every family tab strip is uppercase (1080-1094).",
+   "problem": "'Goal loop' names two mechanisms, and a user who sets a goal with /goal expects to find it in GOAL LOOPS.",
+   "change": "chat.js:\n- The /goal set reply becomes '⊙ goal set for this session only · lasting goal loops:' followed by a real door key into AUTOMATE › GOAL LOOPS (openTerm('automation','loops')), not a menu path.\n- The pause and resume lines say 'session goal'.\nstationui.js:10843-10846: quest tabs read NOW · GOALS · PROGRESS · HISTORY (no quests.css change). Shoot at 145% text size and at mobile width.\nKeep the YOU › AIMS label and its existing door. Mirroring PROPOSALS and confirmations into NEEDS YOU belongs to P01.",
+   "kind": "copy",
+   "files": [
+    "frontend/app/chat.js",
+    "frontend/app/stationui.js"
+   ],
+   "size": "S",
+   "priority": 29,
+   "needsAndrewYes": false,
+   "userEvidence": "Dock census vocabulary 'Goals' (high)",
+   "collidesWithLane": "final-small-ports (chat.js; disjoint hunks)",
+   "verifierNotes": "All three lenses killed AIMS→GOALS. AIMS holds different data, and renaming it would create two GOALS tabs and undo the 10-01 move. Its door already exists. The NEEDS YOU clause moved to P01."
+  },
+  {
+   "id": "P28",
+   "area": "work-output",
+   "title": "QUESTS › Progress shows each number once, truthfully named",
+   "today": "'AGENT GROWTH Lv N' (meterHtml, stationui.js:10786-10788) is Xp.compute(stationStats) (queststore.js:14-15), the same number Station prestige shows as STATION LEVEL (2153-2166). Both render together (10863), next to an OPEN IN THE DOSSIER door (data-open-growth, 11448). 'N APPROVALS' counts thumbs-up verdicts (2166; xp.js:315,369-372). The only in-window TROPHY CASE door is inside the collapsed 'Station milestones' block (10805-10809). The trophy window is titled HONOURS (windows/trophies.js:56). test/journey-wiring.test.js:17 pins 'AGENT GROWTH' as one of three tracks (comment at stationui.js:10446-10449). The COMMANDER gauge already opens QUESTS › Progress, with a native title tip (topbar.js:46,160). DECISIONS.md:55 says 'NEVER a gauge/score UI'.",
+   "problem": "One number shows twice under two names, one of them false, which breaks the truthful-telemetry law. Users can't tell which level matters.",
+   "change": "stationui.js:\n- Delete the meterHtml block (10786-10788) and its OPEN IN THE DOSSIER key. Agent growth stays in each dossier's GROWTH, and the data-open-growth handler stays for other doors.\n- Rename 'Station prestige' to STATION XP and 'N APPROVALS' to 'N THUMBS-UP'.\n- Keep milestones folded. Put the door on the <summary> row: 'MILESTONES n / m · OPEN THE TROPHY CASE ▸'.\nwindows/trophies.js:56: HONOURS becomes MILESTONES.\nUpdate test/journey-wiring.test.js:17 and the three-track comment (STATION XP · COMMANDER JOURNEY · STATION EVOLUTION).\ntopbar.js:46: the native title becomes a data-tip.\nWhether to keep the COMMANDER gauge stays Andrew's open call (untangle call 3), presented with both options against DECISIONS.md:55 and no recommendation.",
+   "kind": "organize",
+   "files": [
+    "frontend/app/stationui.js",
+    "frontend/app/windows/trophies.js",
+    "frontend/app/topbar.js",
+    "test/journey-wiring.test.js"
+   ],
+   "size": "S",
+   "priority": 30,
+   "needsAndrewYes": true,
+   "userEvidence": "Work-output census (high); truthful telemetry law",
+   "collidesWithLane": "final-customer-p1 (stationui.js; disjoint hunks)",
+   "verifierNotes": "The meter is deleted rather than renamed, since its number already appears in Station prestige. Uncollapsing milestones was rejected because QUESTS is already crowded. The COMMANDER recommendation was removed because it touches a locked decision."
+  },
+  {
+   "id": "P33",
+   "area": "first-run-learning",
+   "title": "Starter-room machines show what they are (needs Andrew's approval)",
+   "today": "The starter room places INTEL CAB, SERVER CART, DISH, WORKBENCH and STUDIO as real floor grants (worldmodel.js:4940-4948). In play mode a click on them does nothing (world.js:1617-1667) and the cursor never changes (world.js:1611-1613). MISSION BOARD, TROPHY CASE and PLUGIN TERMINAL already open docked windows on click (world.js:1636-1648). places.js:46 'built-in-abilities' lands on CONNECT › BUILT-IN ABILITIES, a station-wide kill-switch list rather than this prop's grant. openTerm supports a section, not a per-row scroll.",
+   "problem": "On a station where every object is a capability, the machines in the first room are dead clicks.",
+   "change": "Andrew picks one option; nothing is built before his yes. Lowest priority.\nPreferred:\n- HOVER = GLANCE nameplate on capability props, e.g. 'INTEL CAB · research', plus a pointer cursor (world.js:1611-1613).\nIf he wants a click, in play mode only for the five starter props:\n- (a) open the agent dossier's existing access readout, or\n- (b) Places.open('built-in-abilities') / openTerm('connectors','toolsets'), landing on the section only.\nWith (b), the click must reveal the CONNECT dock door. Add row focus only if the window already exposes a toolset-row anchor.\nWalk it on a fresh staged dock and shoot it with the toast rack and nav coach up. Sync world.js with final-rc-seams (~7998) and final-approval-truth (~11136) first.",
+   "kind": "new-surface",
+   "files": [
+    "frontend/app/world.js",
+    "frontend/app/app.js"
+   ],
+   "size": "S",
+   "priority": 31,
+   "needsAndrewYes": true,
+   "userEvidence": "First-run census (high); 'object = capability' principle",
+   "collidesWithLane": "final-rc-seams, final-approval-truth",
+   "verifierNotes": "The newuser lens noted that the BUILT-IN ABILITIES landing teaches the wrong thing (a kill-switch, not the grant), so the hover nameplate and dossier option were added. Per-row scroll was out of scope."
+  }
+ ],
+ "killed": [
+  {
+   "id": "P07",
+   "title": "Pause automation from the desk",
+   "why": "All three connect-settings lenses killed it. It brings back a desk-wide stop that was removed on purpose twice: 418b3d95a on 09-06 ('remove global stop UI') and b0c57d5dc on 09-09, which deleted the STOP/RESUME AUTOMATION toggle and made emergency-control.js resume-only (emergency-control.js:1). Memory station-control-lane-1002.md:24 records this. The premise was also wrong: #automation-resume is not dead and shows whenever a halt exists (emergency-control.js:24-30). It is a new visible control with no customer evidence (NO UNREQUESTED UI FEATURES). The one in-scope fix, saying 'Pause Automation in the StarNet tray menu' wherever copy names an E-STOP (friendlyerror.js:226-227, glossary, manual), was folded into P30."
+  },
+  {
+   "id": "P32",
+   "title": "NEW APP stays in BUILD, and STEP-IN keeps its door",
+   "why": "All three dock lenses killed it. A standing STEP-IN reverses Andrew's own 10-02 rule 'no standing button' (stepin.js:105-107; commit 98a7a73e5). Saved sign-ins already have doors: SETTINGS › BROWSER › OPEN SAVED SIGN-INS (stationui.js:7967-7971) and places.js:56. A permanent BUILD › NEW APP reverses the approved front-doors move 'NEW APP leaves BUILD once APPS exists' (1a125f9f6; apps.js:56-60) and adds a duplicate door. The 'hidden twice' premise is false: hidden and data-offline are separate on purpose (systems.js:98-103)."
+  },
+  {
+   "id": "P34",
+   "title": "Remove dead wiring that misleads future passes",
+   "why": "This is not an organization move: nothing changes on screen. The law lens said it does not belong on Andrew's one-page UX plan, and the newuser lens killed it as pre-cut churn. Parts of the premise were false. The FIRST TASK menu is a live fallback (tutorial.js:202-215), showBrief is exported (:1333), and WorkHub.mountSources is live (stationui.js:9816). Tests pin much of the code (tutorial-connect-beat, pitchstore offerStarter, workview, voice.button/draftguard mocks, outbox-window:139). It also collides with final-small-ports (voice.js, chatresize.js), final-rc-seams (app.js:4256) and final-approval-truth (the chat.js export line). Recommended as a separate post-release hygiene lane after those lanes merge, using the truth lens's precise scope. The one useful item, the stale index.html:746-748 OUTBOX comment, rides P10."
+  }
+ ]
+}

@@ -66,7 +66,7 @@
   // the COMMS elapsed timer reads a real "how long has this turn been running" off the channel.
   function begin(wsId, ts) {
     const c = get(wsId);
-    c.busy = true; c.runId = null; c.acc = ''; c.tools = []; c.toolEvents = []; c.pending = null; c.pendings = [];
+    c.busy = true; c.runId = null; c.acc = ''; c.tools = []; c.toolEvents = []; keepBackgroundAsks(c);
     c.startedAt = ts || 0;
     c.pausedMs = 0; c.pausedAt = 0;
     // TRUTHFUL TELEMETRY: at send time the sidecar has confirmed NOTHING — the request may still be
@@ -79,10 +79,18 @@
   // the run finished (or errored/aborted) — drop transient state; the turn now lives in Workstreams.history.
   function end(wsId) {
     const c = peek(wsId); if (!c) return;
-    c.busy = false; c.runId = null; c.acc = ''; c.tools = []; c.toolEvents = []; c.pending = null; c.pendings = [];
+    c.busy = false; c.runId = null; c.acc = ''; c.tools = []; c.toolEvents = []; keepBackgroundAsks(c);
     c.startedAt = 0;
     c.pausedMs = 0; c.pausedAt = 0;
-    c.status = 'online';
+    c.status = c.pending ? 'awaiting your approval…' : 'online';
+  }
+  /* A BACKGROUND WORKER'S ASK OUTLIVES THE RUN (2026-10-13). A run's start/end/stop clears that run's own asks, but an ask
+     filed with background:true belongs to a worker the conversation handed off in the background (team.dispatch
+     background:true): it is still waiting on the sidecar after the reply that started it ended, so it stays filed until
+     its own answer or expiry arrives (clearPending with its promptId). It never pauses the conversation's own run clock. */
+  function keepBackgroundAsks(c) {
+    c.pendings = (Array.isArray(c.pendings) ? c.pendings : []).filter(x => x && x.background === true);
+    c.pending = c.pendings.length ? c.pendings[c.pendings.length - 1] : null;
   }
   // the sidecar confirmed the run (agent.run.start arrived). ts (optional, caller-injected wall-clock)
   // RE-STAMPS startedAt so the elapsed timer measures the confirmed run, not send-click → first-byte
@@ -126,16 +134,22 @@
     if (!Array.isArray(c.pendings)) c.pendings = [];
     if (!p) { c.pendings = []; c.pending = null; return null; }
     c.pendings = c.pendings.filter(x => !(x && p.promptId && x.promptId === p.promptId)).concat([p]);
-    c.pending = p; c.status = 'awaiting your approval…'; if (ts && !c.pausedAt) c.pausedAt = ts;
+    c.pending = p;
+    // a background worker's ask: the conversation's own run (if any) is not the one paused on it
+    if (p.background === true) { if (!c.busy) c.status = 'awaiting your approval…'; return c.pending; }
+    c.status = 'awaiting your approval…'; if (ts && !c.pausedAt) c.pausedAt = ts;
     return c.pending;
   }
+  // the newest ask the conversation's OWN run is paused on (a background worker's ask never pauses it)
+  function runAsk(c) { const own = (c && Array.isArray(c.pendings) ? c.pendings : []).filter(x => x && x.background !== true); return own.length ? own[own.length - 1] : null; }
   function clearPending(wsId, ts, promptId) {
     const c = peek(wsId); if (!c) return;
-    c.pendings = promptId ? (c.pendings || []).filter(x => !(x && x.promptId === promptId)) : [];
+    // a bulk clear (a stopped run) takes that run's own asks only — a background worker's ask outlives it
+    c.pendings = promptId ? (c.pendings || []).filter(x => !(x && x.promptId === promptId)) : (c.pendings || []).filter(x => x && x.background === true);
     c.pending = c.pendings.length ? c.pendings[c.pendings.length - 1] : null;
-    if (c.pending) return;
+    if (runAsk(c)) return;
     if (c.pausedAt) { c.pausedMs += Math.max(0, (ts || c.pausedAt) - c.pausedAt); c.pausedAt = 0; }
-    c.status = c.busy ? 'working…' : 'online';
+    c.status = c.busy ? 'working…' : (c.pending ? 'awaiting your approval…' : 'online');
   }
 
   // ---------- queries ----------
@@ -151,6 +165,8 @@
   }
   function statusOf(wsId) { const c = peek(wsId); return c ? c.status : 'online'; }
   function pendingOf(wsId) { const c = peek(wsId); return c ? c.pending : null; }
+  // what the conversation's own live run is paused on (null while it is working, even if a background worker is waiting)
+  function runPendingOf(wsId) { return runAsk(peek(wsId)); }
   function pendingAllOf(wsId) { const c = peek(wsId); return c && Array.isArray(c.pendings) ? c.pendings.slice() : (c && c.pending ? [c.pending] : []); }
   // every open ask on the station, oldest conversation first (the NEEDS YOU list reads this)
   function allPending() { const out = []; for (const c of map.values()) for (const p of pendingAllOf(c.wsId)) out.push({ wsId: c.wsId, p }); return out; }
@@ -186,7 +202,7 @@
     get: get, peek: peek, has: has,
     begin: begin, end: end, setRunId: setRunId, setStatus: setStatus,
     appendToken: appendToken, setAcc: setAcc, addTool: addTool, addToolCall: addToolCall, addToolResult: addToolResult, setPending: setPending, clearPending: clearPending,
-    isBusy: isBusy, runIdOf: runIdOf, startedAtOf: startedAtOf, elapsedOf: elapsedOf, statusOf: statusOf, pendingOf: pendingOf, pendingAllOf: pendingAllOf, allPending: allPending,
+    isBusy: isBusy, runIdOf: runIdOf, startedAtOf: startedAtOf, elapsedOf: elapsedOf, statusOf: statusOf, pendingOf: pendingOf, runPendingOf: runPendingOf, pendingAllOf: pendingAllOf, allPending: allPending,
     anyBusy: anyBusy, busyCount: busyCount, busyIds: busyIds, pendingIds: pendingIds, snapshot: snapshot,
     setComposeTarget: setComposeTarget, composeTarget: composeTarget,
     drop: drop, reset: reset

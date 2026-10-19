@@ -1,8 +1,6 @@
 name: connector-keychain-acceptance
 on:
   workflow_dispatch:
-  push:
-    branches: [agent/google-oauth-audit-0919, agent/google-oauth-merge-0920]
 permissions:
   contents: read
 jobs:
@@ -23,6 +21,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Compile production credential code in lightweight acceptance harness
         run: cargo build --locked --manifest-path test/native-connector-keychain/Cargo.toml
+      - name: Pure policy and refusal guards (no native credential access)
+        run: |
+          cargo test --locked --manifest-path test/native-connector-keychain/Cargo.toml connector_key_policy
+          cargo test --locked --manifest-path test/native-connector-keychain/Cargo.toml acceptance_guards
+      - name: Allocate unique synthetic entry
+        shell: bash
+        run: echo "STARNET_ACCEPTANCE_RUN_ID=$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - name: Configure disposable keychain
         shell: bash
         run: |
@@ -37,6 +42,10 @@ jobs:
         run: |
           binary=test/native-connector-keychain/target/debug/starnet-connector-keychain-acceptance
           "$binary" migrate
+          if "$binary" migrate; then
+            echo 'Harness failed to refuse an existing synthetic entry'
+            exit 1
+          fi
           "$binary" recover
           "$binary" malformed
           "$binary" recover
@@ -51,3 +60,70 @@ jobs:
           "$binary" recover
       - name: Vault fault and removal regressions
         run: node test/connector-vault.test.js
+      - name: Remove only the owned synthetic entry after successful acceptance
+        run: test/native-connector-keychain/target/debug/starnet-connector-keychain-acceptance cleanup
+      - name: Preserve native component evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-keychain-${{ matrix.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/starnet-connector-keychain-${{ env.STARNET_ACCEPTANCE_RUN_ID }}/
+          if-no-files-found: ignore
+
+  windows-credential-manager:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      STARNET_DISPOSABLE_KEYCHAIN: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile lightweight native component harness
+        run: cargo build --locked --manifest-path test/native-connector-keychain/Cargo.toml
+      - name: Pure policy and refusal guards (simulated errors, not Windows denial evidence)
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path test/native-connector-keychain/Cargo.toml connector_key_policy
+          if ($LASTEXITCODE -ne 0) { throw 'Policy controls failed' }
+          cargo test --locked --manifest-path test/native-connector-keychain/Cargo.toml acceptance_guards
+          if ($LASTEXITCODE -ne 0) { throw 'Acceptance guard controls failed' }
+      - name: Allocate unique synthetic entry
+        shell: pwsh
+        run: |
+          "STARNET_ACCEPTANCE_RUN_ID=$([guid]::NewGuid().ToString('N'))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Refuse missing opt-in before credential access
+        shell: pwsh
+        run: |
+          $env:STARNET_DISPOSABLE_KEYCHAIN = '0'
+          & test/native-connector-keychain/target/debug/starnet-connector-keychain-acceptance.exe migrate
+          $refused = $LASTEXITCODE
+          if ($refused -eq 0) { throw 'Harness failed to refuse missing opt-in' }
+          # Expected native failure above must not become the step's final exit status.
+          exit 0
+      - name: Windows component persistence across distinct native processes
+        shell: pwsh
+        run: |
+          $binary = './test/native-connector-keychain/target/debug/starnet-connector-keychain-acceptance.exe'
+          foreach ($phase in @('migrate', 'recover', 'malformed', 'recover')) {
+            & $binary $phase
+            if ($LASTEXITCODE -ne 0) { throw "Native component phase failed: $phase; evidence retained" }
+            if ($phase -eq 'migrate') {
+              & $binary migrate
+              if ($LASTEXITCODE -eq 0) { throw 'Harness failed to refuse an existing synthetic entry' }
+            }
+          }
+      - name: Remove only the owned synthetic entry after successful acceptance
+        shell: pwsh
+        run: |
+          & test/native-connector-keychain/target/debug/starnet-connector-keychain-acceptance.exe cleanup
+          if ($LASTEXITCODE -ne 0) { throw 'Owned synthetic entry cleanup failed; evidence retained' }
+      - name: Preserve native component evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-keychain-windows-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/starnet-connector-keychain-${{ env.STARNET_ACCEPTANCE_RUN_ID }}/
+          if-no-files-found: ignore

@@ -67,7 +67,17 @@ const tick = () => new Promise(r => setImmediate(r));
   }
 
   /* ---------- 3. source wiring ---------- */
-  const fn = (s, name) => { const i = s.indexOf('function ' + name + '('); A.ok(i >= 0, name + ' exists'); return s.slice(i, i + 2500); };
+  /* the WHOLE function, never a fixed character window: a 2500-char slice went red the day finRunSample's settle grew a
+     field (the sample POST slid past the window while the gate order was still right). Brace-count from the body's own
+     `{` — after the parameter list, because `options = {}` holds the first brace — with A.fnBody, plus the length guard
+     its header note asks for (a mis-scan runs long, so the body must be non-empty and far shorter than the file). */
+  const fn = (s, name) => {
+    const i = s.indexOf('function ' + name + '('); A.ok(i >= 0, name + ' exists');
+    const open = s.indexOf(') {', i);
+    const body = s.slice(i, open + 2) + A.fnBody(s.slice(open + 2), '{');
+    A.ok(body.length > 200 && body.length < 12000, name + ' body scanned to its own closing brace (' + body.length + ' chars)');
+    return body;
+  };
   const rs = fn(build, 'finRunSample');
   A.ok(rs.indexOf('finPlanGate(c).then') >= 0 && rs.indexOf('finPlanGate(c).then') < rs.indexOf('/api/routing/sample'), 'finRunSample gates on finPlanGate BEFORE the sample POST');
   A.ok(/phase: 'post'/.test(rs) && /phase: 'run'/.test(rs), 'the sample walks phase post → run');

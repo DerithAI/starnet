@@ -102,7 +102,7 @@ A.ok(/globalCompositeOperation = 'copy'/.test(worldSrc),
   A.ok(reads.length >= 1 && rogue.length === 0,
     'every world.js getImageData reads a dedicated probe/offscreen context — NEVER the stage or the bake plate (rogue: ' + rogue.join(', ') + ')');
 }
-A.ok(/catch \(e\) \{ probeOff = true;/.test(worldSrc),
+A.ok(/e\.name === 'SecurityError'\) (?:\{ )?probeOff = true;/.test(worldSrc),
   'an unreadable (tainted) canvas disables the probe instead of throwing every second');
 A.ok(/if \(W < 2 \|\| H < 2\) return;/.test(worldSrc),
   'a 1x1 blank bake records no sentinel — the watchdog stays inert rather than rebaking forever');
@@ -134,8 +134,9 @@ A.ok(!/\bcache = null\b/.test(recBody),
    the cooldown earned by the FIRST loss made the station sit black through the next one
    (cycles 2/4/5 came back 14.7%/10.1%/11.4% non-black with the sentinel still reading blank).
    Only a recovery that changed NOTHING is evidence of a broken GPU worth rate-limiting. */
-A.ok(/futileRecoveries > 0 && now - lastRecoverAt < RECOVER_COOLDOWN_MS/.test(recBody),
-  'recovery backs off ONLY after a futile recovery — a healthy GPU heals the next loss instantly');
+A.ok(/futileRecoveries > 0 && now - lastRecoverAt < cooldown\) return false/.test(recBody)
+  && /const cooldown = Math\.min\(RECOVER_MAX_COOLDOWN_MS, RECOVER_COOLDOWN_MS \* 2 \*\* Math\.max\(0, futileRecoveries - 1\)\)/.test(recBody),
+  'recovery backs off ONLY after a futile recovery (a healthy GPU heals the next loss instantly), widening and capped while it stays futile');
 A.ok(/futileRecoveries = bakeProbe \? 0 : futileRecoveries \+ 1/.test(worldSrc),
   'a recovery that restored an opaque bake clears the futile count (success is proof the GPU is fine)');
 A.ok(/if \(!bakeWentBlank\(\)\) \{ futileRecoveries = 0; return; \}/.test(worldSrc),
@@ -144,6 +145,38 @@ A.ok(/if \(!recoverLostCanvases\([\s\S]{0,80}?\) return;\s*rebake\(\);/.test(wor
   'the watchdog rebakes inside the same call, so the fresh plate is testable immediately');
 A.ok(/const PROBE_MS = (\d+)/.test(worldSrc) && Number(/const PROBE_MS = (\d+)/.exec(worldSrc)[1]) <= 250,
   'the sentinel is read at least 4x a second — a lost frame is a flicker, never a black station');
+
+/* ---- 4b. A GPU THAT STAYS BROKEN IS NOT HAMMERED (review world-render-02) ----
+   Every futile retry is a full station bake (~2.5 s on a big industrial floor) plus, before this, a re-prepare of the whole
+   prop catalog — into a GPU that is not giving canvases back. A flat 3 s cooldown kept the main thread ~80% busy for as long
+   as the GPU stayed broken. The real watchdog block runs here: the sentinel stays blank until the stub "GPU" heals. */
+{
+  const vm = require('vm');
+  const raw = app('world.js');
+  const block = raw.slice(raw.indexOf('  let bakeProbe = null;'), raw.indexOf('  /* ---------- STAGE CONTEXT LOSS'));
+  A.ok(block.length > 2000 && block.length < 40000, 'the bake watchdog block was located');
+  const gpu = { ok: false, blank: true, t: 0 }, bakes = [], restores = [];
+  const sb = { console: { warn() {} }, cache: { baseCv: {} }, bakeDirty: false, gpu,
+    PropRemaster: { restore() { restores.push(gpu.t); } },
+    rebake() { bakes.push(gpu.t); gpu.blank = !gpu.ok; vm.runInContext('bakeProbe = gpu.ok ? { x: 1, y: 1 } : null;', sb); } };
+  vm.createContext(sb);
+  vm.runInContext(block + '\nbakeWentBlank = () => gpu.blank;\nthis.watch = watchCanvasLoss;', sb);
+  const run = (from, to) => { for (let t = from; t <= to; t += 250) { gpu.t = t; sb.watch(t); } };
+  run(0, 60000);
+  A.ok(bakes.length >= 3 && bakes.length <= 6, 'a GPU whose fresh canvases stay blank is retried on a widening back-off, not every 3 s (' + bakes.length + ' bakes in a minute)');
+  A.eq(restores.length, 1, 'the prop catalog is re-prepared once per loss, not on every futile retry');
+  run(60250, 900000);
+  let gap = 0; for (let i = 1; i < bakes.length; i++) gap = Math.max(gap, bakes[i] - bakes[i - 1]);
+  A.ok(gap <= 60000, 'the back-off is capped: a broken spell is still retried at least once a minute (longest wait ' + gap + ' ms)');
+  A.eq(restores.length, 1, '...and still without re-preparing the props each time');
+  gpu.ok = true; const healBakes = bakes.length;
+  run(900250, 1000000);
+  A.eq(bakes.length, healBakes + 1, 'the GPU heals: the next retry bakes an opaque floor and the watchdog goes quiet');
+  A.eq(restores.length, 2, 'healing re-prepares the prop art once, on the healthy GPU (the broken spell may have left it blank)');
+  gpu.blank = true; gpu.t = 1000250; sb.watch(1000250);
+  A.eq(bakes.length, healBakes + 2, 'a fresh loss after healing is rebuilt on the spot (no back-off left over)');
+  A.eq(restores.length, 3, '...with its own prop re-prepare');
+}
 
 /* ---- 5. THE BROWSER-EVENT PATH: belt to the watchdog's braces ----
    preventDefault() on 'contextlost' is what ASKS for restoration; without it 'contextrestored'
@@ -155,12 +188,16 @@ A.ok(/addEventListener\('contextrestored'[\s\S]{0,300}?recoverLostCanvases\(/.te
   "'contextrestored' runs the same recovery");
 A.ok(/addEventListener\('contextrestored'[\s\S]{0,300}?lastRecoverAt = 0/.test(worldSrc),
   'an explicit restore beats the recovery cooldown (the browser told us; do not wait)');
+A.ok(/addEventListener\('contextrestored'[\s\S]{0,300}?futileRecoveries = 0/.test(worldSrc),
+  '...and starts a broken spell over, so the props are re-prepared on the restored context');
 
 /* ---- 6. COMING BACK FROM THE BACKGROUND ----
    A GPU reset usually lands while the app is hidden (machine slept, display changed), so the
    first frame back is exactly when the damage shows. */
 A.ok(/visibilitychange[\s\S]{0,160}?lastProbeAt = 0/.test(worldSrc),
   'becoming visible re-arms the sentinel for the next frame');
+A.ok(/visibilitychange[\s\S]{0,160}?lastProbeAt = 0; futileRecoveries = 0;/.test(worldSrc),
+  '...and drops a broken spell’s back-off, so a GPU healed by sleep/wake is retried on that frame');
 A.ok(/addEventListener\('focus'[\s\S]{0,120}?lastProbeAt = 0/.test(worldSrc),
   'regaining focus re-arms the sentinel');
 

@@ -3,10 +3,10 @@ fingerprint: 85f602c4
 slug: windows-0132-packaged-backend-startup
 title: Windows 0.13.2 startup fails loading a packaged backend module
 surface: release
-severity: P1
+severity: P2
 status: open
 found: 2026-10-11
-lane: agent/session-handoff-1011
+lane: release-0135-prep
 fix:
 origin: customer
 report: support-2026-10-11-windows-packaged-backend-startup
@@ -40,8 +40,20 @@ An existing empty CommonJS module normally resolves and exports an empty object.
 
 ## Verdict
 
-Open: startup-blocking customer report; cause and artifact reproduction unverified. Keep separate from macOS checkpoint-growth report #107/8bdf73bb and older frontend/WebKit boot-integrity records. Disk pressure is a hypothesis to check, not an established common cause. No installer repair, source fix or customer recovery is claimed.
+Re-triaged P1 to P2 for the 0.13.5 cut: the build guard 08d7735de now refuses a zero-byte backend module at build time; the reporter's machine is not re-verified. Waiting on reporter data. Andrew approved this disposition for the 0.13.5 cut (10-15).
 
 ## Required acceptance
 
 Identify the failing file/path boundary; demonstrate the repair on a disposable installation of the exact affected artifact, then on the release candidate. Verify startup, a real local task, restart, and upgrade/reinstall continuity of existing station data. If the original report cannot be reproduced, retain that limitation and the specific evidence request. A successful source checkout run cannot close installed acceptance.
+
+## Public artifact inspection — 2026-10-12
+
+The official public `StarNet_0.13.2_x64-setup.exe` (457,888,688 bytes, SHA-256 `f8ce564ffe5d420efd1d8efb35c796d73bfd4baae00444c61a82bbc268371cdd`) has a valid Authenticode signature. Read-only selective NSIS extraction found nonempty `sidecar/tools/builtin/shell.js` (90,354 bytes), `sidecar/index.js` (2,007,111 bytes), and `sidecar/loop.js` (184,069 bytes). All three match released source after CRLF-to-LF normalization; their raw installed-archive hashes and method limits are recorded in [the artifact receipt](../evidence/customer-release-1011/windows-0132-artifact.json). The installer and extracted code were never executed.
+
+This establishes the selected public archive contents only. It does not identify the customer's installer, installed file bytes, startup resource root, exception stack, or failure cause, and does not prove installed startup or recovery. The report remains open; no source repair is justified by this inspection alone.
+
+## Build-side guard — 2026-10-14
+
+Every bundle path (npm run desktop:build, desktop:dev, both CI workflows) stages through scripts/stage-frontend-dist.mjs before tauri copies sidecar/ and shared/ verbatim from the working tree, and nothing checked those trees. Commit 08d7735de: staging now refuses to package when any code file under sidecar/, shared/ or frontend/ is zero bytes, or when a git-tracked file with content is missing or emptied on disk, and names each file. Regression: test/bundle-source-integrity.test.js.
+
+This guards packages built from a damaged checkout only. The public 0.13.2 installer's shell.js was already shown whole, so this does not explain or repair the customer's installation, and no installed startup or recovery is claimed. The report stays open.

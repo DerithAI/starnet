@@ -29,6 +29,7 @@ const IndustrialTextures = (() => {
     // Tried and rejected: cut 2.2/key 2, cut 1.6/key 1.7, cut 1.3/key .85 — all too bright.
     cut: 1, key: 0, keyReach: .5, keyProps: 1, keyPropReach: 1.5, shadeCool: 0 };
   const plates = new WeakMap();
+  const plateScales = new WeakMap();   // dense plate -> the exact scale it was painted at (cropBase cuts on it)
   const platePyramids = new WeakMap();
   const detailTargets = new WeakMap(), wallStrips = new Map(), materials = new Map(), emitters = new Map();
   let loaded = false;
@@ -128,16 +129,19 @@ const IndustrialTextures = (() => {
   // Tee the base painter into a denser art plate. The original canvas remains
   // the exact geometry/alpha/readback authority for lights, chunks and picking.
   // Only the final visible blit uses the denser plate; simulation units stay 12px.
+  // `referenceSize.scale`, when given, IS the plate's scale (capped at 6): the station bake passes one scale for the
+  // whole station so its chunks and the whole-station plate are cut from the same pixel grid (see cropBase).
   function detailContext(ctx, referenceSize = ctx.canvas) {
     if (!enabled()) return ctx;
-    const source = ctx.canvas, scale = Math.min(6, 4096 / Math.max(referenceSize.width, referenceSize.height));
+    const source = ctx.canvas, scale = referenceSize.scale > 0 ? Math.min(6, referenceSize.scale)
+      : Math.min(6, 4096 / Math.max(referenceSize.width, referenceSize.height));
     if (scale < 1.5) return ctx;
     const cv = document.createElement('canvas'); cv.width = Math.ceil(source.width * scale); cv.height = Math.ceil(source.height * scale);
     const g = cv.getContext('2d'), transform = ctx.getTransform();
     g.scale(scale, scale); g.transform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
     g.imageSmoothingEnabled = false;
     const paintObjects = new WeakMap();
-    plates.set(source, cv);
+    plates.set(source, cv); plateScales.set(cv, scale);
     if (cv.addEventListener) cv.addEventListener('contextlost', () => plates.delete(source), { once: true });
     document.documentElement.dataset.textureResolution = String(scale);
     const proxy = new Proxy(ctx, {
@@ -195,6 +199,39 @@ const IndustrialTextures = (() => {
     // just as on contextlost. The next normal rebake restores authored detail.
     if (lost === hi) plates.delete(cv);
   }
+  /* A CROP OF A BAKED PLATE (2026-10-13, Andrew: "a huge delay in build mode"). BUILD MODE cuts the live world's
+     whole-station bake into its chunks instead of re-baking every one of them on the first edit. `dst` already holds
+     src's pixels from (x, y); this gives it the matching dense plate, copied 1:1 from src's — never resampled — so the
+     chunk draws exactly what the world drew there. Refused (false, nothing registered) unless the cut lands on whole
+     plate pixels; the caller then bakes that chunk instead. True with nothing to do when src has no plate either. */
+  function cropBase(src, dst, x, y) {
+    const hi = enabled() && plates.get(src);
+    if (!hi) return true;
+    const scale = plateScales.get(hi), sx = x * scale, sy = y * scale;
+    if (!(scale > 0) || !Number.isInteger(sx) || !Number.isInteger(sy)) return false;
+    const cv = document.createElement('canvas'); cv.width = Math.ceil(dst.width * scale); cv.height = Math.ceil(dst.height * scale);
+    const g = cv.getContext('2d'); g.imageSmoothingEnabled = false;
+    g.drawImage(hi, sx, sy, cv.width, cv.height, 0, 0, cv.width, cv.height);
+    plates.set(dst, cv); plateScales.set(cv, scale);
+    if (cv.addEventListener) cv.addEventListener('contextlost', () => plates.delete(dst), { once: true });
+    return true;
+  }
+  // ...and the way back: one plate for `dst` made of its pieces' plates, each copied 1:1 at (x, y) * scale. Refused (false,
+  // nothing registered) unless every piece has a plate of one scale that lands on whole plate pixels; true with nothing to
+  // do when no piece has a plate.
+  function stitchBase(dst, pieces) {
+    const plated = enabled() ? pieces.map(p => plates.get(p.cv)) : [];
+    if (!plated.some(Boolean)) return true;
+    if (!plated.every(Boolean)) return false;
+    const scale = plateScales.get(plated[0]);
+    if (!(scale > 0) || plated.some(hi => plateScales.get(hi) !== scale) || pieces.some(p => !Number.isInteger(p.x * scale) || !Number.isInteger(p.y * scale))) return false;
+    const cv = document.createElement('canvas'); cv.width = Math.ceil(dst.width * scale); cv.height = Math.ceil(dst.height * scale);
+    const g = cv.getContext('2d'); g.imageSmoothingEnabled = false;
+    pieces.forEach((p, i) => g.drawImage(plated[i], p.x * scale, p.y * scale));
+    plates.set(dst, cv); plateScales.set(cv, scale);
+    if (cv.addEventListener) cv.addEventListener('contextlost', () => plates.delete(dst), { once: true });
+    return true;
+  }
   function drawBase(ctx, cv, x = 0, y = 0) {
     const hi = enabled() && plates.get(cv);
     if (!hi) return false;
@@ -251,15 +288,28 @@ const IndustrialTextures = (() => {
   }
   // Map the authored steel mullion down a splayed doorway reveal. Subpixel
   // slices retain the six-times wall bake resolution rather than pixel stairs.
+  /* A DRAW THAT MISSES THE CANVAS IS NOT MADE (2026-10-14, the busy-station walk: a BUILD MODE chunk bake walked every
+     doorway reveal and hull column within reach of its 384px square, and most of those slices land beside it). The rect,
+     in the context's own units, that its canvas covers — its dense plate covers the same rect — one pixel wider all round;
+     null under any transform but an axis-aligned positive one, which never skips. A slice wholly outside it paints
+     nothing there, so it is not drawn (the painter's save/restore keeps its state unchanged either way). */
+  function canvasBox(ctx) {
+    const m = ctx.getTransform ? ctx.getTransform() : null, cv = ctx.canvas;
+    if (!m || !cv || m.b !== 0 || m.c !== 0 || !(m.a > 0) || !(m.d > 0)) return null;
+    return { x0: (-1 - m.e) / m.a, x1: (cv.width + 1 - m.e) / m.a, y0: (-1 - m.f) / m.d, y1: (cv.height + 1 - m.f) / m.d };
+  }
+  const misses = (box, x, y, w, h) => !!box && (x + w < box.x0 || x > box.x1 || y + h < box.y0 || y > box.y1);
   function doorReturn(ctx,edge,top,foot,reach,side,base,capH=0) {
     if(!enabled())return false;
     const im=material('remaster/walls/viewport',base),height=foot-top+1;
     if(height<=0)return false;
     ctx.save();ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+    const box=canvasBox(ctx);
     for(let i=0;i<height*6;i++) {
       const y=top+i/6,h=Math.min(1/6,foot+1-y);
       const t=Math.min(1,(y+h/2-top)/(foot-top));
       const w=1+reach*(1-t),x=side?edge-w:edge;
+      if(misses(box,x,y,w,h))continue;
       ctx.drawImage(im,(side?.87:.03)*im.width,(.17+.58*(y-top)/height)*im.height,
         .10*im.width,.58*h/height*im.height,x,y,w,h);
       ctx.fillStyle=side?'rgba(0,0,0,0.13)':'rgba(0,0,0,0.27)';ctx.fillRect(x,y,w,h);
@@ -267,6 +317,7 @@ const IndustrialTextures = (() => {
     const cap=material('remaster/crown',base);
     for(let i=0;i<capH*6;i++) {
       const k=i/6,w=1+reach*(k+1/12)/capH,x=side?edge-w:edge;
+      if(misses(box,x,top-capH+k,w,1/6))continue;
       ctx.drawImage(cap,.22*cap.width,(.13+.73*k/capH)*cap.height,
         .18*cap.width,.73/capH/6*cap.height,x,top-capH+k,w,1/6);
     }
@@ -373,13 +424,16 @@ const IndustrialTextures = (() => {
     const im = shellImage(material, base), period = 96;
     if (!im) return false;
     ctx.save(); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    // a hull layer is cut to the part of the skirt that survives its mask, but the veins walk every column of the chunk
+    const box = canvasBox(ctx);
     // Sample each column relative to its actual contour top. The geometry's
     // alpha mask and exposure pass still clip and shade the resulting cladding.
     for (let x = 0; x < width; x++) {
+      if (misses(box, x, 0, 1, height)) continue;
       const top = topOf && topOf[x] >= 0 ? topOf[x] : -vy;
       for (let y = 0; y < height;) {
         const sy = mod(y - top, period), h = Math.min(period - sy, height - y);
-        ctx.drawImage(im, mod(vx + x, period) * im.width / period, sy * im.height / period,
+        if (!misses(box, x, y, 1, h)) ctx.drawImage(im, mod(vx + x, period) * im.width / period, sy * im.height / period,
           im.width / period, h * im.height / period, x, y, 1, h);
         y += h;
       }
@@ -541,7 +595,7 @@ const IndustrialTextures = (() => {
     ctx.drawImage(im, x + (w - dw) / 2, y + h - dh, dw, dh);
     ctx.restore(); return true;
   }
-  return Object.freeze({ ready, enabled, isRemaster, lighting, detailContext, baseLayers, discardBaseLayer, restoreMaterials, _dbgLoseMaterials, drawBase, floor, wall, wallStrip, wallPatch, crown, doorReturn, viewportFrame, shell, shellPlate, propPanel, workstation, workstationEmitter, chair, crate,
+  return Object.freeze({ ready, enabled, isRemaster, lighting, detailContext, cropBase, stitchBase, baseLayers, discardBaseLayer, restoreMaterials, _dbgLoseMaterials, drawBase, floor, wall, wallStrip, wallPatch, crown, doorReturn, viewportFrame, shell, shellPlate, propPanel, workstation, workstationEmitter, chair, crate,
     furniture, supportsWall: id => enabled() && (wallIds.includes(id)||wallMaterials.includes(id)),
     status: () => ({ requested, loaded, failed: failed.slice(), assets: Object.keys(images) }) });
 })();

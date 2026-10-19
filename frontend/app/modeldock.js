@@ -310,6 +310,10 @@ const ModelDock = (() => {
       }
     }
     else if (p === 'anthropic' && /^anthropic\//i.test(id)) candidate = id.slice(id.indexOf('/') + 1);
+    // GitHub #98: the routed spelling 'google/gemini-2.5-flash' kept after switching to native GEMINI names the
+    // catalog's 'gemini-2.5-flash' — confirmed by the live catalog below, never guessed; an OpenRouter variant suffix
+    // (':free', ':thinking', …) is a routing option, not part of the native name (sidecar gemini.js routedToNative)
+    else if (p === 'gemini' && /^google\//i.test(id)) candidate = id.slice(id.indexOf('/') + 1).replace(/:[a-z][a-z0-9-]*$/i, '');
     return candidate && rows.some(m => m && m.id === candidate) ? candidate : '';
   }
 
@@ -1004,7 +1008,8 @@ const ModelDock = (() => {
       closeDock();
     });
     document.addEventListener('pointerdown', () => { pressAt = clock(); }, true);
-    document.addEventListener('keydown', ev => { if (open && ev.key === 'Escape') closeDock(); });
+    // an Esc that closed the dock is marked used: an offer panel over COMMS must not ALSO read it as its NOT NOW (review 10-15)
+    document.addEventListener('keydown', ev => { if (open && ev.key === 'Escape') { ev.preventDefault(); closeDock(); } });
   }
 
   function init(o) {

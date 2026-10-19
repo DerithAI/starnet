@@ -134,7 +134,7 @@ function boot(opts) {
     Chat: { isBusy: () => sandbox.__busy, status: s => { statusLog.push(s); nodes['chat-status'].textContent = s; }, send: t => sandbox.__sent.push(t), autoGrowInput() {} },
     SFX: { open() {}, click() {}, think() {}, boot() {} },
     Personas: { DEFAULT_ID: 'professional', get: () => ({ ttsVoice: 'Umbriel', ttsSpeed: 1 }) },
-    Harness: { getKey: () => (opts.ttsKey ? 'k' : ''), configured: () => false },
+    Harness: Object.assign({ getKey: () => (opts.ttsKey ? 'k' : ''), configured: () => false }, opts.harness || {}),
     __busy: false, __sent: []
   };
   if (opts.now) sandbox.Date = class extends Date { static now() { return opts.now(); } };
@@ -771,6 +771,78 @@ async function opensWithin(t, ms) {
     A.eq(played[played.length-1],'Next reply opens normally.','cut: the next reply is spoken');
   }
 
+  // --- EVERY speaker-off path puts the speech note away -----------------------------------------
+  // 2026-10-15 report: "this warning pops up and never goes away once you turn off voice whilst the agent is
+  // chatting". Only a new SPOKEN reply (or a click) cleared the note, and a muted station opens none — the
+  // speaker key cleared it, but ending Local Live / hands-free (the restore of a mute voice mode lifted) and
+  // `/voice off` after it did not, so the note sat under the COMMS keys for good.
+  {
+    const fail503 = url => String(url).includes('/api/tts')
+      ? Promise.resolve({ok:false,status:503,headers:{get:()=> 'application/json'},json:async()=>({reason:'unavailable'})})
+      : Promise.resolve({ok:true,json:async()=>({})});
+    const noted = t => /couldn.t be spoken/.test(t.nodes['voice-toggle'].title);
+    const raiseNote = async t => {
+      t.Voice.setSpeakReplies(false); A.ok(t.Voice.forceSpeakOn(), 'note: voice mode lifts a hand-set mute');
+      t.Voice.speakChunk('A sentence the engine drops.', 'agent', {replyToken:t.Voice.replyToken()});
+      await until(() => noted(t), 1000);
+      A.ok(noted(t), 'note: a dropped sentence raises the note while the speaker is on');
+    };
+    const paths = {
+      'Local Live ends (restoreSpeak)': t => { t.Voice.stopSpeaking(); t.Voice.restoreSpeak(); },
+      // delta review 10-15: a Local Live start that fails (mic permission denied) restores the mute with NO stop first
+      'a failed Local Live start (restoreSpeak alone)': t => t.Voice.restoreSpeak(),
+      'hands-free ends (stopConvo)': t => t.Voice.stopConvo(),
+      '/voice off (stopConvo, then setSpeakReplies off)': t => { t.Voice.stopConvo(); t.Voice.setSpeakReplies(false); },
+      'the speaker key': t => t.nodes['voice-toggle'].onclick()
+    };
+    for (const [name, mute] of Object.entries(paths)) {
+      const t = boot({Audio:AutoEndAudio, fetch:fail503});
+      await raiseNote(t);
+      mute(t);
+      A.eq(t.Voice.isOn(), false, 'note: ' + name + ' leaves the speaker off');
+      A.ok(!noted(t), 'note: ' + name + ' puts the speech note away');
+      A.ok(!t.Voice.isSpeaking() && !t.Voice.isReplyPending(), 'note: ' + name + ' leaves nothing speaking or queued');
+      // the agent keeps talking while muted — nothing may bring the note back
+      t.Voice.speakChunk('More words while muted.', 'agent', {replyToken:t.Voice.replyToken()}); t.Voice.endReply();
+      await tick(30);
+      A.ok(!noted(t), 'note: ' + name + ' — a muted reply never re-raises the note');
+    }
+  }
+
+  // --- a speaker restored to its mute goes SILENT, even with a sentence mid-play ---------------
+  // delta review 10-15: a failed Local Live start (mic permission denied) re-mutes through Voice.restoreSpeak() with no
+  // stopSpeaking() of its own, so the sentence already playing — and every one queued behind it — went on with the
+  // speaker key OFF. The audio here plays until something stops it (the playback watchdog is held off), so the outcome
+  // never depends on timing.
+  {
+    const played = [], paused = [];
+    class HeldAudio extends MockAudio {
+      play() { played.push(this.src); queueMicrotask(() => { if (this.onplay) this.onplay(); }); return Promise.resolve(); }
+      pause() { paused.push(this.src); }
+    }
+    const t = boot({ Audio: HeldAudio, fetch: (url, o) => String(url).includes('/api/tts')
+      ? Promise.resolve({ ok: true, headers: { get: () => 'audio/wav' }, blob: async () => ({ size: 128, text: JSON.parse(o.body).text }) })
+      : Promise.resolve({ ok: true, json: async () => ({}) }) });
+    t.sandbox.URL.createObjectURL = blob => blob.text;
+    const compressed = t.sandbox.setTimeout;   // the rig compresses long timers; keep the 2-minute playback watchdog real
+    t.sandbox.setTimeout = (fn, ms, ...a) => ms >= 100000 ? setTimeout(fn, ms, ...a).unref() : compressed(fn, ms, ...a);
+    t.Voice.setSpeakReplies(false);
+    A.ok(t.Voice.forceSpeakOn(), 'held: Local Live lifts the hand-set mute as it starts');
+    const token = t.Voice.replyToken();
+    t.Voice.speakChunk('The first sentence is playing.', 'agent', { replyToken: token });
+    t.Voice.speakChunk('The second sentence waits its turn.', 'agent', { replyToken: token });
+    t.Voice.endReply();
+    await until(() => t.Voice.isSpeaking(), 1000);
+    A.ok(t.Voice.isSpeaking() && played.length === 1, 'held: the first sentence is playing, the second queued behind it');
+    t.Voice.restoreSpeak();   // the failed start's catch: nothing stopped the voice before it
+    A.eq(t.Voice.isOn(), false, 'held: the restore leaves the speaker off');
+    A.ok(!t.Voice.isSpeaking(), 'held: the sentence that was playing stops with it');
+    A.ok(paused.length > 0 && paused.every(src => src === 'The first sentence is playing.'), 'held: its audio is paused: ' + paused.join('|'));
+    A.ok(!t.Voice.isReplyPending(), 'held: nothing is left queued');
+    await tick(30);
+    A.eq(played.join('|'), 'The first sentence is playing.', 'held: the queued sentence never plays on a muted speaker');
+  }
+
   // --- Local Live pins one voice AND one serving engine for the whole conversation ------------
   // Without this pin, every streamed sentence reread localStorage and independently chose Kokoro vs Edge.
   // A settings click or one transient local-engine failure could therefore change speaker mid-conversation.
@@ -967,6 +1039,22 @@ async function opensWithin(t, ms) {
     A.ok(/restarted|reload/i.test(String(t.nodes['chat-status'].textContent || '')),
       'stt 403: and the diagnostic SURVIVES endListening\'s same-tick restore (it is actually painted)');
   }
+  // a page the station KEPT its key from (Harness.tokenWithheld) gets the same 403, but it is not a restart: a reload
+  // only re-runs the same ownership check, so the STT failure points at the station notice instead (threads-backend-05)
+  {
+    const sttFail = (url) => (String(url).indexOf('/api/stt') >= 0)
+      ? Promise.resolve({ ok: false, status: 403, headers: { get: () => 'text/plain' }, json: () => Promise.reject(new SyntaxError('Unexpected token f')) })
+      : Promise.resolve({ ok: true, headers: { get: () => 'application/json' }, json: () => Promise.resolve({}), blob: () => Promise.resolve({ size: 1 }) });
+    const t = boot({ recorder: true, fetch: sttFail, harness: { tokenWithheld: () => 'other-user' } });
+    t.Voice.startListening(); await tick(30);
+    mrInstances[mrInstances.length - 1].ondataavailable({ data: { size: 1 } });
+    t.Voice.stopListening();
+    await until(() => t.statusLog.some(s => /not verified|restarted/i.test(String(s))), 5000);
+    A.eq(t.sandbox.__sent.length, 0, 'stt 403 on a withheld page: nothing is sent');
+    A.ok(t.statusLog.some(s => /not verified as your own account/.test(String(s)) && /station notice/.test(String(s))),
+      'stt 403 on a withheld page: names the ownership check and the notice: ' + JSON.stringify(t.statusLog));
+    A.ok(!t.statusLog.some(s => /restarted/i.test(String(s))), 'stt 403 on a withheld page: never says the station restarted');
+  }
   // the documented 200-degrade envelope keeps working, and its reason is painted too
   {
     const sttDegrade = (url) => (String(url).indexOf('/api/stt') >= 0)
@@ -1098,6 +1186,20 @@ async function opensWithin(t, ms) {
     t.Voice.speakChunk('Floor second sentence.', 'agent', {}); t.Voice.endReply();
     await until(() => !t.Voice.isReplyPending(), 1000);
     A.eq(t.Voice.playbackChain(), 'machine', 'one reply keeps one effect across an engine blip');
+
+    // a later sentence whose X-Voice-Provider is unreadable (a cross-origin desktop page sees no unexposed header)
+    // still came from the engine this reply pinned: a Kokoro clip is never re-paced as keyed on top of the engine
+    t.Voice.setVoiceChoice('am_michael', 'agent'); served = 'local-kokoro';
+    const pinnedAt = audios.length;
+    t.Voice.speakChunk('Kokoro opens this reply.', 'agent', { speedMul: 0.88 });
+    await until(() => audios.length > pinnedAt, 1000);
+    served = '';
+    t.Voice.speakChunk('This sentence lost its provider header.', 'agent', { speedMul: 0.88 }); t.Voice.endReply();
+    await until(() => !t.Voice.isReplyPending(), 1000);
+    A.eq(bodies[bodies.length - 1].localEngine, 'local-kokoro', 'the later sentence asked the pinned Kokoro engine');
+    A.eq(audios.length - pinnedAt, 2, 'both sentences played');
+    A.eq(audios[audios.length - 1].playbackRate, 1, 'a header-less clip from pinned Kokoro plays at 1x — the engine already paced it');
+    A.eq(t.Voice.playbackChain(), 'natural', 'the Kokoro reply stays on the natural chain');
 
     // read-aloud prosody: a bulleted line ends a sentence instead of running into the next
     await say('Here is what changed:\n- fixed the voice\n- added tests');

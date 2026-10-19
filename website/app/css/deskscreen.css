@@ -40,6 +40,7 @@
 .ds-status { padding: 2px 10px; font-size: 13px; color: var(--ph-dim); border-bottom: 1px solid rgba(var(--ph-rgb), .08); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ds-app[data-s="run"] .ds-status { color: var(--ph); }
 .ds-app[data-s="bad"] .ds-status { color: color-mix(in srgb, var(--bad, #ff4a3d) 70%, var(--text)); }
+.ds-app[data-s="held"] .ds-status { color: var(--ph-dim); }   /* a call the Task Brief held: not run yet, never red */
 .ds-partial { padding: 4px 10px; }
 .ds-view { flex: 1 1 auto; min-height: 0; overflow: auto; }
 

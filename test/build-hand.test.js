@@ -72,6 +72,12 @@ const frozen = s => JSON.stringify(s.serialize()) + '|' + s.getSeq() + '|' + s.c
   A.ok(lr.ok && s.propById(lr.id).done === lt.d && s.propById(lr.id).maxIter === 3 && s.propById(lr.id).when === 'APPROVED', 'a LOOP keeps the belt\'s lane as DONE and carries passes + verdict from the hand — never a compass lane from elsewhere');
   // removing a 1-in / 1-out junction rejoins the belt it sat on (the floor's own reconcile)
   A.ok(s.removeProp(lr.id).ok && linkOf(s, L.B2, L.O), 'removing a junction that sat on one belt rejoins that belt');
+  // a SPLIT THE JOB splitter picked up (Q) and clicked onto a belt — the normal way a splitter goes down — keeps dividing
+  // (final floor lane M16 / R22: the PICK UP key promises "its settings … too")
+  const sp = linkOf(s, L.B1, L.B2), st = sp.path[Math.floor(sp.path.length / 2)], sr = s.junctionOnBelt(st.x, st.y, 'splitter', { cfg: { divide: true, bufferSize: 3 } });
+  A.ok(sr.ok && s.propById(sr.id).divide === true && s.propById(sr.id).bufferSize === 3, 'a SPLIT THE JOB splitter in hand keeps its divide mode on a belt — ' + JSON.stringify(sr.ok ? s.propById(sr.id) : sr));
+  const plain = s.junctionOnBelt(linkOf(s, L.B2, L.O).path[3].x, linkOf(s, L.B2, L.O).path[3].y, 'splitter', { cfg: { divide: 'yes' } });
+  A.ok(plain.ok && !s.propById(plain.id).divide, '…and only a literal true divides (the held value stays sanitized)');
 }
 
 /* ---------- A2. connect / merge / branch / re-route / drop: one undo each, the preview IS the commit ---------- */
@@ -250,7 +256,14 @@ const frozen = s => JSON.stringify(s.serialize()) + '|' + s.getSeq() + '|' + s.c
     && /live: !!\(valPlan && valPlan\.sendTo && valPlan\.sendTo\[p\.id\]\)/.test(fn('sendLinks')), '…Alt makes every SEND TO arc say its words, live or OFF exactly as the compiled plan has it');
   const ajt = fn('altJunctionText');
   A.ok(!/[×→▸]/.test(ajt), 'the Alt texts are ASCII (VT323 has no × or arrows)');
-  A.ok(/floatHistory\(r, ev\.shiftKey \? 'REDID' : 'UNDID'\)/.test(key) && /undoBtn\.onclick = \(\) => \{ setHand\(null, \{ silent: true \}\); const r = station\.undo\(\); sfx\(r\.ok \? 'click' : 'bad'\); floatHistory\(r, 'UNDID'\); \};/.test(build), 'Ctrl+Z / Ctrl+Y and the UNDO / REDO keys float UNDID · / REDID · <WHAT>');
+  A.ok(/floatHistory\(r, ev\.shiftKey \? 'REDID' : 'UNDID'\)/.test(key) && /undoBtn\.onclick = \(\) => \{ dropPickOff\(\); const r = station\.undo\(\); sfx\(r\.ok \? 'click' : 'bad'\); floatHistory\(r, 'UNDID'\); \};/.test(build)
+    && /redoBtn\.onclick = \(\) => \{ dropPickOff\(\); const r = station\.redo\(\);/.test(build), 'Ctrl+Z / Ctrl+Y and the UNDO / REDO keys float UNDID · / REDID · <WHAT>');
+  // final floor lane M21 / R55: undo / redo close only PICK WHAT GOES HERE (its options were probed on the floor before the undo) and
+  // keep the piece in THE HAND — placing BAYs from the hotbar, a Ctrl+Z on a misplaced one leaves the BAY still held
+  const zKey = key.slice(key.indexOf("(ev.key === 'z' || ev.key === 'Z')"), key.indexOf("if (ev.key === '/')"));
+  A.ok(zKey.length > 0 && !/setHand\(null/.test(zKey) && (zKey.match(/dropPickOff\(\);/g) || []).length === 2, 'Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y put down only the picker, never the held piece');
+  A.ok(!/(undo|redo)Btn\.onclick = \(\) => \{ setHand\(null/.test(build), '…and so do the UNDO / REDO keys');
+  A.ok(/const dropPickOff = \(\) => \{ if \(dropPick\) \{ dropPick = null; renderSelection\(\); setHint\(\); \} \};/.test(build), 'dropPickOff closes an open picker (and only that)');
   A.ok(/if\(dropPick\)\{host\.hidden=false;root\.classList\.add\('has-selection'\);return renderDropPick\(host\);\}/.test(build), 'PICK WHAT GOES HERE docks where the selection card does (windows dock from the bottom — never a popover at the pointer)');
   const od = fn('openDropPick');
   A.ok(/station\.probeDrop\(/.test(od) && !/probeDrop/.test(hp + plan2), 'the fit probe runs once on RELEASE, never per frame');

@@ -160,5 +160,9 @@ for(const c of T.catalog.filter(c=>c.group==='work')) assert.ok(c.pitch&&c.pitch
   assert.match(onb,/c\.purposeLabel \? ' — ' \+ c\.purposeLabel/,'the station question labels each choice with its purpose');
   assert.match(ob,/WORK › AUTOMATE › WORKFLOWS walks you through who works each step/,'the pick\'s closing line points at WORKFLOWS');
   assert.match(build,/querySelector\('\.refit-firstrun, \.refit-preset-example, \.refit-station-builds'\)\)\) fireFirstRide\(\)/,'the first ride never narrates over the presets dialog or the setup guide (one voice)');
+  // (org wire AUTO-P17-1) the guide's doc quotes the keys the card really wears — a key renamed in build.js renames them in the doc too
+  const guideDoc=fs.readFileSync(path.join(__dirname,'..','docs','station-creative-example.md'),'utf8');
+  assert.ok(build.includes("sr?.view?.ok?'↻ SEND IT AGAIN':'▶ SEND A REAL JOB')")&&guideDoc.includes('the run button reads ▶ SEND A REAL JOB (↻ SEND IT AGAIN')&&!guideDoc.includes('costs a run'),'the doc quotes the run key as the card says it, with no "· costs a run" suffix the card dropped');
+  assert.ok(build.includes("'>GIVE '+esc(String(agentLabelFor(firstAid)).toUpperCase())+' EVERY STEP</button>")&&guideDoc.includes('A GIVE <NAME> EVERY STEP button')&&!/DOES EVERY STEP/.test(guideDoc),'the doc quotes GIVE <NAME> EVERY STEP, the key the card wears');
 }
 console.log('station-templates: seven layouts (five work presets with a ready line each, two looks), classic/remastered catalogs, approved home, one-agent and per-agent staffing, purpose-chip recommendations, belt-order steps, loop gates, the setup path, clear entrances, prop access, ownership, undo/redo and persistence PASS');

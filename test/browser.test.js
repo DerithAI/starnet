@@ -1847,11 +1847,14 @@ function fakeDriver() {
       const B2 = makeBrowserTools({
         makeDriver: seam.makeDriver, forceHeadless: true, syntheticInputOnly: true,
         persistentProfile: lease.profile,
-        attendedLogin: { prompt: async f => { asked.push({ tool: f.tool, host: f.argsSummary }); return 'once'; } }
+        attendedLogin: { prompt: async f => { asked.push({ tool: f.tool, host: f.argsSummary, fresh: f.fresh }); return 'once'; } }
       });
       const out = await B2.tools.find(t => t.name === 'browser.login').run({ url: 'https://erank.com/login' }, {});
       A.eq(asked.map(a => a.tool), ['browser.login', 'browser.login.done'], 'both consent phases ride the live channel in order');
       A.eq(asked[0].host, 'erank.com', 'the consent ask names the host, not the full URL');
+      // review app-shell-ui-03: both asks answer THIS sign-in only, so a standing answer (always, full) is applied and
+      // echoed as once by handleConsent, never confirmed as a grant the harness did not make
+      A.eq(asked.map(a => a.fresh), [true, true], 'both login asks are fresh consent (approve once only)');
       A.eq(seam.made.length, 2, 'login = one headed launch + one headless restore');
       A.eq(seam.made[0].headed, true, 'the login window is headed');
       A.eq(seam.made[0].synthetic, false, 'the human-driven window carries NO synthetic-input shims (SSO popups must work)');

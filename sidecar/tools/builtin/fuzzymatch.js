@@ -103,7 +103,7 @@
       }
       return { ok: true, content: replaceMatches(content, matches, newText, oldText, strategy), count: matches.length, strategy, error: null };
     }
-    return { ok: false, content, count: 0, strategy: null, error: 'Could not find a match for patch hunk' };
+    return { ok: false, content, count: 0, strategy: null, error: 'Could not find a match for patch hunk: its context and "-" lines must match the current file line for line (only leading/trailing whitespace may differ, and no lines may be skipped). fs.read the file and copy those lines verbatim.' };
   }
 
   return { fuzzyFindAndReplace, _internals: { findLineBlock, reindent } };

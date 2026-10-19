@@ -57,7 +57,9 @@
 .sn-menu .rt-simple-create .sp-time select { min-width: 70px; width: auto; padding: 8px 24px 8px 10px; }
 .sn-menu .rt-simple-create .sp-tz { margin-top: 0; }
 
-.sn-menu .rt-identity { display: grid; grid-template-columns: minmax(0,2fr) minmax(0,1fr); gap: 16px; }
+/* RUN BY lists workflows too (org P16): an even split keeps a name like RESEARCH + WRITE whole beside its chevron,
+   and align-items:start keeps a tall RUN BY from stretching the Name field */
+.sn-menu .rt-identity { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; align-items: start; }
 .sn-menu .rt-identity .sn-menu-field { margin: 0 0 6px; }
 .sn-menu .rt-simple-create > [hidden] { display: none; }
 

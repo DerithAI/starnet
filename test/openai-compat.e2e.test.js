@@ -13,6 +13,7 @@
    The upstream LLM is mocked via SKYNET_OPENROUTER_BASE (no real key, no network). Modeled on e2e.run.test.js. */
 'use strict';
 const A = require('./_assert.js');
+const { userWords } = require('./helpers/host-notes.js');   // the caller's own words: the run-context note leads the newest user message on this wire
 const http = require('http');
 const path = require('path');
 const os = require('os');
@@ -35,7 +36,7 @@ function startMockOpenRouter() {
       if (req.url.indexOf('/chat/completions') >= 0) {
         let body = ''; req.on('data', d => { body += d; }); req.on('end', () => {
           try { const pb = JSON.parse(body); const msgs = pb.messages || []; const lu = [...msgs].reverse().find(m => m && m.role === 'user');
-            toolsByPrompt.push({ user: String((lu && lu.content) || ''), tools: (pb.tools || []).map(t => t && t.function && t.function.name) }); } catch (_) {}
+            toolsByPrompt.push({ user: userWords(lu), tools: (pb.tools || []).map(t => t && t.function && t.function.name) }); } catch (_) {}
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
           // DRIPFEED sentinel: a long slow stream so the concurrency test can hold a run in flight.
           if (body.indexOf('DRIPFEED') >= 0) {

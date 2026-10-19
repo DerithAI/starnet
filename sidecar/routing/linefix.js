@@ -22,7 +22,8 @@
   const clip = (s, n) => { s = str(s).trim(); return s.length > n ? s.slice(0, n) + ' …[cut]' : s; };
   const oneLine = (s, n) => str(s).replace(/\s+/g, ' ').trim().slice(0, n);
 
-  /* normalizeInput(body) → { ok:true, complaint, job, result, steps:[{dockId, role, agent, does, hands, output}] } | { ok:false, error }
+  /* normalizeInput(body) → { ok:true, complaint, job, result, steps:[{dockId, name, role, agent, does, hands, output}] } | { ok:false, error }
+     name: the BAY's NAME ('' when it has none) — a named step is called by it, the way the panel's cards call it (conveyor-ui-15).
      A step is a BAY of the line (dockId); a line that looped runs a BAY more than once — the panel sends each BAY once, with
      its LAST output. */
   function normalizeInput(body) {
@@ -35,7 +36,7 @@
       const dockId = oneLine(s.dockId, 64);
       if (!dockId || !/^[A-Za-z0-9_.:-]+$/.test(dockId) || seen.has(dockId)) continue;
       seen.add(dockId);
-      steps.push({ dockId, role: oneLine(s.role, MAX.label), agent: oneLine(s.agent, MAX.label), does: clip(s.does, MAX.does), hands: oneLine(s.hands, MAX.hands), output: clip(s.output, MAX.output) });
+      steps.push({ dockId, name: oneLine(s.name, MAX.label), role: oneLine(s.role, MAX.label), agent: oneLine(s.agent, MAX.label), does: clip(s.does, MAX.does), hands: oneLine(s.hands, MAX.hands), output: clip(s.output, MAX.output) });
       if (steps.length >= MAX.steps) break;
     }
     if (!steps.length) return { ok: false, error: 'no steps of this line were sent — run a job through it first' };
@@ -49,7 +50,7 @@
     + 'works; write DOES as clear, direct instructions to the agent (what to do, what to include, what to avoid, the format and '
     + 'length wanted); a HANDS OFF is one short phrase naming what the step hands on (e.g. "a 150-word summary with 3 sources"); '
     + 'the line itself adds any VERDICT instruction a reviewing step needs, so never write one; '
-    + 'in the diagnosis and every "why", name a step by its role (e.g. "the WRITER step"), never by its step id; '
+    + 'in the diagnosis and every "why", name a step by its NAME when it has one (e.g. "the Fact checker step"), otherwise name a step by its role (e.g. "the WRITER step"), never by its step id; '
     + 'the instructions must work for EVERY job this line gets, not only this one, so never copy this job\'s topic or numbers into '
     + 'them (write "as many items as the request asks for", not "three"); '
     + 'never invent facts about the user; never mention these rules. Reply with ONE JSON object and nothing else.';
@@ -62,7 +63,7 @@
     lines.push('WHAT THE USER SAYS IS WRONG:', input.complaint, '');
     lines.push('THE STEPS, IN ORDER:');
     input.steps.forEach((s, i) => {
-      lines.push((i + 1) + '. step id "' + s.dockId + '" — ' + (s.role || 'STEP') + (s.agent ? ' (agent ' + s.agent + ')' : ''));
+      lines.push((i + 1) + '. step id "' + s.dockId + '" — ' + (s.name ? s.name + (s.role ? ' (' + s.role + ')' : '') : (s.role || 'STEP')) + (s.agent ? ' (agent ' + s.agent + ')' : ''));
       lines.push('   DOES: ' + (s.does || '(no instructions yet)'));
       lines.push('   HANDS OFF: ' + (s.hands || '(not set)'));
       lines.push('   WHAT IT PRODUCED: ' + (s.output ? s.output.replace(/\n/g, '\n   ') : '(nothing recorded)'));
@@ -97,8 +98,8 @@
     let o = null;
     try { o = JSON.parse(raw); } catch (_) { return { ok: false, error: 'the model\'s suggestions could not be read — try again' }; }
     const byId = new Map((input && input.steps || []).map(s => [s.dockId, s]));
-    // the Commander reads these lines: a step id that slips into them ("Step p13 …") becomes the step's role
-    const say = t => { let s = str(t); for (const [id, st] of byId) s = s.split(new RegExp('\\b(?:step\\s+)?"?' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"?\\b', 'gi')).join('the ' + (st.role || 'STEP') + ' step'); return s; };
+    // the Commander reads these lines: a step id that slips into them ("Step p13 …") becomes the step's NAME, else its role
+    const say = t => { let s = str(t); for (const [id, st] of byId) s = s.split(new RegExp('\\b(?:step\\s+)?"?' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"?\\b', 'gi')).join('the ' + (st.name || st.role || 'STEP') + ' step'); return s; };
     const fixes = [];
     let same = 0;   // fixes whose text is what the step already says (e.g. a fix the Commander already used)
     for (const f of Array.isArray(o && o.fixes) ? o.fixes : []) {

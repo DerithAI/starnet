@@ -265,8 +265,19 @@ module.exports = (async () => {
     A.eq(seen.pop().think, undefined, 'a task keeps the model default');
     await collect(thinker(), { model: 'q', messages: msg, tools: TOOLS });
     A.eq(seen.pop().think, undefined, 'an internal run WITH tools keeps the model default');
-    await collect(makeOpenAICompatibleProvider({ fetch: mkFetch(['completion', 'tools', 'thinking']), baseUrl: 'http://think.test:11434/v1', nativeOllama: true, sendReasoningEffort: true, reasoningEffort: 'high' }), { model: 'q', messages: msg });
-    A.eq(seen.pop().think, true, 'an explicit reasoning effort still wins on a background call');
+    await collect(makeOpenAICompatibleProvider({ fetch: mkFetch(['completion', 'tools', 'thinking']), baseUrl: 'http://think.test:11434/v1', nativeOllama: true, sendReasoningEffort: true, reasoningEffort: 'high' }), { model: 'q', messages: msg, reasoningEffort: 'high' });
+    A.eq(seen.pop().think, true, 'an explicit per-request reasoning effort (the aux tier) still wins on a background call');
+    // Review providers-tools-04: a CUSTOM endpoint on Ollama's port carries CUSTOM's 'medium' run effort; a background
+    // call that chose no effort of its own must not inherit it (it would think again and hold the next greeting).
+    // (Once /api/show has been read, the catalog knows the model reasons and the effort reaches the wire: warm first.)
+    const thinkFetch = mkFetch(['completion', 'tools', 'thinking']);
+    const customOllama = factory.selectProvider({ provider: 'custom', baseUrl: 'http://localhost:11434/v1', reasoningEffort: 'medium',
+      fetch: async (url, init) => url.endsWith('/v1/models') ? new Response('{"data":[{"id":"q"}]}', { status: 200 }) : thinkFetch(url, init) });
+    await collect(customOllama, { model: 'q', messages: msg, isTask: false }); seen.pop();
+    await collect(customOllama, { model: 'q', messages: msg, tools: TOOLS, isTask: true });
+    A.eq(seen.pop().think, true, 'a task on that endpoint keeps its effort');
+    await collect(customOllama, { model: 'q', messages: msg });
+    A.eq(seen.pop().think, false, 'a background call on a CUSTOM Ollama endpoint does not inherit the run effort');
     await collect(makeOpenAICompatibleProvider({ fetch: mkFetch(['completion', 'tools']), baseUrl: 'http://nothink.test:11434/v1', nativeOllama: true }), { model: 'q', messages: msg });
     A.eq('think' in seen.pop(), false, 'a model that cannot think is never sent the field');
   }
@@ -285,6 +296,12 @@ module.exports = (async () => {
     A.ok(!/so it was still loading|was still loading the model from disk/.test(absent), 'an absent model is not proof of disk loading');
     A.ok(!/had not finished reading/.test(N.placementNote(ps(10e9), 'qwen3:8b', 21000)), 'placement does not prove the model is reading the prompt');
     A.ok(/could not be read/.test(N.placementNote(null, 'qwen3:8b', 0)), 'an unreadable status says so, never guesses');
+    A.ok(/^Ollama on this computer /.test(N.placementNote(ps(0), 'qwen3:8b', 21000)), 'a loopback server is named as this computer');
+    // Review providers-tools-05: a remote Ollama (a GPU box on the LAN) is never called "this computer".
+    for (const body of [ps(0), { models: [] }, null]) {
+      const remote = N.placementNote(body, 'qwen3:8b', 21000, 'at ollama.lan');
+      A.ok(/^Ollama at ollama\.lan /.test(remote) && !/this computer/.test(remote), 'a remote server is named by its host: ' + remote);
+    }
 
     let statusBody = ps(0);
     const fetch = async (url, init) => {
@@ -306,6 +323,280 @@ module.exports = (async () => {
     A.ok(absentErr && /not listed as loaded/.test(absentErr.message), 'actual timed-out request carries observed missing-model status');
     A.ok(absentErr && /may still be loading/.test(absentErr.message) && !/so it was still loading/.test(absentErr.message), 'actual adapter preserves uncertainty about loading');
     A.eq(errorClass.classifyApiError(absentErr, { model: 'qwen3:8b' }).reason, 'timeout', 'absent placement remains a timeout, not a model-load failure');
+    statusBody = ps(0);
+    const lan = makeOpenAICompatibleProvider({ fetch, baseUrl: 'http://ollama.lan:11434/v1', nativeOllama: true, connectTimeoutMs: 30 });
+    let lanErr = null;
+    try { await collect(lan, { model: 'qwen3:8b', messages: [{ role: 'user', content: 'x' }], preStreamRetries: 0 }); } catch (e) { lanErr = e; }
+    A.ok(lanErr && /Ollama at ollama\.lan had qwen3:8b loaded/.test(lanErr.message) && !/this computer/.test(lanErr.message), 'a remote timeout names the remote server');
+  }
+
+  // Explicit local allocation failures are terminal even when Ollama reports HTTP 500.
+  // Replaying the same allocation caused repeated memory pressure after the owner's GPU/sidecar crash.
+  {
+    const details = [
+      'llama-server reported out-of-memory during startup: cudaMalloc failed: out of memory',
+      'failed to allocate CUDA0 buffer of size 4869357568',
+      'failed to allocate buffer for kv cache',
+      'model requires more system memory (8.0 GiB) than is available (1.1 GiB)'
+    ];
+    for (const detail of details) {
+      for (const mode of ['http', 'stream', 'compatible-fallback']) {
+        let posts = 0;
+        const p = makeOpenAICompatibleProvider({ nativeOllama: true, baseUrl: 'http://localhost:11434/v1', fetch: async url => {
+          if (url.endsWith('/api/show')) return SHOW(40960, ['completion', 'tools']);
+          if (url.endsWith('/api/chat') && mode === 'compatible-fallback') return new Response('not found', { status: 404 });
+          if (url.endsWith('/api/chat') || url.endsWith('/chat/completions')) {
+            posts++;
+            return mode === 'stream' ? ndjson([{ error: detail }]) : new Response(JSON.stringify({ error: detail }), { status: 500 });
+          }
+          return new Response('{"data":[],"models":[]}', { status: 200 });
+        } });
+        let err;
+        try { await collect(p, { model: 'qwen3:8b', messages: [{ role: 'user', content: 'hello' }] }); } catch (e) { err = e; }
+        A.eq(posts, 1, mode + ': the failed allocation is never resent');
+        const cls = errorClass.classifyApiError(err, { model: 'qwen3:8b' });
+        A.eq(cls.reason, 'local_memory', mode + ': memory exhaustion has its own local category');
+        A.eq(cls.retryable, false, mode + ': memory exhaustion cannot enter the host retry ladder');
+        A.eq(require('../sidecar/recovery-policy.js').providerFailure({ classification: cls, hasFallback: false, maxRecoveries: 3 }).action,
+          'fail', mode + ': with no eligible fallback it neither retries nor reallocates');
+        A.eq(require('../sidecar/recovery-policy.js').providerFailure({ classification: cls, hasFallback: true, maxRecoveries: 3 }).action,
+          'fallback', mode + ': a configured fallback (off this runtime, the loop decides) may take over');
+        A.ok(/^Local model ran out of memory\./.test(err && err.message), mode + ': forwarded error carries an actionable local-memory headline');
+        A.ok(err && err.message.includes(detail), mode + ': the exact allocation failure remains available for diagnostics');
+      }
+    }
+    // Review providers-tools-05: an Ollama server on another machine is not "this computer": say which one.
+    {
+      const lan = makeOpenAICompatibleProvider({ nativeOllama: true, baseUrl: 'http://ollama.lan:11434/v1', fetch: async url => {
+        if (url.endsWith('/api/show')) return SHOW(40960, ['completion', 'tools']);
+        if (url.endsWith('/api/chat')) return new Response(JSON.stringify({ error: details[1] }), { status: 500 });
+        return new Response('{"data":[],"models":[]}', { status: 200 });
+      } });
+      let err;
+      try { await collect(lan, { model: 'qwen3:8b', messages: [{ role: 'user', content: 'hello' }] }); } catch (e) { err = e; }
+      A.ok(err && /^The model server at ollama\.lan ran out of memory\./.test(err.message), 'a remote allocation failure names that server: ' + (err && err.message));
+      A.ok(err && !/Close other local models|this computer/.test(err.message), 'and never tells the Commander to close apps here');
+      A.eq(errorClass.classifyApiError(err, { model: 'qwen3:8b' }).reason, 'local_memory', 'it is still the memory category');
+    }
+    // A generic hosted 500 with the same upstream detail stays retryable: this is an Ollama-specific decision.
+    let posts = 0;
+    const hosted = makeOpenAICompatibleProvider({ baseUrl: 'https://hosted.test/v1', fetch: async url => {
+      if (url.endsWith('/chat/completions')) { posts++; return posts === 1
+        ? new Response(JSON.stringify({ error: details[0] }), { status: 500 })
+        : new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { status: 200 }); }
+      return new Response('{"data":[]}', { status: 200 });
+    } });
+    await collect(hosted, { model: 'hosted', messages: [{ role: 'user', content: 'hello' }] });
+    A.eq(posts, 2, 'hosted memory-related 500 keeps its transient retry behavior');
+  }
+
+  // The actual host loop must receive the terminal category and preserve the actionable message.
+  {
+    let posts = 0;
+    const seq = [], waits = [], recoveries = [];
+    const p = makeOpenAICompatibleProvider({ nativeOllama: true, baseUrl: 'http://127.0.0.1:11434/v1', fetch: async url => {
+      if (url.endsWith('/api/show')) return SHOW(40960, ['completion', 'tools']);
+      if (url.endsWith('/api/chat')) { posts++; return new Response(JSON.stringify({ error: 'cudaMalloc failed: out of memory' }), { status: 500 }); }
+      return new Response('{"data":[],"models":[]}', { status: 200 });
+    } });
+    const result = await require('../sidecar/loop.js').runAgentLoop({ provider: p, model: 'qwen3:8b', agentId: 'memory-test', runId: 'memory-test',
+      messages: [{ role: 'user', content: 'hello' }], emit: (name, payload) => seq.push({ name, payload }),
+      sleep: async ms => { waits.push(ms); }, onRecovery: row => recoveries.push(row) });
+    A.eq(posts, 1, 'the real host loop does not restart a failed local model allocation');
+    A.eq(waits, [], 'no adapter or host retry wait occurs');
+    A.eq(recoveries, [], 'no retry recovery is falsely reported');
+    A.eq([result.reason, result.failureStage, result.failureCode], ['error', 'provider_stream', 'local_memory'], 'terminal failure telemetry is retained');
+    const error = seq.find(row => row.name === 'agent.run.error');
+    A.eq(error && error.payload.transient, false, 'the actual emitted error is terminal');
+    A.ok(error && /^Local model ran out of memory\./.test(error.payload.message), 'the actual error event carries the memory headline');
+  }
+
+  // Review providers-tools-02: out of memory fails over to a configured fallback OFF this local runtime, never to a
+  // second model on the same Ollama (another allocation on the same GPU), and fails honestly when only those remain.
+  for (const withHosted of [true, false]) {
+    let localPosts = 0, hostedPosts = 0;
+    const seq = [], waits = [];
+    const local = makeOpenAICompatibleProvider({ nativeOllama: true, baseUrl: 'http://127.0.0.1:11434/v1', fetch: async url => {
+      if (url.endsWith('/api/show')) return SHOW(40960, ['completion', 'tools']);
+      if (url.endsWith('/api/chat')) { localPosts++; return new Response(JSON.stringify({ error: 'failed to allocate CUDA0 buffer of size 4869357568' }), { status: 500 }); }
+      return new Response('{"data":[],"models":[]}', { status: 200 });
+    } });
+    // the saved SETTINGS chain shape: a separate Ollama provider object on the same runtime, then a hosted one
+    const localAgain = makeOpenAICompatibleProvider({ nativeOllama: true, baseUrl: 'http://127.0.0.1:11434/v1', fetch: async url => {
+      if (url.endsWith('/api/show')) return SHOW(40960, ['completion', 'tools']);
+      if (url.endsWith('/api/chat')) { localPosts++; return new Response(JSON.stringify({ error: 'failed to allocate CUDA0 buffer' }), { status: 500 }); }
+      return new Response('{"data":[],"models":[]}', { status: 200 });
+    } });
+    const hosted = makeOpenAICompatibleProvider({ baseUrl: 'https://hosted-fallback.test/v1', fetch: async url => {
+      if (url.endsWith('/chat/completions')) { hostedPosts++; return new Response('data: {"choices":[{"delta":{"content":"hosted ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { status: 200 }); }
+      return new Response('{"data":[]}', { status: 200 });
+    } });
+    const fallbacks = [{ provider: local, providerId: 'ollama', model: 'qwen3:4b' }, { provider: localAgain, providerId: 'ollama', model: 'qwen3:1.7b' }];
+    if (withHosted) fallbacks.push({ provider: hosted, providerId: 'openrouter', model: 'hosted/model' });
+    const result = await require('../sidecar/loop.js').runAgentLoop({ provider: local, model: 'qwen3:14b', agentId: 'oom-fb', runId: 'oom-fb-' + withHosted,
+      messages: [{ role: 'user', content: 'hello' }], fallbacks, emit: (name, payload) => seq.push({ name, payload }), sleep: async ms => { waits.push(ms); } });
+    A.eq(localPosts, 1, (withHosted ? 'hosted chain' : 'local-only chain') + ': no second allocation on the same local runtime');
+    A.eq(waits, [], 'no retry wait after a local out-of-memory');
+    if (withHosted) {
+      A.eq(hostedPosts, 1, 'the hosted fallback is taken');
+      A.eq(result.reason, 'done', 'the run completes on the hosted fallback');
+      const fb = seq.find(r => r.name === 'provider.fallback');
+      A.ok(fb && fb.payload.toModel === 'hosted/model' && fb.payload.reason === 'local_memory', 'the failover receipt names the hosted model and the memory reason');
+    } else {
+      A.eq(result.reason, 'error', 'with only same-runtime fallbacks the run ends');
+      const error = seq.find(r => r.name === 'agent.run.error');
+      A.ok(error && /^Local model ran out of memory\./.test(error.payload.message), 'the memory headline is kept');
+      A.ok(!seq.some(r => r.name === 'provider.fallback'), 'no failover to the same runtime is reported');
+    }
+  }
+
+  /* GH#111 — THE OLLAMA CARD POINTED AT LM STUDIO. LM Studio answers a route it does not serve with HTTP 200 and ONE
+     JSON object, {"error":"Unexpected endpoint or method. (POST /api/chat)"}, and that 200 was read as the native
+     stream: a compact body surfaced the bare sentence (classified unknown, so retried), a pretty-printed one an EMPTY
+     reply. The user must be told the URL is not Ollama, and which card speaks to it. */
+  {
+    const LMS = 'Unexpected endpoint or method. (POST /api/chat)';
+    const lmStudio = (shape) => {
+      const urls = [];
+      const fetch = async (url, init) => {
+        urls.push(url);
+        const route = new URL(url).pathname;
+        if (route === '/v1/models') return new Response(JSON.stringify({ data: [{ id: 'qwen2.5-7b-instruct' }] }), { status: 200 });
+        if (route === '/v1/chat/completions') return new Response('data: ' + JSON.stringify({ choices: [{ delta: { content: 'via v1' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n', { status: 200 });
+        const body = { error: 'Unexpected endpoint or method. (' + ((init && init.method) || 'GET') + ' ' + route + ')' };
+        const text = shape === 'pretty' ? JSON.stringify(body, null, 2) : JSON.stringify(body) + (shape === 'compact-nl' ? '\n' : '');
+        return new Response(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      };
+      return { urls, fetch };
+    };
+    for (const shape of ['compact', 'compact-nl', 'pretty']) {
+      const s = lmStudio(shape);
+      const p = makeOpenAICompatibleProvider({ fetch: s.fetch, baseUrl: 'http://127.0.0.1:1234/v1', nativeOllama: true });
+      let err = null, ev = [];
+      try { ev = await collect(p, { model: 'qwen2.5-7b-instruct', messages: [{ role: 'user', content: 'hi' }] }); } catch (e) { err = e; }
+      A.ok(err, shape + ': a 200 "no such route" from another server is an error, never an empty reply (got ' + JSON.stringify(ev) + ')');
+      A.ok(err && /is not an Ollama server/.test(err.message), shape + ': the error says the URL is not Ollama: ' + (err && err.message));
+      A.ok(err && /127\.0\.0\.1:1234/.test(err.message), shape + ': it names the server it reached');
+      A.ok(err && /the way LM Studio does/.test(err.message), shape + ': it says what the server looked like, no more');
+      A.ok(err && /SETTINGS → AI & MODELS → CUSTOM/.test(err.message), shape + ': it names the card that speaks to that server');
+      A.ok(err && err.message.includes('[' + LMS + ']'), shape + ': the server\'s own words stay for diagnostics');
+      const cls = errorClass.classifyApiError(err, { model: 'qwen2.5-7b-instruct' });
+      A.eq([cls.reason, cls.retryable, cls.shouldFallback], ['endpoint_mismatch', false, false], shape + ': a wrong server is terminal: no retry, no fallback');
+      A.eq(cls.message, err.message, shape + ': the adapter sentence is what the run reports');
+      A.eq(s.urls.filter(u => u.endsWith('/api/chat')).length, 1, shape + ': the native chat was asked once');
+      s.urls.length = 0;
+      const again = await collect(p, { model: 'qwen2.5-7b-instruct', messages: [{ role: 'user', content: 'again' }] });
+      A.ok(!s.urls.some(u => u.endsWith('/api/chat')), shape + ': the native wire is off for this instance afterwards');
+      A.eq(again.filter(e => e.type === 'text').map(e => e.delta).join(''), 'via v1', shape + ': the next call on it uses the /v1 wire');
+    }
+    // A pretty-printed error body of any other words is still that error, never an empty success.
+    {
+      const fetch = async (url) => {
+        if (url.endsWith('/api/show')) return SHOW(40960, ['completion', 'tools']);
+        if (url.endsWith('/api/chat')) return new Response(JSON.stringify({ error: 'model runner has unexpectedly stopped' }, null, 2), { status: 200 });
+        return new Response('{"data":[]}', { status: 200 });
+      };
+      let err = null, ev = [];
+      try { ev = await collect(makeOpenAICompatibleProvider({ fetch, baseUrl: 'http://127.0.0.1:11434/v1', nativeOllama: true }), { model: 'q', messages: [{ role: 'user', content: 'hi' }] }); } catch (e) { err = e; }
+      A.ok(err && err.message === 'model runner has unexpectedly stopped', 'a pretty-printed error body throws its own words (got ' + (err ? err.message : JSON.stringify(ev)) + ')');
+      A.ok(err && !err.endpointMismatch, 'and is not called a wrong server');
+    }
+    // Controls: Ollama's own first-line error keeps its words and its native wire; a body that is not JSON at all keeps
+    // today's honest cut-stream end (Ollama proxies vary, so nothing is inferred from it).
+    {
+      const urls = [];
+      const fetch = async (url) => {
+        urls.push(url);
+        if (url.endsWith('/api/show')) return SHOW(40960, ['completion', 'tools']);
+        if (url.endsWith('/api/chat')) return ndjson([{ error: 'boom' }]);
+        return new Response('{"data":[]}', { status: 200 });
+      };
+      const p = makeOpenAICompatibleProvider({ fetch, baseUrl: 'http://127.0.0.1:11434/v1', nativeOllama: true });
+      for (let i = 0; i < 2; i++) {
+        let err = null;
+        try { await collect(p, { model: 'q', messages: [{ role: 'user', content: 'hi' }] }); } catch (e) { err = e; }
+        A.eq(err && err.message, 'boom', 'an Ollama stream error keeps Ollama\'s words (call ' + (i + 1) + ')');
+        A.ok(err && !err.endpointMismatch, 'and is never called a wrong server');
+      }
+      A.eq(urls.filter(u => u.endsWith('/api/chat')).length, 2, 'the native wire stays on after Ollama\'s own error');
+      A.ok(!urls.some(u => u.endsWith('/chat/completions')), 'and nothing moved to the /v1 wire');
+      const html = makeOpenAICompatibleProvider({ baseUrl: 'http://127.0.0.1:11434/v1', nativeOllama: true, fetch: async (url) => {
+        if (url.endsWith('/api/chat')) return new Response('<html>\n<body>proxy page</body>\n</html>', { status: 200 });
+        return new Response('{"data":[]}', { status: 200 });
+      } });
+      const ev = await collect(html, { model: 'q', messages: [{ role: 'user', content: 'hi' }] });
+      A.eq(ev.map(e => e.type + ':' + e.truncated), ['done:true'], 'a non-JSON 200 body still ends as one cut (truncated) stream');
+    }
+    // The real host loop: the named error reaches agent.run.error at once, with no retry ladder swallowing it into a
+    // second (silent) attempt, and the run records why it failed.
+    {
+      const s = lmStudio('compact');
+      const seq = [], waits = [];
+      const p = makeOpenAICompatibleProvider({ fetch: s.fetch, baseUrl: 'http://127.0.0.1:1234/v1', nativeOllama: true });
+      const result = await require('../sidecar/loop.js').runAgentLoop({ provider: p, model: 'qwen2.5-7b-instruct', agentId: 'lms-test', runId: 'lms-test',
+        messages: [{ role: 'user', content: 'hello' }], emit: (name, payload) => seq.push({ name, payload }), sleep: async ms => { waits.push(ms); } });
+      A.eq(s.urls.filter(u => /\/(?:api\/chat|chat\/completions)$/.test(u)).length, 1, 'the loop sends the turn once');
+      A.eq(waits, [], 'no retry wait');
+      A.eq([result.reason, result.failureStage, result.failureCode], ['error', 'provider_stream', 'endpoint_mismatch'], 'the run records the wrong-server failure');
+      const error = seq.find(row => row.name === 'agent.run.error');
+      A.ok(error && /is not an Ollama server/.test(error.payload.message) && /CUSTOM/.test(error.payload.message), 'the error event carries the named hint: ' + (error && error.payload.message));
+      A.eq(error && error.payload.transient, false, 'and is terminal');
+      A.ok(!seq.some(row => row.name === 'provider.retry'), 'no retry is reported');
+    }
+    /* THE CUSTOM CARD'S GUESS (review 10-15). A CUSTOM endpoint borrows the native wire only because its URL LOOKED like
+       Ollama (port 11434, or "ollama" in the host name; factory.js looksLikeOllama). When that server is LM Studio, the
+       wrong guess is StarNet's, not the user's: CUSTOM is already the card that speaks to it. The OLLAMA-card sentence
+       told that user to do what they had done, on every run (the provider is rebuilt per run). The same turn goes once
+       on the /v1 wire instead, the way the 404 path does, and no OLLAMA-card advice reaches a CUSTOM user. */
+    for (const baseUrl of ['http://127.0.0.1:11434/v1', 'http://my-ollama.lan:1234/v1']) {
+      for (const shape of ['compact', 'compact-nl', 'pretty']) {
+        const tag = 'CUSTOM ' + baseUrl + ' ' + shape;
+        const s = lmStudio(shape);
+        const p = factory.selectProvider({ provider: 'custom', baseUrl, fetch: s.fetch });
+        let err = null, ev = [];
+        try { ev = await collect(p, { model: 'qwen2.5-7b-instruct', messages: [{ role: 'user', content: 'hi' }] }); } catch (e) { err = e; }
+        A.ok(!err, tag + ': a CUSTOM card on a non-Ollama server is not an error (got ' + (err && err.message) + ')');
+        A.eq(ev.filter(e => e.type === 'text').map(e => e.delta).join(''), 'via v1', tag + ': the same turn is answered on the /v1 wire');
+        A.eq(ev.filter(e => e.type === 'done').length, 1, tag + ': with exactly one terminal event');
+        A.eq(s.urls.filter(u => u.endsWith('/api/chat')).length, 1, tag + ': the guessed native chat was asked once');
+        A.eq(s.urls.filter(u => u.endsWith('/v1/chat/completions')).length, 1, tag + ': and the /v1 chat once');
+        s.urls.length = 0;
+        await collect(p, { model: 'qwen2.5-7b-instruct', messages: [{ role: 'user', content: 'again' }] });
+        A.ok(!s.urls.some(u => u.endsWith('/api/chat')), tag + ': the guess is not repeated on this instance');
+      }
+    }
+    // A CUSTOM card whose /v1 then fails reports the /v1 failure in its own words, never the OLLAMA-card advice.
+    {
+      const s = lmStudio('compact');
+      const fetch = async (url, init) => (url.endsWith('/v1/chat/completions')
+        ? new Response(JSON.stringify({ error: { message: 'Invalid API key' } }), { status: 401 })
+        : s.fetch(url, init));
+      let err = null;
+      try { await collect(factory.selectProvider({ provider: 'custom', baseUrl: 'http://127.0.0.1:11434/v1', fetch }), { model: 'q', messages: [{ role: 'user', content: 'hi' }] }); } catch (e) { err = e; }
+      A.ok(err && err.status === 401 && /Invalid API key/.test(err.message), 'the /v1 failure is what a CUSTOM card reports: ' + (err && err.message));
+      A.ok(err && !/OLLAMA card|is not an Ollama server/.test(err.message) && !err.endpointMismatch, 'and it carries no OLLAMA-card advice');
+    }
+    // The real host loop on a CUSTOM card: one run, answered, no retry wait and no error event.
+    {
+      const s = lmStudio('pretty');
+      const seq = [], waits = [];
+      const result = await require('../sidecar/loop.js').runAgentLoop({ provider: factory.selectProvider({ provider: 'custom', baseUrl: 'http://localhost:11434/v1', fetch: s.fetch }),
+        model: 'qwen2.5-7b-instruct', agentId: 'lms-custom', runId: 'lms-custom',
+        messages: [{ role: 'user', content: 'hello' }], emit: (name, payload) => seq.push({ name, payload }), sleep: async ms => { waits.push(ms); } });
+      A.eq(result.reason, 'done', 'a CUSTOM run on LM Studio completes: ' + JSON.stringify([result.reason, result.failureCode]));
+      A.eq(waits, [], 'without a retry wait');
+      A.ok(!seq.some(row => row.name === 'agent.run.error' || row.name === 'provider.retry'), 'and without an error or retry event');
+      A.eq([s.urls.filter(u => u.endsWith('/api/chat')).length, s.urls.filter(u => u.endsWith('/v1/chat/completions')).length], [1, 1], 'one guessed native ask, one /v1 answer');
+    }
+    // The server named in the OLLAMA-card sentence is the URL's host:port as a URL parser reads it: credentials (even a
+    // password with a raw "@") never reach COMMS, history or the diagnostics users paste into GitHub.
+    {
+      const s = lmStudio('compact');
+      let err = null;
+      try { await collect(makeOpenAICompatibleProvider({ fetch: s.fetch, baseUrl: 'http://user:p@ss@10.0.0.5:1234/v1', nativeOllama: true }), { model: 'q', messages: [{ role: 'user', content: 'hi' }] }); } catch (e) { err = e; }
+      A.ok(err && err.message.includes('(10.0.0.5:1234)'), 'the sentence names host:port: ' + (err && err.message));
+      A.ok(err && !err.message.includes('ss@') && !err.message.includes('user:'), 'and no part of the credentials');
+    }
   }
 
   A.report('provider.ollama-native.test');

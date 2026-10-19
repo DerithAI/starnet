@@ -1,0 +1,71 @@
+{
+  "status": "ACCEPT_PREPARED_NOT_RUN",
+  "issue": 118,
+  "phase": "A: error truthfulness only",
+  "ownerThread": "01a12ce1-53da-7a50-a7f8-12fccba769e6",
+  "worktree": "C:/Users/andro/gen-trees/issue118-image-host-1014",
+  "branch": "agent/issue118-image-host-1014",
+  "parentCommit": "86173ec679d615849b393e9ff86d9edaea6d5f9f",
+  "sourceBase": "cbf01f528f1286da588e410c78756fea234259c3",
+  "revisionBinding": "This receipt binds the exact source/test Git blobs and SHA256 below. Its containing commit is the implementation revision; no self-referential commit hash is embedded.",
+  "source": {
+    "path": "sidecar/tools/builtin/image.js",
+    "blob": "0df52a4acf87b8cddd854b0f42e5b1c366331d19",
+    "sha256": "5bf9dfdd5ed5a0ebf7449873c57fea91089218436611bec44834d36ed253191a"
+  },
+  "controls": {
+    "path": "test/image.test.js",
+    "blob": "3797512bb9e0002a249ac3817273e50bfb312561",
+    "sha256": "b12d0c73c12d2d0642bc98cc36a468f8de803fe60c8c27e00fb22489c3eca74e",
+    "status": "PREPARED_NOT_RUN",
+    "registration": "Existing test/fast.list entry at line 427; no runner changes",
+    "coverage": [
+      "Exact quoted dispatched host rejection; explicit distinct host and requested image model wording",
+      "Substring, different host, identical/prefix-overlapping model labels, invalid/oversized labels, image-model mention and generic/status negatives",
+      "Actual mocked tool failure with both existing and missing output paths; no overwrite/create, usage or publication; one request and no renewal on non-401",
+      "Configured API key and different conversation model do not alter existing Codex route or dispatched model constants",
+      "Known credential, account ID, API key and prompt redaction; oversized detail withheld",
+      "Malformed raw response redacted before clipping; shared secret-pattern redaction and one-line bounded detail",
+      "Nested non-string sensitive detail withheld before serialization",
+      "Repeated 401 performs at most one renewal and two sends; renewed credential redacted",
+      "Overlapping old/new credentials replaced longest-first without exposing renewed private suffix"
+    ],
+    "fixtureProvenance": "Customer supplied error text, not a raw backend envelope. All mocked JSON response envelopes are synthetic, not captured customer evidence."
+  },
+  "implementation": [
+    "Only status 400 with the known exact quoted rejection text naming body.model is classified; ambiguous host/image labels or detail remain generic",
+    "Explicit message says: No image was returned or saved by this attempt. It makes no claim about unseen server-side production",
+    "Known request secrets are removed longest-first, then the existing context redactor is applied before single-line 300-character clipping",
+    "Non-string or oversized provider detail and unavailable/failing redactor are withheld"
+  ],
+  "unchanged": {
+    "sharedRedactor": { "path": "sidecar/context.js", "blob": "686bdb98d8be4223e19880aca25bfb0d021bd8f6" },
+    "boundaries": [
+      "CODEX_HOST_MODEL and all existing model constants/selections",
+      "Provider route and request body selection; no account, API-key or billing fallback",
+      "Existing 401 maximum one renewal/two sends",
+      "Success parsing, image saving and publication semantics",
+      "Shared events/schema and frozen spend evidence lanes"
+    ]
+  },
+  "independentReview": {
+    "reviewer": "/root/issue118_static_review",
+    "mode": "Read-only static diff review; no execution",
+    "initialDisposition": "CHANGES_REQUESTED: overlapping known-secret order and non-string detail serialization",
+    "finalDisposition": "ACCEPT_PREPARED_NOT_RUN",
+    "reviewedSourceBlob": "0df52a4acf87b8cddd854b0f42e5b1c366331d19",
+    "reviewedTestBlob": "3797512bb9e0002a249ac3817273e50bfb312561",
+    "result": "Both findings structurally addressed. No additional actionable finding in the bounded review. Routing, constants, renewal limit and publication ordering unchanged."
+  },
+  "verification": {
+    "performed": ["Text-only git diff review", "git diff --check", "Exact Git blob and SHA256 hashing", "Independent static review"],
+    "notPerformed": ["Syntax checks", "Tests including test:fast", "Imports", "Dependencies", "App/runtime/build execution", "Provider/account calls", "Image generation", "Live/customer verification"],
+    "hold": "Guardian/resource execution hold retained; source acceptance is not runtime acceptance"
+  },
+  "remaining": [
+    "Phase B host-selection/capability policy unresolved and not authorized by this change",
+    "Execution gate and independent coordinator acceptance pending",
+    "No merge/release authorization; branch ancestry includes an unaccepted RC",
+    "No claim that image generation is repaired or customer recovery is verified"
+  ]
+}

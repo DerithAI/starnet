@@ -144,7 +144,7 @@ const byClass = (root, c) => all(root).filter(e => e._cls && e._cls.has(c));
       document: { createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }) },
       row: () => { const r = { d: new El('div'), body: new El('div') }; rows.push(r); return r; },
       Harness: { consentAnswer: () => (clarifyReply || Promise.resolve({ ok: true })) }, TaskConversation: null,
-      U: { bus: { emit() {}, on() {}, off() {} } }, isActiveWs: () => false, renderPresence() {}, syncStatus() {}, status() {}, autoscroll() {}, revealCard() {}, releaseCard() {}, keepFocus() {}, fitWhole() {}, announcedPrompt: () => true, StationUI: { notify() {} } });
+      U: { bus: { emit() {}, on() {}, off() {} } }, isActiveWs: () => false, renderPresence() {}, syncStatus() {}, status() {}, autoscroll() {}, revealCard() {}, releaseCard() {}, keepFocus() {}, fitWhole() {}, announcedPrompt: () => true, StationUI: { notify() {} }, askAnswerers: new Map(), glance: (t) => String(t) });
     vm.runInContext(part(chat, '  function settledWhere(resp)', '  async function answerConsent(') + part(chat, '  function clarifyRow(', '  // p = a consent payload'), c);
     c.clarifyRow({ promptId: 'p9', tool: 'brief.ask', argsSummary: JSON.stringify(q) }, { id: 'w1', agentId: 'agent' });
     return rows[0];
@@ -178,7 +178,7 @@ const byClass = (root, c) => all(root).filter(e => e._cls && e._cls.has(c));
     const inLog = new Set();
     const log = { scrollHeight: 1000, clientHeight: 300, offsetHeight: 300, get scrollTop() { return top; }, set scrollTop(v) { top = Math.max(0, Math.min(700, v)); }, getBoundingClientRect: () => ({ top: 100, height: 300 }), contains: el => inLog.has(el) };
     const card = (at, h = 100) => { const c = { offsetHeight: h, dataset: { liveAsk: '1' }, focused: 0, focus() { this.focused++; }, getBoundingClientRect: () => ({ top: 100 + at - log.scrollTop }) }; inLog.add(c); return c; };
-    const rc = vm.createContext({ log, stick: true, autoscroll() { if (rc.read().stick) log.scrollTop = log.scrollHeight; else pills.push('new'); }, showNewPill: v => pills.push('show'), hideNewPill: () => pills.push('hide'), document: {} });
+    const rc = vm.createContext({ log, stick: true, noteAskLanding() {}, autoscroll() { if (rc.read().stick) log.scrollTop = log.scrollHeight; else pills.push('new'); }, showNewPill: v => pills.push('show'), hideNewPill: () => pills.push('hide'), document: {} });
     vm.runInContext(part(chat, '  let heldCard = null, heldScrollTop = 0;', '  function jumpToBottom()').replace(/let heldCard/, 'var heldCard') + '\nthis.read = () => ({ stick, heldCard, heldQueue });', rc);
     const tall = card(600); rc.revealCard(tall);   // at the bottom (700) its top would sit 100px above the edge
     A.ok(log.scrollTop === 592 && tall.getBoundingClientRect().top === 108 && rc.read().stick === false && !pills.includes('show'), 'a card whose top the bottom-follow would cut shows from its top (8px under the edge), the follow waits, no pill over it');
@@ -230,7 +230,9 @@ const byClass = (root, c) => all(root).filter(e => e._cls && e._cls.has(c));
   const css = read('frontend/app/group-chat.js');
   A.ok(/\.gc-question \.gc-q-text\{[^}]*font-size:var\(--sn-type-prose,18px\)/.test(css) && /\.gc-question \.gc-q-choice\{min-height:36px/.test(css), 'group card: the question at reading size, the answers 36px keys');
   A.ok(/\.gc-state \.gc-ok\{min-width:8em;min-height:36px;[^}]*font-size:var\(--sn-type-control,16px\)/.test(css), 'group approval keys are 16px / 36px (were 11px / 20px) and keep their width while sending');
-  A.ok(/\.gc-badge\{[^}]*font:inherit;font-size:15px/.test(css) && !/\.gc-badge::before/.test(css), 'GROUP is a word of the header line, not a shrunken [chip] (the rail law, 10-13)');
+  A.ok(!/gc-badge/.test(css) && !/'GROUP'/.test(css), 'the group header names its members with no GROUP word in front (no-shrunken-chips law 10-13, walk 10-14 #18)');
+  A.ok(/\.gc-people\{[^}]*max-height:18px;overflow:hidden/.test(css), 'the member names sit on ONE line (OPTIMUS no longer drops alone to a second); the rest fold into +N');
+  A.ok(/\.gc-more\{[^}]*font-size:var\(--sn-type-control,16px\)/.test(css), 'the +N reads at the size of the names, never a smaller chip');
   A.ok(/\.gc-tray-scroll\.more-below\{[^}]*mask-image/.test(css), 'the strip fades at its edge instead of slicing a line');
   A.ok(/\.gc-question\{[^}]*border-radius:5px;background:var\(--cg-card/.test(css) && /\.gc-question \.gc-q-choice\{[^}]*border-radius:5px/.test(css), 'the group card is the 5px matte decision card (Andrew 10-02)');
   A.ok(/\.gc-question \.gc-q-text\{[^}]*-webkit-line-clamp:3/.test(css), 'a long question shows three lines (the whole of it one tap away)');

@@ -4,7 +4,8 @@
    the Commander meets them, and that nothing in the panel asks for an edit it cannot make:
      · the page loads the layout engine and the editor; the Build host runs every edit through ONE runner that lays a new
        line where the Commander is looking, flashes what it placed and recompiles at once;
-     · the Conveyors tab has BUILD YOUR OWN LINE, which opens the new line's panel;
+     · the Conveyors tab has BUILD YOUR OWN LINE, which puts an INBOX in hand for the Commander to place (never lays a line
+       itself — Andrew 2026-10-13; driven for real in test/build-new-line-hand.test.js);
      · a BAY's card: ROLE chips (the step's name) and SHAPE THE LINE — earlier / later / a review / a second opinion (COPY) /
        share the load (TURNS) / remove; a lone BAY: MAKE IT A LINE; a LOOP gate: REMOVE THE REVIEW;
      · the + on a belt: a step by role, a BRANCH (copy / turns) and — only in front of a step or the OUTBOX — a SORTER;
@@ -35,7 +36,8 @@ A.ok(/if \(fl\.moves\) \{ drawMoves\(fl, k, t\); continue; \}/.test(build) && /f
 A.ok(/pushFlash\(/.test(run) && /Tutorial\.onPropPlaced/.test(run) && /rebake\(\)/.test(run), '…what it placed flashes, the tutorial hears it, and the plan recompiles at once');
 A.ok(/lineEdit: \(op, propId, args, how\) => lineEditRun\(op, propId, args, how\)/.test(build) && /canLineEdit: \(op, propId, args\) =>[^\n]*LineEdit\.check\(/.test(build), 'the panel host offers lineEdit and canLineEdit (the dry answer that greys a button out)');
 const own = at(build, '      /* BUILD YOUR OWN (conveyor-links phase D)', '      /* START FROM INTENT');
-A.ok(/BUILD YOUR OWN LINE/.test(own) && /lineEditRun\('newLine', null, \{\}\)/.test(own) && /openWorkflowPanel\(r\.focus\)/.test(own), 'the Conveyors tab has BUILD YOUR OWN LINE: a new line, its Workflow panel open on it');
+A.ok(/BUILD YOUR OWN LINE/.test(own) && /own\.onclick = \(\) => startNewLine\(\);/.test(own), 'the Conveyors tab has BUILD YOUR OWN LINE: it puts an INBOX in hand');
+A.ok(!/lineEditRun\(|LineEdit\.|openWorkflowPanel\(/.test(own), '…and never lays a line (or opens a panel) itself — the Commander places the INBOX where they click');
 
 // the panel's edits
 const shape = at(panel, '  function shapeHTML(p) {', '  /* ---------- the footer');
@@ -66,7 +68,7 @@ A.ok(/tidy \? \{ tidy: true \} : null/.test(wire), '…and the second click asks
 A.ok(/res\.tidied \? ' · the whole line laid out afresh round it' : res\.relaid \? ' · the belts round it re-routed'/.test(le), 'the confirmation says when belts were re-routed or the line laid afresh');
 
 // ROLE chips: a step's name, one undo, only real roles
-A.ok(/data-role="' \+ r \+ '" aria-pressed=/.test(panel) && /setPropRole\(p\.id, b\.getAttribute\('aria-pressed'\) === 'true' \? '' : b\.dataset\.role\)/.test(panel), 'a BAY\'s ROLE chips set its role (clicking the pressed one clears it)');
+A.ok(/data-role="' \+ esc\(r\) \+ '" aria-pressed=/.test(panel) && /setPropRole\(p\.id, b\.getAttribute\('aria-pressed'\) === 'true' \? '' : b\.dataset\.role\)/.test(panel), 'a BAY\'s ROLE chips set its role (clicking the pressed one clears it)');
 {
   const st = WM.create(WM.starterDoc());
   const bay = st.addProp({ t: 'bay', x: 6, y: 5, w: 2, h: 2 });

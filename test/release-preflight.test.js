@@ -221,6 +221,20 @@ A.ok(!parseGateLog('').ok, 'empty log rejected');
   A.eq(byId(r5, 'pins').status, 'FAIL', 'post-bump with pins still on the old version FAILs');
 }
 
+// ── an HTML comment left in the notes (an unfilled placeholder) is published as-is: refuse it at the cut ──
+{
+  const post = Object.assign({}, CTX, { phase: 'post-bump', version: '0.10.7' });
+  const placeholder = '# StarNet v0.10.7\n\n- fixed the thing\n<!-- #121 line goes here only if the i121 lane ships -->\n- fixed another\n';
+  const r = runPreflight(post, fakeRepo({ files: { 'RELEASE_NOTES.md': placeholder } }));
+  A.eq(byId(r, 'notes').status, 'FAIL', 'post-bump: an HTML comment in the notes is a hard FAIL');
+  A.ok(/#121 line goes here/.test(byId(r, 'notes').detail), 'the notes row quotes the comment it found');
+  A.ok(/fill it or delete it/.test(byId(r, 'notes').fix), 'the notes row says to fill or delete it');
+  const pre = runPreflight(Object.assign({}, CTX, { version: '0.10.7' }), fakeRepo({ files: { 'RELEASE_NOTES.md': placeholder } }));
+  A.eq(byId(pre, 'notes').status, 'WARN', 'pre-bump: the same comment is a WARN, like the TODO scaffold');
+  const clean = runPreflight(post, fakeRepo({ files: { 'RELEASE_NOTES.md': '# StarNet v0.10.7\n\n- fixed the thing\n- fixed another\n' } }));
+  A.eq(byId(clean, 'notes').status, 'PASS', 'post-bump: the same notes without the comment PASS');
+}
+
 // ── T0 / G1 / smoke receipts do not establish attended soak duration ──
 {
   const io = fakeRepo({ files: {

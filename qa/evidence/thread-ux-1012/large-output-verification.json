@@ -1,0 +1,333 @@
+{
+  "candidate": "18c1ec59f094775ada818175d927e9c4ffc845d8",
+  "supersedes": "a69664135e4983fe624ec11bea6b2bd4666ee651",
+  "date": "2026-10-12",
+  "scope": "Isolated source audit; no trunk integration, installer or customer acceptance. Full gates remain outstanding.",
+  "changes": [
+    "Persist the full redacted accepted answer before its final run envelope; support1048576 JavaScript characters and explicitly reject oversize final persistence.",
+    "Store exact textLength and SHA256 on final projection and run envelope; both browser consumers verify identity/completeness before deduplication.",
+    "Restart recovers a persisted projection whose final run patch failed; no model rerun or duplicate execution/spend.",
+    "Projection write failure remains pending and unavailable, with the persistence diagnostic retained if the page is offline.",
+    "Retries cannot replace first accepted text/reason/repair identity; canonical views suppress legacy projections at the historical200000-character cap.",
+    "Desktop history, phone history, and phone continuation share the same accepted-answer projection; indexed previews exclude repair prompts."
+  ],
+  "focused": {
+    "candidate": "18c1ec59f094775ada818175d927e9c4ffc845d8",
+    "syntaxFiles": [
+      "frontend/app/apiticket.js",
+      "frontend/app/delegated.js",
+      "frontend/app/stationcommands.js",
+      "frontend/app/workstreams.js",
+      "sidecar/dispatch-delivery.js",
+      "sidecar/index.js",
+      "sidecar/runstore.js",
+      "sidecar/tools/builtin/orchestration.js",
+      "sidecar/transcript-history.js",
+      "sidecar/transcriptstore.js",
+      "test/delegated-threads.test.js",
+      "test/e2e.dispatch-session.test.js",
+      "test/remote-sessions.test.js",
+      "test/remote.e2e.test.js",
+      "test/station-commands.test.js",
+      "test/thread-ux-regressions.test.js",
+      "test/transcript-history-v2.test.js",
+      "test/transcript.test.js",
+      "website/app/app/apiticket.js",
+      "website/app/app/delegated.js",
+      "website/app/app/stationcommands.js",
+      "website/app/app/workstreams.js"
+    ],
+    "receipts": [
+      {
+        "suite": "test/station-commands.test.js",
+        "receipt": "station-commands.test: OK (306 assertions)"
+      },
+      {
+        "suite": "test/delegated-threads.test.js",
+        "receipt": "delegated-threads.test: OK (107 assertions)"
+      },
+      {
+        "suite": "test/workstreams.test.js",
+        "receipt": "workstreams.test: OK (212 assertions)"
+      },
+      {
+        "suite": "test/apitickets.test.js",
+        "receipt": "apitickets.test: OK (54 assertions)"
+      },
+      {
+        "suite": "test/transcript.test.js",
+        "receipt": "transcript.test: OK (112 assertions)"
+      },
+      {
+        "suite": "test/transcript-history-v2.test.js",
+        "receipt": "transcript-history-v2.test: OK (50 assertions)"
+      },
+      {
+        "suite": "test/runstore.test.js",
+        "receipt": "runstore.test: OK (148 assertions)"
+      },
+      {
+        "suite": "test/transcript.per-turn-durable.test.js",
+        "receipt": "transcript.per-turn-durable.test: OK (33 assertions)"
+      },
+      {
+        "suite": "test/transcript-torn-tail-append.test.js",
+        "receipt": "transcript-torn-tail-append.test: OK (16 assertions)"
+      },
+      {
+        "suite": "test/taint-lineage.test.js",
+        "receipt": "taint-lineage.test: OK (69 assertions)"
+      },
+      {
+        "suite": "test/orchestration.test.js",
+        "receipt": "orchestration.test: OK (342 assertions)"
+      },
+      {
+        "suite": "test/remote.core.test.js",
+        "receipt": "remote core: OK (76 assertions)"
+      },
+      {
+        "suite": "test/remote-sessions.test.js",
+        "receipt": "remote-sessions: OK (30 assertions)"
+      }
+    ]
+  },
+  "uxAndConsentCases": 31,
+  "realSidecarHttp": {
+    "assertions": 154,
+    "characters": 250030,
+    "sha256": "1e594ec5ae0da6ce1264500c34a4b520238bf362f2879ac6e15798b98892316a",
+    "tail": "COMPLETE_TAIL",
+    "checks": [
+      "valid repaired Unicode JSON and original/repair distinction",
+      "canonical and delivery=1 full output",
+      "projection failure plus restart and offline truthful diagnostic",
+      "run patch failure plus restart recovery and second restart idempotency",
+      "unchanged execution count/spend"
+    ],
+    "testedCandidate": "5513ad4871f14478bed84e43a0b97dbbb3685581"
+  },
+  "maximumBoundary": {
+    "characters": 1048576,
+    "validJson": true,
+    "escapedDiskRowOver4MiB": true,
+    "fullTailHashAndRestart": true,
+    "suite": "test/transcript-history-v2.test.js"
+  },
+  "liveBrowser": {
+    "fixture": "Seeded live browser with synthetic run/delivery endpoint responses; backend persistence/restart tested separately against real sidecar",
+    "length": 210026,
+    "sha256": "884389bcfac7d2f8f63e23b746d7af75e6915bc0d427a55cf7c955237e5b720e",
+    "attempts": [
+      {
+        "phase": "truncated",
+        "folded": 0,
+        "chatMessages": 0,
+        "chatRunIds": 0,
+        "chatLength": 0,
+        "chatTail": false,
+        "receiptStatus": "err",
+        "receiptLength": 0,
+        "receiptTail": false,
+        "retryVisible": true,
+        "rawAbsent": true
+      },
+      {
+        "phase": "changed",
+        "folded": 0,
+        "chatMessages": 0,
+        "chatRunIds": 0,
+        "chatLength": 0,
+        "chatTail": false,
+        "receiptStatus": "err",
+        "receiptLength": 0,
+        "receiptTail": false,
+        "retryVisible": true,
+        "rawAbsent": true
+      },
+      {
+        "phase": "complete",
+        "folded": 1,
+        "chatMessages": 1,
+        "chatRunIds": 1,
+        "chatLength": 210026,
+        "chatTail": true,
+        "receiptStatus": "ok",
+        "receiptLength": 210026,
+        "receiptTail": true,
+        "retryVisible": false,
+        "rawAbsent": true
+      }
+    ],
+    "proof": {
+      "chatHash": "884389bcfac7d2f8f63e23b746d7af75e6915bc0d427a55cf7c955237e5b720e",
+      "receiptHash": "884389bcfac7d2f8f63e23b746d7af75e6915bc0d427a55cf7c955237e5b720e",
+      "chatJsonValid": true,
+      "receiptJsonValid": true,
+      "duplicateFold": 0
+    },
+    "binding": [
+      {
+        "name": "workstreams.js",
+        "local": "7024ccdfdd975b93346c01282e2b05047c7a177d5e5b282be8c9a34c4daf003f",
+        "served": "7024ccdfdd975b93346c01282e2b05047c7a177d5e5b282be8c9a34c4daf003f",
+        "equal": true
+      },
+      {
+        "name": "stationcommands.js",
+        "local": "58d6c3fd77c7cfa86e1025c43fd954b40328aeadbdcad078b804a6f1e1fe16a2",
+        "served": "58d6c3fd77c7cfa86e1025c43fd954b40328aeadbdcad078b804a6f1e1fe16a2",
+        "equal": true
+      },
+      {
+        "name": "delegated.js",
+        "local": "2950134784ac725d18a0d8f7b3aa721bc8cf4f618b50b965319450bfbfde0f90",
+        "served": "2950134784ac725d18a0d8f7b3aa721bc8cf4f618b50b965319450bfbfde0f90",
+        "equal": true
+      }
+    ],
+    "pageErrors": [],
+    "candidate": "18c1ec59f094775ada818175d927e9c4ffc845d8"
+  },
+  "servedFrontend": {
+    "candidate": "18c1ec59f094775ada818175d927e9c4ffc845d8",
+    "files": [
+      {
+        "path": "frontend/app/app.js",
+        "status": 200,
+        "sourceSha256": "cadea93203644183c77985c2319195c6a900698484dbe2dea0b55365266e0b8c",
+        "servedSha256": "cadea93203644183c77985c2319195c6a900698484dbe2dea0b55365266e0b8c",
+        "match": true
+      },
+      {
+        "path": "frontend/app/chat.js",
+        "status": 200,
+        "sourceSha256": "2b4de3d88a2106ab67722710c0609edb64430bb1952a6df248398a217152a8ea",
+        "servedSha256": "2b4de3d88a2106ab67722710c0609edb64430bb1952a6df248398a217152a8ea",
+        "match": true
+      },
+      {
+        "path": "frontend/app/delegated.js",
+        "status": 200,
+        "sourceSha256": "2950134784ac725d18a0d8f7b3aa721bc8cf4f618b50b965319450bfbfde0f90",
+        "servedSha256": "2950134784ac725d18a0d8f7b3aa721bc8cf4f618b50b965319450bfbfde0f90",
+        "match": true
+      },
+      {
+        "path": "frontend/app/group-chat.js",
+        "status": 200,
+        "sourceSha256": "8e7db27539662294525d53879fb8e8811971ba13e31c41a606b9d9d390f56c67",
+        "servedSha256": "8e7db27539662294525d53879fb8e8811971ba13e31c41a606b9d9d390f56c67",
+        "match": true
+      },
+      {
+        "path": "frontend/app/overseer.js",
+        "status": 200,
+        "sourceSha256": "cb554074f4775742a81f9e9a76dfa16aa491dd9ba48ed0a388c142c0fe7ea12b",
+        "servedSha256": "cb554074f4775742a81f9e9a76dfa16aa491dd9ba48ed0a388c142c0fe7ea12b",
+        "match": true
+      },
+      {
+        "path": "frontend/app/stationcommands.js",
+        "status": 200,
+        "sourceSha256": "58d6c3fd77c7cfa86e1025c43fd954b40328aeadbdcad078b804a6f1e1fe16a2",
+        "servedSha256": "58d6c3fd77c7cfa86e1025c43fd954b40328aeadbdcad078b804a6f1e1fe16a2",
+        "match": true
+      },
+      {
+        "path": "frontend/app/workstreams.js",
+        "status": 200,
+        "sourceSha256": "7024ccdfdd975b93346c01282e2b05047c7a177d5e5b282be8c9a34c4daf003f",
+        "servedSha256": "7024ccdfdd975b93346c01282e2b05047c7a177d5e5b282be8c9a34c4daf003f",
+        "match": true
+      },
+      {
+        "path": "frontend/css/beat-cards.css",
+        "status": 200,
+        "sourceSha256": "a0b1eca440f88160bf3ed8679d9f829f4a4ebd479c4a95ce149087ea0b04129c",
+        "servedSha256": "a0b1eca440f88160bf3ed8679d9f829f4a4ebd479c4a95ce149087ea0b04129c",
+        "match": true
+      },
+      {
+        "path": "frontend/app/apiticket.js",
+        "status": 200,
+        "sourceSha256": "a2908ddb4cecea42f2d7009f92e3506322deb4fb5c8be48af222256555a2e666",
+        "servedSha256": "a2908ddb4cecea42f2d7009f92e3506322deb4fb5c8be48af222256555a2e666",
+        "match": true
+      }
+    ]
+  },
+  "limits": [
+    "The browser edge proof supplies synthetic run/delivery responses; actual endpoints and persistence/restart are separately tested through real sidecar HTTP.",
+    "Earlier reader/approval/navigation proofs remain bound to their original candidates in the preceding evidence files.",
+    "Full fast and HTTP gates were not rerun in this sparse lane; previous broad attempts are not green. Complete integration gates are required before merge.",
+    "Customer record082ee8e5 stays OPEN.",
+    "Remote end-to-end is not wholly green: 108 assertions pass and two pre-existing art checks fail because this sparse tree omits art assets."
+  ],
+  "logs": [
+    {
+      "path": ".dogfood/thread-ux-fix/integrity-http.log",
+      "sha256": "813bf8ab904a1b4d960451d2c991674bb124383d5c7c6ed7c9c4cc15ee45d553",
+      "tail": [
+        "delivery proof: {\"characters\":250030,\"sha256\":\"1e594ec5ae0da6ce1264500c34a4b520238bf362f2879ac6e15798b98892316a\",\"originalId\":\"98879ead-6756-4793-80bd-3b495d989254\",\"repairId\":\"2aee318b-cdf0-48c4-8c3a-eba2dfb3af5d\",\"tail\":\"COMPLETE_TAIL\"}",
+        "e2e.dispatch-session.test: OK (154 assertions)"
+      ]
+    },
+    {
+      "path": ".dogfood/thread-ux-fix/integrity-phone-http.log",
+      "sha256": "4133180cde9864b9a8462d95b718b355470c68cd4357a8d7c1bb897109e4a490",
+      "tail": [
+        "phone projection proof: {\"phase\":\"before restart\",\"acceptedCount\":1,\"rawEvidenceVisible\":false,\"pendingContents\":[\"Pending user request\"],\"preview\":\"Research request\"}",
+        "FAIL: the portrait of an agent is a real sprite from the shipped art",
+        "FAIL: and the drawings to show them walking",
+        "phone projection proof: {\"phase\":\"after restart\",\"acceptedCount\":1,\"rawEvidenceVisible\":false,\"pendingContents\":[\"Pending user request\"],\"preview\":\"Continue the accepted phone result\"}",
+        "remote e2e: 2 problem(s), 108 ok"
+      ]
+    },
+    {
+      "path": ".dogfood/thread-ux-fix/integrity-focused.log",
+      "sha256": "2b1eb733c5cd7c196d2318e1438bebe9694df505b04f6d12562e54b89542177f",
+      "tail": [
+        "  duration_ms: 12.5394",
+        "  type: 'test'",
+        "  ...",
+        "1..31",
+        "# tests 31",
+        "# suites 0",
+        "# pass 31",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 104.0569"
+      ]
+    },
+    {
+      "path": ".dogfood/thread-ux-fix/live-large-integrity.log",
+      "sha256": "0a702150a1c42be29a322de24137290f09442062b9b2779e6d5faa93c88a49be",
+      "tail": [
+        "ATTEMPTS [{\"phase\":\"truncated\",\"folded\":0,\"chatMessages\":0,\"chatRunIds\":0,\"chatLength\":0,\"chatTail\":false,\"receiptStatus\":\"err\",\"receiptLength\":0,\"receiptTail\":false,\"retryVisible\":true,\"rawAbsent\":true},{\"phase\":\"changed\",\"folded\":0,\"chatMessages\":0,\"chatRunIds\":0,\"chatLength\":0,\"chatTail\":false,\"receiptStatus\":\"err\",\"receiptLength\":0,\"receiptTail\":false,\"retryVisible\":true,\"rawAbsent\":true},{\"phase\":\"complete\",\"folded\":1,\"chatMessages\":1,\"chatRunIds\":1,\"chatLength\":210026,\"chatTail\":true,\"receiptStatus\":\"ok\",\"receiptLength\":210026,\"receiptTail\":true,\"retryVisible\":false,\"rawAbsent\":true}]",
+        "{\"fixture\":\"Seeded live browser with synthetic run/delivery endpoint responses; backend persistence/restart tested separately against real sidecar\",\"length\":210026,\"sha256\":\"884389bcfac7d2f8f63e23b746d7af75e6915bc0d427a55cf7c955237e5b720e\",\"attempts\":[{\"phase\":\"truncated\",\"folded\":0,\"chatMessages\":0,\"chatRunIds\":0,\"chatLength\":0,\"chatTail\":false,\"receiptStatus\":\"err\",\"receiptLength\":0,\"receiptTail\":false,\"retryVisible\":true,\"rawAbsent\":true},{\"phase\":\"changed\",\"folded\":0,\"chatMessages\":0,\"chatRunIds\":0,\"chatLength\":0,\"chatTail\":false,\"receiptStatus\":\"err\",\"receiptLength\":0,\"receiptTail\":false,\"retryVisible\":true,\"rawAbsent\":true},{\"phase\":\"complete\",\"folded\":1,\"chatMessages\":1,\"chatRunIds\":1,\"chatLength\":210026,\"chatTail\":true,\"receiptStatus\":\"ok\",\"receiptLength\":210026,\"receiptTail\":true,\"retryVisible\":false,\"rawAbsent\":true}],\"proof\":{\"chatHash\":\"884389bcfac7d2f8f63e23b746d7af75e6915bc0d427a55cf7c955237e5b720e\",\"receiptHash\":\"884389bcfac7d2f8f63e23b746d7af75e6915bc0d427a55cf7c955237e5b720e\",\"chatJsonValid\":true,\"receiptJsonValid\":true,\"duplicateFold\":0},\"binding\":[{\"name\":\"workstreams.js\",\"local\":\"7024ccdfdd975b93346c01282e2b05047c7a177d5e5b282be8c9a34c4daf003f\",\"served\":\"7024ccdfdd975b93346c01282e2b05047c7a177d5e5b282be8c9a34c4daf003f\",\"equal\":true},{\"name\":\"stationcommands.js\",\"local\":\"58d6c3fd77c7cfa86e1025c43fd954b40328aeadbdcad078b804a6f1e1fe16a2\",\"served\":\"58d6c3fd77c7cfa86e1025c43fd954b40328aeadbdcad078b804a6f1e1fe16a2\",\"equal\":true},{\"name\":\"delegated.js\",\"local\":\"2950134784ac725d18a0d8f7b3aa721bc8cf4f618b50b965319450bfbfde0f90\",\"served\":\"2950134784ac725d18a0d8f7b3aa721bc8cf4f618b50b965319450bfbfde0f90\",\"equal\":true}],\"pageErrors\":[]}"
+      ]
+    }
+  ],
+  "productionCandidate": "5513ad4871f14478bed84e43a0b97dbbb3685581",
+  "freezeNote": "The source freeze adds only a phone prompt-scoping test correction after the real HTTP runs. Production code is identical.",
+  "phoneProtocol": {
+    "testedCandidate": "5513ad4871f14478bed84e43a0b97dbbb3685581",
+    "passed": 108,
+    "failed": 2,
+    "newParityChecksPassed": true,
+    "failures": [
+      "existing portrait PNG assertion: sparse checkout omits frontend/assets",
+      "existing approved_robot.walk.south animation assertion: sparse checkout omits frontend/assets"
+    ],
+    "checks": [
+      "sealed phone thread shows one accepted answer and no raw/repair evidence",
+      "thread list previews exclude internal repair prompts",
+      "phone follow-up model context contains accepted output only",
+      "same results after restart"
+    ],
+    "legacyPreviewTradeoff": "Closed legacy indexes without preview provenance omit preview text until normal index rebuild; history remains available and listing adds no transcript scans."
+  }
+}

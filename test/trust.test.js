@@ -140,6 +140,7 @@ A.eq(T.assess(ready5, ctxAt(xpAt(6, 90, 30), { currentInitiative: 'leash' })).of
 const off = T.assess(ready5, ctxAt(xpAt(3, 82, 45), { earnedAt: 777 })).offer;
 A.eq(off.provenance, { earnedAt: 777, runs: 45, confidence: 82, streak: 5 }, 'provenance = {earnedAt, runs, confidence, streak} read straight off the real state (nothing fabricated)');
 A.ok(off.why.indexOf('45 tasks') >= 0 && off.why.indexOf('82%') >= 0, 'the why line quotes the real track record');
+A.ok(/ready for more$/.test(off.why) && !/leash|earned/.test(off.why), 'an initiative offer reads "ready for more", never leash/earned talk (call #57)');
 const offNoClock = T.assess(ready5, ctxAt(xpAt(3, 82, 45), { earnedAt: undefined })).offer;
 A.eq(offNoClock.provenance.earnedAt, null, 'no injected clock → earnedAt is null, never a fabricated time');
 

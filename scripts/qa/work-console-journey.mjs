@@ -230,18 +230,18 @@ async function journeyRoutines(cdp, A) {
   })()`).catch(() => ({ present: false }));
   A.ok('JW-routines/active-list-row', rowShown && rowInfo.present && rowInfo.run && rowInfo.toggle && rowInfo.remove, 'row = ' + J(rowInfo));
 
-  // ARM TOGGLE, from the armed state create left: DISABLE → POST /api/cron/arm → enabled true→false (label reads
-  // ENABLE), then ENABLE → enabled false→true (label reads DISABLE) — each label from the authoritative read.
+  // ARM TOGGLE, from the armed state create left: TURN SCHEDULING OFF → POST /api/cron/arm → enabled true→false (label reads
+  // TURN SCHEDULING ON), then ON → enabled false→true (label reads TURN SCHEDULING OFF) — each label from the authoritative read.
   const pollEnabled = (want) => waitFor(cdp, `(async () => { try { const r = await fetch('/api/cron', { cache: 'no-store' }); const j = await r.json(); return j.enabled === ${want ? 'true' : 'false'}; } catch (_) { return false; } })()`, 40);
   const offClicked = await clickSel(cdp, '#rt-arm');
   const disarmed = await pollEnabled(false);
-  const offLabel = await waitFor(cdp, `(() => { const b = document.querySelector('#rt-arm'); return !!b && b.dataset.arm !== '0' && /ENABLE/i.test(b.textContent); })()`, 40);
+  const offLabel = await waitFor(cdp, `(() => { const b = document.querySelector('#rt-arm'); return !!b && b.dataset.arm !== '0' && /TURN SCHEDULING ON/i.test(b.textContent); })()`, 40);
   const armClicked = await clickSel(cdp, '#rt-arm');
   const armed = await pollEnabled(true);
   const armState = await cron('/api/cron', 'GET');
   A.ok('JW-routines/arm-flips-enabled', offClicked === 'clicked' && disarmed && offLabel && armClicked === 'clicked' && armed && armState.json && armState.json.enabled === true, 'disable then enable → GET /api/cron enabled = ' + (armState.json && armState.json.enabled));
-  const armLabelFlips = await waitFor(cdp, `(() => { const b = document.querySelector('#rt-arm'); return !!b && b.dataset.arm === '0' && /DISABLE/i.test(b.textContent); })()`, 40);
-  A.ok('JW-routines/arm-label-authoritative', armLabelFlips, 'rt-arm now reads DISABLE (data-arm=0) from the authoritative read');
+  const armLabelFlips = await waitFor(cdp, `(() => { const b = document.querySelector('#rt-arm'); return !!b && b.dataset.arm === '0' && /TURN SCHEDULING OFF/i.test(b.textContent); })()`, 40);
+  A.ok('JW-routines/arm-label-authoritative', armLabelFlips, 'rt-arm now reads TURN SCHEDULING OFF (data-arm=0) from the authoritative read');
 
   // DELETE (two-step DOM): click DELETE → CONFIRM → POST /api/cron/remove → count back to baseline.
   await clickSel(cdp, `.mc-row[data-id="${jobId}"] button[data-act="remove"]`);

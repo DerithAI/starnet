@@ -59,6 +59,8 @@ function makeTriggerRunner(deps) {
   const emit = typeof d.emit === 'function' ? d.emit : function () {};
   const bumpQueue = typeof d.bumpQueue === 'function' ? d.bumpQueue : function () { return 0; };
   const halted = typeof d.halted === 'function' ? d.halted : function () { return false; };
+  // the halt is the station's own process-fault containment, not the Commander's E-STOP: only the words differ (see handoff-runner)
+  const faulted = typeof d.faulted === 'function' ? d.faulted : function () { return false; };
   const dayCap = typeof d.dayCap === 'function' ? d.dayCap : function () { return { cap: null, spent: 0 }; };
   const runsFor = typeof d.runsFor === 'function' ? d.runsFor : function () { return []; };
   const shipsToOutbox = typeof d.shipsToOutbox === 'function' ? d.shipsToOutbox : function () { return false; };
@@ -113,7 +115,7 @@ function makeTriggerRunner(deps) {
 
   /* ---- preflight: can THIS line take work right now? (no side effects) ---- */
   function preflight(t) {
-    if (halted()) return 'automation is stopped (E-STOP) — resume it and this trigger fires again';
+    if (halted()) return faulted() ? 'the station hit an internal fault and stopped its background work — restart StarNet and this trigger fires again' : 'automation is stopped (E-STOP) — resume it and this trigger fires again';
     const plan = planOf();
     if (!plan) return 'no work line is armed — the floor has no complete line to run';
     if (!(Array.isArray(plan.lines) ? plan.lines : []).some(l => l && String(l.lineId) === t.lineId)) return 'its line is no longer on the floor (the line changed or was removed) — delete this trigger or re-create it on the line';
@@ -247,12 +249,14 @@ function makeTriggerRunner(deps) {
     const lo = s.current.lineOutcome;
     const onLine = !!(info && info.lineId === t.lineId);
     const allDone = runs.length > 0 && runs.every(r => r.reason === 'done');
-    const ships = !!(lo && !lo.stopped && shipsToOutbox(lo.agentId, lo.dockId));
+    // a PARTIAL joined job (chain out.partial) is not clean, even when every run row that exists ended done (runtime repair 2026-10-12)
+    const ships = !!(lo && !lo.stopped && !lo.partial && shipsToOutbox(lo.agentId, lo.dockId));
     const completed = onLine && allDone && ships;
     const usd = runs.reduce((a, r) => a + ((typeof r.usd === 'number' && isFinite(r.usd)) ? r.usd : 0), 0);
     if (workitemId) {
       const dep = bumpQueue(agentId, -1);
-      if (completed) emit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: now() - startedAt, ts: now() });
+      // (GitHub #122, additive) the line's review loop ran out of passes: delivered, said as unapproved
+      if (completed) emit('workitem.delivered', Object.assign({ workitemId, finalQueueId: 'outbox', agentId, box: '', ms: now() - startedAt, ts: now() }, lo.unapproved ? { unapproved: String(lo.unapproved) } : null));
       emit('queue.status', { queueId: agentId, depth: dep, maxCapacity: d.queueCap || 64, nextAdvanceAt: 0 });
     }
     let err = null;
@@ -264,9 +268,12 @@ function makeTriggerRunner(deps) {
       else if (!runs.length) err = firstReply || 'no run was recorded for this work';
       else if (!allDone) { const bad = runs.find(r => r.reason !== 'done'); err = 'a stage (' + (bad.agentId ? nameOf(bad.agentId) : '?') + ') ended "' + (bad.reason || 'unknown') + '"' + (firstReply ? ': ' + firstReply : ''); }
       else if (lo && lo.stopped) err = 'the line stopped early: ' + lo.stopped;
+      else if (lo && lo.partial) err = 'the joiner sent on without every branch (' + lo.partial + ')';
       else err = 'the line did not reach its OUTBOX';
     }
     const outcome = { ok: completed, at: now(), streamId, runs: runs.length, usd, agentId: (lo && lo.agentId) || agentId || null, source: item.source || null };
+    // (GitHub #122, additive) reached the OUTBOX, but a review loop used all its passes without approving it — said, never read as clean
+    if (completed && lo && lo.unapproved) outcome.unapproved = String(lo.unapproved).slice(0, 300);
     patch(t.id, () => (err ? { lastOutcome: outcome, lastError: err.slice(0, 400), lastErrorAt: now() } : { lastOutcome: outcome, lastError: null, lastErrorAt: null }));
     return outcome;
   }

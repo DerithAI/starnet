@@ -34,6 +34,15 @@ failedSettlement.beforeRun({ runId: 'cannot-save' });
 assert.throws(() => failedSettlement.onRun({ runId: 'cannot-save', result: { usd: 0.01, tokens: 3 } }), /disk full/);
 assert.equal(failedSettlement.canContinue(), false);
 for(const reason of ['error','cancelled']) { const f=makeEvaluationAccounting({ledger}); f.beforeRun({runId:reason}); assert.throws(()=>f.onRun({runId:reason,result:{reason,usd:0,tokens:0}}),/incomplete/); assert.equal(pending.has(reason),true); }
+// The dispatch receipt records the billing source the host knew (StarNet credits or the Commander's own key), so an
+// unsettled evaluation is never shown as BILLING SOURCE UNKNOWN (security-storage-07). Absent stays unknown.
+for (const managed of [true, false, undefined]) {
+  const metas = [];
+  const sourced = makeEvaluationAccounting({ ledger: { beginRun: (runId, agentId, meta) => { metas.push(meta); return true; }, markUnsettled: () => true, recordStrict: () => true },
+    agentId: 'owner', provider: 'openrouter', model: 'test/model', managed });
+  sourced.beforeRun({ runId: 'sourced' });
+  assert.equal(metas[0].managed, managed, 'billing source on the receipt: ' + managed);
+}
 // An unmetered provider (Ollama, a subscription) bills nothing per token: its unpriced usage settles at $0, with no
 // dispatch receipt (the run host writes none for it), and never makes station spend history unknown.
 {

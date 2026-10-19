@@ -28,7 +28,7 @@ try {
   assert(await ev(`document.querySelector('.fm-content').textContent.includes('Turn rough notes into a plan')`));
   const chapters = await ev(`Array.from(document.querySelectorAll('.fm-tab[data-t]'), b => b.dataset.t)`);
   assert.equal(chapters.length, 7);
-  const titles = { deliverables: 'DELIVERABLES', agents: 'AGENT DOSSIER', tasks: 'TASK BOARD', connectors: 'ABILITIES', automation: 'AUTOMATION', quests: 'QUEST LOG', settings: 'SETTINGS' };
+  const titles = { deliverables: 'DELIVERABLES', agents: 'AGENT DOSSIER', tasks: 'TASKS', connectors: 'ABILITIES', automation: 'AUTOMATION', quests: 'QUEST LOG', settings: 'SETTINGS' };
   for (const chapter of chapters) {
     await click('.fm-tab[data-t="' + chapter + '"]');
     const state = await ev(`(() => {

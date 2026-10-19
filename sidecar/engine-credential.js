@@ -66,7 +66,7 @@ function normalizeInput(input) {
   for (const raw of (Array.isArray(o.keyPool) ? o.keyPool : [])) {
     const k = cleanKey(raw);
     if (!k || pool.indexOf(k) >= 0) continue;
-    if (k.length > MAX_KEY) return { ok: false, error: 'a backup key is too long to be a provider key' };
+    if (k.length > MAX_KEY) return { ok: false, error: 'a spare key is too long to be a provider key' };
     pool.push(k);
     if (pool.length >= MAX_POOL) break;
   }

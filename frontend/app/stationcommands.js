@@ -92,6 +92,15 @@ const StationCommands = (() => {
     if (!hit) throw new Error('there is no crew member "' + want + '". The crew: ' + crew.map(x => x.name + ' (' + x.id + ')').join(', '));
     return hit;
   }
+  /* THE NAME A RESULT GIVES A SESSION = the name the rail shows it by (Workstreams.titleOf): only the General home is
+     "General"; an untitled other session is a "New session". A result that said `session: 'General'` for a run filed in a
+     fresh untitled session had the lead tell the Commander the work landed in General while the rail read "New session".
+     Lookup is unchanged — an untitled session is still addressed by its id — and the session LISTS keep `title: null` for
+     untitled, so the model can tell an unnamed session from one literally called "New session". */
+  function sessionName(w) {
+    if (typeof Workstreams !== 'undefined' && Workstreams.titleOf) return Workstreams.titleOf(w) || 'New session';
+    return (w && w.title) || 'General';
+  }
   function resolveChat(want) {
     if (typeof Workstreams === 'undefined' || !Workstreams.list) throw new Error('sessions are not ready yet');
     want = String(want || '').trim();
@@ -176,7 +185,7 @@ const StationCommands = (() => {
   }
   async function sessionControl(act, a) {
     const sc = App.sessionControl || {};
-    const hit = resolveChat(a.session), id = hit.w.id, label = hit.title || 'General';
+    const hit = resolveChat(a.session), id = hit.w.id, label = hit.title || sessionName(hit.w);
     const rowOf = save => (save.workstreams || []).find(w => w && w.id === id);
     if (act === 'session.rename') {
       const title = String(a.title || '').trim().slice(0, 80);
@@ -266,6 +275,23 @@ const StationCommands = (() => {
     return true;
   }
 
+  /* ONE ANSWER, ONE ROW (org live walk 2026-10-14: a delegated report that finished while the app was closed showed twice,
+     and the copy persisted). Opening the session merges its durable transcript (Chat.reconcileServerHistory), which files
+     the run's answer as an assistant row stamped with its sourceRunId but never touches ws.runIds; the /api/runs recovery
+     below then saw no runId and spliced the same answer in again. A run is filed when the session's run list names it OR
+     its history already holds that run's answer. */
+  function answerFiled(ws, runId) {
+    const id = String(runId || '');
+    if (!id) return false;
+    return (Array.isArray(ws.history) ? ws.history : []).some(m => m && !m.sys && m.role === 'assistant'
+      && String(m.sourceRunId || '') === id && String(m.content == null ? '' : m.content).trim());
+  }
+  // a run whose answer the transcript merge filed joins the session's run list, so its outcome and run count are true
+  function recordFiledRun(ws, runId, ts, beforeRunId) {
+    if (!runId || !Workstreams.appendRun || (ws.runIds || []).map(String).indexOf(String(runId)) >= 0) return false;
+    return !!Workstreams.appendRun(ws.id, String(runId), ts, beforeRunId);
+  }
+
   function foldDelivery(a, opts) {
     opts = opts || {};
     const hit = resolveDelivery(a);
@@ -274,10 +300,11 @@ const StationCommands = (() => {
     const text = String((a && a.text) || '').trim();
     if (!text) throw new Error('nothing to deliver — the worker returned no text');
     const runId = String((a && a.runId) || '');
-    if (runId && (ws.runIds || []).indexOf(runId) >= 0) {
-      if (noteOutcome(ws, runId, a.reason)) refreshAndPersist(ws, !!opts.quiet);
+    if (runId && ((ws.runIds || []).indexOf(runId) >= 0 || answerFiled(ws, runId))) {
+      const recorded = recordFiledRun(ws, runId, a.ts, opts.beforeRunId);
+      if (noteOutcome(ws, runId, a.reason) || recorded) refreshAndPersist(ws, !!opts.quiet);
       try { endDeliveredRun(ws, runId); } catch (_) {}
-      return { folded: false, reason: 'already delivered', session: ws.title || 'General', resolvedBy: hit.resolvedBy };
+      return { folded: false, reason: 'already delivered', session: sessionName(ws), resolvedBy: hit.resolvedBy };
     }
     const who = String((a && a.agentId) || 'agent');
     const prompt = String((a && a.prompt) || '').trim();
@@ -289,7 +316,7 @@ const StationCommands = (() => {
     // agent that wrote it — the marker would say the same thing twice
     const turns = [];
     if (prompt && !ws.worker) turns.push({ role: 'system', sys: true, content: '— delegated to ' + who + ': ' + prompt.slice(0, 400) + ' —', ts });
-    turns.push({ role: 'assistant', content: text, agentId: who, ts });
+    turns.push({ role: 'assistant', content: text, agentId: who, ts, sourceRunId: runId || undefined, streamId: ws.id });
     const beforeTurn = opts.recover || opts.beforeRunId ? ws.history.findIndex(m => Number(m && m.ts) > ts) : -1;
     ws.history.splice(beforeTurn < 0 ? ws.history.length : beforeTurn, 0, ...turns);
     if (runId && Workstreams.appendRun) Workstreams.appendRun(ws.id, runId, ts, opts.beforeRunId);
@@ -298,7 +325,7 @@ const StationCommands = (() => {
     if (Workstreams.markUnread && !ws.worker) Workstreams.markUnread(ws.id);   // a worker's thread is hidden: the asking conversation gets the one report
     try { endDeliveredRun(ws, runId); } catch (_) {}
     refreshAndPersist(ws, !!opts.quiet, turns);
-    return { folded: true, session: ws.title || 'General', agentId: who, resolvedBy: hit.resolvedBy };
+    return { folded: true, session: sessionName(ws), agentId: who, resolvedBy: hit.resolvedBy };
   }
 
   /* ---------- station.layout: THE FLOOR AS THE LEAD READS IT (2026-09-28; builds on PR #48 by @mvanhorn) ----------
@@ -363,11 +390,16 @@ const StationCommands = (() => {
   function pickLine(lines, want) {
     const lower = want.toLowerCase();
     const byId = lines.filter(l => l.lineId === want);
-    const byName = lines.filter(l => l.name && l.name.toLowerCase() === lower);
+    // …or by the word the floor shows it under (LINE F for an unnamed line, LINE RESEARCH for 'Research' — final floor lane M25)
+    // An exact NAME speaks before a shown word (repair: a line named 'F' and an unnamed line both matched "F", one by name and one
+    // by word; the floor now shows the unnamed one as LINE F 2, and its own name is asked first all the same).
+    const shown = typeof Pipeline !== 'undefined' && Pipeline.lineWord ? Pipeline.lineWord(want) : null;
+    const byLabel = lines.filter(l => l.name && l.name.toLowerCase() === lower);
+    const byName = byLabel.length ? byLabel : lines.filter(l => shown && l.word && l.word === shown);
     const byPart = lines.filter(l => l.name && l.name.toLowerCase().indexOf(lower) >= 0);
     const hits = byId.length ? byId : (byName.length ? byName : byPart);
     if (hits.length === 1) return hits[0];
-    const names = lines.map(l => (l.name || 'unnamed') + ' (' + l.lineId + ')').join(', ');
+    const names = lines.map(l => (l.name || l.word || 'unnamed') + ' (' + l.lineId + ')').join(', ');
     throw new Error(hits.length > 1 ? 'more than one line matches "' + want + '" — name it exactly. Lines: ' + names
       : 'there is no line called "' + want + '"' + (names ? '. Lines: ' + names : ' — this station has no assembly lines'));
   }
@@ -401,8 +433,10 @@ const StationCommands = (() => {
     const geo = st.projectGeometry(), plan = P.compileRoutingPlan(geo) || {};
     const origin = geo.origin || { tx: 0, ty: 0 };
     const roomAtTile = t => { const id = st.roomAt(t.x + origin.tx, t.y + origin.ty); const r = id && st.roomById(id); return r ? (r.name || r.kind || id) : null; };
+    // advice that is not a routing finding (never painted on the floor at rest) still reaches the lead, in its own words
+    const ADVICE_LABEL = { SEND_TO_PRIVATE_FILES: 'PRIVATE FILES — THE NEXT CREW CANNOT OPEN THEM' };
     const issue = e => {
-      const o = { code: e.code, label: label(e.code), blocking: !e.warn, propId: e.propId || null };
+      const o = { code: e.code, label: ADVICE_LABEL[e.code] || label(e.code), blocking: !e.warn, propId: e.propId || null };
       const f = why(e.code); if (f !== o.label) o.fix = f;
       if (!o.propId && e.tile) { const room = roomAtTile(e.tile); if (room) o.room = room; }   // a belt CYCLE has only a tile: say where it is
       return o;
@@ -415,7 +449,8 @@ const StationCommands = (() => {
       const p = propOf(pid);
       return (p && P.composeStageBrief && P.composeStageBrief(p.brief, p.hands)) || '';
     };
-    const errors = (plan.errors || []).filter(Boolean), claimed = new Set();
+    // + the SEND TO file advice, only where it is TRUE (Pipeline.sendToFileAdvice: no project folder, a different crew next — M19 / M29)
+    const errors = (plan.errors || []).filter(Boolean).concat(P.sendToFileAdvice ? P.sendToFileAdvice(plan) : []), claimed = new Set();
     const onLine = (c, e) => (e.propId != null && c.props.indexOf(e.propId) >= 0) || !!(e.tile && c.tiles && c.tiles[e.tile.x + ',' + e.tile.y])
       || (e.propId == null && !e.tile && [].concat(e.agentId || [], e.agents || []).some(a => c.bays.some(b => b.agentId === a)));
     const unread = (facts && facts.unread) || [];
@@ -426,7 +461,11 @@ const StationCommands = (() => {
       : (I.beltTileNear ? (t => t ? t.x + ',' + t.y : null)(I.beltTileNear(plan.belts || {}, p.x, p.y, p.w || 1, p.h || 1)) : null);
     const comps = (P.lineComponents(geo) || []).filter(c => c.intakes.length || c.bays.length || c.outboxes.length);
     // SEND TO (2026-10-10): a line names another by its INBOX's label; the hand-offs are the COMPILED plan's (plan.sendTo)
-    const lineName = id => { const cc = comps.find(x => x.key === id), l = cc ? (cc.intakes.map(i => propOf(i)).find(p => p && p.label) || {}).label : null; return l ? (P.lineWord ? P.lineWord(l) : 'LINE ' + String(l).replace(/^line\b[\s:·-]*/i, '').toUpperCase()) : 'an unnamed line (lineId ' + id + ')'; };
+    /* the floor's own name for a line (worldmodel.lineName: its first named INBOX, else LINE <its first INBOX's letter> — what the
+       plates and the SEND TO chips say), with its lineId when unnamed so station.layout line= can still take it (final floor lane
+       M25 / R62: 'an unnamed line' named no line the Commander could see) */
+    const floorWord = id => (typeof st.lineName === 'function' ? st.lineName(id) : null);
+    const lineName = id => { const cc = comps.find(x => x.key === id), l = cc ? (cc.intakes.map(i => propOf(i)).find(p => p && p.label) || {}).label : null; if (l) return P.lineWord ? P.lineWord(l) : 'LINE ' + String(l).replace(/^line\b[\s:·-]*/i, '').toUpperCase(); const w = floorWord(id); return (w || 'an unnamed line') + ' (lineId ' + id + ')'; };
     // the SEND TOs a step's own lane can ship into (a line with two OUTBOXes hands on only from the one that sends — 10-11 repair)
     const sendsOf = (lineId, pid) => (P.sendsReachedOf ? P.sendsReachedOf(plan, lineId, pid) : []);
     const reachedOf = pid => (P.outboxesReached ? P.outboxesReached(plan, pid) : []);
@@ -444,7 +483,7 @@ const StationCommands = (() => {
       const anyStart = !!(starts.schedules.length || starts.channels.length || starts.events.length);
       // the panel's facts, verbatim (build.js wfHost: hasCompute per BAY; workflowpanel.js paintHead: briefOf, labelOf, isCrew)
       const ready = W.readiness(flow, c, { hasCompute, errors: plan.errors || [], labelOf: why, isCrew: onCrew,
-        briefOf: pid => { const p = propOf(pid); return p && (p.brief || p.hands); }, triggers: starts });
+        briefOf: pid => { const p = propOf(pid); return p && (p.brief || p.hands); }, stepName: pid => { const p = propOf(pid); return p && p.label; }, triggers: starts });
       const segs = W.howItRuns(flow, { nameOf: upper, handsOf: pid => { const p = propOf(pid); return p && p.hands; }, triggers: starts });
       let hints = ready.hints.map(h => h.what);
       if (unread.length && flow.trigger.propId && !anyStart && !flow.cyclic) {
@@ -496,7 +535,7 @@ const StationCommands = (() => {
         filters.push({ propId: fp.id, rules: Object.keys(j.routes || {}).map(tag => ({ tag, goesTo: to(j.routes[tag]) })), otherwise: j.def ? to(j.def) : [] });
       }
       const mine = errors.filter(e => onLine(c, e)); mine.forEach(e => claimed.add(e));
-      const out = { lineId: c.key, name: (c.intakes.map(id => propOf(id)).find(p => p && p.label) || {}).label || null,
+      const out = { lineId: c.key, name: (c.intakes.map(id => propOf(id)).find(p => p && p.label) || {}).label || null, word: floorWord(c.key) || null,
         status: W.pillText(ready), ready: !!ready.ready, howItRuns: W.sentenceText(segs),
         blocking: ready.blocking.map(b => b.what), hints,
         starts: { schedules: starts.schedules, channels: starts.channels, events: starts.events, paused: starts.paused,
@@ -510,7 +549,7 @@ const StationCommands = (() => {
         // which steps ship into each sending OUTBOX: only THOSE jobs ride on (a line with two OUTBOXes hands on from the one that sends)
         const afterOf = k => flow.order.filter(pid => reachedOf(pid).indexOf(k) >= 0).map(pid => step[pid]).filter(Boolean);
         out.sendsWorkTo = outs.map(k => ({ lineId: st[k].toLine, name: lineName(st[k].toLine), outboxPropId: k, afterSteps: afterOf(k) }));
-        if (c.outboxes.length <= 1) out.howItRuns += ' Then every job it finishes is sent on to ' + out.sendsWorkTo.map(x => x.name).join(' and ') + ' (SEND TO), whose own crew works it next.';
+        if (c.outboxes.length <= 1) out.howItRuns += ' Then every job it finishes cleanly is sent on to ' + out.sendsWorkTo.map(x => x.name).join(' and ') + ' (SEND TO), whose own crew works it next.';
         else out.howItRuns += ' Then ' + out.sendsWorkTo.map(x => 'a job that lands in its OUTBOX ' + x.outboxPropId + (x.afterSteps.length ? ' (after step ' + x.afterSteps.join(' or ') + ')' : '') + ' is sent on to ' + x.name).join('; ')
           + ' (SEND TO), whose own crew works it next' + (outs.length < c.outboxes.length ? '; a job that lands in another of its ' + c.outboxes.length + ' OUTBOXes stops there.' : '.');
       }
@@ -556,6 +595,9 @@ const StationCommands = (() => {
   const builtWrite = (st, list) => { try { localStorage.setItem(builtKey(st), JSON.stringify(list.slice(-10))); } catch (_) {} };
   let planSeq = 0;
   const NEXT_STEP = 'Tell the Commander the summary in plain words, then call station.build with this planId. Nothing has been built yet.';
+  // a LINE plan with nobody on a step says how to staff it in the same plan (StationBuilder.planNext: its top-level steps), else the
+  // usual word; a room or build plan staffs a line inside its zones and lines (staff), so its receipt names the staff form instead
+  const planNextOf = pl => (StationBuilder.planNext && StationBuilder.planNext(pl, (App.agents ? App.agents() : []).map(x => x && x.name).filter(Boolean))) || NEXT_STEP;
   function park(r) {
     if (!r || !r.ok) throw new Error((r && r.error) || 'the plan failed');
     const now = Date.now();
@@ -666,6 +708,30 @@ const StationCommands = (() => {
     finally { if (timer != null) clearTimeout(timer); }
   }
 
+  /* #121: a build is SAVED only when the station file holds it. The floor on screen proves nothing about a restart (the
+     browser cache can be full), so, like station.update_agent: queue the live save, flush it, read the station file
+     back and compare the floor. Bounded so the receipt stays inside the bridge's six-second deadline (it runs beside
+     builderPublication); any doubt answers durable:false, and the build itself is never undone. */
+  const DURABLE_WAIT_MS = 3000;
+  async function builderDurability(st) {
+    const unproven = { durable: false, durability: 'The floor is built on screen, but the station file has not confirmed it yet, so it could revert after a restart. Do not tell the Commander it is saved.' };
+    if (typeof App === 'undefined' || !App.persist || typeof CloudSave === 'undefined' || !CloudSave.flush || !CloudSave.pull || typeof StationBuilder === 'undefined' || !StationBuilder.sigOf) return unproven;
+    let timer = null;
+    try {
+      // the floor as JSON carries it (a key holding undefined is dropped on the wire, so compare like with like)
+      const want = StationBuilder.sigOf(JSON.parse(JSON.stringify(st.serialize())));
+      App.persist();
+      const proof = (async () => {
+        if (await CloudSave.flush({ force: true }) !== true) return false;
+        const saved = await CloudSave.pull();
+        return !!(saved && saved.station && StationBuilder.sigOf(saved.station) === want);
+      })().catch(() => false);
+      const ok = await Promise.race([proof, new Promise(resolve => { timer = setTimeout(() => resolve(false), DURABLE_WAIT_MS); })]);
+      return ok === true ? { durable: true } : unproven;
+    } catch (_) { return unproven; }
+    finally { if (timer != null) clearTimeout(timer); }
+  }
+
   const VERBS = {
     /* A crew-written plugin DRAFT's window, previewed (plugin.preview tool): sandboxed, a throwaway store, no backend.
        The sidecar names the draft, its digest and its screens; PluginHost opens (or reloads) the DRAFT window. */
@@ -705,7 +771,7 @@ const StationCommands = (() => {
       const { st, env } = builderReady(a);
       const p = park(StationBuilder.plan(st.serialize(), (a && a.request) || {}, env));
       return { planId: p.planId, summary: p.plan.summary, line: p.plan.line, where: p.plan.where, steps: p.plan.steps, ready: p.plan.ready, blocking: p.plan.blocking,
-        recruits: p.plan.recruits, picked: p.plan.picked, notes: p.plan.notes, expiresInMinutes: PLAN_TTL_MS / 60000, next: NEXT_STEP };
+        recruits: p.plan.recruits, picked: p.plan.picked, notes: p.plan.notes, expiresInMinutes: PLAN_TTL_MS / 60000, next: planNextOf(p.plan) };
     },
     // ROOMS & DECOR (phase 2): a hand-designed room kit (a new room, or furnishing one with clear floor), or every room of a preset
     'station.plan_room': (a) => {
@@ -809,10 +875,12 @@ const StationCommands = (() => {
       const undo = 'The Commander can take all of it back with one UNDO in Build mode'
         + (r.kind === 'swap' ? ', or bring the old station back with RESTORE PREVIOUS in Build → Presets' : '')
         + ((r.recruited || []).length ? '; the recruited agents stay on the crew (DELETE AGENT in a Dossier removes one)' : '') + '.';
-      const result = Object.assign({ built: true, undo }, r.line
-        ? { summary: r.summary, line: r.line, where: r.where, steps: r.steps, lineId: r.lineKey, ready: r.ready, blocking: r.blocking, recruited: r.recruited }
-        : { summary: r.summary, rooms: r.rooms, hallways: r.hallways, lines: r.lines, recruited: r.recruited, where: r.where });
-      result.routing = await builderPublication();
+      // the receipt's body is the builder's own (StationBuilder.receipt): every line it laid or touched, with the floor's readiness
+      const result = Object.assign({ built: true, undo }, StationBuilder.receipt(r, e.plan));
+      // publication and the station-file proof run side by side, so together they stay inside the bridge deadline
+      const [routing, durability] = await Promise.all([builderPublication(), builderDurability(st)]);
+      result.routing = routing;
+      Object.assign(result, durability);
       if (!result.routing.published) {
         result.ready = false;
         result.blocking = (result.blocking || []).concat(result.routing.reason);
@@ -987,7 +1055,7 @@ const StationCommands = (() => {
       // Only the call-owning run may rebind voice. An unrelated run cannot transfer the call.
       try { if (typeof VoiceLive !== 'undefined' && VoiceLive.isActive && VoiceLive.isActive() && VoiceLive.rebind
           && VoiceLive.boundSessionId && VoiceLive.boundSessionId() === a.origin.streamId) VoiceLive.rebind(ws.id); } catch (_) {}
-      return { id: ws.id, title: ws.title != null ? ws.title : 'General', durable: true };
+      return { id: ws.id, title: sessionName(ws), durable: true };
     },
 
     /* Read a session's recent visible conversation — the agent's EYES into work that happened elsewhere.
@@ -1002,14 +1070,20 @@ const StationCommands = (() => {
         .filter(m => m && !m.hidden && !m.internal && typeof m.content === 'string'
           && (m.role === 'user' || m.role === 'assistant' || m.sys))
         .slice(-limit)
-        .map(m => ({
-          speaker: m.sys ? 'station' : (m.role === 'user' ? 'commander' : (m.agentId || ws.agentId || 'agent')),
-          sys: !!m.sys,
-          text: String(m.content).slice(0, 600)
-        }));
+        .map(m => {
+          // a goal-loop step is the STATION's prompt, never the Commander's words (org P29-sys wiring): a lead reading it must
+          // not tell the user "you asked me to continue…"
+          const step = (typeof GoalLoop !== 'undefined' && GoalLoop.stepOfTurn) ? GoalLoop.stepOfTurn(m) : null;
+          if (step != null) return { speaker: 'station', sys: true, text: ('Goal step: ' + step).slice(0, 600) };
+          return {
+            speaker: m.sys ? 'station' : (m.role === 'user' ? 'commander' : (m.agentId || ws.agentId || 'agent')),
+            sys: !!m.sys,
+            text: String(m.content).slice(0, 600)
+          };
+        });
       const busy = (typeof Channels !== 'undefined' && Channels.isBusy) ? !!Channels.isBusy(ws.id) : false;
       return {
-        id: ws.id, title: hit.title || 'General', agentId: ws.agentId || 'agent',
+        id: ws.id, title: hit.title || sessionName(ws), agentId: ws.agentId || 'agent',
         busy, runCount: (ws.runIds || []).length, turns,
         note: turns.length ? undefined : 'this session has no visible conversation yet'
       };
@@ -1033,14 +1107,17 @@ const StationCommands = (() => {
       Channels.setRunId(ws.id, runId, Date.now());
       if (Channels.setStatus) Channels.setStatus(ws.id, 'working…');
       try { if (typeof App !== 'undefined' && App.refreshRail) App.refreshRail(); } catch (_) {}
-      return { started: true, session: ws.title || 'General', runId, resolvedBy: hit.resolvedBy };
+      return { started: true, session: sessionName(ws), runId, resolvedBy: hit.resolvedBy };
     },
 
-    'station.dispatch_end': (a) => {
+    'station.dispatch_end': async (a) => {
       const hit = resolveDelivery(a);
       const settled = endDeliveredRun(hit.w, a && a.runId);
+      // The producer ends dispatch only after validating/finalizing its delivery. Recovery ignores provisional
+      // execution rows, including a repair run, so run termination alone can never publish raw output.
+      await reconcile(hit.w.id);
       try { if (typeof App !== 'undefined' && App.refreshRail) App.refreshRail(); } catch (_) {}
-      return { settled, session: hit.w.title || 'General', resolvedBy: hit.resolvedBy };
+      return { settled, session: sessionName(hit.w), resolvedBy: hit.resolvedBy };
     },
 
     /* STATION CONTROL (2026-10-02, "the agent can do anything the Commander asks"): what the Dossier CONFIG card, the
@@ -1142,8 +1219,10 @@ const StationCommands = (() => {
       // /api/runs is newest-first. Fold oldest-first so multiple missed answers preserve conversation order.
       for (const row of rows.slice().reverse()) {
         if (!row || !String(row.sessionTitle || '').trim()) continue;
-        const reason = row.reason;
-        const text = row.deliveryText;
+        const delivery = row.dispatchDelivery;
+        if (delivery && delivery.state !== 'final') continue;
+        const reason = delivery ? delivery.reason : row.reason;
+        let text = delivery ? delivery.text : row.deliveryText;
         const args = {
           streamId: row.streamId, sessionTitle: row.sessionTitle, agentId: row.agentId,
           runId: row.runId, prompt: row.deliveryPrompt, text, reason, ts: row.ts
@@ -1154,15 +1233,29 @@ const StationCommands = (() => {
         // Ordinary conversations retain their existing recovery policy. A worker's record also retains failed
         // or interrupted attempts: even an empty result needs its truthful outcome and inspection link.
         if (!hit.w.worker && ['done', 'max_iters', 'budget'].indexOf(String(reason || 'done')) < 0) continue;
-        if (row.runId && (hit.w.runIds || []).indexOf(String(row.runId)) >= 0) {
-          if (noteOutcome(hit.w, String(row.runId), reason)) outcomes++;
-          continue;
-        }
         // An earlier missed attempt can be recovered after a newer answer was already filed locally.
         // Use the server's run order to insert it before that known successor, preserving current truth.
         const liveRunId = typeof Channels !== 'undefined' && Channels.isBusy && Channels.isBusy(hit.w.id) && Channels.runIdOf && Channels.runIdOf(hit.w.id);
         const beforeRunId = (hit.w.runIds || []).find(id => rank.has(String(id)) && rank.get(String(id)) < rank.get(String(row.runId)))
           || (liveRunId && liveRunId !== row.runId && (hit.w.runIds || []).includes(liveRunId) ? liveRunId : undefined);
+        if (row.runId && ((hit.w.runIds || []).indexOf(String(row.runId)) >= 0 || answerFiled(hit.w, row.runId))) {
+          if (recordFiledRun(hit.w, String(row.runId), row.ts, beforeRunId)) outcomes++;
+          if (noteOutcome(hit.w, String(row.runId), reason)) outcomes++;
+          continue;
+        }
+        // The run index stores a bounded preview. Do not let that preview deduplicate the complete answer.
+        // Read only the finalized delivery projection; exact execution transcripts may contain rejected output.
+        if (delivery && (String(text || '').length >= 24000 || (delivery.textLength != null && delivery.textLength !== String(text || '').length))) {
+          try {
+            const response = await fetch('/api/transcript?stream=' + encodeURIComponent(row.streamId || '') + '&runId=' + encodeURIComponent(row.runId || '') + '&delivery=1&limit=1', { cache: 'no-store' });
+            if (!response.ok) continue;
+            const result = await response.json();
+            const full = await Workstreams.finalDeliveryText(row, result.turns);
+            if (full == null) continue;
+            text = full;
+          } catch (_) { continue; }
+        }
+        args.text = text;
         if (!String(text || '').trim()) {
           if (hit.w.worker && row.runId && reason && Workstreams.appendRun) {
             if (Workstreams.appendRun(hit.w.id, String(row.runId), row.ts, beforeRunId)) outcomes++;

@@ -123,6 +123,35 @@ try {
   A.eq(JSON.parse(fs.readFileSync(path.join(current, 'agent.save.json'), 'utf8')).doc.agent.name, 'VEGA', 'stale-break activation lands the requested station');
   A.eq(fs.existsSync(lockfile), false, 'recovery lock is released after activation');
 
+  // Recycled holder PID (soak 2026-10-15, review P3). Recovery runs on EVERY boot before the owner claim and its
+  // refusal exits 73 without the crash-loop breaker. A holder hard-killed inside the recovery election + lock,
+  // whose PID Windows then gave to cmd.exe, made kill(0) say alive and wedged every boot. The host's injected
+  // lockProcessIdentity proves such a PID recycled; a holder whose process predates its stamps still blocks.
+  fs.rmSync(current, { recursive: true, force: true });
+  fs.rmSync(legacyA, { recursive: true, force: true });
+  write(current, '.migrated', '1');
+  write(legacyA, 'agent.save.json', save('DENEB', 6500, 'legacy-recycled'));
+  const recycledInspection = Recovery.inspectCandidates({ fs, path, platform: 'darwin', home, workspaceRoot: current, candidateRoots: [legacyA] });
+  Recovery.requestRecovery({ fs, path, platform: 'darwin', home, workspaceRoot: current, candidateRoots: [legacyA], inspection: recycledInspection, candidateId: recycledInspection.automaticCandidateId, now: () => 6500 });
+  const killedAt = Date.now() - 2 * 3600000;
+  const { makeWorkspaceOwner } = require('../sidecar/workspace-owner.js');
+  const killedElection = makeWorkspaceOwner({ fs, path, pid: 43136, now: () => killedAt, nonce: () => 'killed-recovery',
+    filename: path.basename(current) + '.recovery-owner.json' });
+  A.eq(killedElection.acquire(path.dirname(current)).ok, true, 'recycled fixture: the killed holder held the recovery election');
+  fs.writeFileSync(lockfile, '43136:killed');   // ...and the parent-level recovery lock; no release (uncatchable kill)
+  fs.utimesSync(lockfile, killedAt / 1000, killedAt / 1000);
+  const identityFor = seen => ({ probe: p => (p === 43136 ? seen : { ok: false, reason: 'ESRCH' }), self: () => null });
+  const liveHolder = Recovery.applyPendingRecovery({ fs, path, platform: 'darwin', home, workspaceRoot: current, candidateRoots: [legacyA],
+    now: () => 7000, lockPidAlive: () => true, lockProcessIdentity: identityFor({ ok: true, startedAt: killedAt - 1500, executable: 'node.exe' }) });
+  A.eq(liveHolder.lockUnavailable, true, 'a holder process that predates its recovery stamps still refuses a second activation');
+  A.eq(fs.readFileSync(lockfile, 'utf8'), '43136:killed', 'and its recovery lock is untouched');
+  const recycled = Recovery.applyPendingRecovery({ fs, path, platform: 'darwin', home, workspaceRoot: current, candidateRoots: [legacyA],
+    now: () => 7100, lockPidAlive: () => true,
+    lockProcessIdentity: identityFor({ ok: true, startedAt: killedAt + 31 * 60000, executable: 'C:\\Windows\\system32\\cmd.exe' }) });
+  A.ok(!recycled.lockUnavailable, 'a recovery election + lock whose PID now belongs to a newer process no longer refuses the boot');
+  A.eq(recycled.applied, true, 'and the pending recovery is activated');
+  A.eq(fs.existsSync(lockfile), false, 'the recycled-PID recovery lock is released after activation');
+
   // Size guard: a pathological source fails CLOSED with a clear error before it can be buffered.
   fs.rmSync(current, { recursive: true, force: true });
   fs.rmSync(legacyA, { recursive: true, force: true });

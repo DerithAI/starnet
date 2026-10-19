@@ -10,8 +10,10 @@
               "Generated and saved … model X" line, never the requested one), the reported saved shape, verified transparency, and
               any reference image it matched (the run's transcript rows: tool_call arguments paired with the result)
      palette  the dominant colours IN the deliverable files (hex / rgb() / hsl(); a CSS custom property counts extra,
-              it is a design token), by frequency
-     fonts    the primary family of each font-family declaration in those files (plus Google Fonts links)
+              it is a design token), by frequency. A file a later run rewrote holds THAT run's style: when the caller
+              passes ranUntil and each file's mtimeMs, such a file keeps its path but lends no colours or fonts. Without
+              ranUntil every file is read as it is NOW, so the host must pass both (captureTasteRef in index.js)
+     fonts    the primary family of each font-family declaration in those same files (plus Google Fonts links)
      tools    the approach: the run's successful tool calls in order (runstore `toolTrace`), repeats folded
 
    Truthful telemetry: every field is read from a real record or a real file at capture time; nothing is inferred or
@@ -202,10 +204,22 @@ function methodOf(trace) {
   return parts.join(' → ');
 }
 
-/* buildRef({ artifacts, toolTrace, rows, files, tainted, redact, agentId }) -> the reference, or null when the run left
-   nothing to point at. artifacts/toolTrace = the run row's own fields; rows = its transcript rows (or provider messages);
-   files = [{ path, text }] read from the run's design deliverables; redact = the host's secret scrub for free text;
-   agentId = whose PRIVATE workspace the relative paths live in (omitted for a project run: its paths arrive absolute). */
+// a design file changed after the rated run ended is a LATER run's work (review memory-learning-11). The slack covers
+// mtime granularity and the gap between the run's last write and its runstore record. With the end known, a file whose
+// change time is unknown proves nothing; a caller that knows no end time (ranUntil 0) reads every file as before.
+const MTIME_SLACK_MS = 2000;
+function unchangedSince(file, ranUntil) {
+  const until = Number(ranUntil) || 0;
+  if (!until) return true;
+  const at = Number(file && file.mtimeMs);
+  return isFinite(at) && at > 0 && at <= until + MTIME_SLACK_MS;
+}
+
+/* buildRef({ artifacts, toolTrace, rows, files, ranUntil, tainted, redact, agentId }) -> the reference, or null when the
+   run left nothing to point at. artifacts/toolTrace = the run row's own fields; rows = its transcript rows (or provider
+   messages); files = [{ path, text, mtimeMs }] read from the run's design deliverables; ranUntil = when the run ended (ms):
+   files modified after it lend no palette or fonts; redact = the host's secret scrub for free text; agentId = whose
+   PRIVATE workspace the relative paths live in (omitted for a project run: its paths arrive absolute). */
 function buildRef(input) {
   input = input || {};
   const scrub = typeof input.redact === 'function' ? (t) => { try { return str(input.redact(t)); } catch (_) { return ''; } } : (t) => t;
@@ -222,7 +236,7 @@ function buildRef(input) {
     if (im.reference) out.reference = im.reference;
     return out;
   });
-  const style = styleSpec(input.files);
+  const style = styleSpec((Array.isArray(input.files) ? input.files : []).filter(f => unchangedSince(f, input.ranUntil)));
   const tools = methodOf(input.toolTrace);
   if (!paths.length && !images.length && !style.palette.length && !style.fonts.length && !tools) return null;
   // v1 copied requested shape/alpha/reference. v2 derives those fields from the saved receipt.
@@ -272,6 +286,5 @@ function refLine(ref, level, viewer) {
   if (tools) bits.push('via ' + tools);
   return (paths.length ? ' → ' + where + paths.join(', ') : '') + (bits.length ? ' · ' + bits.join(' · ') : '');
 }
-function hasStyle(ref) { return !!(ref && ((Array.isArray(ref.paths) && ref.paths.length) || (Array.isArray(ref.images) && ref.images.length) || (Array.isArray(ref.palette) && ref.palette.length))); }
 
-module.exports = { isDesignPath, colorsIn, fontsIn, styleSpec, imageCalls, methodOf, buildRef, refLine, hasStyle, DESIGN_EXT };
+module.exports = { isDesignPath, colorsIn, fontsIn, styleSpec, imageCalls, methodOf, buildRef, refLine, DESIGN_EXT };

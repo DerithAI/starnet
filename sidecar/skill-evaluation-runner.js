@@ -41,12 +41,26 @@ function createTaskHandoffSuite(skillName) {
         checks: [{ id: 'do-not-transfer-old-success', kind: 'json_equal', expected: { objective: 'export inactive accounts', destination: 'reports/archive.json', verified: false, nextAction: 'write requested file' } }] }
     ] };
 }
+/* EVALUATION LIMITS, SIZED TO THE SUITE AND THE COMMANDER'S RUN CAP. A fixed 120 s clock and $0.08 per run stopped
+   every evaluation on a slow reasoning model (16 calls at ~15 s each) or a premium-priced one, and the stop left an
+   unsettled receipt. Every case runs twice (without and with the proposal). Each run gets the Commander's per-run
+   cap (runCapUsd; $0.08 when the host gives none), the whole evaluation is bounded by runs x that cap, and the wall
+   clock allows ~90 s per run, never under 2 minutes or over 20. The host sizes its timer, the page's wait, the
+   runner's limits.maxCostUsd and the accounting's runCapUsd/maxUsd from this one result. */
+function evaluationLimits(options) {
+  const o = options || {};
+  const runs = Math.max(1, Math.floor(Number(o.cases) || 0)) * 2;
+  const cap = Number(o.runCapUsd);
+  const perRunUsd = Number.isFinite(cap) && cap > 0 ? cap : 0.08;
+  return { runs, perRunUsd, totalUsd: perRunUsd * runs, wallClockMs: Math.min(20 * 60000, Math.max(120000, runs * 90000)) };
+}
 function makeAgentLoopCaseRunner(options) {
   const o = options || {};
   if (!o.provider || typeof o.provider.stream !== 'function') throw new Error('evaluation provider required');
   const loop = o.runAgentLoop || defaultLoop;
   if (typeof o.runIdPrefix !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(o.runIdPrefix)) throw new Error('evaluation requires a bounded host runIdPrefix');
-  const runIdPrefix = o.runIdPrefix;
+  // The runner owns the skill-eval- namespace below; a host prefix that already carries it is not doubled.
+  const runIdPrefix = /^skill-eval-[a-zA-Z0-9]/.test(o.runIdPrefix) ? o.runIdPrefix.slice('skill-eval-'.length) : o.runIdPrefix;
   let runSerial = 0;
   const clock = o.clock || { now: () => 0 };
   const tools = [
@@ -60,8 +74,9 @@ function makeAgentLoopCaseRunner(options) {
     if (typeof o.authorize === 'function' && await o.authorize({ runId, taskId: task.id, phase }) !== true) return { reason: 'policy-denied' };
     const streamAttempts = [];
     let streamSpent = 0, streamUncertain = false, streamDenied = false;
-    // Set by the host's dispatch admission (beforeRun) before any provider attempt: an unmetered provider bills nothing.
-    let unmetered = false;
+    // An unmetered provider (Ollama, a Codex/Grok/Kimi sign-in) bills nothing per call. The host says so when it
+    // builds the runner (o.unmetered) or in its dispatch admission (beforeRun), before any provider attempt.
+    let unmetered = o.unmetered === true;
     const accountableProvider = Object.create(o.provider);
     accountableProvider.stream = async function* trackedStream(request) {
       // This is the paid entry, including retries and continuation calls inside one loop turn.
@@ -110,7 +125,8 @@ function makeAgentLoopCaseRunner(options) {
         const charge = reconcile(lastUsage);
         // The same reconciler used by the loop supplies totals. Unknown pricing or
         // partial streams cannot authorize another attempt using guessed headroom.
-        // A subscription or local call settles at $0 whatever its usage said: there is no headroom to guess.
+        // An unmetered provider bills nothing per call: every attempt there is known $0, complete or not, as runOnce
+        // books it, whatever its usage said. There is no headroom to guess.
         if (unmetered) attempt.accounted = attempt.unmetered = true;
         else {
           attempt.accounted = !!(attempt.complete && attempt.usageObserved && priced(charge));
@@ -143,7 +159,8 @@ function makeAgentLoopCaseRunner(options) {
     if (typeof o.beforeRun === 'function') {
       const admission = await o.beforeRun({ runId, taskId: task.id, phase });
       if (admission !== true && !(admission && admission.ok === true)) throw new Error('evaluation dispatch receipt was not accepted');
-      unmetered = !!(admission && admission.unmetered === true);
+      // The admission can only add the unmetered fact; it never turns a host-declared unmetered provider metered.
+      if (admission && admission.unmetered === true) unmetered = true;
     }
     let result;
     try { result = await loop({
@@ -168,4 +185,4 @@ function makeAgentLoopCaseRunner(options) {
     return { reason: result.reason, value, artifacts: Object.fromEntries(files), toolCalls };
   };
 }
-module.exports = { createArtifactWorkflowSuite, createTaskHandoffSuite, makeAgentLoopCaseRunner };
+module.exports = { createArtifactWorkflowSuite, createTaskHandoffSuite, makeAgentLoopCaseRunner, evaluationLimits };

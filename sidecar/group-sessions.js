@@ -73,16 +73,30 @@ function makeGroupSessions(d) {
   }
   function stopTurn(g, t, reason) {
     if (workingTurn.get(g.id) === t.id && controllers.has(g.id)) { t.state = 'stopping'; if (reason) t.reason = reason; return controllers.get(g.id); }
-    t.state = 'stopped'; t.reason = reason || 'Stopped'; delete t.approval; return null;
+    t.state = 'stopped'; t.reason = reason || 'Stopped'; retireApproval(t); return null;
+  }
+  /* STOPPED WHILE AN APPROVAL WAITED (live walk 2026-10-14): the card just vanished from the group. The turn keeps what was
+     asked — never its prompt id, nothing can answer it any more — so the transcript retires it in the desk card's words. */
+  function retireApproval(t) {
+    if (!t.approval) return;
+    const asked = Object.assign({}, t.approval); delete asked.promptId;
+    t.unansweredApproval = asked; delete t.approval;
   }
   // A Commander upload belongs to the message that carries it. One no message links (the send that carried it was
   // refused, or never went out) is not shared: agents don't see it in context and group.read refuses it.
   function shared(g, a) { return !(a.agentId === 'user' && a.attachmentKey && !g.messages.some(m => (m.artifactIds || []).includes(a.id))); }
   function publicGroup(g) {
     const out = clone(g);
-    for (const t of out.turns) if (drafts.has(t.id)) t.draft = drafts.get(t.id);
+    for (const t of out.turns) if (drafts.has(t.id)) { const dr = drafts.get(t.id); t.draft = dr.text; if (dr.steps.length) t.draftSteps = dr.steps; }
     out.artifacts = out.artifacts.map(({ content, ...a }) => a);
     return out;
+  }
+  // A reply that made visible tool calls keeps its flow (the prose as it streamed + the calls between) for the transcript to
+  // draw like the one-on-one chat; `content` stays the reply's final answer (what peers read as context, what is copied).
+  const GROUP_STEPS_MAX = 40;
+  function flowOf(streamed, steps) {
+    if (!steps.length) return {};
+    return { flow: { text: String(streamed || ''), steps: steps.map(s => ({ ...s })) } };
   }
   function message(g, author, content, extra = {}) {
     const m = { id: d.id(), seq: g.messages.length + 1, author, content, at: d.now(), ...extra };
@@ -505,12 +519,34 @@ function makeGroupSessions(d) {
       if (!claimed) { agentLeases.delete(t.agentId); controllers.delete(id); workingTurn.delete(id); continue; }
       t = get(id).turns.find(x => x.id === t.id);
       let chain = Promise.resolve(), output = '', error = '', usd = null;
+      /* THE TURN'S FLOW, AS THE ONE-ON-ONE CHAT SHOWS IT (rc walk 2026-10-14). The draft glued every model turn onto the last
+         ("Let me configure it:The steps are locked.") — the one-on-one page breaks its paragraph at each tool call, this
+         accumulator never did — and the transcript showed none of the calls, so nobody could see what the lead did. `streamed`
+         is the reply exactly as it streamed, with a paragraph break where a visible tool call cut it; `steps` are those calls
+         ({ at: offset into streamed, name, args, done, isError, summary, ms }) — the chips the group transcript draws. */
+      let streamed = '', breakNext = false;
+      const steps = [];
       progress.set(t.id, { at: d.now(), tools: new Set() });
       const emit = (name, p) => {
         if (p.runId && p.runId !== runId) return;
         const pulse = progress.get(t.id);
         if (pulse && ['agent.token', 'agent.run.start', 'agent.tool_call', 'agent.tool_result'].includes(name)) { pulse.at = d.now(); if (name === 'agent.tool_call') pulse.tools.add(p.callId); if (name === 'agent.tool_result') pulse.tools.delete(p.callId); }
-        if (name === 'agent.token') { output += String(p.delta || ''); drafts.set(t.id, output); }
+        if (name === 'agent.token') {
+          const delta = String(p.delta || '');
+          output += delta;
+          if (breakNext && delta.trim() && streamed.trim() && !/^\s*\n/.test(delta)) streamed = streamed.replace(/[ \t]+$/, '') + '\n\n';
+          if (delta.trim()) breakNext = false;
+          streamed += delta;
+          drafts.set(t.id, { text: streamed, steps: steps.slice() });
+        }
+        if (name === 'agent.tool_call' && steps.length < GROUP_STEPS_MAX) {
+          steps.push({ at: streamed.length, callId: String(p.callId || ''), name: String(p.name || 'tool'), args: String(p.argsSummary || ''), done: false });
+          breakNext = true; drafts.set(t.id, { text: streamed, steps: steps.slice() });
+        }
+        if (name === 'agent.tool_result') {
+          const s = steps.find(x => !x.done && (!p.callId || x.callId === String(p.callId)));
+          if (s) { Object.assign(s, { done: true, isError: !!p.isError, summary: String(p.summary || ''), ms: Number.isFinite(p.ms) ? p.ms : null }); drafts.set(t.id, { text: streamed, steps: steps.slice() }); }
+        }
         if (name === 'agent.run.error') error = String(p.message || 'Run failed');
         if (name === 'agent.cost' && p.reconciled && Number.isFinite(p.usd)) usd = (usd || 0) + p.usd;
         if (name === 'agent.run.start') chain = chain.then(() => update(id, state => { const turn = state.turns.find(x => x.id === t.id); if (turn.state !== 'stopping') turn.state = 'running'; }));
@@ -524,30 +560,36 @@ function makeGroupSessions(d) {
             const promptId = d.id();
             await chain;
             await update(id, state => { const turn = state.turns.find(x => x.id === t.id); if (turn.state !== 'stopping') { turn.state = 'waiting for approval'; turn.approval = { promptId, ...fields }; } });
+            let stoppedFirst = false;   // the stop settled this ask, not an answer
             const answer = await new Promise(resolve => {
               let timer;
               const finish = value => { clearTimeout(timer); pending.delete(promptId); ac.signal.removeEventListener('abort', onAbort); resolve(value); };
-              const onAbort = () => finish('deny');
+              // a stopped turn withdraws its ask: 'cancelled' (the broker's withdrawn result), never the Commander's "no"
+              const onAbort = () => { stoppedFirst = true; finish('cancelled'); };
               pending.set(promptId, { id, turnId: t.id, finish, tool: fields.tool, argsFull: argsFull && typeof argsFull.text === 'string' ? argsFull : null });
               // nobody answered in 5 minutes: a TIMEOUT (the broker says "nobody answered in time"), never the Commander's "no"
               timer = setTimeout(() => finish('timeout'), 300000);
               ac.signal.addEventListener('abort', onAbort, { once: true });
               if (ac.signal.aborted) onAbort();
             });
-            await update(id, state => { const turn = state.turns.find(x => x.id === t.id); delete turn.approval; if (turn.state !== 'stopping') turn.state = 'running'; });
+            await update(id, state => { const turn = state.turns.find(x => x.id === t.id); if (stoppedFirst) retireApproval(turn); delete turn.approval; if (turn.state !== 'stopping') turn.state = 'running'; });
             return answer;
           } });
         await chain;
-        const last = (result?.messages || []).filter(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()).at(-1);
-        if (last) output = last.content;
+        const spoke = (result?.messages || []).filter(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim());
+        if (spoke.length) output = spoke.at(-1).content;
         await update(id, state => {
           const current = state.turns.find(x => x.id === t.id);
           const waiting = (state.questions || []).some(q => q.turnId === t.id && q.state === 'pending');
           const stopped = ac.signal.aborted || current.state === 'stopping';
           Object.assign(current, { state: waiting ? 'waiting for answer' : stopped ? 'stopped' : error || result?.reason !== 'done' ? 'failed' : 'completed',
             reason: stopped ? (current.reason || 'Stopped') : error || result?.reason || 'No result', endedAt: d.now(), usd });
+          if (['stopped', 'failed'].includes(current.state)) retireApproval(current);
           delete current.approval;
-          if (output) message(state, t.agentId, output, { runId, turnId: t.id, partial: stopped || current.state === 'failed' });
+          // a reply that did NOT complete keeps every paragraph the run said (live walk 2026-10-14: a stop collapsed the lead's
+          // narration to its last sentence, "Good. Now I can create the loop:"); a completed one posts its final reply, as before
+          const said = ['stopped', 'failed'].includes(current.state) && spoke.length > 1 ? spoke.map(m => m.content.trim()).join('\n\n') : output;
+          if (said) message(state, t.agentId, said, Object.assign({ runId, turnId: t.id, partial: stopped || current.state === 'failed' }, flowOf(streamed, steps)));
           if (!['completed', 'waiting for answer'].includes(current.state)) for (const child of state.turns) if (child.parent === t.id && child.state === 'queued') { child.state = 'stopped'; child.reason = 'Parent did not complete'; }
         });
       } catch (e) {
@@ -555,8 +597,9 @@ function makeGroupSessions(d) {
         await update(id, state => {
           const cur = state.turns.find(x => x.id === t.id);
           Object.assign(cur, { state: (state.questions || []).some(q => q.turnId === t.id && q.state === 'pending') ? 'waiting for answer' : ac.signal.aborted ? 'stopped' : 'failed', reason: e.message, endedAt: d.now() });
+          if (['stopped', 'failed'].includes(cur.state)) retireApproval(cur);
           delete cur.approval;
-          if (output) message(state, t.agentId, output, { runId, turnId: t.id, partial: true });
+          if (output) message(state, t.agentId, output, Object.assign({ runId, turnId: t.id, partial: true }, flowOf(streamed, steps)));
           for (const child of state.turns) if (child.parent === t.id && child.state === 'queued') child.state = 'stopped';
         });
       } finally {
@@ -614,7 +657,7 @@ function makeGroupSessions(d) {
     for (const g of Object.values(s.groups)) {
       if (g.deleted) continue;
       if (g.turns.some(t => ACTIVE.has(t.state) || t.state === 'queued')) g.paused = true;
-      for (const t of g.turns) if (ACTIVE.has(t.state) && !(g.questions || []).some(q => q.turnId === t.id && q.state === 'pending')) { t.state = 'interrupted'; t.reason = 'Sidecar restarted; review effects before retrying'; delete t.approval; }
+      for (const t of g.turns) if (ACTIVE.has(t.state) && !(g.questions || []).some(q => q.turnId === t.id && q.state === 'pending')) { t.state = 'interrupted'; t.reason = 'Sidecar restarted; review effects before retrying'; retireApproval(t); }
       for (const t of g.turns) if (t.parent && t.state === 'queued' && g.turns.some(p => p.id === t.parent && !['completed', 'answered'].includes(p.state))) {
         t.state = 'stopped'; t.reason = 'Parent was interrupted; review before retrying';
       }

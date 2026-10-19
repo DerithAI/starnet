@@ -25,6 +25,10 @@
   // fold-fidelity helpers (verbatim user section, usage anchor, provider-reported window). Node-only like failopen;
   // absent (a browser build that never runs the loop) = compaction stays off rather than folding unfaithfully.
   const fidelity = (typeof require === 'function') ? require('./compaction-fidelity.js') : null;
+  // the per-run <run_context> note's predicate (providers/provider.js owns the fence) — compaction pins that note
+  const isRunContextNote = (typeof require === 'function') ? require('./providers/provider.js').isRunContextNote : null;
+  // ... and the <crew_call> note (review 2026-10-12): it left the run-context note to trail the newest user message
+  const isCrewCallNote = (typeof require === 'function') ? require('./providers/provider.js').isCrewCallNote : null;
 
   // tool-call argument repair (L2): recover mechanically-broken JSON from non-Anthropic models. Degrades to
   // identity if the module is absent (e.g. a browser build that never runs the loop).
@@ -323,6 +327,14 @@
   }
   const isCancelled = (meta) => !!(meta && meta.signal && meta.signal.aborted);
 
+  /* A HIDDEN TOOL'S ERROR IS NOT NEWS FOR THE COMMANDER (rc walk 2026-10-14). The Task Brief tools draw no chip, so a model that
+     narrated fixing one ("Let me fix that—sources needs to be an array:", "Let me correct that:") put a sentence in COMMS about
+     an action nobody could see. The model still reads the full error; it is told the step is invisible. */
+  const HIDDEN_ERROR_NOTE = ' (This tool is invisible to the Commander: never mention this error or its fix. Make the corrected call with no text before it — or, if you fall back to the TASK_QUESTION marker, reply with only that one marker line.)';
+  function quietHiddenError(c, r, meta) {
+    if (!r || !r.isError || !(meta && meta.hiddenTools && meta.hiddenTools.has(c.name)) || typeof r.content !== 'string') return r;
+    return Object.assign({}, r, { content: r.content + HIDDEN_ERROR_NOTE, quietRepair: true });
+  }
   // Every call gets exactly one result (success / error / timeout / denial / cancelled skip) — never thrown.
   async function executeCalls(calls, dispatch, capCtx, emit, meta) {
     const results = [];
@@ -351,11 +363,11 @@
           if (e && e.fatalToRun === true) throw e;
           r = { ok: false, isError: true, content: 'tool dispatch threw: ' + (e && e.message), summary: 'error' };
         }
-        r = r || { ok: false, isError: true, content: 'tool returned nothing', summary: 'error' };
+        r = quietHiddenError(c, r || { ok: false, isError: true, content: 'tool returned nothing', summary: 'error' }, meta);
         return { c, r, ms: Math.max(0, (meta.clock ? meta.clock.now() : 0) - t0) };
       }));
       for (const s of settled) {
-        results.push({ callId: s.c.id, isError: !!s.r.isError, ok: !!s.r.ok, content: s.r.content, summary: s.r.summary || (s.r.isError ? 'error' : 'ok'), control: s.r.control || null, images: s.r.images || null, parkedPath: s.r.parkedPath || null });
+        results.push({ callId: s.c.id, isError: !!s.r.isError, ok: !!s.r.ok, content: s.r.content, summary: s.r.summary || (s.r.isError ? 'error' : 'ok'), control: s.r.control || null, images: s.r.images || null, parkedPath: s.r.parkedPath || null, ...(s.r.quietRepair ? { quietRepair: true } : {}) });
         if (meta.hiddenTools && meta.hiddenTools.has(s.c.name)) continue;
         emit('agent.tool_result', {
           agentId: meta.agentId, runId: meta.runId, callId: s.c.id, ok: !!s.r.ok,
@@ -396,9 +408,9 @@
         if (e && e.fatalToRun === true) throw e;
         r = { ok: false, isError: true, content: 'tool dispatch threw: ' + (e && e.message), summary: 'error' };
       }
-      r = r || { ok: false, isError: true, content: 'tool returned nothing', summary: 'error' };
+      r = quietHiddenError(c, r || { ok: false, isError: true, content: 'tool returned nothing', summary: 'error' }, meta);
       const t1 = meta.clock ? meta.clock.now() : 0;
-      results.push({ callId: c.id, isError: !!r.isError, ok: !!r.ok, content: r.content, summary: r.summary || (r.isError ? 'error' : 'ok'), control: r.control || null, images: r.images || null, parkedPath: r.parkedPath || null });
+      results.push({ callId: c.id, isError: !!r.isError, ok: !!r.ok, content: r.content, summary: r.summary || (r.isError ? 'error' : 'ok'), control: r.control || null, images: r.images || null, parkedPath: r.parkedPath || null, ...(r.quietRepair ? { quietRepair: true } : {}) });
       if (r.control && r.control.final) finalControl = r.control;
       if (r.control && r.control.stopTools) stopToolsControl = r.control;
       if (!hidden) emit('agent.tool_result', {
@@ -435,8 +447,10 @@
     new RegExp('\\blet me\\s+(?!(?:' + CG_LET_ME_TALK + ')\\b)[a-z]', 'i'),                                    // "Let me read the file"
     new RegExp('\\b' + CG_SUBJ + '\\s+(?:now\\s+|just\\s+|quickly\\s+|first\\s+|then\\s+|also\\s+)?(?:' + CG_VERBS + ')\\b', 'i'),  // "I'll fix all three" / "I'm going to go ahead and create…"
     new RegExp('\\b(i\'?ll|i\\s+will|i\'?m\\s+going\\s+to|i\\s+am\\s+going\\s+to)\\s+(?:take\\s+care\\s+of|(?:get|have)\\s+(?:this|that|it|the\\s+(?:task|work|job))\\s+done)\\b', 'i'), // "I'll take care of it" / "I'll get this done"
-    new RegExp('^(?:(?:ok(?:ay)?|sure|alright|right|great|perfect|got\\s+it|understood|on\\s+it|will\\s+do)[,!.\\s—–-]+)?(?:i\'?m\\s+|i\\s+am\\s+|we\'?re\\s+)?(?:now\\s+)?(?:' + CG_GERUNDS + ')\\b(?:[^.!?\\n]|\\.(?=\\w)){0,80}\\bnow\\b', 'i'),   // "Reading the full main.js now" / "Working on it now"
-    new RegExp('(?:^|[,;:—–-]\\s*)(?:and\\s+)?now\\s+(?:i\'?m\\s+|i\\s+am\\s+)?(?:' + CG_GERUNDS + ')\\b', 'i'),                          // "now fixing the death path" (NOT "the login is now working")
+    new RegExp('^(?:(?:ok(?:ay)?|sure|alright|right|great|perfect|got\\s+it|understood|on\\s+it|will\\s+do)[,!.\\s—–-]+)?(?:i\'?m\\s+|i\\s+am\\s+|we\'?re\\s+)?(?:now\\s+)?(?:' + CG_GERUNDS + ')\\b(?:[^.!?\\n]|\\.(?=\\w)){0,80}\\bnow\\b(?=\\s*(?:[.!…,;:)—–-]|$))', 'i'),   // "Reading the full main.js now" / "Working on it now" (NOT "Saving now works")
+    // a state gerund that is bare or complemented by a status ("— now working.", "Now working as expected") reports
+    // a finished fix, not an announce; "— now working on the fix" still is one
+    new RegExp('(?:^|[,;:—–-]\\s*)(?:and\\s+)?now\\s+(?:i\'?m\\s+|i\\s+am\\s+)?(?!(?:working|running|building|connecting|loading|saving|sending|uploading)\\b\\s*(?:[.!…)]|$|(?:again|correctly|properly|fine|normally|smoothly|successfully|as\\s+expected|without|with\\s+no)\\b))(?:' + CG_GERUNDS + ')\\b', 'i'),   // "now fixing the death path" (NOT "the login is now working")
     new RegExp('\\b(?:i\'?m|i\\s+am)\\s+(?:now\\s+|currently\\s+|still\\s+)?(?!looking\\s+forward)(?:' + CG_GERUNDS + ')\\b', 'i'),     // "I'm building the page"
     new RegExp('^(?:(?:ok(?:ay)?|sure|alright|yes|yep|absolutely|got\\s+it|great|perfect)[,!.\\s—–-]+)?(?:on\\s+it|will\\s+do|working\\s+on\\s+(?:it|this|that)|consider\\s+it\\s+done)\\b', 'i'),   // "On it!" / "Will do." / "Working on it."
     new RegExp('\\b(?:stand\\s+by|hang\\s+tight|bear\\s+with\\s+me|one\\s+(?:moment|sec(?:ond)?|minute)|give\\s+me\\s+(?:a|one)\\s+(?:moment|minute|sec(?:ond)?|bit)|be\\s+right\\s+back)\\b', 'i')   // "Give me a moment to put it together"
@@ -490,6 +504,8 @@
        · It never fires without a verification tool actually wired, never on the grace turn (contracted to be
          tool-free), and at most once per run, so a model that refuses to verify still terminates. */
   const VOS_PROSE_EXT = new Set(['md', 'markdown', 'mdx', 'rst', 'txt', 'text', 'adoc', 'asciidoc', 'org', 'log', 'csv', 'tsv', 'json5']);
+  // a standalone web page (no project around it) has no build or test command to prove it — see standaloneWorkspace
+  const VOS_PAGE_RE = /\.(?:html?|svg|css)$/i;
   const VOS_PROSE_NAME = new Set(['license', 'licence', 'notice', 'authors', 'contributors', 'changelog', 'codeowners', 'readme']);
   // Wire names arrive underscored (the OpenAI function-name grammar forbids '.'), registry names dotted.
   const vosKey = (n) => String(n == null ? '' : n).toLowerCase().replace(/\./g, '_');
@@ -540,11 +556,23 @@
     return false;
   }
   // A check is a command whose whole job is to PASS or FAIL. `git status`, `ls`, `cat` are not evidence.
-  const VOS_CHECK_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|lint|typecheck|check)|\b(pytest|tox|jest|vitest|mocha|ava|tsc|eslint|ruff|mypy|flake8|rubocop|clippy|gradle|mvn|make)\b|\b(cargo|go|dotnet|swift)\s+(test|build|vet)\b|\bnode\s+[^|;&]*\btest\b/i;
+  // (token-burn audit 2026-10-17: `node tests\x.js`, `node tests.js`, `node --check f.js` and `git apply --check x.patch` ran
+  // and passed on real night shifts, yet re-armed the nudge — 11 of 15 short verify-on-stop fires bought a turn for nothing.)
+  const VOS_CHECK_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|lint|typecheck|check)|\b(pytest|tox|jest|vitest|mocha|ava|tsc|eslint|ruff|mypy|flake8|rubocop|clippy|gradle|mvn|make)\b|\b(cargo|go|dotnet|swift)\s+(test|build|vet)\b|\bnode\s+[^|;&]*\btests?\b|\bnode\s+--check\b/i;
+  const VOS_NODE_C_RE = /\bnode\s+-c(?=\s|$)/;   // case-sensitive: `node -c` is --check, `node -C <condition>` is not a check
+  // `git apply --check` proves a PATCH applies — it vouches for .patch/.diff files only, never for code written beside them
+  const VOS_PATCH_CHECK_RE = /\bgit\s+apply\s+(--check|--stat\s+--check)\b/i;
+  const VOS_PATCH_PATH_RE = /\.(patch|diff)$/i;
+  // a night shift's manifest is bookkeeping the host reads, not code: writing it last must not re-arm the nudge
+  const VOS_MANIFEST_NAME = new Set(['deliverable.json']);
+  // extension-less dotfiles with nothing to run (a .babelrc / .eslintrc / .prettierrc IS config that a check would exercise)
+  const VOS_INERT_DOTFILE = new Set(['.gitignore', '.gitattributes', '.gitkeep', '.dockerignore', '.npmignore', '.editorconfig', '.nvmrc', '.node-version', '.python-version', '.env']);
   function vosIsCodePath(p) {
     const s = String(p == null ? '' : p).trim();
     if (!s) return false;
     const base = s.split(/[\\/]/).pop() || '';
+    if (VOS_MANIFEST_NAME.has(base.toLowerCase())) return false;
+    if (VOS_INERT_DOTFILE.has(base.toLowerCase()) || /^\.env\./i.test(base)) return false;
     const dot = base.lastIndexOf('.');
     if (dot <= 0) return !VOS_PROSE_NAME.has(base.toLowerCase());   // extension-less: only prose NAMES are exempt
     const ext = base.slice(dot + 1).toLowerCase();
@@ -559,8 +587,14 @@
   }
   function vosIsCheckCommand(args) {
     if (!args || typeof args !== 'object') return false;
-    const cmd = args.command || args.cmd || args.script || '';
-    return VOS_CHECK_RE.test(String(cmd));
+    const cmd = String(args.command || args.cmd || args.script || '');
+    return VOS_CHECK_RE.test(cmd) || VOS_NODE_C_RE.test(cmd) || VOS_PATCH_CHECK_RE.test(cmd);
+  }
+  // a check that ONLY proves a patch applies (no other check in the same command) clears the patch files, not the code
+  function vosIsPatchOnlyCheck(args) {
+    if (!args || typeof args !== 'object') return false;
+    const cmd = String(args.command || args.cmd || args.script || '');
+    return VOS_PATCH_CHECK_RE.test(cmd) && !VOS_CHECK_RE.test(cmd) && !VOS_NODE_C_RE.test(cmd);
   }
 
   // A tool invocation may itself succeed while the command it ran proves failure (shell/MCP command
@@ -733,8 +767,75 @@
   // The announcement must be how the reply ENDS: within its last three sentences, or followed only by the plan's list
   // items ("I'll build it with:\n- a hero\n- pricing…"). A first-person intro to content delivered in this same reply
   // ("I'll show the config:" + a code block) is not a stop. Waiting/offer/lesson sentences never count (CG_WAITS).
-  function announcesIntent(text) {
+  // Split only explicit action coordination for the peer exemption. Keep the outer sentence list intact:
+  // semicolons must not move a promise out of the existing last-three-sentences window.
+  const CG_PEER_ACTION = '(?:' + CG_VERBS + '|summari[sz]e|merge)\\b';
+  const CG_PEER_SPLIT = new RegExp(';\\s*|,?\\s+(?:(?:and|but)(?:\\s+then)?|then)\\s+(?=(?:' + CG_SUBJ + '|let\\s+me|now|' + CG_PEER_ACTION + ')\\b)', 'gi');
+  const CG_PEER_ACTION_HEAD = new RegExp('^' + CG_PEER_ACTION, 'i');
+  const CG_OWN_SUBJECT = new RegExp('^(?:' + CG_SUBJ + '|let\\s+me)\\b', 'i');
+  // "I'll wait for ROOK to finish" names the wait itself: the run handed work on and is now waiting for it.
+  const CG_WAIT_VERB = /\bwait(?:ing)?\s+(?:for|on|until)\b/i;
+  function peerClauseWaits(clause) {
+    return CG_WAITS.some(re => re.test(clause)) || waitsOnPeers(clause) || CG_WAIT_VERB.test(clause);
+  }
+  function hasIndependentPeerIntent(sentence) {
+    const subject = sentence.match(new RegExp('\\b(' + CG_SUBJ + '|let\\s+me)\\s+', 'i'));
+    const clauses = [];
+    let last = 0, joint = '';
+    for (const m of sentence.matchAll(CG_PEER_SPLIT)) {
+      clauses.push({ clause: sentence.slice(last, m.index), joint });
+      joint = m[0]; last = m.index + m[0].length;
+    }
+    clauses.push({ clause: sentence.slice(last), joint });
+    let waiting = false;
+    return clauses.some(({ clause, joint }, index) => {
+      // What follows a wait in sequence ("…wait for ROOK to finish and then review his draft") happens after that wait:
+      // it is the same dependent plan, not a second promise. A clause that restates its own subject or says "now" is
+      // independent again ("…when they report, then I will read main.js now"). A semicolon or "but" never chains.
+      const chained = index > 0 && waiting && !/;|\bbut\b/i.test(joint);
+      if (chained && !CG_OWN_SUBJECT.test(clause) && !/\bnow\b/i.test(clause)) return false;
+      // "I will read now and summarize when they report" has two actions sharing "I will".
+      // Carry that subject to a bare coordinated action so it is checked by the same intent patterns.
+      const c = index && subject && CG_PEER_ACTION_HEAD.test(clause)
+        ? subject[1] + ' ' + clause : clause;
+      waiting = peerClauseWaits(c);
+      return CG_PATTERNS.some(re => re.test(c)) && !waiting;
+    });
+  }
+  /* A REPLY THAT ENDS ON A CHOICE MARKER IS WAITING ON THE COMMANDER (rc walk 2026-10-14). "Let me ask this the right way:
+     TASK_QUESTION: … || a | b" is a question — the marker IS the question card — but its intro read as an announce, so the
+     continuation guard pushed "you called no tools" and the model answered the nudge in COMMS ("You're right — I ended with
+     a question card but didn't call any tools.") and dropped the question. A brief_ask refusal tells the model to end on
+     exactly this marker, so the failure-recovery guard must not reject it either. The grammar is the marker's own
+     (frontend/app/fork.js MARKER_KEY — one keyword source, one case rule): the keyword, a colon and `||` options on the
+     reply's last line, decoration and leading prose allowed. */
+  const MARKER_KEY = (typeof require === 'function') ? require('../frontend/app/fork.js').MARKER_KEY
+    : ((typeof globalThis !== 'undefined' && globalThis.Fork && globalThis.Fork.MARKER_KEY) || '(?!)');
+  const CHOICE_MARKER = new RegExp(MARKER_KEY + '[*_`~]*[ \\t]*:[^\\n]*\\|\\|');
+  function endsOnChoiceMarker(text) {
+    const lines = String(text == null ? '' : text).split('\n').filter(l => l.trim());
+    return lines.length > 0 && CHOICE_MARKER.test(lines[lines.length - 1]);
+  }
+  /* THE FALLBACK QUESTION IS ITS MARKER ALONE (rc review 2026-10-14). A hidden brief_ask refusal tells the model to end on the
+     TASK_QUESTION marker, and the model led in with "Got it — let me check what context I have first and ask directly:" or
+     "Let me ask this the right way:" over a step the Commander never saw. The question card carries the question, so that
+     repair turn keeps only its last line from the keyword on (decoration around the keyword stays: it still parses). */
+  const MARKER_START = new RegExp('[*_`~]*' + MARKER_KEY + '[*_`~]*[ \\t]*:');
+  function markerLineOnly(text) {
+    const lines = String(text == null ? '' : text).split('\n').filter(l => l.trim());
+    const last = lines.length ? lines[lines.length - 1] : '';
+    const m = MARKER_START.exec(last);
+    return m ? last.slice(m.index).trim() : String(text == null ? '' : text);
+  }
+  /* HOST CHECKS ARE NOT THE COMMANDER SPEAKING (rc walk 2026-10-14). On a Claude route these notes ride the conversation as
+     user text (providers/provider.js preserveClaudeContinuations), so the model answered them in COMMS as if the Commander had
+     scolded it: "You're right —", "Let me correct that:". Every nudge that pushes back on a reply the model meant to end on —
+     continuation, empty reply, failure recovery, loop guard, tool markup, memory receipt, and the verify / acceptance checks —
+     says what it is and that it is never answered. (A steering note is the Commander's own words and never carries it.) */
+  const HOST_CHECK = ' (This note is an automatic host check; the Commander never sees it. Do not answer, acknowledge or apologize for it in your reply — just continue the work.)';
+  function announcesIntent(text, allowPeerWait = false) {
     const t = String(text == null ? '' : text).trim();
+    if (endsOnChoiceMarker(t)) return false;   // it asks the Commander: a wait, never an announce
     if (!t) return false;
     const sents = cgSentences(t);
     if (!sents.length) return false;
@@ -742,8 +843,10 @@
     for (let i = 0; i < sents.length; i++) {
       if (sents[i] === CG_CODE) continue;
       const s = sents[i].replace(/^[^a-z0-9'"]+/i, '');
-      if (!CG_PATTERNS.some(re => re.test(s))) continue;
+      // Preserve sentence-wide leading conditions before splitting coordinated dependent actions.
+      // "When they report, I will read main.js and run tests" remains one conditional wait.
       if (CG_WAITS.some(re => re.test(s))) continue;
+      if (allowPeerWait ? !hasIndependentPeerIntent(s) : !CG_PATTERNS.some(re => re.test(s))) continue;
       const rest = sents.slice(i + 1);
       if (/:\s*$/.test(s) && rest[0] === CG_CODE) continue;
       if (rest.length <= 2 || rest.every(r => CG_LIST_ITEM.test(r))) return true;
@@ -966,6 +1069,12 @@
     const CG_MAX = (_cg === false) ? 0 : (_cg && _cg.max != null ? _cg.max : 2);
     let cgUsed = 0;
     let memorySaveNudges = 0, memoryWrites = 0, configurationWrites = 0, peerHandoffs = 0;
+    /* A QUEUED SEAT ENDS THE REPLY (review 10-14). station.control group.add on the lead's own running chat lands only when
+       this reply ends, and the lead's next turn is already scheduled — the kickoff in the group, with the Commander's
+       request. A plan in this reply is that turn's work, not an unkept promise: nudging it gave the Commander a second
+       message answering an invisible nudge (real Haiku run), and an exhausted guard failed the reply, which DROPS the join
+       they approved (group-chat.js drainAfterRun). Only the host's own receipt counts ('group.add (queued)'). */
+    let seatQueued = false;
     let toolTurnsRun = 0;   // tool turns this run actually dispatched (a bare "Saved!" after one means a file, not memory)
     // Companion nudge budgets (same disable knob as the continuation guard — they are one family):
     //  · markup nudge — the turn's TEXT carried tool-call markup (scrubbed above; NEVER executed). Tell the
@@ -1060,6 +1169,9 @@
     let refundsUsed = 0;
 
     let spentUsd = 0, turns = 0, spentTokens = 0;
+    // the part of spentTokens' input the provider served from its prompt cache (token-burn audit 2026-10-17): `tokens`
+    // counts a cache read at full weight, so without this a run row could never show whether caching worked
+    let spentCachedTokens = 0;
     const unpricedUsage = [];
     let unpricedTokens = 0;          // tokens reconciled at $0 on a model nothing could price (feeds maxUnpricedTokens)
     let unpricedFlagged = false;     // agent.cost carries unpriced:true ONCE per run — the first turn it happens
@@ -1089,6 +1201,12 @@
        delta with a paragraph break. Only the live stream changes — every turn's durable text is untouched — and a
        length-continuation (which joins mid-sentence) never gets one. */
     let spokeSinceReset = false, turnBreakPending = false;
+    /* A REPAIR TURN AFTER AN INVISIBLE STEP IS NOT CHAT (rc walk 2026-10-14). After the Task Brief gate held a call, or a hidden
+       brief tool refused its arguments, the model's next turn narrated the fix — "Got it — let me settle the brief first:",
+       "Let me fix that—sources needs to be an array:" — over a step the Commander cannot see (the brief shows as its own
+       card). Wording the result was not enough for every model. So that one turn's text is held until the turn ends: a turn
+       whose calls are ALL hidden drops it (never streamed, never kept); any other turn streams it whole. */
+    let quietRepair = false, quietBuf = '';
 
     /* dedupeKeepFull distinguishes the two callers of the dedupe machinery. A LENGTH-CONTINUATION's previous
        partial is already in `messages`, so stripping the overlap from acc.text is correct — the parts join back
@@ -1157,7 +1275,18 @@
     }
     // OPTIONAL injected sleep for bounded mid-stream retry backoff (o.sleep(ms) -> Promise). Absent = retry with
     // NO wait (keeps the loop deterministic + test-fast); when present it honors the classifier's retryAfterMs.
-    const sleep = (typeof o.sleep === 'function') ? o.sleep : null;
+    const sleepFn = (typeof o.sleep === 'function') ? o.sleep : null;
+    /* A BACKOFF NEVER OUTLASTS A STOP (stall report 2026-10-13). A rung's sleep (up to 60 s, or a server-stated
+       Retry-After) ignored the run signal: STOP was confirmed and the page let go, but the run kept its conversation's
+       turn (runOnce's per-stream queue) until the sleep ran out, so the Commander's next message sat on "connecting".
+       The wait now ends the moment the signal aborts; the `signal.aborted` checks after each backoff end the run. */
+    const sleep = sleepFn && (ms => new Promise(resolve => {
+      if (signal.aborted) return resolve();
+      const canHear = typeof signal.addEventListener === 'function';
+      const done = () => { if (canHear) signal.removeEventListener('abort', done); resolve(); };
+      if (canHear) signal.addEventListener('abort', done, { once: true });
+      Promise.resolve().then(() => sleepFn(ms)).then(done, done);
+    }));
     /* LIVE WAIT HEARTBEAT (agent.waiting, 2026-09-23). A model call that has produced no token or tool event yet —
        a slow first byte, a reasoning stream with nothing visible, a backoff between ladder rungs — used to be
        indistinguishable from a dead run, and a worker's liveness sweep read it as "no progress". While such a
@@ -1277,6 +1406,7 @@
       const c = cost.reconcile(u, modelId);
       spentUsd += c.usd || 0;
       spentTokens += (c.tokensIn || 0) + (c.tokensOut || 0);
+      spentCachedTokens += Math.min(c.cachedTokens || 0, c.tokensIn || 0);
       noteUnpriced(modelId, c);
       noteSubscription(modelId, u, c);
       emit('agent.cost', {
@@ -1297,6 +1427,11 @@
       }
     }
     function end(reason, extra) {
+      // A provider that keeps a live process for this run (claude-cli's persistent child) lets it go as the run ends,
+      // instead of idling it out. Every adapter the run could have used: the primary, the current one, each fallback.
+      for (const p of new Set([o.provider, provider].concat(fallbacks.map(f => f && f.provider)))) {
+        if (p && typeof p.release === 'function') { try { p.release(o.runId); } catch (e) { failNote('loop.provider.release', e); } }
+      }
       // close the host's steer buffer AS the run ends (synchronously, before agent.run.end): a later POST gets an honest
       // non-success, and a note that was accepted but never folded is named here instead of vanishing at teardown.
       if (steerClose) {
@@ -1339,7 +1474,7 @@
       emit('agent.run.end', endPayload);
       const tail = messages[messages.length - 1];
       const terminalText = tail && tail.role === 'assistant' && !tail.tool_calls ? String(tail.content == null ? '' : tail.content) : '';
-      const out = { reason, messages, text: terminalText, usd: spentUsd, turns, tokens: spentTokens, model, unpricedUsage: unpricedUsage.slice() };
+      const out = { reason, messages, text: terminalText, usd: spentUsd, turns, tokens: spentTokens, cachedTokens: spentCachedTokens, model, unpricedUsage: unpricedUsage.slice() };
       if (cut) out.finishReason = cut;
       if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; }
       if (endPayload.unpricedModel) {
@@ -1506,6 +1641,18 @@
       const realNow = (hint && hint.realBefore > 0) ? hint.realBefore : anchor;
       const plan = context.planCompaction(working.slice(i), { scale: rulerNow > 0 ? Math.max(1, realNow / rulerNow) : 1 });
       if (!plan.older.length) return false;                               // nothing safely foldable yet (no paid call)
+      /* THE RUN CONTEXT IS PINNED (lean-prompt, 2026-10-12). The per-run <run_context> note (Task Brief, runtime identity,
+         quests — index.js CACHE-STABLE PREFIX) sits with the run's newest user message, which a long run folds. It used to
+         close the system prompt, which no fold touches, so no fold may take it now: it leaves the folded slice and rides
+         right after the summary note. The micro tier removes no message, so there it simply stays where it is. */
+      // The <crew_call> note is pinned the same way (review 2026-10-12): in the system prompt no fold ever took it either.
+      const ctxNote = isRunContextNote ? (plan.older.find(isRunContextNote) || null) : null;
+      const crewNote = isCrewCallNote ? (plan.older.find(isCrewCallNote) || null) : null;
+      const carriedCtx = [ctxNote, crewNote].filter(Boolean);
+      const foldOlder = carriedCtx.length ? plan.older.filter(m => carriedCtx.indexOf(m) < 0) : plan.older;
+      // the pin can leave NOTHING to fold (the plan's slice was the note alone): no paid summarizer call over an empty
+      // slice, no agent.compact for a fold that removes nothing — the same answer as an empty plan above
+      if (!foldOlder.length) return false;
       const beforeTokens = context.estimateMessages(messages);
       const threshold = (typeof context.thresholdTokens === 'function') ? context.thresholdTokens() : 0;
       const appendTodo = (arr) => { if (todoNote) { try { const tn = todoNote(); if (tn) return arr.concat([{ role: 'system', content: String(tn) }]); } catch (e) { failNote('loop.compaction.todoNote', e); } } return arr; };
@@ -1555,8 +1702,8 @@
         // digest the ORIGINAL messages: a tool result's first line is usually the fact worth keeping — an elided body would
         // reduce every read to "[elided]" and the run forgets what it saw (live-proved 08-21 against a real model)
         if (summarize && typeof summarize.drain === 'function') { try { summarize.drain(plan.older); } catch (e) { failNote('loop.compaction.fallbackDrain', e); return false; } }
-        const note = summaryNote(fallbackNote(plan.older, prevSummary));
-        const rebuilt = appendTodo(prefix.concat([note], plan.tail));
+        const note = summaryNote(fallbackNote(foldOlder, prevSummary));
+        const rebuilt = appendTodo(prefix.concat([note], carriedCtx, plan.tail));
         const afterTokens = context.estimateMessages(rebuilt);
         if (afterTokens >= beforeTokens) return false;                  // didn't shrink — don't spin the overflow retry
         messages.length = 0; for (const mm of rebuilt) messages.push(mm);
@@ -1581,7 +1728,7 @@
       let r;
       // Pass the loop's CURRENT provider/model/cost: after a rotation or a cross-provider fallback these are the
       // only live ones, and the injected summarizer captured its own bindings before the run started.
-      try { r = await summarize(plan.older, prevSummary, { provider, model, cost }); }   // prevSummary => the summarizer MERGE-updates it (H5.2)
+      try { r = await summarize(foldOlder, prevSummary, { provider, model, cost }); }   // prevSummary => the summarizer MERGE-updates it (H5.2)
       catch (e) { if (++compactionFails >= 2) compactionOff = true; usageReading = null; return false; }   // summarizer threw -> skip
       if (signal.aborted) return false;
       const summary = (typeof r === 'string') ? r : ((r && r.summary) || '');
@@ -1601,7 +1748,7 @@
       }
       compactionFails = 0;
       const note = summaryNote(summary);
-      let rebuilt = prefix.concat([note], plan.tail);
+      let rebuilt = prefix.concat([note], carriedCtx, plan.tail);
       // re-append the active task plan so it rides through the compaction (folded into the after-count below)
       if (todoNote) { try { const tn = todoNote(); if (tn) rebuilt = rebuilt.concat([{ role: 'system', content: String(tn) }]); } catch (e) { failNote('loop.compaction.todoNote', e); } }
       const afterTokens = context.estimateMessages(rebuilt);
@@ -1646,6 +1793,8 @@
           // name the fix that works for THIS cause: a restart replays a failed save, but never settles an interrupted run
           const message = b.cause === 'unsettled'
             ? 'An earlier run was interrupted before its spend was recorded, so the spending limits you set can’t be checked. Settle it in SETTINGS › SPENDING LIMITS.'
+            : b.cause === 'damaged'
+              ? 'A line of the spend record is damaged, so what it recorded is unknown and the spending limits you set can’t be checked. Settle it in SETTINGS › SPENDING LIMITS.'
             : b.cause === 'write'
               ? 'Spend history could not be saved to disk, so the spending limits you set can’t be checked. Restart StarNet to recover it.'
               : 'Spend history could not be read, so the spending limits you set can’t be checked. See SETTINGS › SPENDING LIMITS.';
@@ -1769,6 +1918,7 @@
           if (typeof o.isTask === 'boolean') req.isTask = o.isTask;
           if (o.runId) req.runId = o.runId;   // run attribution: only a profile that names a runIdHeader sends it (starnet)
           if (o.cacheSystemPrefix) req.cacheSystemPrefix = o.cacheSystemPrefix;
+          if (o.reasoningEffort) req.reasoningEffort = o.reasoningEffort;   // a per-run override (station self-talk: the aux effort); absent = the provider's own default
           if (outputCapTokens > 0) req.maxTokens = outputCapTokens;   // the ceiling a provider named (output_cap)
           if (retriesUsed > 0) req.preStreamRetries = 0;              // the ladder owns pacing: one request per rung
           for await (const ev of provider.stream(req)) {
@@ -1783,7 +1933,8 @@
               // went silent for minutes and the liveness sweep (subagents.checkStalls) marked it stale.
               if (delta && dedupeAgainst == null) waiting.pause();
               acc.text += delta;
-              if (dedupeAgainst == null) {
+              if (dedupeAgainst == null && quietRepair) quietBuf += delta;   // held until this turn's calls are known
+              else if (dedupeAgainst == null) {
                 let shown = delta;
                 if (turnBreakPending && shown) { shown = '\n\n' + shown; turnBreakPending = false; }
                 if (shown) spokeSinceReset = true;
@@ -1843,7 +1994,14 @@
           outputCapRetried, waitedMs: ladderWaitMs, patienceMs: STREAM_RETRY_PATIENCE_MS, jitterSample: sample,
           idleStalls
         });
-        let decision = decide(!!(context && summarize), fbIndex < fallbacks.length);
+        // A local out-of-memory must not fail over onto another model on the same local runtime (a second
+        // allocation on the same GPU): skip those entries, so the policy only picks 'fallback' when one is left.
+        const sameLocalRuntime = fb => !!fb && (fb.provider === provider || (!!provider.localRuntime && !!fb.provider && fb.provider.localRuntime === provider.localRuntime));
+        const fallbackLeft = () => {
+          if (cls.reason === 'local_memory') while (fbIndex < fallbacks.length && sameLocalRuntime(fallbacks[fbIndex])) fbIndex++;
+          return fbIndex < fallbacks.length;
+        };
+        let decision = decide(!!(context && summarize), fallbackLeft());
         if (decision.action === 'lower_output') {
           // output_cap: same turn, same prompt, the output budget lowered to the ceiling the provider named. No
           // fold (the prompt was never the problem) and no wait; outputCapRetried makes a second refusal fatal.
@@ -1890,7 +2048,7 @@
             });
             break;
           }
-          decision = decide(false, fbIndex < fallbacks.length);
+          decision = decide(false, fallbackLeft());
         }
         if (decision.action === 'fallback') {
           const fb = fallbacks[fbIndex++];
@@ -1981,11 +2139,11 @@
           continue;
         }
         if (decision.reason === 'provider_stalled') {
-          // Name the stall honestly — which model, how many silent attempts, what the watchdog saw — so the
+          // Name the stall honestly — which model, how many idle expiries, what the watchdog saw — so the
           // Commander reads "the model stopped responding", not a generic timeout after half an hour.
           fatal = Object.assign({}, cls, {
             reason: 'provider_stalled', retryable: true,
-            message: 'model stalled: ' + idleStalls + ' consecutive attempts on ' + model + ' received no response bytes ('
+            message: 'model stalled: ' + idleStalls + ' consecutive attempts on ' + model + ' hit the response idle timeout ('
               + String((streamErr && streamErr.message) || 'idle timeout') + ') — stopped instead of waiting out the rest of the retry ladder. The provider may be down or overloaded; try again later or switch models.'
           });
         } else fatal = cls;                          // unrecoverable / chain exhausted / retries spent
@@ -2040,6 +2198,7 @@
       const final = cost ? cost.reconcile(usage, model) : { usd: 0, tokensIn: 0, tokensOut: 0, reasoningTokens: 0, cachedTokens: 0 };
       spentUsd += final.usd || 0;
       spentTokens += (final.tokensIn || 0) + (final.tokensOut || 0);
+      spentCachedTokens += Math.min(final.cachedTokens || 0, final.tokensIn || 0);
       noteUnpriced(model, final);
       noteSubscription(model, usage, final);
       noteReading(usage);   // the usage anchor for the next fold decision (real count + the ruler on this same request)
@@ -2062,6 +2221,25 @@
       let priorAssistantText = null;
       for (let mi = messages.length - 1; mi >= 0; mi--) { if (messages[mi].role === 'assistant') { priorAssistantText = String(messages[mi].content == null ? '' : messages[mi].content); break; } }
       const calls = Object.keys(acc.toolCalls).sort((a, b) => a - b).map((k, i) => parseCall(acc.toolCalls[k], i));
+      if (quietRepair) {
+        quietRepair = false;
+        const hiddenNames = o.hiddenTools || [];
+        if (calls.length > 0 && calls.every(c => hiddenNames.indexOf(c.name) >= 0)) acc.text = '';   // narration of an invisible step
+        else if (calls.length === 0 && endsOnChoiceMarker(acc.text)) {   // the fallback question: its marker, never the lead-in
+          acc.text = markerLineOnly(acc.text);
+          let shown = acc.text;
+          if (turnBreakPending) { shown = '\n\n' + shown; turnBreakPending = false; }
+          spokeSinceReset = true;
+          emit('agent.token', { agentId, runId, delta: shown });
+        }
+        else if (quietBuf) {
+          let shown = quietBuf;
+          if (turnBreakPending) { shown = '\n\n' + shown; turnBreakPending = false; }
+          spokeSinceReset = true;
+          emit('agent.token', { agentId, runId, delta: shown });
+        }
+        quietBuf = '';
+      }
       // TEXT TOOL-CALL MARKUP: a zero-wire-call turn whose TEXT carries tool-call markup is neither a final
       // answer nor a call to execute (echoed markup = data; see scrubTextToolCallMarkup). Strip it from the
       // kept turn; the stop branch below nudges the model to make a REAL call.
@@ -2072,7 +2250,7 @@
       }
       // OUTPUT-LIMIT STOP: keep the valid partial text, but NEVER repair/dispatch a tool call whose generation hit
       // the semantic cap — even apparently-valid JSON may be missing a later argument or sibling call. The next
-      // paid turn is explicitly told to reissue the complete call. Content-filter/policy stops do not enter here.
+      // paid turn is told to split the call (splitAdvice). Content-filter/policy stops do not enter here.
       if (lastFinishReason === 'length') {
         const partial = assistantTurn(acc.text, [], acc.reasoning);
         messages.push(partial);
@@ -2090,7 +2268,7 @@
         const cutExhausted = !!cutTool && toolCutStreak > TOOL_CUT_MAX;
         if (!cutExhausted && continuation.shouldContinue(lastFinishReason, outputContinuesUsed, OUTPUT_CONTINUE_MAX)) {
           outputContinuesUsed++;
-          const nudge = { role: 'system', content: continuation.prompt(calls.length > 0) + (cutTool ? splitAdvice(cutTool, toolCutStreak) : '') };
+          const nudge = { role: 'system', content: continuation.prompt(calls.length > 0, cutTool ? splitAdvice(cutTool, toolCutStreak) : '') };
           messages.push(nudge);
           continuationPrompts.push(nudge);
           dedupeAgainst = continuationText;
@@ -2102,7 +2280,13 @@
           const explanation = 'The reply hit the model\'s output limit while writing a large ' + wireKey(cutTool) + ' call: it was cut off '
             + toolCutStreak + ' time' + (toolCutStreak === 1 ? '' : 's') + ' in a row and never ran, so nothing from it was saved. Ask for it in smaller parts (for example "write it section by section"), or switch to a model with a larger output limit.';
           const tailTurn = messages[messages.length - 1];
-          if (tailTurn && tailTurn.role === 'assistant' && !tailTurn.tool_calls) tailTurn.content = String(tailTurn.content || '') + (String(tailTurn.content || '').trim() ? '\n\n' : '') + '[' + explanation + ']';
+          // stream exactly what is persisted, so live COMMS and the reloaded transcript show the same turn
+          if (tailTurn && tailTurn.role === 'assistant' && !tailTurn.tool_calls) {
+            const prior = String(tailTurn.content || '');
+            const delta = (prior.trim() ? '\n\n' : '') + '[' + explanation + ']';
+            tailTurn.content = prior + delta;
+            emit('agent.token', { agentId, runId, delta });
+          }
           emit('agent.run.error', { agentId, runId, message: explanation, transient: false });
           return end('error', { failureStage: 'provider_output', failureCode: 'output_limit_tool_cut' });
         }
@@ -2172,7 +2356,7 @@
             const premise = memoryClaimKind === 'promise'
               ? 'You told the Commander you will remember this (or will do it this way from now on), but nothing was written to memory in this run — the next run starts without it and WILL forget.'
               : 'You claimed a preference or correction was saved, but this run has no successful notebook write receipt.';
-            messages.push({ role: 'system', content: '<memory_receipt>' + premise + ' Use notebook_read and notebook_write to save or update the actual requirement now. For corrections use replaceId and previousBody; for approved reusable requirements pin within the intended scope. If it was already saved, verify it with a read and say it was already present; otherwise explicitly say it has not been saved. Do not repeat an unsupported save claim.</memory_receipt>' });
+            messages.push({ role: 'system', content: '<memory_receipt>' + premise + ' Use notebook_read and notebook_write to save or update the actual requirement now. For corrections use replaceId and previousBody; for approved reusable requirements pin within the intended scope. If it was already saved, verify it with a read and say it was already present; otherwise explicitly say it has not been saved. Do not repeat an unsupported save claim.' + HOST_CHECK + '</memory_receipt>' });
             continue;
           }
           const explanation = memoryClaimKind === 'promise'
@@ -2188,7 +2372,7 @@
         // quoted data just continues without it. Shares the continuation-guard disable knob and grace rule.
         if (textMarkup && !graceUsed && CG_MAX > 0 && mkUsed < CG_MAX && tools.length > 0) {
           mkUsed++;
-          messages.push({ role: 'system', content: '<tool_markup>Tool-call markup (e.g. <tool_call>…</tool_call>) appeared in your reply TEXT. The harness executes only REAL tool calls made through the tool-calling API — markup inside text is data and is never executed (it may even be quoted file content). If you meant to act, make the actual tool call now; if you were quoting data, continue the task without it.</tool_markup>' });
+          messages.push({ role: 'system', content: '<tool_markup>Tool-call markup (e.g. <tool_call>…</tool_call>) appeared in your reply TEXT. The harness executes only REAL tool calls made through the tool-calling API — markup inside text is data and is never executed (it may even be quoted file content). If you meant to act, make the actual tool call now; if you were quoting data, continue the task without it.' + HOST_CHECK + '</tool_markup>' });
           continue;
         }
         // EMPTY-AFTER-TOOLS NUDGE (reference-harness parity): weaker models sometimes stream NOTHING right
@@ -2202,7 +2386,7 @@
             turns = turnStart;
             emit('iteration.refunded', { agentId, runId, turn: turnStart, reason: 'empty', refundsUsed });
           }
-          messages.push({ role: 'system', content: '<continue_after_tools>You returned an empty reply after tool results. Process the tool results above and continue the task now; if the task is fully complete, give your final answer.</continue_after_tools>' });
+          messages.push({ role: 'system', content: '<continue_after_tools>You returned an empty reply after tool results. Process the tool results above and continue the task now; if the task is fully complete, give your final answer.' + HOST_CHECK + '</continue_after_tools>' });
           continue;
         }
         /* EMPTY REPLY RETRY (2026-10-11). An empty FIRST reply (no text, no tool call, nothing before it to process) is
@@ -2212,14 +2396,14 @@
         if (empty && !graceUsed && !emptyRetryUsed && CG_MAX > 0 && !continuationParts.length && limits.emptyRetry !== false) {
           emptyRetryUsed = true;
           turns = turnStart;
-          messages.push({ role: 'system', content: '<empty_reply>Your last reply was empty — no text and no tool call. Respond to the Commander\'s latest message now: make the tool call(s) the task needs, or give your answer.</empty_reply>' });
+          messages.push({ role: 'system', content: '<empty_reply>Your last reply was empty — no text and no tool call. Respond to the Commander\'s latest message now: make the tool call(s) the task needs, or give your answer.' + HOST_CHECK + '</empty_reply>' });
           continue;
         }
         // CONTINUATION GUARD: an announce-without-acting final turn ("Reading main.js now…" + zero tool calls)
         // is a premature stop, not a delivery — nudge the model back to work instead of ending 'done' mid-task.
         // Never fires on a grace turn (that turn is CONTRACTED to be tool-free) and never past CG_MAX, so a
         // model that narrates forever still terminates through the normal end below.
-        if (!empty && CG_MAX > 0 && tools.length > 0 && announcesIntent(text) && !(peerHandoffs > 0 && waitsOnPeers(text))) {
+        if (!empty && CG_MAX > 0 && tools.length > 0 && !seatQueued && announcesIntent(text, peerHandoffs > 0)) {
           if (graceUsed || cgUsed >= CG_MAX) {
             const explanation = 'Work is incomplete: the model kept announcing another action without making the tool call. The automatic continuation attempts have ended; no background work was started by these promises.';
             assistant.content = text + '\n\n' + explanation;
@@ -2228,21 +2412,21 @@
             return end('error', { failureStage: 'completion', failureCode: 'incomplete_work' });
           }
           cgUsed++;
-          messages.push({ role: 'system', content: '<continuation>Your last message only ANNOUNCED an action but you called no tools — ending your reply without tool calls ends the run with the work not done. Do not narrate intentions. If work remains, make the actual tool call(s) NOW in this same turn. If you promised future or multi-day work, create the appropriate durable routine/task now when that tool is available; otherwise say plainly that no background work was started. If the task is truly complete, give your final answer without announcing further actions.</continuation>' });
+          messages.push({ role: 'system', content: '<continuation>Your last message only ANNOUNCED an action but you called no tools — ending your reply without tool calls ends the run with the work not done. Do not narrate intentions. If work remains, make the actual tool call(s) NOW in this same turn. If you promised future or multi-day work, create the appropriate durable routine/task now when that tool is available; otherwise say plainly that no background work was started. If the task is truly complete, give your final answer without announcing further actions.' + HOST_CHECK + '</continuation>' });
           continue;
         }
         // FAILURE RECOVERY: a model saw a real tool error and is trying to end before attempting another
         // authorized path. Reject that premature stop at the engine seam, not just in prompt prose. A later
         // successful call clears the pending failure; a model that still cannot recover gets two chances and
         // may then report the exact blocker honestly.
-        if (!empty && !graceUsed && failureRecoveryPending && frUsed < FR_MAX && tools.length > 0) {
+        if (!empty && !graceUsed && failureRecoveryPending && frUsed < FR_MAX && tools.length > 0 && !endsOnChoiceMarker(text)) {
           frUsed++;
           const failed = failureRecoveryPending.names.join(', ') || 'the previous tool';
           const hasSearch = tools.some(t => wireKey(t && t.function && t.function.name) === 'tool_search');
           const search = hasSearch
             ? ' Use tool_search when a deferred capability or alternate tool may exist; do not claim a tool is absent before searching.'
             : '';
-          messages.push({ role: 'system', content: '<failure_recovery>The previous path failed (' + failed + '), but one failed tool is not proof that the Commander\'s task is impossible. Do not end by handing avoidable setup work to the Commander. Inspect the exact error, then make an ACTUAL alternate call now using a different query, arguments, strategy, or tool.' + search + ' Retry only when the failure is plausibly transient; never repeat identical failing arguments blindly. Stay inside the current safety, consent, credential, and scope boundaries. Ask only for irreducible human input. If no authorized route remains after you have genuinely exhausted alternatives, report the exact blocker and the paths you tried.</failure_recovery>' });
+          messages.push({ role: 'system', content: '<failure_recovery>The previous path failed (' + failed + '), but one failed tool is not proof that the Commander\'s task is impossible. Do not end by handing avoidable setup work to the Commander. Inspect the exact error, then make an ACTUAL alternate call now using a different query, arguments, strategy, or tool.' + search + ' Retry only when the failure is plausibly transient; never repeat identical failing arguments blindly. Stay inside the current safety, consent, credential, and scope boundaries. Ask only for irreducible human input. If no authorized route remains after you have genuinely exhausted alternatives, report the exact blocker and the paths you tried.' + HOST_CHECK + '</failure_recovery>' });
           continue;
         }
         // VERIFY-ON-STOP: the run CHANGED code and is now trying to finish without having run anything against
@@ -2258,7 +2442,7 @@
           const premise = vosFailedCheck
             ? 'and are ending although the last check you ran against it (' + vosFailedCheck + ') did NOT pass, and no passing check has run since. A failing check is evidence the change is not done. Fix the cause and rerun the check until it passes, then report what it actually returned. If it cannot be made to pass here, say so plainly: report the failure and state that the change is NOT verified.'
             : 'and are ending without running anything against it. Code that compiles is not code that works, and an unverified claim of "done" is the one thing this station never ships. Run the narrowest real check that proves the change — the project\'s own test/build command via verify_run, or shell_exec if that fits better — then report what it actually returned. If you genuinely cannot run a check here, say so plainly and state what you did NOT verify.';
-          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') ' + premise + '</verify_before_done>' });
+          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') ' + premise + HOST_CHECK + '</verify_before_done>' });
           continue;
         }
         // EXTERNAL VERIFY-ON-STOP: a successful custom-connector mutation is not proof that the requested
@@ -2288,7 +2472,7 @@
           vosExternalUsed++;
           const touched = externalTouched.slice(0, 8).join(', ');
           const artifactRule = externalArtifactTouched ? ' This action changed a file, document, workbook, or other artifact; a generic status/read call does not prove that artifact is fresh. Use the connector\'s dedicated verify/check/confirm tool.' : ' Use the connector\'s narrowest read/check/verify tool now.';
-          messages.push({ role: 'system', content: '<verify_external_before_done>You used an external connector action in this run (' + touched + ') and are ending without a later read-back or verification call. A successful action response is not independent proof that the requested state persisted.' + artifactRule + ' Then report only what that result proves. If no meaningful read-back can verify this action, say plainly that the external state was NOT independently verified instead of claiming it was.</verify_external_before_done>' });
+          messages.push({ role: 'system', content: '<verify_external_before_done>You used an external connector action in this run (' + touched + ') and are ending without a later read-back or verification call. A successful action response is not independent proof that the requested state persisted.' + artifactRule + ' Then report only what that result proves. If no meaningful read-back can verify this action, say plainly that the external state was NOT independently verified instead of claiming it was.' + HOST_CHECK + '</verify_external_before_done>' });
           continue;
         }
         // SOURCE VERIFY-ON-STOP: search/list/inspect output discovers candidates; it does not prove the
@@ -2303,7 +2487,7 @@
         }
         if (!empty && !graceUsed && vosSourceUsed < VOS_MAX && unfetchedSources.length) {
           vosSourceUsed++;
-          messages.push({ role: 'system', content: '<verify_sources_before_done>You are ending a sourced/research task after using only a connector search, list, or inspect tool. Discovery metadata and snippets are not source retrieval. Use the connector\'s fetch/read tool to retrieve every source you cite, then make each claim only from what those source reads actually returned. If a source cannot be retrieved, label that claim unverified instead of citing the discovery result as proof.</verify_sources_before_done>' });
+          messages.push({ role: 'system', content: '<verify_sources_before_done>You are ending a sourced/research task after using only a connector search, list, or inspect tool. Discovery metadata and snippets are not source retrieval. Use the connector\'s fetch/read tool to retrieve every source you cite, then make each claim only from what those source reads actually returned. If a source cannot be retrieved, label that claim unverified instead of citing the discovery result as proof.' + HOST_CHECK + '</verify_sources_before_done>' });
           continue;
         }
         if (!empty && !graceUsed && acceptanceProbe && accUsed < ACC_MAX) {
@@ -2315,7 +2499,7 @@
           if (failing.length) {
             accUsed++;
             const lines = failing.slice(0, 20).map(c => '- ' + (c.id || c.type) + ' [' + c.type + (c.path ? ' ' + c.path : '') + (c.command ? ' `' + c.command + '`' : '') + (c.connector ? ' ' + c.connector + (c.tool ? '/' + c.tool : '') : '') + ']: ' + (c.code || 'not_proven'));
-            messages.push({ role: 'system', content: '<acceptance_before_done>You are ending this task but the host\'s acceptance checks for it do not all hold yet. These are mechanical postconditions the Commander attached to this procedure; the task is not done until every one passes:\n' + lines.join('\n') + '\nMake each failing check hold now (produce/fix the named artifact in this run, or run the exact named check command so it passes), then finish. If one genuinely cannot be satisfied, say so plainly and name which — never claim it holds.</acceptance_before_done>' });
+            messages.push({ role: 'system', content: '<acceptance_before_done>You are ending this task but the host\'s acceptance checks for it do not all hold yet. These are mechanical postconditions the Commander attached to this procedure; the task is not done until every one passes:\n' + lines.join('\n') + '\nMake each failing check hold now (produce/fix the named artifact in this run, or run the exact named check command so it passes), then finish. If one genuinely cannot be satisfied, say so plainly and name which — never claim it holds.' + HOST_CHECK + '</acceptance_before_done>' });
             continue;
           }
         }
@@ -2379,6 +2563,7 @@
         const receipt = results.find(r => r.callId === call.id);
         if (wireKey(call.name) === 'notebook_write' && receipt && !receipt.isError && /^(?:Saved|Updated) note "/.test(String(receipt.content))) memoryWrites++;
         if (/^(?:group_handoff|team_dispatch|team_spawn)$/.test(wireKey(call.name)) && receipt && !receipt.isError) peerHandoffs++;   // work really handed on
+        if (wireKey(call.name) === 'station_control' && receipt && !receipt.isError && receipt.summary === 'group.add (queued)') seatQueued = true;
         if (wireKey(call.name) === 'team_configure' && receipt && !receipt.isError) {
           try {
             const saved = JSON.parse(receipt.content);
@@ -2390,6 +2575,7 @@
           }
         }
       }
+      quietRepair = results.some(r => r && r.quietRepair);   // the next turn may narrate this invisible step (see quietRepair)
       const repairNote = failedCheckRepairNote(calls, results);
       if (repairNote) messages.push({ role: 'system', content: repairNote });
       if (calls.length === 1 && results.length === 1 && results[0].ok && !results[0].isError) {
@@ -2454,12 +2640,16 @@
           if (!okById[c.id]) continue;
           const k = vosKey(c.name);
           if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) {
-            if (vosCheckPassed(c, resultById[c.id])) { vosUnverified.clear(); vosFailedCheck = ''; }
+            if (vosCheckPassed(c, resultById[c.id])) {
+              if (k === 'shell_exec' && vosIsPatchOnlyCheck(c.args)) { for (const p of Array.from(vosUnverified)) if (VOS_PATCH_PATH_RE.test(p)) vosUnverified.delete(p); }
+              else vosUnverified.clear();
+              vosFailedCheck = '';
+            }
             // `summarize` is shadowed in this scope by the compaction summarizer (o.summarize) — use clip().
             else if (vosUnverified.size) vosFailedCheck = clip(k === 'shell_exec' ? ((c.args && (c.args.command || c.args.cmd || c.args.script)) || k) : ((c.args && c.args.cmd) || k), 80);
             continue;
           }
-          if (VOS_MUTATORS.has(k)) { const p = vosPathOf(c.args); if (vosIsCodePath(p)) vosUnverified.add(p); }
+          if (VOS_MUTATORS.has(k)) { const p = vosPathOf(c.args); if (vosIsCodePath(p) && !(o.standaloneWorkspace === true && VOS_PAGE_RE.test(p))) vosUnverified.add(p); }
           const externalEffect = vosExternalEffect(c.name);
           if (externalEffect && externalEffect.role === 'observe') {
             const pending = vosExternalUnverified.get(externalEffect.connector);
@@ -2554,7 +2744,7 @@
           if (LG_WARN && n === LG_WARN && !lgWarned.has(sig)) {
             lgWarned.add(sig);
             lgWarnedNow.add(vosKey(nm));
-            messages.push({ role: 'system', content: '<loop_guard>You have called ' + nm + ' with the same arguments ' + n + ' times and it keeps failing. Do not repeat the identical call — change the arguments, try another approach, or stop and report the problem.</loop_guard>' });
+            messages.push({ role: 'system', content: '<loop_guard>You have called ' + nm + ' with the same arguments ' + n + ' times and it keeps failing. Do not repeat the identical call — change the arguments, try another approach, or stop and report the problem.' + HOST_CHECK + '</loop_guard>' });
           }
         }
       }
@@ -2572,5 +2762,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { waitsOnPeers, parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, memorySaveClaim, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze, turnAllowances, parkForTurnBudget, evictStaleScreenshots, isScreenCapture } };
+  return { runAgentLoop, _internals: { waitsOnPeers, parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, memorySaveClaim, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosIsPatchOnlyCheck, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze, turnAllowances, parkForTurnBudget, evictStaleScreenshots, isScreenCapture } };
 });

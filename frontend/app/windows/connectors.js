@@ -26,6 +26,37 @@
     if (typeof StationUI.openTerm === 'function') StationUI.openTerm('connectors', 'catalog');
   };
 
+  /* LOCKED CREDENTIAL STORAGE — the next step the panel names under the sidecar's own message. A held file ('busy':
+     antivirus, backup or sync) and an unreachable OS store ('key-unavailable') leave an intact store that a restart or
+     an unlock fixes, and START FRESH would only set it aside, so neither is told its files are unreadable: the restart
+     or the unlock comes first and START FRESH stays as the exit when that fails. A busy lock's sidecar message already
+     says restart, then START FRESH, so the line adds nothing for it. The sidecar sends canStartFresh for every lock
+     today; a lock with no START FRESH and no fix of its own leaves the sidecar's message to speak. */
+  function storageNextStep(storage) {
+    const s = storage || {};
+    if (s.reason === 'busy') return s.canStartFresh ? '' : ' Restart StarNet to try again.';
+    if (s.reason === 'key-unavailable') return s.canStartFresh ? ' Use START FRESH only if you cannot unlock or repair the credential store.' : ' Unlock the credential store and restart StarNet.';
+    return s.canStartFresh ? ' START FRESH sets the unreadable files aside and lets you sign in to each service again.' : '';
+  }
+  /* An open store's storage notes. `notice` is a store StarNet does not count as encrypted (fallback, or a seal not yet
+     checked), so it is headed that way. `migrationNotice` is an older sign-in file left beside a SEALED store: a plain
+     heading, never 'not encrypted'. */
+  function storageNoticeHtml(storage) {
+    const s = storage || {};
+    return (s.notice ? '<div class="mc-notice"><b>Credential storage · not encrypted</b>' + esc(s.notice) + '</div>' : '') +
+      (s.migrationNotice ? '<div class="mc-notice"><b>Credential storage</b>' + esc(s.migrationNotice) + '</div>' : '');
+  }
+  /* START FRESH's answer: where the old files went. Finishing an interrupted attempt also returns `previous`, the
+     folders that attempt filled; with nothing left to move it has no movedTo, and the marker that named those folders
+     is gone, so this toast is the one place left that says where the old files are. */
+  function startFreshKeptText(answer) {
+    const j = answer || {};
+    const previous = Array.isArray(j.previous) ? j.previous.filter(p => typeof p === 'string' && p) : [];
+    const where = (typeof j.movedTo === 'string' && j.movedTo) || previous[0] || 'the connectors folder';
+    const earlier = previous.filter(p => p !== where);
+    return 'Connector storage started fresh. Old files kept in ' + where + (earlier.length ? ' (earlier copies in ' + earlier.join(', ') + ')' : '');
+  }
+
   /* ============== CONNECTORS — attach MCP servers so agents gain external tools ==============
      A connector is a remote MCP (Model Context Protocol) server. Once added + connected, its tools
      become real agent tools, gated by the same consent prompt as everything else. The server URL +
@@ -61,8 +92,8 @@
     // capability your agents can use, grouped into toolsets…"). Every pane in this console had the same
     // stutter. The `desc` is the one that stays — it is also what the search box matches on.
     const secToolsets =
-      '<label class="mc-hint" for="ts-agent">Capabilities for agent</label><select id="ts-agent" class="key-input" aria-label="Capabilities for agent"></select>' +
-      '<button class="bb xs" id="ts-refresh" type="button">REFRESH AUTHORITY</button>' +
+      '<label class="mc-hint" for="ts-agent">Show abilities of</label><select id="ts-agent" class="ab-agent-pick" aria-label="Show the abilities of agent"></select>' +
+      '<button class="bb xs" id="ts-refresh" type="button">REFRESH ACCESS</button>' +
       '<div id="ts-authority" class="set-about" role="status"></div>' +
       '<div class="ts-core set-row"><span class="ts-glyph" aria-hidden="true">◉</span>' +
         '<span class="ts-main"><span class="ts-name">COMPUTE <span class="ts-core-tag">CORE</span></span>' +
@@ -158,7 +189,7 @@
         '<b class="cc-lg-key">API key</b> you paste a key · <b class="cc-lg-oauth">SIGN IN</b> connect through your browser. Some services require one-time app setup first.</span></p>' +
       '<div id="cc-list" class="cc-list"><span class="loading pulse">loading catalog…</span></div>' +
       '<div id="cc-msg" class="msg" role="status" aria-live="polite"></div>' +
-      '<p class="set-about dim">Need something not listed? Add any remote MCP server by URL in <b>MCP CONNECTORS</b>, or paste a custom platform key in <b>KEYS</b>.</p>';
+      '<p class="set-about dim">Need something not listed? Add any remote MCP server by URL in <b>CONNECTED SERVICES</b>, or paste a custom platform key in <b>SAVED API CONNECTIONS</b>.</p>';
     // ---- KEYS pane markup: every platform key the agents hold, in one place. Top = keyed catalog/MCP platforms
     //      currently connected (truth from /api/connectors — managed on their own tab, read-only here). Bottom =
     //      encrypted API credentials (POST /api/servicekeys): the sidecar exposes each as an env var in
@@ -194,7 +225,7 @@
         // TRUTHFUL TELEMETRY: the key alone is not enough. The shell it is handed to only exists when a WORKBENCH
         // prop is placed (capability/office.js grants it nowhere by default), and workspace-process tools are not
         // projected onto unattended surfaces at all (inputpolicy.js), so a saved key is inert until both hold.
-        '<div class="mc-hint">These API keys are used through the terminal. Check the selected agent in TOOLSETS: access may come from a workbench, an execution profile or Full Access. ' +
+        '<div class="mc-hint">These API keys are used through the terminal. Check the selected agent in BUILT-IN ABILITIES: access may come from a workbench, an execution profile or Full Access. ' +
           'Scheduled work also follows its saved unattended access settings. Saving a key does not verify that the service accepts it.</div>' +
         '<div class="mc-acts"><button class="bb sm" id="ky-add">+ SAVE KEY</button></div>' +
       '</div>' +
@@ -313,7 +344,7 @@
     // sections are unchanged — only the first one shown.
     if (H.consoleSection && !H.consoleSection.connectors) H.consoleSection.connectors = 'catalog';
     const host = mountConsole(body, 'connectors', [
-      { id: 'toolsets', label: 'BUILT-IN ABILITIES', glyph: '▤', desc: 'Inspect an agent’s capability grants. Switches apply in ASK mode; Full Access overrides them. Connected services still need working credentials.', build: frag(secToolsets) },
+      { id: 'toolsets', label: 'BUILT-IN ABILITIES', glyph: '▤', desc: 'The list shows what the agent you pick can use, but each switch turns a built-in ability on or off for every agent; CHECK WITH ME and LET IT WORK obey the switches, FULL POWER overrides them. Connected services still need working credentials.', build: frag(secToolsets) },
       { id: 'computer', label: 'COMPUTER CONTROL', glyph: '▣', desc: 'Choose how agents interact with native desktop apps. Full Power or a paired remote-owner lease is required.', build: frag(
         '<div class="set-about">CUA targets windows and accessibility elements, works in the background where supported, and reports evidence for each action. Foreground input can move focus when needed.</div>' +
         '<div id="cu-status" class="set-about" role="status" aria-live="polite">Checking computer control…</div>' +
@@ -339,7 +370,7 @@
         { id: 'advanced', label: 'CREATE / ADVANCED', sections: ['extensions', 'exchange'] }
       ],
       searchLabel: 'Search abilities',
-      searchPlaceholder: 'search a platform, tool or skill — try “notion”…',
+      searchPlaceholder: 'search abilities…',   // fits the rail's search box whole (the long hint was cut at 'search a platform,')
       searchEmptyText: 'No abilities match that search. Try another platform, tool, or skill.'
     });
     lanes.forEach(l => { try { if (typeof l.wire === 'function') l.wire(); } catch (_) {} });
@@ -656,6 +687,9 @@
       else return;
       if (ok) {
         try { sfx('ok'); } catch (_) {}
+        // an approve / turn-off / add / remove changes what waits on approval: NEEDS YOU (rail, NOTIFICATIONS, the bell)
+        // re-reads the station now, never up to a minute later (org P01)
+        if (typeof NeedsYou !== 'undefined' && NeedsYou.refreshFeeds) NeedsYou.refreshFeeds(true);
         // plugin windows follow approval immediately: a turned-off plugin's open window says so, a new one can open
         if (/^plugin-/.test(kind) && typeof PluginHost !== 'undefined') {
           try {
@@ -771,7 +805,7 @@
           '</div></details>'
         : '';
       return '<div class="set-row ts-row' + (off ? ' ts-off' : '') + (inert ? ' ts-inert-row' : '') + '" data-id="' + esc(t.id) + '" style="--ci:' + (ri || 0) + '">' +
-          '<input type="checkbox" data-ts-toggle="' + esc(t.id) + '"' + (t.enabled ? ' checked' : '') + ' aria-label="Enable ' + esc(t.label) + '"' + (t.switchEffective ? '' : ' disabled data-tip="Full Access overrides this saved switch. Change authority first."') + '>' +
+          '<input type="checkbox" data-ts-toggle="' + esc(t.id) + '"' + (t.enabled ? ' checked' : '') + ' aria-label="Enable ' + esc(t.label) + ' for every agent"' + (t.switchEffective ? ' data-tip="Turns ' + esc(t.label) + ' on or off for every agent"' : ' disabled data-tip-below data-tip="FULL POWER overrides this saved switch. Change access first."') + '>' +
           '<span class="ts-glyph" aria-hidden="true">' + esc(t.glyph || '▪') + '</span>' +
           '<span class="ts-main">' +
             '<span class="ts-name">' + esc(t.label) + ' ' + status + consent +
@@ -785,8 +819,11 @@
     const tsAuthorityEl = body.querySelector('#ts-authority');
     const agents = H.present || [];
     tsAgentEl.innerHTML = agents.map(a => '<option value="' + esc(a.id) + '">' + esc(a.name || a.id) + '</option>').join('') || '<option value="">Station defaults</option>';
-    if (agents[H.sel]) tsAgentEl.value = agents[H.sel].id;
+    // ORG P21: open on the same agent the skills lane in this console shows (sent from a dossier, or the dossier's own)
+    const openOn = typeof H.skillsAgentId === 'function' ? H.skillsAgentId() : (agents[H.sel] && agents[H.sel].id);
+    if (openOn && agents.some(a => a.id === openOn)) tsAgentEl.value = openOn; else if (agents[H.sel]) tsAgentEl.value = agents[H.sel].id;
     let tsRequest = 0;
+    const tsLabels = {};
     tsAgentEl.addEventListener('change', tsRefresh);
     body.querySelector('#ts-refresh').addEventListener('click', tsRefresh);
     async function tsRefresh() {
@@ -799,11 +836,12 @@
         const a = j.authority;
         tsAuthorityEl.textContent = a.name + ' · ' + a.approvalLabel + ' · ' + a.filesystemLabel + '. ' + a.revoke + ' Capability grants shown here; the current task, service connection and operating system can still limit execution.';
         const list = (j && j.toolsets) || [];
+        list.forEach(t => { if (t && t.id) tsLabels[t.id] = t.label || t.id; });   // the toast names the ability, not its id
         tsListEl.innerHTML = '<div class="ability-readout" aria-label="Selected agent toolset availability">' +
           '<div><b>' + list.filter(t => t.available).length + '</b><span>AVAILABLE</span></div>' +
           '<div><b>' + list.filter(t => tsAvailability(t) === 'NEEDS PROP').length + '</b><span>NEED A PROP</span></div>' +
           '<div><b>' + list.filter(t => !t.available && tsAvailability(t) !== 'NEEDS PROP').length + '</b><span>UNAVAILABLE</span></div></div>' +
-          '<p class="ability-legend">AVAILABLE means this agent has the capability through equipment or access settings. Service connections and task permissions still apply.</p>' +
+          '<p class="ability-legend">AVAILABLE means this agent has the capability through equipment or access settings. Service connections and task permissions still apply. Each switch below applies to every agent.</p>' +
           list.map(tsRowHTML).join('');
         if (body.querySelector('#sp-connect')) setupSpotify(body);   // wire Spotify now the sp-* markup is in the JUKEBOX row
       } catch (_) { if (request !== tsRequest) return; tsAuthorityEl.textContent = 'Effective authority unavailable.'; tsListEl.innerHTML = '<div class="mc-detail">Cannot read current capabilities. Reopen ABILITIES after reconnecting.</div>'; }
@@ -816,7 +854,7 @@
         const r = await Harness.api.post('/api/toolsets/' + encodeURIComponent(id), { enabled });
         const j = r.j || {};
         if (!r.ok || j.error) { cb.checked = !enabled; sfx('bad'); notify('✕ ' + (j.error || 'toggle failed')); }
-        else { sfx('tick'); notify((enabled ? 'Enabled ' : 'Disabled ') + id, enabled ? 'good' : undefined); }
+        else { sfx('tick'); notify((tsLabels[id] || id) + (enabled ? ' on' : ' off') + ' for every agent', enabled ? 'good' : undefined); }
       } catch (e) { cb.checked = !enabled; sfx('bad'); notify('✕ ' + ((e && e.message) || 'request failed')); }
       cb.disabled = false;
       tsRefresh();
@@ -1017,8 +1055,7 @@
           notices.innerHTML += '<div class="mc-notice"><b>Credential storage</b>' + esc(storageError) + '</div>';
           // START FRESH is the exit the sidecar offers for a store it cannot open (wrong key, damaged, unrecognized):
           // the old files are moved aside, never deleted, and every service is signed in again.
-          listEl.innerHTML = '<div class="mc-detail">Your saved connections have not been erased.' +
-            (storage.canStartFresh ? ' START FRESH sets the unreadable files aside and lets you sign in to each service again.' : ' Unlock the credential store and restart StarNet.') + '</div>' +
+          listEl.innerHTML = '<div class="mc-detail">Your saved connections have not been erased.' + storageNextStep(storage) + '</div>' +
             (storage.canStartFresh ? '<div class="mc-acts"><button class="bb sm danger" id="mc-start-fresh" type="button">START FRESH</button></div>' : '');
           const fresh = listEl.querySelector('#mc-start-fresh');
           if (fresh && typeof ArmConfirm !== 'undefined' && ArmConfirm.wire) {
@@ -1029,7 +1066,7 @@
                 fresh.disabled = true;
                 let r = null;
                 try { r = await Harness.api.post('/api/connectors/storage/start-fresh', { confirm: true }); } catch (_) {}
-                if (r && r.ok) { sfx('ok'); notify('Connector storage started fresh. Old files kept in ' + ((r.j && r.j.movedTo) || 'the connectors folder')); }
+                if (r && r.ok) { sfx('ok'); notify(startFreshKeptText(r.j)); }
                 else { sfx('bad'); notify('START FRESH failed: ' + ((r && r.j && r.j.error) || 'the station did not answer')); }
                 refresh();
               }
@@ -1037,7 +1074,7 @@
           }
           return;
         }
-        if (storage.notice) notices.innerHTML += '<div class="mc-notice"><b>Credential storage · not encrypted</b>' + esc(storage.notice) + '</div>';
+        notices.innerHTML += storageNoticeHtml(storage);
         if (list.length) {
           const expanded = new Set(Array.from(listEl.querySelectorAll('.mc-inspect[open]')).map(el => el.closest('.mc-row').dataset.id));
           listEl.innerHTML = list.map(row).join('');
@@ -1748,7 +1785,7 @@
           return '<div class="mc-row" style="--ci:' + i + '">' +
             '<div class="mc-top"><b>' + esc((cat && cat.name) || c.label || c.id) + '</b> <span class="dim">' + esc(c.id) + '</span>' +
               '<span class="mc-state" style="color:' + b[0] + '">' + b[1] + (c.toolCount ? ' · ' + c.toolCount + ' tool' + (c.toolCount === 1 ? '' : 's') : '') + '</span></div>' +
-            '<div class="mc-url dim"><span class="mc-tag">' + (c.hasHeaders && !c.hasToken ? 'header saved' : 'token saved') + '</span> managed in ' + (cat ? 'CATALOG' : 'MCP CONNECTORS') + '</div>' +
+            '<div class="mc-url dim"><span class="mc-tag">' + (c.hasHeaders && !c.hasToken ? 'header saved' : 'token saved') + '</span> managed in ' + (cat ? 'CATALOG' : 'CONNECTED SERVICES') + '</div>' +
           '</div>';
         }).join('');
       } catch (_) { kyPlatEl.innerHTML = '<div class="mc-detail">sidecar offline — start it to see connected platforms.</div>'; }

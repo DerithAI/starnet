@@ -18,7 +18,7 @@ const COMMAND = 'curl -sS -X POST https://api.example.test/v1/deploy/production/
 
 function backendCtx() {
   const ctx = { redact: require('../sidecar/context.js').redact };
-  vm.createContext(ctx); vm.runInContext(extract(backend, 'function consentSummary(call)', 'function throttleSearch'), ctx);
+  vm.createContext(ctx); vm.runInContext(extract(backend, 'function consentSummary(call, where)', 'function throttleSearch'), ctx);
   return ctx;
 }
 
@@ -48,7 +48,8 @@ test('the full request lives only on the pending prompt, behind a token-gated GE
   const route = extract(backend, 'function handleConsentArgs(req, res)', '\n}\n');
   assert.match(route, /pendingByRun\.get/);
   assert.match(route, /respondJson\(res, 404/);
-  assert.match(backend, /argsSummary: consentSummary\(call\), argsFull: consentArgsFull\(call\), fresh:/);
+  // (consentSummary is told the run's conversation, so a station.control card can name the chat it changes)
+  assert.match(backend, /argsSummary: consentSummary\(call, \{ streamId \}\), argsFull: consentArgsFull\(call\), fresh:/);
   // never on the event: the permission.prompt row is still exactly the frozen five fields
   assert.match(backend, /const row = \{ promptId, agentId, tool: \(fields && fields\.tool\) \|\| 'tool', scope: \(fields && fields\.scope\) \|\| 'write', argsSummary: \(fields && fields\.argsSummary\) \|\| '' \};/);
   // group chat: the saved turn.approval never carries it; the in-memory pending entry does

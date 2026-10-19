@@ -42,4 +42,26 @@ A.ok(/if \(key === 'settings' && \(activeId === 'models' \|\| activeId === 'live
 // not only inside the glass skin, or both thumbs point up and the right-hand one files a miss (sweep 10-02)
 const appCss = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'css', 'app.css'), 'utf8');
 A.ok(/^\.thumb-down \.thumb-px \{ transform: rotate\(180deg\); \}/m.test(appCss), 'app.css flips the down-thumb unscoped');
+// org pass 10-14 (P11, #45/#46): MY WORK's FIRST open lands on DELIVERABLES (the TASKS board reads empty after plain
+// COMMS work); after that the dock button reopens the last-used tab. Tab ORDER is unchanged. Runs the REAL toggleFamily.
+{
+  const vm = require('vm');
+  const fam = ui.slice(ui.indexOf('const FAMILIES = {'), ui.indexOf('// which menu a window belongs to'));
+  const tf = ui.slice(ui.indexOf('function toggleFamily(famId) {'), ui.indexOf('function toggleTerm(key, title, builder, opts) {'));
+  A.ok(fam.length > 0 && tf.length > 0, 'FAMILIES and toggleFamily are found');
+  const ctx = { open: {}, minimized: {}, store: {}, opened: [], familyOf: () => null };
+  ctx.openFamilyTab = (f, t) => ctx.opened.push(f + ':' + t.id);
+  vm.createContext(ctx); vm.runInContext(fam + '\n' + tf + '\nthis.FAMILIES = FAMILIES; this.toggleFamily = toggleFamily;', ctx);
+  A.eq(ctx.FAMILIES.mywork.tabs.map(t => t.id).join(','), 'tasks,deliverables,recipes', 'the MY WORK tab order is unchanged');
+  ctx.toggleFamily('mywork');
+  A.eq(ctx.opened.pop(), 'mywork:deliverables', 'a first MY WORK open (no saved tab) lands on DELIVERABLES');
+  ctx.store.famLast = { mywork: 'tasks' };
+  ctx.toggleFamily('mywork');
+  A.eq(ctx.opened.pop(), 'mywork:tasks', 'after that the last-used tab wins (TASKS stays one click away)');
+  ctx.toggleFamily('automate');
+  A.eq(ctx.opened.pop(), 'automate:workflows', 'a menu with no `first` still opens its first tab');
+}
+// org D9 (10-14): a door that moves an OPEN menu window to another section (AWAY WORK while SCHEDULES shows) lights that tab too
+A.ok(/if \(open\[key\]\) \{ if \(minimized\[key\]\) restoreTerm\(key\); if \(section\) \{ rerender\(key\); syncFamilyTabs\(open\[key\], key\); \} return; \}/.test(ui),
+  'openTerm on an open window re-syncs the menu tab strip after it re-renders the section');
 A.report('front-doors-tabs');

@@ -107,3 +107,16 @@ dc2a6676b72bc30d665076b3f965c1a81870182b:test/engine-credential.test.js:generic-
 dc2a6676b72bc30d665076b3f965c1a81870182b:test/engine-key-sync.test.js:generic-api-key:110
 dc2a6676b72bc30d665076b3f965c1a81870182b:test/engine-key-sync.test.js:generic-api-key:119
 dc2a6676b72bc30d665076b3f965c1a81870182b:test/routine-keys.e2e.test.js:generic-api-key:25
+
+# 0.13.5 trunk push (reviewed 2026-10-16): ten generic-api-key hits, all synthetic OpenRouter-shaped test fixtures
+# (22-25 chars; a real sk-or-v1 key is 73) used with mock providers / model test/model, or a redaction-test string.
+46a5990d247573280e020b9fd061f43d06154b24:test/verdictreview.test.js:generic-api-key:124
+747d73bffa55cf0709d37c7c31c0618e6f8ada76:test/learning.evidence.test.js:generic-api-key:57
+9168c4481c37aca51545043bd27b3778d396391d:qa/evidence/frontend-deep-sweep-2026-10-11/phone-voice-probe.mjs:generic-api-key:44
+a3f610ba4ec47e9ca49810f0e76594fecf4c4a61:test/verdictreview.test.js:generic-api-key:124
+b01ab61bf4b33da307c81088754d9e2c23cf4c08:qa/evidence/memory-continuation-1011/stop-ui.mjs:generic-api-key:15
+b03c75e8c5b03bcde0cac6981c01eab3d783035c:qa/evidence/frontend-deep-sweep-2026-10-11/probe.mjs:generic-api-key:21
+b887cb75b8b5f4fd1a713ebd97c40cbff69f3772:test/tasteref.http.test.js:generic-api-key:57
+b887cb75b8b5f4fd1a713ebd97c40cbff69f3772:test/tasteref.http.test.js:generic-api-key:65
+d26549162aa41c080ef3c0f40f075f03174f2bbe:test/earlier-conversation.http.test.js:generic-api-key:37
+d26549162aa41c080ef3c0f40f075f03174f2bbe:test/earlier-conversation.http.test.js:generic-api-key:45

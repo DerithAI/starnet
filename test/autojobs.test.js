@@ -162,7 +162,7 @@ A.ok(J.armStateLine(undefined) && /scheduler is off/i.test(J.armStateLine(undefi
 
 /* ---------- doneLine(): honest when the scheduler that fires the job is OFF ---------- */
 A.ok(/won'?t run|OFF/i.test(J.doneLine(1, false)), 'scheduler off → the done-line admits it won\'t run yet');
-A.ok(/enable scheduling/i.test(J.doneLine(2, false)), 'scheduler off → the done-line points at enabling scheduling');
+A.ok(/turn scheduling on/i.test(J.doneLine(2, false)), 'scheduler off → the done-line points at turning scheduling on (the switch’s one name, org P16)');
 A.ok(!/won'?t run/i.test(J.doneLine(1, true)), 'scheduler armed → the normal, confident done-line');
 
 A.report('autojobs.test');

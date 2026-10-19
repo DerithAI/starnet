@@ -743,7 +743,67 @@ const StationBake = (() => {
   // chunk bake and leave a stale strip of wall behind.
   const dirtyPadPx = () => pad + Math.max(WALL.skirt, Math.max(WALL.up, WALL.corUp) + WALL.capH + 8) + 48;
   let G, T, HR, W, H, VX, VY, CW, CH, lampPos, edges, chamferAt, extN, openJoins;
+  /* A CHUNK PAINTS ONLY WHAT CAN REACH IT (2026-10-13, Andrew: "a huge delay in build mode" placing a block). BUILD MODE bakes
+     the station in 384px chunks, and every chunk walked and painted EVERY wall tile and rounded corner on the station, clipped
+     only by its canvas — one chunk cost about a third of a whole-station bake, so a room stamp that re-baked ten visible chunks
+     froze the editor for ~6 s. The incremental bake already rests on one contract: nothing a tile paints lands further than
+     dirtyPadPx() from it (an edit there re-bakes only the chunks within that reach). The same reach now bounds which walls, floors and
+     corners a chunk paints at all — one tile wider for safety — so a culled one could not have touched this chunk's pixels.
+     A whole-station bake (no viewport) culls nothing. */
+  let cullBox = null;
+  /* ONE TEXTURE DENSITY PER STATION (2026-10-13). The dense art plate was sized off each CANVAS — 4096px across a
+     whole-station bake, so ~3.1x on a 1320px floor, but the 6x cap on every 384px BUILD MODE chunk: a chunk painted
+     ~3.7x the plate pixels the live world shows for the same floor (and 4x the GPU memory), and BUILD MODE looked
+     sharper after an edit than before it. Every bake of a station now paints at the station's own density, quantised
+     to 1/16 so a chunk edge (CHUNK_PX * k/16 = 24k plate pixels) always lands on whole plate pixels.
+     A CHUNK AND THE WHOLE STATION SHARE ONE PLATE GRID (2026-10-14, the busy-station walk: 0.8-1.1 M plate pixels of the
+     kept BUILD MODE bake disagreed with a fresh one, worst Δ255, all on the hull skirts). Below 6x a plate pixel is not a
+     whole number of bake pixels, so every dense scratch layer the bake folds into the plate must start and end on that
+     grid too (plateStep) or it is resampled by a fraction that depends on the canvas it was cut for. The density is
+     quantised to 1/16, not finer, so that grid step stays small (at most 16 bake px of scratch overshoot). */
+  const fixtureOpts = () => ({ wallUp: WALL.up, corUp: WALL.corUp, infillFixtures: projectionPresentation });
+  const plateDensity = (w, h) => Math.floor(Math.min(6, 4096 / Math.max(w, h, 1)) * 16) / 16;
+  const detailRef = () => ({ scale: plateDensity(W, H) });
+  // the density a bake of a w x h floor paints its dense plate at, or 0 when it paints none (classic textures, a headless
+  // test, or below the 1.5x detailContext refuses). A chunk painted at another density is not this floor's chunk.
+  const paintedDensity = (w, h) => {
+    if (typeof IndustrialTextures === 'undefined' || !IndustrialTextures.enabled || !IndustrialTextures.enabled()) return 0;
+    const s = plateDensity(w, h);
+    return s < 1.5 ? 0 : s;
+  };
+  // the dense plate's grid step in bake px: the smallest q with q * density a whole number of plate pixels (1 at 6x or
+  // with no plate, at most 16)
+  const plateStep = () => {
+    const s = paintedDensity(W, H);
+    let q = 1; while (s && !Number.isInteger(q * s) && q < 16) q++;
+    return q;
+  };
+  const rectCulled = r => !!cullBox && ((r.x2 + 1) * T < cullBox[0] || r.x1 * T > cullBox[2] || (r.y2 + 1) * T < cullBox[1] || r.y1 * T > cullBox[3]);
+  const tileCulled = (tx, ty) => !!cullBox && ((tx + 1) * T < cullBox[0] || tx * T > cullBox[2] || (ty + 1) * T < cullBox[1] || ty * T > cullBox[3]);
   const h2 = (x, y, s) => U.hash(x + ',' + y + ',' + (s || ''));
+  /* ...AND A DRAW THAT MISSES THE CANVAS IS NOT MADE. The reach above keeps every wall and corner that can touch a chunk, so a
+     chunk still walks the ones whose art lands beside it, not on it — about half of a busy chunk's corner work. A rect (bake
+     px, half-open) that misses this canvas by more than a pixel paints nothing on it or on its dense plate (which covers the
+     same rect), so its draw calls are skipped; what the walk records (crown and face rects, the measured reach) still runs. */
+  const missesCanvas = (x0, y0, x1, y1) => x1 < VX - 1 || x0 > VX + CW + 1 || y1 < VY - 1 || y0 > VY + CH + 1;
+  // the same test on any context the bake draws through (a scratch layer has its own size and offset): its axis-aligned
+  // transform maps the rect to that canvas's pixels; any other transform never skips
+  const missesContext = (g, x0, y0, x1, y1) => {
+    const m = g.getTransform && g.getTransform(), cv = g.canvas;
+    if (!m || !cv || m.b !== 0 || m.c !== 0 || !(m.a > 0) || !(m.d > 0)) return false;
+    return x1 * m.a + m.e < -1 || x0 * m.a + m.e > cv.width + 1 || y1 * m.d + m.f < -1 || y0 * m.d + m.f > cv.height + 1;
+  };
+  /* EVERYTHING ONE ROUNDED CORNER PAINTS lies in one box: the spandrel erase and hull rim within HR of its corner point, the
+     deck cut and face band in its own tile, the crown ring within HR of its outline circle (lifted above the tile on a top
+     corner), and the ambient strip the light map erases above a top corner (WALL.up + capH + 2 over the tile, pad wider).
+     A corner whose box misses the canvas is skipped whole: what it would record (crown and face rects, its measured crown
+     reach) is only ever painted back inside that same box. */
+  const cornerMissesCanvas = (ccx, ccy, kind) => {
+    const X = ccx * T, Y = ccy * T, ay = Y + CORNER[kind].cy * T, room = !G.isCorridor(G.zoneGrid[G.idx(ccx, ccy)]);
+    const cy = cornerArcCy(kind, ay, Y, HR, room), capH = Math.max(2, Math.round(WALL.capH));
+    const lift = Math.max(Math.round(WALL.up), Math.round(WALL.corUp), 0) + capH + 2;
+    return missesCanvas(X - HR - pad - 3, Math.min(cy - HR, Y - lift) - 3, X + T + HR + pad + 3, Math.max(cy + HR, Y + T) + 3);
+  };
 
   /* ---------- THE ONE ROUNDED-CORNER RASTER ----------
      Every curve in the station is a quarter circle at a tile corner, and they must all agree to the
@@ -771,6 +831,7 @@ const StationBake = (() => {
   /* cut the hull's rounded corner. Was a clip('evenodd') + fill, which anti-aliased the station's
      whole silhouette — the soft outer fuzz that survived the interior-curve fix. */
   function eraseSpandrel(g, kind, ax, ay, rad) {
+    if (missesContext(g, ax - rad - 1, ay - rad - 1, ax + rad + 1, ay + rad + 1)) return;
     g.save();
     g.globalCompositeOperation = 'destination-out';
     g.fillStyle = '#000';
@@ -785,6 +846,16 @@ const StationBake = (() => {
     const c = document.createElement('canvas');
     c.width = Math.max(1, Math.ceil(w));
     c.height = Math.max(1, Math.ceil(h));
+    return c;
+  }
+  /* A SCRATCH THE BAKE ONLY READS BACK (2026-10-14, the busy-station walk: a room edit froze BUILD MODE 0.4-1.3 s and a
+     quarter of every chunk bake was getImageData — GPU round trips). The ownership raster and the alley silhouette are
+     painted only to be read (getImageData) and never drawn into a displayed canvas, so they live on the CPU, where a
+     readback is a copy. Only integer-aligned opaque fills, 1px corner rows and 1:1 copies go on them: those raster to the
+     same pixels on either backend. */
+  function readbackCanvas(w, h) {
+    const c = canvas(w, h);
+    c.getContext('2d', { willReadFrequently: true });
     return c;
   }
   function translatedContext(c) {
@@ -2542,6 +2613,16 @@ const StationBake = (() => {
      render must never inject phantom windows into the live bake (same guard sampleWall uses). */
   const STRIP_TILES = 4;
   let stripCache = null;
+  /* STRIPS OUTLIVE A BAKE (2026-10-14, the busy-station walk: a strip the industrial atlas does not cover — glass, hedge — is
+     rendered and read back from the GPU on every chunk bake, ~30 ms of each room edit). A strip is a function of its key
+     (material, paint, height) and of what this token names — the tile size, the live-tunable knobs (the CRT LAB writes them),
+     the surface renderer in use and the texture pack's state — never of the floor, so it is kept until the token moves. */
+  let stripCacheToken = '';
+  const stripToken = () => {
+    const tex = typeof document !== 'undefined' && document.documentElement && document.documentElement.dataset
+      ? document.documentElement.dataset.textureRevision || '' : '';
+    return JSON.stringify([T, WALL, DEPTH, SHAPE, WALL_TONE, nextSurfaces(), remastered(), tex]);
+  };
   function faceStrip(matId, pal, h) {
     // The same selected face must wrap onto side walls and corners. A pending
     // atlas (or a specialized native material) falls through to the real recipe.
@@ -2627,6 +2708,7 @@ const StationBake = (() => {
     const ed = WALL_EDGES[matId] || WALL_EDGES.bulkhead;
     const depth = axis === 'x' ? w : h, len = axis === 'x' ? h : w;
     if (depth <= 0 || len <= 0) return;
+    if (missesContext(b, x, y, x + w, y + h)) return;   // every mark below lies inside the face's own rect
     if (strip) {
       /* THE WALL'S OWN PIXELS AGAIN — rows 0..depth of the same strip the tall face and the corner
          use, so a side wall is the top few rows of the very material the north wall shows, and the
@@ -3450,16 +3532,21 @@ const StationBake = (() => {
          filled as one rect, so the common case (nothing standing south of this corner) is the single
          fillRect it always was, and crownRects/record only ever record pixels actually painted —
          a mask that disagrees with the painter is the leaked-ambient class of bug. */
+      // (grouped by the limit as it CUTS this rect: a wall standing below the rect cuts nothing, so it is the same as none —
+      // a far room's north wall in the same columns used to split the rect, and the split rect drew different pixels)
       for (let cx0 = x0; cx0 < x1; ) {
-        const lim = nearerNorthTop(Math.floor(cx0 / T), ccy);
+        const lim = Math.min(y1, nearerNorthTop(Math.floor(cx0 / T), ccy));
         let cx1 = Math.min(x1, cx0 + sample);
-        while (cx1 < x1 && nearerNorthTop(Math.floor(cx1 / T), ccy) === lim) cx1 = Math.min(x1, cx1 + sample);
-        const yEnd = Math.min(y1, lim);
+        while (cx1 < x1 && Math.min(y1, nearerNorthTop(Math.floor(cx1 / T), ccy)) === lim) cx1 = Math.min(x1, cx1 + sample);
+        const yEnd = lim;
         if (yEnd > y0) {
-          b.fillStyle = c; b.fillRect(cx0, y0, cx1 - cx0, yEnd - y0);
-          if (c === pal.cap) crownMachining(b, cx0, y0, cx1 - cx0, yEnd - y0, c, w > h);
-          if (textureMap && strip && strip.hi)
-            IndustrialTextures.wallPatch(b, cx0, y0, cx1 - cx0, yEnd - y0, strip, textureMap);
+          b.fillStyle = c;
+          if (!missesCanvas(cx0, y0, cx1, yEnd)) {
+            b.fillRect(cx0, y0, cx1 - cx0, yEnd - y0);
+            if (c === pal.cap) crownMachining(b, cx0, y0, cx1 - cx0, yEnd - y0, c, w > h);
+            if (textureMap && strip && strip.hi)
+              IndustrialTextures.wallPatch(b, cx0, y0, cx1 - cx0, yEnd - y0, strip, textureMap);
+          }
           // Record the face AFTER clipping to the silhouette and nearer walls.
           // A raised corner is an interior wall, even above the floor footprint.
           if (interior) cornerFaceRects.push([cx0, y0, cx1 - cx0, yEnd - y0]);
@@ -3608,6 +3695,7 @@ const StationBake = (() => {
 
   function bakeWalls(b) {
     for (const e of edges) {
+      if (tileCulled(e.x, e.y)) continue;   // see A CHUNK PAINTS ONLY WHAT CAN REACH IT
       const X = e.x * T, Y = e.y * T;
       // a doorway gets its sill; an OPEN JOIN gets nothing at all — see "A THRESHOLD IS A HOLE IN
       // A WALL". Painting a track down a seam with no wall on it is what put a bar between two
@@ -4157,6 +4245,9 @@ const StationBake = (() => {
     const tmp = canvas(CW, CH2);
     const tg = tmp.getContext('2d');
     const list = [...groups.values()];
+    // a footprint's plate ring that misses this canvas entirely ([VX, VX+CW] x [VY-M, VY-M+CH2]) draws nothing on it, so
+    // its per-footprint scratch layers below are skipped — exact, not a reach estimate (see A CHUNK PAINTS ONLY WHAT CAN REACH IT)
+    const offCanvas = r => (r.x2 + 1) * T + pad < VX - 1 || r.x1 * T - pad > VX + CW + 1 || (r.y2 + 1) * T + pad < VY - M - 1 || r.y1 * T - pad > VY - M + CH2 + 1;
     const stampRect = (g, r) => g.fillRect(r.x1 * T - pad, r.y1 * T - pad, (r.x2 - r.x1 + 1) * T + pad * 2, (r.y2 - r.y1 + 1) * T + pad * 2);
     const eraseAllChamfers = g => { for (const [ccx, ccy, kind] of G.chamfers) { const A = CORNER[kind]; eraseSpandrel(g, kind, (ccx + A.cx) * T, (ccy + A.cy) * T, HR); } };
     /* which chamfers are a rect's OWN — the four corners it can legitimately round off itself */
@@ -4198,6 +4289,7 @@ const StationBake = (() => {
       const keep = canvas(CW, CH2), kg = keep.getContext('2d');
       kg.imageSmoothingEnabled = false;
       for (const r of grp.rects) {
+        if (offCanvas(r)) continue;
         const one = canvas(CW, CH2), og = one.getContext('2d');
         og.imageSmoothingEnabled = false;
         og.save(); og.translate(-VX, -(VY - M)); og.fillStyle = '#fff'; stampRect(og, r);
@@ -4250,7 +4342,7 @@ const StationBake = (() => {
     const rects = G.allRects;
     let own = null, tops = null;
     {
-      const idxCv = canvas(CW, CH2), ig = idxCv.getContext('2d');
+      const idxCv = readbackCanvas(CW, CH2), ig = idxCv.getContext('2d');
       ig.imageSmoothingEnabled = false;
       ig.save();
       ig.translate(-VX, -(VY - M));
@@ -4266,9 +4358,11 @@ const StationBake = (() => {
          ownership raster is what `maskTo` cuts every group back to, so a plate ring the silhouette
          keeps but ownership dropped would be masked straight back out and the corner would stay
          short. The two rasters must agree pixel for pixel or the fix is invisible. */
+      const one = readbackCanvas(CW, CH2), og = one.getContext('2d');   // one scratch, cleared per footprint
       rects.forEach((r, i) => {
-        const one = canvas(CW, CH2), og = one.getContext('2d');
+        if (offCanvas(r)) return;
         og.imageSmoothingEnabled = false;
+        og.clearRect(0, 0, CW, CH2);
         og.save(); og.translate(-VX, -(VY - M));
         og.fillStyle = idxOf(i);
         og.fillRect(r.x1 * T - pad, r.y1 * T - pad, (r.x2 - r.x1 + 1) * T + pad * 2, (r.y2 - r.y1 + 1) * T + pad * 2);
@@ -4327,6 +4421,18 @@ const StationBake = (() => {
       ctx.globalCompositeOperation = 'source-over';
     };
 
+    /* ON THE PLATE GRID (2026-10-14). These scratch rects are local to THIS canvas (a chunk's ownership raster is clipped to
+       the chunk), so the same skirt gets a different scratch origin and size in a chunk bake than in a whole-station bake.
+       Below 6x that moved the scratch plate's pixel grid against the base plate's by a fraction and stretched it by
+       ceil(w * s) / (w * s) when it was folded back in — the hull skirts came out resampled differently in every chunk
+       (Δ255 against a whole-station bake on a 1464px floor). Snapping each scratch rect outward to the plate grid (its top
+       measured from the base canvas row, M rows above this canvas) makes every fold a 1:1 copy at whole plate pixels; the
+       few extra margin pixels are transparent and masked out exactly as before. */
+    const step = plateStep();
+    const onGrid = bd => {
+      const x = Math.floor(bd.x / step) * step, y = M + Math.floor((bd.y - M) / step) * step;
+      return { x, y, right: x + Math.ceil((bd.right - x) / step) * step, bottom: y + Math.ceil((bd.bottom - y) / step) * step };
+    };
     list.forEach((grp, gi) => {
       if (visibleGroups && !visibleGroups.has(gi)) return;
       const pal = hullPal(grp.z);
@@ -4337,11 +4443,11 @@ const StationBake = (() => {
         const g = cv.getContext('2d');
         g.translate(-bounds.x, -bounds.y);
         return { cv, ctx: typeof IndustrialTextures !== 'undefined'
-          ? IndustrialTextures.detailContext(g, { width: CW, height: CH2 }) : g };
+          ? IndustrialTextures.detailContext(g, detailRef()) : g };
       };
       // Dense plates only need the extent surviving the ownership mask. Keep
       // painter coordinates chunk-relative so textures and seams do not move.
-      const bounds = own ? groupBounds[gi] : { x: 0, y: 0, right: CW, bottom: CH2 };
+      const bounds = onGrid(own ? groupBounds[gi] : { x: 0, y: 0, right: CW, bottom: CH2 });
       const { cv: f, ctx: fg } = shellLayer(bounds);
       const stamp = (dy, c) => {
         tg.globalCompositeOperation = 'source-over';
@@ -4367,7 +4473,7 @@ const StationBake = (() => {
         if (recipe.veins && own && tops) {
           for (let i = 0; i < rects.length; i++) {
             if (groupOfRect[i] !== gi || !visibleRects[i]) continue;
-            const rb = rectBounds[i];
+            const rb = onGrid(rectBounds[i]);
             const { cv: one, ctx: og } = shellLayer(rb);
             og.imageSmoothingEnabled = false;
             // world-coord keying: the canvas' top-left is world (VX, VY - M), so a recipe adding
@@ -4437,7 +4543,7 @@ const StationBake = (() => {
     const GAP = T * 5 + pad * 2;   // how far apart two hulls can be and still bound an alley run
     const M = GAP + pad;
     const w = CW + 2 * M, h = CH + 2 * M;
-    const sil = canvas(w, h);
+    const sil = readbackCanvas(w, h);
     const g = sil.getContext('2d');
     g.imageSmoothingEnabled = false;
     g.translate(-(VX - M), -(VY - M));
@@ -4530,7 +4636,8 @@ const StationBake = (() => {
          bake paths skip together, so parity holds there too.
      DEPTH.dither = mix between the smooth original and the fully dithered result (0 = off). */
   const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-  function ditherLight(L, w, h) {
+  // (vx, vy: the canvas's origin in bake px — the Bayer phase is keyed to it; a deferred dither passes its own chunk's)
+  function ditherLight(L, w, h, vx = VX, vy = VY) {
     const k = Math.max(0, Math.min(1, DEPTH.dither));
     if (k <= 0.001) return;
     if (typeof L.getImageData !== 'function' || typeof L.putImageData !== 'function') return;
@@ -4538,12 +4645,12 @@ const StationBake = (() => {
     const d = img.data;
     const STEPS = 5;   // alpha quantized to 6 hard values (0, 51, 102 … 255)
     for (let y = 0; y < h; y++) {
-      const row = ((y + VY) & 3) << 2;
+      const row = ((y + vy) & 3) << 2;
       for (let x = 0; x < w; x++) {
         const i = ((y * w + x) << 2) + 3;
         const a = d[i];
         if (!a || a === 255) continue;
-        const t = (BAYER4[row | ((x + VX) & 3)] + 0.5) / 16;
+        const t = (BAYER4[row | ((x + vx) & 3)] + 0.5) / 16;
         const q = Math.min(STEPS, Math.floor((a / 255) * STEPS + t)) * (255 / STEPS);
         d[i] = Math.round(a + (q - a) * k);
       }
@@ -4568,9 +4675,9 @@ const StationBake = (() => {
     }
     // A raised corner face extends above and outside its floor tile. Reuse the
     // painter's clipped spans so it receives the same light as the straight wall.
-    for (const [x,y,w,h] of cornerFaceRects) b.fillRect(x,y,w,h);
+    for (const [x,y,w,h] of cornerFaceRects) if (!missesCanvas(x, y, x + w, y + h)) b.fillRect(x,y,w,h);
     b.globalCompositeOperation = 'destination-out';
-    for (const [x,y,w,h] of crownRects) b.fillRect(x,y,w,h);
+    for (const [x,y,w,h] of crownRects) if (!missesCanvas(x, y, x + w, y + h)) b.fillRect(x,y,w,h);
     b.globalCompositeOperation = 'source-over';
     return cv;
   }
@@ -4715,7 +4822,7 @@ const StationBake = (() => {
        gradient: it stands for a surface, not a light source. */
     if (LIGHT.crown > 0.001) {
       L.fillStyle = 'rgba(0,0,0,' + Math.min(1, LIGHT.crown).toFixed(3) + ')';
-      for (const [x, y, w, h] of crownRects) L.fillRect(x, y, w, h);
+      for (const [x, y, w, h] of crownRects) if (!missesCanvas(x, y, x + w, y + h)) L.fillRect(x, y, w, h);
     }
     for (const l of lampPos) cut(l.x, l.y, l.r, LIGHT.pool * (l.gain == null ? 1 : l.gain));
     // doorway light spill so corridors and rooms read as connected — DOORWAYS only (see pairIsSill)
@@ -4787,7 +4894,12 @@ const StationBake = (() => {
     L.fillStyle = 'rgba(0,0,0,1)';
     for (const v of viewportRects) L.fillRect(v.x, v.y, v.w, v.h);
     L.globalCompositeOperation = 'source-over';
-    ditherLight(L, lightCv.width, lightCv.height);
+    /* ONE WAIT FOR THE GPU PER CALL, NOT PER CHUNK. The dither reads the light map back, and a GPU readback waits for every
+       draw queued before it — the chunk's whole dense plate. The chunks one bakeIncremental call bakes queue their dithers
+       (ditherQueue) and run them after the last chunk, so the GPU rasters one chunk while the next one's walls are walked.
+       Nothing reads a chunk's light map before its dither runs (the call returns after it). */
+    if (ditherQueue) ditherQueue.push({ L, w: lightCv.width, h: lightCv.height, vx: VX, vy: VY });
+    else ditherLight(L, lightCv.width, lightCv.height);
     const flickers = [];
     for (let i = 0; i < lampPos.length; i += 2) flickers.push(lampPos[i]);
     return { lightCv, interiorCv, flickers, lamps: lampPos.slice() };   // lamps = all virtual light samples; no ceiling hardware is rendered
@@ -4796,7 +4908,7 @@ const StationBake = (() => {
   function buildBase() {
     const baseCv = canvas(CW, CH);
     const rawContext = translatedContext(baseCv);
-    const b = typeof IndustrialTextures !== 'undefined' ? IndustrialTextures.detailContext(rawContext) : rawContext;
+    const b = typeof IndustrialTextures !== 'undefined' ? IndustrialTextures.detailContext(rawContext, detailRef()) : rawContext;
 
     /* THE EXTERIOR SHELL, PER FOOTPRINT (2026-08-05). Every pass below used to run once for the whole
        station off a single constant; each is now driven by the owning room's HULL_RECIPES entry.
@@ -4821,8 +4933,8 @@ const StationBake = (() => {
     // chamfer hull spandrel erase + curved rim — BEFORE corridor connectors, so a corridor kissing a
     // room's rounded corner keeps its hull (v7 render.js ordering: corridors drawn after the erase)
     for (const [ccx, ccy, kind] of chamfersByDepth) {
-      const A = CORNER[kind], ax = (ccx + A.cx) * T, ay = (ccy + A.cy) * T;
-      eraseSpandrel(b, kind, ax, ay, HR);
+      const A = CORNER[kind], ax = (ccx + A.cx) * T, ay = (ccy + A.cy) * T, away = cornerMissesCanvas(ccx, ccy, kind);
+      if (!away) eraseSpandrel(b, kind, ax, ay, HR);
       /* THE RIM HAS TO FOLLOW THE SAME PROFILE THE ERASE CUT (2026-08-08). This was the file's
          last surviving stroked `arc()`, and it survived precisely because a circle looks the same
          from both sides — the erase and the stroke agreed by coincidence, not by construction. The
@@ -4837,6 +4949,7 @@ const StationBake = (() => {
          The tone belongs to the room the corner was cut from, same as the interior chamfer pass, or
          a clad room reverts to shell-grey at its corners. */
       b.fillStyle = hullPal(G.zoneGrid[G.idx(ccx, ccy)]).arc;
+      if (away) continue;
       let prevX = null;
       eachCornerRow(kind, ax, ay, HR - 2, (py, ex) => {
         if (ex == null) { prevX = null; return; }
@@ -4885,7 +4998,9 @@ const StationBake = (() => {
     b.globalCompositeOperation = 'source-over';
 
     // floors
-    for (const r of G.allRects) (G.isCorridor(r.z) ? bakeCorridorFloor : bakeDeck)(b, r);
+    // (a deck tile paints inside its own tile, so a chunk lays only the tiles on its canvas, and one more all round)
+    const onCanvas = { x1: Math.floor((VX - 1) / T) - 1, x2: Math.floor((VX + CW + 1) / T) + 1, y1: Math.floor((VY - 1) / T) - 1, y2: Math.floor((VY + CH + 1) / T) + 1 };
+    for (const r of G.allRects) if (!rectCulled(r)) (G.isCorridor(r.z) ? bakeCorridorFloor : bakeDeck)(b, r, onCanvas);
     bakeEdgeAO(b);
     bakeCorridorDressing(b);
     bakeWalls(b);
@@ -4898,6 +5013,7 @@ const StationBake = (() => {
        makes it connect. */
     // chamfer floor-cut + curved interior wall pass — depth order, same as the rim pass above
     for (const [ccx, ccy, kind] of chamfersByDepth) {
+      if (tileCulled(ccx, ccy) || cornerMissesCanvas(ccx, ccy, kind)) continue;   // see A CHUNK PAINTS ONLY WHAT CAN REACH IT
       const X = ccx * T, Y = ccy * T, A = CORNER[kind], ax = X + A.cx * T, ay = Y + A.cy * T;
       // a rounded corner belongs to the room it was cut from — take that room's wall palette so a
       // coloured room's corner arc doesn't revert to the old universal brown-grey.
@@ -4928,11 +5044,11 @@ const StationBake = (() => {
          south keeps those rows. `clamp` routes through here, so this covers the whole pass. */
       const fill = (x, y, w, h, c) => {
         if (w <= 0 || h <= 0) return;
-        for (let cx0 = x; cx0 < x + w; ) {
-          const lim = nearerNorthTop(Math.floor(cx0 / T), ccy);
+        for (let cx0 = x; cx0 < x + w; ) {   // (grouped by the limit as it cuts this rect — see bakeCornerCrown's put)
+          const lim = Math.min(y + h, nearerNorthTop(Math.floor(cx0 / T), ccy));
           let cx1 = cx0 + 1;
-          while (cx1 < x + w && nearerNorthTop(Math.floor(cx1 / T), ccy) === lim) cx1++;
-          const yEnd = Math.min(y + h, lim);
+          while (cx1 < x + w && Math.min(y + h, nearerNorthTop(Math.floor(cx1 / T), ccy)) === lim) cx1++;
+          const yEnd = lim;
           if (yEnd > y) { b.fillStyle = c; b.fillRect(cx0, y, cx1 - cx0, yEnd - y); }
           cx0 = cx1;
         }
@@ -5103,7 +5219,7 @@ const StationBake = (() => {
 
     bakeRoomLighting(b);   // after the chamfers, so a rounded corner is lit like every other surface
     if (nextSurfaces() && WorldSurface.paintFixtures) wallFixtures = WorldSurface.paintFixtures(b, G,
-      { wallUp: WALL.up, corUp: WALL.corUp, infillFixtures: projectionPresentation, viewport: { x: VX, y: VY, w: CW, h: CH } });
+      Object.assign(fixtureOpts(), { viewport: { x: VX, y: VY, w: CW, h: CH } }));
 
     // faint room name plates (the v7 floor-code stencil, generalized)
     b.font = "7px 'VT323','Courier New',monospace"; b.fillStyle = 'rgba(255,255,255,0.07)'; b.textAlign = 'left';
@@ -5127,9 +5243,15 @@ const StationBake = (() => {
       return false;
     }
     G = geo; T = geo.TILE; HR = T + pad; W = geo.W; H = geo.H;
-    wallPalCache = null;   // per-room wall palettes are derived from THIS geometry — never reuse across bakes
-    hullPalCache = null;   // ...and so are the per-room exterior shells
-    stripCache = null;     // ...and the rendered face strips the curved surfaces sample
+    // (the chunks one bakeIncremental call bakes share them: one geometry, one set of knobs, nothing changes in between)
+    if (geo !== sharedGeo) {
+      wallPalCache = null;   // per-room wall palettes are derived from THIS geometry — never reuse across bakes
+      hullPalCache = null;   // ...and so are the per-room exterior shells
+    }
+    // the rendered face strips the curved surfaces sample: kept while nothing they are rendered from has changed (STRIPS
+    // OUTLIVE A BAKE)
+    const st = stripToken();
+    if (st !== stripCacheToken || (stripCache && stripCache.size > 96)) { stripCache = null; stripCacheToken = st; }
     viewportRects = [];    // ...and so are the window holes the wall pass punches
     crownRects = [];       // ...and the crown rects the ambient cut reads back
     cornerFaceRects = [];  // actual curved wall pixels, shared with the light receiver
@@ -5137,6 +5259,8 @@ const StationBake = (() => {
     crownReach = new Map();   // ...and the corner crown's measured reach, which the mask erase reads back
     VX = viewport ? viewport.x : 0; VY = viewport ? viewport.y : 0;
     CW = viewport ? viewport.w : W; CH = viewport ? viewport.h : H;
+    const reach = dirtyPadPx() + T;
+    cullBox = viewport ? [VX - reach, VY - reach, VX + CW + reach, VY + CH + reach] : null;
     lampPos = []; wallFixtures = []; chamferAt = {}; extN = new Set();
     extNByCol = null;   // ...and the tall-north-face column index the corner ring's depth clip reads
     for (const [cx, cy, k] of geo.chamfers) chamferAt[cx + ',' + cy] = k;
@@ -5240,16 +5364,32 @@ const StationBake = (() => {
     return result;
   }
 
-  function bakeViewport(geo, viewport) {
+  // `chunk`: a BUILD MODE chunk keeps only its canvases and lists (bakeChunk) — the nav lights, interior clip path and door
+  // occluders are whole-station parts (stitchWhole builds them from the stitched pixels), so a chunk skips their readbacks
+  function bakeViewport(geo, viewport, chunk) {
     if (!setBakeState(geo, viewport)) return blankBake(geo);
     const baseCv = buildBase();
     const { lightCv, interiorCv, flickers, lamps } = buildLightMap();
-    const navLights = hullNavLights(baseCv, interiorCv), interiorPath = interiorLightPath(interiorCv);
-    const doorOccluders = buildDoorOccluders(baseCv);
-    return { baseCv, lightCv, interiorCv, interiorPath, navLights, doorOccluders, W: geo.W, H: geo.H, origin: geo.origin, flickers, lamps, wallFixtures, viewport: viewport || { x: 0, y: 0, w: geo.W, h: geo.H } };
+    const navLights = chunk ? [] : hullNavLights(baseCv, interiorCv), interiorPath = chunk ? null : interiorLightPath(interiorCv);
+    const doorOccluders = chunk ? [] : buildDoorOccluders(baseCv);
+    return { baseCv, lightCv, interiorCv, interiorPath, navLights, doorOccluders, W: geo.W, H: geo.H, origin: geo.origin, flickers, lamps, wallFixtures,
+      viewport: viewport || { x: 0, y: 0, w: geo.W, h: geo.H }, doorRecords: doorOcclusion, glassRects: viewportRects };
   }
 
+  /* THE WHOLE STATION IS ITS CHUNKS, STITCHED (2026-10-14, the busy-station walk). BUILD MODE's first edit cuts the chunks
+     it does not re-bake from the live world's whole-station bake (slicedChunks), and every later edit compares — and
+     composes — them with freshly baked chunks. A whole-station canvas is not a chunk canvas: the same art drawn at another
+     canvas size and offset rounds a level differently here and there, a chunk's rim differs where a pass reads past its
+     edge, and on a 1464px floor the cut chunks disagreed with fresh ones by ~6k pixels (0.8-1.1 M before the plate-grid
+     fix above). So a station larger than one chunk is baked AS its chunks and stitched (stitchWhole): the world's bake, the
+     chunks BUILD MODE cuts from it, the ones it re-bakes and the floor it hands back on SAVE & EXIT are one set of pixels by
+     construction. A one-chunk station, or a set stitchWhole refuses, bakes whole as before. */
   function bake(geo) {
+    const grid = chunkGrid(geo);
+    if (grid.cols * grid.rows > 1) {
+      const whole = stitchWhole(geo, bakeIncremental(geo, null, null));
+      if (whole) return whole;
+    }
     return bakeViewport(geo, null);
   }
 
@@ -5261,17 +5401,26 @@ const StationBake = (() => {
       chunkPx: CHUNK_PX
     };
   }
+  /* EVERY CHUNK IS A WHOLE SQUARE (2026-10-14, the busy-station walk: a room past the south edge re-baked the whole bottom row
+     of chunks). An edge chunk used to end at the floor's edge, so a floor that grew or shrank there changed the size of every
+     chunk along it, and a chunk of another size is another bake. A chunk is CHUNK_PX square wherever it lies: the floor's
+     margin is wider than anything a tile paints, so past the floor's edge a chunk is transparent (the live world's stitched
+     floor and a BUILD MODE frame drew the same pixels either way, measured on the busy station and a station of every
+     material), and growth there re-bakes only the chunks its rects reach. A chunk is never resized to follow the edge
+     instead: on the GPU a scratch layer of another size samples a pixel here and there differently (6 dense-plate pixels,
+     Δ25, on the busy station's bottom row), so a resized chunk is not the chunk a fresh bake paints. */
   function chunkViewport(geo, cx, cy) {
-    const x = cx * CHUNK_PX, y = cy * CHUNK_PX;
-    return { x, y, w: Math.min(CHUNK_PX, geo.W - x), h: Math.min(CHUNK_PX, geo.H - y) };
+    return { x: cx * CHUNK_PX, y: cy * CHUNK_PX, w: CHUNK_PX, h: CHUNK_PX };
   }
+  // a rect is padded by the dirty reach (what a tile there can paint) unless it names its own (`pad`, in px: a room's name
+  // plate changes only the text's pixels — worldmodel nameplateRect)
   function dirtyRectToLocalPx(geo, r) {
-    const t = geo.TILE;
+    const t = geo.TILE, p = typeof r.pad === 'number' && r.pad >= 0 ? r.pad : dirtyPadPx();
     return {
-      x1: Math.max(0, (r.x1 - geo.origin.tx) * t - dirtyPadPx()),
-      y1: Math.max(0, (r.y1 - geo.origin.ty) * t - dirtyPadPx()),
-      x2: Math.min(geo.W, (r.x2 + 1 - geo.origin.tx) * t + dirtyPadPx()),
-      y2: Math.min(geo.H, (r.y2 + 1 - geo.origin.ty) * t + dirtyPadPx())
+      x1: Math.max(0, (r.x1 - geo.origin.tx) * t - p),
+      y1: Math.max(0, (r.y1 - geo.origin.ty) * t - p),
+      x2: Math.min(geo.W, (r.x2 + 1 - geo.origin.tx) * t + p),
+      y2: Math.min(geo.H, (r.y2 + 1 - geo.origin.ty) * t + p)
     };
   }
   function dirtyChunks(geo, dirtyRects) {
@@ -5336,10 +5485,12 @@ const StationBake = (() => {
   }
   function bakeChunk(geo, cx, cy, usedAt) {
     const viewport = chunkViewport(geo, cx, cy);
-    const baked = bakeViewport(geo, viewport);
+    const baked = bakeViewport(geo, viewport, true);
+    sharedGeo = geo;   // the next chunk of this call keeps the strips and palettes this one made
     return { key: chunkKey(cx, cy), cx, cy, x: viewport.x, y: viewport.y, w: viewport.w, h: viewport.h,
       baseCv: baked.baseCv, lightCv: baked.lightCv, interiorCv: baked.interiorCv,
-      flickers: baked.flickers, lamps: baked.lamps || [], wallFixtures: baked.wallFixtures || [], usedAt: usedAt || 0 };
+      flickers: baked.flickers, lamps: baked.lamps || [], wallFixtures: baked.wallFixtures || [], usedAt: usedAt || 0,
+      doorRecords: baked.doorRecords || null, glassRects: baked.glassRects || null };
   }
   function pruneChunkMap(chunkMap, maxRetainedChunks, requiredKeys) {
     if (!maxRetainedChunks || chunkMap.size <= maxRetainedChunks) return { evicted: 0 };
@@ -5362,16 +5513,99 @@ const StationBake = (() => {
     }
     return out;
   }
+  /* THE FLOOR GREW, THE FRAME DID NOT MOVE (2026-10-13). A room stamped past the station's south or east edge (or one
+     removed there) changes W/H but not the origin, so every local pixel coordinate — and every chunk's content — is
+     unchanged except near the edit, which the dirty rects name exactly as for any in-frame edit. It used to count as a
+     new frame and re-bake every visible chunk: ~6 s on a large station for one room. Chunks whose rect is unchanged in
+     the new frame are kept; an edge chunk the new size reshapes is dropped (a visible one re-bakes below). An origin
+     move still re-bakes everything: the bake hashes some marks by local coordinates, so a shifted chunk would not be
+     pixel-identical to a fresh one. (Since every chunk is a whole square, an edge chunk keeps its rect too.) */
+  /* ...AND THE PLATE DENSITY DID NOT MOVE EITHER (2026-10-14). The density follows the floor's larger side, so a room past
+     the east edge of a wide station (or the south edge of a tall one) changes it: every kept chunk's dense plate was painted
+     at the old density, at another size than a fresh chunk's (9 chunks on the busy-station walk). Then nothing is kept. */
+  function samePlateDensity(prev, geo) {
+    return paintedDensity(prev.W, prev.H) === paintedDensity(geo.W, geo.H);
+  }
+  function keptChunks(prev, geo) {
+    if (!(prev && prev.chunked && prev.chunkMap && prev.origin && prev.chunkPx === CHUNK_PX &&
+      prev.origin.tx === geo.origin.tx && prev.origin.ty === geo.origin.ty && samePlateDensity(prev, geo))) return null;
+    const grid = chunkGrid(geo), kept = new Map();
+    for (const c of prev.chunkMap.values()) {
+      if (c.cx >= grid.cols || c.cy >= grid.rows) continue;
+      const v = chunkViewport(geo, c.cx, c.cy);
+      if (v.x === c.x && v.y === c.y && v.w === c.w && v.h === c.h) kept.set(c.key, c);
+    }
+    return kept;
+  }
+  /* THE WORLD'S BAKE IS ALREADY THE FLOOR (2026-10-13, Andrew: "a huge delay in build mode"). BUILD MODE opens on the
+     live world's whole-station bake (entry never re-bakes), so its FIRST edit found no chunks to keep and re-baked every
+     visible one — ~4.5 s on a large station for the first room or rename. A whole-station bake paints the same pixels a
+     chunk does (the chunk contract, one density per station), so the chunks an edit cannot reach are CUT from it: 1:1
+     copies of its base, light and interior canvases and of its dense plate. Same origin only (a moved origin re-bakes
+     everything, as before), and only the chunks whose rect the new frame keeps; a cut that would not land on whole plate
+     pixels is skipped, and that chunk bakes. */
+  function slicedChunks(prev, geo) {
+    const whole = prev && prev.viewport;
+    if (!(prev && !prev.chunked && prev.baseCv && prev.lightCv && prev.origin && whole && whole.x === 0 && whole.y === 0 &&
+      whole.w === prev.W && whole.h === prev.H && prev.origin.tx === geo.origin.tx && prev.origin.ty === geo.origin.ty &&
+      samePlateDensity(prev, geo))) return null;
+    // only a bake made of chunks cuts back into them exactly (bake(): THE WHOLE STATION IS ITS CHUNKS, STITCHED); a
+    // whole-canvas bake is not one — not even of a one-chunk floor: its canvas is the floor's size, a chunk's is CHUNK_PX
+    // square, and on the GPU a scratch layer of another size samples a pixel here and there differently — so its chunks bake
+    const prevGrid = chunkGrid(prev);
+    if (!prev.stitched) return null;
+    const grid = chunkGrid(geo), old = { W: prev.W, H: prev.H }, out = new Map();
+    // (a chunk of the old floor: past its edge the cut is transparent, as a fresh chunk is there)
+    const cut = (cv, v) => {
+      if (!cv) return null;
+      const c = canvas(v.w, v.h), g = c.getContext('2d');
+      g.imageSmoothingEnabled = false; g.drawImage(cv, -v.x, -v.y);
+      return c;
+    };
+    for (let cy = 0; cy < grid.rows; cy++) for (let cx = 0; cx < grid.cols; cx++) {
+      const v = chunkViewport(geo, cx, cy), o = chunkViewport(old, cx, cy);
+      if (cx >= prevGrid.cols || cy >= prevGrid.rows || v.x !== o.x || v.y !== o.y || v.w !== o.w || v.h !== o.h) continue;
+      const baseCv = cut(prev.baseCv, v);
+      if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.cropBase && !IndustrialTextures.cropBase(prev.baseCv, baseCv, v.x, v.y)) continue;
+      out.set(chunkKey(cx, cy), { key: chunkKey(cx, cy), cx, cy, x: v.x, y: v.y, w: v.w, h: v.h,
+        baseCv, lightCv: cut(prev.lightCv, v), interiorCv: cut(prev.interiorCv, v),
+        flickers: prev.flickers || [], lamps: prev.lamps || [], wallFixtures: prev.wallFixtures || [], usedAt: 0,
+        doorRecords: prev.doorRecords || null, glassRects: prev.glassRects || null });
+    }
+    return out;
+  }
+  /* ONE CALL, ONE SET OF STRIPS. Every chunk bake renders the face strips its curved walls sample (a canvas and a GPU
+     readback each, on the busy station ~6 ms a chunk) and derives the rooms' palettes, and a room edit bakes up to a dozen
+     chunks of the same floor in one call. They are shared across that call's chunks (sharedGeo), never across calls. */
+  let sharedGeo = null, ditherQueue = null;
   function bakeIncremental(geo, previous, dirtyRects, opts) {
+    sharedGeo = null;   // the first chunk of this call starts from fresh caches
+    ditherQueue = [];
+    try { return bakeIncrementalShared(geo, previous, dirtyRects, opts); }
+    finally {
+      sharedGeo = null;
+      const queued = ditherQueue; ditherQueue = null;
+      for (const d of queued) ditherLight(d.L, d.w, d.h, d.vx, d.vy);
+    }
+  }
+  function bakeIncrementalShared(geo, previous, dirtyRects, opts) {
     opts = opts || {};
-    const reuse = sameChunkFrame(previous, geo);
+    const same = sameChunkFrame(previous, geo), grown = same ? null : (keptChunks(previous, geo) || slicedChunks(previous, geo));
+    const reuse = same || !!grown;
     const generation = reuse ? (previous.generation || 0) + 1 : 1;
-    const chunkMap = reuse ? new Map(previous.chunkMap) : new Map();
+    const chunkMap = same ? new Map(previous.chunkMap) : grown || new Map();
     const visible = chunkRefsForRect(geo, opts.visibleRect);
     const visibleKeys = new Set((visible || []).map(c => c.key));
-    let dirty = (reuse && opts.onlyMissingVisible) ? [] : (reuse ? dirtyChunks(geo, dirtyRects) : dirtyChunks(geo, []));
-    if (!reuse && visible) dirty = dirty.filter(d => visibleKeys.has(d.key));
-    for (const d of dirty) chunkMap.set(d.key, bakeChunk(geo, d.cx, d.cy, generation));
+    // an edit with no rects re-bakes the whole station: nothing kept is still true, so it is a reset — the visible chunks
+    // bake now and the rest lazily as they pan into view (as on any reset), never every chunk of the station in one frame
+    const everything = reuse && !(same && opts.onlyMissingVisible) && !(dirtyRects && dirtyRects.length) && !!visible;
+    if (everything) chunkMap.clear();
+    let dirty = (same && opts.onlyMissingVisible) ? [] : (reuse ? dirtyChunks(geo, dirtyRects) : dirtyChunks(geo, []));
+    if ((!reuse || everything) && visible) dirty = dirty.filter(d => visibleKeys.has(d.key));
+    // with no viewport the caller wants the whole floor, like a cold bake: chunks a grown frame dropped or added fill in too
+    if (grown && !visible) for (const d of dirtyChunks(geo, [])) if (!chunkMap.has(d.key) && !dirty.some(x => x.key === d.key)) dirty.push(d);
+    const bakedNow = [];
+    for (const d of dirty) { const c = bakeChunk(geo, d.cx, d.cy, generation); chunkMap.set(d.key, c); bakedNow.push(c); }
     const requiredKeys = new Set(dirty.map(d => d.key));
     let visibleBaked = 0;
     for (const v of (visible || [])) {
@@ -5379,20 +5613,68 @@ const StationBake = (() => {
       const existing = chunkMap.get(v.key);
       if (existing) existing.usedAt = generation;
       else {
-        chunkMap.set(v.key, bakeChunk(geo, v.cx, v.cy, generation));
+        const c = bakeChunk(geo, v.cx, v.cy, generation);
+        chunkMap.set(v.key, c); bakedNow.push(c);
         visibleBaked++;
       }
     }
     const pruned = pruneChunkMap(chunkMap, opts.maxRetainedChunks, requiredKeys);
     const chunks = Array.from(chunkMap.values()).sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx));
+    /* THE LIGHTS ARE THE FLOOR'S NOW, NOT EVERY FLOOR A CHUNK EVER SAW (2026-10-13). Every chunk bake lists the lamps,
+       flickers and wall fixtures of the WHOLE station as it stood when that chunk baked, and the cache used to be the union
+       of all of them — so a room removed (or moved) in BUILD MODE kept its lamps and fixtures lit from every chunk the
+       edit did not reach (3 phantom lamps + 3 fixtures and 116 flickers for 69 after removing one room on the demo
+       station). The lists now come from the chunks baked in THIS call (all of them baked against this floor), else they
+       carry over unchanged from the cache this one continues (nothing re-baked = nothing moved), else the union. */
+    const carried = !bakedNow.length && reuse && previous && previous.lamps && previous.flickers && previous.wallFixtures;
+    const lists = field => bakedNow.length ? uniqueFlickers(bakedNow, field) : carried ? previous[field || 'flickers'] : uniqueFlickers(chunks, field);
     return {
       chunked: true, chunks, chunkMap, chunkPx: CHUNK_PX, generation,
-      W: geo.W, H: geo.H, origin: geo.origin, flickers: uniqueFlickers(chunks), lamps: uniqueFlickers(chunks, 'lamps'),
-      wallFixtures: uniqueFlickers(chunks, 'wallFixtures'),
+      W: geo.W, H: geo.H, origin: geo.origin, flickers: lists(), lamps: lists('lamps'),
+      wallFixtures: lists('wallFixtures'),
       stats: { chunkCount: chunks.length, rebakedChunks: dirty.length + visibleBaked, reusedChunks: reuse ? Math.max(0, chunks.length - dirty.length - visibleBaked) : 0,
         dirtyChunks: dirty.map(d => d.key), visibleChunks: visible ? Array.from(visibleKeys) : null,
         evictedChunks: pruned.evicted, fullReset: !reuse }
     };
+  }
+
+  /* BUILD MODE HANDS ITS FLOOR BACK (2026-10-13, Andrew: "a huge delay in build mode"). Leaving BUILD MODE after a room
+     edit re-baked the whole station for the live world (~2.3 s of SAVE & EXIT on the demo station) although BUILD MODE
+     had just painted every chunk of it. When its chunk set covers the floor exactly — every chunk present, in this frame,
+     each showing the wall-fixture housings this floor's plan puts in its rect NOW (furniture reaches the bake only
+     through that plan; every other edit re-baked the chunks it reaches) — the chunks are stitched into one whole-station bake instead: 1:1 copies of their canvases and dense plates, plus the
+     parts only a whole bake has (door occluders, nav lights, the interior clip), built from the stitched pixels. Anything
+     less returns null and the world bakes as before. */
+  // the housings a bake paints into one chunk rect (WorldSurface.paintFixtures' own cull), as a comparable key
+  const paintedIn = (fx, c) => (fx || []).filter(f => !(f.fixtureX + 5 <= c.x || f.fixtureX - 5 >= c.x + c.w || f.fixtureY + 6 <= c.y || f.fixtureY - 2 >= c.y + c.h))
+    .map(f => f.id + '@' + f.fixtureX + ',' + f.fixtureY + ':' + f.base).sort().join(';');
+  function stitchWhole(geo, baked) {
+    if (!baked || !baked.chunked || !sameChunkFrame(baked, geo)) return null;
+    const grid = chunkGrid(geo), cells = [];
+    for (let cy = 0; cy < grid.rows; cy++) for (let cx = 0; cx < grid.cols; cx++) {
+      const c = baked.chunkMap.get(chunkKey(cx, cy)), v = chunkViewport(geo, cx, cy);
+      if (!c || c.x !== v.x || c.y !== v.y || c.w !== v.w || c.h !== v.h || !c.baseCv || !c.lightCv || !c.doorRecords || !c.glassRects) return null;
+      cells.push(c);
+    }
+    if (!setBakeState(geo, null)) return null;
+    const plan = nextSurfaces() && WorldSurface.paintFixtures ? WorldSurface.paintFixtures(null, G, fixtureOpts()) : [];
+    if (cells.some(c => paintedIn(c.wallFixtures, c) !== paintedIn(plan, c))) return null;
+    const baseCv = canvas(W, H), lightCv = canvas(W, H), interiorCv = canvas(W, H);
+    for (const [cv, field] of [[baseCv, 'baseCv'], [lightCv, 'lightCv'], [interiorCv, 'interiorCv']]) {
+      const g = cv.getContext('2d'); g.imageSmoothingEnabled = false;
+      for (const c of cells) if (c[field]) g.drawImage(c[field], c.x, c.y);
+    }
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.stitchBase &&
+      !IndustrialTextures.stitchBase(baseCv, cells.map(c => ({ cv: c.baseCv, x: c.x, y: c.y })))) return null;
+    const seen = new Set(), unique = (list, key) => list.filter(d => { const k = key(d); if (seen.has(k)) return false; seen.add(k); return true; });
+    doorOcclusion = unique([].concat(...cells.map(c => c.doorRecords)), d => 'd' + d.x + ',' + d.y + ',' + d.w + ',' + d.h + ',' + d.sortY);
+    viewportRects = unique([].concat(...cells.map(c => c.glassRects)), v => 'g' + v.x + ',' + v.y + ',' + v.w + ',' + v.h);
+    lampPos = []; wallFixtures = plan;
+    const navLights = hullNavLights(baseCv, interiorCv), interiorPath = interiorLightPath(interiorCv);
+    const doorOccluders = buildDoorOccluders(baseCv);
+    return { baseCv, lightCv, interiorCv, interiorPath, navLights, doorOccluders, W: geo.W, H: geo.H, origin: geo.origin,
+      flickers: baked.flickers, lamps: baked.lamps, wallFixtures, viewport: { x: 0, y: 0, w: geo.W, h: geo.H },
+      doorRecords: doorOcclusion, glassRects: viewportRects, stitched: true };
   }
 
   function drawBase(ctx, baked, ox, oy, visibleRect) {
@@ -5494,7 +5776,7 @@ const StationBake = (() => {
      doorway and keeps its sill, track, guide ticks and light spill. */
   const seamOpenJoins = geo => [...classifyJoins(geo)].sort();
 
-  return { bake, bakeIncremental, dirtyChunks, visibleChunks, missingVisibleChunks, drawBase, drawLight, sampleMaterial, sampleWall, sampleHull, seamOpenJoins, wallFloorShadow, CHUNK_PX, LIGHT, WALL, DEPTH, SHAPE, get HULL_EXPOSURE() { return hullLit(); }, hullRampExposure };
+  return { bake, bakeIncremental, stitchWhole, dirtyChunks, visibleChunks, missingVisibleChunks, drawBase, drawLight, sampleMaterial, sampleWall, sampleHull, seamOpenJoins, wallFloorShadow, CHUNK_PX, LIGHT, WALL, DEPTH, SHAPE, get HULL_EXPOSURE() { return hullLit(); }, hullRampExposure };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = StationBake;

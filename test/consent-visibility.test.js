@@ -83,6 +83,14 @@ const F = p => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
   A.ok(/CONSENT_ACK_EXTEND_MS\s*=/.test(idx), 'sidecar: the extension bound is a named, bounded constant');
   // the summon channel keeps its own untouched fail-closed timer (no behavior change out of scope).
   A.ok(/setTimeout\(\(\) => finish\(null\), CONSENT_TIMEOUT_MS\)/.test(idx), 'sidecar: summon fail-closed timer untouched');
+  // sidecar-index-14: AbortSignal.any is missing on Node 18/20.0-20.2; an unguarded call threw inside askHuman, so a
+  // delegated worker's first approval failed its tool call instead of showing the Commander a card
+  const unguarded = [];
+  for (let at = idx.indexOf('AbortSignal.any(['); at >= 0; at = idx.indexOf('AbortSignal.any([', at + 1)) {
+    // the guard sits on the same expression or on the enclosing if, a few lines up
+    if (!/typeof AbortSignal\.any === 'function'/.test(idx.slice(Math.max(0, at - 300), at))) unguarded.push(idx.slice(idx.lastIndexOf('\n', at) + 1, idx.indexOf('\n', at)).trim());
+  }
+  A.eq(unguarded, [], 'sidecar: every AbortSignal.any call checks that the runtime has it');
 }
 
 A.report('consent-visibility');

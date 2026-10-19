@@ -150,7 +150,7 @@ const redact = (t) => String(t).replace(/sk-[A-Za-z0-9]{8,}/g, '[redacted]');
 
   // ---- relevance-ranked index: opts.query reorders by BM25 over {name, summary}; no query -> caller order ----
   {
-    // caller (skillStore mine()) order: pinned first, then updatedAt desc — feed that shape in directly.
+    // a pinned-first, updatedAt-desc caller order (skillStore mine()'s shape; the run prompt passes listAccessible) — fed in directly.
     const idx = [
       { id: 'p1', name: 'Pinned Ops', summary: 'unrelated ops runbook', state: 'active', pinned: true, updatedAt: 1000 },
       { id: 'n1', name: 'Deploy Pipeline', summary: 'ship the app safely', state: 'active', updatedAt: 3000 },
@@ -169,6 +169,44 @@ const redact = (t) => String(t).replace(/sk-[A-Za-z0-9]{8,}/g, '[redacted]');
       'a no-overlap query degrades to updatedAt-desc caller order (tiebreak law)');
     const stopQ = runtimeSkills.composeIndex(idx, { query: 'the of and' });
     A.ok(stopQ.text.indexOf('Deploy Pipeline') < stopQ.text.indexOf('Video Editing'), 'a stopword-only query is treated as no query');
+  }
+  // ---- the run prompt's real caller (listAccessible): pinned first on a turn with no query, and no redundant
+  // owner tags on the agent's own skills (skills-eval-18) ----
+  {
+    const st = makeSkillStore({ io: memIo(), clock, redact });
+    for (const name of ['Alpha brief', 'Beta report', 'Zoom setup']) st.write({ agentId: 'a', name, summary: 'when ' + name.toLowerCase() + ' comes up', body: 'steps' });
+    A.ok(st.manage({ agentId: 'a', action: 'pin', target: 'Zoom setup' }).ok, 'pin the alphabetically last skill');
+    st.write({ agentId: 'b', name: 'Shared runbook', summary: 'station ops', body: 'steps' });
+    A.ok(st.share({ agentId: 'b', target: 'Shared runbook', scope: 'station', actor: 'user' }).ok, 'b shares a station skill');
+    const own = runtimeSkills.composeIndex(st.listAccessible('a', {}), {});
+    A.ok(own.text.indexOf('Zoom setup') >= 0 && own.text.indexOf('Zoom setup') < own.text.indexOf('Alpha brief'), 'a pinned skill leads the index on a turn with no query');
+    const line = name => own.text.split('\n').find(l => l.indexOf('- ' + name) === 0) || '';
+    A.ok(line('Alpha brief') && line('Alpha brief').indexOf('[owner:') < 0, 'the agent\'s own skill carries no owner tag: ' + line('Alpha brief'));
+    A.ok(line('Shared runbook').indexOf('[owner: b, scope: station]') > 0, 'a skill shared by another agent still names its owner and scope');
+    const tight = runtimeSkills.composeIndex(st.listAccessible('a', {}), { budget: 60 });
+    A.ok(/Additional saved skills/.test(tight.text) && tight.text.indexOf('- Beta report [owner:') < 0 && tight.text.indexOf('- Shared runbook [owner: b]') >= 0, 'the names-only overflow applies the same rule');
+    // Another agent's pinned station skill never jumps ahead of the agent's own skills, even when the caller passes
+    // no agentId (the run prompt): listAccessible's agent-scope rows are the caller's own, so they name the owner.
+    A.ok(st.manage({ agentId: 'b', action: 'pin', target: 'Shared runbook' }).ok, 'b pins its station skill');
+    const noQuery = runtimeSkills.composeIndex(st.listAccessible('a', {}), {}).text;
+    A.ok(noQuery.indexOf('Zoom setup') < noQuery.indexOf('Alpha brief') && noQuery.indexOf('Beta report') < noQuery.indexOf('Shared runbook'), 'with no query, the agent\'s own pin leads and another agent\'s pin keeps its place after the agent\'s own skills');
+    const asked = runtimeSkills.composeIndex(st.listAccessible('a', {}), { query: 'alpha brief' }).text;
+    A.ok(asked.indexOf('Zoom setup') < asked.indexOf('Alpha brief') && asked.indexOf('Alpha brief') < asked.indexOf('Shared runbook'), 'with a query, another agent\'s pin ranks by relevance, not ahead of it');
+  }
+  // ---- listAccessible keeps mine()'s order inside the own-first grouping: own pins, then most recently updated,
+  // then name; another agent's newer skill stays after the agent's own (skills-eval-18) ----
+  {
+    const saved = clk;
+    const st = makeSkillStore({ io: memIo(), clock, redact });
+    clk = 5000; st.write({ agentId: 'a', name: 'Alpha old', summary: 'x', body: 'steps' });
+    clk = 6000; st.write({ agentId: 'a', name: 'Beta mid', summary: 'x', body: 'steps' });
+    clk = 7000; st.write({ agentId: 'a', name: 'Gamma new', summary: 'x', body: 'steps' });
+    clk = 7500; A.ok(st.manage({ agentId: 'a', action: 'pin', target: 'Alpha old' }).ok, 'pin the oldest own skill');
+    clk = 8000; st.write({ agentId: 'b', name: 'Aardvark station', summary: 'x', body: 'steps' });
+    A.ok(st.share({ agentId: 'b', target: 'Aardvark station', scope: 'station', actor: 'user' }).ok, 'b shares a newer station skill');
+    A.eq(st.listAccessible('a', {}).map(s => s.name), ['Alpha old', 'Gamma new', 'Beta mid', 'Aardvark station'],
+      'own pin first, then own skills newest first, then other agents\' skills');
+    clk = saved;
   }
   A.eq(runtimeSkills.extractInvocations([{ role: 'user', content: '/skill Deploy\ncontinue' }])[0], 'Deploy', 'slash /skill invocation is parsed');
   A.ok(/PRELOADED SKILLS/.test(runtimeSkills.composeLoaded([s.view('a', 'Deploy', { bump: false })])), 'explicit preload composes full skill bodies');
@@ -412,6 +450,7 @@ const redact = (t) => String(t).replace(/sk-[A-Za-z0-9]{8,}/g, '[redacted]');
   const g = runtimeSkills.composeIndex([], { emptyGuide: true, canManage: true }).text;
   A.ok(/## SAVED AGENT SKILLS/.test(g) && /no saved skills yet/.test(g), 'emptyGuide -> a zero-skill agent is told it has none and what a skill is');
   A.ok(g.indexOf('skill.manage (action create)') >= 0, 'the line names the create call the agent actually has');
+  A.ok(g.indexOf('It applies once approved in ABILITIES > SKILLS.') >= 0, 'the line never implies a saved skill applies before the Commander approves it');
   A.ok(/skill.write/.test(runtimeSkills.composeIndex([], { emptyGuide: true, canManage: false }).text), 'without skill.manage the line names skill.write');
   A.eq(runtimeSkills.composeIndex([], { emptyGuide: true, canManage: true }).text, g, 'the line is a constant (rides the cached prefix)');
   const allArchived = runtimeSkills.composeIndex([{ name: 'Old', body: 'x', state: 'archived' }, { name: 'Older', body: 'y', state: 'archived' }], { emptyGuide: true, canManage: true }).text;

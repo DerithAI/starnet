@@ -154,6 +154,8 @@
         // token death classifies to the ⏼ RECONNECT door, mirroring the pre-run oauthLabel() wrap. Keyed
         // openai-compatible providers keep the generic label (their recovery door is the key field either way).
         label: isDeviceOAuth ? (profile.name || profile.id) : undefined,
+        // the routed-catalog hint is for a VENDOR's own API; a user-run endpoint's ids are legitimately vendor/model (#126)
+        routedIdHint: id !== 'custom' && id !== 'ollama',
         key: isDeviceOAuth ? (opts.token || opts.key) : opts.key,
         baseUrl: opts.baseUrl || profile.baseUrl,
         chatPath: profile.chatPath,
@@ -173,6 +175,8 @@
         staticModels: profile.staticModels,
         // prices.js family for endpoints whose /models carries no pricing (null = stays honestly unpriced)
         priceFamily: (typeof profile.priceFamily === 'string') ? profile.priceFamily : null,
+        // an endpoint that relays to OpenRouter (the managed proxy) takes OpenRouter's cache breakpoints verbatim
+        cacheControl: profile.explicitCache === 'openrouter' ? openrouter.applyCacheControl : null,
         // Local runtimes may need to load a model before returning headers. Hosted providers retain the
         // shared 30s connect ceiling; only profiles that prove a different need override it.
         connectTimeoutMs: wire.connectTimeoutMs,
@@ -182,6 +186,9 @@
         // Ollama: chat on the native /api/chat with a request-sized window (registry `nativeOllama`); an env pin or
         // ceiling wins over the profile's, the same way the output ceilings above resolve.
         nativeOllama: wire.nativeOllama === true,
+        // ...and whether that native wire was only BORROWED on the URL's look (a CUSTOM card): a server that then proves
+        // it is not Ollama is StarNet's wrong guess, so the turn moves to /v1 instead of blaming the user's card.
+        nativeOllamaBorrowed: wire !== profile && wire.nativeOllama === true,
         numCtx: resolveMaxOutputTokens(wire, 'numCtx'),
         maxCtx: resolveMaxOutputTokens(wire, 'maxCtx'),
         defaultContext: opts.defaultContext,

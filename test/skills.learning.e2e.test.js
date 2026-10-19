@@ -13,6 +13,7 @@
    Zero real network, zero spend (fake key, mocked upstream). */
 'use strict';
 const A = require('./_assert.js');
+const { hostText } = require('./helpers/host-notes.js');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -44,7 +45,10 @@ function startMock() {
       let raw = ''; req.on('data', d => { raw += d; }); req.on('end', () => {
         let body = {}; try { body = JSON.parse(raw); } catch (_) {}
         const msgs = Array.isArray(body.messages) ? body.messages : [];
-        const sys = String((msgs[0] && msgs[0].content) || '');
+        // every system-role message: the run's own skill index is ranked by THIS message, so since lean-prompt (2026-10-12)
+        // it rides the per-run <run_context> system note placed with the newest user turn, not the cached system prompt
+        const sys = hostText(msgs);   // + the notes that ride user-side on a non-Claude wire
+        // the MAIN run carries [RUNTIME] - since lean-prompt (2026-10-12) in its <run_context> system note
         const isMain = sys.indexOf('[RUNTIME]') >= 0;
         const tools = (Array.isArray(body.tools) ? body.tools : []).map(t => t && t.function && t.function.name);
         state.requests.push({ sys, isMain, tools });

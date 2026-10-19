@@ -60,4 +60,19 @@ A.ok(convCss.length > 500 && !/text-shadow:\s*0 0|--ph-glow/.test(convCss), 'the
 const px = (convCss.match(/font-size:\s*([0-9.]+)px/g) || []).map(s => +/([0-9.]+)/.exec(s)[1]);
 A.ok(px.every(n => n >= 14), 'nothing the tab sets itself is under 14px (' + px.join(', ') + ')');
 
+/* (org P18, FINDINGS #32) THE TAB OPENS CALM: LINES shows FOR YOUR GOAL + ANY JOB; every other shelf is its name + count, folded,
+   one click from open (a session-kept toggle); the shelf holding the ARMED line is always open; nothing is removed */
+{
+  const shelf = at(build, 'const goal = goalLine();', 'pal.appendChild(grid);');
+  A.ok(/grid\.appendChild\(lineGroupHd\('FOR YOUR GOAL', 'refit-goalhd'\)\);/.test(shelf), 'FOR YOUR GOAL still leads, open');
+  A.ok(/const open = lineShelfShown\(g\.id, groups\[g\.id\]\);/.test(shelf) && /g\.id === LINE_SHELF_OPEN \? lineGroupHd\(g\.label\) : lineShelfToggle\(g, groups\[g\.id\]\.length, open\)/.test(shelf) && /if \(open\) for \(const bp of groups\[g\.id\]\) addLineCell\(grid, bp\);/.test(shelf), 'ANY JOB is a plain open heading; every other shelf a fold key, its tiles only when open');
+  A.ok(/const LINE_SHELF_OPEN = 'any';/.test(build) && /\{ id: 'any', label: 'ANY JOB'/.test(build), 'the open shelf is ANY JOB');
+  A.ok(/const lineShelfShown = \(id, bps\) => id === LINE_SHELF_OPEN \|\| \(lineShelfOpen\.has\(id\) \? lineShelfOpen\.get\(id\) : \(tool === 'line' && bps\.some\(bp => bp\.id === lineType\)\)\);/.test(build), 'a shelf opened or folded stays so; untouched, the ARMED line\'s shelf opens');
+  const tog = at(build, 'function lineShelfToggle(g, n, open) {', '/* a shelf section');
+  A.ok(/b\.type = 'button';/.test(tog) && /setAttribute\('aria-expanded', String\(open\)\)/.test(tog) && /esc\(g\.label\) \+ ' <small>' \+ n \+ '<\/small>'/.test(tog) && /b\.dataset\.tip = g\.blurb;/.test(tog) && !/title/.test(tog), 'a fold key: a real button, aria-expanded, the shelf\'s name + count; its blurb is the tip (no sentence under it, no native title)');
+  A.ok(/b\.onclick = \(\) => \{ lineShelfOpen\.set\(g\.id, !open\); sfx\('click'\); renderPalette\(\); \};/.test(tog), '…one click opens or folds it (the armed line\'s shelf too)');
+  A.ok(/\.refit-linegroup\.refit-lineshelf-tog \{[^}]*background: none;[^}]*cursor: pointer;/.test(app), 'the fold key is painted as a heading (never the OS button)');
+  A.ok(/const MACHINE_ORDER = \['bay', 'intake', 'outbox', 'splitter', 'merger', 'joiner', 'filter', 'loop'\];/.test(build) && /const HOTBAR = \['bay', 'intake', 'outbox', 'splitter', 'merger', 'joiner', 'filter', 'loop'\];/.test(build), 'the MACHINES shelf follows the HOTBAR\'s order (BAY first)');
+}
+
 A.report('conveyor-tab-readable.test');

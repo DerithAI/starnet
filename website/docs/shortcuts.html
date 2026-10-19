@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Keyboard shortcuts — StarNet Docs</title>
-<meta name="description" content="Every keyboard shortcut StarNet actually binds: fullscreen, the ten REFIT build tools, undo and redo, camera keys, and window navigation.">
+<meta name="description" content="Every keyboard shortcut StarNet actually binds: fullscreen, text size, the nine BUILD MODE tools, undo and redo, camera keys, and window navigation.">
 <link rel="canonical" href="https://starnetos.com/docs/shortcuts.html">
 <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
 <link rel="stylesheet" href="docs.css?v=20260913-brand-nav">
@@ -97,42 +97,50 @@
   <div class="keyrow"><span class="kd">End a Live Voice session</span><span class="kk"><kbd>Esc</kbd></span></div>
   <div class="keyrow"><span class="kd">Advance a dialogue beat (also skips the typewriter)</span><span class="kk"><kbd>Space</kbd> / <kbd>Enter</kbd></span></div>
   <div class="keyrow"><span class="kd">Move focus between controls inside a window</span><span class="kk"><kbd>Tab</kbd> / <kbd>Shift</kbd><span class="plus">+</span><kbd>Tab</kbd></span></div>
+  <div class="keyrow"><span class="kd">Text size bigger / smaller / back to AUTO</span><span class="kk"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>=</kbd> / <kbd>Ctrl</kbd><span class="plus">+</span><kbd>&minus;</kbd> / <kbd>Ctrl</kbd><span class="plus">+</span><kbd>0</kbd></span></div>
+  <div class="keyrow"><span class="kd">Open FIND (or put the cursor back in it)</span><span class="kk"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>K</kbd></span></div>
 </div>
 
-<h2 id="refit-station-build-mode">REFIT STATION (build mode)</h2>
-<p>These are live only while REFIT is open. Open it from the bottom bar: <b>&#9874; BUILD &rsaquo; REFIT STATION</b>. There is no hotkey to open REFIT itself.</p>
+<h2 id="refit-station-build-mode">BUILD MODE</h2>
+<p>These are live only while BUILD MODE is open and you are not typing in a field. Open it from the bottom bar: <b>&#9874; BUILD &rsaquo; BUILD MODE</b>. There is no hotkey to open BUILD MODE itself.</p>
 <div class="keys">
   <div class="keyrow"><span class="kd"><b>SELECT</b> &mdash; click to select &middot; drag a machine onto another to belt them &middot; drag a selected piece onto open floor to move it</span><span class="kk"><kbd>0</kbd></span></div>
   <div class="keyrow"><span class="kd"><b>ROOM</b> &mdash; click to place, drag to size</span><span class="kk"><kbd>1</kbd></span></div>
   <div class="keyrow"><span class="kd"><b>HALLWAY</b> &mdash; click to run, drag to size</span><span class="kk"><kbd>2</kbd></span></div>
   <div class="keyrow"><span class="kd"><b>SURFACE</b> &mdash; click a room to lay this deck</span><span class="kk"><kbd>3</kbd></span></div>
   <div class="keyrow"><span class="kd"><b>DELETE</b> &mdash; click anything; drag across a belt to clear the run</span><span class="kk"><kbd>5</kbd></span></div>
-  <div class="keyrow"><span class="kd"><b>PROP</b> &mdash; click the deck to place it</span><span class="kk"><kbd>6</kbd></span></div>
+  <div class="keyrow"><span class="kd"><b>PROPS</b> &mdash; pick a prop, then click the deck to place it</span><span class="kk"><kbd>6</kbd></span></div>
   <div class="keyrow"><span class="kd"><b>BELT</b> &mdash; click one machine, then another</span><span class="kk"><kbd>7</kbd></span></div>
-  <div class="keyrow"><span class="kd"><b>DUPE</b> &mdash; click a thing to copy it</span><span class="kk"><kbd>8</kbd></span></div>
-  <div class="keyrow"><span class="kd"><b>LINES</b> &mdash; pick a ready-made line, then click the deck</span><span class="kk"><kbd>9</kbd></span></div>
+  <div class="keyrow"><span class="kd"><b>COPY</b> &mdash; click a room or prop to copy it, then click to stamp copies</span><span class="kk"><kbd>8</kbd></span></div>
+  <div class="keyrow"><span class="kd"><b>CONVEYOR LINES</b> &mdash; choose a ready-made line, then click clear floor to place it</span><span class="kk"><kbd>9</kbd></span></div>
 </div>
-<h3 id="conveyor-hand">Conveyors tab: the hand</h3><p>On this tab, keys <kbd>1–8</kbd> replace the ROOM–DUPE keys above: BAY, INBOX, OUTBOX, SPLITTER, MERGER, JOINER, FILTER, LOOP. Press the held piece’s key again to put it down. <kbd>0</kbd> and <kbd>9</kbd> work on every tab.</p><div class="keys">
-<div class="keyrow"><span class="kd">Pick a copy of the piece under the pointer</span><span class="kk"><kbd>Q</kbd></span></div>
-<div class="keyrow"><span class="kd">Inspect floor settings and SEND TO arcs</span><span class="kk"><kbd>Alt</kbd> (hold)</span></div>
-<div class="keyrow"><span class="kd">Flip a dragged belt corner; turn a paste ghost</span><span class="kk"><kbd>R</kbd></span></div>
+<h3 id="conveyor-hand">Conveyors tab: the hand</h3><p>On this tab, keys <kbd>1–8</kbd> replace the ROOM–COPY keys above: BAY, INBOX, OUTBOX, SPLITTER, MERGER, JOINER, FILTER, LOOP. Press the held piece’s key again to put it down. <kbd>0</kbd> and <kbd>9</kbd> work on every tab.</p><div class="keys">
+<div class="keyrow"><span class="kd">Flip the corner of a belt you are dragging</span><span class="kk"><kbd>R</kbd></span></div>
+<div class="keyrow"><span class="kd">Branch a belt: a SPLITTER lands where you pressed; let go on a machine, another belt, or empty floor (then pick what goes there)</span><span class="kk">Drag a belt&rsquo;s middle</span></div>
+<div class="keyrow"><span class="kd">Reshape a placed belt through a point (<kbd>R</kbd> flips the corner)</span><span class="kk"><kbd>Ctrl</kbd> + drag a belt</span></div>
 <div class="keyrow"><span class="kd">Remove a piece or belt; drop a held piece</span><span class="kk">Right-click</span></div>
 <div class="keyrow"><span class="kd">Select a whole line</span><span class="kk">Double-click a machine</span></div>
-<div class="keyrow"><span class="kd">Box-select on empty floor; Shift adds</span><span class="kk">Drag</span></div>
-<div class="keyrow"><span class="kd">Move any piece</span><span class="kk"><kbd>Shift</kbd> + drag</span></div>
-<div class="keyrow"><span class="kd">Copy / cut / paste / duplicate / select all</span><span class="kk"><kbd>Ctrl</kbd> + <kbd>C / X / V / D / A</kbd></span></div>
-</div><h3 id="editing-and-camera-inside-refit">Editing and camera, inside REFIT</h3>
+</div><h3 id="editing-and-camera-inside-refit">Editing and camera, inside BUILD MODE</h3>
 <div class="keys">
   <div class="keyrow"><span class="kd">Undo</span><span class="kk"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Z</kbd></span></div>
   <div class="keyrow"><span class="kd">Redo</span><span class="kk"><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Y</kbd> or <kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>Z</kbd></span></div>
+  <div class="keyrow"><span class="kd">Copy / cut / paste / duplicate / select all</span><span class="kk"><kbd>Ctrl</kbd> + <kbd>C / X / V / D / A</kbd></span></div>
+  <div class="keyrow"><span class="kd">Box-select on empty floor; Shift adds</span><span class="kk">Drag</span></div>
+  <div class="keyrow"><span class="kd">Move any piece</span><span class="kk"><kbd>Shift</kbd> + drag</span></div>
+  <div class="keyrow"><span class="kd">Pick a copy of the piece under the pointer</span><span class="kk"><kbd>Q</kbd></span></div>
+  <div class="keyrow"><span class="kd">Inspect floor settings and SEND TO arcs</span><span class="kk"><kbd>Alt</kbd> (hold)</span></div>
+  <div class="keyrow"><span class="kd">Turn a paste ghost forward / back</span><span class="kk"><kbd>R</kbd> / <kbd>Shift</kbd><span class="plus">+</span><kbd>R</kbd></span></div>
   <div class="keyrow"><span class="kd">Turn the prop under the cursor forward / back</span><span class="kk"><kbd>R</kbd> / <kbd>Shift</kbd><span class="plus">+</span><kbd>R</kbd></span></div>
   <div class="keyrow"><span class="kd">Flip the prop under the cursor</span><span class="kk"><kbd>M</kbd></span></div>
+  <div class="keyrow"><span class="kd">Delete the selection (a whole line: DELETE LINE; a selected room: press twice; a delete that cuts a SEND TO: press again to confirm)</span><span class="kk"><kbd>Del</kbd> / <kbd>Backspace</kbd></span></div>
+  <div class="keyrow"><span class="kd">Nudge the selection one tile (<kbd>Shift</kbd>: five tiles)</span><span class="kk"><kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&rarr;</kbd><kbd>&darr;</kbd> / <kbd>Shift</kbd><span class="plus">+</span>arrows</span></div>
+  <div class="keyrow"><span class="kd">Focus the prop search</span><span class="kk"><kbd>/</kbd></span></div>
   <div class="keyrow"><span class="kd">Fit the camera to the station</span><span class="kk"><kbd>F</kbd></span></div>
   <div class="keyrow"><span class="kd">Pan the camera (hold and drag)</span><span class="kk"><kbd>Space</kbd></span></div>
   <div class="keyrow"><span class="kd">Zoom</span><span class="kk">mouse wheel</span></div>
-  <div class="keyrow"><span class="kd">Step back: close card &rarr; cancel drag &rarr; drop half-made belt &rarr; back to SELECT &rarr; close REFIT</span><span class="kk"><kbd>Esc</kbd></span></div>
+  <div class="keyrow"><span class="kd">Step back: close card &rarr; put down what you hold &rarr; cancel drag &rarr; deselect &rarr; close the Workflow panel &rarr; back to SELECT &rarr; press Esc twice to save &amp; exit BUILD MODE</span><span class="kk"><kbd>Esc</kbd></span></div>
 </div>
-<div class="callout">On a Mac, <kbd>Cmd</kbd> works wherever <kbd>Ctrl</kbd> is listed. <kbd>R</kbd> flips a belt’s corner while dragging and turns a paste ghost (<kbd>Shift+R</kbd> turns back). Re-lay a placed belt to re-aim it. <kbd>R</kbd> and <kbd>M</kbd> also turn and mirror supported props.</div>
+<div class="callout">On a Mac, <kbd>Cmd</kbd> works wherever <kbd>Ctrl</kbd> is listed. <kbd>R</kbd> flips a belt’s corner while dragging and turns a paste ghost (<kbd>Shift+R</kbd> turns back). Drag a placed belt&rsquo;s middle to branch it; <kbd>Ctrl</kbd>+drag it to reshape it through a point between the same machines. <kbd>R</kbd> and <kbd>M</kbd> also turn and mirror supported props.</div>
 
 <h2 id="comms-and-windows">COMMS and windows</h2>
 <div class="keys">

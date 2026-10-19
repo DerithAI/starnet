@@ -19,7 +19,13 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const { diagnosticDelta } = require('./verify.js');
 
 const DEFAULT_SERVERS = Object.freeze([
-  { id: 'typescript', command: 'typescript-language-server', args: ['--stdio'], extensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'], languageIds: { '.ts': 'typescript', '.tsx': 'typescriptreact', '.js': 'javascript', '.jsx': 'javascriptreact', '.mjs': 'javascript', '.cjs': 'javascript' } },
+  /* typescript-language-server EXECUTES THE PROJECT too (review security-storage-01): with no tsserver.path set it
+     forks the workspace's own node_modules/typescript/lib/tsserver.js (searching parent folders too) ahead of its
+     bundled copy. An agent's fs.write can plant that file, so it gets the same watched-run-only gate as rust-analyzer
+     below. The gate only stops UNATTENDED runs from starting it: a planted file still runs on the next watched .js/.ts
+     edit under that folder. Closing that needs tsserver.path pinned to a TypeScript outside the workspace. */
+  { id: 'typescript', command: 'typescript-language-server', args: ['--stdio'], extensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'], languageIds: { '.ts': 'typescript', '.tsx': 'typescriptreact', '.js': 'javascript', '.jsx': 'javascriptreact', '.mjs': 'javascript', '.cjs': 'javascript' }, executesProject: true,
+    executesWhy: 'can run the project\'s own TypeScript (node_modules/typescript)' },
   { id: 'pyright', command: 'pyright-langserver', args: ['--stdio'], extensions: ['.py', '.pyi'], languageIds: { '.py': 'python', '.pyi': 'python' } },
   /* rust-analyzer EXECUTES THE PROJECT (2026-10-10 security pass): `cargo metadata` honours the project's .cargo/config
      (build.rustc / rustc-wrapper) and rust-toolchain.toml (a path toolchain), and by default it also runs build.rs,
@@ -409,7 +415,11 @@ function makeLspManager(deps) {
       const descriptor = descriptorFor(file.abs);
       if (!descriptor) { ticket.unsupported.push(String(file.rel || file.abs)); continue; }
       if (descriptor.executesProject && input.allowProjectExecution !== true) {
-        ticket.unavailable.push({ file: String(file.rel || file.abs), server: descriptor.id, reason: descriptor.command + ' runs the project\'s own build configuration, so it starts only for a watched run' });
+        // detection first (a stat, never a spawn): the watched-run reason is only true for a server that exists
+        const reason = locateExecutable(descriptor)
+          ? descriptor.command + ' ' + (descriptor.executesWhy || 'runs the project\'s own build configuration') + ', so it starts only for a watched run'
+          : descriptor.command + ' is not installed on PATH';
+        ticket.unavailable.push({ file: String(file.rel || file.abs), server: descriptor.id, reason });
         continue;
       }
       const got = getClient(descriptor, file.abs, file.base);

@@ -278,7 +278,12 @@
       if (!s || !(arr(s.runIds).includes(runId) || (streamId && s.id === streamId))) continue;
       const h = arr(s.history);
       for (let i = h.length - 1; i >= 0; i--) {
-        if (h[i] && h[i].role === 'user') { const t = oneLine(textOf(h[i].content), 200); if (t) return { task: t, streamId: s.id || '' }; }
+        if (h[i] && h[i].role === 'user') {
+          // a goal-loop step is not the Commander's words: the run's task is the GOAL it works toward (org P29-sys wiring)
+          const step = (typeof GoalLoop !== 'undefined' && GoalLoop.stepOfTurn) ? GoalLoop.stepOfTurn(h[i]) : null;
+          const t = oneLine(step != null ? step : textOf(h[i].content), 200);
+          if (t) return { task: t, streamId: s.id || '' };
+        }
       }
       return { task: oneLine(s.title || '', 200), streamId: s.id || '' };
     }
@@ -340,7 +345,10 @@
       const endAt = wk.completedAt || wk.updatedAt || 0;
       if (!running && !(endAt && t - endAt <= FINISHED_WINDOW_MS)) continue;
       const asking = running && !!wk.runId && feed.prompts.has(wk.runId);
-      const end = WORKER_END[wk.status] || ['stopped', wk.status ? 'Ended (' + String(wk.status) + ')' : 'Ended'];
+      // a worker the liveness check stopped (the sidecar records "stalled: …") was not lost to a restart
+      const stalled = wk.status === 'stale' && /^stalled\b/.test(String(wk.reason || ''));
+      const end = stalled ? ['fault', 'Stopped: made no progress']
+        : (WORKER_END[wk.status] || ['stopped', wk.status ? 'Ended (' + String(wk.status) + ')' : 'Ended']);
       const w = who(wk.agentId);
       out.push({
         key: 'worker:' + wk.id, kind: 'worker', workerId: wk.id, generation: wk.generation, runId: wk.runId || '',
@@ -593,7 +601,7 @@
 
   // The widget's world is drawn ~20 times a second (World.setFrameCap): alive to a glance, a fraction of the
   // full station's cost while a game has the GPU. 48ms stays under the world's 64ms step clamp, so bodies
-  // still move at their true speed. The full station gets the world's own RENDER PACING back (30 fps focused, slower unfocused — world.js).
+  // still move at their true speed. The full station gets the world's own RENDER PACING back (60 fps while visible, faster while you move the camera — world.js).
   const WIDGET_FRAME_MS = 48;
   function worldStart(capped) {
     // the widget shows the world only: its rows already say who works, for how long and on what, so the
@@ -942,7 +950,12 @@
     if (small) worldStart(true); else { worldStop(); S.followId = ''; }
     if (S.els && S.els.title) {
       if (act) { if (S.titleWas == null) S.titleWas = S.els.title.textContent; }
-      else if (S.titleWas != null) { S.els.title.textContent = S.titleWas; S.titleWas = null; }
+      else if (S.titleWas != null) {
+        S.els.title.textContent = S.titleWas; S.titleWas = null;
+        // ORG P26: the session may have changed under ▮ ACTIVITY — the one title writer repaints the open session's name
+        S.els.title.removeAttribute('data-session');
+        if (typeof Chat !== 'undefined' && Chat.paintTitle) Chat.paintTitle();
+      }
     }
   }
 
@@ -978,9 +991,11 @@
     bindBus();
     doc.body.classList.add('hud-mode');
     applyView();
-    // the COMMS header is the HUD's drag handle
+    // the COMMS header is the HUD's drag handle. The title is 'deep': since org P26 it holds the session name in a child
+    // <span class=comms-session>, and Tauri's bare attribute drags only when the press lands on the element ITSELF — so a
+    // press on the name moved nothing. The h3 stays bare: it holds keys, and a key must stay a click.
     S.els.h3.setAttribute('data-tauri-drag-region', '');
-    if (S.els.title) S.els.title.setAttribute('data-tauri-drag-region', '');
+    if (S.els.title) S.els.title.setAttribute('data-tauri-drag-region', 'deep');
     render();
     poll(); pollHistory();
     S.pollT = root.setInterval(poll, POLL_MS);

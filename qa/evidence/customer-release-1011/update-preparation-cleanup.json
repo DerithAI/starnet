@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "baseCandidate": "845239d700929d12067dd506111ea275a81acab2",
+  "testedCombinedBase": "7183993a8c329dd6b010983554da92cd28952ee9",
+  "testFile": "test/update-preparation.http.test.js",
+  "testFileSha256": "584fdf959df4cc8a735621191264611300b20dc247ffc3cec4831ae9124cdf9a",
+  "change": "Move A.report after existing finally so reporting cannot skip child termination/wait and disposable sandbox removal. All nine assertions and cleanup operations are unchanged.",
+  "patchSha256": "ef1b7154ad55d4c23f71529d21eb979f5e2dc902cf084a65230baf861a11ea4f",
+  "controls": {
+    "count": 7,
+    "runtime": "22.23.2",
+    "scope": "Actual process.exit in isolated child processes with inert application I/O; original skips cleanup and repaired pass/fail paths clean before reporting."
+  },
+  "actualHttp": {
+    "command": "node scripts/run-test-list.mjs test/http.list update-preparation.http.test.js",
+    "exitCode": 0,
+    "assertions": 9,
+    "log": ".handoff/update-preparation-cleanup-http.log",
+    "logSha256": "223531eea29f4a69892262b9705d25d0dcda0a5c5834344771cbd4da5a319615"
+  },
+  "limits": [
+    "This repairs a confirmed test cleanup defect, not a demonstrated cause of the Node24 native assertion.",
+    "Canonical validation-runtime case 6e29727c remains open and unattributed."
+  ]
+}

@@ -185,6 +185,13 @@ function rig(floor, script, opts) {
     A.eq(res.text, 'published', 'the publisher has the last word');
     A.ok(/\[LOOP — pass 1 of 3/.test(R.log[0].text), 'the re-entry handoff names the pass');
     A.ok(/\[LOOP — pass 3 of 3/.test(R.log[4].text), 'and counts up to max');
+    // token-burn audit 2026-10-17: hops no longer replay the line's transcript, so the loop-back turn itself carries the work
+    A.eq(R.log[2].agentId, 'drafter');
+    // (the fixture's drafter names its output after the pass it was handed: its first draft is 'draft v2')
+    A.ok(R.log[2].text.indexOf('THE WORK UNDER REVIEW') >= 0 && R.log[2].text.indexOf('draft v2') >= 0 && R.log[2].text.indexOf('needs work 1') >= 0,
+      'a loop-back shows the writer the draft the reviewer judged AND the review: ' + R.log[2].text.slice(-300));
+    A.ok(R.log[2].text.indexOf('draft v2') < R.log[2].text.indexOf('needs work 1'), 'the work under review comes before the review');
+    A.ok(R.log[4].text.indexOf('draft v3') >= 0 && R.log[4].text.indexOf('draft v2') < 0, 'each pass shows the LATEST draft under review, never a stale one');
     A.eq(R.log[6].agentId, 'publisher');
     A.ok(!/\[LOOP/.test(R.log[6].text), 'the done-lane handoff carries no loop marker');
     A.eq(res.hops.length, 7, 'seven hops bought — more than the 6-stage cap, because loop passes are bounded by max, not by the stage cap');
@@ -217,6 +224,43 @@ function rig(floor, script, opts) {
     A.eq(res.stopped, null, 'join-then-outbox runs to its end (' + res.stopped + ')');
     A.eq(res.hops.map(h => h.agentId).join(','), 'B', 'sibling B ran; nothing past the joiner');
     A.ok(/2 of 2 branches delivered/.test(res.text) && /alpha findings/.test(res.text) && /beta findings/.test(res.text), 'the merged crate is the delivered answer');
+  }
+
+  /* ---- A PARTIAL JOIN IS A DELIVERED REPLY, NOT A SHIPMENT (wave 2 review, conveyor-backend-07; docs/DECISIONS.md): a COPY job whose
+     branch failed still answers (law 1 — the joiner sends on what arrived, marked PARTIAL), but the job is `partial`, the floor gets no
+     line-output product at the OUTBOX, and SEND TO hears of it only as partial (the host refuses it and says why on the next line —
+     never handed on, never counted as SHIPPED). Same verdict one after another and in parallel; the clean job is unchanged. ---- */
+  {
+    const floor = joinFloor();
+    floor.props[5] = { id: 'p6', t: 'outbox', x: 12, y: 4, w: 2, h: 2 };
+    const plan = P.compileRoutingPlan(floor), router = makeRouter();
+    A.ok(router.setPlan(plan).ok, 'partial: the join-to-OUTBOX floor deploys');
+    const entry = router.resolveDock({ tag: 'general' }), lineId = router.lineOriginFor(entry.agentId, entry.dockId);
+    for (const peek of [false, true]) for (const fail of [true, false]) {
+      const events = [], shipped = [];
+      const c = makeChainRunner(Object.assign({ nextAgent: (a, x) => router.chainNext(a, x), stepDock: (d, x) => router.chainStepDock(d, x),
+        entryDockOf: a => router.entryDockOf(a), fanSiblingsDock: d => router.fanSiblingsDock(d), lineOfAgent: (a, d) => router.lineOfAgent(a, d),
+        lastStage: (a, d) => router.chainShipsToOutbox(a, d), onShipped: r => { shipped.push(r); }, emit: (n, p) => events.push({ n, p }), now: clock,
+        setTimer: () => 0 }, peek ? { peekDock: (d, x) => router.chainPeekDock(d, x) } : {}));
+      const other = entry.agentId === 'A' ? 'B' : 'A';
+      const res = await c.advance({ agentId: entry.agentId, dockId: entry.dockId, text: entry.agentId + ' findings', originalText: 'research X', lineId, runId: 'pj' + peek + fail,
+        runAgent: async h => (fail && h.agentId === other ? { error: 'provider exploded' } : { text: h.agentId + ' findings', usd: 0.01 }) });
+      await new Promise(r => setImmediate(r));
+      const label = (peek ? 'parallel' : 'one after another') + (fail ? ', a failed branch' : ', clean');
+      const outputs = events.filter(e => e.n === 'workitem.delivered' && e.p.box === 'line-output');
+      A.eq(res.stopped, null, label + ': the line still answers (' + res.stopped + ')');
+      A.eq(res.outboxId, 'p6', label + ': at its OUTBOX');
+      if (fail) {
+        A.ok(typeof res.partial === 'string' && new RegExp(other + ' failed').test(res.partial), label + ': the job is partial, naming the failed branch (' + res.partial + ')');
+        A.ok(/PARTIAL/.test(res.text), label + ': the reply is still delivered, marked PARTIAL');
+        A.eq(outputs.length, 0, label + ': no product is released at the OUTBOX');
+        A.ok(shipped.length === 1 && shipped[0].partial === res.partial, label + ': SEND TO hears of it only as partial (the host refuses it, never hands it on)');
+      } else {
+        A.ok(!res.partial, label + ': a full join is not partial');
+        A.eq(outputs.length, 1, label + ': its product is released once');
+        A.ok(shipped.length === 1 && !shipped[0].partial, label + ': and it ships clean');
+      }
+    }
   }
 
   /* ---- the chain USD cap still bounds a loop ---- */
@@ -280,6 +324,9 @@ function rig(floor, script, opts) {
     A.eq(fixerTurn.agentId, 'fixer');
     A.ok(/\[LOOP — escalated: 2 passes round the gate at 12,4 without VERDICT: approved — handed to the escalation lane\]/.test(fixerTurn.text),
       'the fixer\'s handoff says exactly why it has the crate');
+    // token-burn audit 2026-10-17: hops no longer replay the line, so the fixer is handed the work itself, not only the notes on it
+    A.ok(fixerTurn.text.indexOf('THE WORK UNDER REVIEW') >= 0 && fixerTurn.text.indexOf('another draft') >= 0 && fixerTurn.text.indexOf('still bad 2') >= 0,
+      'the fixer gets the last draft AND the review: ' + fixerTurn.text.slice(-260));
   }
   /* the SAME floor with the verdict PASSING never touches the fixer */
   {
@@ -317,6 +364,47 @@ function rig(floor, script, opts) {
     } else {
       A.ok(true, 'visited-esc fallback floor did not compile as intended — covered by the runner guard');
     }
+  }
+
+  /* ---- SEND TO carries the routine's own directive (token-burn audit 2026-10-17): a contextFrom routine hands its line the
+          ASSEMBLED prompt (untrusted context + directive) as originalText so stages can read it, and the plain directive as
+          `ask`; the shipped record (what SEND TO hands the next line, cut at 4k downstream) must be the ask. ---- */
+  {
+    const shippedRecs = [];
+    const R = rig(loopFloor({ maxIter: 1 }), { publisher: { text: 'published', usd: 0.01 } }, { lastStage: () => true, onShipped: r => shippedRecs.push(r) });
+    const assembled = '<untrusted_routine_context>' + 'digest line. '.repeat(400) + '</untrusted_routine_context>\n\n## ROUTINE DIRECTIVE\nwrite a post';
+    await R.c.advance({ agentId: 'publisher', text: 'published', originalText: assembled, ask: 'write a post', lineId: R.lineId, runId: 'ask1' });
+    await new Promise(r => setImmediate(r));
+    A.ok(shippedRecs.length === 1, 'the job ships (' + shippedRecs.length + ')');
+    A.eq(shippedRecs[0] && shippedRecs[0].originalText, 'write a post', 'the SEND TO record carries the routine directive, never its context block');
+    const plain = [];
+    const R2 = rig(loopFloor({ maxIter: 1 }), { publisher: { text: 'published', usd: 0.01 } }, { lastStage: () => true, onShipped: r => plain.push(r) });
+    await R2.c.advance({ agentId: 'publisher', text: 'published', originalText: 'write a post', lineId: R2.lineId, runId: 'ask2' });
+    await new Promise(r => setImmediate(r));
+    A.eq(plain[0] && plain[0].originalText, 'write a post', 'with no separate ask the record keeps originalText (every other caller unchanged)');
+  }
+
+  /* ---- loopDecision's WORK UNDER REVIEW block, at the seam the runner and the step test share (token-burn audit 2026-10-17) ---- */
+  {
+    const { loopDecision } = require('../sidecar/routing/chain.js');
+    const gate = (o) => Object.assign({ loop: '12,4', backTo: 'drafter', max: 2, when: 'approved', next: 'publisher' }, o || {});
+    const ctxRevise = { verdict: 'revise' };
+    const back = loopDecision(gate(), ctxRevise, 0, {}, 'notes\nVERDICT: revise', 'DRAFT-1');
+    A.ok(back.again && /^\[LOOP — pass 1 of 2[^\n]*\]\nTHE WORK UNDER REVIEW[^\n]*\nDRAFT-1\n\nREVIEW:\nnotes/.test(back.text), 'a loop-back: marker, then the work under review, then the review');
+    const self = loopDecision(gate(), ctxRevise, 0, {}, 'notes\nVERDICT: revise', '');
+    A.ok(self.again && self.text.indexOf('THE WORK UNDER REVIEW') < 0, 'no reviewed text (a self-loop) -> no block, never a nested loop turn');
+    const exNext = loopDecision(gate(), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exNext.exhausted && exNext.text.indexOf('DRAFT-3') >= 0, 'an exhausted crate going to a downstream dock carries the unapproved work');
+    // a done lane that meets a JOINER: next is null and the dock past the joiner is afterJoin.next (frontend/app/pipeline.js)
+    const exJoinDock = loopDecision(gate({ next: null, afterJoin: { join: '14,8', expect: 2, next: 'synth' } }), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exJoinDock.exhausted && exJoinDock.text.indexOf('DRAFT-3') >= 0, 'an exhausted branch whose joiner feeds a dock carries the unapproved work for that dock');
+    const exJoinOut = loopDecision(gate({ next: null, afterJoin: { join: '14,8', expect: 2, next: null } }), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exJoinOut.exhausted && exJoinOut.text.indexOf('DRAFT-3') < 0, '...a joiner that ships straight out keeps the delivered product unchanged');
+    const exOut = loopDecision(gate({ next: null }), ctxRevise, 2, {}, 'still bad\nVERDICT: revise', 'DRAFT-3');
+    A.ok(exOut.exhausted && exOut.text.indexOf('DRAFT-3') < 0 && exOut.text.indexOf('still bad') >= 0, 'an exhausted crate that ships straight out keeps the reviewer\'s word only');
+    const big = 'x'.repeat(30000);
+    const clipped = loopDecision(gate(), ctxRevise, 0, {}, 'notes', big);
+    A.ok(clipped.text.length < 17000 && /characters of the work omitted/.test(clipped.text), 'a huge draft is clipped (head + tail), never the whole thing');
   }
 
   A.report('chain.join-loop');

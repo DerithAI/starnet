@@ -58,7 +58,9 @@
     function health() {
       return {
         complete: !readError && unsettled.size === 0, durable: !writeError,
-        readError: readError || (unsettled.size ? 'UNSETTLED_SPEND' : null), writeError, unsettledRuns: unsettled.size
+        readError: readError || (unsettled.size ? 'UNSETTLED_SPEND' : null), writeError, unsettledRuns: unsettled.size,
+        // of those, the unreadable record lines (kind 'damaged'): the refusal names a damaged line, not an interrupted run
+        damagedLines: [...unsettled.values()].filter(r => r && r.kind === 'damaged').length
       };
     }
     // meta (optional object, or a getter for one): what the receipt may name about the dispatch so the Commander can
@@ -105,6 +107,7 @@
       const entry = {
         runId: str(e.runId), agentId: str(e.agentId),
         turns: num(e.turns), usd: num(e.usd), tokens: num(e.tokens),
+        ...(num(e.cachedTokens) > 0 ? { cachedTokens: num(e.cachedTokens) } : {}),   // (additive) the cache-served part of `tokens`' input
         model: modelName(e.model),
         unmetered: !!e.unmetered,
         ts: num(e.ts) || clock.now()
@@ -115,6 +118,9 @@
       if (e.attested === true) {
         entry.attested = true;
         entry.attestedAs = e.attestedAs === 'limit' ? 'limit' : 'entered';
+        // a settled DAMAGED record line: the row names the exact line (sha256 of its bytes) it resolves, so the host's
+        // reader skips that line from now on — the line itself is never rewritten or removed
+        if (typeof e.resolvesLine === 'string' && /^[0-9a-f]{64}$/.test(e.resolvesLine)) entry.resolvesLine = e.resolvesLine;
       }
       if (typeof opts.nextId === 'function') entry.entryId = str(opts.nextId());
       return entry;
@@ -146,7 +152,7 @@
       if (!r || pending.has(id)) throw Object.assign(new Error('that run has no unsettled spend'), { code: 'not_unsettled' });
       if (typeof usd !== 'number' || !isFinite(usd) || usd < 0) throw Object.assign(new Error('the amount must be a number of dollars, 0 or more'), { code: 'bad_usd' });
       try {
-        return recordStrict({ runId: id, agentId: r.agentId, turns: 0, tokens: 0, usd, model: r.model, ts: r.ts, attested: true, attestedAs: how === 'limit' ? 'limit' : 'entered' });
+        return recordStrict({ runId: id, agentId: r.agentId, turns: 0, tokens: 0, usd, model: r.model, ts: r.ts, attested: true, attestedAs: how === 'limit' ? 'limit' : 'entered', resolvesLine: r.kind === 'damaged' ? r.lineHash : undefined });
       } catch (e) {
         // the settlement journal may already be on disk and replays at the next boot: never offer a second booking
         unsettled.delete(id);

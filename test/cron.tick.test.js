@@ -293,6 +293,22 @@ const okRun = (text) => (o) => { o.emit('agent.run.start', { agentId: 'a', runId
     A.eq(firstOf(s.events, 'cron.result').outcome, 'failed', 'cancelled work is announced as failed, not ok');
   }
 
+  // ---- 7d. a run whose tools ran before the model went silent never records "nothing was done" (review threads-backend-03) ----
+  {
+    const j = onceJob('silent-after-tools', 'in 1m');
+    const s = setup([j], (o) => {
+      o.emit('agent.run.start', { agentId: o.agentId, runId: o.runId, trigger: 'schedule', model: o.model });
+      o.emit('agent.tool_call', { agentId: o.agentId, runId: o.runId, callId: 'c1', name: 'fs_write' });
+      o.emit('agent.tool_result', { agentId: o.agentId, runId: o.runId, callId: 'c1', ok: true, isError: false });
+      o.emit('agent.run.end', { agentId: o.agentId, runId: o.runId, reason: 'empty', turns: 2, usd: 0 });
+    });
+    s.clock.set(T0 + 60000);
+    s.driver.applyTick(s.clock.now());
+    await flush();
+    const err = s.getJob('silent-after-tools').lastError || '';
+    A.ok(!/nothing was done/.test(err) && /1 tool step\b/.test(err) && /\[empty\]$/.test(err), 'the routine card says the tool step ran: ' + err);
+  }
+
   // ---- 8. no key/model -> one durable blocked_config alert; runOnce is never called ----
   {
     const j = intervalJob('j1', 'every 1m');

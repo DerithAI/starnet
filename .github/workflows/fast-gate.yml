@@ -96,3 +96,28 @@ jobs:
 
       - name: Customer journey regression gate
         run: npm run qa:customer-journeys
+
+  # Pure Rust policy checks. The connector key policy tests in src-tauri/src/credentials.rs and the acceptance
+  # harness's input guards use injected closures and input checks only: no keychain entry, no native process, no
+  # app build. Running them here catches a policy regression (for example regenerating over a malformed existing
+  # key, which would orphan every sealed connector credential) and a credentials.rs compile error before a cut.
+  # Never pass --ignored: that runs the production-entry roundtrip test. The native phases stay in the
+  # dispatch-only connector-keychain-acceptance workflow.
+  rust-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Connector key policy and acceptance guard tests (pure, no keychain access)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path test/native-connector-keychain/Cargo.toml connector_key_policy 2>&1 | tee "$RUNNER_TEMP/policy.log"
+          cargo test --locked --manifest-path test/native-connector-keychain/Cargo.toml acceptance_guards 2>&1 | tee "$RUNNER_TEMP/guards.log"
+          # a renamed test would leave a filter matching nothing, which cargo passes green: require a passed test in each
+          for log in policy guards; do
+            grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/$log.log" || { echo "::error::the $log filter ran no test"; exit 1; }
+          done

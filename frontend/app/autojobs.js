@@ -241,8 +241,8 @@
   function armStateLine(schedulerArmed) {
     if (schedulerArmed) return null;
     return {
-      text: 'saved, but the scheduler is off — this won’t run until you enable scheduling (ROUTINES → enable scheduling).',
-      cta: { label: 'enable scheduling', panel: 'routines' }
+      text: 'saved, but the scheduler is off — this won’t run until you turn scheduling on (AUTOMATE › SCHEDULES → ▶ TURN SCHEDULING ON).',
+      cta: { label: 'turn scheduling on', panel: 'routines' }
     };
   }
 
@@ -253,8 +253,8 @@
     const where = " you'll find " + (scheduled === 1 ? 'it' : 'them') + " (and what " + (scheduled === 1 ? 'it produces' : 'they produce') + ") in AUTOMATE › SCHEDULES.";
     if (schedulerArmed === false) {
       return scheduled === 1
-        ? "done — it's saved, but scheduling is OFF so it won't run yet. enable scheduling in AUTOMATE › SCHEDULES to arm it." + where
-        : "done — " + scheduled + " jobs are saved, but scheduling is OFF so they won't run yet. enable scheduling in AUTOMATE › SCHEDULES to arm them." + where;
+        ? "done — it's saved, but scheduling is OFF so it won't run yet. turn scheduling on in AUTOMATE › SCHEDULES to arm it." + where
+        : "done — " + scheduled + " jobs are saved, but scheduling is OFF so they won't run yet. turn scheduling on in AUTOMATE › SCHEDULES to arm them." + where;
     }
     return scheduled === 1
       ? "done — it's on the schedule." + where

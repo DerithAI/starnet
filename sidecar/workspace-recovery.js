@@ -358,13 +358,17 @@ function applyPendingRecovery(opts) {
     // already fixed in workspace-owner.js). A lockfile written before the current OS boot cannot have a
     // live holder; cron-lock reclaims it.
     bootedAt: o.lockBootedAt,
+    // lockProcessIdentity (opt-in, injected by index.js; soak 2026-10-15): within one boot a hard-killed holder's
+    // PID can be handed to an unrelated process, which kill(0) reads as alive. The identity check proves such a
+    // PID recycled (sidecar/process-identity.js); an unreadable identity keeps the lock respected.
+    processIdentity: o.lockProcessIdentity,
     reclaimByAge: false
   });
   // Recovery precedes workspace ownership and can replace the whole directory.
   // Elect outside that directory so its legacy advisory lock cannot be stolen
   // by a delayed stale reclaimer while another process is copying/activating.
   const election = makeWorkspaceOwner({ fs, path, now, pid: o.lockPid,
-    nonce: o.lockNonce, pidAlive: o.lockPidAlive, bootedAt: o.lockBootedAt,
+    nonce: o.lockNonce, pidAlive: o.lockPidAlive, bootedAt: o.lockBootedAt, processIdentity: o.lockProcessIdentity,
     filename: path.basename(current) + '.recovery-owner.json' });
   const elected = election.acquire(path.dirname(current));
   let attempt = { ran: false };

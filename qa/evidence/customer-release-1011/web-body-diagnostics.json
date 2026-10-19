@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "at": "2026-10-12T08:26:48.151Z",
+  "base": "0e329887867535d8bed7662b93d322acbf7c3c1a",
+  "relatedCustomerRecord": "1d3ac09a",
+  "scope": "Diagnostic repair for independently reproduced post-header body failures; no attribution to reported macOS transport cause.",
+  "sourceHashes": {
+    "sidecar/tools/builtin/web.js": "9c9212a6f62adff685c1d5d0dc364a8a114c57341f9b1982c1501821b03b0e9e",
+    "test/outbound-failure-diagnosability.test.js": "07f6947fe7c67f952597120e15eeec7c58ef04a23cdd60553d16bb3c8737f7b2"
+  },
+  "behavior": "Preserve the distinct terminated message and append only bounded machine cause code plus requested final-hop hostname. Never include raw cause text, paths, query, response body or port.",
+  "before": {
+    "expectedFailures": 5,
+    "passingAssertions": 83
+  },
+  "after": {
+    "registeredToolAssertions": 88,
+    "ssrfAssertions": 49,
+    "calmAssertions": 36,
+    "runtimes": [
+      "Windows Node22.23.0",
+      "Windows bundled Node22.23.2"
+    ],
+    "dependency": "Undici6.28.1"
+  },
+  "proof": [
+    "Registered real loopback malformed gzip and socket failure after successful headers",
+    "Redirect reports final hop; pinned public-DNS fixture dialled loopback",
+    "One request per hop; all dispatchers closed; no fallback/retry",
+    "Malformed/oversized metadata excluded; cancellation preserved"
+  ],
+  "limits": [
+    "No affected Mac, signed installer or customer recovery observed",
+    "No TLS, SSRF, fallback or retry policy changes",
+    "Initial delayed-gzip fixture stalled standalone on both Windows runtimes; private failing receipts retained, not attributed to product/customer"
+  ],
+  "combinedLog": {
+    "path": ".handoff/web-body-combined-focused.log",
+    "sha256": "82afeab386725fd9127473e360034d5190eb985dea2a2711f3ca28e17e1e7845"
+  }
+}

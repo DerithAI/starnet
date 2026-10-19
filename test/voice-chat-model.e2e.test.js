@@ -6,6 +6,8 @@
    model and a signed-out voice provider both stay on the agent's model and say why on agent.run.start. */
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 
 (async () => {
@@ -113,6 +115,22 @@ const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
     st = await fixture.json('POST', '/api/voice/chat-model', { clear: true });
     assert.deepEqual(JSON.parse(st.text).setting, { provider: '', model: '', reasoningEffort: 'none' });
     assert.equal(JSON.parse(st.text).saved, false);
+
+    // a save that cannot be written says so and keeps the previous choice (sidecar-index-11): it used to answer
+    // saved:true, run on the new model until a restart, then silently fall back to the default
+    const vfile = path.join(fixture.workspace, 'voice-chat.json');
+    fs.rmSync(vfile, { force: true }); fs.rmSync(vfile + '.bak', { force: true });
+    fs.mkdirSync(vfile);   // deterministic: the store's final rename target is a directory
+    try {
+      const failed = await fixture.json('POST', '/api/voice/chat-model', { provider: 'openrouter', model: FAST, reasoningEffort: 'none' });
+      assert.equal(failed.status, 507, failed.text);
+      assert.match(JSON.parse(failed.text).error, /could not be saved/);
+      st = await fixture.json('GET', '/api/voice/chat-model');
+      assert.deepEqual(JSON.parse(st.text).setting, { provider: '', model: '', reasoningEffort: 'none' }, 'the previous (default) choice is kept');
+      assert.equal(JSON.parse(st.text).saved, false);
+      v = await run(true);
+      assert.equal(v.mine[0].model, MAIN, 'a voice turn does not run on a model that was never saved');
+    } finally { fs.rmSync(vfile, { recursive: true, force: true }); }
     console.log('voice-chat-model.e2e: PASS (voice turn routes, typed turn stays, restart, too-large, fallback, unconfigured, clear)');
   } finally { await fixture.dispose(); await new Promise(r => upstream.close(r)); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

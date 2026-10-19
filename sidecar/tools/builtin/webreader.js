@@ -103,9 +103,25 @@
     const env = deps.env || (typeof process !== 'undefined' ? process.env : {});
 
     let driver = null, idleTimer = null, chain = Promise.resolve(), closed = false;
+    let warm = false;   // the current driver has produced a page: its browser STARTED (web.js times only the start)
+    /* A BROWSER THAT CANNOT START (live walk 10-14): Chromium failed to launch, and every engine of every search
+       relaunched it — 3 tries × ~20 s each — while the worker's web_search sat on "Searching …" for 80 s, then 185 s.
+       A launch failure now ends that search's engine loop and holds the reader down for a cooldown: availability()
+       says why, so web_search skips the rung at once (and tells the Commander) instead of relaunching a dead browser. */
+    // the host injects the real clock (index.js); never ambient time here (lint-determinism) — with none, the cooldown never reads as over
+    const clock = typeof deps.now === 'function' ? deps.now : () => 0;
+    const LAUNCH_COOLDOWN_MS = deps.launchCooldownMs == null ? 10 * 60000 : Number(deps.launchCooldownMs);
+    let launchDown = null;   // { at, reason }
+    const launchFailureOf = e => {
+      const m = String((e && e.message) || e || '');
+      return /could not attach to Chromium|exited before CDP ownership|Chromium not found|browser could not start|WebSocket\/fetch is not available/i.test(m)
+        ? m.replace(/^browser unavailable:\s*/i, '').replace(/^the station browser could not start:\s*/i, '') : '';
+    };
+    const downNote = () => 'the station browser could not start (' + launchDown.reason.slice(0, 160) + ')';
 
     function availability() {
       if (String(env.SKYNET_WEB_READER || env.STARNET_WEB_READER || '') === '0') return { ok: false, reason: 'disabled' };
+      if (launchDown && clock() - launchDown.at < LAUNCH_COOLDOWN_MS) return { ok: false, launchFailed: true, reason: downNote() };
       if (!makeDriver) return { ok: false, reason: 'browser module unavailable' };
       if (deps.makeDriver) return { ok: true };   // an injected factory needs no Chrome on disk
       try {
@@ -120,7 +136,7 @@
       if (idleTimer.unref) idleTimer.unref();
     }
     function teardown() {
-      const d = driver; driver = null;
+      const d = driver; driver = null; warm = false;
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       if (d) { try { const p = d.close(); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
     }
@@ -147,7 +163,7 @@
                        | { ok:false, reason, status?, title? }        — never throws for page-level outcomes */
     function fetchText(url, opts) {
       const avail = availability();
-      if (!avail.ok) return Promise.resolve({ ok: false, reason: avail.reason });
+      if (!avail.ok) return Promise.resolve({ ok: false, reason: avail.reason, launchFailed: avail.launchFailed === true });
       if (closed) return Promise.resolve({ ok: false, reason: 'reader closed' });
       const signal = opts && opts.signal;
       return enqueue(async () => {
@@ -156,6 +172,7 @@
         try { d = ensureDriver(); } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
         try {
           await d.navigate(String(url));
+          warm = true;
           const resp = typeof d.lastResponse === 'function' ? d.lastResponse() : null;
           const status = resp && Number(resp.status) || 0;
           let title = '';
@@ -175,22 +192,34 @@
           // recovery and promises the session is usable for the very next call — keep the warm Chrome.
           // Anything else (CDP/socket-level) rebuilds on the next use.
           if (!/did not finish loading/.test(String((e && e.message) || ''))) teardown();
+          const lf = launchFailureOf(e);
+          if (lf) { launchDown = { at: clock(), reason: lf }; return { ok: false, reason: downNote(), launchFailed: true }; }
           return { ok: false, reason: String((e && e.message) || e) };
         } finally { armIdle(); }
       });
     }
 
-    /* search(query) -> { engine, results:[{title,url,snippet}] } — results:[] when every engine is dry.
-       Engines are tried in order inside ONE queue slot; first non-empty wins. */
+    /* search(query, { signal, onLaunched }) -> { engine, results:[{title,url,snippet}] } — results:[] when every engine
+       is dry. Engines are tried in order inside ONE queue slot; first non-empty wins. onLaunched() fires once the
+       browser has STARTED — at once for a warm one, else when its first page answers (a slow page counts: the browser
+       is up) — so a caller can bound the start without ever cutting short a healthy browser's reading (review 10-14). */
     function search(query, opts) {
       const avail = availability();
-      if (!avail.ok) return Promise.resolve({ engine: '', results: [], reason: avail.reason });
+      if (!avail.ok) return Promise.resolve({ engine: '', results: [], reason: avail.reason, launchFailed: avail.launchFailed === true });
       if (closed) return Promise.resolve({ engine: '', results: [], reason: 'reader closed' });
       const signal = opts && opts.signal;
       const q = encodeURIComponent(String(query || '')).replace(/%20/g, '+');
+      let told = false;
+      const launched = () => {
+        if (told || !opts || typeof opts.onLaunched !== 'function') return;
+        told = true;
+        try { opts.onLaunched(); } catch (e) { console.warn('[webreader] onLaunched threw', e); }
+      };
+      if (driver && warm) launched();   // already running: nothing to start (a queued read is the browser working)
       return enqueue(async () => {
         let d;
         try { d = ensureDriver(); } catch (e) { return { engine: '', results: [], reason: String((e && e.message) || e) }; }
+        if (warm) launched();
         // deliberately NOT unref'd: an operational wait must hold the event loop open (an unref'd
         // timer here let the whole test process drain and exit mid-poll); only the IDLE timer unrefs
         const sleepMs = (ms) => new Promise(res => setTimeout(res, ms));
@@ -198,6 +227,7 @@
           if (signal && signal.aborted) break;
           try {
             await d.navigate(eng.url(q));
+            warm = true; launched();
             /* HYDRATION POLLING (live-found 2026-07-31): bing lands via an `rdr` redirect, so the
                settle can return on the INTERMEDIATE document — an extractor fired immediately reads
                zero rows on a page that shows ten a second later. Poll briefly instead of trusting
@@ -214,9 +244,17 @@
             }
             if (rows.length) { armIdle(); return { engine: eng.id, results: rows.slice(0, RESULTS_MAX) }; }
           } catch (e) {
+            // the browser itself could not start: the next engine would only relaunch it — stop, and say so
+            const lf = launchFailureOf(e);
+            if (lf) {
+              launchDown = { at: clock(), reason: lf };
+              teardown(); armIdle();
+              return { engine: '', results: [], reason: downNote(), launchFailed: true };
+            }
             // a slow engine page is survivable (navigate's stopLoading recovery) — only a
             // driver-level failure warrants a rebuild before the next engine
-            if (!/did not finish loading/.test(String((e && e.message) || ''))) {
+            if (/did not finish loading/.test(String((e && e.message) || ''))) { warm = true; launched(); }   // slow page, live browser
+            else {
               teardown();
               try { d = ensureDriver(); } catch (_) { break; }
             }

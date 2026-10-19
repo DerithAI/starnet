@@ -57,13 +57,16 @@
     const s = str(v || 'active').toLowerCase();
     return STATES.has(s) ? s : 'active';
   }
-  const REVIEW_ACTORS = new Set(['background-review', 'skill-review', 'curator']);   // autonomous revisions are proposed separately from the active skill
-  // persist() re-stamps a review-written version 'ask' on EVERY save, telemetry included. A curator version saved
-  // before curator writes became proposals was 'allow', with its narrow siblings archived into it: re-judging that
-  // umbrella at its next markUsed withheld the only copy. A curator version is review-written once it was promoted.
+  // Two different questions. STAGE_ACTORS: the autonomous writers whose NEW writes become proposals instead of the
+  // active skill. reviewWritten(entry): whose STORED versions persist() stamps 'ask' (provenance) on EVERY save,
+  // telemetry included. A curator version saved before curator writes became proposals (0.13.2/0.13.3, stamped
+  // 'allow', its narrow siblings archived into it) must not turn 'ask' the first time a run merely uses it:
+  // withholding the umbrella would leave the agent with neither. A curator version is review-written once it was
+  // promoted (its approval is digest-keyed: the approve route precommits it for the candidate's bytes).
+  const STAGE_ACTORS = new Set(['background-review', 'skill-review', 'curator']);
   function reviewWritten(entry) {
     const by = str(entry && entry.writtenBy);
-    return REVIEW_ACTORS.has(by) && (by !== 'curator' || !!str(entry.promotionReceiptId));
+    return STAGE_ACTORS.has(by) && (by !== 'curator' || !!str(entry && entry.promotionReceiptId));
   }
   function trustSource(createdBy) {
     const source = str(createdBy).trim().toLowerCase();
@@ -511,13 +514,16 @@
         } else if (str(e.absorbedInto || '').trim()) {
           heir = find(agentId, str(e.absorbedInto).trim(), { includeArchived: false });
         }
-        entry = clone(existing); entry.writtenBy = str(e.createdBy || 'agent'); entry.state = 'archived'; entry.updatedAt = now();
+        // Archive and restore change no content, so they keep the writer of these bytes: relabeling a withheld
+        // review-written version as the Commander's would approve bytes nobody read. (A staged archive is still
+        // stamped with its proposer in stageMutation.)
+        entry = clone(existing); entry.state = 'archived'; entry.updatedAt = now();
         if (heir) entry.absorbedInto = heir.name;
         entry = persist(entry);
         return { ok: true, action: 'archive', absorbedInto: entry.absorbedInto || '', skill: projectSkill(entry, true), edited: true };
       }
       if (action === 'restore') {
-        entry = clone(existing); entry.writtenBy = str(e.createdBy || 'agent'); entry.state = 'active'; entry.updatedAt = now();
+        entry = clone(existing); entry.state = 'active'; entry.updatedAt = now();
         entry = persist(entry);
         return { ok: true, action: 'restore', skill: projectSkill(entry, true), edited: true };
       }
@@ -531,7 +537,8 @@
         if (!p.ok) return p;
         t = now();
         entry = clone(existing);
-        entry.writtenBy = str(e.createdBy || 'agent');
+        // A support file ships with the body it sits beside: never lower a review stamp on that body.
+        if (!reviewWritten(existing)) entry.writtenBy = str(e.createdBy || 'agent');
         entry.files = normFiles(entry.files);
         const encoding = e.encoding === 'base64' ? 'base64' : 'utf8';
         const content = encoding === 'base64' ? str(e.content).slice(0, Math.ceil(supportFileMax * 4 / 3) + 4) : red(e.content, supportFileMax);
@@ -557,7 +564,8 @@
         p = supportPath(e.path || e.file || e.filePath);
         if (!p.ok) return p;
         entry = clone(existing);
-        entry.writtenBy = str(e.createdBy || 'agent');
+        // A support file ships with the body it sits beside: never lower a review stamp on that body.
+        if (!reviewWritten(existing)) entry.writtenBy = str(e.createdBy || 'agent');
         entry.files = normFiles(entry.files);
         delete entry.files[p.path];
         entry.packageDiverged = !!entry.packageDigest;
@@ -575,22 +583,38 @@
     // build on its pending draft; every revision invalidates previous evaluation receipts.
     function shouldStage(e, legacyWrite) {
       if (opts.stageReviews === false) return false;   // private isolated draft constructor
-      if (REVIEW_ACTORS.has(str(e.createdBy))) return true;
+      if (STAGE_ACTORS.has(str(e.createdBy))) return true;
       if (!legacyWrite && ['pin', 'unpin'].includes(str(e.action))) return false;
       return trustSource(e.createdBy || 'agent') === 'agent-created';
     }
     function stageMutation(e, legacyWrite) {
       const aid = str(e.agentId) || 'agent';
       const seeds = Array.from(latest.values()).map(clone);
+      // A writer builds on a pending draft only when it can SEE that draft: the review/curator passes read it
+      // through pendingView, and a foreground run sees it only when its own run wrote it. Otherwise the run's
+      // patch text comes from the active body (so it "isn't found" in the draft) and a full edit would silently
+      // discard the proposal it never saw. Two empty run ids are not the same run (a review draft can carry none).
+      const unseen = new Map(), runId = str(e.sourceRunId);
       for (const row of candidateRows.values()) if (row.agentId === aid && row.status === 'pending'
         && row.baseDigest === revisionDigest(latest.get(keyOf(row.agentId, row.name)) || null)) {
+        const own = !!runId && str(row.skill.sourceRunId) === runId;
+        if (!STAGE_ACTORS.has(str(e.createdBy)) && !own) { unseen.set(keyOf(row.agentId, row.name), row); continue; }
         const i = seeds.findIndex(s => keyOf(s.agentId, s.name) === keyOf(row.agentId, row.name));
         if (i >= 0) seeds[i] = clone(row.skill); else seeds.push(clone(row.skill));
       }
+      const awaiting = name => ({ ok: false, error: '"' + name + '" already has a proposal awaiting evaluation in ABILITIES > SKILLS - the Commander must approve or reject it before this skill can be changed again' });
       const draft = makeSkillStore(Object.assign({}, opts, { stageReviews: false, packageStore: null, packages: null,
         io: { readAll: () => seeds, append() {} } }));
       const r = legacyWrite ? draft.write(e) : draft.manage(e);
-      if (!r.ok) return r;
+      if (!r.ok) {
+        // A skill that exists only as an unseen proposal (a new skill, listed to its owner as WITHHELD) is not in
+        // the draft at all: name the waiting proposal, not 'no such skill'.
+        const target = str(legacyWrite ? e.name : (e.target != null ? e.target : (e.id != null ? e.id : e.name))).trim();
+        const hidden = target && Array.from(unseen.values()).find(row => row.skill.id === target || row.name.toLowerCase() === target.toLowerCase());
+        return hidden ? awaiting(hidden.name) : r;
+      }
+      // Only the skill this write targets can collide; an unrelated pending proposal never blocks it.
+      if (unseen.has(keyOf(aid, r.skill && r.skill.name))) return awaiting(r.skill.name);
       const entry = normalizeEntry(r.skill);
       entry.writtenBy = str(e.createdBy || 'agent');
       entry.packagePath = ''; entry.canonicalRevision = false;
@@ -602,29 +626,75 @@
         baseDigest: revisionDigest(active), candidateDigest: revisionDigest(entry),
         createdAt: prior && prior.status === 'pending' ? prior.createdAt : now(), updatedAt: now(),
         action: r.action || (r.edited ? 'edit' : 'create'), skill: entry };
+      // An archive into a heir is bound to the heir version this draft saw (the curator's pending merge when there
+      // was one, else the live heir): see heirBlocker.
+      if (entry.state === 'archived' && entry.absorbedInto) {
+        const heirSeen = seeds.find(s => keyOf(s.agentId, s.name) === keyOf(aid, entry.absorbedInto) && s.state !== 'archived');
+        if (heirSeen) row.heirDigest = heirDigestOf(heirSeen);
+      }
       try { io.append(clone(row)); } catch (err) { failNote('skillstore.candidate.append', err); throw err; }
       candidateRows.set(key, clone(row));
-      return Object.assign({}, r, { pending: true, candidate: projectCandidate(row, true),
+      // isNew: no active version (archived counts as one), so skill.write/manage can say "proposed skill" not "revision"
+      return Object.assign({}, r, { pending: true, isNew: !active, candidate: projectCandidate(row, true),
         skill: Object.assign(projectSkill(entry, true), { pendingCandidate: true, candidateId: row.candidateId }) });
     }
     function projectCandidate(row, includeBody) {
       const out = clone(row); out.skill = projectSkill(row.skill, !!includeBody);
       return out;
     }
+    // A pending proposal whose base is no longer the active skill can only be rejected: say so (baseCurrent:false)
+    // instead of listing it as something the Commander can still evaluate. baseCurrent compares the STORED record,
+    // as approveCandidate does. The evaluate/approve routes must read their baseline the same way (hydrate:false,
+    // skills-eval-03): until they do, a hydrated body or support file can differ, so baseCurrent:true alone does not
+    // promise that Evaluate will be accepted.
+    function listedCandidate(row, includeBody) {
+      const out = projectCandidate(row, includeBody);
+      if (row.status === 'pending') out.baseCurrent = row.baseDigest === revisionDigest(latest.get(keyOf(row.agentId, row.name)) || null);
+      return out;
+    }
     function candidates(agentId, options) {
       const o = options || {};
       return Array.from(candidateRows.values()).filter(r => r.agentId === str(agentId)
-        && (o.includeResolved || r.status === 'pending')).map(r => projectCandidate(r, !!o.includeBody));
+        && (o.includeResolved || r.status === 'pending')).map(r => listedCandidate(r, !!o.includeBody));
     }
     function candidate(agentId, id) {
       const row = Array.from(candidateRows.values()).find(r => r.agentId === str(agentId) && r.candidateId === str(id));
-      return row ? projectCandidate(row, true) : null;
+      return row ? listedCandidate(row, true) : null;
     }
     function pendingView(agentId, target) {
       const row = Array.from(candidateRows.values()).find(r => r.agentId === str(agentId) && r.status === 'pending'
         && r.baseDigest === revisionDigest(latest.get(keyOf(r.agentId, r.name)) || null)
         && (r.skill.id === str(target) || r.name.toLowerCase() === str(target).toLowerCase() || r.candidateId === str(target)));
       return row ? Object.assign(projectSkill(row.skill, true), { pendingCandidate: true, candidateId: row.candidateId }) : null;
+    }
+    // A heir's CONTENT: lifecycle and pin are not content (a stale or pinned umbrella still carries the merged steps).
+    function heirDigestOf(entry) { return entry ? revisionDigest(Object.assign(clone(entry), { state: 'active', pinned: false })) : ''; }
+    /* AN ARCHIVE IS BOUND TO ITS HEIR (CONSOLIDATION MUST NAME ITS HEIR). A curator consolidation is two proposals,
+       widen the umbrella and archive the narrow sibling into it, and the Commander can click them in any order.
+       The archive row records the heir version it was built on (heirDigest), and it is approvable only while that
+       exact content is the live heir. Otherwise the archived steps would be in no active skill: the merge was
+       rejected, is outdated, or the heir changed since. Returns the refusal text, or null. */
+    function heirBlocker(row) {
+      const entry = row.skill;
+      if (!entry || entry.state !== 'archived' || !entry.absorbedInto) return null;
+      const heirName = str(entry.absorbedInto), q = '"' + heirName + '"';
+      const heir = find(row.agentId, heirName, { includeArchived: false });
+      const other = candidateRows.get(keyOf(row.agentId, heirName));
+      const heirRow = other && other.candidateId !== row.candidateId ? other : null;
+      const approveFirst = 'approve the proposal for ' + q + ' first - this archive moves its content there';
+      const notLive = q + ' is not an active skill, so this archive would point at content nobody can load';
+      if (!row.heirDigest) {   // proposed before archives recorded their heir version
+        if (heirRow && heirRow.status === 'pending') return approveFirst;
+        return heir ? null : notLive;
+      }
+      if (heir && heirDigestOf(heir) === row.heirDigest) return null;
+      const merge = heirRow && heirDigestOf(heirRow.skill) === row.heirDigest ? heirRow : null;
+      if (merge && merge.status === 'pending'
+        && merge.baseDigest === revisionDigest(latest.get(keyOf(row.agentId, heirName)) || null)) return approveFirst;
+      if (merge && (merge.status === 'pending' || merge.status === 'rejected'))
+        return 'the merge into ' + q + ' was not approved, so archiving this skill would lose its steps; reject this archive';
+      if (!heir) return notLive;
+      return q + ' changed after this archive was proposed, so it may not hold these steps; reject this archive';
     }
     function candidateDecision(e) {
       const row = Array.from(candidateRows.values()).find(r => r.agentId === str(e.agentId) && r.candidateId === str(e.candidateId));
@@ -633,26 +703,44 @@
         return { error: 'candidate changed; read and evaluate its current revision first' };
       return { row, active: latest.get(keyOf(row.agentId, row.name)) || null };
     }
+    // Everything that stops a pending proposal from being promoted apart from its evaluation receipt (null when
+    // nothing does). approveCandidate runs it, and the approve route must run it (promotionBlocker) BEFORE it
+    // precommits a digest approval for the candidate's bytes: an archive carries the live sibling's bytes, so a
+    // refused archive would otherwise leave a withheld sibling's bytes approved.
+    function blockerFor(row, active) {
+      if (revisionDigest(active) !== row.baseDigest) return 'the active skill changed after this proposal; reject it or wait for the agent to propose a new revision';
+      if (row.skill.guardAction === 'block') return 'candidate is blocked by the skill guard';
+      // Pinned content cannot be changed by proposing a revision before it was pinned.
+      if (active && active.pinned) return 'the active skill is pinned; unpin it before promotion';
+      return heirBlocker(row);
+    }
+    function promotionBlocker(agentId, candidateId) {
+      const row = Array.from(candidateRows.values()).find(r => r.agentId === str(agentId) && r.candidateId === str(candidateId));
+      if (!row || row.status !== 'pending') return 'no pending candidate with that id';
+      return blockerFor(row, latest.get(keyOf(row.agentId, row.name)) || null);
+    }
     function approveCandidate(e) {
       e = e || {};
       if (e.approvedBy !== 'user') return { ok: false, error: 'only the Commander may promote a candidate' };
       const found = candidateDecision(e);
       if (found.error) return { ok: false, error: found.error };
       const { row, active } = found;
-      if (revisionDigest(active) !== row.baseDigest) return { ok: false, error: 'active skill changed; regenerate and evaluate the candidate against it' };
-      if (row.skill.guardAction === 'block') return { ok: false, error: 'candidate is blocked by the skill guard' };
+      const blocked = blockerFor(row, active);
+      if (blocked) return { ok: false, error: blocked };
       if (!validatePromotionReceipt) return { ok: false, error: 'candidate needs a host-verified behavior evaluation before promotion' };
       let checked;
+      // acknowledgedNoImprovement is the Commander's explicit "accept a complete tie"; the verifier decides if it qualifies.
       try { checked = validatePromotionReceipt(e.evaluation, { candidateDigest: row.candidateDigest, baselineDigest: row.baseDigest,
-        candidate: projectSkill(row.skill, true), baseline: active ? projectSkill(active, true) : null, agentId: row.agentId }); }
+        candidate: projectSkill(row.skill, true), baseline: active ? projectSkill(active, true) : null, agentId: row.agentId,
+        acknowledgedNoImprovement: e.acknowledgedNoImprovement === true }); }
       catch (_) { checked = null; }
       if (!checked || checked.ok !== true || (checked.status && checked.status !== 'pass'))
         return { ok: false, error: (checked && checked.error) || 'evaluation is missing, stale, insufficient, or regressed' };
       const entry = clone(row.skill);
-      // Pinned content cannot be changed by proposing a revision before it was pinned.
-      if (active && active.pinned) return { ok: false, error: 'the active skill is pinned; unpin it before promotion' };
+      // (A pinned active skill was already refused by blockerFor above.)
       // Usage belongs to the ACTIVE record: it kept counting while the candidate waited (no digest covers it), so
-      // the proposal-time snapshot must not reset it. Stale/active is the same freshness clock; archive/restore is content.
+      // the proposal-time snapshot must not reset it, or a skill used every day since it was proposed would look
+      // idle to curate() right after approval. Stale/active is the same freshness clock; archive/restore is content.
       if (active) {
         entry.viewCount = active.viewCount || 0; entry.useCount = active.useCount || 0;
         entry.lastUsedAt = active.lastUsedAt == null ? null : active.lastUsedAt;
@@ -660,7 +748,9 @@
       }
       entry.canonicalRevision = true; entry.updatedAt = now();
       entry.promotionReceiptId = str(checked.receiptId || (e.evaluation && (e.evaluation.receiptId || e.evaluation.id)));
-      const resolved = Object.assign({}, clone(row), { status: 'promoted', resolvedAt: now(), evaluation: clone(e.evaluation) });
+      // The decision record says whether the promotion was measured or only owner-acknowledged as no improvement.
+      const resolved = Object.assign({}, clone(row), { status: 'promoted', resolvedAt: now(), evaluation: clone(e.evaluation),
+        acknowledgedNoImprovement: checked.acknowledged === true });
       // Active content and resolution are one append; restart cannot observe half a promotion.
       persist(entry, resolved);
       return { ok: true, skill: projectSkill(entry, true), candidate: projectCandidate(resolved, false) };
@@ -672,6 +762,25 @@
       const row = Object.assign({}, clone(found.row), { status: 'rejected', resolvedAt: now() });
       io.append(clone(row)); candidateRows.set(keyOf(row.agentId, row.name), row);
       return { ok: true, candidate: projectCandidate(row, false) };
+    }
+    /* VETO = UNDO A SILENT SAVE (COMMS). The reflection auto-saves a learned skill through write(), which makes it
+       a proposal, so the veto rejects that proposal. A plain archive was a new staged write that could not see the
+       reflection's draft: refused for a revision, 'no such skill' for a new skill, and the proposal stayed
+       approvable. Only an active skill is archived, as the Commander, so the archive is not staged again (a pending
+       retirement proposal is rejected first, then the skill is archived). Matched by skill id or name; 'no such
+       skill' when neither exists, which the route treats as already undone. */
+    function veto(e) {
+      e = e || {};
+      const aid = str(e.agentId) || 'agent';
+      const target = str(e.target != null ? e.target : e.id).trim();
+      const row = target ? Array.from(candidateRows.values()).find(r => r.agentId === aid && r.status === 'pending'
+        && (r.skill.id === target || r.name.toLowerCase() === target.toLowerCase())) : null;
+      if (row) {
+        const r = rejectCandidate({ agentId: aid, candidateId: row.candidateId, candidateDigest: row.candidateDigest });
+        if (!r.ok) return r;
+        if (row.skill.state !== 'archived') return Object.assign({ action: 'reject' }, r);
+      }
+      return manage({ agentId: aid, target, action: 'archive', createdBy: 'user' });
     }
     function projectKey(root) {
       const s = str(root).trim().replace(/\\/g, '/').replace(/\/+$/, '');
@@ -693,13 +802,24 @@
         rows.push({ id: row.skill.id, agentId: row.agentId, name: row.name, state: 'active', scope: 'agent',
           pendingCandidate: true, candidateId: row.candidateId, guardAction: 'ask', summary: '', files: [] });
       }
-      return rows.sort((a, b) => (Number(b.agentId === str(agentId)) - Number(a.agentId === str(agentId))) || a.name.localeCompare(b.name));
+      // Own skills first; inside each group mine()'s order (pinned, then most recently updated, then name), so a
+      // budget-capped index or a paged skill.list drops the stale skills, not the alphabetically late ones.
+      return rows.sort((a, b) => (Number(b.agentId === str(agentId)) - Number(a.agentId === str(agentId)))
+        || (!!b.pinned - !!a.pinned) || ((b.updatedAt || 0) - (a.updatedAt || 0)) || a.name.localeCompare(b.name));
     }
     function viewAccessible(agentId, target, options) {
       const o = options || {};
       let matches = listAccessible(agentId, o).filter(s => (!o.ownerAgentId || s.agentId === str(o.ownerAgentId))
         && (s.id === str(target) || s.name.toLowerCase() === str(target).toLowerCase()));
-      if (!o.ownerAgentId && matches.some(s => s.agentId === str(agentId))) matches = matches.filter(s => s.agentId === str(agentId));
+      if (!o.ownerAgentId && matches.some(s => s.agentId === str(agentId))) {
+        const own = matches.filter(s => s.agentId === str(agentId));
+        /* An agent's own pending-only PROPOSAL is not an active skill, so it never hides an active skill of the same
+           name the agent can read (customer report f702f2f6: a worker whose background review had drafted a same-name
+           proposal was told the Commander-approved station skill awaited approval). Its own ACTIVE skill still wins. */
+        const ownActive = own.filter(s => !s.pendingCandidate);
+        const others = matches.filter(s => s.agentId !== str(agentId) && !s.pendingCandidate);
+        matches = ownActive.length ? ownActive : (others.length ? others : own);
+      }
       if (matches.length !== 1) return null;   // never choose an arbitrary owner's same-name skill
       return matches[0].pendingCandidate ? matches[0] : view(matches[0].agentId, matches[0].id, o);
     }
@@ -795,8 +915,11 @@
       for (const s of mine(agentId, { includeArchived: true })) {
         if (s.pinned || s.state === 'archived') continue;
         const pending = candidateRows.get(keyOf(s.agentId, s.name));
-        // Aging must not invalidate a pending replacement or repeatedly override a rejected retirement.
-        if (pending && ['pending', 'rejected'].includes(pending.status) && pending.baseDigest === revisionDigest(s)) continue;
+        // Aging must not invalidate a pending replacement or repeatedly override a rejected RETIREMENT. A rejected
+        // content edit says nothing about the skill's age, so it must not freeze aging. (manage reports delete as
+        // action 'archive', so this covers both.)
+        if (pending && pending.baseDigest === revisionDigest(s)
+          && (pending.status === 'pending' || (pending.status === 'rejected' && pending.action === 'archive'))) continue;
         const base = s.lastUsedAt || s.updatedAt || s.createdAt || t;
         const age = Math.max(0, t - base);
         const entry = clone(s);
@@ -821,7 +944,7 @@
 
     return {
       write, manage, list, view, markUsed, curate, compact,
-      candidates, candidate, pendingView, approveCandidate, rejectCandidate, share, listAccessible, viewAccessible,
+      candidates, candidate, pendingView, promotionBlocker, approveCandidate, rejectCandidate, veto, share, listAccessible, viewAccessible,
       all() { return Array.from(latest.values()).map(s => projectSkill(s, true)); },
       count() { return latest.size; },
       _internals: { slug, keyOf, supportPath, cleanName, normalizeEntry, bumpView, trustSource }

@@ -15,6 +15,7 @@
 const A = require('./_assert.js');
 const http = require('node:http');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+const { hostText } = require('./helpers/host-notes.js');   // system + the user-side <run_context> note (per-run ids)
 const { planConnectorDeferral, connectorIndexLine } = require('../sidecar/tools/builtin/toolsearch.js');
 
 const MARK = 'CONNECTOR_DEFER_PROBE';
@@ -193,7 +194,8 @@ const toolNames = body => (body.tools || []).map(t => t.function.name);
     A.ok(sys1.indexOf('Connector tools not loaded yet') >= 0 && sys1.indexOf('big (40 tools)') >= 0, 'TURN 1: the system prompt carries the one-line server index');
     A.ok(sys1.indexOf('small (') < 0, 'TURN 1: the advertised small server is not indexed');
     A.ok(sys1.indexOf('mcp__big__widget_03') < 0, 'TURN 1: the index does not re-list the deferred tool names');
-    A.ok(sys1.lastIndexOf('Run id:') > sys1.indexOf('Connector tools not loaded yet'), 'the index rides BEFORE the per-run ids (prompt-cache prefix law)');
+    const host1 = hostText(t1.messages);   // the per-run ids ride the run-context note, after the system prompt
+    A.ok(host1.lastIndexOf('Run id:') > host1.indexOf('Connector tools not loaded yet') && host1.indexOf('Connector tools not loaded yet') >= 0, 'the index rides BEFORE the per-run ids (prompt-cache prefix law)');
     A.ok(n2.indexOf('mcp__big__widget_17') >= 0, 'TURN 2: the searched connector tool is declared under its wire name');
     A.eq(n2.filter(n => n.indexOf('mcp__big__') === 0).length, 1, 'TURN 2: only what matched was revealed');
     const searchResult = (t2.messages || []).filter(m => m.role === 'tool').map(m => String(m.content)).join('\n');

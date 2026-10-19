@@ -226,9 +226,11 @@ A.eq(runTeeView('agent.reasoning', { agentId: 'a1', runId: 'r1', on: true }), nu
   const makeBridge = new Function('EventSource', 'setTimeout', 'clearTimeout', `
     let bridgePaused = false, chanES = null, retryTimer = null, backoff = 1000;
     let bridgeCursor = '', bridgeRecovering = false;
-    const emitted = []; let snapshots = 0;
+    const emitted = []; let snapshots = 0; const readyOrder = [];
     let lastSseEventAt = 0, fnow = 0;
-    const apiUrl = x => x, fetchSnapshot = () => { snapshots++; };
+    const apiUrl = x => x, fetchSnapshot = () => { snapshots++; readyOrder.push('snapshot'); };
+    // FIRST SHIP's own reset (world.js forgetShipBase) — the one collaborator the bridge's replay completion calls besides the snapshot
+    const forgetShipBase = () => { readyOrder.push('forget-ship-base'); };
     const window = { __STARNET_API_TOKEN__: '' };
     const ApiTicket = { sseUrl: q => '/api/channels/events?' + q + '&ticket=T' + (++minted) };   // app/apiticket.js stand-in
     let minted = 0;
@@ -237,7 +239,7 @@ A.eq(runTeeView('agent.reasoning', { agentId: 'a1', runId: 'r1', on: true }), nu
     ${openSource}
     return {
       open,
-      emitted, snapshots: () => snapshots,
+      emitted, snapshots: () => snapshots, readyOrder,
       resume() { if (!chanES) open(); },
       source() { return chanES; }
     };
@@ -267,6 +269,10 @@ A.eq(runTeeView('agent.reasoning', { agentId: 'a1', runId: 'r1', on: true }), nu
   A.eq(bridge.emitted.length, 1, 'a replayed duplicate is applied only once');
   resumed.onmessage({ data: JSON.stringify({ stream: 'ready', cursor: 'a:2', reset: false }), lastEventId: 'a:2' });
   A.eq(bridge.snapshots(), 1, 'replay completion refreshes authoritative state');
+  // (conveyor-final repair) FIRST SHIP's baseline reset was inlined AHEAD of the snapshot inside open()'s catch-all, so any throw in
+  // it silently skipped the authoritative refresh: the snapshot comes first, then FIRST SHIP's own forgetShipBase
+  A.eq(bridge.readyOrder, ['snapshot', 'forget-ship-base'], 'replay completion refreshes authoritative state FIRST, then lets FIRST SHIP re-read its counts');
+  A.ok(!/shipBase\s*=|shipApplied|refreshShipBase/.test(openSource), 'the bridge reaches into no FIRST SHIP internals — one call to forgetShipBase');
   resumed.onerror(); bridge.resume();
   A.ok(bridge.source().url.includes('cursor=a%3A2'), 'a manually recreated EventSource carries the acknowledged cursor');
 

@@ -332,6 +332,9 @@ button:active {
 .toast.actionable:hover .toast-txt { color: var(--ph-bright); }
 
 .toast.leaving { animation: toast-out var(--t-med) var(--ease-soft) forwards; }
+/* a keyed card replaced in its own seat (StationUI.toast: one MODEL card for four quick presses) is the same readout with a new
+   value — no second slide-in or blade strike; its text still decodes and its dwell rail starts over */
+.toast.swap:not(.leaving), .toast.swap .toast-lamp { animation: none; }
 @keyframes toast-in {
   from { opacity: 0; transform: translate3d(-20px, 4px, 0); }
   to   { opacity: 1; transform: translate3d(0, 0, 0); }
@@ -436,6 +439,10 @@ button:active {
 .empty-state .es-glyph {
   display: block; font-size: 30px; color: var(--ph-dim);
   opacity: 0.6; margin-bottom: 8px; text-shadow: 0 0 8px var(--ph-glow2);
+}
+.empty-state .es-glyph svg {   /* a drawn line icon (the dock's stroke recipe), never a fallback-font glyph box */
+  display: block; width: 30px; height: 30px; margin: 0 auto; fill: none; stroke: currentColor;
+  stroke-width: 1.3; stroke-linecap: square; stroke-linejoin: miter;
 }
 .empty-state b { display: block; color: var(--ph); font-size: 15px; letter-spacing: 1px; margin-bottom: 4px; }
 .empty-state span { display: block; font-size: 12px; opacity: 0.85; }

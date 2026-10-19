@@ -176,6 +176,18 @@ A.ok(/unknown station change/.test(cardFor({ action: 'nope' })), 'an unknown act
   A.ok(t.controlTool.consentKey !== t.powerTool.consentKey, 'control and power are separate consent classes');
   A.ok(t.controlTool.taintLocked && t.powerTool.taintLocked, 'both lock once the run read untrusted content');
 }
+// checkpoints: the store's health record rides through, so the lead never tells the Commander a change can be undone
+// while the last restore point failed to save (a killed checkpoint Git command's stale lock, 10-15)
+{
+  const health = { ok: false, at: 5, since: 4, failures: 2, lastFailure: { at: 5, reason: 'Git add timed out' } };
+  const s = stubs(() => ({ status: 200, json: { enabled: true, snapshots: [{ id: 'a'.repeat(40) }], health } }));
+  const r = await make(s).settingsTool.run({ section: 'checkpoints', agent: 'NOVA' });
+  A.ok(s.routes.some(x => x.url === '/api/checkpoint?agent=NOVA'), 'checkpoints reads that agent\'s restore points');
+  A.ok(/"health":\{"ok":false/.test(r.content) && /Git add timed out/.test(r.content), 'the checkpoints section carries the net health: ' + String(r.content).slice(0, 240));
+  const s2 = stubs(() => ({ status: 200, json: { enabled: true, snapshots: [] } }));
+  const r2 = await make(s2).settingsTool.run({ section: 'checkpoints', agent: 'NOVA' });
+  A.ok(/"health":null/.test(r2.content), 'no health from the backend reads as unknown (null), never as ok');
+}
 
 A.report('station-control.test');
 })().catch(e => { console.error(e); process.exit(1); });

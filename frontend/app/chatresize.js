@@ -75,7 +75,7 @@
     try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
     const cur = getComputedStyle(game).getPropertyValue('--chat-w').trim();
     try { if (cur) localStorage.setItem(KEY, parseInt(cur, 10)); } catch (_) {}
-    try { if (typeof SFX === 'object' && SFX.click) SFX.click(); } catch (_) {}
+    try { if (typeof SFX === 'object' && SFX.press) SFX.press(); } catch (_) {}
   }
   handle.addEventListener('pointerdown', e => {
     dragging = true;

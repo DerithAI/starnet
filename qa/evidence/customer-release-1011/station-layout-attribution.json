@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "base": "fa3237f28e92d064de6d75323a73157e7120f561",
+  "changedFile": "test/station-layout.e2e.test.mjs",
+  "changedFileSha256": "762671fc17f965fef7ca1622b1b43f41cbab6e0e4b9765e1392429f61d7700bf",
+  "scope": "Fixture attribution only; production and quest behavior unchanged",
+  "originalFailure": {
+    "step": 49,
+    "total": 209,
+    "detail": "Earlier owner full HTTP run selected a request without station_layout; original selected-request identity was not recorded.",
+    "cause": "unproved"
+  },
+  "investigation": {
+    "unchangedAssertionsRun": ".handoff/layout-provider-diagnostic.log",
+    "outcome": "Passed; foreground calls 2, 6, 10 offered station_layout while auxiliary calls could quote the foreground prompt."
+  },
+  "repair": "Bind nonce-bearing exact user turn and expected model to one initial request, then require matching foreground run, issued tool call, successful terminal tool result and model-visible result.",
+  "validation": {
+    "startedAt": "2026-10-12T08:53:59.0797463Z",
+    "exitCode": 0,
+    "log": ".handoff/station-layout-attribution.log",
+    "logSha256": "e4ebcf931ace91def4173030461d8a4eb27aada3a3ee76d256204465ac664526",
+    "result": "All seeded live-browser assertions passed; ten mock requests; no real provider; no page exceptions",
+    "negativeControls": [
+      "Auxiliary request before foreground",
+      "Quoted user/system/tool prompt",
+      "Unrelated reordered tool results",
+      "Missing offered tool still fails original assertion",
+      "Wrong model",
+      "Ambiguous initial request",
+      "Wrong run ID",
+      "Missing or duplicate terminal",
+      "Wrong-origin, duplicate or failed tool result"
+    ]
+  },
+  "limits": [
+    "Original failure cause remains unproved.",
+    "A focused fixture pass does not replace the final complete HTTP gate or installed acceptance."
+  ]
+}

@@ -15,10 +15,21 @@
   function fileLabel(files) {
     return files && files.length ? ('; files: ' + files.map(f => f.path).join(', ')) : '';
   }
-  function emitSkill(ctx, skill) {
+  function emitSkill(ctx, skill, isNew) {
     if (ctx && typeof ctx.emit === 'function' && skill) {
-      try { ctx.emit('deliverable', { id: skill.id, agentId: skill.agentId || ((ctx && ctx.agentId) || 'agent'), kind: 'skill', title: (skill.pendingCandidate ? 'Proposed revision: ' : '') + skill.name }); } catch (_) {}
+      const label = skill.pendingCandidate ? (isNew ? 'Proposed skill: ' : 'Proposed revision: ') : '';
+      try { ctx.emit('deliverable', { id: skill.id, agentId: skill.agentId || ((ctx && ctx.agentId) || 'agent'), kind: 'skill', title: label + skill.name }); } catch (_) {}
     }
+  }
+  // The model's reply for a staged write. A brand-new skill is a proposed skill, not a "revision", and neither is
+  // something the skill guard held: it waits on the Commander's evaluation and approval.
+  function proposedReply(r, isNew) {
+    return {
+      content: isNew
+        ? 'Proposed new skill "' + r.skill.name + '". It is not active until the Commander evaluates and approves it in ABILITIES > SKILLS.'
+        : 'Proposed revision for skill "' + r.skill.name + '". It is not active until the Commander evaluates and approves it in ABILITIES > SKILLS; the active version is unchanged.',
+      summary: 'proposed'
+    };
   }
 
   /* A MODEL SETS ONLY WHAT ITS SCHEMA OFFERS. skill.manage used to hand the model's arguments to the store
@@ -37,6 +48,8 @@
   function makeSkillTools(deps) {
     const store = deps && deps.store;
     const onView = deps && deps.onView;
+    // onManage(skill, ctx, action, { isNew }): isNew marks a proposal for a skill with no active version, so an
+    // observer whose own deliverable title replaces emitSkill's (the review/curator passes) can say 'Proposed skill'.
     const onManage = deps && deps.onManage;
     const gate = (deps && deps.gate) || null;                          // skills/gate.js instance: may the MODEL read this skill?
     const readBeforeWrite = !!(deps && deps.readBeforeWrite);           // set for the autonomous review/curator passes
@@ -100,6 +113,13 @@
       if (!store || typeof store.view !== 'function' || !nameOrId) return null;
       try { return (readBeforeWrite && store.pendingView && store.pendingView(agentId, nameOrId)) || store.view(agentId, nameOrId, { bump: false, includeArchived: true, hydrate: false }); } catch (_) { return null; }
     }
+    // A staged write proposes a NEW skill when no active (or archived) version exists to revise. Read the active
+    // record only: a pending draft is not a version the Commander approved. Unknown counts as a revision.
+    function proposesNew(agentId, r) {
+      if (typeof r.isNew === 'boolean') return r.isNew;
+      if (!r.skill || !store || typeof store.view !== 'function') return false;
+      try { return !store.view(agentId, r.skill.id, { bump: false, includeArchived: true, hydrate: false }); } catch (_) { return false; }
+    }
 
     const writeTool = {
       name: 'skill.write', capability: 'memory', scope: 'write', requiresConsent: false, taintLocked: true,
@@ -130,9 +150,10 @@
           platforms: args && args.platforms, createdBy: (ctx && ctx.createdBy) || (ctx && ctx.skillReview ? 'background-review' : 'agent'), sourceRunId: ctx && ctx.runId
         });
         if (!r.ok) return { content: 'Could not save the skill: ' + r.error, summary: 'not saved' };
-        emitSkill(ctx, r.skill);
-        if (typeof onManage === 'function') { try { onManage(r.skill, ctx, r.pending ? 'propose' : (r.edited ? 'edit' : 'create')); } catch (_) {} }
-        if (r.pending) return { content: 'Proposed revision for skill "' + r.skill.name + '". Evaluation and Commander approval are required before use. Any existing active version is unchanged.', summary: 'proposed' };
+        const isNew = !!r.pending && proposesNew(aid, r);
+        emitSkill(ctx, r.skill, isNew);
+        if (typeof onManage === 'function') { try { onManage(r.skill, ctx, r.pending ? 'propose' : (r.edited ? 'edit' : 'create'), { isNew }); } catch (_) {} }
+        if (r.pending) return proposedReply(r, isNew);
         return { content: (r.edited ? 'Updated' : 'Saved') + ' skill "' + r.skill.name + '". Reload it anytime with skill.view.', summary: r.edited ? 'edited' : 'saved' };
       }
     };
@@ -173,9 +194,10 @@
         }
         const r = store.manage(Object.assign(modelArgs(args), { agentId: aid, createdBy: (ctx && ctx.createdBy) || (ctx && ctx.skillReview ? 'background-review' : 'agent'), sourceRunId: ctx && ctx.runId }));
         if (!r.ok) return { content: 'Could not manage the skill: ' + r.error, summary: 'not saved' };
-        emitSkill(ctx, r.skill);
-        if (typeof onManage === 'function') { try { onManage(r.skill, ctx, r.pending ? 'propose' : (r.action || (args && args.action) || 'manage')); } catch (_) {} }
-        if (r.pending) return { content: 'Proposed revision for skill "' + r.skill.name + '". Evaluate and approve the candidate in ABILITIES > SKILLS before use. Any existing active version remains unchanged.', summary: 'proposed' };
+        const isNew = !!r.pending && proposesNew(aid, r);
+        emitSkill(ctx, r.skill, isNew);
+        if (typeof onManage === 'function') { try { onManage(r.skill, ctx, r.pending ? 'propose' : (r.action || (args && args.action) || 'manage'), { isNew }); } catch (_) {} }
+        if (r.pending) return proposedReply(r, isNew);
         const done = r.action || (args && args.action) || 'updated';
         const path = r.path ? (' (' + r.path + ')') : '';
         const heir = r.absorbedInto ? (' Content now lives in "' + r.absorbedInto + '".') : '';
@@ -203,6 +225,8 @@
         if (!list.length) return { content: query ? 'No accessible skills match that query. Try another query or list without a query.' : (offset ? 'No more accessible skills on this page.' : 'No skills saved yet. Save one with skill.manage after you work out a repeatable procedure.'), summary: '0 skills' };
         let held = 0;
         const lines = list.map(s => {
+          // A review pass can read and continue its own pending draft: it is a draft, not a guard hold.
+          if (s.pendingCandidate && reviewContext(ctx)) return '- ' + s.name + ' [PENDING DRAFT: not active; skill.view loads it for review]';
           const d = decideFor(s, false);
           // Same rule as the prompt index: name a withheld skill, never summarize it.
           if (d.visible === false) { held++; return '- ' + s.name + ' [WITHHELD: ' + (d.reason || 'held by the skill guard') + ']'; }
@@ -237,6 +261,12 @@
            off disk and can differ from what the scanner saw). A refused view is NOT a read — it must
            not reach onView (which would list it as a loaded skill in the run's telemetry) and must
            not satisfy the read-before-write ledger. */
+        // A proposal this run cannot read is waiting on the Commander, not held by the guard: say so, or the agent
+        // reports a guard hold that does not exist.
+        if (v.pendingCandidate && !pending) return {
+          content: 'The skill "' + v.name + '" is a proposal awaiting the Commander\'s evaluation and approval in ABILITIES > SKILLS; it is not active and its body was not loaded. Do not recreate it.',
+          summary: 'pending'
+        };
         const decision = pending && gate && typeof gate.verifyDraft === 'function' ? gate.verifyDraft(v) : decideFor(v, true);
         if (decision.visible === false) return withheldRefusal(decision, v);
         markRead(v);

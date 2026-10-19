@@ -122,6 +122,12 @@ module.exports = (async () => {
   A.eq(stale.applied[0].reason, 'catalog_unavailable', 'the app receives the explicit unavailable state');
   A.eq(stale.internals.catalogEquivalent('claude-sonnet-5', 'starnet', live), 'anthropic/claude-sonnet-5', 'mapping requires an exact live-catalog match');
   A.eq(stale.internals.catalogEquivalent('invented-model', 'starnet', live), '', 'mapping never invents a managed slug');
+  // GitHub #98: switching to native GEMINI keeps the routed 'google/…' spelling; the live Gemini catalog confirms its native id
+  const geminiLive = [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }];
+  A.eq(stale.internals.catalogEquivalent('google/gemini-2.5-flash', 'gemini', geminiLive), 'gemini-2.5-flash', 'the routed Gemini spelling maps to the native catalog row');
+  A.eq(stale.internals.catalogEquivalent('google/gemini-2.5-flash:free', 'gemini', geminiLive), 'gemini-2.5-flash', 'an OpenRouter variant suffix maps to the same native row');
+  A.eq(stale.internals.catalogEquivalent('google/gemini-9-ultra', 'gemini', geminiLive), '', 'only a row the live catalog lists');
+  A.eq(stale.internals.catalogEquivalent('openai/gpt-5', 'gemini', geminiLive), '', 'another vendor never maps to Gemini');
 
   for (const [label, action, expectedProvider, expectedModel] of [
     ['provider switch', h => { h.setProv('ollama'); h.setModel('qwen3:14b'); }, 'ollama', 'qwen3:14b'],

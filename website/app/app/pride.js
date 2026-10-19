@@ -83,7 +83,7 @@
         if (d > 0) { s.workMs += d; s.sawWork = true; }
         delete s.open[id];
       }
-    } else if (name === 'workitem.delivered') {
+    } else if (name === 'workitem.delivered' && p.box !== 'line-output') {
       s.deliverables += 1; s.sawDeliverable = true; found(s, nowMs);
     } else if (name === 'cron.fire') {
       s.routines += 1; s.sawRoutine = true; found(s, nowMs);

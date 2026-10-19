@@ -110,7 +110,10 @@
   box-shadow: inset 0 2px 6px rgba(0,0,0,.28), inset 0 -1px 0 rgba(var(--ph-bright-rgb),.04); }
 .wf-strip-wrap.pin { position: sticky; top: 0; z-index: 3; }
 @media (max-width: 900px), (max-height: 720px) { .wf-strip-wrap.pin { position: static; } }   /* a short panel keeps its height for the editor */
-.wf-strip { position: relative; display: flex; align-items: center; padding: 14px 14px 16px; min-width: max-content; }   /* every part and every join sit on the line's middle (an INBOX → BAY → OUTBOX line fits the panel whole) */
+.wf-strip { position: relative; display: flex; align-items: center; padding: 14px 14px 16px; min-width: min-content; }   /* every part and every join sit on the line's middle (an INBOX → BAY → OUTBOX line fits the panel whole) */
+/* (walk 10-14 #15) the strip is the panel's width while its parts fit at their narrowest — the joins give way down to their
+   60px floor, the labels wrap — and scrolls only past that: min-width:max-content kept every join at its widest label, so
+   "the job" + "the finished result" pushed a 1-step line's OUTBOX past the panel's edge at 1440x900. */
 .wf-strip.has-arcs { padding-bottom: 42px; }   /* a loop's way back is drawn under the tiles */
 /* THE LINE'S MACHINES AS TILES (2026-09-30, Andrew on this diagram: "make this look way better"): the Build Library's glass tile —
    the machine's own art big in a lit well (a BAY's agent stands at it), its name, one short line; the lamp top-right, a BAY's
@@ -156,8 +159,8 @@
    what it carries over the line, the line with the + that adds to it ON it, and an empty row as tall as the first — so the
    line is the join's centre, and every join is centred on the tiles (beside stacked branches it meets them at their middle
    the same way). A join is as wide as what it carries needs, within reason: a label wraps between words, never inside one. */
-.wf-belt { position: relative; flex: 0 0 auto; align-self: center; width: max-content; min-width: 60px; max-width: 112px; display: grid; grid-template-rows: 27px 28px 27px; justify-items: center; align-items: center; }
-.wf-belt .carry { grid-row: 1; align-self: end; padding: 0 4px 3px; font-size: 14px; color: var(--ph-dim); text-align: center; line-height: 1.1; max-width: 112px; box-sizing: border-box; max-height: 2.3em; overflow: hidden; overflow-wrap: break-word; }
+.wf-belt { position: relative; flex: 0 1 auto; align-self: center; min-width: 60px; max-width: 112px; display: grid; grid-template-rows: 27px 28px 27px; justify-items: center; align-items: center; }
+.wf-belt .carry { grid-row: 1; align-self: end; padding: 0 4px 3px; font-size: 14px; color: var(--ph-dim); text-align: center; line-height: 1.1; max-width: 112px; box-sizing: border-box; max-height: 3.4em; overflow: hidden; overflow-wrap: break-word; }   /* a narrowed join keeps three short lines; the whole label is its tip */
 .wf-belt.gap .carry { grid-row: 2; align-self: center; padding-bottom: 0; }   /* a break in the line says so where the line would run */
 .wf-belt :is(.rail,.wf-plus) { grid-row: 2; grid-column: 1; }
 /* the join between two parts: ONE shape — a 2px line into a solid arrowhead whose tip touches the next part — a shade brighter
@@ -333,6 +336,7 @@ textarea.wf-io:focus { outline: none; border-color: var(--ph); box-shadow: var(-
 .wf-job-h { font-size: 16px; letter-spacing: .6px; color: var(--ph-dim); }
 .wf-job-h b { font-weight: normal; color: var(--ok); letter-spacing: 1.2px; }
 .wf-job-h b.warn { color: var(--gold); }
+.wf-job-h .wf-job-where { display: inline-block; max-width: 100%; }   /* (org D9 polish) wraps as one unit */
 .wf-step-out .src.warn { color: var(--gold); }
 .wf-job-out { max-height: 320px; }
 .wf-steps { display: grid; gap: 2px; }
@@ -340,15 +344,31 @@ textarea.wf-io:focus { outline: none; border-color: var(--ph); box-shadow: var(-
 .wf-step-out .src { color: var(--ph-dim); font-size: 15px; letter-spacing: .4px; }
 .wf-step-out .wf-io { margin: 4px 0 6px; }
 /* a reply drawn as COMMS draws it (Chat.renderProse's classes, on the panel's scale) */
-.wf-io.wf-md { white-space: normal; }
+.wf-io.wf-md { white-space: pre-wrap; }   /* a plain reply keeps its line breaks, as COMMS' .cmsg .body does (renderMarkdown joins its blocks with no whitespace) */
 .wf-md .md-p { display: block; white-space: pre-wrap; margin: .35em 0; }
 .wf-md .md-p:first-child { margin-top: 0; }
 .wf-md .md-h { display: block; margin: .6em 0 .25em; color: var(--ph-bright); letter-spacing: .5px; }
 .wf-md .md-b { color: var(--ph-bright); }
+.wf-md .md-i { font-style: italic; }   /* *italic* slants here as in COMMS (.cmsg .body .md-i): the one renderer draws it everywhere */
 .wf-md .md-list { margin: .35em 0; padding-left: 1.6em; }
 .wf-md .md-list li { margin: .15em 0; }
-.wf-md .md-code { padding: 0 4px; border-radius: 4px; background: rgba(var(--ph-rgb),.08); }
+.wf-md .md-code { font-family: inherit; padding: 0 4px; border-radius: 4px; background: rgba(var(--ph-rgb),.08); }   /* the station face, as COMMS — never the browser's monospace */
 .wf-md a { color: var(--wf-cyan); }
+/* …its fenced blocks, quotes and tables too (walk 10-14: DELIVERABLES draws replies through it now) — COMMS' own rules on the
+   panel scale: a code block keeps its lines and its working ⧉ copy key (chat.js wires .wf-md .md-copy), a table scrolls in place */
+.wf-md .md-pre-wrap { display: block; position: relative; margin: .4em 0; }
+.wf-md .md-pre { display: block; margin: 0; padding: 6px 36px 6px 9px; white-space: pre; overflow-x: auto; font-family: inherit; color: var(--ph-bright);
+  background: rgba(var(--ph-rgb),.07); border: 1px solid var(--ph-faint); border-left: 2px solid var(--ph-dim); border-radius: 4px; }
+.wf-md .md-copy { position: absolute; top: 4px; right: 5px; z-index: 1; border: 1px solid var(--ph-dim); background: var(--panel2); color: var(--ph-dim);
+  font: inherit; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 4px; cursor: pointer; opacity: .72; transition: opacity .12s, color .12s, border-color .12s; }
+.wf-md .md-copy:hover, .wf-md .md-copy:focus-visible { color: var(--ph-bright); border-color: var(--ph); opacity: 1; }
+.wf-md .md-copy.copied { color: var(--ph); border-color: var(--ph); opacity: 1; }
+.wf-md .md-copy.copy-failed { color: var(--bad); border-color: var(--bad); opacity: 1; }
+.wf-md .md-quote { display: block; white-space: normal; margin: .4em 0; padding: .3em .7em; border-left: 2px solid var(--ph-faint); color: var(--ph); }
+.wf-md .md-table-scroll { display: block; max-width: 100%; overflow-x: auto; margin: .5em 0; white-space: normal; }
+.wf-md .md-table { border-collapse: collapse; font: inherit; min-width: 100%; }
+.wf-md .md-table th, .wf-md .md-table td { border: 1px solid var(--ph-faint); padding: .3em .6em; text-align: left; vertical-align: top; }
+.wf-md .md-table th { color: var(--ph-bright); font-weight: normal; }
 /* a READY line's next step: the ▶ SEND IT A JOB key beside the pill */
 .wf-ready #wf-sendnow { padding: 0 12px; }
 /* NOT RIGHT? — say what's wrong; each suggested change is a glass card to use or ignore (2026-09-30) */
@@ -395,7 +415,10 @@ textarea.wf-io:focus { outline: none; border-color: var(--ph); box-shadow: var(-
 /* the WHEN picker, on the panel's scale: cadence keys the size of the panel's own keys, fields you can read */
 .wf-panel .sp, .wf-panel .rt-when { gap: 8px; margin: 0; }
 .wf-panel .sp-modes, .wf-panel .sp-days, .wf-panel .sp-units { gap: 6px; }
+/* the six cadence keys are two even rows of three — a free wrap left CUSTOM alone on a line under the other five (org P16 polish) */
+.wf-panel .sp-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .wf-panel :is(.sp-mode,.sp-unit) { min-height: 34px; padding: 5px 12px; font-size: 16px; letter-spacing: .5px; }
+.wf-panel .sp-mode { min-width: 0; line-height: 1.1; }
 .wf-panel .sp-day { width: 40px; height: 36px; font-size: 16px; }
 .wf-panel .sp-pane.on { gap: 8px; }
 .wf-panel :is(.sp-lbl,.sp-tz,.sp-hint,.sp-note) { font-size: 15px; letter-spacing: .4px; text-transform: none; }

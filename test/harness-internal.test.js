@@ -164,12 +164,13 @@ A.ok(/\+ taskDoctrineNote/.test(sidecar), 'the task doctrine is actually wired i
   A.ok(/Not signed in to ChatGPT/.test(codex), 'a runRouteFailure JSON envelope unwraps to its message');
   const coded = detail(JSON.stringify({ error: 'connect a ChatGPT subscription first.', code: 'codex_not_connected' }));
   A.ok(/codex_not_connected/.test(coded), 'an error code rides along when the text does not already carry it');
-  // END-TO-END through the ladder (the EL-10 family): the message chat() now throws must open RECONNECT CHATGPT.
+  // END-TO-END through the ladder (the EL-10 family): the message chat() now throws must open the ChatGPT sign-in
+  // door. "Not signed in" is never-signed-in, so it reads SIGN IN TO CHATGPT (org P03), not RECONNECT.
   const { friendlyError, actionButton } = require('../frontend/app/friendlyerror.js');
   const v = friendlyError(new Error('sidecar HTTP 500 — ' + codex));
   A.eq(v.kind, 'oauth', 'a pre-stream codex-not-connected failure classifies as oauth once the body survives');
   const btn = actionButton(v);
-  A.ok(btn && /RECONNECT CHATGPT/.test(btn.label), 'the RECONNECT CHATGPT chip is offered on the pre-stream path');
+  A.ok(btn && /SIGN IN TO CHATGPT/.test(btn.label), 'the SIGN IN TO CHATGPT chip is offered on the pre-stream path');
 }
 
 /* S5 source-lock — an ERRORED skillbase read must never become a confident zero.

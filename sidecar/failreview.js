@@ -50,7 +50,7 @@
   const LINE = /^\s*[-*•]?\s*LESSON\s*[:\-—]\s*(.+?)\s*$/i;
   // strip a recall fence the model may have echoed (mirrors reflect.js) — a forged <recalled-memory> block
   // must never be replayed into a durable lesson.
-  const RECALL_FENCE = /<recalled-memory>[\s\S]*?<\/recalled-memory>|<\/?recalled-memory>/gi;
+  const RECALL_FENCE = /<(recalled-memory|run_context|crew_call)>[\s\S]*?<\/\1>|<\/?(?:recalled-memory|run_context|crew_call)>/gi;   // + the per-run <run_context> and <crew_call> notes (lean-prompt 2026-10-12)
 
   /* value-floor regexes — the deterministic backstop for what the prompt alone can't suppress.
      RESTATE: a line that merely restates that the run failed carries no correction — it is the failureCode in

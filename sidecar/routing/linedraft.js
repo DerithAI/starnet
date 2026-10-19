@@ -13,7 +13,8 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LineDraft = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const MAX = { want: 600, starters: 8, roles: 6, purpose: 200, does: 900, name: 32, job: 400 };
+  // starters: the WHOLE ready-made shelf (org P18: worldmodel BLUEPRINTS is 20 today) — SET IT UP FOR ME chooses from every line, in one call
+  const MAX = { want: 600, starters: 32, roles: 6, purpose: 200, does: 900, name: 32, job: 400 };
   const ROLE_RE = /^[A-Z][A-Z0-9 _-]{0,23}$/;
   const ID_RE = /^[a-z0-9_]{1,40}$/;
   const flat = (s, n) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n);

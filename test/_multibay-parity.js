@@ -12,7 +12,8 @@
 const DOCK_FIELDS = ['bayTileToDock', 'agentOfDock', 'docksOfAgent', 'dockChains', 'reachDock', 'gateDocks', 'lineOfDock', 'entryDock', 'homeDock', 'unboundBayTile'];
 // …and the fields SEND TO (2026-10-10) adds to each LINE record — additive legibility, outside the hash: the line's stage count
 // and ceiling (the INBOX's stages n/max), its name, and where it sends (plan.sendTo itself is absent on every floor here)
-const LINE_FIELDS = ['stages', 'maxHops', 'name', 'sendTo'];
+// stepTestBarrier is advisory capability metadata; every pre-existing field and executor answer stays locked.
+const LINE_FIELDS = ['stages', 'maxHops', 'name', 'sendTo', 'stepTestBarrier'];
 function stripDock(plan) {
   const out = {};
   for (const k of Object.keys(plan)) if (DOCK_FIELDS.indexOf(k) < 0) out[k] = plan[k];

@@ -7,6 +7,8 @@ const http = require('node:http');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 const { makeTaskBriefStore } = require('../sidecar/taskbrief-store.js');
 const { isTaskDirective } = require('../frontend/app/classify.js');
+// the Commander's own words: on this Ollama wire the run-context note leads the newest user message
+const { userWords } = require('./helpers/host-notes.js');
 
 (async () => {
   const wires = [];
@@ -68,7 +70,7 @@ const { isTaskDirective } = require('../frontend/app/classify.js');
     assert.equal(hosted.max_tokens, undefined, 'custom/hosted requests receive no local-model output cap');
     const history = [{ role: 'user', content: 'Remember the report code AZURE-739.' }, { role: 'assistant', content: 'The report code is AZURE-739.' }, { role: 'user', content: 'hello' }];
     const remembered = await run('hello', { messages: history });
-    for (const row of history) assert.ok(remembered.messages.some(m => m.role === row.role && m.content === row.content), 'casual optimization retains supplied conversation context');
+    for (const row of history) assert.ok(remembered.messages.some(m => m.role === row.role && (m.role === 'user' ? userWords(m) : m.content) === row.content), 'casual optimization retains supplied conversation context');
     const task = await run('hello, research this for me');
     assert.equal(task.max_tokens, 4096);
     assert.ok(task.tools.length > 0);

@@ -1,0 +1,205 @@
+{
+  "candidate": "4c3d9c3019f8475eae283c62757d7e94a9296fdc",
+  "date": "2026-10-12",
+  "scope": "Isolated source and seeded-live verification. No trunk merge, installer or customer acceptance.",
+  "regression": "Saved rejected same-run assistant rows survived canonical final reconciliation and entered follow-up context.",
+  "fixes": [
+    "Canonical final supersedes saved assistant rows only with explicit compatible run, agent, and stream identity.",
+    "Duplicate saved copies contribute attachments and taint; unrelated, unknown, unfinalized, and system rows remain.",
+    "Obsolete error/stopped flags move to supersededStatus metadata so accepted output renders normally and remains in model context.",
+    "New delivered answers retain sourceRunId and streamId for deterministic restoration."
+  ],
+  "focused": {
+    "suites": [
+      {
+        "suite": "test/chat-history-reconcile.test.js",
+        "status": 0,
+        "receipt": "chat-history-reconcile.test: OK (33 assertions)"
+      },
+      {
+        "suite": "test/chat-history-order.test.js",
+        "status": 0,
+        "receipt": "chat-history-order.test: OK (13 assertions)"
+      },
+      {
+        "suite": "test/comms-history-pin.test.js",
+        "status": 0,
+        "receipt": "comms-history-pin.test: OK (6 assertions)"
+      },
+      {
+        "suite": "test/interrupted-run-in-history.test.js",
+        "status": 0,
+        "receipt": "interrupted-run-in-history.test: OK (27 assertions)"
+      },
+      {
+        "suite": "test/station-commands.test.js",
+        "status": 0,
+        "receipt": "station-commands.test: OK (308 assertions)"
+      },
+      {
+        "suite": "test/remote-dispatch-history.test.js",
+        "status": 0,
+        "receipt": "remote dispatch history: OK (25 assertions)"
+      },
+      {
+        "suite": "test/remote-sessions.test.js",
+        "status": 0,
+        "receipt": "remote-sessions: OK (30 assertions)"
+      },
+      {
+        "suite": "UX and consent",
+        "status": 0,
+        "receipt": "34 tests pass; zero failures"
+      },
+      {
+        "suite": "test/remote.core.test.js",
+        "status": 0,
+        "receipt": "remote core: OK (76 assertions)"
+      }
+    ],
+    "syntax": [
+      {
+        "path": "frontend/app/chat.js",
+        "status": 0
+      },
+      {
+        "path": "frontend/app/stationcommands.js",
+        "status": 0
+      },
+      {
+        "path": "sidecar/remote/host.js",
+        "status": 0
+      },
+      {
+        "path": "test/chat-history-reconcile.test.js",
+        "status": 0
+      },
+      {
+        "path": "test/remote-dispatch-history.test.js",
+        "status": 0
+      },
+      {
+        "path": "test/remote.e2e.test.js",
+        "status": 0
+      },
+      {
+        "path": "test/station-commands.test.js",
+        "status": 0
+      },
+      {
+        "path": "website/app/app/chat.js",
+        "status": 0
+      },
+      {
+        "path": "website/app/app/stationcommands.js",
+        "status": 0
+      }
+    ],
+    "mirrors": [
+      {
+        "path": "chat.js",
+        "equal": true
+      },
+      {
+        "path": "stationcommands.js",
+        "equal": true
+      }
+    ]
+  },
+  "realSealedPhoneHttp": {
+    "candidate": "4c3d9c3019f8475eae283c62757d7e94a9296fdc",
+    "passed": 112,
+    "failed": 2,
+    "failures": [
+      "the portrait of an agent is a real sprite from the shipped art",
+      "and the drawings to show them walking"
+    ],
+    "limitation": "Sparse checkout lacks frontend/assets; no links or copies of shared assets were created.",
+    "savedHistoryRestartAndProviderFollowup": {
+      "acceptedCount": 1,
+      "rawEvidenceVisible": false,
+      "savedRejectedVisible": false
+    },
+    "log": ".dogfood/thread-ux-fix/saved-history-phone-http.log"
+  },
+  "liveBrowser": {
+    "fixture": "Live seeded browser using synthetic canonical transcript and follow-up response; real save/reload/render/send paths. Backend restart and provider context are separately verified by sealed HTTP.",
+    "beforeReload": {
+      "contents": [
+        "Visible request",
+        "{\"answer\":\"ACCEPTED_RESTORED\"}",
+        "Historical status remains"
+      ],
+      "acceptedCount": 1,
+      "rawVisible": false,
+      "acceptedVisible": true,
+      "statusVisible": true,
+      "errorStyled": false,
+      "attachmentNames": [
+        "other.txt",
+        "proof.txt"
+      ],
+      "supersededStatus": {
+        "error": true,
+        "stopped": true,
+        "stopNote": "old failure"
+      },
+      "acceptedError": false,
+      "acceptedStopped": false
+    },
+    "afterReload": {
+      "contents": [
+        "Visible request",
+        "{\"answer\":\"ACCEPTED_RESTORED\"}",
+        "Historical status remains"
+      ],
+      "acceptedCount": 1,
+      "rawVisible": false,
+      "acceptedVisible": true,
+      "statusVisible": true,
+      "errorStyled": false,
+      "attachmentNames": [
+        "other.txt",
+        "proof.txt"
+      ],
+      "supersededStatus": {
+        "error": true,
+        "stopped": true,
+        "stopNote": "old failure"
+      },
+      "acceptedError": false,
+      "acceptedStopped": false
+    },
+    "followup": {
+      "acceptedCount": 1,
+      "rawPresent": false,
+      "statusInModel": false,
+      "streamId": "ws_mv51putr26q0"
+    },
+    "binding": [
+      {
+        "name": "chat.js",
+        "local": "02d5d1901811f6524c6ab5e0d3c888c6aff7f4d611a8874f7cc29397feff209b",
+        "served": "02d5d1901811f6524c6ab5e0d3c888c6aff7f4d611a8874f7cc29397feff209b",
+        "equal": true
+      },
+      {
+        "name": "stationcommands.js",
+        "local": "fe784811184a32a60c1bd7dddeac98c1263d623f35d8df4579df420051698c16",
+        "served": "fe784811184a32a60c1bd7dddeac98c1263d623f35d8df4579df420051698c16",
+        "equal": true
+      }
+    ],
+    "pageErrors": []
+  },
+  "previousEvidence": {
+    "largeOutputCandidate": "18c1ec59f094775ada818175d927e9c4ffc845d8",
+    "largeOutputFile": "large-output-verification.json",
+    "note": "Earlier evidence remains bound to its actual source; it has not been relabeled as a new run."
+  },
+  "integrationLimits": [
+    "Full fast and HTTP gates have not passed in this sparse tree; see HANDOFF.md for prior failures.",
+    "Phone presentation still uses its existing 20000-character per-turn display cap. Full conversation model context and accepted storage are separate.",
+    "Customer record 082ee8e5 remains OPEN."
+  ]
+}

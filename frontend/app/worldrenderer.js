@@ -93,10 +93,12 @@ const WorldRenderer = (() => {
   function create(options) {
     options = options || {};
     let geometry = null, baked = null, lighting = null, frame = null, preparedLight = null, presentationFixtures = [];
+    let lightKnobs = '';   // the industrial pool cut + key WorldLight was last configured with
     let frames = 0, rebuilds = 0, entityCount = 0, lastStart = 0, startedAt = 0;
     let elapsed = [], durations = [], lightDurations = [], lightingMs = 0;
     const push = (array, value) => { array.push(value); if (array.length > FRAME_WINDOW) array.shift(); };
     const canLight = () => !classic && typeof WorldLight !== 'undefined';
+    const poolKnobs = t => t ? t.cut + ',' + t.key : '';
     function begin(input) {
       frame = input || {};
       startedAt = clock();
@@ -104,6 +106,9 @@ const WorldRenderer = (() => {
       if (lastStart && timestamp > lastStart && timestamp - lastStart < 1000) push(elapsed, timestamp - lastStart);
       lastStart = timestamp;
       if (frame.geo !== geometry || frame.cache !== baked) {
+        // the floor re-bakes (a new cache) for every edit that changes rooms, walls, doors or the frame; a props-only edit
+        // brings a new geo over the SAME bake, and the light model (walls, visibility caches, light canvases) stays valid
+        const bakeChanged = frame.cache !== baked;
         geometry = frame.geo; baked = frame.cache; rebuilds++;
         const projection = typeof PropRemaster !== 'undefined' && PropRemaster.isProjection();
         const fill = baked.lamps || baked.flickers || [], practical = baked.wallFixtures || [];
@@ -118,13 +123,25 @@ const WorldRenderer = (() => {
           return Object.assign({}, l, { rgb, r: l.r * 1.12, gain: (l.gain == null ? 1 : l.gain) * 1.5 });
         })) : fill.concat(practical);
         if (canLight()) {
-          if (!lighting) lighting = WorldLight.create({ quality: 'high', wallAmbient: .16, fixtureTint: .16, propTint: .48 });
-          if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.enabled() && lighting.configure)
-            lighting.configure(IndustrialTextures.lighting);
-          lighting.setGeometry(geometry, { width: baked.W, height: baked.H,
-            tileSize: geometry.TILE, interiorPath: baked.interiorPath, interiorMask: baked.interiorCv, surfaceMask: baked.baseCv,
-            surfaceChunks: baked.chunks });
+          const fresh = !lighting;
+          if (fresh) lighting = WorldLight.create({ quality: 'high', wallAmbient: .16, fixtureTint: .16, propTint: .48 });
+          if (fresh || bakeChanged) {
+            if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.enabled() && lighting.configure) {
+              lighting.configure(IndustrialTextures.lighting);
+              lightKnobs = poolKnobs(IndustrialTextures.lighting);
+            }
+            lighting.setGeometry(geometry, { width: baked.W, height: baked.H,
+              tileSize: geometry.TILE, interiorPath: baked.interiorPath, interiorMask: baked.interiorCv, surfaceMask: baked.baseCv,
+              surfaceChunks: baked.chunks });
+          }
         }
+      }
+      // ROOM LIGHT drag (review world-render-07): the pool cut and key are WorldLight's own knobs (StationBake never
+      // reads them), and stationui.js rebakes only on release. A changed cut/key reconfigures the light model over the
+      // SAME bake: configure() rebuilds only WorldLight's own pool layers, never its geometry or the station bake.
+      if (lighting && lighting.configure && typeof IndustrialTextures !== 'undefined' && IndustrialTextures.enabled()) {
+        const t = IndustrialTextures.lighting, sig = poolKnobs(t);
+        if (t && sig !== lightKnobs) { lightKnobs = sig; lighting.configure(t); }
       }
       entityCount = 0;
       lightingMs = 0;
@@ -188,7 +205,7 @@ const WorldRenderer = (() => {
     }
     function dispose() {
       if (lighting && lighting.dispose) lighting.dispose();
-      lighting = null; geometry = null; baked = null; frame = null; preparedLight = null;
+      lighting = null; geometry = null; baked = null; frame = null; preparedLight = null; lightKnobs = '';
       elapsed = []; durations = []; lightDurations = []; lastStart = 0;
     }
     return { begin, drawBase, prepareLight, sampleLight, drawEntities, drawGrounding, drawAtmosphere, drawLight, finish, stats, dispose };

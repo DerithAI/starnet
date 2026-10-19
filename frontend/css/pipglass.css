@@ -530,54 +530,120 @@ body.glass-demo #comms-hud:not([hidden])::before {
 }
 body.glass-demo #comms-hud:not([hidden]):is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .12); box-shadow: 0 0 10px rgba(var(--ph-rgb), .18); }
 
-/* routine groups in the SESSIONS rail (the fold that stays for scheduled runs): the session-row glass, not the old
-   hairline box with a 10px caption */
-body.glass-demo:not(.hud-mode) #left .ws-auto-group { margin: 6px 6px 2px; }
-body.glass-demo:not(.hud-mode) #left .ws-auto-group button {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; align-items: center;
-  padding: 7px 10px; border: 1px solid rgba(var(--ph-rgb), .2); border-radius: 6px; background: var(--cg-card); color: var(--ph); cursor: pointer;
-}
-body.glass-demo:not(.hud-mode) #left .ws-auto-group button::before {
-  content: ''; grid-row: 1 / 3; width: 0; height: 0; border-style: solid; border-width: 4px 0 4px 6px;
-  border-color: transparent transparent transparent currentColor; transition: transform var(--t-fast, .12s) ease;
-}
-body.glass-demo:not(.hud-mode) #left .ws-auto-group button[aria-expanded="true"]::before { transform: rotate(90deg); }
-body.glass-demo:not(.hud-mode) #left .ws-auto-group button span { font-size: 14px; letter-spacing: 1.2px; text-transform: uppercase; }
-body.glass-demo:not(.hud-mode) #left .ws-auto-group button small { grid-column: 2; font-size: 13px; color: var(--cg-mute); }
-body.glass-demo:not(.hud-mode) #left .ws-auto-group button:is(:hover, :focus-visible) { border-color: rgba(var(--ph-rgb), .45); background: rgba(var(--ph-rgb), .08); }
+/* a routine's runs key (app.css): the glass rail's quiet line colour; the older runs it opens sit set in under the newest */
+body.glass-demo:not(.hud-mode) #left #workstreams .ws-runs { font-size: 16px; color: var(--cg-mute); }
+body.glass-demo:not(.hud-mode) #left #workstreams .ws-runs:is(:hover, :focus-visible) { color: var(--ph-bright); }
+body.glass-demo:not(.hud-mode) #left #workstreams .ws-row[data-runs="older"] { margin-left: 28px; }
 
 /* NEEDS YOU (2026-10-11, needsyou.js): every approval, question and failure on the station, pinned atop SESSIONS — the
    approval-card glass edged in the station's "needs you" gold. One row per item, sized for the narrow rail: WHO · where ·
-   how long, then what exactly (two lines at most), then its keys full width. Matte: state is an edge or a fill, never a glow. */
+   how long (on a narrow rail the place leaves the line, and stays the row's door and its tip), then what exactly (a free-form
+   ask, a question or a build two lines at most, every other wait in full: its last word is the claim), then its keys full
+   width. Matte: state is an edge or a fill, never a glow. */
+/* (Andrew 10-15: "ugly and unorganized … in different styles", then on the plain-row pass: "disgusting and cheap … we need
+   it premium") NEEDS YOU is the rail's first section, each wait drawn as the CREW panel's own agent card in its "needs your
+   OK" frame (portrait well + housed lamp, name in the agent's colour, time, the line); a click on a card opens it. */
 body.glass-demo:not(.hud-mode) #left .ws-needs {
-  flex: 0 0 auto; margin: 8px 6px 4px; padding: 8px 10px 6px; font-family: 'VT323', monospace; color: var(--text); text-shadow: none;
-  border: 1px solid rgba(var(--gold-rgb), .32); border-left: 2px solid rgba(var(--gold-rgb), .75); border-radius: 10px;
-  background: linear-gradient(165deg, rgba(var(--gold-rgb), .08), transparent 55%), color-mix(in srgb, var(--panel) 92%, transparent);
-  box-shadow: inset 0 1px 0 rgba(var(--ph-bright-rgb), .07);
+  flex: 0 0 auto; margin: 2px 0 4px; padding: 0 0 2px; font-family: 'VT323', monospace; color: var(--text); text-shadow: none;
+  border: 0; border-radius: 0; background: none; box-shadow: none;
 }
 #left .ws-needs[hidden] { display: none !important; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; font-size: 14px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--gold); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-lamp { width: 9px; height: 9px; border-radius: 2px; background: var(--gold); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-count { margin-left: auto; font-size: 15px; letter-spacing: .5px; font-variant-numeric: tabular-nums; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-list { margin: 0; padding: 0; list-style: none; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { padding: 7px 0 6px; border-top: 1px solid rgba(var(--ph-rgb), .1); cursor: pointer; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:first-child { border-top: 0; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 16px; line-height: 1.25; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who { flex: none; color: var(--ph-bright); letter-spacing: 1px; }
+/* bounded in every rail mode (glass, plain, hud): an expanded "N more" scrolls inside its card, so the lower asks' keys
+   and "Show fewer" stay reachable and SESSIONS keeps its rows. The scrollbar is themed like COMMS', never a white native one.
+   Its gutter is reserved (review 10-16): a scrollbar that comes and goes never narrows the rows, so an ask line reads the
+   same with or without it (needsyou.js measures that line to offer Approve once; a first row whose own keys brought the
+   scrollbar in flipped its reading on every heartbeat). The glass panel gives the gutter's width back (--ny-gutter, below) */
+#left .ws-needs { max-height: min(48%, 440px); overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--ph-dim) transparent; }
+#left .ws-needs::-webkit-scrollbar { width: 8px; }
+#left .ws-needs::-webkit-scrollbar-track { background: transparent; }
+#left .ws-needs::-webkit-scrollbar-thumb { background: var(--ph-dim); border-radius: 4px; }
+/* (Andrew 10-15, his pick of three rendered options: "B · ONE PANEL") the section head on the rail's 10px gutter, then
+   every wait as a row inside ONE quiet glass panel: hairlines between rows, a small portrait well with its housed lamp,
+   the agent's name in its colour with the time, the line under it, keys only when there is more than opening it.
+   The panel shares the CREW cards', rail keys' and search field's edges (x 21 to 401 at the 400px rail). The section's
+   reserved scrollbar gutter (above) is taken back out of the right margins: needsyou.js measures it into --ny-gutter, so
+   the panel and the count keep those edges whether or not the section scrolls (up to the margin's own width; 0 where
+   scrollbars overlay the content). */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 21px 7px 19px; padding-right: max(0px, 21px - var(--ny-gutter, 0px));
+  font-size: 16px; letter-spacing: 2.4px; line-height: 1; text-transform: uppercase; color: var(--ph-bright);
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-lamp { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-count { margin-left: auto; font-size: 16px; letter-spacing: .4px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--cg-mute); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-list {
+  display: flex; flex-direction: column; gap: 0; margin: 0 10px 6px; margin-right: max(0px, 10px - var(--ny-gutter, 0px)); padding: 0; list-style: none;
+  border: 1px solid rgba(var(--ph-rgb), .2); border-radius: 8px; overflow: hidden;
+  background: linear-gradient(165deg, rgba(var(--ph-rgb), .06), transparent 46%), color-mix(in srgb, var(--panel2) 70%, transparent);
+  box-shadow: inset 0 1px 0 rgba(var(--ph-bright-rgb), .05);
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item {
+  position: relative; display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 10px; row-gap: 3px; align-items: start;
+  margin: 0; padding: 8px 10px; border: 0; border-radius: 0; background: none; box-shadow: none; cursor: pointer;
+  transition: background var(--t-fast, .12s) ease;
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item + .ny-item { border-top: 1px solid rgba(var(--ph-rgb), .1); }
+#left .ws-needs .ny-item[hidden], #left .ws-needs .ny-more[hidden] { display: none !important; }
+/* the name line on a narrow rail or a large TEXT SIZE: "in <where>" steps out of sight rather than leave a two-letter stub
+   ("in DELIV…"); the name and the time always show. It is never display:none: it stays the row's door for the keyboard and
+   a screen reader (its name says who, what and where; focus lands on it while an answer is on its way), and the line's
+   hover tip ends "— in <where>". A keyboard focus on the door rings its row, so the focus is seen on every rail (live
+   10-16: put back into the line it was a 0-22px stub on the 200px rail) */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { container-type: inline-size; }
+@container (max-width: 250px) {
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:has(> .ny-line > .ny-where:focus-visible) { outline: 2px solid var(--ph-bright); outline-offset: -2px; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) { background: rgba(var(--ph-rgb), .06); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :not(.ny-face) { grid-column: 2; min-width: 0; }
+/* the small portrait well (the CREW card's, scaled to a row) with the figure the floor draws and the lamp in its corner */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face {
+  grid-column: 1; grid-row: 1 / span 2; align-self: start; position: relative; box-sizing: border-box; width: 30px; height: 38px;
+  display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
+  border-radius: 5px; border: 1px solid rgba(var(--ph-rgb), .22); background: rgba(0, 0, 0, .3); box-shadow: inset 0 2px 6px rgba(0, 0, 0, .45);
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face img { width: 26px; height: 34px; object-fit: contain; object-position: 50% 100%; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-dot {
+  position: absolute; right: 2px; top: 2px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--gold); box-shadow: var(--cg-lamp, 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3));
+}
+/* something broke (failed work, a failed routine): its lamp and its line say so; the row stays in the panel's voice */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.failed, .routine) .ny-dot { background: var(--bad); }
+/* line 1: AGENT (the row's headline, in its colour) · in <where> ........ time. The place gives up its room first (review
+   10-16): it starts from nothing and takes only what the name and the time leave (flex-basis 0, then "…"), so a two-word
+   name (MISS FORTUNE) or a group's names stay on one line beside a long place; a name wraps only where it and its time
+   alone overflow the line, and the time is never pushed out of the row */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-line { display: flex; align-items: baseline; gap: 0 8px; min-width: 0; line-height: 1.15; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who { flex: 0 1 auto; font-size: 19px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ph); text-shadow: var(--pg-glow-soft); }
+/* a group chat's headline is its members' names, the SESSIONS row's own line ("ULTRON, CYPHER +3"): it wraps at a space
+   rather than end in "…", and its +N keeps its gap */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who > .ws-agent-names { white-space: normal; overflow: visible; text-overflow: clip; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who > .ws-agent-more { margin-left: .4em; }
+/* line 2: the ask first, then what it is about; two lines at most (the whole sentence is its hover tip) */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-what {
-  margin-top: 2px; font-size: 16px; line-height: 1.25; overflow-wrap: anywhere; overflow: hidden;
+  font-size: 16px; line-height: 1.25; letter-spacing: .4px; color: color-mix(in srgb, var(--text) 94%, var(--panel2)); overflow-wrap: anywhere; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) .ny-what { color: var(--ph-bright); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-verb { color: var(--gold); }
+/* a station wait whose last words ARE the claim (a quest said done, loop results, STEP-IN, a failure) is shown whole;
+   a build leads with its ask, and an agent's builds with their count ("23 builds to keep or discard · …"), so only the
+   title may clamp */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:not(.approval, .question, .build) .ny-what { display: block; -webkit-line-clamp: none; overflow: visible; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.failed, .routine) .ny-what { color: var(--bad); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-age { flex: none; margin-left: auto; font-size: 14px; color: var(--cg-mute, var(--text)); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-age { flex: none; margin-left: auto; font-size: 15px; letter-spacing: .4px; font-variant-numeric: tabular-nums; color: var(--cg-mute, var(--text)); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where {
-  flex: 1 1 auto; min-width: 0; padding: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
-  font: 14px 'VT323', monospace; letter-spacing: .3px; color: var(--text); opacity: .85; background: none; border: 0; box-shadow: none;
+  flex: 1 1 0; min-width: 0; padding: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+  font: 15px 'VT323', monospace; letter-spacing: .4px; color: var(--cg-mute, var(--text)); background: none; border: 0; box-shadow: none; text-shadow: none;
 }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where:is(:hover, :focus-visible) { color: var(--ph-bright); opacity: 1; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys { display: flex; gap: 6px; margin-top: 6px; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where:is(:hover, :focus-visible) { color: var(--ph-bright); }
+/* (org g3 D1, final round) a row's two keys sit side by side wherever both labels fit the text column (Approve once · Deny
+   need ~141px: the 232px rail at STANDARD), with 8px sides, a 6px gap and the 15px label kept. A key is never narrower than
+   its label, so a narrower column (the 200px rail, a larger TEXT SIZE) stacks them, each full width, rather than clip a word */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key {
-  flex: 1 1 0; min-width: 0; min-height: 34px; padding: 5px 8px; font: 15px/1.1 'VT323', monospace; letter-spacing: .4px; cursor: pointer; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; min-height: 34px; padding: 5px 8px; font: 15px/1.1 'VT323', monospace; letter-spacing: .2px; cursor: pointer; white-space: nowrap;
   color: var(--ph); border: 1px solid rgba(var(--ph-rgb), .2); border-radius: 8px; text-shadow: none;
   background: linear-gradient(125deg, rgba(var(--ph-bright-rgb), .09), rgba(var(--ph-rgb), .045) 48%, rgba(var(--ph-rgb), .015));
   box-shadow: inset 0 1px 0 rgba(var(--ph-bright-rgb), .07);
@@ -587,11 +653,22 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:focus-visible { outline: 
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.primary { color: var(--ph-bright); border-color: rgba(var(--gold-rgb), .55); background: linear-gradient(140deg, rgba(var(--gold-rgb), .15), rgba(var(--ph-rgb), .04)); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.deny { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: color-mix(in srgb, var(--bad) 5%, transparent); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.quiet { color: var(--text); background: transparent; }
+/* org P02 (g3 D1, final round): a direct-chat ask is reviewed through its row (needsyou.js reviewRow) — the row lights like a door */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item.ny-review:hover .ny-what { color: var(--ph-bright); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:disabled { opacity: .55; cursor: default; }
+/* every key row spans the card's text column edge to edge (Andrew 10-15: "make sure buttons are aligned"): one key fills it,
+   two share it in equal halves, each never narrower than its label (a rail too narrow stacks them), each the glass key's
+   34px */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys > .ny-key { flex: 1 1 0; min-width: max-content; min-height: 34px; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more {
-  display: block; width: 100%; padding: 6px 0 2px; text-align: left; cursor: pointer;
-  font: 14px 'VT323', monospace; letter-spacing: .5px; color: var(--ph); background: none; border: 0; border-top: 1px solid rgba(var(--ph-rgb), .1); box-shadow: none;
+  display: inline-flex; align-items: center; gap: 6px; width: auto; min-height: 0; padding: 4px 18px 2px; text-align: left; cursor: pointer;
+  font: 15px 'VT323', monospace; letter-spacing: .4px; color: var(--ph); background: none; border: 0; box-shadow: none; text-shadow: none;
 }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more::before {
+  content: ''; width: 0; height: 0; border-style: solid; border-width: 4px 0 4px 6px;
+  border-color: transparent transparent transparent currentColor; transition: transform var(--t-fast, .12s) ease;
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more[aria-expanded="true"]::before { transform: rotate(90deg); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more:is(:hover, :focus-visible) { color: var(--ph-bright); }
 
 /* --- old-style leftovers found by the 16-window sweep (10-02), each brought into the current glass --- */
@@ -752,6 +829,28 @@ body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn:not(.s
   background: linear-gradient(165deg, rgba(var(--gold-rgb), .08), transparent 60%); border-color: rgba(var(--gold-rgb), .3);
 }
 
+/* a routine's newest run carries its runs key on a line of its own (15px, like the time); its older runs, open under it, are
+   one line each: lamp, the run's title, its time (the agent and the routine are the newest row's) */
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row[data-runs="head"]:not(.attn) {
+  grid-template-areas:
+    "dot agent pin   meta"
+    ".   title title title"
+    ".   runs  runs  runs";
+}
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn[data-runs="head"] {
+  grid-template-areas:
+    "dot agent pin   menu"
+    ".   title title title"
+    ".   meta  meta  meta"
+    ".   runs  runs  runs";
+}
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row > .ws-runs { grid-area: runs; justify-self: start; margin-top: 3px; font-size: 15px; }
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row[data-runs="older"] {
+  margin-left: 28px; grid-template-areas: "dot title pin meta";
+}
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row[data-runs="older"] > .ws-agent { display: none; }
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row[data-runs="older"] .ws-title { font-size: 16px !important; -webkit-line-clamp: 1; }
+
 /* the lamp is the station's own SQUARE glass lamp (glass-demo.css: empty when read, lit core when unread, the
    scan / reply strokes / approval mark / failure X inside it). Andrew 10-03: the one thing he did not want
    changed. This block only seats it on the agent's line. */
@@ -782,6 +881,17 @@ body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-pin {
   width: 7px; height: 10px; overflow: hidden; color: transparent; font-size: 0; text-shadow: none;
   background: var(--gold); clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%); opacity: .85;
 }
+/* a GROUP row's headline is its names ("ULTRON, CYPHER +3"): they own line 1, and the pin and time/status end the title
+   line (rc walk 10-14: beside "Connecting" the names measured 0px wide, and "NOVA, COPY" was cut even beside "6m") */
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row:not(.attn):has(> .ws-agent-group) {
+  grid-template-areas:
+    "dot agent agent agent"
+    ".   title pin   meta";
+}
+/* at headline size two real names can be wider than the rail: they wrap at a space, never end in "…" */
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-agent.ws-agent-group { display: block; white-space: normal; text-overflow: clip; }
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-agent-group > .ws-agent-names { display: inline; white-space: normal; overflow: visible; text-overflow: clip; }
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-agent-group > .ws-agent-more { margin-left: .4em; }
 /* a row that needs you keeps the agent's whole name and puts the call to action on a line of its own */
 body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn {
   grid-template-areas:
@@ -792,3 +902,20 @@ body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn {
 body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn > .ws-meta { justify-self: start; }
 body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn:not(.renaming) > .ws-meta { display: block; }
 body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn > .ws-kebab { grid-area: menu; }
+/* a GROUP row's names line is several names, not one: it takes the WHOLE first line (walk 10-14 #6 — beside the time
+   it got 48-82 of the 123 px "ULTRON, CYPHER" needs, and read "ULTR… +3"). The pin and the time sit at the end of the
+   title's first line. Two names too wide for this rail wrap at a space (the headline rule above), so fitRailAgentLine
+   (app.js) keeps "ULTRON, CYPHER +3" here and folds to "ULTRON +4" only where a names line never wraps. */
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row:has(> .ws-agent-group) {
+  grid-template-areas:
+    "dot agent agent agent"
+    ".   title pin   meta";
+}
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row:has(> .ws-agent-group) > :is(.ws-meta, .ws-pin, .ws-kebab) { align-self: start; margin-top: 2px; }
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn:has(> .ws-agent-group) {
+  grid-template-areas:
+    "dot agent agent agent"
+    ".   title pin   menu"
+    ".   meta  meta  meta";
+}
+body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn:has(> .ws-agent-group) > .ws-meta { align-self: auto; margin-top: 0; }

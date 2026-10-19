@@ -41,7 +41,7 @@ function harness(opts) {
     load: () => JSON.parse(JSON.stringify(disk.triggers)), save: v => { disk.triggers = JSON.parse(JSON.stringify(v)); },
     seen: { load: () => JSON.parse(JSON.stringify(disk.seen)), save: v => { disk.seen = JSON.parse(JSON.stringify(v)); } },
     makeHub: fakeHub, plan: () => plan, shipsToOutbox: () => true, dayCap: opts.dayCap || (() => ({ cap: null, spent: 0 })),
-    halted: opts.halted || (() => false),
+    halted: opts.halted || (() => false), faulted: opts.faulted,
     runsFor: sid => runs[sid] || [], emit: () => {},
     watcher: opts.watcher || null,
     now: () => clock, newId: () => 'id' + (++n) + 'abcdef0123456789'
@@ -246,6 +246,17 @@ function harness(opts) {
     const e = H2.R.enqueue(cf.trigger.id, { text: 'x' });
     A.ok(!e.ok && e.code === 'refused', 'and a file landing there is refused, not fired');
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
+  }
+
+  /* ---- the station's own fault containment is not the Commander's E-STOP (wave 2 review, conveyor-backend-08) ---- */
+  {
+    const H = harness({ halted: () => true, faulted: () => true });
+    const c = H.R.create({ kind: 'webhook', lineId: 'L1', maxPerHour: 10 }, { secretHash: T.hashSecret('k') });
+    const why = H.R.view(c.trigger.id).blockedBy || '';
+    A.ok(/internal fault/.test(why) && !/E-STOP/.test(why), 'a fault-quiesced station blocks the trigger in its own words, never E-STOP — ' + why);
+    const H2 = harness({ halted: () => true });
+    const c2 = H2.R.create({ kind: 'webhook', lineId: 'L1', maxPerHour: 10 }, { secretHash: T.hashSecret('k') });
+    A.ok(/E-STOP/.test(H2.R.view(c2.trigger.id).blockedBy || ''), 'the Commander’s E-STOP still says E-STOP');
   }
 
   A.report('trigger-sweep.test');

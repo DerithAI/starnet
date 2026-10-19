@@ -38,12 +38,12 @@ assert.ok(W.search('needle').some(r => r.id === 'cron-one'), 'collapsed history 
 // Exercise the actual async renderer at its backend seam, including overrides and failed reads.
 const source = fs.readFileSync(require.resolve('../frontend/app/stationui.js'), 'utf8');
 const accessFn = source.slice(source.indexOf('  function loadEffectiveAccess('), source.indexOf('  function fileCard('));
-async function renderAccess(response, rejects = false, connected = true) {
+async function renderAccess(response, rejects = false, connected = true, posture = null) {
   const actions = {}, target = { innerHTML: '', textContent: '', querySelector(s) { return actions[s] ||= {}; } };
   const summary = { textContent: 'checking' }, paths = [];
   const context = { World: { heroCaps: () => [{ objectType: 'cabinet' }] }, esc: s => String(s),
     Harness: { api: { get: path => { paths.push(path); return rejects ? Promise.reject(Error('offline')) : Promise.resolve(response); } } },
-    openTerm() {} };
+    openTerm() {}, agentPostureOf: () => posture };
   vm.createContext(context); vm.runInContext(accessFn, context);
   context.loadEffectiveAccess({ isConnected: connected, querySelectorAll: () => [target], querySelector: s => s.includes('ag-setup-val') ? summary : null }, { id: 'nova' });
   await new Promise(resolve => setImmediate(resolve));
@@ -55,7 +55,14 @@ async function renderAccess(response, rejects = false, connected = true) {
   assert.match(out.paths[0], /agent=nova&placed=cabinet/);
   assert.match(out.target.innerHTML, /AVAILABLE/);
   assert.doesNotMatch(out.target.innerHTML, /SWITCHED OFF|risky actions may ask/);
-  assert.equal(out.summary.textContent, 'Full Power · no prompts');
+  // org P21: the summary speaks the ONE ACCESS posture words
+  assert.equal(out.summary.textContent, 'FULL POWER', 'the narrow tile reads the posture word alone; its meaning rides the tip');
+  out = await renderAccess({ authority: { unrestricted: false, approvalLabel: 'ASK', filesystemLabel: 'Project folders', profileLabel: 'TRUSTED PROJECT', revoke: '' }, toolsets: [] },
+    false, true, { approval: 'ask', label: 'LET IT WORK' });
+  assert.equal(out.summary.textContent, 'LET IT WORK', 'an asking agent reads its posture');
+  out = await renderAccess({ authority: { unrestricted: false, approvalLabel: 'ASK', filesystemLabel: 'Project folders', profileLabel: 'TRUSTED PROJECT', revoke: '' }, toolsets: [] },
+    false, true, { approval: 'full', label: 'FULL POWER' });
+  assert.equal(out.summary.textContent, 'custom', 'a saved FULL POWER the live authority contradicts never reads FULL POWER');
   out = await renderAccess(null, true);
   assert.match(out.target.textContent, /could not be checked/);
   assert.equal(out.summary.textContent, 'unavailable');

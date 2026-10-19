@@ -279,7 +279,7 @@
       for (const n of document.querySelectorAll('[data-verb="' + CSS.escape(String(e.runId)) + '"]')) n.textContent = doing(e.name).word;
       if (showing) renderLive(); return;
     }
-    if (e.type === 'run.step' && L) { const s = L.steps.find(x => x.callId === e.callId && x.ok === null); if (s) s.ok = e.ok; if (showing) renderLive(); return; }
+    if (e.type === 'run.step' && L) { const s = L.steps.find(x => x.callId === e.callId && x.ok === null && !x.held); if (s) { s.ok = e.held ? null : e.ok; if (e.held) s.held = true; } if (showing) renderLive(); return; }
     if (e.type === 'run.ended') {
       if (L) L.ended = e;
       statusSoonish();
@@ -1092,8 +1092,10 @@
       if (L.streamId !== S.thread.streamId || L.ended) continue;
       for (const s of L.steps.slice(-6)) {
         const d = el('div', 'step');
-        d.appendChild(el('b', s.ok === false ? 'x' : s.ok === null ? 'w' : null, s.ok === null ? '…' : s.ok ? '✓' : '✕'));
-        d.appendChild(el('span', null, doing(s.name).phrase)); box.appendChild(d);
+        // a call the Task Brief held did not run: a dim ▸ and "not run yet", never ✕ (it runs once the brief settles)
+        if (s.held) d.appendChild(el('b', 'h', '▸'));
+        else d.appendChild(el('b', s.ok === false ? 'x' : s.ok === null ? 'w' : null, s.ok === null ? '…' : s.ok ? '✓' : '✕'));
+        d.appendChild(el('span', null, doing(s.name).phrase + (s.held ? ' · not run yet' : ''))); box.appendChild(d);
       }
       if (L.text) { const m = el('div', 'msg agent'); m.appendChild(el('span', 'who', agentName(L.agentId).toUpperCase())); m.appendChild(mdNode(L.text)); box.appendChild(m); }
       const w = el('div', 'working'); w.appendChild(el('i')); w.appendChild(el('span', null, agentName(L.agentId) + ' is working'));

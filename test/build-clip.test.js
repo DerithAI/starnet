@@ -105,6 +105,39 @@ const lineOfIntake = (s, id) => plan(s).lines.find(l => l.intakes.includes(id));
   A.ok(!off.ok && off.error === 'OFF_DECK' && off.short === 'PART OF IT IS OFF THE STATION FLOOR', 'off the station floor says so');
 }
 
+/* ---------- B2. review worldmodel-01: a paste whose belt runs right beside another line's belt is refused (never fused) ----------
+   The compiler joins belts that touch into ONE line (Pipeline.lineComponents): a copy laid one row under LINE A's belt became
+   LINE A — one line id, one LINE BUDGET, two INBOXes (the 10-09 P0 class). The floor's own reconcile kept every belt, so only
+   the line check applyLineLayout already makes catches it. */
+{
+  const s = fresh();
+  const IA = add(s, 'intake', 32, 10), BA = add(s, 'bay', 60, 10), OA = add(s, 'outbox', 70, 10);   // LINE A: its belt rides row 10
+  const IB = add(s, 'intake', 36, 30), BB = add(s, 'bay', 46, 30), OB = add(s, 'outbox', 56, 30);   // LINE B: its belt rides row 30
+  s.assignPropAgent(BA, 'nova'); s.assignPropAgent(BB, 'atlas');
+  for (const [a, b] of [[IA, BA], [BA, OA], [IB, BB], [BB, OB]]) A.ok(s.connectBelt(a, b).ok, 'two-line floor laid ' + a + '→' + b);
+  A.ok(linkOf(s, IA, BA).path.every(t => t.y === 10) && linkOf(s, IB, BB).path.every(t => t.y === 30), 'LINE A rides row 10, LINE B row 30');
+  const lineA = lineOfIntake(s, IA).lineId;
+  const c = s.copyLines(s.lineMembers(IB).ids).clip;
+  const before = frozen(s), floor0 = JSON.stringify(s.serialize());
+  // one row under LINE A's belt: every piece stands on clear floor, but the copy's belt touches A's the whole way along
+  const ay = c.y0 - 19;
+  A.ok(c.belts.some(b => s.belts().some(q => q.x === c.x0 + b.x && q.y === ay + b.y - 1)), 'the spot lays the copy\'s belt directly under LINE A\'s');
+  const pr = s.probePaste(c, c.x0, ay);
+  A.ok(!pr.ok && pr.error === 'JOINS_FLOOR' && pr.short === 'ANOTHER LINE IS TOO CLOSE', 'the ghost refuses it whole — ANOTHER LINE IS TOO CLOSE (' + (pr.error || 'ok') + ')');
+  A.eq(frozen(s), before, 'the probe never touches the floor');
+  const r = s.pasteLines(c, c.x0, ay);
+  A.ok(!r.ok && r.error === 'JOINS_FLOOR', 'the paste is refused (' + (r.error || 'it laid') + ')');
+  A.ok(JSON.stringify(s.serialize()) === floor0, '…and nothing of it is laid (all or nothing)');
+  const a1 = lineOfIntake(s, IA);
+  A.ok(a1.lineId === lineA && a1.intakes.length === 1, 'LINE A is still its own line, with its one INBOX (' + a1.intakes.length + ')');
+  if (r.ok) s.undo();
+  // one row further down the copy's belt no longer touches A's: it lays, as its own line with its own budget
+  const ok = s.pasteLines(c, c.x0, ay + 1);
+  A.ok(ok.ok, 'a row further down it lays');
+  const a2 = lineOfIntake(s, IA), b2 = ok.ok && lineOfIntake(s, ok.map[IB]);
+  A.ok(a2 && b2 && a2.lineId === lineA && b2.lineId !== lineA && a2.intakes.length === 1, 'the copy is a NEW line beside LINE A, never part of it');
+}
+
 /* ---------- C. a quarter turn, and SEND TO inside a copy ---------- */
 {
   const s = fresh(), L = line(s);
@@ -153,6 +186,8 @@ const lineOfIntake = (s, id) => plan(s).lines.find(l => l.intakes.includes(id));
   A.ok(Lay && Lay.ok, 'the engine lays the copied line out near the spot');
   const n0 = s.props().length, r = s.pasteLinesLaid(c, Lay);
   A.ok(r.ok && r.ids.length === 5 && s.props().length === n0 + 5, 'pasteLinesLaid writes it');
+  // M24 (2026-10-12): the laid copy reports the belts it laid, as the exact paste does (the lead's card said "0 belts")
+  A.ok(Array.isArray(r.links) && r.links.length === c.links.length && r.links.every(id => s.links().some(l => l.id === id)), 'a laid-out paste returns the ids of the belts it laid (' + (r.links || []).length + ' of ' + c.links.length + ')');
   A.ok(s.propById(r.map[L.B1]).brief === 'Find three sources.' && s.propById(r.map[L.I]).label === 'RESEARCH 2' && s.propById(r.map[L.LOOP]).maxIter === 4, '…with its briefs, its name (numbered) and its LOOP passes');
   A.eq(codes(s), ['LOOP_NO_BACK', 'LOOP_NO_BACK'], '…and it compiles as the original does');
   A.eq(s.undo().label, 'PASTE', 'one undo (UNDID · PASTE)');
@@ -241,6 +276,112 @@ const lineOfIntake = (s, id) => plan(s).lines.find(l => l.intakes.includes(id));
   A.ok(rb.ok && s.undo().label === 'BELT', 'outside a transact removeLinks takes its own undo slot (UNDID · BELT)');
 }
 
+/* ---------- E3. final floor lane M30: an OLD SAVE's OUTBOX → INBOX belt is never pasted back as a belt ----------
+   (DECISIONS: a hand-off is SEND TO, never a belt — a pasted one fused the two copied lines into ONE line, one budget.) The copy
+   carries it the way convertHandoffBelt would: as that OUTBOX's SEND TO, re-pointed at the copy's own INBOX. */
+{
+  const s0 = fresh();
+  const pl = [0, 1].map(i => { const r = LE.placeBlueprint(s0, 'research_line', { x: 34, y: 2 + i * 10 }); if (!r.ok) throw Error(JSON.stringify(r)); const of = t => r.ids.filter(id => s0.propById(id).t === t); return { I: of('intake')[0], O: of('outbox')[0], ids: r.ids }; });
+  const d = JSON.parse(JSON.stringify(s0.serialize()));
+  for (const p of d.props) if (p.id === pl[0].O || p.id === pl[1].I) p.t = 'bay';
+  const ob = WM.deserialize(d); A.ok(ob.connectBelt(pl[0].O, pl[1].I).ok, 'old-save fixture: the pre-SEND TO belt');
+  const saved = JSON.parse(JSON.stringify(ob.serialize())); for (const p of saved.props) { if (p.id === pl[0].O) p.t = 'outbox'; if (p.id === pl[1].I) p.t = 'intake'; }
+  const s = WM.deserialize(saved); for (const p of s.props()) if (p.t === 'bay' && !p.agentId) s.assignPropAgent(p.id, 'ag_' + p.id);
+  A.eq(s.oldHandoffBelts(pl[0].O).length, 1, 'the old OUTBOX → INBOX belt is on the floor');
+  const before = JSON.stringify(s.serialize());
+  const c = s.copyLines(pl[0].ids.concat(pl[1].ids));
+  A.ok(c.ok && !c.clip.links.some(l => { const f = c.clip.nodes.find(n => n.oid === l.from.node), t = c.clip.nodes.find(n => n.oid === l.to.node); return f && t && f.t === 'outbox' && t.t === 'intake'; }), 'the clip carries no OUTBOX → INBOX belt');
+  A.eq((c.clip.nodes.find(n => n.oid === pl[0].O) || {}).sendTo, pl[1].I, '…it carries that hand-off as the OUTBOX\'s SEND TO');
+  let r = null; for (let y = 22; y <= 30 && !r; y++) for (let x = 32; x <= 50 && !r; x++) if (s.checkPaste(c.clip, x, y).ok) { const q = s.pasteLines(c.clip, x, y); if (q.ok) r = q; }
+  A.ok(!!r, 'the two lines paste');
+  const newO = r.ids.find(id => s.propById(id).t === 'outbox' && s.propById(id).sendTo), newI = r.ids.find(id => s.propById(id).t === 'intake' && s.propById(newO).sendTo === id);
+  A.ok(!!newO && !!newI, 'the pasted OUTBOX sends to the pasted INBOX (SEND TO, re-pointed inside the copy)');
+  A.ok(!(s.links() || []).some(l => r.ids.includes(l.from.prop) && s.propById(l.from.prop).t === 'outbox' && r.ids.includes(l.to.prop) && s.propById(l.to.prop).t === 'intake'), 'no new OUTBOX → INBOX belt was laid');
+  A.eq(s.oldHandoffBelts(newO), [], 'oldHandoffBelts(pasted OUTBOX) is empty');
+  const pp = plan(s);
+  A.ok(pp.lineOfProp[newO] && pp.lineOfProp[newI] && pp.lineOfProp[newO] !== pp.lineOfProp[newI], 'the two pasted lines are two lines (two lineIds, two budgets)');
+  A.ok(pp.sendTo && pp.sendTo[newO] && pp.sendTo[newO].intakeId === newI, '…joined by a compiled SEND TO');
+  A.ok(s.undo().ok && JSON.stringify(s.serialize()) === before, 'one undo; the original floor (old belt and all) is untouched');
+}
+/* ---------- E5. REPAIR (M30 follow-up): an old hand-off belt that runs THROUGH A JUNCTION is never pasted back either ----------
+   OUTBOX → MERGER → INBOX on an old save: the copy kept OUTBOX>MERGER and MERGER>INBOX (only a direct OUTBOX → INBOX belt was
+   caught) and the paste fused the two copied lines into ONE. Every link the clip carries is judged by the floor's own end rule
+   (no belt out of an OUTBOX, none into an INBOX); the junction left with no way through stays behind; the hand-off travels as
+   that OUTBOX's SEND TO. Old belts that reach two INBOXes cannot be one SEND TO: they are left out, and counted. */
+{
+  const big = () => { const s = WM.create(); s.projectGeometry(); s.addRoom({ kind: 'hab', rect: { x1: 30, y1: 0, x2: 140, y2: 80 } }); return s; };
+  const add2 = (s, t, x, y) => s.addProp({ t, x, y, w: 2, h: 2, block: true }).id;
+  function oldSave(targets) {
+    const s0 = big();
+    const A0 = [add2(s0, 'intake', 32, 4), add2(s0, 'bay', 42, 4), add2(s0, 'bay', 56, 4)];
+    const Bs = targets.map((_, k) => [add2(s0, 'bay', 32, 24 + k * 14), add2(s0, 'bay', 42, 24 + k * 14), add2(s0, 'outbox', 56, 24 + k * 14)]);
+    for (const L of [A0].concat(Bs)) for (let i = 1; i < 3; i++) A.ok(s0.connectBelt(L[i - 1], L[i]).ok, 'old-save fixture: a belt');
+    for (const B of Bs) A.ok(s0.connectBelt(A0[2], B[0]).ok, 'old-save fixture: the pre-SEND TO belt');
+    const l = s0.links().find(q => q.from.prop === A0[2] && q.to.prop === Bs[0][0]), t = l.path[Math.floor(l.path.length / 2)];
+    const j = s0.junctionOnBelt(t.x, t.y, targets.length > 1 ? 'splitter' : 'merger', {});
+    A.ok(j.ok, 'old-save fixture: a ' + (targets.length > 1 ? 'SPLITTER' : 'MERGER') + ' stands on the old belt — ' + (j.error || ''));
+    const d = JSON.parse(JSON.stringify(s0.serialize()));
+    for (const p of d.props) { if (p.id === A0[2]) p.t = 'outbox'; if (Bs.some(B => B[0] === p.id)) p.t = 'intake'; }
+    const s = WM.deserialize(d); for (const p of s.props()) if (p.t === 'bay') s.assignPropAgent(p.id, 'ag_' + p.id);
+    return { s, O: A0[2], I0: A0[0], Is: Bs.map(B => B[0]), J: j.id };
+  }
+  const ty = (s, id) => (s.propById(id) || {}).t;
+  {
+    const { s, O, I0, Is, J } = oldSave([0]);
+    A.ok(s.links().some(q => q.from.prop === O && q.to.prop === J) && s.links().some(q => q.from.prop === J && q.to.prop === Is[0]), 'the old save: OUTBOX → MERGER → INBOX');
+    const before = JSON.stringify(s.serialize());
+    const c = s.copyLines(s.props().filter(p => /intake|bay|outbox|merger/.test(p.t)).map(p => p.id));
+    A.ok(c.ok, 'it copies');
+    const node = oid => c.clip.nodes.find(n => n.oid === oid);
+    A.ok(!c.clip.links.some(l => (node(l.from.node) || {}).t === 'outbox' || (node(l.to.node) || {}).t === 'intake'), 'the clip carries no belt out of an OUTBOX and none into an INBOX');
+    A.ok(!node(J), '…the MERGER left with no way through stays behind');
+    A.eq((node(O) || {}).sendTo, Is[0], '…and the hand-off travels as that OUTBOX\'s SEND TO');
+    A.eq(c.clip.oldBelts, 0, '(nothing left out: the old belt reached exactly one INBOX)');
+    let r = null; for (let y = 50; y <= 66 && !r; y += 2) for (let x = 32; x <= 70 && !r; x += 2) if (s.checkPaste(c.clip, x, y).ok) { const q = s.pasteLines(c.clip, x, y); if (q.ok) r = q; }
+    A.ok(!!r, 'the copy pastes');
+    const mine = new Set(r.ids);
+    A.ok(!s.links().some(q => (mine.has(q.from.prop) && ty(s, q.from.prop) === 'outbox') || (mine.has(q.to.prop) && ty(s, q.to.prop) === 'intake')), 'no pasted belt leaves an OUTBOX or enters an INBOX');
+    const nO = r.map[O], nI = r.map[Is[0]], nFirst = r.map[I0], pl = plan(s);
+    A.ok(pl.lineOfProp[nFirst] && pl.lineOfProp[nI] && pl.lineOfProp[nFirst] !== pl.lineOfProp[nI], 'the two pasted lines are two lines (were fused: one lineId)');
+    A.ok(s.propById(nO).sendTo === nI && pl.sendTo && pl.sendTo[nO] && pl.sendTo[nO].intakeId === nI, '…joined by a compiled SEND TO');
+    A.ok(s.undo().ok && JSON.stringify(s.serialize()) === before, 'one undo; the original floor (old belt, merger and all) is untouched');
+  }
+  {
+    const { s, O, Is, J } = oldSave([0, 1]);
+    const c = s.copyLines(s.props().filter(p => /intake|bay|outbox|splitter/.test(p.t)).map(p => p.id));
+    const node = oid => c.clip.nodes.find(n => n.oid === oid);
+    A.ok(c.ok && !node(J) && !(node(O) || {}).sendTo, 'old belts from one OUTBOX that reach two INBOXes (one through a SPLITTER) cannot be one SEND TO: the copy sends nowhere, the SPLITTER stays behind');
+    A.eq(c.clip.oldBelts, 1, '…and the clip counts the old hand-off it left out (said on the COPY toast and the lead\'s card)');
+    A.ok(!c.clip.links.some(l => (node(l.from.node) || {}).t === 'outbox' || (node(l.to.node) || {}).t === 'intake'), '…and carries none of it as a belt');
+    const build = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'build.js'), 'utf8'), sb = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'stationbuilder.js'), 'utf8');
+    A.ok(/if \(c\.oldBelts\) notes\.push\(/.test(build) && /if \(c\.clip\.oldBelts\) left\.push\(/.test(sb), 'the COPY toast and the lead\'s copy card say it');
+    void Is;
+  }
+}
+/* ---------- E4. final floor lane M32 / R30: one line-name key — a paste never makes two lines that SHOW the same name ----------
+   setPropLabel refused 'Alpha 2' next to 'Line Alpha 2' (both show LINE ALPHA 2), but the paste numbered by raw labels and made
+   exactly that pair. Every naming path now compares what the floor SHOWS (Pipeline.lineWord). */
+{
+  const s = fresh(), X = line(s);
+  const Y = add(s, 'intake', 32, 20), YB = add(s, 'bay', 40, 20), YO = add(s, 'outbox', 50, 20);
+  s.assignPropAgent(YB, 'nova'); A.ok(s.connectBelt(Y, YB).ok && s.connectBelt(YB, YO).ok, 'a second line');
+  A.ok(s.setPropLabel(X.I, 'Alpha').ok && s.setPropLabel(Y, 'Line Alpha 2').ok, 'lines named Alpha and Line Alpha 2');
+  A.eq(s.setPropLabel(X.I, 'Alpha 2').error, 'DUPLICATE_NAME', 'renaming Alpha to Alpha 2 is refused (it would show LINE ALPHA 2 twice)');
+  A.eq(s.setPropLabel(X.I, 'Line: Alpha 2').error, 'DUPLICATE_NAME', '…and so is "Line: Alpha 2" (the shown word drops any "line" prefix)');
+  A.eq(s.setPropLabel(X.I, 'LINE—Alpha 2').error, 'DUPLICATE_NAME', '…and "LINE—Alpha 2"');
+  const c = s.copyLines(s.lineMembers(X.I).ids).clip;
+  let r = null; for (let y = 28; y <= 36 && !r; y++) for (let x = 32; x <= 50 && !r; x++) if (s.checkPaste(c, x, y).ok) { const q = s.pasteLines(c, x, y); if (q.ok) r = q; }
+  A.ok(!!r, 'the line pastes');
+  const shown = s.props().filter(p => p.t === 'intake').map(p => P.lineWord(p.label, 'LINE ' + s.lineLetter(p.id)));
+  A.eq(new Set(shown).size, shown.length, 'every line SHOWS a different name — ' + JSON.stringify(shown));
+  A.eq(s.propById(r.ids.find(id => s.propById(id).t === 'intake')).label, 'Alpha 3', '…the paste is numbered past the shown LINE ALPHA 2');
+  // an unnamed line SHOWS its letter: no typed name may take it
+  const Z = add(s, 'intake', 70, 4), ZB = add(s, 'bay', 78, 4); s.assignPropAgent(ZB, 'atlas'); A.ok(s.connectBelt(Z, ZB).ok, 'an unnamed line');
+  const letter = s.lineLetter(Z);
+  A.eq(s.setPropLabel(Y, letter).error, 'DUPLICATE_NAME', 'naming a line "' + letter + '" while an unnamed line shows LINE ' + letter + ' is refused');
+  A.eq(s.setPropLabel(Y, 'Line ' + letter).error, 'DUPLICATE_NAME', '…"Line ' + letter + '" too');
+  A.ok(s.setPropLabel(Z, letter).ok, 'the unnamed line itself may take its own letter as its name');
+}
 /* ---------- F. the build.js wiring (source locks) ---------- */
 {
   const build = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'build.js'), 'utf8');
@@ -280,7 +421,10 @@ const lineOfIntake = (s, id) => plan(s).lines.find(l => l.intakes.includes(id));
   A.ok(/drawBeltPreview\(t, \{ path: good \}, GOOD\)/.test(dcg) && !/convey\.drawBelts/.test(dcg) && !/station\./.test(dcg), 'the paste ghost is drawn geometry off the memo — never convey.drawBelts, never a model call per frame');
   A.ok(/if \(g\.clip\) \{ drawClipGhost\(t, now, g\); return; \}/.test(build) && /if \(dupe\.type === 'lines'\) return clipGhost\(tx, ty\);/.test(fn('dupeGhost')) && /if \(dupe\.type === 'lines'\) return pasteClipAt\(w, ev\);/.test(fn('stampDupe')), 'a clip rides the COPY tool\'s own stamp (dupe.type \'lines\')');
   const pca = fn('pasteClipAt');
-  A.ok(/station\.pasteLines\(c, ax, ay, \{ agent: agentHere \}\)/.test(pca) && /LineEdit\.layoutGraphNear\(station, gr\.graph, \{ x: w\.tx, y: w\.ty \}\)/.test(pca) && /station\.pasteLinesLaid\(c, L, \{ agent: agentHere \}\)/.test(pca), 'a click lays it exactly — else laid out to fit near the click — else refused, said');
+  // (wave 2, build-04: the layout near the click is ONE function, layClipNear — the ghost's off-frame probe and the click both ask it,
+  //  and the click lays the very answer the ghost showed when it has one)
+  A.ok(/station\.pasteLines\(c, ax, ay, \{ agent: agentHere \}\)/.test(pca) && /lay = known \|\| layClipNear\(c, w\);/.test(pca) && /LineEdit\.layoutGraphNear\(station, gr\.graph, \{ x: at\.tx, y: at\.ty \}\)/.test(fn('layClipNear'))
+    && /station\.pasteLinesLaid\(c, lay\.L, \{ agent: agentHere \}\)/.test(pca), 'a click lays it exactly — else laid out to fit near the click — else refused, said');
   const key = fn('onKey');
   A.ok(/tool === 'dupe' && dupe && dupe\.type === 'lines' && !\(ev\.ctrlKey \|\| ev\.metaKey\)\) \{ ev\.preventDefault\(\); turnClip\(ev\.shiftKey \? 3 : 1, orientEv\(\)\); return; \}/.test(key) && key.indexOf('turnClip(') < key.indexOf('turnUnderCursor('), 'R turns a clip in hand (before R turns a prop)');
   A.ok(/\(ev\.key === 'x' \|\| ev\.key === 'X'\)\) \{ ev\.preventDefault\(\); cutSelected\(orientEv\(\)\); return; \}/.test(key) && /if \(held\.type === 'lines'\) \{ holdClip\(held, orientEv\(\)\); return; \}/.test(key), 'Ctrl+X cuts; Ctrl+V picks a clip up again');

@@ -98,6 +98,72 @@ async function main() {
   assert.equal(completionLaunches, 1); assert.equal(completing.holding('complete-save'), true);
   completionFailure = false; time += 100; await runTimers();
   assert.equal(completionLaunches, 1); assert.equal(completing.holding('complete-save'), false);
+  // A run end parks one packet: it must not recompact (and re-scrub) every other parked packet on each save, and a
+  // stash/take save says nothing waits on its acknowledgement, so the host may batch it (skills-eval-09).
+  {
+    const { compactPacket } = require('../sidecar/verdictreview.js');
+    let scrubs = 0; const acks = []; let lastRows = [];
+    const countScrub = t => { scrubs++; return String(t).replace(/sk-live-\w+/g, '[redacted]'); };
+    const run = i => ({ agentId: 'a', model: 'm/x', reason: 'done', messages: [
+      { role: 'user', content: 'export report ' + i },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'c' + i, type: 'function', function: { name: 'fs.write', arguments: JSON.stringify({ path: 'r' + i + '.json', content: 'sk-live-abc' }) } }] },
+      { role: 'tool', tool_call_id: 'c' + i, content: 'Saved r' + i + '.json' },
+      { role: 'assistant', content: 'Done ' + i } ] });
+    const lean = makeVerdictReview({ ...opts, redact: countScrub, onChange: (rows, meta) => { lastRows = clone(rows); acks.push(meta && meta.ack); } });
+    for (let i = 0; i < 6; i++) lean.stash('lean' + i, run(i));
+    scrubs = 0; compactPacket(run(6), countScrub); const one = scrubs;
+    scrubs = 0; lean.stash('lean6', run(6));
+    assert.ok(one > 0 && scrubs === one, 'parking a 7th packet compacts only that packet (' + scrubs + ' scrubs, one packet = ' + one + ')');
+    assert.deepEqual(lastRows.map(r => r.packet), [0, 1, 2, 3, 4, 5, 6].map(i => clone(compactPacket(run(i), countScrub))), 'the saved rows are exactly the compacted packets');
+    assert.deepEqual(acks.slice(-1), [false], 'a stash save is not acknowledged work');
+    lean.arm('lean0', 'miss', () => true, 'Use JSON.');
+    assert.equal(acks.at(-1), true, 'arming waits on a verified save');
+    const heldRow = lastRows.find(r => r.runId === 'lean0');
+    const fresh = compactPacket(Object.assign({}, run(0), { runId: 'lean0', verdict: 'miss', correction: 'Use JSON.', correctionOriginalChars: 9,
+      correctionTruncated: false, correctionSource: 'verdict', firedBy: 'snapshot', reviewAttempt: 0 }), countScrub);
+    assert.deepEqual(heldRow.packet, clone(fresh), 'a held row persists the same evidence a fresh compaction gives');
+    assert.equal(lean.correct('lean0', 'Bullets only.', false, 'chip').ok, true);
+    assert.equal(lastRows.find(r => r.runId === 'lean0').packet.learningEvidence.correction.text, 'Use JSON. · Bullets only.', 'a later correction reaches the saved held row');
+    assert.ok(lean.take('lean1', 'ok')); assert.equal(acks.at(-1), false, 'a take save is not acknowledged work');
+  }
+  // The cached compaction must not freeze redaction at stash time: redact() also scrubs the exact secrets the station
+  // holds, read live, so a token stored to the station after its run ended leaves every saved row at the next save.
+  {
+    const { compactPacket } = require('../sidecar/verdictreview.js');
+    const known = new Set(); let gen = 0, scrubs = 0, lastRows = [];
+    const scrub = t => { scrubs++; let s = String(t); for (const k of known) s = s.split(k).join('[redacted-secret]'); return s; };
+    const late = makeVerdictReview({ ...opts, redact: scrub, redactGeneration: () => gen, onChange: rows => { lastRows = clone(rows); } });
+    const leaked = 'plainTokenNoPrefix42';
+    const run = id => ({ agentId: 'a', model: 'm/x', reason: 'done', messages: [{ role: 'user', content: 'call the api with ' + leaked + ' ' + id }, { role: 'assistant', content: 'Done with ' + leaked }] });
+    late.stash('late-parked', run('p')); late.stash('late-held', run('h')); late.arm('late-held', 'miss', () => true, 'Use JSON.');
+    assert.ok(JSON.stringify(lastRows).includes(leaked), 'the token is not a known secret yet');
+    known.add(leaked); gen++;
+    late.stash('late-next', run('n'));
+    assert.equal(lastRows.length, 3);
+    assert.ok(!JSON.stringify(lastRows).includes(leaked), 'a secret stored after the run is scrubbed from every saved row at the next save');
+    scrubs = 0; compactPacket(run('x'), scrub); const one = scrubs;
+    scrubs = 0; late.stash('late-quiet', run('q'));
+    assert.ok(one > 0 && scrubs === one, 'an unchanged secret generation still compacts only the new packet (' + scrubs + ' scrubs, one packet = ' + one + ')');
+  }
+  // A storage block is not carried into a fresh boot: a held row on disk proves a later save worked, so the
+  // restarted station reviews the run instead of leaving it parked until the TTL (skills-eval-19).
+  {
+    timers = []; let diskFull = false, launches = 0, saved = [];
+    const sick = makeVerdictReview({ ...opts, maxPersistenceAttempts: 3, onChange: rows => { if (diskFull) throw new Error('expected disk-full save failure'); saved = clone(rows); } });
+    sick.stash('sick', packet); sick.arm('sick', 'miss', () => { launches++; return true; });
+    diskFull = true;
+    for (let i = 0; i < 8; i++) { time += 5000; await runTimers(); }
+    assert.equal(launches, 0); assert.equal(sick.snapshot()[0].persistenceBlocked, true);
+    diskFull = false; sick.stash('later', packet);
+    assert.equal(saved.find(r => r.runId === 'sick').persistenceBlocked, true, 'a later save writes the blocked held row');
+    timers = [];
+    const rebooted = makeVerdictReview(opts);
+    assert.equal(rebooted.restore(saved), 2);
+    assert.equal(rebooted.resumeHeld(() => { launches++; return true; }), 1, 'the restored held review is scheduled');
+    time += 100; await runTimers();
+    assert.equal(launches, 1, 'the run is reviewed exactly once after the restart');
+    assert.equal(rebooted.holding('sick'), false);
+  }
   console.log('verdictreview.lifecycle: held snapshot/restart, remaining grace, late reversal, launcher retry/restart, bounded attempts, latest host correction PASS');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

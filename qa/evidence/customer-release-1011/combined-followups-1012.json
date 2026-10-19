@@ -1,0 +1,43 @@
+{
+  "candidate": "6f0c44c9f995e892b7955064a14d1993aadf3f72",
+  "recordedAt": "2026-10-12T10:25:10.824Z",
+  "imports": [
+    {
+      "lane": "provider cleanup diagnostics",
+      "source": "c5024ae57127fdcf79407c905cbfb1aa30c53ad2",
+      "merge": "a05351c735a2fc493d2c9bb79b3d6eeb09142042"
+    },
+    {
+      "lane": "thread prompt and voice ownership",
+      "source": "fcd8007ca473d52488986537e304370c37f7f9a0",
+      "evidence": "7de8489b5b28a27a715d698d547d2e814b53a8dd",
+      "merge": "367860fc9"
+    },
+    {
+      "lane": "sample completion identity fixture",
+      "source": "dd74c386f671afe16a6a746061063aa4db2ada36",
+      "evidence": "9c465103f5b686abe1ca2c36518a20770faeedae",
+      "merge": "6f0c44c9f995e892b7955064a14d1993aadf3f72"
+    }
+  ],
+  "focusedFast": {
+    "steps": 5,
+    "exitCode": 0,
+    "log": ".handoff/accepted-followups-fast.log",
+    "logSha256": "e35e5818069a095ab714e63cb3614cc21bc7a7112dbaeeca6d079fe9ee783bd7"
+  },
+  "limits": [
+    "Focused checks are not complete source gates.",
+    "No customer recovery, native microphone or installed acceptance is inferred.",
+    "Combined release surface requires a fresh lock after final source imports."
+  ],
+  "focusedSampleHttp": {
+    "candidate": "6f0c44c9f995e892b7955064a14d1993aadf3f72",
+    "test": "test/routing.sample.e2e.test.js",
+    "assertions": 105,
+    "exitCode": 0,
+    "log": ".handoff/accepted-sample-http.log",
+    "logSha256": "1a703fdbf00251b5d3ae5bcec9a2a041a209aed1ee495ed909f18300b66cf105",
+    "scope": "One real-sidecar suite with local scripted provider; no full gate or customer acceptance."
+  }
+}

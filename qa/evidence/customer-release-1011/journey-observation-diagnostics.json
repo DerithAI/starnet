@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "base": "55a7f1992a46537fa3ec934d4182400227659457",
+  "changedFile": "scripts/qa/journeys.mjs",
+  "changedFileSha256": "209ba40666baa623d6b0c9c8260df5da143d8697fe0fa8673ecb4bf259ece035",
+  "scope": "QA observation diagnostics only; app behavior, assertion IDs, timeouts and successful-observation predicates unchanged",
+  "changes": [
+    "J2 reload busy/card observations fail explicitly when CDP cannot read state; card-read failure no longer passes as false.",
+    "J3 parity/count retains error and latency instead of reporting -1 as a measured count.",
+    "J3 retains waitIdle result and does not claim settlement when idle was not observed."
+  ],
+  "controls": {
+    "checks": [
+      "J2 busy read rejection fails as observation error",
+      "J2 running-chip read rejection cannot turn green",
+      "J2 measured busy channel still fails",
+      "J2 measured running chip still fails",
+      "J2 successful false observations preserve green",
+      "J3 settled parity rejection remains failing with latency",
+      "J3 count rejection cannot become zero or negative state",
+      "J3 both rejected observations remain separate failures",
+      "J3 measured nonzero running count still fails",
+      "J3 successful zero observations preserve green",
+      "J3 false idle result retained without claiming settled",
+      "J3 false idle plus observation rejection cannot pass",
+      "J3 actual parity mismatch is never overwritten",
+      "other parity callers retain prior rejection behavior"
+    ],
+    "logSha256": "6aebf5472a35a5f798e381c360f83b7cf3580c2efc132613e366753834608295"
+  },
+  "live": {
+    "startedAt": "2026-10-12T09:13:32.6390630Z",
+    "exitCode": 0,
+    "journeys": [
+      "J2c",
+      "J3"
+    ],
+    "passed": 35,
+    "total": 35,
+    "log": ".handoff/journeys-observation-live.log",
+    "logSha256": "ae716b060024724b15f6deb8ae224f251093bf6a6de6c812f80882de655cda1f",
+    "provider": "Loopback mock; disposable seeded app and browser; no real provider"
+  },
+  "historicalFindings": [
+    "7f25ecb7",
+    "fd87bfd9",
+    "dd2fd9c0"
+  ],
+  "limitations": [
+    "Earlier detector findings remain unresolved; a later successful replay does not establish their original cause or a product repair.",
+    "This is a focused source replay, not a full journey suite, installed acceptance or customer recovery."
+  ]
+}

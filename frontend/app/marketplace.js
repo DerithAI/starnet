@@ -421,14 +421,15 @@ const Marketplace = (() => {
   function title() { return '▮ ' + plainTitle(); }
 
   function subtitle() {
+    // ORG P22 — ONE LANGUAGE: a new agent is RECRUITED from a CLASS; rewriting an existing agent is a RE-SPEC.
     if (ctx && ctx.mode === 'pick') return ctx.summon
-      ? ('summon a new agent onto your crew — it gets its own chat thread'
+      ? ('recruit a new agent onto your crew — it gets its own session'
          + (ctx.concurrentCap > 0 ? ' · up to ' + ctx.concurrentCap + ' run at once' : ''))
-      : 'choose a specialist to wake your agent as';
+      : 'choose a class for your agent';
     const who = (ctx && ctx.agentName) || 'your agent';
     return tab === 'recipes'
       ? 'launch a ready-made recipe — ' + who + ' picks it up in a new task conversation'
-      : 'deploy a specialty onto ' + who + ' — or save this one as a template';
+      : 're-spec ' + who + ' as a class — or save this one as a template';
   }
 
   /* ---------- the bar: tabs + lane filter ---------- */
@@ -569,6 +570,7 @@ const Marketplace = (() => {
       else if (view === 'build') wireBuildForm(stage);
       else if (view === 'harnessImport') wireHarnessImport(stage);
       else wireLaunchForm(stage);
+      wireTaglineCount(stage);
       return;
     }
     if (tab === 'recipes' && hasRecipes()) syncRecipeFocus();
@@ -646,7 +648,7 @@ const Marketplace = (() => {
     // deploy mode keeps the SAVE-THIS-AGENT toolbar; summon drops the stale "pre-fills the wake screen" hint —
     // the subtitle already states the summon promise, and the dossier's CONFIGURE panel + shelves carry the rest.
     const toolbar = deploy
-      ? '<div class="mkt-toolbar"><button class="bb sm mkt-saveas">＋ SAVE THIS AGENT AS A SPECIALTY</button></div>'
+      ? '<div class="mkt-toolbar"><button class="bb sm mkt-saveas">＋ SAVE THIS AGENT AS A CLASS</button></div>'
       : '';
     let html = toolbar;
 
@@ -663,10 +665,10 @@ const Marketplace = (() => {
 
     // MINE view: the Commander's own specialists only (matches the RECIPES-tab MINE chip).
     if (laneFilter === 'mine') {
-      html += sectH('▮ YOUR SPECIALISTS');
+      html += sectH('▮ YOUR CLASSES');
       html += customs.length
         ? '<div class="mkt-grid mkt-rows">' + customs.map(cardHTML).join('') + buildTile + '</div>'
-        : '<p class="mkt-hint mkt-yours-hint">' + (query ? 'none of your specialists match your search — '
+        : '<p class="mkt-hint mkt-yours-hint">' + (query ? 'none of your classes match your search — '
             : 'none yet — ') + 'build one from scratch below.</p><div class="mkt-grid mkt-rows">' + buildTile + '</div>';
       return html;
     }
@@ -676,7 +678,7 @@ const Marketplace = (() => {
     // SPECIALISTS + the build tile sit at the bottom. (audit item 7 reconciled with item 3)
     const pinCustoms = hasAnyCustoms && !query;
     if (pinCustoms) {
-      html += sectH('▮ YOUR SPECIALISTS');
+      html += sectH('▮ YOUR CLASSES');
       html += '<div class="mkt-grid mkt-rows">' + customs.map(cardHTML).join('') + buildTile + '</div>';
     }
 
@@ -690,10 +692,10 @@ const Marketplace = (() => {
     html += archiveSectionHTML(filtering);
 
     if (!pinCustoms) {
-      html += sectH('▮ YOUR SPECIALISTS');
+      html += sectH('▮ YOUR CLASSES');
       if (!customs.length) html += '<p class="mkt-hint mkt-yours-hint">' +
-        (query ? 'none of your specialists match your search — ' : 'none yet — ') +
-        'build one from scratch below' + (deploy && !query ? ', or save the live agent as a specialty above' : '') + '.</p>';
+        (query ? 'none of your classes match your search — ' : 'none yet — ') +
+        'build one from scratch below' + (deploy && !query ? ', or save the live agent as a class above' : '') + '.</p>';
       html += '<div class="mkt-grid mkt-rows">' + customs.map(cardHTML).join('') + buildTile + '</div>';
     }
     if (!filtering) html += '<details class="mkt-library-more"><summary>Suggestions for your station</summary>' +
@@ -713,13 +715,13 @@ const Marketplace = (() => {
     if (filtering) {
       // searching / lane-filtering: archetypes participate like any class — matches render expanded, no toggle.
       if (!archs.length) return '';
-      return sectH('▮ SPECIALIST ARCHIVE — deep cuts') + '<div class="mkt-grid mkt-rows">' + archs.map(cardHTML).join('') + '</div>';
+      return sectH('▮ CLASS ARCHIVE — deep cuts') + '<div class="mkt-grid mkt-rows">' + archs.map(cardHTML).join('') + '</div>';
     }
     const head = '<button type="button" class="mkt-sect-h mkt-archive-head" aria-expanded="' + (archiveOpen ? 'true' : 'false') + '">' +
-      '<span aria-hidden="true">' + (archiveOpen ? '▾' : '▸') + '</span> SPECIALIST ARCHIVE (' + all.length + ')</button>';
+      '<span aria-hidden="true">' + (archiveOpen ? '▾' : '▸') + '</span> CLASS ARCHIVE (' + all.length + ')</button>';
     if (!archiveOpen) return head;
     return head +
-      '<p class="mkt-hint">niche classes held off the main roster — fully specified, summon any time. When your real work points at one, the station drafts it onto the shelf above for you.</p>' +
+      '<p class="mkt-hint">niche classes held off the main roster — fully specified, recruit any time. When your real work points at one, the station drafts it onto the shelf above for you.</p>' +
       '<div class="mkt-grid mkt-rows">' + archs.map(cardHTML).join('') + '</div>';
   }
   /* Name and the live character preview lead. Skin choices stay visible; model controls expand
@@ -737,7 +739,7 @@ const Marketplace = (() => {
       '<section class="mkt-appearance" aria-label="Choose a skin"><div class="mkt-appearance-heading">APPEARANCE <span class="mkt-appearance-choice">' +
         esc((typeof DATA !== 'undefined' && DATA.SKINS && DATA.SKINS[pickedSummonSkin || DATA.DEFAULT_SKIN] || {}).name || 'Choose a character') +
         '</span></div>' + summonSkinBarHTML() + '</section>',
-      '<p class="mkt-detail-note">Use the station default, or choose a model for this agent.</p>' + summonModelBarHTML(s),
+      '<p class="mkt-detail-note">Keep the first choice below, or choose a model for this agent.</p>' + summonModelBarHTML(s),
       agentReferenceHTML(s)
     ];
     return '<section class="mkt-config" aria-label="configure this agent">' +
@@ -757,14 +759,28 @@ const Marketplace = (() => {
     const pin = pickedSummonModel;
     if (pin && pin.model) return 'pinned to <b>' + esc(shortModel(pin.model)) + '</b>' +
       (pin.effort ? ' at <b>' + esc(String(pin.effort).toUpperCase()) + '</b> effort' : '') + ' — overrides the class default.';
-    if (pin && pin.effort) return 'the same brain as your orchestrator, at <b>' + esc(String(pin.effort).toUpperCase()) + '</b> effort.';
-    return 'Inherits your orchestrator’s model; tuned for <b>' + esc(clearanceLabel(s && s.model).toLowerCase()) + '</b>' +
-      (s && s.reasoningEffort ? ' · ' + esc(String(s.reasoningEffort).toLowerCase()) + ' effort' : '') + '.';
+    // ORG P22: an unpinned recruit COPIES the model of the agent on the line at recruit time (app.js summonAgent:
+    // pin.model || agent.model) — it does not follow later station-default changes, so the copy never says it does.
+    // UNLESS SETTINGS › New agent defaults pins this class's tier: applyLoadout then replaces the copy with that
+    // model (resolveTierModel), so the helper names the pin instead of promising a copy that will not happen.
+    const tierPin = tierModelOf(s);
+    const tier = '<b>' + esc(clearanceLabel(s && s.model).toLowerCase()) + '</b>';
+    if (tierPin) return 'uses <b>' + esc(shortModel(tierPin)) + '</b>, your ' + tier + ' tier model from SETTINGS › New agent defaults' +
+      (pin && pin.effort ? ', at <b>' + esc(String(pin.effort).toUpperCase()) + '</b> effort' : '') + '.';
+    if (pin && pin.effort) return 'copies the model of the agent on the line now, at <b>' + esc(String(pin.effort).toUpperCase()) + '</b> effort.';
+    // `effort: auto` is what applies the class's own effort (app.js summonAgent), so the line says so in the select's word
+    return 'Copies the model of the agent on the line now; tuned for ' + tier +
+      (s && s.reasoningEffort ? '. Effort auto gives it this class’s <b>' + esc(String(s.reasoningEffort).toLowerCase()) + '</b> effort' : '') + '.';
+  }
+  // the SETTINGS tier pin summon will apply to this class (App.tierModelFor — the same reader applyLoadout uses), or null
+  function tierModelOf(s) {
+    return (s && s.model && typeof App !== 'undefined' && App && typeof App.tierModelFor === 'function') ? App.tierModelFor(s.model) : null;
   }
 
-  function summonModelSummary() {
+  function summonModelSummary(s) {
     const pin = pickedSummonModel;
-    return (pin && pin.model ? shortModel(pin.model) : 'Station default') +
+    const tierPin = tierModelOf(s);
+    return (pin && pin.model ? shortModel(pin.model) : tierPin ? shortModel(tierPin) + ' (tier model)' : 'Copies the agent on the line') +
       (pin && pin.effort ? ' · ' + pin.effort : '');
   }
   function shortModel(m) { return String(m || '').split('/').pop().replace(/[-_]+/g, ' ').trim() || String(m || ''); }
@@ -818,8 +834,8 @@ const Marketplace = (() => {
     const used = ((typeof AgentId !== 'undefined' && AgentId.normalizeName) ? AgentId.normalizeName(pickedSummonName) : String(pickedSummonName || '')).length;
     const max = (ctx && ctx.displayNameLimit) || (typeof AgentId !== 'undefined' && AgentId.NAME_MAX) || 18;
     const issue = summonNameIssue(), dup = summonNameConflict();
-    const helper = issue === 'too-long' ? 'too long — shorten this name before summoning'
-      : dup ? 'duplicate name — summon requires a second confirmation; the agent id will remain unique'
+    const helper = issue === 'too-long' ? 'too long — shorten this name before recruiting'
+      : dup ? 'duplicate name — recruiting needs a second confirmation; the agent id will remain unique'
       : 'blank uses the proposed default: ' + summonCandidateName((focusAgent && Specialties.get(focusAgent)) || null);
     return '<div class="mkt-skinbar mkt-namebar"><label class="mkt-skinlabel" for="mkt-summon-name">NAME</label>' +
       '<input class="mkt-in" id="mkt-summon-name" type="text" autocomplete="off" spellcheck="false" aria-invalid="' + (issue ? 'true' : 'false') + '" placeholder="' + esc(summonCandidateName((focusAgent && Specialties.get(focusAgent)) || null)) + '" value="' + esc(pickedSummonName) + '">' +
@@ -861,7 +877,7 @@ const Marketplace = (() => {
     if (!(ctx && ctx.mode === 'pick' && ctx.summon) || typeof ModelPicker === 'undefined') return '';
     return '<div class="mkt-skinbar mkt-modelbar"><div class="mkt-skinlabel">MODEL &amp; EFFORT</div>' +
       '<div class="mkt-modelpick" id="mkt-model-pick">' +
-        ModelPicker.shellHTML({ id: 'mkt-model', inheritLabel: 'Same as the orchestrator', ariaLabel: 'New agent model', effort: true }) +
+        ModelPicker.shellHTML({ id: 'mkt-model', inheritLabel: tierModelOf(s) ? 'Use your ' + clearanceLabel(s.model).toLowerCase() + ' tier model (' + shortModel(tierModelOf(s)) + ')' : 'Copy the model of the agent on the line', ariaLabel: 'New agent model', effort: true }) +
       '</div>' +
       '<div class="mkt-field-help" id="mkt-model-help">' + modelHelpHTML(s) + '</div></div>';
   }
@@ -1118,11 +1134,11 @@ const Marketplace = (() => {
     const deploy = !ctx || ctx.mode !== 'pick';
     const here = !!(ctx && ctx.currentSpecialtyId && ctx.currentSpecialtyId === s.id);
     const badges = (here ? ' <span class="mkt-badge mkt-here">DEPLOYED</span>' : '') + (s.custom ? ' <span class="mkt-badge">CUSTOM</span>' : '');
-    const ctaLabel = deploy ? ('⏼ DEPLOY TO ' + esc(((ctx && ctx.agentName) || 'AGENT')).toUpperCase())
-      : ('⏼ SUMMON <span class="mkt-candidate-name">' + esc(summonCandidateName(s)) + '</span>');
+    const ctaLabel = deploy ? ('⏼ RE-SPEC ' + esc(((ctx && ctx.agentName) || 'AGENT')).toUpperCase())
+      : ('⏼ RECRUIT <span class="mkt-candidate-name">' + esc(summonCandidateName(s)) + '</span>');
     const ctaSub = deploy
-      ? 're-specs ' + esc((ctx && ctx.agentName) || 'your agent') + '’s purpose &amp; standing orders'
-      : 'joins your crew with its own <span data-hint="workstream">chat thread</span>, pre-filled from this class';
+      ? 'replaces ' + esc((ctx && ctx.agentName) || 'your agent') + '’s purpose &amp; standing orders — no new agent'
+      : 'joins your crew with its own <span data-hint="workstream">session</span>, pre-filled from this class';
     const custActs = s.custom
       ? '<div class="mkt-cta-row"><button class="bb sm mkt-edit" data-id="' + esc(s.id) + '">✎ EDIT</button>' +
         '<button class="bb sm danger mkt-del" data-id="' + esc(s.id) + '">⌫ DELETE</button></div>' : '';
@@ -1145,8 +1161,8 @@ const Marketplace = (() => {
       // of a separate dock button. It rides in NORMAL FLOW, outside the sticky block: pinning it too made the
       // permanent footer four elements tall (~190px of a ~660px pane), which is what pushed CONFIGURE off screen.
       (!deploy && ctx && ctx.onDeploy && ctx.agentName && !here
-        ? '<div class="mkt-cta-second"><button class="mkt-cta-alt mkt-deploy-cur" data-id="' + esc(s.id) + '">⏼ DEPLOY TO ' + esc(ctx.agentName).toUpperCase() + ' ▸</button>' +
-          '<div class="mkt-cta-sub">re-specs ' + esc(ctx.agentName) + ' instead — no new crew member</div></div>'
+        ? '<div class="mkt-cta-second"><button class="mkt-cta-alt mkt-deploy-cur" data-id="' + esc(s.id) + '">RE-SPEC ' + esc(ctx.agentName).toUpperCase() + ' INSTEAD ▸</button>' +
+          '<div class="mkt-cta-sub">replaces ' + esc(ctx.agentName) + '’s purpose — no new agent</div></div>'
         : '') +
       '</div><div class="mkt-dos-cta">' + custActs +
         // adopt-voice sits BESIDE the DEPLOY CTA it modifies (audit item 8), not orphaned up in the toolbar.
@@ -2159,8 +2175,8 @@ const Marketplace = (() => {
       const issue = summonNameIssue(), dup = summonNameConflict();
       const help = root.querySelector('.mkt-name-help');
       if (help) {
-        help.textContent = issue === 'too-long' ? 'too long — shorten this name before summoning'
-          : dup ? 'duplicate name — summon requires a second confirmation; the agent id will remain unique'
+        help.textContent = issue === 'too-long' ? 'too long — shorten this name before recruiting'
+          : dup ? 'duplicate name — recruiting needs a second confirmation; the agent id will remain unique'
           : 'blank uses the proposed default: ' + summonCandidateName(s);
         help.classList.toggle('warn', !!(issue || dup));
       }
@@ -2209,7 +2225,7 @@ const Marketplace = (() => {
         const help = sc.querySelector('#mkt-model-help');
         if (help) help.innerHTML = modelHelpHTML((focusAgent && Specialties.get(focusAgent)) || null);
         const choice = sc.querySelector('.mkt-model-choice');
-        if (choice) choice.textContent = summonModelSummary();
+        if (choice) choice.textContent = summonModelSummary((focusAgent && Specialties.get(focusAgent)) || null);
       });
     }
   }
@@ -2269,11 +2285,11 @@ const Marketplace = (() => {
             if (input) { try { input.scrollIntoView({ block: 'center' }); } catch (_) {} input.focus(); }
             return;
           }
-          if (ctx.summon && summonNameConflict()) return armDelete(deployBtn, deployBtn.textContent, commit, 'SUMMON DUPLICATE NAME?');
+          if (ctx.summon && summonNameConflict()) return armDelete(deployBtn, deployBtn.textContent, commit, 'RECRUIT DUPLICATE NAME?');
           commit();
         });
       } else {
-        // DEPLOY TO <current> (deploy mode) — a RE-SPEC that rewrites the live agent's purpose + standing orders.
+        // RE-SPEC <current> (deploy mode) — a RE-SPEC that rewrites the live agent's purpose + standing orders.
         // That's consequential, so it arms/confirms ("RE-SPEC <NAME>?") like every other irreversible bay action.
         armCta(deployBtn, 'RE-SPEC ' + String((ctx && ctx.agentName) || 'AGENT').toUpperCase() + '?', () => {
           const s = Specialties.get(deployBtn.dataset.id); if (!s) return;
@@ -2282,19 +2298,19 @@ const Marketplace = (() => {
           sfx('close');
           if (ctx && ctx.onDeploy) ctx.onDeploy(s, { adoptVoice });
           try { if (typeof ProspectStore !== 'undefined' && ProspectStore.recommendationVerdict) { ProspectStore.recommendationVerdict('recruit', s.id, 'completed', 'completed'); ProspectStore.recommendationOutcome('recruit', s.id, { adopted: true, quality: 1, completedAt: Date.now() }); } } catch (_) {}
-          note(s.name + ' deployed to ' + ((ctx && ctx.agentName) || 'your agent') + (adoptVoice ? ' (+ voice)' : ''), 'good');
+          note(((ctx && ctx.agentName) || 'your agent') + ' re-specced as ' + s.name + (adoptVoice ? ' (+ voice)' : ''), 'good');
           close();
         });
       }
     }
-    // second verb on the merged recruit door: DEPLOY TO <current> from summon mode (no voice adoption checkbox in
+    // second verb on the merged recruit door: RE-SPEC <current> INSTEAD from summon mode (no voice adoption checkbox in
     // this pane — deploy keeps the agent's voice; the dossier can retune it). Same re-spec, same arm/confirm.
     const deployCurBtn = sc.querySelector('.mkt-deploy-cur');
     if (deployCurBtn) armCta(deployCurBtn, 'RE-SPEC ' + String((ctx && ctx.agentName) || 'AGENT').toUpperCase() + '?', () => {
       const s = Specialties.get(deployCurBtn.dataset.id); if (!s) return;
       sfx('close');
       if (ctx && ctx.onDeploy) ctx.onDeploy(s, { adoptVoice: false });
-      note(s.name + ' deployed to ' + ((ctx && ctx.agentName) || 'your agent'), 'good');
+      note(((ctx && ctx.agentName) || 'your agent') + ' re-specced as ' + s.name, 'good');
       close();
     });
     const launchBtn = sc.querySelector('.mkt-launch');
@@ -2359,7 +2375,7 @@ const Marketplace = (() => {
       const s = Specialties.get(del.dataset.id);
       Specialties.removeCustom(del.dataset.id);
       if (focusAgent === del.dataset.id) focusAgent = (Specialties.builtins()[0] || {}).id || null;
-      note('removed specialty: ' + ((s && s.name) || del.dataset.id), 'good'); renderStage();
+      note('removed class: ' + ((s && s.name) || del.dataset.id), 'good'); renderStage();
     }));
     const rDel = sc.querySelector('.mkt-recipe-del');
     if (rDel) rDel.addEventListener('click', () => armDelete(rDel, '⌫ DELETE', () => {
@@ -3199,7 +3215,10 @@ const Marketplace = (() => {
     const body = {
       name: r.name, prompt, schedule, agentId,
       enabled: true, deliver: 'local', repeat: { times: null },
-      meta: { recipeId: r.id }
+      meta: { recipeId: r.id },
+      // ONE ARM RULE (org wire AUTO-P16-1): SCHEDULE IT is a save like the SCHEDULES form's — a scheduling switch nobody ever set is
+      // turned on; one the Commander turned off stays off (POST /api/cron arm:true → armOnSaveIfUnset). The reply's `scheduler` says which.
+      arm: true
     };
     // SOP recipes: the acceptance contract rides the routine's meta bag (additive provenance) so every scheduled
     // tick is held to the same host-checked postconditions as an interactive launch (cron-driver passes it through).
@@ -3217,7 +3236,11 @@ const Marketplace = (() => {
         if (d && d.duplicate) { sfx('bad'); note('a similar routine already exists' + (d.job && d.job.name ? (': "' + d.job.name + '"') : '') + ' — nothing new was created', 'warn'); if (btn) { btn.disabled = false; btn.textContent = '◷ SCHEDULE IT'; } return; }
         cronJobs = null;   // invalidate the cache so the dossier's live-routine badge refreshes
         sfx('click');
-        note('routine scheduled: ' + r.name + ' as ' + runAsName() + ' — ' + cadenceLabel(launchCadence === 'custom' ? null : launchCadence).replace('one-shot', 'on your schedule') + '. find it in AUTOMATE › SCHEDULES.', 'good');
+        // said as it happened (the server's verdict, never assumed): a routine that cannot fire never reads as scheduled
+        const sch = (d && d.scheduler) || null, said = r.name + ' as ' + runAsName() + ' — ' + cadenceLabel(launchCadence === 'custom' ? null : launchCadence).replace('one-shot', 'on your schedule');
+        if (sch && sch.halted) note('routine saved: ' + said + ' — scheduling is stopped (E-STOP), so it will not run until you press ▶ TURN SCHEDULING ON in AUTOMATE › SCHEDULES › Scheduled jobs.', 'warn');
+        else if (sch && !sch.armed) note('routine saved: ' + said + ' — scheduling is off' + (sch.offByChoice ? ' (you turned it off)' : '') + ', so it will not run until you press ▶ TURN SCHEDULING ON in AUTOMATE › SCHEDULES › Scheduled jobs.', 'warn');
+        else note('routine scheduled: ' + said + (sch && sch.armedNow ? ' · scheduling is now on' : '') + '. find it in AUTOMATE › SCHEDULES.', 'good');
         launchId = null; launchMode = 'run'; close();
       })
       .catch(() => { sfx('bad'); note('could not reach the scheduler', 'bad'); if (btn) { btn.disabled = false; btn.textContent = '◷ SCHEDULE IT'; } });
@@ -3585,18 +3608,33 @@ const Marketplace = (() => {
     if (nameIn) { nameIn.focus(); nameIn.setSelectionRange(nameIn.value.length, nameIn.value.length); }
   }
 
+  /* THE TAGLINE CAP, SHOWN WHILE TYPING (releases#8). The one-line taglines (recipe, saved class, built class) stop at
+     their maxlength — typing halts and a paste is clipped — and nothing on screen said so. Each gets the summon NAME
+     bar's own live count (mkt-name-meta / mkt-name-count, warn colour at the cap), read from the input's real maxlength. */
+  function wireTaglineCount(stage) {
+    stage.querySelectorAll('#mkt-r-tag, #mkt-f-tag, #mkt-b-tag').forEach(input => {
+      const max = input.maxLength;
+      if (!(max > 0)) return;
+      const meta = document.createElement('span'); meta.className = 'mkt-name-meta';
+      const count = document.createElement('span'); count.className = 'mkt-name-count'; meta.appendChild(count);
+      const sync = () => { const n = input.value.length; count.textContent = n + ' / ' + max; count.classList.toggle('over', n >= max); };
+      input.addEventListener('input', sync); sync();
+      input.insertAdjacentElement('afterend', meta);
+    });
+  }
+
   /* ---------- save / edit a specialty ---------- */
   function saveFormHTML() {
     const editing = editingId ? Specialties.get(editingId) : null;
     const d = editing || (ctx && ctx.draftFromAgent && ctx.draftFromAgent()) || { name: 'My Specialist', emoji: '✦', tagline: '', purpose: '', manual: '' };
     const hasMission = (d.purpose && d.purpose.trim()) || (d.manual && d.manual.trim());
-    const title = editing ? 'EDIT SPECIALTY' : ('SAVE ' + (((ctx && ctx.agentName) || 'THIS AGENT')).toUpperCase() + ' AS A SPECIALTY');
+    const title = editing ? 'EDIT CLASS' : ('SAVE ' + (((ctx && ctx.agentName) || 'THIS AGENT')).toUpperCase() + ' AS A CLASS');
     const intro = editing
-      ? 'rename or re-icon this saved specialty — its purpose &amp; standing orders are kept as they are.'
-      : 'captures this agent’s current purpose + standing orders as a reusable template you can deploy later.' +
+      ? 'rename or re-icon this saved class — its purpose &amp; standing orders are kept as they are.'
+      : 'captures this agent’s current purpose + standing orders as a reusable class you can recruit or re-spec an agent as later.' +
         (hasMission ? '' : ' <b>heads up:</b> this agent has no purpose / standing-orders set yet, so the template would be near-empty.');
     const ctaCls = (editing || hasMission) ? '' : ' caution';
-    const ctaText = editing ? '✓ SAVE CHANGES' : (hasMission ? '✓ SAVE SPECIALTY' : '✓ SAVE ANYWAY');
+    const ctaText = editing ? '✓ SAVE CHANGES' : (hasMission ? '✓ SAVE CLASS' : '✓ SAVE ANYWAY');
     return '<div class="mkt-save">' +
       '<div class="mkt-save-h">' + esc(title) + '</div>' +
       '<p class="mkt-hint">' + intro + '</p>' +
@@ -3612,7 +3650,7 @@ const Marketplace = (() => {
       const editing = editingId ? Specialties.get(editingId) : null;
       const base = editing || (ctx && ctx.draftFromAgent && ctx.draftFromAgent()) || {};
       const name = (stage.querySelector('#mkt-f-name').value || '').trim();
-      if (!name) { sfx('bad'); note('give your specialty a name', 'bad'); return; }
+      if (!name) { sfx('bad'); note('give your class a name', 'bad'); return; }
       const spec = Object.assign({}, base, {
         name, emoji: (stage.querySelector('#mkt-f-emoji').value || '✦').trim() || '✦',
         tagline: (stage.querySelector('#mkt-f-tag').value || '').trim()
@@ -3621,7 +3659,7 @@ const Marketplace = (() => {
       try {
         const saved = Specialties.saveCustom(spec);
         focusAgent = saved.id;
-        sfx('click'); note((editing ? 'updated' : 'saved') + ' specialty: ' + saved.name, 'good');
+        sfx('click'); note((editing ? 'updated' : 'saved') + ' class: ' + saved.name, 'good');
         editingId = null; view = 'grid'; renderStage();
       } catch (e) { sfx('bad'); note((e && e.message) || 'could not save', 'bad'); }
     });

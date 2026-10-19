@@ -396,4 +396,44 @@ const run = (st, id, op, args, opts) => LE.run(st, id, op, args, Object.assign({
   }
 }
 
+/* ---------- A SECOND LINE HAS ROOM TO GROW (final floor lane R25) ----------
+   The walkthrough: Line A + two steps in the starter room, then BUILD YOUR OWN LINE again — Line B was packed against Line A, its
+   first step needed TIDY and its second said NO_FIT ("give it a bigger room", which never moved the line). A new line is now laid
+   where the same line with three steps would fit; and NO_FIT names the two moves that work, with the gesture for each. */
+{
+  const st = fresh(), near = { x: 9, y: 5 };
+  const go = (id, op, args, o) => LE.run(st, id, op, args, Object.assign({ near }, o || {}));
+  const step = (id, after, role) => { const out = st.lineGraph(id).graph.links.find(l => l.from.node === after); let r = go(id, 'insertStep', { from: after, to: out.to.node, role }); if (!r.ok && r.canTidy) r = go(id, 'insertStep', { from: after, to: out.to.node, role }, { tidy: true }); return r; };
+  const a = go(null, 'newLine', { label: 'Line A' });
+  A.ok(a.ok && !a.roomToGrow && st.propById(a.focus).x === 4 && st.propById(a.focus).y === 4, 'Line A goes exactly where it always did (its spot already has room for three steps)');
+  const a1 = step(a.focus, st.lineGraph(a.focus).graph.nodes.find(n => n.t === 'bay').id, 'GENERALIST'), a2 = a1.ok && step(a.focus, a1.focus, 'WRITER');
+  A.ok(a1.ok && a2 && a2.ok, 'Line A takes two more steps');
+  const b = go(null, 'newLine', { label: 'Line B' });
+  A.ok(b.ok && b.roomToGrow === true, 'a second line goes down in the same room — moved off the cramped spot against Line A, where three steps fit');
+  const b1 = step(b.focus, st.lineGraph(b.focus).graph.nodes.find(n => n.t === 'bay').id, 'GENERALIST');
+  A.ok(b1.ok, 'Line B\'s first added step fits — ' + (b1.error || ''));
+  const b2 = b1.ok ? step(b.focus, b1.focus, 'WRITER') : b1;
+  A.ok(b2.ok, 'Line B\'s second added step fits too (it was NO_FIT: packed against Line A) — ' + (b2.error || ''));
+  A.eq(P.compileRoutingPlan(st.projectGeometry()).lines.length, 2, '…and the two lines stay two lines');
+}
+{
+  const st = fresh(), near = { x: 9, y: 5 };
+  const a = LE.run(st, null, 'newLine', { role: 'RESEARCHER' }, { near });
+  const tail = () => { const c = P.lineComponents(st.projectGeometry()).find(k => k.props.includes(a.focus)); return c.bays[c.bays.length - 1].propId; };
+  let r = null;
+  for (let i = 0; i < 12; i++) { const lb = tail(); r = LE.run(st, lb, 'appendStep', { after: lb, role: 'WRITER' }, { near }); if (!r.ok && r.canTidy) r = LE.run(st, lb, 'appendStep', { after: lb, role: 'WRITER' }, { near, tidy: true }); if (!r.ok) break; }
+  A.ok(r && !r.ok && /^NO_(FIT|SPACE)$/.test(r.error), 'a line that fills the starter room runs out of floor — ' + (r && r.error));
+  A.ok(/grow its room \(click the room, then drag a gold handle on its edge out\)/.test(r.msg) && /move the whole line \(double-click it, then drag it to clear floor\)/.test(r.msg) && !/bigger room/.test(r.msg), 'the refusal names the two moves that work, with the gesture for each — ' + r.msg);
+  // the LEAD (stationbuilder's refit edit, opts.agent) cannot click or drag: the same refusal names its own ops (repair)
+  const lt = tail(), ag = LE.run(st, lt, 'appendStep', { after: lt, role: 'WRITER' }, { near, tidy: true, agent: true });
+  A.ok(!ag.ok && /^NO_(FIT|SPACE)$/.test(ag.error) && /\{ op: "resize", room, x, y, w, h \}/.test(ag.msg) && !/click|drag/i.test(ag.msg), 'the lead\'s refusal says { op: "resize" }, never a click or a drag — ' + ag.msg);
+  const SBsrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'frontend', 'app', 'stationbuilder.js'), 'utf8');
+  A.ok(/env\.LineEdit\.run\(st, t\.p\.id, String\(o\.edit \|\| ''\), args, \{ sizes: sizesOf\(env\), tidy: !!o\.tidy, agent: true \}\)/.test(SBsrc), '…and the refit edit asks for that wording');
+  const rm = st.rooms()[0], R = rm.rects[0];
+  A.ok(st.resizeRoom(rm.id, { x1: R.x1, y1: R.y1, x2: R.x2 + 12, y2: R.y2 + 8 }).ok, 'the room is grown');
+  const lb = tail(); let again = LE.run(st, lb, 'appendStep', { after: lb, role: 'WRITER' }, { near });
+  if (!again.ok && again.canTidy) again = LE.run(st, lb, 'appendStep', { after: lb, role: 'WRITER' }, { near, tidy: true });
+  A.ok(again.ok, 'after growing the room the same edit goes through — ' + (again.error || ''));
+}
+
 A.report('line-edit.test');

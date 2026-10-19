@@ -66,4 +66,12 @@ for (const n of serverNames) {
   A.ok(mapSrc.indexOf(key) === -1, '/' + n + ' is server-executed and has no local handler shadowing it');
 }
 
+// org P29 (one meaning for 'goal loop'): /goal is a SESSION goal on every surface — its palette + /help line says so, in the
+// same words /subgoal uses, never 'standing goal' (the lasting goal loops live in AUTOMATE › GOAL LOOPS)
+{
+  const g = reg.find(c => c.name === 'goal'), sg = reg.find(c => c.name === 'subgoal');
+  A.ok(g && /\bsession\b/.test(g.desc) && !/standing/i.test(g.desc), '/goal describes a goal for this session: ' + (g && g.desc));
+  A.ok(sg && /session goal/.test(sg.desc), '/subgoal speaks of the session goal');
+}
+
 A.report('slash.parity.test');

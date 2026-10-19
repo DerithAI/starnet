@@ -397,6 +397,13 @@
     for (const l of h.links) if (hasPath(l) && (all || (named ? named.has(l.id) : (hot.has(l.from.node) || hot.has(l.to.node))))) delete l.path;
     return h;
   }
+  /* the two moves that DO make room (R25 walkthrough: "give it a bigger room" sent the Commander to build a new room the line never
+     moved into): grow the room the line stands in, or carry the whole line to clear floor — said with the gesture for each */
+  const GROW_HOW = 'grow its room (click the room, then drag a gold handle on its edge out), or move the whole line (double-click it, then drag it to clear floor)';
+  /* …and the same advice in the lead's own ops (opts.agent — stationbuilder's refit edit): it cannot click or drag, it resizes a room
+     with { op: "resize" } (repair: the gesture wording sent the lead to UI moves, or to telling the Commander to do it by hand) */
+  const GROW_OPS = 'grow the room it stands in ({ op: "resize", room, x, y, w, h }: its whole new footprint, edges moved out)';
+  const growHow = opts => (opts && opts.agent) ? GROW_OPS : GROW_HOW;
   function run(station, propId, op, args, opts) {
     const LL = layoutModule();
     if (!LL) return fail('NO_ENGINE', 'the layout engine is not loaded');
@@ -411,6 +418,27 @@
        of a machine the edit touched, then every belt of the line. Its machines never move — only TIDY LINE moves them. Another
        branch / another route may read in any place among its junction's lanes (e.alts): each is tried at each level. */
     const near = opts && opts.near, tries = [e.graph].concat(Array.isArray(e.alts) ? e.alts : []);
+    /* A NEW LINE LEAVES ROOM TO GROW (final floor lane R25): the tightest clear spot packed a second line against the first, so
+       its very next step needed TIDY and the one after had no floor at all. The same line with THREE steps is laid first (a
+       probe, never written). Where today's tight spot already has room for that, the line goes there exactly as before; where it
+       is cramped and the probe fits elsewhere, the real line's INBOX stands where the probe's did and the line is laid out from
+       there — its next steps go down beside it. Where even the probe cannot fit, the line is placed as tightly as before (a
+       line that fits today is never refused for want of growing room). */
+    if (op === 'newLine') {
+      let pg = clone(e.graph), at = (pg.nodes.find(n => n.t === 'bay') || {}).id;
+      for (let k = 0; k < 2 && at; k++) { const s2 = OPS.appendStep(pg, { after: at }, {}); if (!s2.ok) break; pg = s2.graph; at = s2.focus; }
+      const I0 = e.graph.nodes.find(n => n.t === 'intake'), T1 = I0 && pg.nodes.length > e.graph.nodes.length ? LL.layout(e.graph, g.floor, { near }) : null;
+      const tight = T1 && T1.ok && T1.nodes && T1.nodes[I0.id];
+      const pinAt = (gr, p) => { const h = clone(gr); h.nodes.find(n => n.id === I0.id).pin = { x: p.x, y: p.y }; return h; };
+      // where today's spot has room for three steps, the line goes there exactly as before; only a cramped spot moves it
+      const cramped = tight && !LL.layout(pinAt(pg, tight), g.floor, { near }).ok;
+      const P0 = cramped ? LL.layout(pg, g.floor, { near }) : null, spot = P0 && P0.ok && P0.nodes && P0.nodes[I0.id];
+      if (spot) {
+        const pinned = pinAt(e.graph, spot), T0 = LL.layout(pinned, g.floor, { near });
+        if (T0.ok) { const r0 = station.applyLineLayout(pinned, T0); if (!r0 || !r0.ok) return r0 || fail('NOT_APPLIED', 'the edit could not be laid');
+          return { ok: true, focus: (r0.ids && r0.ids[e.focus]) || e.focus, ids: r0.ids, removed: r0.removed || [], relaid: 0, tidied: false, roomToGrow: true }; }
+      }
+    }
     const levels = [gr => gr, Array.isArray(e.loose) && e.loose.length ? gr => loosen(gr, false, e.loose) : null, gr => loosen(gr, false), gr => loosen(gr, true)].filter(Boolean);
     let graph = null, L = null, relaid = 0, tidied = false;
     for (let level = 0; level < levels.length && !graph; level++) {
@@ -424,10 +452,10 @@
     if (!graph) {
       /* say what would actually help: TIDY LINE only when the same edit fits with the line laid out afresh; when even that
          cannot fit, the floor is too small for this line — a bigger room is the answer, never "tidy it" in a circle */
-      if (op === 'tidy' || op === 'newLine') return op === 'tidy' ? fail('NO_FIT', 'this whole line does not fit here laid out afresh — enlarge the room it stands in, move the whole line to clear floor, or keep it as it is') : why(L);
+      if (op === 'tidy' || op === 'newLine') return op === 'tidy' ? fail('NO_FIT', 'this whole line does not fit here laid out afresh — ' + growHow(opts) + ', or keep it as it is') : why(L);
       const t = OPS.tidy(clone(e.graph));
       const T = t.ok ? LL.layout(t.graph, g.floor, { near: opts && opts.near }) : null;
-      if (!(T && T.ok)) return fail(L.error === 'NO_SPACE' || L.error === 'NO_ROOM' ? L.error : 'NO_FIT', 'there is not enough clear floor round this line for that — enlarge the room it stands in, move the whole line to clear floor, or clear some space');
+      if (!(T && T.ok)) return fail(L.error === 'NO_SPACE' || L.error === 'NO_ROOM' ? L.error : 'NO_FIT', 'there is not enough clear floor round this line for that — ' + growHow(opts) + ', or clear some space' + (opts && opts.agent ? ' round it ({ op: "move" } or { op: "delete" } on the pieces in the way)' : ''));
       // it fits with the line laid out afresh: that moves every machine of the line, so it is done only when asked (opts.tidy —
       // the panel's armed second click), never on the first
       if (!(opts && opts.tidy)) return Object.assign(fail('NEEDS_TIDY', 'there is no room for that with the line where it stands — TIDY LINE first, then try again'), { canTidy: true });

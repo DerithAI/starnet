@@ -40,6 +40,39 @@ const other = W.startSession({ projectRoot: 'C:\\projects\\beta' });
 A.ok(other !== scoped, 'another project cannot steal or re-anchor the existing blank');
 A.eq(W.list().length, 3, 'different project scope creates exactly one additional row');
 
+/* ---------- an untouched blank in the rail is reused even when another session is open (org live walk 10-14) ---------- */
+// the rail held an untouched 'New session' plus a real conversation; opening the conversation and pressing +NEW minted a
+// SECOND empty 'New session' row. +NEW now focuses the blank that is already there.
+W.reset();
+W.get(W.generalId()).history.push({ role: 'user', content: 'Brief review' });   // the Commander works in General…
+const blank = W.startSession();              // …an empty 'New session' sits in the rail…
+W.switch(W.generalId());                     // …and General is open again
+const before = W.list().length;
+const again = W.startSession();
+A.ok(again === blank, '+NEW from another session focuses the untouched blank already in the rail');
+A.eq(W.activeId(), blank.id, 'and makes it the open session');
+A.eq(W.list().length, before, 'no second empty "New session" row is minted');
+A.ok(W.list().filter(w => W.isUntouched(w)).length === 1, 'exactly one blank line remains');
+// the same untouched test as the starter path: a used, titled or pinned row is never taken over
+blank.history.push({ role: 'user', content: 'now it is a real conversation' });
+W.switch(W.generalId());
+const fresh2 = W.startSession();
+A.ok(fresh2 !== blank && W.isUntouched(fresh2), 'once the blank holds a message, +NEW mints a fresh one');
+W.switch(W.generalId());
+W.pin(fresh2.id, true);
+A.ok(W.startSession() !== fresh2, 'a pinned empty session is never taken over');
+// scope: an unscoped +NEW never lands in a project-anchored blank, a project +NEW never in an unanchored one
+W.reset();
+W.get(W.generalId()).history.push({ role: 'user', content: 'hello' });
+const anchored = W.startSession({ activate: false, projectRoot: 'C:\\projects\\alpha' });
+A.ok(W.startSession() !== anchored, 'the sessions rail +NEW never reuses a project-anchored blank');
+const plain = W.active();
+W.switch(W.generalId());
+A.ok(W.startSession({ activate: false, projectRoot: 'C:\\projects\\alpha' }) === anchored, 'the project +NEW reuses its own anchored blank');
+A.eq(W.activeId(), W.generalId(), '…and activate:false leaves the focus to the caller');
+A.ok(W.startSession() === plain, 'the unanchored blank is the sessions rail +NEW target');
+A.ok(W.startSession({ reuseActive: false }) !== plain, 'reuseActive:false still mints a fresh row');
+
 /* ---------- both shipped +NEW handlers use the coalescing seam ---------- */
 const app = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'app.js'), 'utf8');
 A.ok(/function newWorkstream\(\)[\s\S]{0,220}Workstreams\.startSession\(/.test(app), 'global +NEW uses Workstreams.startSession');

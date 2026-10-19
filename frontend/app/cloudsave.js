@@ -3,7 +3,8 @@
    localStorage is a fast CACHE that a browser wipe can erase. The sidecar's <workspaces>/<id>.save.json is the
    DURABLE copy (app-data dir, survives a cache wipe / different browser). This module keeps them in sync:
 
-     • push(doc)      — debounced best-effort POST /api/save on every persist; coalesces bursts of turns.
+     • push(doc)      — debounced best-effort POST /api/save on every persist; coalesces bursts of turns. Called even
+                        when the cache write failed (#121, { cacheFailed }): the station file is the store of record.
      • pull()         — GET /api/save?agent=agent → the stored envelope (or null).
      • reconcile(local) — on boot, adopt whichever of {local, remote} is NEWER (by updatedAt), write the winner
                           back into the localStorage cache, and nudge the server if local was ahead. This is
@@ -31,6 +32,18 @@ const CloudSave = (() => {
   let retryTimer = null;               // backoff timer scheduling the next attempt after a failure
   let pending = null;                  // newest doc awaiting a flush (older queued docs are superseded)
   const activeFlushes = new Set();      // confirmable writes currently waiting on the sidecar
+  // #121 BROWSER CACHE FULL. The whole save lives under one browser-storage key; past the browser's per-site cap its
+  // write throws. persist() still queues that envelope here (write-through), flagged cacheFailed. While the newest
+  // save is NOT in the cache, this module holds it in memory (memoryDoc) so re-entry never resumes the stale cache.
+  let pendingCacheFailed = false;      // the doc in `pending` could not be written to the browser cache
+  let cacheFailed = false;             // this page's newest save is not in the browser cache
+  let cacheFailedConfirmed = false;    // ...and the station file has confirmed exactly that save (nothing newer queued)
+  let memoryDoc = null;                // that newest save, while cacheFailed
+  let cacheFailedReason = null;        // the browser's error name for that failure ('QuotaExceededError' = the cap)
+  // push order, so a confirmation knows whether the cache entry is older than the save it confirms. Two saves can carry
+  // the same millisecond updatedAt, so the stamp alone cannot tell a superseded entry from a newer queued one.
+  let pushSeq = 0, pendingSeq = 0;     // the newest push, and the push that put `pending` there
+  let cacheOkSeq = 0;                  // the newest push whose doc the browser cache DID hold
   let health = Core ? Core.freshHealth() : { lastPushOkAt: 0, lastPushFailAt: 0, consecutiveFailures: 0, nextRetryAt: 0 };
   let warnedStale = false;             // ONE console warn per failing↔healthy transition, never per attempt
   // EL-11 FIX 1: the sidecar REFUSES writes when the workspace was stamped by a NEWER StarNet — as an HTTP 200
@@ -45,6 +58,8 @@ const CloudSave = (() => {
   // definitively holds no save; 'forbidden' (auth 401/403) and 'unreachable' (network/timeout/5xx) mean we
   // could not ask — states that must NEVER be presented to the boot path as "no save exists".
   let lastPullOutcome = 'unreachable';   // until a pull settles, we have proven nothing
+  // starnet-releases#4 Blocker 2: the catch-up a growthStale refusal asked for (resolves true once the re-synced save is queued)
+  let staleCatchUp = null;
 
   function now() { return Date.now(); }
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
@@ -105,6 +120,17 @@ const CloudSave = (() => {
     }
   }
 
+  // GROWTH-STALE REFUSAL (starnet-releases#4 Blocker 2). The station refuses a save whose rating watermark
+  // (stationStats.ratingSyncAt) trails its rating ledger, so a stale tab cannot erase acknowledged XP. That refusal is
+  // right, and resending the same save can never pass it: only a rating catch-up advances the watermark. Ask XpStore for
+  // one; on success it persists a fresh save (App.persist -> push), and THAT save is what the next attempt sends. Nothing
+  // here touches the watermark, so the station's check still decides. Resolves true once the re-synced save is queued.
+  function requestRatingCatchUp() {
+    if (typeof XpStore === 'undefined' || !XpStore || typeof XpStore.catchUpRatings !== 'function') return null;
+    try { return Promise.resolve(XpStore.catchUpRatings()).then(r => !!r && !r.failed, () => false); }
+    catch (_) { return null; }
+  }
+
   // (re)arm the backoff retry so a dropped push is never silently abandoned. Newest-wins: whatever is
   // in `pending` when the timer fires is what gets sent, so a burst during backoff still coalesces to one.
   function scheduleRetry() {
@@ -129,7 +155,7 @@ const CloudSave = (() => {
     // honor the backoff window — if a failure streak is live and the next attempt isn't due yet, hold the
     // doc in `pending` and re-arm rather than hammering the sidecar every debounce. `force` skips this hold.
     if (!force && Core && isSave(pending) && !Core.retryDue(health, now())) { scheduleRetry(); return Promise.resolve(false); }
-    const doc = pending; pending = null;
+    const doc = pending, docCacheFailed = pendingCacheFailed, docSeq = pendingSeq; pending = null; pendingCacheFailed = false;
     if (!isSave(doc)) return Promise.resolve(false);
     const attempt = postNow(doc)
       .then(({ response: r, body }) => {
@@ -156,9 +182,20 @@ const CloudSave = (() => {
                 cached._saveRevision = revision; cached._saveDirty = false;
                 if (Number.isFinite(body.updatedAt)) cached.updatedAt = body.updatedAt;
                 localStorage.setItem('starnet.save', JSON.stringify(cached));
+              } else if (docCacheFailed && cacheOkSeq < docSeq && cached && num(cached.updatedAt) <= num(doc.updatedAt)) {
+                // #121: the station file now holds a save NEWER than anything the cache could take. The cached copy is
+                // a superseded ancestor; left in place, the next boot (or a re-entry) would resume it and revert the
+                // station. removeItem cannot hit the storage cap. This holds even with a newer save queued: a queued
+                // save the cache DID hold is itself the entry (cacheOkSeq), never dropped here; a queued save it could
+                // not hold lives in memory meanwhile. (A cache entry newer than this doc came from another window and
+                // is not ours to drop.)
+                localStorage.removeItem('starnet.save');
               }
             } catch (_) {}
+            // the station file confirmed this page's newest save while the cache could not hold it
+            if (!pending && docCacheFailed && doc === memoryDoc) cacheFailedConfirmed = true;
           }
+          staleCatchUp = (body.ok === false && body.growthStale === true) ? requestRatingCatchUp() : null;
           if (body.ok === false) throw new Error('save refused: ' + (body.error || (body.unreadable ? 'existing record unreadable' : body.stale ? 'stale write' : 'unknown')));
         }
         if (!body || body.ok !== true) throw new Error('save acknowledgement missing');
@@ -169,7 +206,7 @@ const CloudSave = (() => {
         markFail();
         // re-queue the newest doc (newest-wins: a fresher push during the attempt already replaced it) and
         // arm the backoff retry. Fail soft — the cache is still authoritative locally, nothing throws out.
-        if (!isSave(pending)) pending = doc;
+        if (!isSave(pending)) { pending = doc; pendingCacheFailed = docCacheFailed; pendingSeq = docSeq; }
         scheduleRetry();
         return false;
       });
@@ -192,6 +229,10 @@ const CloudSave = (() => {
     // A rejected active write re-queues its document, and a newer push may also have arrived while it was in
     // flight. Force one final, confirmable write of that newest pending state before the installer advances.
     if (isSave(pending)) confirmed = await flush({ force: true }) === true;
+    // A growth-stale refusal asked for a rating catch-up: once it has queued the re-synced save, send that ONE time.
+    // A catch-up that fails leaves the refusal standing, and the install stays paused.
+    const catchUp = staleCatchUp; staleCatchUp = null;
+    if (!confirmed && catchUp && await catchUp && isSave(pending)) confirmed = await flush({ force: true }) === true;
     // A flush may have started while the forced write was awaited. Settle it too, and fail closed if any caller
     // queued an even newer document that has not begun its durable write yet.
     while (activeFlushes.size) {
@@ -203,13 +244,22 @@ const CloudSave = (() => {
   }
 
   // queue a write-through; coalesces a burst of persists into one POST after the debounce settles.
-  function push(doc) {
+  //   opts.cacheFailed (#121): the browser cache could not hold this doc. It is queued all the same (the station file is
+  //   the store of record) and held in memory until a later doc lands in the cache again. opts.cacheError: the
+  //   browser's error name, so the UI says "full" only when the browser reported its quota.
+  function push(doc, opts) {
     if (!isSave(doc)) return;
     doc = JSON.parse(JSON.stringify(doc));
     doc._saveRevision = revision;
     doc._saveClient = clientId;
     latestLocal = doc;
     pending = doc;                     // keep only the newest
+    pendingCacheFailed = !!(opts && opts.cacheFailed);
+    pendingSeq = ++pushSeq;
+    if (!pendingCacheFailed) cacheOkSeq = pendingSeq;   // callers push without cacheFailed only for a doc the cache holds
+    cacheFailed = pendingCacheFailed; cacheFailedConfirmed = false;
+    memoryDoc = cacheFailed ? doc : null;
+    cacheFailedReason = cacheFailed ? (String((opts && opts.cacheError) || '') || null) : null;
     if (timer) return;
     timer = setTimeout(() => { timer = null; flush(); }, DEBOUNCE_MS);
   }
@@ -306,18 +356,34 @@ const CloudSave = (() => {
       // an OLDER schema (v1/v2) than this build. resumeInto() assumes a current-schema doc (reads .workstreams,
       // expects .agent.stats); adopting a raw v1/v2 remote would silently drop history + skip the XP seed.
       const priorLocalRaw = (() => { try { return localStorage.getItem('starnet.save'); } catch (_) { return null; } })();
-      let adopted = false;
+      let adopted = false, adoptError = null;
       try {
         const raw = JSON.stringify(remote);
         localStorage.setItem('starnet.save', raw);
         adopted = localStorage.getItem('starnet.save') === raw;
-      } catch (_) {}
+      } catch (e) { adoptError = String((e && (e.name || e.code)) || 'error') + (e && e.message ? ': ' + e.message : ''); }
       try {
         // re-validate through Save.load(): it re-checks the forward-version guard on the just-adopted doc and
         // runs the migration ladder. A migrated, current-schema save is the only thing we hand back.
         const migrated = adopted && (typeof Save !== 'undefined' && Save.load) ? Save.load() : null;
         if (isSave(migrated) && num(migrated.version) <= currentVersion()) return migrated;
       } catch (_) {}
+      // #121: the cache could not take the station file's save (the browser's per-site storage cap). Resume it IN
+      // MEMORY instead — validated, a newer format refused, migrated on a copy — with its own revision (set above), so
+      // the next autosave builds on it. Never the stale local copy, never the save-unreachable screen. The local copy
+      // here is clean (a dirty one returned above) and the station file holds newer: drop it, so neither a re-entry
+      // nor the next boot can resume it.
+      if (!adopted && typeof Save !== 'undefined' && Save.fromDoc) {
+        let mem = null;
+        try { mem = Save.fromDoc(remote); } catch (_) { mem = null; }
+        if (mem && mem.status === 'ok' && isSave(mem.doc) && num(mem.doc.version) <= currentVersion()) {
+          if (priorLocalRaw != null) { try { localStorage.removeItem('starnet.save'); } catch (_) {} }
+          cacheFailed = true; cacheFailedConfirmed = true; memoryDoc = mem.doc;   // it came FROM the station file
+          cacheFailedReason = adoptError;
+          try { console.warn('[cloudsave] browser storage cannot hold this station; resumed it from the station file.'); } catch (_) {}
+          return JSON.parse(JSON.stringify(mem.doc));
+        }
+      }
       // adoption produced no readable current-schema doc (Save unavailable, or the re-read failed the guard).
       // NEVER return the raw, unmigrated remote — resumeInto() would misread it. Roll the cache back to the
       // prior local and prefer it. Without one, a failed adoption cannot justify first-run onboarding.
@@ -383,7 +449,19 @@ const CloudSave = (() => {
       : { lastPushOkAt: health.lastPushOkAt, lastPushFailAt: health.lastPushFailAt, consecutiveFailures: health.consecutiveFailures, nextRetryAt: 0, warn: false, stale: false };
     s.conflict = conflict;
     s.degraded = degraded;   // EL-11 FIX 1: refused-by-newer-StarNet is its own persistent, renderable state
+    // #121: the browser cache could not hold this page's newest save, so the station file is its only durable copy.
+    // cacheFailedConfirmed is true only once the station file acknowledged exactly that save with nothing newer queued.
+    s.cacheFailed = cacheFailed;
+    s.cacheFailedConfirmed = cacheFailed && cacheFailedConfirmed && !isSave(pending) && !activeFlushes.size;
+    s.cacheFailedReason = cacheFailed ? cacheFailedReason : null;
     return s;
+  }
+
+  // #121: the newest save this page holds ONLY in memory (the browser cache could not take it), as a fresh copy; null
+  // when the cache holds the newest save. Re-entry resumes from this instead of the stale or removed cache.
+  function memorySave() {
+    if (!cacheFailed || !isSave(memoryDoc)) return null;
+    try { return JSON.parse(JSON.stringify(memoryDoc)); } catch (_) { return null; }
   }
 
   // EL-11 FIX 1: other write paths (app.js pushRoster) hit the SAME degraded refusal — let them latch the
@@ -409,6 +487,6 @@ const CloudSave = (() => {
     localStorage.removeItem('starnet.save');
     location.reload();
   }
-  return { localSnapshot: () => latestLocal, reloadCurrent, revision: () => revision, push, pull, reconcile, flush, flushForUpdate, installUnloadFlush, health: healthNow, isFutureSentinel, isUnknownSentinel, markDegraded, recoveryNotice, lineage, ackRecovery, pullOutcome: () => lastPullOutcome, _isSave: isSave, _isFutureSave: isFutureSave };
+  return { localSnapshot: () => latestLocal, memorySave, reloadCurrent, revision: () => revision, push, pull, reconcile, flush, flushForUpdate, installUnloadFlush, health: healthNow, isFutureSentinel, isUnknownSentinel, markDegraded, recoveryNotice, lineage, ackRecovery, pullOutcome: () => lastPullOutcome, _isSave: isSave, _isFutureSave: isFutureSave };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = CloudSave;

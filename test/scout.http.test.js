@@ -20,6 +20,9 @@ const path = require('path');
 const http = require('http');
 const Interests = require('../sidecar/interests.js');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+// lean prompt (2026-10-12): the run's commander evidence rides the per-run <run_context> note, which this non-Claude chat
+// wire carries as the Commander's message's fenced leading text — read every host-authored prompt text, not one placement
+const { hostText } = require('./helpers/host-notes.js');
 
 (async () => {
   const fixture = SidecarFixture.create({
@@ -167,7 +170,7 @@ async function trustedCacheRestart() {
     A.eq(response.status, 200, label + ': fresh foreground run accepted');
     await response.text();
     A.eq(bodies.length - before, 1, label + ': exactly one local provider request');
-    const system = ((bodies[before] || {}).messages || []).filter(m => m.role === 'system').map(m => String(m.content)).join('\n');
+    const system = hostText((bodies[before] || {}).messages || []);
     A.ok(system.includes(MARK), label + ': captured actual provider SYSTEM payload');
     A.ok(!system.includes(POISON), label + ': no legacy poison anywhere in provider SYSTEM messages');
     const topics = system.split('\n').filter(line => /^- TOPIC: /.test(line));

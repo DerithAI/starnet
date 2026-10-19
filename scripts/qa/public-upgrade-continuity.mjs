@@ -213,7 +213,7 @@ try {
   const after = await snapshot();
   receipt.afterState = continuityProjection(after);
   if (!await evalJS(cdp, "__TAURI__.core.invoke('harness_has_provider_key',{provider:'openrouter'})")) throw new Error('Synthetic key did not survive candidate install');
-  receipt.expectedMigrationFields = ['local/durable.agent.systemPrompt (regenerated from preserved identity documents)', 'local/durable.agents[].personaId (missing/composed default for this fixture)', 'local/durable.workstreams[].parentStreamId (missing/null)', 'local/durable.workstreams[].projectHome (missing/false)', 'local/durable.agents[].color (missing/non-hex -> crew palette suit)'];
+  receipt.expectedMigrationFields = ['local/durable.agent.systemPrompt (regenerated from preserved identity documents)', 'local/durable.agents[].personaId (missing/composed default for this fixture)', 'local/durable.workstreams[].parentStreamId (missing/null)', 'local/durable.workstreams[].projectHome (missing/false)', 'local/durable.workstreams[].projectRootAt (missing/null)', 'local/durable.workstreams[].worker (missing/false)', 'local/durable.workstreams[].lastRunReason (missing/empty)', 'local/durable.workstreams[].pendingJoin (missing/null)', 'local/durable.agents[].color (missing/non-hex -> crew palette suit)'];
   const projection = stableJson(fixtureState(adoptStationSchemaV2(adoptAssignedSuitColors(continuityProjection(before), continuityProjection(after)), continuityProjection(after))));
   if (projection !== stableJson(fixtureState(continuityProjection(after)))) throw new Error('State changed across public-to-candidate reinstall');
   receipt.checks.statePreservedAcrossInstall = true;

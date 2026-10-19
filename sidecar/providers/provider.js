@@ -271,7 +271,7 @@
   }
 
   const timeouts = { envInt, connectMs, idleMs, connectSignal, connectGuard, idleGuardedReader, timeoutError, makeAbortError };
-  const runtime = { isAbort, abortableDelay, markPreStreamRetriesExhausted, preStreamRetries, stampRequestHost };
+  const runtime = { isAbort, abortableDelay, markPreStreamRetriesExhausted, preStreamRetries, stampRequestHost, requestHostOf };
 
   function recoveredToolContent(callId, content) {
     let body;
@@ -490,7 +490,8 @@
   function prepareWireMessages(messages, target) {
     if (!Array.isArray(messages)) return messages;
     const spec = WIRE_TARGETS[target] || WIRE_TARGETS.chat;
-    let out = repairToolPairs(messages);
+    // host-fence tags in user/tool content and inside a note's body are written inert (INERT HOST FENCES, below)
+    let out = repairToolPairs(inertHostFences(messages));
     if (spec.idGrammar) out = remapToolCallIds(out, spec.idGrammar);
     return out;
   }
@@ -520,19 +521,230 @@
     return changed ? out : messages;
   }
 
+  /* RUN CONTEXT NOTE (lean-prompt, 2026-10-12). The per-run block (task brief, runtime identity, quests, crew call, the
+     run's own skill index) used to ride the END of the system prompt, so the system differed on every message and no
+     provider could reuse the conversation behind it from cache. runOnceCore now sends it as ONE fenced system note
+     placed with the newest user message — the <recalled-memory> seam. An adapter that hoists LEADING system messages
+     into a provider system field must stop at this note: on a conversation's first message nothing precedes it but
+     the system prompt, and hoisting it there would make message 1's system differ from message 2's.
+     The body is made inert where the note is made (inertHostTags, INERT HOST FENCES below): the Task Brief inside it
+     quotes the request word for word, so a request carrying "</run_context>\n<run_context>" must never open a second
+     block that reads as host-written. A clean body keeps its bytes. */
+  const RUN_CONTEXT_OPEN = '<run_context>';
+  const RUN_CONTEXT_CLOSE = '</run_context>';
+  function runContextNote(text) {
+    const t = String(text == null ? '' : text).trim();
+    return t ? RUN_CONTEXT_OPEN + '\n' + inertHostTags(t) + '\n' + RUN_CONTEXT_CLOSE : '';
+  }
+  function isRunContextNote(message) {
+    if (!message || message.role !== 'system') return false;
+    const c = message.content;
+    const head = typeof c === 'string' ? c : (Array.isArray(c) && c[0] && typeof c[0].text === 'string' ? c[0].text : '');
+    return head.indexOf(RUN_CONTEXT_OPEN) === 0;
+  }
+
+  /* CREW CALL NOTE (lean-prompt review, 2026-10-12). crew-call.js's [CREW CALL] line is per-request, so it cannot ride
+     the cache-stable system prompt — but inside the run-context note it sat BEFORE the Commander's words, the opposite
+     of its design ("short, request-specific, and last": qwen3:8b went 0/4 -> 4/4 delegated with it near the END of the
+     system prompt). It is its own fenced host note placed right AFTER the newest user message (index.js): a chat wire
+     and Ollama carry it as that user turn's CLOSING text (userSideHostNotes), a Claude route as the user turn right
+     after it, Claude Code as the close of that user entry — every route reads it after the request, and the request
+     still ends on a user turn. A long run's fold carries it like the run-context note (loop.js). Body inert where it
+     is made, like runContextNote. */
+  const CREW_CALL_OPEN = '<crew_call>';
+  const CREW_CALL_CLOSE = '</crew_call>';
+  function crewCallFence(text) {
+    const t = String(text == null ? '' : text).trim();
+    return t ? CREW_CALL_OPEN + '\n' + inertHostTags(t) + '\n' + CREW_CALL_CLOSE : '';
+  }
+  function isCrewCallNote(message) {
+    return !!message && message.role === 'system' && headText(message.content).indexOf(CREW_CALL_OPEN) === 0;
+  }
+
+  /* HOST NOTES ON A GENERIC CHAT WIRE (lean-prompt review, 2026-10-12). The host notes ride the conversation as their
+     own system messages AFTER the system prompt: the per-run <run_context> note and <recalled-memory> (both right
+     before the newest user message), the <crew_call> note (right after it), and the <conversation_summary> of turns the history window dropped (right after
+     the system prompt, or where a compaction fold put it). A Claude route turns them into user-side text
+     (preserveClaudeContinuations, the native adapters); a generic Chat Completions endpoint received them as role
+     'system' at index > 0 — and strict chat templates refuse exactly that ("System message must be at the beginning",
+     #102), as do role-order validators that reject a system message after an assistant or tool turn. With the run
+     context now on EVERY message, every run on such an endpoint would fail. So on a non-Claude chat wire the notes
+     leave their system messages and become ONE fenced leading text part of the Commander's user message (noteCarrier, below): the request keeps
+     exactly one leading system message (byte-stable across a conversation's messages), user/assistant alternation is
+     untouched (never a separate message), and the request still ends on that user turn. The <crew_call> note is the
+     one exception to "leading": it becomes that turn's CLOSING text part, after the Commander's words (CREW CALL NOTE
+     above). Other host system messages (loop steering, nudges) keep their pre-existing placement. Pure: copies, never
+     mutates; identity when no note.
+     KNOWN GAP (review 2026-10-12, pre-existing — also on 04ce1fcb8; its own follow-up, not this projection's job): the
+     loop's mid-run system messages (continuation / empty_reply nudges, steering_note, iteration_limit, hook_context,
+     verify_*, loop_guard, the post-fold todo note) still go out as role 'system' after an assistant or tool turn here,
+     and the request can END on one — a strict template refuses it. So this does NOT make every message strict-safe. */
+  const HOST_NOTE_TAGS = ['run_context', 'recalled-memory', 'conversation_summary', 'crew_call'];
+  function headText(content) {
+    return typeof content === 'string' ? content : (Array.isArray(content) && content[0] && typeof content[0].text === 'string' ? content[0].text : '');
+  }
+  function isHostNote(message) {
+    if (!message || message.role !== 'system') return false;
+    const head = headText(message.content);
+    for (const tag of HOST_NOTE_TAGS) if (head.indexOf('<' + tag + '>') === 0) return true;
+    return false;
+  }
+  function isClaudeModel(model) { return /anthropic\/|claude/i.test(String(model || '')); }
+
+  /* INERT HOST FENCES (lean-prompt review, 2026-10-12). With the host notes riding the SAME user turn as the
+     Commander's words (and on a Claude route as adjacent user text), a "</run_context>" or "<recalled-memory>" typed by
+     a user, pasted by a channel guest, or returned in a tool result (a web page, a file, an email) could close a
+     genuine note early or open a forged one — text that reads as host context. The claude-cli pattern (inertTags):
+     every host-fence open/close tag in user, tool and assistant content is written with &lt; so it stays text, and so is every
+     one inside a note's own body (its task brief quotes the Commander; recall quotes saved memories; the summary quotes
+     the conversation). A note keeps exactly its own outer fence: the open tag it starts with and the close tag it ends
+     with. Only <recalled-memory> is ever made of several blocks (recall + taste, joined "</recalled-memory>\n
+     <recalled-memory>"), so only it keeps same-tag joins; inside a <run_context> or <conversation_summary> a join is
+     quoted text (review 2026-10-12: a brief quoting "</run_context>\n<run_context>\n[RUNTIME]..." forged a second
+     run-context block on every route). The system prompt (index 0) is the host's own text and is left alone.
+     Pure, deterministic; identity when nothing changes, so a clean transcript keeps its bytes. */
+  const HOST_FENCE_TAG_RE = /<(\/?)(run_context|recalled-memory|conversation_summary|crew_call)(?=[\s>/]|$)/gi;   // = HOST_NOTE_TAGS
+  function inertHostTags(s) { return String(s).replace(HOST_FENCE_TAG_RE, '&lt;$1$2'); }   // a declaration: runContextNote (above) calls it
+  const MULTI_BLOCK_NOTES = new Set(['recalled-memory']);
+  function inertNoteBody(s) {
+    const str = String(s);
+    let tag = '';
+    for (const t of HOST_NOTE_TAGS) if (str.indexOf('<' + t + '>') === 0) { tag = t; break; }
+    if (!tag) return inertHostTags(str);
+    const open = '<' + tag + '>', close = '</' + tag + '>', join = close + '\n' + open;
+    const end = str.endsWith(close) ? str.length - close.length : str.length;
+    const inner = str.slice(open.length, end);
+    const body = MULTI_BLOCK_NOTES.has(tag) ? inner.split(join).map(inertHostTags).join(join) : inertHostTags(inner);
+    return open + body + str.slice(end);
+  }
+  function inertContent(content, fn) {
+    if (typeof content === 'string') { const v = fn(content); return v === content ? content : v; }
+    if (!Array.isArray(content)) return content;
+    let changed = false;
+    const parts = content.map(p => {
+      if (!p || typeof p !== 'object' || typeof p.text !== 'string') return p;
+      const v = fn(p.text);
+      if (v === p.text) return p;
+      changed = true;
+      return Object.assign({}, p, { text: v });
+    });
+    return changed ? parts : content;
+  }
+  function inertHostFences(messages) {
+    if (!Array.isArray(messages)) return messages;
+    let changed = false;
+    const out = messages.map((m, i) => {
+      if (!m || typeof m !== 'object') return m;
+      let fn = null;
+      // assistant text too (review 2026-10-12): a reply that echoed a fetched page's "<run_context>…</run_context>" is sent
+      // back on every later turn, where a live fence would read as host context; tool_calls are untouched (not content)
+      if (m.role === 'user' || m.role === 'tool' || m.role === 'assistant') fn = inertHostTags;
+      else if (m.role === 'system' && i > 0) fn = isHostNote(m) ? inertNoteBody : inertHostTags;
+      if (!fn || m.content == null) return m;
+      const content = inertContent(m.content, fn);
+      if (content === m.content) return m;
+      changed = true;
+      return Object.assign({}, m, { content });
+    });
+    return changed ? out : messages;
+  }
+  function contentText(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return content == null ? '' : String(content);
+    return content.map(p => (typeof p === 'string' ? p : (p && typeof p.text === 'string' ? p.text : ''))).join('');
+  }
+  // prepend `text` (already fenced) to a user message's content: a string stays a string (the shape every endpoint
+  // accepts), a parts array gains one leading text part
+  function withLeadingText(message, text) {
+    const c = message.content;
+    let content;
+    if (Array.isArray(c)) content = [{ type: 'text', text }].concat(c);
+    else if (typeof c === 'string' && c) content = text + '\n\n' + c;
+    else content = text;
+    return Object.assign({}, message, { content });
+  }
+  // append `text` (already fenced) the same way: after the Commander's words (the <crew_call> note, CREW CALL NOTE)
+  function withTrailingText(message, text) {
+    const c = message.content;
+    let content;
+    if (Array.isArray(c)) content = c.concat([{ type: 'text', text }]);
+    else if (typeof c === 'string' && c) content = c + '\n\n' + text;
+    else content = text;
+    return Object.assign({}, message, { content });
+  }
+  /* WHICH USER TURN CARRIES THE NOTES (review 2026-10-12). index.js injects the run-context note and recall right BEFORE
+     the Commander's message, so the carrier is the first user turn after the last of those notes — not simply the newest
+     user turn: mid-run the loop appends user turns of its own (the screen-capture turn, loop.js shotTurn), and moving the
+     notes onto one would change the Commander's message bytes mid-run (one prefix-cache miss) and hang the Task Brief
+     and recall off a screenshot. With no such note (a summary or crew call alone), or nothing after it, the newest user
+     turn carries them, as before. */
+  function noteCarrier(messages) {
+    let anchor = -1, newest = -1;
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (!m) continue;
+      if (m.role === 'user') newest = i;
+      else if (isHostNote(m) && !isCrewCallNote(m) && !isSummaryHead(m)) anchor = i;
+    }
+    if (anchor >= 0) for (let i = anchor + 1; i < messages.length; i++) if (messages[i] && messages[i].role === 'user') return i;
+    return newest;
+  }
+  function isSummaryHead(m) { return headText(m.content).indexOf('<conversation_summary>') === 0; }
+  function userSideHostNotes(messages) {
+    if (!Array.isArray(messages) || !messages.some(isHostNote)) return messages;
+    const target = noteCarrier(messages);
+    const lead = [], trail = [];
+    for (const m of messages) if (isHostNote(m)) { const t = contentText(m.content).trim(); if (t) (isCrewCallNote(m) ? trail : lead).push(t); }
+    const out = [];
+    if (target < 0) {
+      /* NO USER TURN AT ALL (review 2026-10-12): a fold keeps the first non-system message, and a transcript or window
+         slice can start on a reply, so a folded request may hold no user message. The notes still never go out as a
+         system message after index 0: they become ONE user turn of their own right after the leading system prompt,
+         before the first non-system message. */
+      const notes = lead.concat(trail).join('\n\n');
+      let placed = false;
+      for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        if (isHostNote(m)) continue;
+        if (!placed && !(m && m.role === 'system')) { if (notes) out.push({ role: 'user', content: notes }); placed = true; }
+        out.push(m);
+      }
+      if (!placed && notes) out.push({ role: 'user', content: notes });
+      return out;
+    }
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (isHostNote(m)) continue;
+      if (i !== target) { out.push(m); continue; }
+      let u = lead.length ? withLeadingText(m, lead.join('\n\n')) : m;
+      if (trail.length) u = withTrailingText(u, trail.join('\n\n'));
+      out.push(u);
+    }
+    return out;
+  }
+  /* The ONE role projection every Chat Completions adapter applies (openai-compatible, openrouter): a Claude model
+     keeps its structural placement (later system messages become user turns — preserveClaudeContinuations), every
+     other model gets the host notes user-side (userSideHostNotes). */
+  function chatRoleProjection(messages, model) {
+    return isClaudeModel(model) ? preserveClaudeContinuations(messages, model) : userSideHostNotes(messages);
+  }
+
   // Claude has one leading system block. Keep later host reminders in the
   // conversation, as the native Anthropic adapter does, so gateways cannot hoist
   // them and turn the preceding assistant answer into unsupported prefill.
+  // The run-context note ends the leading block even when nothing but the system prompt precedes it (see above).
   function preserveClaudeContinuations(messages, model) {
-    if (!Array.isArray(messages) || !/anthropic\/|claude/i.test(String(model || ''))) return messages;
+    if (!Array.isArray(messages) || !isClaudeModel(model)) return messages;
     let leading = true;
     return messages.map(message => {
-      if (!message || message.role !== 'system') leading = false;
+      if (!message || message.role !== 'system' || isRunContextNote(message)) leading = false;
       return !leading && message && message.role === 'system'
         ? Object.assign({}, message, { role: 'user' }) : message;
     });
   }
 
   return { EVENT_TYPES, FINISH, normalizeFinish, timeouts, runtime, repairToolPairs, preserveClaudeContinuations,
+    RUN_CONTEXT_OPEN, RUN_CONTEXT_CLOSE, runContextNote, isRunContextNote, CREW_CALL_OPEN, CREW_CALL_CLOSE, crewCallFence, isCrewCallNote,
+    HOST_NOTE_TAGS, isHostNote, isClaudeModel, userSideHostNotes, chatRoleProjection, inertHostTags, inertHostFences,
     prepareWireMessages, remapToolCallIds, ANTHROPIC_TOOL_ID, chatWireMessages, CHAT_WIRE_KEYS };
 });

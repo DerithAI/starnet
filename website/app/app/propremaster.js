@@ -84,8 +84,9 @@ const PropRemaster = (() => {
     return USER_KEY.test(key)&&v&&v.mode==='approved'&&v.effects===false&&!v.contact&&!v.foreground&&!v.nativeLayers&&!v.nativeMask&&!v.screenPower&&!v.activity&&
       validate({...v,image:'runtime.png'})&&im&&im.width===v.sourceWidth&&im.height===v.sourceHeight;
   }
-  async function prepare(key,v,preloaded) {
+  async function prepare(key,v,preloaded,replacing=null,generation=0) {
     try {
+      let machineLayers=null;
       if(!(preloaded?runtimeOK(key,v,preloaded):validate(v)))throw Error('invalid manifest view');
       const id=key.split(':')[0];
       if(v.mode==='content'&&(typeof AuthoredPropContent==='undefined'||!AuthoredPropContent.regions[id]))throw Error('authored content unavailable');
@@ -100,6 +101,7 @@ const PropRemaster = (() => {
           const layer=canvas(source.width*scale,source.height*scale),lg=layer.getContext('2d');lg.imageSmoothingQuality='high';lg.drawImage(source,0,0,layer.width,layer.height);layers[name]=layer;
         }
         if(!AuthoredPropMotion.register(id,machine.motion,layers))throw Error('invalid authored mechanism');
+        machineLayers=layers;
       }
       const im=preloaded||await image(v.image);
       if(im.width!==v.sourceWidth || im.height!==v.sourceHeight)throw Error('source dimensions differ');
@@ -148,7 +150,7 @@ const PropRemaster = (() => {
       if(frame.width>256||frame.height>256)throw Error('layer bounds too large');
       const pw=Math.ceil(frame.width*DENSITY),ph=Math.ceil(frame.height*DENSITY);
       const cost=pw*ph*((projectionHandled?1:v.mode==='native'?3:v.mode==='screen'||v.screenPower?10:v.mode==='pool'?49:['water','scanner','steam','pulse'].includes(v.mode)?13:['content','machine','service'].includes(v.mode)?2:1)+(v.foreground?1:0)+(!projectionHandled&&v.activity?2:0))+(projection?.image?projection.width*projection.height:0);
-      if(pixelBudget+cost>MAX_PIXELS)throw Error('decoded prop budget exceeded');
+      if(pixelBudget-(replacing?.cost||0)+cost>MAX_PIXELS)throw Error('decoded prop budget exceeded');
       const body=canvas(pw,ph),g=body.getContext('2d');
       g.scale(DENSITY,DENSITY);g.translate(-frame.x,-frame.y);
       g.imageSmoothingEnabled=true;g.imageSmoothingQuality='high';
@@ -167,7 +169,7 @@ const PropRemaster = (() => {
       }
       // Concurrent image decodes may finish between the initial budget check
       // and mask decode, so enforce the shared bound again at the commit point.
-      if(pixelBudget+cost>MAX_PIXELS)throw Error('decoded prop budget exceeded');
+      if(pixelBudget-(replacing?.cost||0)+cost>MAX_PIXELS)throw Error('decoded prop budget exceeded');
       const screen=!projectionHandled&&(v.mode==='screen'||v.screenPower)?authoredScreen(body,v.screenRegions,box,frame):null;
       const approved= !projectionHandled&&v.mode==='approved'&&v.effects!==false&&typeof ApprovedSheetEffects!=='undefined'&&ApprovedSheetEffects.ids.includes(id)
         ?ApprovedSheetEffects.prepare(id,im,{sourceWidth:v.sourceWidth,sourceHeight:v.sourceHeight,crop}):null;
@@ -184,15 +186,104 @@ const PropRemaster = (() => {
       if(projectionHandled){const emitter=ProjectionPropEffects.classify(id,view).effects.find(e=>['screen','connector','lamp'].includes(e.kind));
         if(emitter){const cx=emitter.region.reduce((n,p)=>n+p[0],0)/emitter.region.length,cy=emitter.region.reduce((n,p)=>n+p[1],0)/emitter.region.length;
           projectionEmitter={x:box.x+(cx*v.sourceWidth-crop.x)/crop.width*box.width,y:box.y+(cy*v.sourceHeight-crop.y)/crop.height*box.height};}}
-      const entry={spec:v,body,mask,live,screen,motion,foreground,composed,approved,indicators,projectionHandled,projection,projectionEmitter,frame,box,crop,lost:false};
+      const entry={spec:v,body,mask,live,screen,motion,foreground,composed,approved,indicators,projectionHandled,projection,projectionEmitter,frame,box,crop,lost:false,
+        cost,runtimeSource:preloaded||null,generation:0,retryAt:0};
       // One byte per prepared pixel; pointer picking never reads a canvas in-frame.
-      const pickPixels=body.getContext('2d').getImageData(0,0,pw,ph).data;
+      // Keep the small fitted body in CPU memory, not the full source image. A
+      // GPU reset must not change a known authored prop into the legacy drawing.
+      // This shares the existing one-time picking readback and is bounded by
+      // MAX_PIXELS (at most 48 MiB, including the whole catalog's fitted bodies).
+      entry.recoveryPixels=body.getContext('2d').getImageData(0,0,pw,ph);
+      entry.foregroundPixels=foreground?foreground.getContext('2d').getImageData(0,0,pw,ph):null;
+      entry.offPixels=screen?screen.off.getContext('2d').getImageData(0,0,pw,ph):null;
+      const pickPixels=entry.recoveryPixels.data;
       entry.pickAlpha=new Uint8Array(pw*ph);
       for(let i=0;i<entry.pickAlpha.length;i++)entry.pickAlpha[i]=pickPixels[i*4+3];
-      for(const plane of [body,mask,live,foreground,composed,screen&&screen.off,...(motion||[])])if(plane&&plane.addEventListener)
-        plane.addEventListener('contextlost',()=>{entry.lost=true;if(entry.projection)ProjectionPropEffects.dispose(entry.projection);},{once:true});
-      pixelBudget+=cost;entries.set(key,entry);revision++;
-    }catch(e){failures.push({view:key,reason:String(e.message||e)});}
+      if(!entry.pickAlpha.some(a=>a>0))throw Error('authored body unavailable after canvas loss');
+      // A resized runtime prop or a second reset can supersede an in-flight
+      // decode. Never publish its stale pixels or charge its budget twice.
+      if(replacing&&(entries.get(key)!==replacing||replacing.generation!==generation))return false;
+      for(const plane of [body,mask,live,foreground,composed,screen&&screen.off,projection&&projection.image,approved&&approved.image,...(motion||[]),...(indicators||[]),...Object.values(machineLayers||{})])
+        watchPlane(key,entry,plane);
+      pixelBudget+=cost-(replacing?.cost||0);entries.set(key,entry);revision++;
+      return true;
+    }catch(e){const reason=String(e.message||e);if(!failures.some(f=>f.view===key&&f.reason===reason))failures.push({view:key,reason});}
+    return false;
+  }
+  const repairQueue=new Set(),repairing=new Set(),repairWaiters=[];
+  let repairNotice=false;
+  function watchPlane(key,entry,plane){
+    if(plane&&plane.addEventListener)plane.addEventListener('contextlost',ev=>{
+      ev.preventDefault?.();
+      if(entries.get(key)===entry)loseEntry(key,entry);
+    },{once:true});
+  }
+  function loseEntry(key,entry){
+    entry.lost=true;entry.generation++;entry.retryAt=0;entry.recoveryBody=entry.recoveryForeground=entry.recoveryOff=entry.recoveryComposed=null;
+    repairQueue.add(key);pumpRepairs();
+  }
+  function queueRepair(key,entry){
+    if(entry.lost&&performance.now()>=entry.retryAt&&!repairing.has(key)){repairQueue.add(key);pumpRepairs();}
+  }
+  function pumpRepairs(){
+    for(const key of repairQueue){
+      if(repairing.size>=4)break;
+      if(repairing.has(key))continue;
+      repairQueue.delete(key);
+      const old=entries.get(key);if(!old||!old.lost)continue;
+      repairing.add(key);const generation=old.generation;
+      prepare(key,old.spec,old.runtimeSource,old,generation).then(ok=>{
+        if(ok)repairNotice=true;
+        else if(entries.get(key)===old&&old.generation===generation)old.retryAt=performance.now()+3000;
+      }).finally(()=>{
+        repairing.delete(key);pumpRepairs();
+      });
+    }
+    if(repairing.size||repairQueue.size)return;
+    if(repairNotice){
+      repairNotice=false;
+      // Silhouette, picking and lighting consumers must stop using pre-loss
+      // canvas caches too. One notification per bounded repair batch.
+      try{if(typeof PropSprites!=='undefined'&&PropSprites.userArtChanged)PropSprites.userArtChanged();}catch(_){}
+      try{if(typeof window!=='undefined'&&typeof CustomEvent!=='undefined')window.dispatchEvent(new CustomEvent('starnet:prop-art-ready',{detail:{revision}}));}catch(_){}
+    }
+    while(repairWaiters.length)repairWaiters.shift()();
+  }
+  function restore(){
+    // Queue everything before starting: global loss also covers platforms that
+    // silently discard pixels without dispatching individual canvas events.
+    for(const [key,entry]of entries){
+      if(entry.lost)continue; // repeated global signals share the in-flight repair
+      entry.lost=true;entry.generation++;entry.retryAt=0;entry.recoveryBody=entry.recoveryForeground=entry.recoveryOff=entry.recoveryComposed=null;repairQueue.add(key);
+    }
+    pumpRepairs();return whenRecovered();
+  }
+  function whenRecovered(){return repairing.size||repairQueue.size?new Promise(resolve=>repairWaiters.push(resolve)):Promise.resolve();}
+  function recoveryBody(key,entry,foreground=false){
+    queueRepair(key,entry);
+    const field=foreground==='off'?'recoveryOff':foreground?'recoveryForeground':'recoveryBody';
+    if(!entry[field]){
+      if(performance.now()<(entry.bodyRetryAt||0))return null;
+      try{
+        const pixels=foreground==='off'?entry.offPixels:foreground?entry.foregroundPixels:entry.recoveryPixels;if(!pixels)return null;
+        const c=document.createElement('canvas');c.width=pixels.width;c.height=pixels.height;
+        // CPU-backed during recovery: this copy must survive a still-resetting GPU.
+        const g=c.getContext('2d',{willReadFrequently:true});if(!g)throw Error('recovery canvas unavailable');
+        g.putImageData(pixels,0,0);entry[field]=c;watchPlane(key,entry,c);
+      }catch(_){entry.bodyRetryAt=performance.now()+3000;return null;}
+    }
+    return entry[field];
+  }
+  function recoveryComposition(key,entry,body){
+    if(performance.now()<(entry.composedRetryAt||0))return null;
+    try{
+      let c=entry.recoveryComposed;
+      if(!c){c=document.createElement('canvas');c.width=body.width;c.height=body.height;}
+      const g=c.getContext('2d',{willReadFrequently:true});
+      if(!g||g.isContextLost?.())throw Error('recovery composition unavailable');
+      if(!entry.recoveryComposed){entry.recoveryComposed=c;watchPlane(key,entry,c);}
+      return {canvas:c,ctx:g};
+    }catch(_){entry.recoveryComposed=null;entry.composedRetryAt=performance.now()+3000;return null;}
   }
   // Complete new display art: no original sprite is drawn beneath or over it.
   // Power follows physical occupancy; motion modifies only authored cyan phosphor.
@@ -283,24 +374,28 @@ const PropRemaster = (() => {
   function draw(ctx,id,view,x,y,w,h,state,drawNative) {
     if(!enabled(id,view))return false;
     const e=entries.get(id+':'+view),v=e.spec;
-    if(e.lost)return false; // a lost cached plane must never make the prop disappear
     // A saved custom box is already a native geometry contract, not permission to squash.
     if(w!==v.footprint.w*12||h!==v.footprint.h*12||
       (v.nativeFallbackWhen||[]).some(k=>state&&state[k]))return false;
     const f=e.frame;
-    if(e.composed){
-      const g=e.composed.getContext('2d');g.save();
+    const body=e.lost?recoveryBody(id+':'+view,e):e.body;
+    if(!body)return true; // known authored art never routes a graphics outage to legacy art
+    const composition=e.composed?(e.lost?recoveryComposition(id+':'+view,e,body):{canvas:e.composed,ctx:e.composed.getContext('2d')}):null;
+    // Composition is optional during a reset. If even the CPU surface cannot be
+    // allocated, the normal body path below keeps the retained authored pixels.
+    if(composition){
+      const {canvas:composed,ctx:g}=composition;g.save();
       try{
-        g.setTransform(1,0,0,1,0,0);g.globalAlpha=1;g.globalCompositeOperation='source-over';g.clearRect(0,0,e.composed.width,e.composed.height);g.drawImage(e.body,0,0);
+        g.setTransform(1,0,0,1,0,0);g.globalAlpha=1;g.globalCompositeOperation='source-over';g.clearRect(0,0,composed.width,composed.height);g.drawImage(body,0,0);
         g.scale(DENSITY,DENSITY);g.translate(-f.x,-f.y);
         if(v.mode==='content')AuthoredPropContent.draw(g,id,{...e.box,crop:e.crop},state||{});
-        if(v.mode==='machine')AuthoredPropMotion.draw(g,id,{...e.box,crop:e.crop},state||{});
+        if(v.mode==='machine'&&!e.lost)AuthoredPropMotion.draw(g,id,{...e.box,crop:e.crop},state||{});
         if(v.mode==='service')AuthoredServiceContent.draw(g,id,{...e.box,crop:e.crop},state||{});
       }finally{g.restore();}
-      ctx.save();try{ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(e.composed,x+f.x,y+f.y,e.composed.width/DENSITY,e.composed.height/DENSITY);}finally{ctx.restore();}
+      ctx.save();try{ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(composed,x+f.x,y+f.y,composed.width/DENSITY,composed.height/DENSITY);}finally{ctx.restore();}
       return true;
     }
-    if(e.live){
+    if(e.live&&!e.lost){
       const g=e.live.getContext('2d');g.save();
       try{
         g.setTransform(1,0,0,1,0,0);g.clearRect(0,0,e.live.width,e.live.height);
@@ -315,18 +410,22 @@ const PropRemaster = (() => {
       ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
       const baseAlpha=ctx.globalAlpha;
       const occupied=v.screenPower==='ambient'?true:v.screenPower==='connected'?!!state?.live:v.screenPower==='bound'?!!state?.bound&&state.state==='online':state&&typeof state.occupied==='boolean'?state.occupied:!!(state&&state.work);
-      ctx.drawImage(e.screen&&!occupied?e.screen.off:e.body,x+f.x,y+f.y,e.body.width/DENSITY,e.body.height/DENSITY);
-      if(e.live)ctx.drawImage(e.live,x+f.x,y+f.y,e.live.width/DENSITY,e.live.height/DENSITY);
-      if(e.screen&&occupied&&!(state&&state.still)){
+      const paint=e.screen&&!occupied?(e.lost?recoveryBody(id+':'+view,e,'off'):e.screen.off):body;
+      if(paint)ctx.drawImage(paint,x+f.x,y+f.y,e.body.width/DENSITY,e.body.height/DENSITY);
+      if(e.live&&!e.lost)ctx.drawImage(e.live,x+f.x,y+f.y,e.live.width/DENSITY,e.live.height/DENSITY);
+      if(e.screen&&!e.lost&&occupied&&!(state&&state.still)){
         const phase=Math.floor((Math.max(0,Number(state&&state.now)||0)%2800)/350);
         ctx.globalCompositeOperation='source-atop';
         ctx.globalAlpha *= .65 + .2 * Math.max(0,Math.min(1,Number(state&&state.heat)||0));
-        ctx.drawImage(screenBeam(e.screen,phase),x+f.x,y+f.y,e.body.width/DENSITY,e.body.height/DENSITY);
+        const beam=screenBeam(e.screen,phase);
+        if(!e.screen.watched)e.screen.watched=new WeakSet();
+        if(!e.screen.watched.has(beam)){e.screen.watched.add(beam);watchPlane(id+':'+view,e,beam);}
+        ctx.drawImage(beam,x+f.x,y+f.y,e.body.width/DENSITY,e.body.height/DENSITY);
       }
       const fired=v.mode==='pulse'&&v.motion.trigger==='fired';
       const active=fired?!!(state&&state.fired):v.mode==='scanner'?!!(state&&state.scanning):v.mode==='pool'||['pulse','steam'].includes(v.mode)&&v.motion.trigger==='work'?!!(state&&state.work):true;
       const moving=!(state&&state.still)&&active;
-      if(e.motion&&(moving||v.mode==='pool'||fired&&active)){
+      if(e.motion&&!e.lost&&(moving||v.mode==='pool'||fired&&active)){
         const period=v.mode==='scanner'?900:4800,phase=moving?Math.floor((Math.max(0,Number(state&&state.now)||0)%period)/period*e.motion.length):fired?6:0;
         ctx.globalCompositeOperation=v.mode==='steam'?'source-over':'source-atop';
         if(fired&&state.bad&&v.motion.failureColour){
@@ -336,11 +435,11 @@ const PropRemaster = (() => {
       }
       if(v.mode==='approved'){
         ctx.globalCompositeOperation='source-over';ctx.globalAlpha=baseAlpha;
-        if(e.approved&&typeof ApprovedSheetEffects!=='undefined')ApprovedSheetEffects.draw(ctx,id,{x:x+e.box.x,y:y+e.box.y,width:e.box.width,height:e.box.height,crop:e.crop,sourceWidth:v.sourceWidth,sourceHeight:v.sourceHeight},{...state,prepared:e.approved});
+        if(e.approved&&typeof ApprovedSheetEffects!=='undefined')ApprovedSheetEffects.draw(ctx,id,{x:x+e.box.x,y:y+e.box.y,width:e.box.width,height:e.box.height,crop:e.crop,sourceWidth:v.sourceWidth,sourceHeight:v.sourceHeight},{...state,prepared:e.lost?null:e.approved});
         approvedState(ctx,id,e,x,y,state||{});
       }
       if(e.projectionHandled){ctx.globalAlpha=baseAlpha;ctx.globalCompositeOperation='source-over';
-        ProjectionPropEffects.draw(ctx,id,view,{x:x+e.box.x,y:y+e.box.y,width:e.box.width,height:e.box.height,crop:e.crop,sourceWidth:v.sourceWidth,sourceHeight:v.sourceHeight},state||{},e.projection);}
+        ProjectionPropEffects.draw(ctx,id,view,{x:x+e.box.x,y:y+e.box.y,width:e.box.width,height:e.box.height,crop:e.crop,sourceWidth:v.sourceWidth,sourceHeight:v.sourceHeight},state||{},e.lost?null:e.projection);}
     }finally{ctx.restore();}
     return true;
   }
@@ -352,9 +451,14 @@ const PropRemaster = (() => {
     if(id==='missionboard'&&state.pins>0)label=String(state.pins)+' quests';
     if(id==='trophycase'&&state.trophies>0)label=String(state.trophies)+' earned';
     if(id==='airlock'&&state.door)label=String(state.door).slice(0,16);
-    if(label){ctx.font='3px VT323,monospace';ctx.textAlign='center';ctx.fillStyle='#cbb985';ctx.fillText(label,x+e.spec.footprint.w*6,y+e.box.y+e.box.height+3);}
+    // 8 world px, the size of every other world tag (NO FEED, AWAITING APPROVAL): at 3px "1 pending" was ~5px on screen (walk 10-14 #14).
+    // At that size it is wider than a 2-tile OUTBOX: state.tagRoom (its room to the hull's outer face, from world.js) keeps it out of space.
+    if(label){ctx.font="8px 'VT323','Courier New',monospace";ctx.textAlign='center';ctx.textBaseline='top';ctx.fillStyle='#cbb985';
+      let cx=x+e.spec.footprint.w*6;const r=state.tagRoom,tw=r?ctx.measureText(label).width:0;
+      if(r&&tw<=r.w)cx=Math.max(r.x+tw/2,Math.min(r.x+r.w-tw/2,cx));
+      ctx.fillText(label,cx,y+e.box.y+e.box.height+1);}
     const trigger=e.spec.activity,amount=trigger==='fired'?Math.max(0,Math.min(1,+state.fired||0)):trigger==='work'&&state.work?1:trigger==='ambient'?.3:0;
-    if(amount&&!e.approved&&e.indicators){ctx.globalAlpha*=amount*(state.still?.45:.35+.15*Math.sin((+state.now||0)/280));ctx.drawImage(e.indicators[state.bad?1:0],x+e.frame.x,y+e.frame.y,e.body.width/DENSITY,e.body.height/DENSITY);}
+    if(amount&&!e.lost&&!e.approved&&e.indicators){ctx.globalAlpha*=amount*(state.still?.45:.35+.15*Math.sin((+state.now||0)/280));ctx.drawImage(e.indicators[state.bad?1:0],x+e.frame.x,y+e.frame.y,e.body.width/DENSITY,e.body.height/DENSITY);}
   }
   const ready=(async()=>{
     if(typeof document==='undefined'||typeof Image==='undefined'||typeof fetch!=='function')return;
@@ -383,31 +487,32 @@ const PropRemaster = (() => {
   })();
   function emitter(id,view='s',w,h){
     const e=enabled(id,view)&&entries.get(id+':'+view),p=e&&e.screen&&e.screen.centroid;
-    if(e&&(e.lost||(w!=null&&w!==e.spec.footprint.w*12)||(h!=null&&h!==e.spec.footprint.h*12)))return null;
+    if(e&&((w!=null&&w!==e.spec.footprint.w*12)||(h!=null&&h!==e.spec.footprint.h*12)))return null;
     if(e?.projectionEmitter)return {...e.projectionEmitter};
     return p?{x:e.frame.x+p.x,y:e.frame.y+p.y}:null;
   }
   function screenEmission(id,view='s',w,h,state={}){
     const e=enabled(id,view)&&entries.get(id+':'+view);
-    if(!e||e.lost||!e.projectionHandled||w!==e.spec.footprint.w*12||h!==e.spec.footprint.h*12)return null;
+    if(!e||!e.projectionHandled||w!==e.spec.footprint.w*12||h!==e.spec.footprint.h*12)return null;
     const p=ProjectionPropEffects.screenEmission(id,view,state);if(!p)return null;
     return {...p,screenEmission:true,x:e.box.x+(p.x*e.spec.sourceWidth-e.crop.x)/e.crop.width*e.box.width,
       y:e.box.y+(p.y*e.spec.sourceHeight-e.crop.y)/e.crop.height*e.box.height};
   }
   function drawForeground(ctx,id,view,x,y,w,h,mirror=false){
     const e=enabled(id,view)&&entries.get(id+':'+view);
-    if(!e||e.lost||!e.foreground||w!==e.spec.footprint.w*12||h!==e.spec.footprint.h*12)return false;
+    if(!e||!e.foreground||w!==e.spec.footprint.w*12||h!==e.spec.footprint.h*12)return false;
+    const foreground=e.lost?recoveryBody(id+':'+view,e,true):e.foreground;if(!foreground)return false;
     ctx.save();try{ctx.translate(x,y);if(mirror){ctx.translate(w,0);ctx.scale(-1,1);}ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
-      ctx.drawImage(e.foreground,e.frame.x,e.frame.y,e.body.width/DENSITY,e.body.height/DENSITY);
+      ctx.drawImage(foreground,e.frame.x,e.frame.y,e.body.width/DENSITY,e.body.height/DENSITY);
     }finally{ctx.restore();}return true;
   }
   function viewGeometry(id,view='s'){
     const e=enabled(id,view)&&entries.get(id+':'+view);
-    return !e||e.lost?null:{box:{...e.box},crop:{...e.crop},spec:{...e.spec},surfaceSupport:e.spec.surfaceSupport};
+    return !e?null:{box:{...e.box},crop:{...e.crop},spec:{...e.spec},surfaceSupport:e.spec.surfaceSupport};
   }
   function hitTest(id,view,x,y,w,h){
     const e=enabled(id,view)&&entries.get(id+':'+view);
-    if(!e||e.lost||w!==e.spec.footprint.w*12||h!==e.spec.footprint.h*12)return null;
+    if(!e||w!==e.spec.footprint.w*12||h!==e.spec.footprint.h*12)return null;
     const px=Math.floor((x-e.frame.x)*DENSITY),py=Math.floor((y-e.frame.y)*DENSITY);
     return px>=0&&py>=0&&px<e.body.width&&py<e.body.height&&e.pickAlpha[py*e.body.width+px]>=24;
   }
@@ -418,7 +523,7 @@ const PropRemaster = (() => {
     const key=String(id)+':'+view;
     if(entries.has(key)&&!replace)return true;
     if(entries.has(key)){   // a resized made prop: drop the old plane and its share of the pixel budget
-      const old=entries.get(key);pixelBudget=Math.max(0,pixelBudget-(old.body?old.body.width*old.body.height:0));
+      const old=entries.get(key);pixelBudget=Math.max(0,pixelBudget-old.cost);
       entries.delete(key);runtimeViews=Math.max(0,runtimeViews-1);
     }
     if(runtimeViews>=400){failures.push({view:key,reason:'too many player-made props'});return false;}
@@ -426,8 +531,9 @@ const PropRemaster = (() => {
     await prepare(key,v,im);
     return entries.has(key);
   }
-  return Object.freeze({ready,enabled,draw,registerRuntime,drawForeground,emitter,screenEmission,viewGeometry,hitTest,isProjection:()=>projectionReview,revision:()=>revision,
-    status:()=>({views:Array.from(entries.keys()),failures:failures.slice(),pixels:pixelBudget}),
+  return Object.freeze({ready,enabled,draw,registerRuntime,restore,whenRecovered,drawForeground,emitter,screenEmission,viewGeometry,hitTest,isProjection:()=>projectionReview,revision:()=>revision,
+    status:()=>({views:Array.from(entries.keys()),failures:failures.slice(),pixels:pixelBudget,lost:[...entries.values()].filter(e=>e.lost).length,recovering:repairing.size+repairQueue.size,
+      recoveryBytes:[...entries.values()].reduce((n,e)=>n+e.recoveryPixels.data.byteLength+(e.foregroundPixels?.data.byteLength||0)+(e.offPixels?.data.byteLength||0),0)}),
     // Pure contracts exposed for deterministic headless geometry validation.
     validate,fit});
 })();

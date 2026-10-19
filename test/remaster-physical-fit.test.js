@@ -22,14 +22,24 @@ const manifest=JSON.parse(fs.readFileSync('frontend/assets/industrial/projection
 assert.deepEqual(manifest.props[spec.id].views.s.footprint,{w:5,h:3});
 // Picking must honour transparent corners, open legs and the actual prepared frame.
 const code=fs.readFileSync('frontend/app/propremaster.js','utf8');
-const entry={spec:{footprint:{w:2,h:2}},frame:{x:-1,y:-3},body:{width:4,height:4},pickAlpha:Uint8Array.from([0,255,255,0,255,255,255,255,0,255,255,0,0,255,0,0])};
+const entry={spec:{footprint:{w:2,h:2}},frame:{x:-1,y:-3},box:{x:-1,y:-3,width:4,height:4},crop:{x:1,y:2,width:4,height:4},body:{width:4,height:4},pickAlpha:Uint8Array.from([0,255,255,0,255,255,255,255,0,255,255,0,0,255,0,0])};
 const scope={enabled:()=>true,entries:new Map([['table:s',entry]]),DENSITY:1};
-vm.runInNewContext(code.slice(code.indexOf('  function hitTest('),code.indexOf('  return Object.freeze({ready'))+';this.pick=hitTest;',scope);
+vm.runInNewContext(code.slice(code.indexOf('  function viewGeometry('),code.indexOf('  return Object.freeze({ready'))+';this.pick=hitTest;this.geometry=viewGeometry;',scope);
 assert.equal(scope.pick('table','s',-1,-3,24,24),false,'transparent clipped corner is not selectable');
 assert.equal(scope.pick('table','s',0,-3,24,24),true,'visible crown outside floor box is selectable');
 assert.equal(scope.pick('table','s',1,0,24,24),false,'gap between feet is not selectable');
 assert.equal(scope.pick('table','s',0,0,12,12),null,'custom footprint uses native picking fallback');
-entry.lost=true;assert.equal(scope.pick('table','s',0,0,24,24),null,'lost cache falls back');
+// Canvas loss keeps the authored CPU alpha/geometry contract. Falling back here
+// would make transparent corners and leg gaps behave like the old native art.
+const pickGrid=()=>Array.from(entry.pickAlpha,(_,i)=>scope.pick('table','s',entry.frame.x+i%4+.5,entry.frame.y+Math.floor(i/4)+.5,24,24));
+const healthyGrid=pickGrid(),alphaBefore=Array.from(entry.pickAlpha),geometryBefore=JSON.parse(JSON.stringify(scope.geometry('table','s')));
+assert.deepEqual(healthyGrid,[false,true,true,false,true,true,true,true,false,true,true,false,false,true,false,false],'the full authored alpha silhouette is selectable exactly where opaque');
+entry.lost=true;
+entry.body.getContext=()=>{throw Error('lost GPU canvas must not be read for picking');};
+assert.deepEqual(pickGrid(),healthyGrid,'loss retains every authored opaque pixel, clipped corner and open leg gap for picking');
+assert.deepEqual(Array.from(entry.pickAlpha),alphaBefore,'picking never rewrites retained authored alpha');
+assert.deepEqual(JSON.parse(JSON.stringify(scope.geometry('table','s'))),geometryBefore,'loss retains fitted box, source crop and footprint geometry');
+assert.equal(scope.pick('table','s',0,0,12,12),null,'custom footprint still uses its native picking contract during recovery');
 console.log('PASS: pack-scoped physical resize, saved centre/contact, freed tiles, undo/redo, reload, custom saves and alpha picking.');
 // Selection bounds use rendered alpha, independently of the reserved floor tiles.
 const spriteSource=fs.readFileSync('frontend/app/propsprites.js','utf8');

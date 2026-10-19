@@ -109,9 +109,17 @@ function stamped(bpId) {
   const st = stamped('two_doors');
   const ins = one(st, 'intake');
   A.eq(ins.length, 2, 'two doors has two INBOXes');
+  // two doors is ONE stage long, so 0 after the first fits: a second step makes it two, so a budget of 0 really trips
+  const [B] = one(st, 'bay');
+  const add = LE.run(st, B, 'appendStep', { after: B, role: 'WRITER' }, {});
+  A.ok(add && add.ok, 'a second step after the shared BAY — ' + JSON.stringify(add && (add.error || add.msg)));
+  crewAll(st);
+  A.eq(tooLong(planOf(st)).length, 0, 'two stages fit the default ceiling: no finding before any budget');
   st.setPropLimits(ins[1], { maxHops: 0 });
   const f = tooLong(planOf(st));
-  A.ok(f.length === 0 || f[0].propId === ins[1], 'a finding on a two-door line sits on the INBOX whose budget is in force');
+  A.ok(f.length === 1 && f[0].propId === ins[1] && f[0].maxHops === 0 && f[0].stages === 2, 'a finding on a two-door line sits on the INBOX whose budget is in force — ' + JSON.stringify(f));
+  st.setPropLimits(ins[0], { maxHops: 6 });
+  A.eq(tooLong(planOf(st)).length, 0, '…and the OLDER INBOX that carries limits speaks first: its 6 after the first fits');
 }
 
 /* ---------- THE WORKFLOW PANEL READS IT (WorkflowLine): while the line is being built, and with the one fix ---------- */
@@ -128,7 +136,7 @@ function stamped(bpId) {
   A.ok(f.tooLong && f.tooLong.stages === 8 && f.tooLong.maxHops === 6 && f.tooLong.propId === I, '…but the panel\'s flow reads the stand-in-crew compile: TOO LONG while the line is being built — ' + JSON.stringify(f.tooLong));
   const r = WL.readiness(f, comp, { errors: plan.errors, hasCompute: () => true, labelOf: c => c });
   const item = r.blocking.find(b => b.code === 'LINE_TOO_LONG');
-  A.ok(!!item && item.propId === I && /one job runs 8 stages, the LINE BUDGET allows 7/.test(item.what), 'readiness names it (not READY TO RUN) with the numbers: ' + (item && item.what));
+  A.ok(!!item && item.propId === I && /the longest way runs 8 stages, the LINE BUDGET allows 7/.test(item.what), 'readiness names it (not READY TO RUN) with the numbers: ' + (item && item.what));
   A.eq(WL.tooLongFix(f.tooLong), 7, 'the one fix: 7 stages after the first');
   A.eq(WL.tooLongFix({ stages: 26, maxHops: 6 }), null, 'past the ceiling (24 after the first) no budget fits…');
   A.ok(/shorten the line/.test(WL.tooLongText({ stages: 26, maxHops: 24 })), '…and the words say to shorten the line');

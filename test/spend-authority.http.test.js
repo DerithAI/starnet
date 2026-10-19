@@ -12,7 +12,8 @@ const {SidecarFixture}=require('./helpers/sidecar-fixture');
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const base='http://127.0.0.1:'+server.address().port+'/api/v1';
-  const f=SidecarFixture.create({entry:path.resolve(__dirname,'helpers/spend-fault-host.cjs'),timeoutMs:20000,env:{SKYNET_OPENROUTER_BASE:base,STARNET_OPENROUTER_BASE:base,SKYNET_OPENROUTER_KEY:'spend-fixture',SKYNET_DEFAULT_MODEL:'test/spend',SKYNET_BUDGET_PER_DAY:'2',SKYNET_AUX_BUDGET:'0'}});
+  // Count foreground spend dispatches here; the independent quest-refresh timer has its own admission suites.
+  const f=SidecarFixture.create({entry:path.resolve(__dirname,'helpers/spend-fault-host.cjs'),timeoutMs:20000,env:{SKYNET_OPENROUTER_BASE:base,STARNET_OPENROUTER_BASE:base,SKYNET_OPENROUTER_KEY:'spend-fixture',SKYNET_DEFAULT_MODEL:'test/spend',SKYNET_BUDGET_PER_DAY:'2',SKYNET_AUX_BUDGET:'0',SKYNET_QUEST_REFRESH:'0'}});
   const ledger=path.join(f.workspace,'ledger.jsonl'),control=path.join(f.workspace,'spend-fault.json');
   const run=()=>f.json('POST','/api/run',{agentId:'agent',provider:'openrouter',model:'test/spend',key:'spend-fixture',baseUrl:base,isTask:false,messages:[{role:'user',content:'Say hello'}]});
   const status=()=>f.json('GET','/api/budget/status');

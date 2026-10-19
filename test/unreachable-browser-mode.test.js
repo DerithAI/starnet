@@ -21,7 +21,10 @@ A.ok(/if \(!core\) \{[\s\S]*?setStatus\(BROWSER_HINT\);/.test(body), 'without a 
 A.ok(/retrying every 5s \(attempt ' \+ attempts \+ '\)\. Your save is untouched\.' \+ \(core \|\| unreadable \|\| cacheFailed \? '' : ' ' \+ BROWSER_HINT\)/.test(body), 'browser network failures retain the terminal hint; known file/cache failures retain their specific diagnosis');
 A.ok(body.includes('SAVE-CACHE · LOCAL RESTORE FAILED'), 'local cache failures have a distinct truthful recovery code');
 A.ok(body.includes('SAVE-READ · STATION FILE UNAVAILABLE') && body.includes("const unreadable = r.reason === 'unreadable'"), 'read failures retain a specific recovery code across retries');
-A.ok(body.includes("'station service not answering (browser mode)'"), 'subtitle states browser mode');
+A.ok(body.includes("const notAnswering = 'station service not answering' + (core ? '' : ' (browser mode)');"), 'subtitle states browser mode');
+// …on every repaint: paintDiagnosis owns the wording, so a retry never drops it (review app-shell-ui-09)
+A.ok(/const paintDiagnosis = reason => \{\s*if \(sub\) sub\.textContent = [^;]*: notAnswering;/.test(body), 'each diagnosis repaint keeps the browser-mode subtitle');
+A.ok(body.indexOf('const core = tauriCore();') < body.indexOf('const paintDiagnosis'), 'the core is resolved before the first paint reads it');
 
 /* ---- the retry loop and the desktop exits are untouched ---- */
 A.ok(/timer = setInterval\(\(\) => \{\s*attempt\(\);/.test(body), 'the 5s retry loop is kept');

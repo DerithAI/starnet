@@ -74,6 +74,7 @@ const { appendPending, listPending } = require('../sidecar/memory-store.js');
   assert.equal(rank([projectNote],'Make another one',{now,streamId:'new-project-session',projectRoot:'C:/Work/Other'}).length,0);
   assert.equal(rank([projectNote],'Make another one',{now,streamId:'new-project-session'}).length,0);
   assert.equal(rank([projectNote],'Acme website design',{now,streamId:'new-project-session',projectRoot:'C:/Work/Other'}).length,0);
-  assert.equal(rank([projectNote],'Acme website design',{now,streamId:'new-project-session',floor:false}).length,1);
+  assert.equal(rank([projectNote],'Acme website design',{now,streamId:'new-project-session',floor:false}).length,0);
+  assert.equal(rank([projectNote],'Acme website design',{now,streamId:'new-project-session',projectRoot:'c:/work/acme/',floor:false}).length,1);
   console.log('memory-corrections.test: PASS (corrections, stale writes, failed persistence, review, scope, compaction)');
 })().catch(e=>{console.error(e);process.exitCode=1;});

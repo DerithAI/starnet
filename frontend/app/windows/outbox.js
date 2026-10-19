@@ -8,6 +8,14 @@
   const H = StationUI.h;
   const esc = H.esc, sfx = H.sfx, fmtRel = H.fmtRel, notify = H.notify, openTerm = H.openTerm;
   const WS = H.WS, persistWS = H.persistWS;
+  /* a job's FROM / SENT ON TO end by the floor's own line name (worldmodel.lineName — LINE N for an unnamed line, as its plate
+     says), else the name the job recorded. A job end is { line, jobId, name } (linejobs normEnd): it never carried a lineId, so
+     every unnamed line read 'ANOTHER LINE' here (repair). */
+  function lineOfEnd(e) {
+    let st = null; try { st = (typeof App !== 'undefined' && App.station) ? App.station() : null; } catch (_) { st = null; }
+    const w = e && e.line != null && st && typeof st.lineName === 'function' ? st.lineName(e.line) : null;
+    return w || Pipeline.lineWord(e && e.name, 'ANOTHER LINE');
+  }
 
   /* ============== OUTBOX — the finished-work window (accordion redesign, 2026-07-16 round 4) ==============
      Andrew's spec, exactly: an EXTREMELY simple list. Collapsed row = the task's TITLE + a small
@@ -28,15 +36,60 @@
      deliverables and all organized output'): this list is DELIVERABLES' TO REVIEW section — finished runs waiting for
      your verdict — not a window of its own. openTerm('outbox') / the floor OUTBOX / every old door land there
      (TERM_ALIAS outbox → deliverables § review). Empty = the section hides; the library below is always there. */
+  /* ONE READING OF AN ANSWER (walk 10-14 — TO REVIEW printed '## Findings', '- **Item one:**', '`code`' raw while the library below,
+     the WORKFLOWS job view and the Workflow panel drew the same reply): WHAT CAME BACK is drawn by COMMS' own renderer
+     (Chat.renderProse — escape-first, so a reply's markup never runs) on the panel scale (wf-md); plain text where it is not loaded.
+     The collapsed glance is the library's own markdown → one plain line (Deliverables.plainLine): no '## ', no list dashes, and a
+     stripped `code` leaves no stray space ('with code .'). */
+  function answerInto(out, text, files) {
+    if (typeof Chat !== 'undefined' && Chat.renderProse) { out.classList.add('wf-md'); Chat.renderProse(out, text, files ? { files } : undefined); }
+    else out.textContent = text;
+  }
+  /* WHERE THIS RUN'S FILES LIVE (review 10-14): a reply's relative file link or image opens where the run that wrote it put it —
+     the RUN's agent, at the root its run record says it ran with (none = that agent's own workspace) — never the agent open in
+     COMMS, which is renderProse's default when no refs ride along. COMMS' own rule for a reply (turnFileRefs), read off the run row. */
+  function runFileRefs(agentId, projectRoot) {
+    return (typeof Chat !== 'undefined' && Chat.workspaceFileRefs) ? Chat.workspaceFileRefs(String(agentId || 'agent'), null, projectRoot || undefined) : undefined;
+  }
+  // the run's own row (runs.jsonl via /api/runs — the record ReturnStore.openWork reads too); null when it is unreachable or aged out
+  function runRecord(rw) {
+    if (!rw || !rw.runId || typeof Harness === 'undefined' || !Harness.api) return Promise.resolve(null);
+    return Promise.resolve().then(() => Harness.api.get('/api/runs?agent=' + encodeURIComponent(rw.agentId || 'agent') + '&runId=' + encodeURIComponent(rw.runId)))
+      .then(j => ((j && j.runs) || []).find(x => x && x.runId === rw.runId) || null, () => null);
+  }
+  // a cut reply says so BELOW the answer, never inside it: a cut that lands in a fenced block would draw the note as code (and ⧉ would copy it)
+  const ANSWER_MAX = 4000;
+  function answerCut(out, text) {
+    if (String(text).length <= ANSWER_MAX) return;
+    const n = document.createElement('div'); n.className = 'ob-cut';
+    n.textContent = '… output truncated — ↗ OPEN SESSION opens the conversation.';
+    out.appendChild(n);
+  }
+  function plain(s) {
+    return (typeof Deliverables !== 'undefined' && Deliverables.plainLine) ? Deliverables.plainLine(s) : String(s || '').replace(/\s+/g, ' ').trim();
+  }
   const mounted = new Set();
   function buildOutbox(body) {
+    // what TO REVIEW really holds (org pass 10-14, P12): ReturnStore.pendingRows = runs that finished while you were away
+    // (schedules too) plus folded line jobs, workflow samples and SEND TO hand-offs — never an attended chat, which is
+    // rated in COMMS. This list is only the rating reminder: what a run made is filed in the library below, and every row keeps
+    // its session. A run that made no files is NOT in the library (sidecar deliverableRows drops it), so the copy never says
+    // every row is (org live walk 10-14: the note, MARK ALL's tip and its toast all claimed library filing for 3 of 4 rows).
+    /* ONE CLEAN HEADING (org pass 10-14, P12 polish): '▾ TO REVIEW 3' on one line, like every other section heading — the count
+       is its own number, not buried mid-sentence — and what the list holds is a dim note UNDER it, never a hanging paragraph */
+    const reviewNote = 'Away runs and workflow jobs waiting for your rating. Files they made are in the library below; each one keeps its session (↗ OPEN SESSION). Chats are rated in COMMS.';
+    // the count sits after ALL, idle and armed alike ('✓ MARK ALL 3 REVIEWED' → 'MARK ALL 3 REVIEWED — SURE?'), the way the
+    // toolbar's CLEAR ALL 3 carries its own (P12 polish 2)
+    const markLabel = n => '✓ MARK ALL ' + n + ' REVIEWED';
     const RS = (typeof ReturnStore !== 'undefined') ? ReturnStore : null;
     const rows = (RS && RS.pendingRows) ? RS.pendingRows() : [];
+    for (const el of mounted) if (el !== body && !el.isConnected) mounted.delete(el);   // a replaced copy never outlives its window
     mounted.add(body);
     body.hidden = !rows.length;
     body.innerHTML =
-      '<h4 class="ms-h dlv-review-h"><button type="button" class="dlv-review-tog" aria-expanded="true"><span class="ob-caret-all" aria-hidden="true">▾</span> TO REVIEW <span class="dim">— finished work waiting for your verdict (' + rows.length + ')</span></button>' +
-        '<button type="button" class="bb sm ob-clearall">✓ CLEAR ALL ' + rows.length + '</button></h4>' +
+      '<h4 class="ms-h dlv-review-h"><button type="button" class="dlv-review-tog" aria-expanded="true"><span class="ob-caret-all" aria-hidden="true">▾</span> <span class="dlv-review-lbl">TO REVIEW</span> <span class="dlv-review-n">' + rows.length + '</span></button>' +
+        '<button type="button" class="bb sm ob-clearall" data-tip="Takes every run off this list without a rating. Nothing is deleted: files stay in your library, each run in its session.">' + markLabel(rows.length) + '</button></h4>' +
+      '<p class="dim dlv-review-note">' + reviewNote + '</p>' +
       '<div id="ob-list" class="ob-list"></div>' +
       '<button type="button" class="bb sm ob-showall" hidden></button>' +
       '<div class="row ob-doors" style="margin-top:10px;gap:8px"><button class="bb sm" id="ob-logbook">AGENT RECORD · run history</button></div>';
@@ -49,7 +102,7 @@
     /* A LIST THAT CAN'T BURY THE LIBRARY (2026-10-10): a routine left running overnight used to stack 30+ tall cards here,
        pushing the library thousands of pixels down with no way to fold them. Now the heading folds the whole section (the
        choice is remembered), only the first FEW rows show until SHOW ALL, and CLEAR ALL collects every crate in one go —
-       the work itself stays in the library below; only the "waiting for your verdict" reminder goes. */
+       nothing is deleted (files stay in the library below, each run in its session); only the "waiting for your verdict" reminder goes. */
     const FOLD_KEY = 'starnet.dlv.review.open', FEW = 3;
     let sectionOpen = true; try { sectionOpen = localStorage.getItem(FOLD_KEY) !== '0'; } catch (_) {}
     let showAll = false;
@@ -59,30 +112,28 @@
       tog.setAttribute('aria-expanded', sectionOpen ? 'true' : 'false');
       tog.querySelector('.ob-caret-all').textContent = sectionOpen ? '▾' : '▸';
       list.hidden = !sectionOpen; if (doors) doors.hidden = !sectionOpen; clearAll.hidden = !sectionOpen;
+      const note = body.querySelector('.dlv-review-note'); if (note) note.hidden = !sectionOpen;
       const live = Array.from(list.children);
       live.forEach((r, i) => { r.hidden = !showAll && i >= FEW; });
       more.hidden = !sectionOpen || live.length <= FEW;
       more.textContent = showAll ? 'SHOW FEWER ▴' : 'SHOW ALL ' + live.length + ' ▾';
       // the counts follow the live list as crates are collected one by one
-      const n = tog.querySelector('.dim'); if (n) n.textContent = '— finished work waiting for your verdict (' + live.length + ')';
-      if (clearAll.dataset.armed !== '1') clearAll.textContent = '✓ CLEAR ALL ' + live.length;
+      const n = tog.querySelector('.dlv-review-n'); if (n) n.textContent = String(live.length);
+      if (clearAll.dataset.armed !== '1') clearAll.textContent = markLabel(live.length);
     };
     tog.addEventListener('click', () => { sectionOpen = !sectionOpen; try { localStorage.setItem(FOLD_KEY, sectionOpen ? '1' : '0'); } catch (_) {} paintFold(); });
     more.addEventListener('click', () => { showAll = !showAll; paintFold(); });
     const clearEvery = () => {
       const ids = Array.from(list.children).filter(r => r.dataset.collected !== '1').map(r => r.dataset.runId).filter(Boolean);
       if (RS && RS.resolveAll) RS.resolveAll(ids); else if (RS && RS.resolve) ids.forEach(id => RS.resolve(id));
-      notify('Cleared ' + ids.length + ' from TO REVIEW. The work stays in your library.', '');
+      notify('Marked ' + ids.length + ' reviewed. Nothing was deleted.', '');
       renderEmpty();
     };
-    if (typeof ArmConfirm !== 'undefined' && ArmConfirm.wire) ArmConfirm.wire(clearAll, { armedLabel: 'CLEAR ALL — SURE?', onDisarm: paintFold, onConfirm: clearEvery });
+    if (typeof ArmConfirm !== 'undefined' && ArmConfirm.wire) ArmConfirm.wire(clearAll, { armedLabel: 'MARK ALL REVIEWED — SURE?', onArm: b => { b.textContent = 'MARK ALL ' + list.children.length + ' REVIEWED — SURE?'; }, onDisarm: paintFold, onConfirm: clearEvery });
     else clearAll.addEventListener('click', clearEvery);
     // agent id → display name via the live roster (raw ids read as debug output)
     const agentName = id => { const a = (Array.isArray(H.present) ? H.present.find(x => x && x.id === id) : null); return (a && a.name) || id || 'agent'; };
     const firstLine = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t; };
-    // strip markdown scaffolding (fences, table pipes, headings, emphasis) for the one-line glance —
-    // the FULL untouched output stays in .ob-out; this only keeps the collapsed desc readable.
-    const plain = s => String(s || '').replace(/```[\s\S]*?(```|$)/g, ' ').replace(/[|#*_>`]+/g, ' ').replace(/(^|\s)[-:=]{3,}(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
     // legacy crates (persisted before streamId rode the rows) — fill their transcript join once, best-effort.
     const fillStreams = (async () => {
       if (rows.every(r => r.streamId)) return;
@@ -105,9 +156,10 @@
         const j = await Harness.api.get('/api/deliverables?includeCleared=1');   // a crate whose library card was cleared keeps its files
         for (const it of ((j && j.items) || [])) {
           if (!it || !it.runId) continue;
-          const cur = byRun.get(it.runId) || { agentId: it.agentId, runId: it.runId, files: [], main: '' };
+          const cur = byRun.get(it.runId) || { agentId: it.agentId, runId: it.runId, files: [], main: '', summary: '' };
           for (const f of (it.files || [])) if (f && f.path && !cur.files.some(x => x.path === f.path)) cur.files.push(f);
           if (it.main && !cur.main) cur.main = it.main;
+          if (it.summary && !cur.summary) cur.summary = String(it.summary);   // the agent's own one-line note for the glance
           byRun.set(it.runId, cur);
         }
       } catch (_) {}                                      // library unreachable → drawers simply omit FILES (never invented)
@@ -135,7 +187,10 @@
       row.innerHTML =
         '<div class="ob-head" role="button" tabindex="0" aria-expanded="false">' +
           '<div class="ob-title">◷ <b></b><span class="ob-caret">▸</span></div>' +
-          '<div class="ob-desc">Open to read this run’s result.</div>' +
+          // (P11 polish 2) no filler under the title: every card read 'Open to read this run’s result.', three copies of one
+          // sentence. The line stays empty (and takes no room) until the library's own summary for this run — or, once
+          // opened, the run's reply — fills it.
+          '<div class="ob-desc"></div>' +
           '<div class="ob-meta">' + esc(agentName(rw.agentId)) + ' · ' + when + usd + '</div>' +
         '</div>' +
         '<div class="ob-body" hidden>' +
@@ -152,12 +207,15 @@
         '</div>';
       row.querySelector('.ob-title b').textContent = provisionalTitle;
       list.appendChild(row);
+      // the glance line: the library's summary of this run, when it filed one (never invented)
+      dlvJoin.then(m => { const d = m.get(rw.runId); const el = row.querySelector('.ob-desc'); if (d && d.summary && el && !el.textContent) el.textContent = firstLine(plain(d.summary), 150); }, () => {});
       // Load expanded work only, scoped by durable run identity before the transcript page limit.
       let reading = false, loaded = false;
       const readResult = async () => {
         if (reading || loaded) return;
         reading = true;
         const desc = row.querySelector('.ob-desc'), ask = row.querySelector('.ob-ask'), out = row.querySelector('.ob-out');
+        const runRec = runRecord(rw);   // read beside the transcript: where the answer's file links resolve
         await fillStreams;
         let turns = null;
         if (rw.streamId) {
@@ -181,24 +239,31 @@
         desc.textContent = lastReply ? firstLine(plain(lastReply), 150)
           : (turns === null ? 'couldn’t read the result — is the station running?'
             : (turns && turns.length ? 'the run finished with nothing to report.' : 'no transcript recorded for this run. Open the session for older work without run attribution.'));
-        const askFull = hand && hand.sent ? String(hand.original) + '\n\n— handed on from ' + Pipeline.lineWord(hand.sent.fromName, 'another line') + ': this reply is this line’s work on what that line delivered.'
-          : hand ? String(hand.original) + '\n\n— the result of a work line: this reply is from step ' + hand.stage + ', after ' + String(agentName(hand.from)).toUpperCase() + '.'
-          : users.length ? String(users[0].content) : '';
+        // the line a handed-on job came FROM — said in the floor's words once the job's record is read (below); the frame's own
+        // name only when there is no record (an unnamed line's frame carries none: it read 'another line' beside FROM LINE N)
+        let fromWord = hand && hand.sent ? Pipeline.lineWord(hand.sent.fromName, 'another line') : '';
         // where this job came from / went on to (SEND TO) — the job's own record says, never a guess from the text
         if (jobStream) {
           try {
             const lj = await Harness.api.get('/api/line-jobs?stream=' + encodeURIComponent(rw.streamId) + '&limit=1');
-            const sj = lj && Array.isArray(lj.jobs) ? lj.jobs[0] : null, word = e => Pipeline.lineWord(e && e.name, e && e.lineId ? 'LINE ' + e.lineId : 'ANOTHER LINE');
+            const sj = lj && Array.isArray(lj.jobs) ? lj.jobs[0] : null, word = e => lineOfEnd(e);
+            if (sj && sj.from && hand && hand.sent) fromWord = word(sj.from);
             // (a REFUSED hand-off is NOT SENT ON, with why — never "sent on" for work the station did not send, 10-11)
             const bits = sj ? [sj.from ? 'FROM ' + word(sj.from) : '', sj.sentTo ? (sj.sentTo.refused ? 'NOT SENT ON TO ' + word(sj.sentTo) + ' — ' + sj.sentTo.refused : 'SENT ON TO ' + word(sj.sentTo)) : ''].filter(Boolean) : [];
             const pv = row.querySelector('.ob-prov');
             if (pv && bits.length) { pv.textContent = bits.join(' · '); pv.hidden = false; }
           } catch (_) { /* the provenance line is extra: the result itself is already on screen */ }
         }
+        const askFull = hand && hand.sent ? String(hand.original) + '\n\n— handed on from ' + fromWord + ': this reply is this line’s work on what that line delivered.'
+          : hand ? String(hand.original) + '\n\n— the result of a work line: this reply is from step ' + hand.stage + ', after ' + String(agentName(hand.from)).toUpperCase() + '.'
+          : users.length ? String(users[0].content) : '';
         ask.textContent = askFull ? (askFull.length > 1500 ? askFull.slice(0, 1500) + ' …' : askFull) : (rw.title || '—');
-        out.textContent = lastReply ? (lastReply.length > 4000 ? lastReply.slice(0, 4000) + '\n\n… output truncated — ↗ OPEN SESSION opens the conversation.' : lastReply)
-          : (turns === null ? '⚠ couldn’t load the output — the run’s transcript wasn’t reachable.'
-            : 'this run recorded no readable output.');
+        if (lastReply) {
+          const rec = await runRec;
+          answerInto(out, lastReply.slice(0, ANSWER_MAX), runFileRefs(rw.agentId, rec && rec.projectRoot));
+          answerCut(out, lastReply);
+        } else out.textContent = turns === null ? '⚠ couldn’t load the output — the run’s transcript wasn’t reachable.'
+          : 'this run recorded no readable output.';
         // FILES — the library's rows for this run, in the library's own markup (dlv-files), sized off
         // disk by the backend. Only rendered when the index proves the run produced something; a plain
         // conversation gets no section (an every-row "no files" line would be noise, not honesty).
@@ -261,11 +326,11 @@
       });
       const rateHost = row.querySelector('.ob-rate');
       const mounted = (typeof Chat !== 'undefined' && Chat.awayRate)
-        ? Chat.awayRate(rateHost, rw, () => { if (RS && RS.resolve) RS.resolve(rw.runId); collected(row); })
+        ? Chat.awayRate(rateHost, rw, () => { if (RS && RS.resolve) RS.resolve(rw.runId, 'outbox'); collected(row); })
         : false;
       if (!mounted) {   // already judged this session — offer the plain collect so the crate never wedges
-        const b = document.createElement('button'); b.type = 'button'; b.className = 'consent-btn'; b.textContent = '✓ collect crate';
-        b.addEventListener('click', ev => { ev.stopPropagation(); if (RS && RS.resolve) RS.resolve(rw.runId); collected(row); });
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'consent-btn'; b.textContent = '✓ mark reviewed';
+        b.addEventListener('click', ev => { ev.stopPropagation(); if (RS && RS.resolve) RS.resolve(rw.runId, 'outbox'); collected(row); });
         rateHost.appendChild(b);
       }
     }
@@ -275,6 +340,10 @@
   // DELIVERABLES mounts this as its TO REVIEW section; ReturnStore refreshes every mounted copy when crates change
   window.OutboxView = {
     build: buildOutbox,
-    refresh() { mounted.forEach(el => { if (!el.isConnected) { mounted.delete(el); return; } buildOutbox(el); }); }
+    refresh() { mounted.forEach(el => { if (!el.isConnected) { mounted.delete(el); return; } buildOutbox(el); }); },
+    // DELIVERABLES' close: every copy inside the closing window goes now, not at the next crate change (night-leak 10-15: a
+    // closed MY WORK stayed alive through `mounted` for minutes, until a refresh happened to prune it)
+    unmount(root) { mounted.forEach(el => { if (!el.isConnected || (root && (el === root || (root.contains && root.contains(el))))) mounted.delete(el); }); },
+    _mountedCount: () => mounted.size
   };
 })();

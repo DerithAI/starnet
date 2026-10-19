@@ -53,7 +53,9 @@ A.eq(P.parseLsofOwners('p100\nu501\nf12\np4242\nu501\nf20\n', 100), [{ pid: 4242
 A.eq(P.parseLsofOwners('', 100), [], 'lsof: nothing visible → no owners');
 
 // ---- the check itself, with injected lookups ----
-function fakeRun(map) { return async (exe, args) => { const k = path.basename(exe); return map[k] ? map[k](args) : { ok: false, code: -1, stdout: '' }; }; }
+// win32 basename: the injected exe paths are Windows paths ('C:\\W\\System32\\netstat.exe'), and POSIX path.basename
+// does not split on '\\' — on the Linux CI gate every fake would miss and read as lookup-failed.
+function fakeRun(map) { return async (exe, args) => { const k = path.win32.basename(exe); return map[k] ? map[k](args) : { ok: false, code: -1, stdout: '' }; }; }
 const Q = { remoteAddress: '127.0.0.1', remotePort: 52345, localAddress: '127.0.0.1', localPort: 8787 };
 
 (async () => {
@@ -163,16 +165,30 @@ const Q = { remoteAddress: '127.0.0.1', remotePort: 52345, localAddress: '127.0.
       run: (exe, args) => new Promise(r => execFile(exe, args, { windowsHide: true, timeout: 10000, maxBuffer: 16 << 20 },
         (e, so) => r({ ok: !e, code: e && typeof e.code === 'number' ? e.code : (e ? -1 : 0), stdout: String(so || '') })))
     });
+    // SETTLES, never hangs: a client that fails to start or connect (AV/loopback filtering, a spawn failure under memory
+    // pressure) used to leave the server holding the event loop until the gate's 50-minute kill, naming nothing. Now it
+    // resolves a failing verdict that says why, and the assertion below fails on it (review tests-17).
+    const ROUND_TRIP_MS = 45000;   // > the two 10 s lookups (netstat + tasklist) plus a child spawn on a loaded box
     const verdict = await new Promise((resolve) => {
-      const srv = http.createServer(async (req, res) => {
+      let done = false, timer = null, srv = null;
+      const finish = (v) => {
+        if (done) return;
+        done = true; clearTimeout(timer);
+        srv.close(() => {});
+        if (typeof srv.closeAllConnections === 'function') srv.closeAllConnections();
+        resolve(v);
+      };
+      srv = http.createServer(async (req, res) => {
         const s = req.socket;
         const v = await real({ remoteAddress: s.remoteAddress, remotePort: s.remotePort, localAddress: s.localAddress, localPort: s.localPort });
-        res.end('x'); srv.close(); resolve(v);
+        res.end('x'); finish(v);
       });
+      timer = setTimeout(() => finish({ ok: false, reason: 'no verdict: the loopback round trip did not finish within ' + (ROUND_TRIP_MS / 1000) + ' s' }), ROUND_TRIP_MS);
       srv.listen(0, '127.0.0.1', () => {
         // a CHILD process is the client, so the peer pid is not our own (the netstat → tasklist path really runs)
         const port = srv.address().port;
-        execFile(process.execPath, ['-e', "require('http').get('http://127.0.0.1:" + port + "/',r=>r.resume())"], () => {});
+        execFile(process.execPath, ['-e', "require('http').get('http://127.0.0.1:" + port + "/',r=>r.resume())"], { windowsHide: true, timeout: ROUND_TRIP_MS },
+          (e, _so, se) => { if (e) finish({ ok: false, reason: 'loopback client failed: ' + (e.code || e.message) + ' ' + String(se || '').slice(0, 200) }); });
       });
     });
     A.eq([verdict.ok, verdict.reason], [true, 'same-user'], 'real loopback: a process of this OS user is recognised (owner never locked out) — got ' + JSON.stringify(verdict));

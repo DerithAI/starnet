@@ -33,4 +33,20 @@ const plain = D.parseDraft(JSON.stringify({ starter: 'front_desk', steps: { GENE
 A.ok(plain.ok && plain.name === 'One agent' && plain.job === '', 'no name → the starter\'s own name; no first job → empty');
 A.ok(D.firstObject('a {not json} then {"a":{"b":"}"}} tail').a.b === '}', 'the first object that parses, braces in strings respected');
 
+/* (org P18) SET IT UP FOR ME chooses from the WHOLE ready-made shelf, not just the four tiles WORKFLOWS shows */
+{
+  const WM = require('../frontend/app/worldmodel.js');
+  const shelf = WM.BLUEPRINTS.map(bp => ({ id: bp.id, name: bp.plain || bp.label, purpose: bp.desc || '', roles: bp.props.filter(p => p.t === 'bay').map(p => p.role || 'STEP') }));
+  A.ok(D.MAX.starters >= WM.BLUEPRINTS.length, 'the starter cap holds the whole shelf (' + WM.BLUEPRINTS.length + ' lines, cap ' + D.MAX.starters + ')');
+  const all = D.normalizeInput({ want: 'review my pull requests', starters: shelf });
+  A.eq(all.ok && all.starters.length, WM.BLUEPRINTS.length, 'every shelf line survives normalizeInput (each has a step, a role and a well-formed id)');
+  A.ok(all.starters.every(s => s.roles.length === shelf.find(x => x.id === s.id).roles.length), '…with every one of its steps (the 6-step deep_dive included)');
+  const p = D.buildPrompt(all);
+  A.ok(WM.BLUEPRINTS.every(bp => p.user.indexOf('- ' + bp.id + ' (') >= 0), 'the one prompt lists every line');
+  const deep = D.parseDraft(JSON.stringify({ starter: 'mission_control', steps: Object.fromEntries(all.starters.find(s => s.id === 'mission_control').roles.map(r => [r, 'Do the ' + r.toLowerCase() + ' part.'])) }), all);
+  A.ok(deep.ok && deep.starter === 'mission_control', 'a line beyond the four tiles is trusted when it was offered');
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../frontend/app/windows/workflows.js'), 'utf8');
+  A.ok(/const ids = STARTERS\.concat\(catalogLines\(\)\.map\(b => b\.id\)\.filter\(id => STARTERS\.indexOf\(id\) < 0\)\);/.test(src) && /postJSON\('\/api\/routing\/line-draft', \{ want, starters \}\)/.test(src), 'WORKFLOWS sends the whole shelf, its four starters first, in the one billed call');
+}
+
 A.report('linedraft.test');

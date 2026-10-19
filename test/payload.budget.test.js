@@ -2,13 +2,14 @@
 
    Every model call re-sends the system prompt and every advertised tool schema. Nothing guarded that growth: a
    Hermes-parity audit measured StarNet at 34,867 system chars + 47 tools per call on a working floor, against
-   13,595 + 25 for Hermes on the same machine. This test builds the two layouts that matter from the REAL request
+   13,595 + 25 for Hermes on the same machine. This test builds the layouts that matter from the REAL request
    bytes a private sidecar sends to a fake model, prints what it measured so growth is visible in review, and pins
    an upper budget with headroom:
 
      default-new-install  the floor a fresh station boots with (WorldModel.starterDoc() -> World.heroCaps), the
                           interactive LEAD run, ASK approval, no connectors, no media/Spotify credentials.
      fully-granted-floor  the same station with the master bypass on: every CAP_REGISTRY object is materialized.
+     lead-with-crew       the default floor again with ONE specialist on the roster (the crew>0 lead path).
 
    A budget failure is a REVIEW prompt, not a bug report: if the growth is intended, raise the budget in the same
    commit and say why. Also re-asserts the chat-diet law: a non-task turn carries NO tools on the wire. */
@@ -17,6 +18,7 @@ const A = require('./_assert.js');
 const http = require('node:http');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 const WM = require('../frontend/app/worldmodel.js');
+const { hostNotes } = require('./helpers/host-notes.js');
 
 const MARK = 'PAYLOAD_BUDGET_PROBE';
 const HOST = '127.0.0.1';
@@ -58,10 +60,44 @@ const HOST = '127.0.0.1';
    THE LENT BUILDER 2026-10-11: team_dispatch takes builder:true on a worker (a delegated Build Manager gets the lead's
    station.map/plan/build for one job) — the schema field (+29) and one sentence saying what it lends (+121): trunk
    measured 66,073, the lane 66,223. Intended growth, kept to that one sentence (the limits ride the worker's own
-   note and the planner's refusals, not this schema): the byte budget moves to 66,250. */
+   note and the planner's refusals, not this schema): the byte budget moves to 66,250.
+   LEAN PROMPT 2026-10-12 (agent/lean-prompt-1012) — RATCHET DOWN. This probe's lead has no crew (no roster), so the
+   ZERO-CREW DIET applies: team.summon stays advertised, the other 8 team_* tools are deferred (named in [HARNESS],
+   found by tool_search) and [ORCHESTRATION] shrinks to the recruit line + the crew-independent station/session rules.
+   Measured base 04ce1fcb8 -> lane: default-new-install 24,672 -> 21,265 system chars | 84 -> 76 tools | 66,238 -> 58,822
+   tool bytes; fully-granted-floor 24,893 -> 21,486 | 84 -> 76 | 66,238 -> 58,822. (systemChars sums EVERY system-role
+   message, so the per-run <run_context> note the CACHE-STABLE PREFIX moved out of the system prompt is still counted
+   here: this custom model keeps it a system message.) Budgets = measurement + ~0.3% (the date line varies in length).
+   LEAN PROMPT REVIEW 2026-10-12: the diet deferred working capabilities. A crewless lead now defers ONLY team.dispatch
+   and the background-worker controls; team.spawn (clones need no crew) and team.config / team.configure (its own
+   Dossier) stay advertised with their SPAWN and CREW CONFIGURATION briefing lines. Since 1765d0a2c the run-context note
+   rides the newest user message on this non-Claude wire, so systemChars now adds the user-side host notes explicitly
+   (same quantity as before: every host-authored prompt char re-sent per call). Measured: both floors 79 tools / 61,298
+   tool bytes; 22,069 / 22,290 chars (1,961 of them the note). Still below base 04ce1fcb8 (84 / 66,238 / 24,672).
+   LEAD WITH CREW 2026-10-12: both layouts above are crewless, so the crew>0 path (which the diet must leave untouched)
+   had no ratchet. lead-with-crew = the starter floor with ONE specialist on the roster: 84 tools / 66,238 tool bytes
+   (exactly base's tool payload; tools/bytes pinned at the base budgets 84 / 66,250) and 25,006 chars (1,961 of them
+   the note; the full [ORCHESTRATION] briefing with YOUR TEAM). System budget = measurement + ~0.3%.
+   THE DELIVERABLE IS A THING TO OPEN 2026-10-14 (rc walk #41): the YOUR TEAM line now tells a lead with crew to name the
+   deliverable as ready to open on its card, never a bare list of file names or an offer to fetch it (+196 chars, only on
+   the crew>0 path; the crewless floors are unchanged). Intended growth: lead-with-crew measured 25,202 on the 0.13.5
+   candidate with both lanes merged, so its system budget moves to 25,280 (measurement + ~0.3%).
+   CREW IN THIS CHAT 2026-10-14 (rc walk: "bring two crew in" / "add them into this chat" went to team.dispatch): the
+   [ORCHESTRATION] seat line (station.control group.add, never team.dispatch) and the steer in team_dispatch / team_summon's
+   descriptions are paid for by tightening the SPAWN and YOUR TEAM lines and team_dispatch's own wording — no budget moved.
+   Measured: default 22,093 | fully 22,314 | crew 25,261 system chars; 61,334 / 61,334 / 66,164 tool bytes (review round:
+   the seat line quotes "add them into this chat", paid for by a shorter team.steer clause).
+   THE SHELL THAT RUNS 2026-10-17 (#128): shell_exec's description said "On Windows this uses cmd.exe; wrap PowerShell
+   cmdlets with …" on every machine, and Linux models tried powershell first. The description now names no shell (one
+   string for every agent and machine, so it cannot know) and points at a per-agent Shell line in [RUNTIME], which
+   follows the EFFECTIVE execution backend (local cmd.exe / /bin/sh, Docker or SSH sh). Measured on Windows (the longest
+   line, it carries the PowerShell wrapper): 61,331 -> 61,266 tool bytes, 22,092 / 22,313 / 25,260 -> 22,234 / 22,455 /
+   25,402 system chars (+142, all in the per-run note, never the cached prefix). Intended move: system budgets +142, tool
+   budgets -65, so each keeps its previous headroom. */
 const BUDGET = {
-  'default-new-install': { systemChars: 24750, tools: 84, toolBytes: 66250 },
-  'fully-granted-floor': { systemChars: 24950, tools: 84, toolBytes: 66250 }
+  'default-new-install': { systemChars: 22282, tools: 79, toolBytes: 61285 },
+  'fully-granted-floor': { systemChars: 22502, tools: 79, toolBytes: 61285 },
+  'lead-with-crew': { systemChars: 25422, tools: 84, toolBytes: 66185 }
 };
 
 (async () => {
@@ -100,8 +136,13 @@ const BUDGET = {
     A.eq(bodies.length, 1, 'exactly one foreground model call');
     const b = bodies[0] || { messages: [] };
     const tools = Array.isArray(b.tools) ? b.tools : [];
+    // every system-role message PLUS the host notes that ride user-side (the per-run <run_context> note is the fenced
+    // leading text of the newest user message on this non-Claude wire since 1765d0a2c): host-authored prompt text is
+    // re-sent on every call wherever the wire puts it, so the ratchet keeps counting it
+    const noteChars = hostNotes(b.messages.filter(m => m.role === 'user')).reduce((n, t) => n + t.length, 0);
     return {
-      systemChars: b.messages.filter(m => m.role === 'system').reduce((n, m) => n + String(m.content).length, 0),
+      systemChars: b.messages.filter(m => m.role === 'system').reduce((n, m) => n + String(m.content).length, 0) + noteChars,
+      noteChars,
       tools: tools.length,
       toolBytes: tools.length ? Buffer.byteLength(JSON.stringify(tools)) : 0
     };
@@ -115,9 +156,16 @@ const BUDGET = {
     A.eq(chat.tools, 0, 'chat diet: a non-task turn carries NO tools on the wire');
     A.eq((await fixture.json('POST', '/api/permissions/bypass', { on: true })).status, 200, 'master bypass on (every capability object materialized)');
     measured['fully-granted-floor'] = await measure(true);
+    // lead-with-crew: the starter floor again (bypass off), now with ONE specialist on the roster, so the crew>0 path —
+    // which the zero-crew diet must leave byte-identical — keeps its own ratchet
+    A.eq((await fixture.json('POST', '/api/permissions/bypass', { on: false })).status, 200, 'master bypass off again (the starter floor)');
+    A.eq((await fixture.json('POST', '/api/roster', { updatedAt: Date.now(), agents: [
+      { agentId: 'agent', name: 'NOVA', provider: 'custom', model: 'fixture-model' },
+      { agentId: 'researcher', name: 'Ada', role: 'researcher', provider: 'custom', model: 'fixture-model' }] })).status, 200, 'one specialist on the roster');
+    measured['lead-with-crew'] = await measure(true);
     for (const id of Object.keys(BUDGET)) {
       const m = measured[id], b = BUDGET[id];
-      console.log('[payload] ' + id + ': system ' + m.systemChars + ' chars (budget ' + b.systemChars + ') | ' + m.tools + ' tools (budget ' + b.tools + ') | '
+      console.log('[payload] ' + id + ': system ' + m.systemChars + ' chars (budget ' + b.systemChars + '; of which user-side notes ' + m.noteChars + ') | ' + m.tools + ' tools (budget ' + b.tools + ') | '
         + m.toolBytes + ' tool bytes (budget ' + b.toolBytes + ')');
       A.ok(m.systemChars <= b.systemChars, id + ': system prompt ' + m.systemChars + ' chars within budget ' + b.systemChars);
       A.ok(m.tools <= b.tools, id + ': ' + m.tools + ' advertised tools within budget ' + b.tools);

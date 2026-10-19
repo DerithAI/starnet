@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-12T13:16:23.410Z",
+  "sourceAtIntake": "9350db92c0ed71814d69abc39483ed72b91332cc",
+  "gmail": {
+    "schemaVersion": 1,
+    "sinceExclusive": "2026-10-12T03:22:01Z",
+    "throughInclusive": "2026-10-12T12:54:12Z",
+    "candidate": "9350db92c0ed71814d69abc39483ed72b91332cc",
+    "reviewer": "claude_session_inventory",
+    "queries": [
+      {
+        "body": "{starnet \"star net\" \"StarNet AI\"}",
+        "records": 2
+      },
+      {
+        "body": "{starnetos}",
+        "records": 0
+      },
+      {
+        "body": "-{starnet \"Star Net\" starnetos} {\"spend history\" \"station failed\" \"link down\" \"overseer\" \"Higgsfield\" \"shell.exec\"}",
+        "records": 0
+      },
+      {
+        "body": "-{starnet \"Star Net\" starnetos} {subject:bug subject:troubleshooting subject:startup subject:credits subject:agents subject:station subject:workflow subject:splitter}",
+        "records": 0
+      },
+      {
+        "body": "{from:whop.com from:notifications.github.com} {starnet starnetos \"Star Net\"}",
+        "records": 0
+      }
+    ],
+    "queryPrefix": "in:anywhere after:1791775320 before:1791809653",
+    "queryWindow": "One-second padding; returned timestamps checked.",
+    "pagination": "Five exhausted one-page queries",
+    "uniqueMessages": 2,
+    "completeThreadsRead": 2,
+    "maxMessagesPerThread": 100,
+    "findings": [
+      {
+        "at": "2026-10-12T11:01:27Z",
+        "classification": "prospective-buyer setup clarification",
+        "summary": "Dedicated Mac mini installation, whether model/tier upgrades happen in-app, and beginning multiple agents for stores/services.",
+        "defect": false,
+        "recovery": false,
+        "existingIncidentMatch": null
+      },
+      {
+        "at": "2026-10-12T05:57:18Z",
+        "classification": "collaboration proposal",
+        "summary": "Discussion about contributing to StarNet.",
+        "defect": false,
+        "recovery": false,
+        "existingIncidentMatch": null
+      }
+    ],
+    "limits": [
+      "Targeted query delta, not mailbox-wide or direct Whop community coverage.",
+      "No new defect or recovery evidence within this coverage; no existing incident closure.",
+      "No messages, drafts, labels, accounts or source changed."
+    ],
+    "sourceRetention": {
+      "privateSourceIds": "Retained in coordinator ignored provenance; excluded from tracked evidence."
+    }
+  },
+  "github": {
+    "sinceExclusive": "2026-10-12T03:22:01Z",
+    "throughInclusive": "2026-10-12T12:53:49Z",
+    "fetchStartedAt": "2026-10-12T12:55:49.111Z",
+    "fetchCompletedAt": "2026-10-12T12:55:52.648Z",
+    "candidateFrozenAt": "9350db92c0ed71814d69abc39483ed72b91332cc",
+    "newOrUpdatedIssues": [],
+    "newOrEditedComments": [],
+    "newIssueEvents": [],
+    "newlyVisibleIssueEventIds": [],
+    "previousIssueEventIdsMissingNow": [],
+    "eventCoverage": {
+      "rawPages": [
+        100,
+        100,
+        95
+      ],
+      "rawRecords": 295,
+      "nonPullRequestIssueRecords": 216,
+      "uniqueNonPullRequestIssueEventIds": 216,
+      "baselineUniqueNonPullRequestIssueEventIds": 216,
+      "excludedPullRequestRecords": 79,
+      "unattributedRecords": 0,
+      "newestIssueEvent": [
+        {
+          "id": 32999809583,
+          "event": "labeled",
+          "createdAt": "2026-10-11T19:17:38Z",
+          "issue": 107,
+          "issueUrl": "https://github.com/androoAGI/starnet/issues/107",
+          "eventApiUrl": "https://api.github.com/repos/androoAGI/starnet/issues/events/32999809583",
+          "commitId": null
+        }
+      ]
+    },
+    "apiCoverage": [
+      {
+        "name": "issues",
+        "endpoint": "repos/androoAGI/starnet/issues?state=all&since=2026-10-12T03%3A22%3A01Z&sort=updated&direction=asc&per_page=100",
+        "startedAt": "2026-10-12T12:55:49.112Z",
+        "completedAt": "2026-10-12T12:55:49.564Z",
+        "pageCount": 1,
+        "pageSizes": [
+          0
+        ],
+        "rawRecords": 0,
+        "pagination": "gh api --paginate --slurp followed every Link rel=next to exhaustion"
+      },
+      {
+        "name": "comments",
+        "endpoint": "repos/androoAGI/starnet/issues/comments?since=2026-10-12T03%3A22%3A01Z&sort=updated&direction=asc&per_page=100",
+        "startedAt": "2026-10-12T12:55:49.565Z",
+        "completedAt": "2026-10-12T12:55:50.031Z",
+        "pageCount": 1,
+        "pageSizes": [
+          0
+        ],
+        "rawRecords": 0,
+        "pagination": "gh api --paginate --slurp followed every Link rel=next to exhaustion"
+      },
+      {
+        "name": "events",
+        "endpoint": "repos/androoAGI/starnet/issues/events?per_page=100",
+        "startedAt": "2026-10-12T12:55:50.031Z",
+        "completedAt": "2026-10-12T12:55:52.648Z",
+        "pageCount": 3,
+        "pageSizes": [
+          100,
+          100,
+          95
+        ],
+        "rawRecords": 295,
+        "pagination": "gh api --paginate --slurp followed every Link rel=next to exhaustion"
+      }
+    ],
+    "acceptanceRequirementsChanged": false,
+    "customerRecoveryEvidenceAdded": false,
+    "limits": [
+      "Read-only current GitHub REST evidence is not an atomic historical snapshot. Requests completed after the fixed cutoff; event timestamps and the since-filtered responses determine window eligibility.",
+      "The issue/comment since queries returned zero records, including any later-than-cutoff records visible at fetch time.",
+      "Repository issue events were fully paginated and compared by event ID with the prior snapshot; PR events are excluded from customer-issue evidence.",
+      "GitHub search is only an independent indexed cross-check and may lag. Deleted or inaccessible comments/events and off-GitHub reports cannot be reconstructed from this audit.",
+      "Prior totals are coverage context, not customer incidence. Issue closure would not by itself prove installed/customer recovery."
+    ],
+    "artifacts": [
+      {
+        "path": ".bugloops/github-delta-2026-10-12/fetch-metadata.json",
+        "sha256": "f08e545128b240cec5c8877be86f228d3f29df314b9629d318c76a9dad7e72d6"
+      },
+      {
+        "path": ".bugloops/github-delta-2026-10-12/issues-pages.json",
+        "sha256": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05"
+      },
+      {
+        "path": ".bugloops/github-delta-2026-10-12/comments-pages.json",
+        "sha256": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05"
+      },
+      {
+        "path": ".bugloops/github-delta-2026-10-12/events-pages.json",
+        "sha256": "006524dc166285e45c279a371048a17b702003688dae325741cae8fa44cb6e85"
+      }
+    ]
+  },
+  "customerClarification": {
+    "id": "setup-clarification-1012",
+    "classification": "How-to / prospective setup, not a malfunction or recovery",
+    "sourceChecked": "9350db92c0ed71814d69abc39483ed72b91332cc",
+    "documentationCommit": "080c1f50c9cada59f37f3f04b8e2c99a3f7b6590",
+    "questions": [
+      "Dedicated Mac mini installation",
+      "Model and tier upgrades versus account plans",
+      "Beginning multiple agents for stores/services"
+    ],
+    "answerSources": [
+      "INSTALL.md:55",
+      "website/docs/getting-started.html:88",
+      "frontend/app/tutorial.js:1191",
+      "frontend/app/tutorial.js:1221",
+      "frontend/app/modeldock.js:33",
+      "frontend/app/modeldock.js:82",
+      "frontend/index.html:283",
+      "frontend/app/stationui.js:6345",
+      "frontend/app/worldmodel.js:4456",
+      "frontend/app/worldmodel.js:4471",
+      "sidecar/index.js:1198",
+      "sidecar/budget.js:137"
+    ],
+    "verifiedGaps": [
+      "Provider reference omitted the managed-account pairing path and did not distinguish model, reasoning effort, editorial badges and account plans.",
+      "First workflow guide used obsolete navigation, described four layouts as the complete catalog and treated layout placement/crew assignment as sufficient for successful real work.",
+      "Provider cost wording implied every receipt established actual cost and billing source despite accepted unknown-provenance handling."
+    ],
+    "changes": [
+      "Document current pairing and model/account/update boundaries without claiming live checkout availability or entitlements.",
+      "Document current Build navigation, readiness and sample/step-through/real-job modes, costs, SEND TO and final-result checks.",
+      "Describe unknown billing provenance without claiming account reconciliation.",
+      "Regenerate search index; retain13 exact SVGs and all existing guide anchors.",
+      "Correct the same workstation-location guidance in three in-app manual strings and the exact website mirror.",
+      "Qualify spending refusal by explicitly configured limits; no budget policy changed."
+    ],
+    "staticChecks": [
+      "website-shell generator:32pages,1generatedfilewritten,24indexed",
+      "All13guideSVGs byte-identical; existinganchorspreserved",
+      "git diff --check PASS",
+      "Both tutorial syntax checks PASS; exact mirror bytes match."
+    ],
+    "independentReview": {
+      "reviewer": "codex_lane_audit",
+      "verdict": "ACCEPT",
+      "source": "080c1f50c9cada59f37f3f04b8e2c99a3f7b6590",
+      "scope": "Five source/documentation paths relative513cf8817, three tutorial strings, exact website mirror and search-index changes limited to two documents.",
+      "resolvedFindings": [
+        "Compute belongs to assigned agent workstation; its capability room need not be the bay room.",
+        "Unknown spend can block explicitly configured limits; shipped soft daily rail differs."
+      ],
+      "boundary": "Source agreement only, no runtime or customer recovery."
+    },
+    "runtimeValidation": "Deferred while scheduled Guardian owns serialized gate slot; existing website navigation/staging checks will run before fresh broad gates.",
+    "acceptanceLimits": [
+      "Docs describe candidate source; no independent website deployment.",
+      "Fresh-source beginner UI-only check stops at first-directive; it does not prove installed Mac setup, model/plan transaction, second agent, real store connection or multi-agent deliverable.",
+      "No customer contact, billing/account change, new incident closure or recovery inference.",
+      "Managed external checkout availability and customer entitlement unverified."
+    ],
+    "documentationCommits": [
+      "1e9e00fb9bdc1c53858203ff6d3fc0db24c0fbef",
+      "da237c1ec50883656ef396f70bc65b7c7c0b81d7",
+      "080c1f50c9cada59f37f3f04b8e2c99a3f7b6590"
+    ]
+  },
+  "directWhop": {
+    "status": "UNREVIEWED",
+    "reason": "Community/channel identity and authorized usable read access still missing; notification searches are separate."
+  },
+  "followUpCoverage": {
+    "recordedAt": "2026-10-12T15:43:53.330Z",
+    "gmail": {
+      "window": {
+        "startExclusive": "2026-10-12T12:54:12Z",
+        "endInclusive": "2026-10-12T14:32:37Z",
+        "queryPrefix": "in:anywhere after:1791809651 before:1791815558",
+        "boundaryPaddingSeconds": 1
+      },
+      "queries": [
+        "{starnet \"star net\" \"StarNet AI\"}",
+        "{starnetos}",
+        "-{starnet \"Star Net\" starnetos} {\"spend history\" \"station failed\" \"link down\" \"overseer\" \"Higgsfield\" \"shell.exec\"}",
+        "-{starnet \"Star Net\" starnetos} {subject:bug subject:troubleshooting subject:startup subject:credits subject:agents subject:station subject:workflow subject:splitter}",
+        "{from:whop.com from:notifications.github.com} {starnet starnetos \"Star Net\"}"
+      ],
+      "results": {
+        "queries": 5,
+        "pages": 5,
+        "maxResultsPerPage": 100,
+        "allMessageIdsEmpty": true,
+        "allNextPageTokensNull": true,
+        "allIsErrorFalse": true,
+        "completeThreadsRead": 0,
+        "newDefects": 0,
+        "recoveryEvidence": 0,
+        "setupClarifications": 0,
+        "proposals": 0
+      },
+      "receipt": {
+        "path": ".handoff/gmail-delta-1012-143237.json",
+        "sha256": "bb29694171e0060cdec437e2e67231a488ac7203fb414cc71251193b1d2f13a2"
+      },
+      "limits": "Targeted search-term coverage, not whole-mailbox completeness. Generic/unmatched subjects and attachment-only content may remain outside coverage. Gmail notifications are not directWhop community review."
+    },
+    "github": {
+      "sinceExclusive": "2026-10-12T12:53:49Z",
+      "throughInclusive": "2026-10-12T15:03:23Z",
+      "fetchStartedAt": "2026-10-12T15:05:20.891Z",
+      "fetchCompletedAt": "2026-10-12T15:05:24.704Z",
+      "issues": 0,
+      "comments": 0,
+      "newIssueEvents": 0,
+      "rawEvents": 295,
+      "issueEventsMatched": 216,
+      "excludedPullRequestEvents": 79,
+      "eventPageSizes": [
+        100,
+        100,
+        95
+      ],
+      "paginationExhausted": true,
+      "receipt": {
+        "path": ".handoff/github-delta-1012-150323.json",
+        "sha256": "fce7193aa62ceb58bdff45e117b5b2b28beba8bf2f1b531be00cdcb411f92ac3"
+      },
+      "limits": "Complete returned issue-event identity comparison; no missing or newly visible older issue events. No recovery inferred from silence."
+    },
+    "newDefects": 0,
+    "newRecoveryEvidence": 0,
+    "directWhopReviewed": false,
+    "customerContact": false,
+    "mutations": false
+  }
+}

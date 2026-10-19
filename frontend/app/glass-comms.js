@@ -48,11 +48,48 @@
   }
   const input=document.querySelector('#chat-input');
   if(input)input.placeholder='Message \u00b7 / commands';
+  // FIT LAW for the COMMS popups (Andrew 10-15, a user's shot: on a short COMMS the model picker ran up UNDER the
+  // agent header, its + and globe painted through REASONING MAX). The composer row is z 4 and the header z 6, so a
+  // popup taller than the room between them slides beneath the header. Each popup is capped to that room
+  // (--comms-fit, read by its max-height) on open and on every resize, and scrolls inside it instead. When that room
+  // is a slit (a short window), a riser covers the header cleanly instead — its row is lifted ABOVE the header
+  // (.comms-pop-over), so the two never interleave — and the agent menu may run down over the composer.
+  const fitPanel=document.querySelector('#chat-panel'),fitRow=document.querySelector('#chat-inputrow'),fitting=new Set();
+  const FIT_FLOOR=220;   // CSS px: the least room a popup is still usable in
+  function fitPopup(popup) {
+    if(!popup||!fitPanel||!fitRow)return;
+    const row=fitRow.getBoundingClientRect();
+    if(!popup.hidden&&row.height) {
+      const scale=fitRow.offsetHeight/row.height||1;   // visual px → CSS px under the TEXT SIZE zoom
+      const idbar=document.querySelector('#comms-idbar'),head=idbar&&!idbar.hidden?idbar.getBoundingClientRect():null;
+      const top=head&&head.height?head.bottom:fitPanel.getBoundingClientRect().top;
+      const lift=getComputedStyle(popup).transform,shift=lift&&lift!=='none'?new DOMMatrixReadOnly(lift).m42/scale:0;   // the open fade
+      const box=popup.getBoundingClientRect(),start=box.top-shift,end=box.bottom-shift;
+      // the agent menu drops DOWN from the header; the picker and the slash palette rise UP from the composer
+      const drops=Boolean(idbar&&idbar.contains(popup));
+      let room=(drops?row.top-start:end-top)*scale;
+      const over=room<FIT_FLOOR;
+      const ceiling=document.querySelector('#topbar')?.getBoundingClientRect().bottom||0;   // never over the top bar
+      if(over)room=(drops?fitPanel.getBoundingClientRect().bottom-start:end-ceiling-6)*scale;
+      popup.toggleAttribute('data-fit-over',over&&!drops);
+      popup.style.setProperty('--comms-fit',Math.max(0,Math.floor(room-6))+'px');
+    }
+    fitPanel.classList.toggle('comms-pop-over',[...fitting].some(p=>!p.hidden&&p.hasAttribute('data-fit-over')));
+  }
+  function watchFit(popup) {
+    if(!popup)return;fitting.add(popup);
+    new MutationObserver(()=>fitPopup(popup)).observe(popup,{attributes:true,attributeFilter:['hidden']});fitPopup(popup);
+  }
+  if(fitPanel&&typeof ResizeObserver==='function') {
+    const refit=new ResizeObserver(()=>fitting.forEach(fitPopup));
+    [fitPanel,fitRow,document.querySelector('#comms-idbar')].forEach(node=>{if(node)refit.observe(node);});
+  }
   // Hidden popups become non-interactive immediately while their final frame fades out.
   ['#model-dock','#chat-slash'].forEach(selector=>{
     const popup=document.querySelector(selector);if(!popup)return;
     const sync=()=>{popup.inert=popup.hidden;};
     new MutationObserver(sync).observe(popup,{attributes:true,attributeFilter:['hidden']});sync();
+    watchFit(popup);
   });
   // Return keyboard focus before the original Escape handler hides the model picker.
   document.querySelector('#model-dock')?.addEventListener('keydown', e => {
@@ -68,7 +105,7 @@
   const label=document.createElement('span');button.append(label,icon('chevron'));
   const menu=document.createElement('div');menu.id='gd-agent-menu';menu.className='gd-agent-menu';menu.hidden=true;menu.inert=true;
   menu.setAttribute('role','listbox');menu.setAttribute('aria-label','Agents on the line');
-  wrap.append(button);bar.append(menu);wrap.classList.add('gd-agent-enhanced');
+  wrap.append(button);bar.append(menu);wrap.classList.add('gd-agent-enhanced');watchFit(menu);
   source.setAttribute('data-gd-agent-source','');source.setAttribute('aria-hidden','true');source.tabIndex=-1;
   function close(focus=false) {
     menu.hidden=true;menu.inert=true;button.setAttribute('aria-expanded','false');
@@ -106,7 +143,13 @@
     const items=rows();
     (last?items.at(-1):items.find(row=>row.getAttribute('aria-selected')==='true')||items[0])?.focus();
   }
-  button.addEventListener('click',()=>{if(menu.hidden)open();else close();});
+  // Closing it sounds like a dock going back (walk 10-14: the close played the press cue): close(), as the model selector does.
+  function toggle() {
+    if(menu.hidden){open();return;}
+    close();
+    if(typeof SFX!=='undefined'&&SFX.close)SFX.close();   // stamps the cue first, so the delegated press yields
+  }
+  button.addEventListener('click',toggle);
   button.addEventListener('keydown',e=>{
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();open(e.key==='ArrowUp');}
     else if(e.key==='Escape'){e.preventDefault();close();}

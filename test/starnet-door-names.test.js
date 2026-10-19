@@ -16,7 +16,18 @@ const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 // the door the messages must name really exists: the AI & MODELS section is the providers pane
 const station = read('frontend/app/stationui.js');
 A.ok(/\{ id: 'providers', label: 'AI & MODELS'/.test(station), 'SETTINGS has an AI & MODELS section (the providers pane)');
-A.ok(/id="credits-buy">＋ ADD CREDITS/.test(station) && /secProviders =[\s\S]{0,1200}<div id="credits-store"><\/div>/.test(station), 'the STORE (+ ADD CREDITS) renders inside that same AI & MODELS pane');
+/* the STORE is a string node OF the secProviders template (that whole const statement, up to the next declaration),
+   and that template is what the AI & MODELS section builds: the structure, not a byte window, so a longer comment or
+   another block inside the pane (the org P05 API KEYS service-key lines) never reads as "the STORE moved out". */
+const provAt = station.indexOf('const secProviders =');
+const provNext = /\n[ \t]*const [A-Za-z_$][\w$]* =/g;
+provNext.lastIndex = provAt + 1;
+const provEndM = provAt >= 0 ? provNext.exec(station) : null;
+const secProvidersTpl = provEndM ? station.slice(provAt, provEndM.index) : '';
+A.ok(secProvidersTpl.length > 0, 'the secProviders template is found as one const statement');
+A.ok(/id="credits-buy">＋ ADD CREDITS/.test(station) && secProvidersTpl.includes(`'<div id="credits-store"></div>'`) &&
+  /\{ id: 'providers', label: 'AI & MODELS'[^\n]*build: frag\(secProviders\b/.test(station),
+  'the STORE (+ ADD CREDITS) renders inside that same AI & MODELS pane');
 A.ok(!/label: 'PROVIDERS'/.test(station), 'no SETTINGS section is labelled PROVIDERS');
 
 (async () => {

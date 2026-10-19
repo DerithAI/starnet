@@ -161,7 +161,10 @@ function scriptPrompt(decision) {
   {
     const home = path.join(ROOT, 'home');
     const stores = [['.ssh', 'id_ed25519'], ['.aws', 'credentials'], ['.tauri', 'starnet-updater.key'], ['.codex', 'auth.json'],
-      [path.join('AppData', 'Local', 'Google', 'Chrome', 'User Data', 'Default'), 'Login Data']];
+      [path.join('AppData', 'Local', 'Google', 'Chrome', 'User Data', 'Default'), 'Login Data'],
+      // security-storage-03: the Windows homes of the gcloud and GitHub CLI logins, and cargo's registry token
+      [path.join('AppData', 'Roaming', 'gcloud'), 'credentials.db'], [path.join('AppData', 'Roaming', 'GitHub CLI'), 'hosts.yml'],
+      ['.cargo', 'credentials.toml'], ['.cargo', 'credentials'], [path.join('.config', 'gh'), 'hosts.yml']];
     for (const [dir, file] of stores) { await fsp.mkdir(path.join(home, dir), { recursive: true }); await fsp.writeFile(path.join(home, dir, file), 'secret'); }
     await fsp.writeFile(path.join(home, '.git-credentials'), 'https://u:p@h');
     await fsp.writeFile(path.join(home, 'notes.ssh.txt'), 'not a key');
@@ -179,11 +182,68 @@ function scriptPrompt(decision) {
     A.ok(/credential floor/.test(msg) && /Full Power/.test(msg), 'the refusal names the floor and the one switch that reaches it — got: ' + msg);
     const power = await h.pt.guard(path.join(home, '.ssh', 'id_ed25519'), { scope: 'read', surface: 'autonomous', unrestrictedHost: true });
     A.ok(power && power.unrestrictedHost === true, 'Full Power (the operator\'s explicit host-wide switch) still reaches it');
-    // a symlink named innocently that points INTO a credential store is caught on its real target
+    // a symlink named innocently that points INTO a credential store is caught on its real target. Non-admin
+    // Windows cannot create file symlinks, so the injected-fs case below proves the same rule on every host.
     const link = path.join(home, 'innocent.txt');
     let linked = false;
-    try { await fsp.symlink(path.join(home, '.ssh', 'id_ed25519'), link, 'file'); linked = true; } catch (_) {}
+    try { await fsp.symlink(path.join(home, '.ssh', 'id_ed25519'), link, 'file'); linked = true; }
+    catch (e) { if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(e.code)) throw e; }
     if (linked) await rejects(h.pt.guard(link, { scope: 'read', surface: 'autonomous', fullAccess: true }), 'credential floor is re-proven on the symlink\'s real target');
+    else console.log('SKIP: credential-floor real-symlink case — this host cannot create file symlinks (the injected-fs case below still proves the rule)');
+  }
+  {
+    const PM = Object.assign({}, require('node:path').posix, { sep: '/' });
+    const LINK = '/home/innocent.txt', KEY = '/home/.ssh/id_ed25519';
+    const fspFake = {
+      async realpath(p) { return p === LINK ? KEY : p; },
+      async lstat(p) { if (p === LINK || p === KEY || p === '/home') return {}; const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+      async stat(p) { if (p === '/home') return { isDirectory: () => true }; throw new Error('ENOENT'); }
+    };
+    const pt = makePathTrust({ fsp: fspFake, pathMod: PM, roots: () => ['/home'] });
+    let msg = '';
+    try { await pt.guard(LINK, { scope: 'read', surface: 'autonomous', fullAccess: true }); } catch (e) { msg = e.message; }
+    A.ok(/credential floor/.test(msg), 'credential floor is re-proven on the realpath (injected fs, runs on every host) — got: ' + msg);
+    const ok = await pt.guard('/home/notes.txt', { scope: 'read', surface: 'autonomous', fullAccess: true });
+    A.eq(ok.base, '/home', 'an ordinary file under the same root still reads');
+  }
+
+  // ---- security-storage-08: the browser-profile rule matches the browsers' real profile folders, not any folder
+  //      that happens to be NAMED chromium or vivaldi (a Chromium checkout is an ordinary project). ----
+  {
+    const home = path.join(ROOT, 'home-browsers');
+    const profiles = [
+      [path.join('AppData', 'Local', 'Chromium', 'User Data', 'Default'), 'Cookies'],
+      [path.join('AppData', 'Local', 'Google', 'Chrome SxS', 'User Data', 'Default'), 'Login Data'],
+      [path.join('AppData', 'Local', 'Microsoft', 'Edge Beta', 'User Data', 'Default'), 'Cookies'],
+      [path.join('AppData', 'Local', 'BraveSoftware', 'Brave-Browser', 'User Data', 'Default'), 'Cookies'],
+      [path.join('AppData', 'Local', 'Vivaldi', 'User Data', 'Default'), 'Login Data'],
+      [path.join('AppData', 'Roaming', 'Opera Software', 'Opera Stable'), 'Cookies'],
+      [path.join('AppData', 'Roaming', 'Mozilla', 'Firefox', 'Profiles', 'x.default'), 'logins.json'],
+      // Microsoft Store (MSIX) Firefox: the package virtualizes AppData as Packages/<pkg>/LocalCache/{Local,Roaming}
+      [path.join('AppData', 'Local', 'Packages', 'Mozilla.Firefox_n80bbvh6b1yt2', 'LocalCache', 'Roaming', 'Mozilla', 'Firefox', 'Profiles', 'x.default'), 'logins.json'],
+      [path.join('.config', 'opera'), 'Cookies'], [path.join('.config', 'opera-developer'), 'Login Data'],
+      [path.join('.config', 'chromium', 'Default'), 'Cookies'], [path.join('.config', 'vivaldi', 'Default'), 'Cookies'],
+      [path.join('.config', 'google-chrome-beta', 'Default'), 'Cookies'], [path.join('.mozilla', 'firefox', 'x.default'), 'logins.json'],
+      [path.join('snap', 'chromium', 'common', 'chromium', 'Default'), 'Cookies'],
+      [path.join('.var', 'app', 'com.google.Chrome', 'config', 'google-chrome', 'Default'), 'Cookies'],
+      [path.join('Library', 'Application Support', 'Chromium', 'Default'), 'Cookies'],
+      [path.join('Library', 'Application Support', 'Vivaldi', 'Default'), 'Cookies'],
+      [path.join('Library', 'Application Support', 'Google', 'Chrome', 'Default'), 'Cookies']];
+    const projects = [[path.join('chromium', 'src', 'base'), 'a.cc'], [path.join('code', 'vivaldi'), 'readme.md'],
+      [path.join('code', 'google', 'chrome-extension'), 'manifest.json'],
+      // a .config child that merely STARTS with "opera" is not Opera's profile
+      [path.join('.config', 'operator'), 'notes.md'], [path.join('code', 'app', '.config', 'operations'), 'x.json']];
+    for (const [dir, file] of profiles.concat(projects)) { await fsp.mkdir(path.join(home, dir), { recursive: true }); await fsp.writeFile(path.join(home, dir, file), 'x'); }
+    const h = harness({ roots: [home] });
+    for (const [dir, file] of profiles) {
+      await rejects(h.pt.guard(path.join(home, dir, file), { scope: 'read', surface: 'autonomous', fullAccess: true }),
+        'credential floor: browser profile ' + dir + ' is denied to an unattended Full Access run');
+    }
+    for (const [dir, file] of projects) {
+      let err = '';
+      try { await h.pt.guard(path.join(home, dir, file), { scope: 'read', surface: 'autonomous', fullAccess: true }); } catch (e) { err = e.message; }
+      A.eq(err, '', 'a project folder named like a browser (' + dir + ') is not a browser profile');
+    }
   }
 
   // ---- Full Power: the whole local computer, including protected paths, with no project card ----

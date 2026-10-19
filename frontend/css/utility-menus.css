@@ -23,6 +23,7 @@
 .dlv-review .ob-title { font-size: 21px; letter-spacing: .2px; }
 .dlv-review .ob-title b { white-space: normal; overflow-wrap: anywhere; font-weight: normal; }
 .dlv-review .ob-desc { font-size: 16px; line-height: 1.45; margin-top: 8px; opacity: 1; }
+.ob-desc:empty { display: none; }   /* (P11 polish 2) a card with nothing real to say under its title takes no room there */
 .dlv-review .ob-meta { font-size: 13px; letter-spacing: .2px; margin-top: 10px; }
 .dlv-review .ob-body { padding: 16px 18px 18px; background: rgba(0,0,0,.12); }
 .dlv-review .ob-sec { font-size: 12px; letter-spacing: .7px; margin: 16px 0 8px; }
@@ -89,7 +90,9 @@
 .sn-menu .lp-shape-n { font-size: 18px; font-weight: normal; letter-spacing: .2px; }
 .sn-menu .lp-shape-t { font-size: 14px; line-height: 1.4; }
 .sn-menu .lp-shape-r { font-size: 11px; letter-spacing: .2px; text-transform: none; }
-.sn-menu .lp-shape-e { font-size: 20px; }
+.sn-menu .lp-shape-e { font-size: 20px; grid-row: 1 / span 2; }
+/* (org D10 polish) an odd last kind of loop takes the whole row (as AWAY WORK does under the access tiles), never one tile alone */
+.sn-menu .lp-shape:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .sn-menu .lp-stage { border-top: 1px solid rgba(var(--ph-rgb),.14); padding-top: 8px; animation: none; }
 .sn-menu #lp-form { gap: 15px; }
 .sn-menu #lp-form .mc-lbl { font-size: 15px; line-height: 1.45; letter-spacing: .1px; gap: 7px; }

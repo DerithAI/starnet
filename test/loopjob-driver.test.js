@@ -214,6 +214,22 @@ function world(opts) {
     A.eq(wb.loop().iterations[0].outcome, 'failed', 'a budget-ended run is not parked as an approvable candidate');
     A.ok(/budget/.test(wb.loop().iterations[0].error || ''), 'the failed iteration names its terminal reason');
 
+    // an 'empty' end AFTER a tool ran: a file may already be written, so the settlement never says "nothing was done"
+    // (review threads-backend-03 — the same count cron-driver and Run Now pass to incompleteRunMessage)
+    const we = world(); we.seed({}); we.tick(T0);
+    we.calls[0].emit('agent.tool_call', { name: 'fs_write' });
+    we.calls[0].emit('agent.run.end', { reason: 'empty' });
+    await we.finish({ reason: 'empty' });
+    const emptyErr = we.loop().iterations[0].error || '';
+    A.eq(we.loop().iterations[0].outcome, 'failed', 'an empty end after a tool step is still not an approvable candidate');
+    A.ok(/1 tool step\b/.test(emptyErr) && /\[empty\]$/.test(emptyErr) && !/nothing was done/.test(emptyErr),
+      'an empty end after a tool step says the step ran, never "nothing was done": ' + emptyErr);
+    // …and with no tool step, the plain empty sentence stands
+    const we0 = world(); we0.seed({}); we0.tick(T0);
+    we0.calls[0].emit('agent.run.end', { reason: 'empty' });
+    await we0.finish({ reason: 'empty' });
+    A.ok(/nothing was done/.test(we0.loop().iterations[0].error || ''), 'an empty end with no tool step keeps "nothing was done": ' + we0.loop().iterations[0].error);
+
     // a run host that throws synchronously
     const w3 = world({ runThrows: true }); w3.seed({});
     w3.tick(T0);

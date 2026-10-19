@@ -1,0 +1,55 @@
+{
+  "case": "4c0efd8c",
+  "scope": "Narrow recovery diagnosis freshness repair; original customer cause and installed recovery remain unconfirmed.",
+  "sourceBase": "e3e6c2ad0599d00d50969cf15ad2236c1662bffd",
+  "comparedRoot": "bbe1aa1",
+  "sourceHashes": {
+    "frontend/app/app.js": "e1e2f49c3c2ab1cabe075b239a44b5ab7955cedb7f409f759a229791e3a07722",
+    "frontend/app/cloudsave.js": "87ab0948b270e3b6c606f21f542812c3b6a1ad253aee8a43607a18ea96e2e791",
+    "sidecar/index.js": "81b317a22b56df8f0174650684642975d12e805ebae4f17a17422ab073e9be56",
+    "sidecar/savestore.js": "67af95bfe526a47a8f46706b833598b9d12b467f86af104f42ed05e5c7ab0edb"
+  },
+  "servedAppSha256": "e1e2f49c3c2ab1cabe075b239a44b5ab7955cedb7f409f759a229791e3a07722",
+  "before": "before.json reproduces stale SAVE-NET after explicit unreadable retry; first restart observation excluded because navigation synchronization was invalid.",
+  "after": "after.json: live seeded header and body stalls, health 200, diagnostics failure, preserved save bytes, SAVE-READ on unreadable retry, successful retry and service restart reopening NOVA.",
+  "checks": [
+    {
+      "command": "node test/save-recovery-diagnosis.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/unreachable-browser-mode.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/cloudsave-timeout.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/cloudsave-unknown.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/save-unreadable.http.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/diagnostics-dead-engine.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/link-down-recovery.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/desktop-fresh-start-contract.test.js",
+      "result": "pass"
+    }
+  ],
+  "limitations": [
+    "Synthetic seeded Windows browser session; no customer profile, installer acceptance or customer recovery.",
+    "Original failed request status/timing, correlated native logs and current customer retest remain missing.",
+    "No full fast gate run in this lane under coordinator scope; integration gate remains required before merge.",
+    "The gate behavior regression failed before the repair (SAVE-NET instead of SAVE-READ)."
+  ]
+}

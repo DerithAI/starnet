@@ -19,6 +19,7 @@
 'use strict';
 
 const A = require('./_assert.js');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 const http = require('http');
 const path = require('path');
 const os = require('os');
@@ -55,7 +56,7 @@ function startMockOpenRouter() {
           const sysMsg = msgs.find(m => m && m.role === 'system');
           const userMsg = msgs.find(m => m && m.role === 'user');
           const system = String((sysMsg && sysMsg.content) || '');
-          const prompt = String((userMsg && userMsg.content) || '');
+          const prompt = userWords(userMsg);
           const toolResults = msgs.filter(m => m && m.role === 'tool').length;
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
           const tool = (id, name, args) => {

@@ -116,7 +116,12 @@
     const page = w.classList.contains('browser-win');
     // The WORKFLOWS window is a work surface: the job, the step working on it and the whole result want the room (2026-09-30).
     const work = w.classList.contains('wfw-win');
-    const preferred = catalog ? Math.max(available * .75, w.offsetHeight - catalog.offsetHeight + 260) : page ? available * .82 : work ? available * .8 : available * .56;
+    // The ADD AGENTS picker is a roster you pick from: at 56% its add list showed one agent and a half (walk 10-14 #9).
+    // Its two lists keep floors (two agents to add, one member); on a short screen 80% is under them, so it opens as tall as
+    // its own overflow says they need (review 10-14: DONE sat 18px under the fold at 1366x768) — still capped by the band.
+    const roster = w.classList.contains('gc-picker-win'), rosterBody = roster && w.querySelector('.term-body');
+    const rosterNeed = rosterBody ? w.offsetHeight - rosterBody.clientHeight + rosterBody.scrollHeight : 0;
+    const preferred = catalog ? Math.max(available * .75, w.offsetHeight - catalog.offsetHeight + 260) : page ? available * .82 : work ? available * .8 : roster ? Math.max(available * .8, rosterNeed) : available * .56;
     const h = s.expanded ? available : Math.min(available, Math.max(220, s.height || preferred));
     w.style.animation = 'none'; w.style.transform = 'none';
     const geometry = {left:b.x+'px',top:(b.bottom-h)+'px',width:b.width+'px',height:h+'px',maxWidth:b.width+'px',maxHeight:available+'px'};

@@ -1,13 +1,13 @@
-/* sidecar/verdictreview.js â€” VERDICT-TRIGGERED SKILL REVIEW (consistency loop, slice 1, 2026-08-22).
+/* sidecar/verdictreview.js — VERDICT-TRIGGERED SKILL REVIEW (consistency loop, slice 1, 2026-08-22).
 
-   The background skill review (skillreview.js) fires on run SIZE â€” â‰¥4 tool calls, â‰¥8 turns, â‰¥5000 chars. The
+   The background skill review (skillreview.js) fires on run SIZE — ≥4 tool calls, ≥8 turns, ≥5000 chars. The
    Commander's own verdict on the work was never an input: a small run rated `miss` taught the skillbase nothing,
    which is exactly the consistency complaint ("it did it wrong, and next week it does it wrong again").
 
    This module is the pure half of the fix. At run end, a run that did NOT earn a size-review gets a compact
    REVIEW PACKET parked here (the transcript + the aux provider handles the review would need). When a verdict
    arrives on POST /api/growth/ratings and it is `ok` or `miss`, the packet is TAKEN (once) and index.js runs the
-   same quiet review loop with the verdict in the prompt. `great` never triggers â€” praise is not a lesson.
+   same quiet review loop with the verdict in the prompt. `great` never triggers — praise is not a lesson.
 
    Bounded by construction: a capped LRU (oldest evicted), a TTL so a stale packet never reviews a run the
    Commander rated long after against a skillbase that has since moved, and take() deletes. Durable since
@@ -41,7 +41,7 @@ function reviewPassFinished(result, changedSkillbase) {
   return !(result.reason === 'cancelled' && !modelProduced(result));
 }
 
-// compactPacket â€” the persistable half of a review packet: no provider/cost objects (they are live handles, and a
+// compactPacket — the persistable half of a review packet: no provider/cost objects (they are live handles, and a
 // provider can carry a credential), and only the transcript the review prompt can actually read (skillreview's
 // transcript() tail-caps at 12k chars) plus the run's directive, so a packet on disk stays a few KB.
 const PERSIST_CHARS = 16000;
@@ -49,7 +49,7 @@ const PER_MESSAGE_CHARS = 4000;
 // the FINAL answer is kept whole (up to this cap): a `great` rating after a restart mints a golden from it, and a
 // golden measured against a truncated output would flag every faithful later run as off-length.
 const FINAL_CHARS = 60000;
-// redact (optional): the host's secret scrub â€” a tool that read a .env or an API response put that text in the
+// redact (optional): the host's secret scrub — a tool that read a .env or an API response put that text in the
 // transcript, and a packet on disk must never hold it in cleartext (every other durable transcript store redacts).
 function compactPacket(p, redact) {
   p = p || {};
@@ -96,15 +96,38 @@ function makeVerdictReview(opts) {
   // hands the caller a compacted, provider-free snapshot to persist; restore() reloads it on boot. A restored
   // packet has no live provider: the caller rebuilds one for the agent when the review fires.
   const onChange = typeof opts.onChange === 'function' ? opts.onChange : null;
-  function changed() {
+  // meta.ack:false marks a save no caller waits on (stash, take): the host may batch it. Every other transition
+  // (arm, correct, fire, retry, complete) acts on the result, so it stays a synchronous, verified save.
+  function changed(meta) {
     if (!onChange) return true;
-    try { const result = onChange(snapshot()); if (result === false || (result && typeof result.then === 'function')) throw new Error('review persistence must complete synchronously'); return true; } catch (e) { failNote('verdictreview.persist', e); return false; }
+    try { const result = onChange(snapshot(), meta || { ack: true }); if (result === false || (result && typeof result.then === 'function')) throw new Error('review persistence must complete synchronously'); return true; } catch (e) { failNote('verdictreview.persist', e); return false; }
+  }
+  // Each row is compacted once, not on every save: a run end used to recompact and re-scrub every parked packet.
+  // A parked packet never changes after stash; a held row is recompacted only when its verdict or correction does.
+  // The rows share these cached objects, so a caller treats a snapshot as read-only.
+  // The cache never freezes redaction: redact() also scrubs the exact secrets the station holds, read live, so the
+  // host's known-secret generation (opts.redactGeneration) keys every cached row. A token stored to the station after
+  // its run ended leaves every saved row at the next save. A generation that cannot be read forces a fresh compaction.
+  const redactGeneration = typeof opts.redactGeneration === 'function' ? opts.redactGeneration : null;
+  let unreadGenerations = 0;
+  function secretGeneration() {
+    if (!redactGeneration) return '';
+    try { return 'g:' + String(redactGeneration()); } catch (e) { failNote('verdictreview.redactGeneration', e); return 'unread:' + (++unreadGenerations); }
+  }
+  function parkedCompact(row, gen) {
+    if (!row.compact || row.compactGen !== gen) { row.compact = compactPacket(row.packet, opts.redact); row.compactGen = gen; }
+    return row.compact;
+  }
+  function heldCompact(h, runId, gen) {
+    const key = JSON.stringify([runId, gen, h.verdict, h.correction, h.correctionOriginalChars, h.correctionTruncated, h.correctionSource || '']);
+    if (h.compactKey !== key) { h.compact = compactPacket(jobFor(h, runId, 'snapshot'), opts.redact); h.compactKey = key; }
+    return h.compact;
   }
   function snapshot() {
-    const rows = [];
-    for (const [runId, row] of packets) rows.push({ runId, at: row.at, packet: compactPacket(row.packet, opts.redact) });
+    const rows = [], gen = secretGeneration();
+    for (const [runId, row] of packets) rows.push({ runId, at: row.at, packet: parkedCompact(row, gen) });
     for (const [runId, h] of held) {
-      const packet = compactPacket(jobFor(h, runId, 'snapshot'), opts.redact);
+      const packet = heldCompact(h, runId, gen);
       const correction = packet.learningEvidence && packet.learningEvidence.correction;
       rows.push({ runId, at: h.at, ratedAt: h.ratedAt, state: 'held', reviewStatus: h.status, dueAt: h.dueAt, attempts: h.attempts, persistenceFailures: h.persistenceFailures || 0, persistenceBlocked: h.persistenceBlocked === true,
         verdict: h.verdict, correction: correction ? correction.text : '', correctionSource: h.correctionSource,
@@ -122,7 +145,9 @@ function makeVerdictReview(opts) {
         held.set(id, { at: r.at, ratedAt: Number.isFinite(r.ratedAt) ? r.ratedAt : r.at, packet: Object.assign({}, r.packet, { restored: true }), verdict: r.verdict,
           ...correctionParts(r.correction, r.correctionOriginalChars, r.correctionTruncated), correctionSource: String(r.correctionSource || ''),
           dueAt: r.reviewStatus === 'running' ? now() + retryMs : (Number.isFinite(r.dueAt) ? r.dueAt : now() + graceMs),
-          persistenceFailures: Math.max(0, Number(r.persistenceFailures) || 0), persistenceBlocked: r.persistenceBlocked === true,
+          // A held row on disk proves a later save succeeded, so a storage block never outlives the boot it happened
+          // in: fireHeld re-verifies durability before dispatch, and the retry bound applies again from zero.
+          persistenceFailures: 0, persistenceBlocked: false,
           attempts: Math.max(0, Number(r.attempts) || 0), status: r.reviewStatus === 'retry-exhausted' ? 'retry-exhausted' : 'pending', timer: null, fire: null });
       } else packets.set(id, { at: r.at, packet: Object.assign({}, r.packet, { restored: true }) });
       n++;
@@ -167,7 +192,7 @@ function makeVerdictReview(opts) {
     packets.delete(id);
     packets.set(id, { at: now(), packet });
     sweep();
-    changed();
+    changed({ ack: false });
     return true;
   }
 
@@ -185,7 +210,7 @@ function makeVerdictReview(opts) {
     const id = String(runId).trim();
     const row = packets.get(id);
     packets.delete(id);
-    changed();
+    changed({ ack: false });
     return row ? row.packet : null;
   }
 
@@ -195,7 +220,7 @@ function makeVerdictReview(opts) {
   /* ---- CORRECTION GRACE (slice 2, 2026-08-22) ----
      A verdict alone says "this fell short"; the Commander's NEXT words say HOW. Firing the review the instant the
      verdict lands threw those words away. arm() takes the packet and holds it for `graceMs`; correct() attaches
-     the Commander's correction â€” a chip tap (final:false) keeps waiting for the typed message, a typed message
+     the Commander's correction — a chip tap (final:false) keeps waiting for the typed message, a typed message
      (final:true) fires the review NOW with their words; the timer fires with whatever arrived. One review per
      run either way (held map is keyed by runId; fire is single-shot). Timers are INJECTED (determinism law). */
   const setT = typeof opts.setTimeout === 'function' ? opts.setTimeout : (fn, ms) => setTimeout(fn, ms);
@@ -309,7 +334,7 @@ function makeVerdictReview(opts) {
   }
   function holding(runId) { return held.has(String(runId || '').trim()); }
   // peek: read a parked packet WITHOUT consuming it (slice 4: a `great` verdict reads which skills the run loaded
-  // to mint a golden; it never spends the packet â€” praise is not a review).
+  // to mint a golden; it never spends the packet — praise is not a review).
   function peek(runId) { sweep(); const row = packets.get(String(runId || '').trim()); return row ? row.packet : null; }
 
   return { stash, shouldTrigger, take, size, has, cap, ttlMs, arm, correct, holding, peek, graceMs, snapshot, restore, resumeHeld };

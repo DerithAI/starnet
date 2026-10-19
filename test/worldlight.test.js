@@ -394,4 +394,27 @@ keyed.dispose();
   warm.dispose(); cold.dispose();
 }
 
+// GROUNDING CLIP (review world-render-04): a standing body's wall clip is cached, but it was keyed on the shadow's length, which
+// moves with every flicker of a nearby screen, so the 24 wall rays were re-cast every frame anyway. The clip is keyed on the
+// body's maximum reach instead (shadowFor caps length at height * 0.7): a flickering light must not rebuild a still body's clip.
+{
+  const ground = Light.create({ canvasFactory }); ground.setGeometry(station(true));
+  const still = [{ x: 35, y: 30, width: 8, height: 20 }];
+  const flick = k => ({ lights: [Object.assign({}, source, { a: 0.5 + 0.05 * k, softness: 2 }),
+    { x: 70, y: 28, r: 40, a: 0.9 - 0.08 * k, c: [90, 170, 255], softness: 1, originX: 66, originY: 24 }] });
+  const lengths = new Set();
+  for (let k = 0; k < 6; k++) {
+    ground.prepare(flick(k));
+    lengths.add(Light.shadowFor(still[0], [], [], ground.sample(35, 30)).length.toFixed(6));
+    ground.drawGrounding(output, still);
+  }
+  A.ok(lengths.size > 1, '(the flicker really moves the shadow length)');
+  A.eq(ground.stats().groundClipBuilds, 1, 'a still body casts its wall clip once while a nearby light flickers');
+  ground.drawGrounding(output, [{ x: 36, y: 30, width: 8, height: 20 }]);
+  A.eq(ground.stats().groundClipBuilds, 2, 'a body that moved gets a fresh clip');
+  ground.setGeometry(station(false)); ground.prepare(flick(0)); ground.drawGrounding(output, still);
+  A.eq(ground.stats().groundClipBuilds, 3, 'a new wall set rebuilds the clip (a sealed door is respected)');
+  ground.dispose();
+}
+
 A.report('WorldLight spatial illumination');

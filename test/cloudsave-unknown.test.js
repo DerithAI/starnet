@@ -63,20 +63,44 @@ const doc = (updatedAt) => ({ schema: 'starnet.save', version: 3, updatedAt, age
   nextPull = () => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ unreadable: true }) });
   A.eq((await CloudSave.reconcile(null)).reason, 'unreadable', 'file read failure retains its specific recovery diagnosis');
 
-  // A valid remote whose cache/migration adoption fails is still an existing station.
-  nextPull = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ save: doc(200) }) });
-  global.localStorage = { getItem() { return null; }, setItem() { throw new Error('quota exceeded'); }, removeItem() {} };
-  const cacheFailure = await CloudSave.reconcile(null);
-  A.ok(CloudSave.isUnknownSentinel(cacheFailure), 'failed remote adoption cannot fall through to onboarding');
-  A.eq(cacheFailure.reason, 'cache', 'cache failure does not falsely diagnose a disconnected server');
+  // #121: a valid remote the browser cache cannot hold (its per-site storage cap) is resumed IN MEMORY through the
+  // real Save.fromDoc (validated, migrated), with its own revision: never onboarding, never the save-unreachable screen.
+  const RealSave = require('../frontend/app/save.js');
+  const removed = [];
+  global.Save = RealSave;
+  nextPull = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ save: { ...doc(200), _saveRevision: 4 } }) });
+  global.localStorage = { getItem() { return null; }, setItem() { throw new Error('quota exceeded'); }, removeItem(k) { removed.push(k); } };
+  const fromMemory = await CloudSave.reconcile(null);
+  A.ok(!CloudSave.isUnknownSentinel(fromMemory) && fromMemory && fromMemory.agent && fromMemory.agent.name === 'NOVA', 'a remote the cache cannot hold is resumed from memory, not gated');
+  A.eq(fromMemory.version, RealSave.CURRENT, 'the in-memory resume runs the migration ladder');
+  A.eq(CloudSave.revision(), 4, 'the in-memory resume carries the station file revision');
+  A.eq(CloudSave.memorySave() && CloudSave.memorySave().agent.name, 'NOVA', 'the in-memory save is what a later re-entry resumes');
+  A.eq(removed, [], 'with no cache entry there is nothing to drop');
 
+  // the 'cache' sentinel stays ONLY for a remote save that fails migration
+  global.Save = { CURRENT: 5, load: () => null, fromDoc: () => ({ status: 'error', doc: null, version: 0 }) };
+  nextPull = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ save: doc(200) }) });
+  const cacheFailure = await CloudSave.reconcile(null);
+  A.ok(CloudSave.isUnknownSentinel(cacheFailure), 'a remote that fails migration cannot fall through to onboarding');
+  A.eq(cacheFailure.reason, 'cache', 'a migration failure does not falsely diagnose a disconnected server');
+
+  // a stale CLEAN local + a newer remote the cache cannot hold: the newer remote wins, from memory, at its revision;
+  // the superseded cache entry is dropped so neither a re-entry nor the next boot can resume it
   const staleLocal = { ...doc(100), _saveRevision: 1 };
-  const newerRemote = { ...doc(200), _saveRevision: 5 };
+  const newerRemote = { ...doc(200), _saveRevision: 5, agent: { id: 'agent', name: 'NOVA-2' } };
   nextPull = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ save: newerRemote }) });
-  global.Save = { CURRENT: 5, load: () => staleLocal };
+  global.Save = RealSave;
+  removed.length = 0;
   const staleRaw = JSON.stringify(staleLocal);
   global.localStorage.getItem = () => staleRaw;
-  A.eq(await CloudSave.reconcile(staleLocal), staleLocal, 'failed cache write retains the original local snapshot');
+  const resumed = await CloudSave.reconcile(staleLocal);
+  A.eq(resumed && resumed.agent && resumed.agent.name, 'NOVA-2', 'a failed cache write resumes the newer station file, not the stale local copy');
+  A.eq(CloudSave.revision(), 5, 'the resumed station builds on the station file revision');
+  A.eq(removed, ['starnet.save'], 'the superseded clean cache entry is removed');
+
+  // ...but when that newer remote fails migration, the original local snapshot is kept at its own revision
+  global.Save = { CURRENT: 5, load: () => staleLocal, fromDoc: () => ({ status: 'error', doc: null, version: 0 }) };
+  A.eq(await CloudSave.reconcile(staleLocal), staleLocal, 'a remote that fails migration retains the original local snapshot');
   A.eq(CloudSave.revision(), 1, 'failed adoption cannot rebase a stale cache onto the newer durable revision');
 
   A.report('cloudsave-unknown');

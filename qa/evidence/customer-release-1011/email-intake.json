@@ -137,7 +137,7 @@
     {
       "id": "E07",
       "kind": "security-report",
-      "title": "Cross-user local station isolation report",
+      "title": "Private security report",
       "recovery": "unconfirmed",
       "existing_fingerprints": [
         "1df2d6f8"
@@ -146,7 +146,7 @@
         "45fd059b7",
         "f7553cd3e"
       ],
-      "assessment": "Private customer report on Windows 11 / 0.13.1; source candidate contains boundary repair and exact-peer follow-up. Existing fingerprint is audit-origin and related. No foreign-user installer proof or customer retest. Detailed evidence remains private.",
+      "assessment": "Private security report; details are held outside the repository.",
       "thread_count": 1,
       "priority": "owner-triage-first",
       "mapping_relationship": "related only; exact incident record not established",
@@ -159,31 +159,33 @@
       "title": "Google blocks Drive or Gmail OAuth authorization",
       "recovery": "unconfirmed",
       "existing_fingerprints": [
+        "f2ac6356",
         "e5d4b743"
       ],
       "source_candidates": [],
-      "assessment": "Drive explicitly 0.13.1, fresh personal Google account also blocked; Gmail version unknown. Earlier developer-credential onboarding bug is related only. Missing precise Google app-blocked record; OAuth deployment/verification state must be checked independently.",
+      "assessment": "October 12 reconciliation: f2ac6356 records the 0.13.1 Drive hard block with a newly created personal account. The separate Gmail report and app-password route do not establish Drive or OAuth recovery. e5d4b743 is the older developer-credential form defect. Cause and recovery unconfirmed.",
       "thread_count": 2,
       "priority": "owner-triage-first",
-      "mapping_relationship": "related only; exact incident record not established",
-      "record_action": "add customer incident record or link a more precise existing record",
+      "mapping_relationship": "exact Drive incident f2ac6356; Gmail separate; e5d4b743 related only",
+      "record_action": "retain open; installer unverified and customer recovery unconfirmed",
       "customer_reporters": 2
     },
     {
       "id": "E09",
       "kind": "bug",
-      "title": "Saved station request is lost although health endpoint answers",
+      "title": "Saved station opening is blocked although health endpoint answers",
       "recovery": "unconfirmed",
       "existing_fingerprints": [
+        "4c0efd8c",
         "25de9a74",
         "34c58f4f"
       ],
       "source_candidates": [],
-      "assessment": "0.13.1 Windows, alternate install disk, SAVE-NET/SAVE REQUEST LOST; diagnostics API returned nothing. Related save-integrity fingerprints do not establish cause. Missing exact record and affected logs.",
+      "assessment": "October 12 reconciliation: 4c0efd8c records Windows 0.13.1/e0a36dcd3 saved-station opening blocked at SAVE-NET despite a reported health response. No data loss or alternate-drive cause established. Related save-integrity records do not prove this incident repaired.",
       "thread_count": 1,
       "priority": "owner-triage-first",
-      "mapping_relationship": "related only; exact incident record not established",
-      "record_action": "add customer incident record or link a more precise existing record",
+      "mapping_relationship": "exact incident 4c0efd8c; other records related only",
+      "record_action": "retain open; installer unverified and customer recovery unconfirmed",
       "customer_reporters": 1
     },
     {
@@ -397,18 +399,27 @@
       "id": "E23",
       "kind": "bug",
       "title": "macOS web_fetch transport reports TLS decode error or socket close",
-      "recovery": "persists",
-      "existing_fingerprints": [],
+      "recovery": "unconfirmed",
+      "existing_fingerprints": [
+        "1d3ac09a"
+      ],
       "source_candidates": [
         "86921e195",
         "a2fd53f44"
       ],
-      "assessment": "0.12.5 Apple Silicon persists after restart; no proxy. Diagnostic source changes identify host/cause; they do not prove a transport fix. Keep distinct from DNS lookup shape until correlated.",
+      "assessment": "October 12 recovery of the October 3 record 1d3ac09a from commit 17c3aeb9253b88bb5dcae60a55b7af819415031d corrects the October 11 intake omission. Original 0.12.5 Apple Silicon failure persisted after restart; no source fix or later customer recovery established. Diagnostic and DNS changes are related only.",
       "thread_count": 1,
       "priority": "normal-intake",
-      "mapping_relationship": "no matching fingerprint found",
-      "record_action": "add customer incident record or link a more precise existing record",
-      "customer_reporters": 1
+      "mapping_relationship": "exact historical customer record recovered",
+      "record_action": "retain open; installer unverified and customer recovery unconfirmed",
+      "customer_reporters": 1,
+      "reconciliation_source": {
+        "commit": "17c3aeb9253b88bb5dcae60a55b7af819415031d",
+        "record": "qa/bugs/1d3ac09a-reported-macos-web-fetch-tls-decode-and-socket-f.md",
+        "original_date": "2026-10-03",
+        "intake_date": "2026-10-11",
+        "recovered_date": "2026-10-12"
+      }
     },
     {
       "id": "E24",

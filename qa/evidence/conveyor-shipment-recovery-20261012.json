@@ -1,0 +1,102 @@
+{
+  "kind": "actual-sidecar-shipment-recovery-before-after",
+  "notes": [
+    "Private real sidecar with local deterministic provider performing successful fs_list calls.",
+    "Fault injector arms only after the shipment main-file rename succeeds, then returns EIO for shipment reads until a private sentinel is removed.",
+    "Semantic-invalid and corrupt-main cases restart the sidecar so no previous in-memory value can conceal the failed load. All fixtures are synthetic and disposed."
+  ],
+  "before": {
+    "kind": "actual-sidecar-shipment-readback-recovery",
+    "sourceCommit": "413716af9fa73617ca9b31618946198b893841a2",
+    "fault": "EIO armed only after shipment main-file rename succeeded; local deterministic provider performed actual fs_list",
+    "initial": {
+      "status": 200,
+      "shipped": 0
+    },
+    "durableA": 1,
+    "duringFault": {
+      "status": 200,
+      "shipped": 0
+    },
+    "afterB": {
+      "status": 200,
+      "shipped": 1
+    },
+    "retainedA": false,
+    "restarted": {
+      "status": 200,
+      "shipped": 1
+    },
+    "invalidRow": {
+      "status": 200,
+      "shipped": 1
+    },
+    "invalidUnchanged": false,
+    "restored": {
+      "status": 200,
+      "shipped": 2
+    },
+    "corruptPolls": [
+      {
+        "status": 500,
+        "shipped": null
+      },
+      {
+        "status": 200,
+        "shipped": 0
+      }
+    ],
+    "corruptUnchanged": false,
+    "corruptRestored": {
+      "status": 200,
+      "shipped": 1
+    }
+  },
+  "after": {
+    "kind": "actual-sidecar-shipment-readback-recovery",
+    "sourceCommit": "ff986819265f423a1ee9235f9395987145625db6",
+    "fault": "EIO armed only after shipment main-file rename succeeded; local deterministic provider performed actual fs_list",
+    "initial": {
+      "status": 200,
+      "shipped": 0
+    },
+    "durableA": 1,
+    "duringFault": {
+      "status": 500,
+      "shipped": null
+    },
+    "afterB": {
+      "status": 200,
+      "shipped": 2
+    },
+    "retainedA": true,
+    "restarted": {
+      "status": 200,
+      "shipped": 2
+    },
+    "invalidRow": {
+      "status": 500,
+      "shipped": null
+    },
+    "invalidUnchanged": true,
+    "restored": {
+      "status": 200,
+      "shipped": 2
+    },
+    "corruptPolls": [
+      {
+        "status": 500,
+        "shipped": null
+      },
+      {
+        "status": 500,
+        "shipped": null
+      }
+    ],
+    "corruptUnchanged": true,
+    "corruptRestored": {
+      "status": 200,
+      "shipped": 2
+    }
+  }
+}

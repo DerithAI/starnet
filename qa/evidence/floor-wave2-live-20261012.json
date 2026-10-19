@@ -1,0 +1,33 @@
+{
+  "kind": "isolated-station-browser-acceptance",
+  "lane": "final floor lane, wave 2 (release review floor items)",
+  "sourceCommit": "97be9dea7bb1b9e09d0be4c237a163ad9c2bc03e",
+  "verifiedAt": "2026-10-12",
+  "notes": [
+    "The lane's own isolated station (fresh workspace, APPDATA/HOME/HERMES_HOME sandboxed, dev seed) served from this worktree on 127.0.0.1:9682; headless Chrome over CDP with REAL mouse and keyboard input (Input.dispatchMouseEvent / dispatchKeyEvent). Floor rigs (an INBOX-less fragment, a walled pocket, a parallel line) were laid through the validated WorldModel API; every verified gesture was real input.",
+    "Checks ran on the working tree while the lane was finishing; the move-refusal ordering was re-verified after its last change. Screenshots: gen-trees/_final-shots/wave2-floor/ (not committed).",
+    "Not verified live: build-17 (needs a pre-links save with a merged belt run; unit-tested on such a floor), worldmodel-08 (a paid hand-off run; unit-tested with the real hand-off runner and compiler)."
+  ],
+  "checks": [
+    { "id": "build-01 / conveyor-ui-02", "action": "Alt held (real key) with a BAY->OUTBOX fragment and no INBOX on the floor", "observed": { "alt": true, "renderDegraded": null, "degradedLayers": [] , "plates": "2/7 STAGES and 1/7 STAGES drawn on both INBOXes" } },
+    { "id": "build-04", "action": "Ctrl+C a line, rest the paste ghost over the line itself", "observed": { "atOnce": { "ghost": "SOMETHING ALREADY STANDS WHERE A PIECE GOES", "laid": "asking" }, "rested": { "laid": { "ok": true } }, "badge": "A CLICK LAYS IT OUT TO FIT NEARBY", "click": "PASTED · LINE RESEARCH · LAID OUT TO FIT (+4 pieces), undone" } },
+    { "id": "build-06", "action": "hotbar SPLITTER (key 4) on bare floor", "observed": { "floorNag": "NOT ON A BELT — BELT INTO IT", "hoverCard": "This junction touches no belt, so it routes nothing. Belt into it: ..." } },
+    { "id": "build-08", "action": "drag a lone BAY to empty floor, then click the Props tab", "observed": { "before": { "pick": true, "card": true }, "after": { "pick": false, "card": false, "hasSelection": 0 } } },
+    { "id": "build-09", "action": "arm a LINES shelf line, tap REMOVE, tap an OUTBOX", "observed": { "afterKey": { "tool": "select", "touchArm": "remove", "lit": true }, "afterTap": "REMOVED · OUTBOX · CTRL+Z (undone)" } },
+    { "id": "build-10", "action": "drag a BAY that already hands work on to the floor, R mid-drag, let go on the red verdict", "observed": { "mid": { "flip": true, "cornerLit": true }, "after": { "flip": false, "cornerLit": false } } },
+    { "id": "build-11", "action": "latch ALT VIEW, click Props, click Conveyors", "observed": { "latched": true, "inProps": false, "back": true } },
+    { "id": "build-12", "action": "FINISH card (BELT tool) of a line fed by another line's SEND TO", "observed": { "feed": "✓ FED BY LINE ALLOWANCE", "done": true } },
+    { "id": "build-13", "action": "drag LINE RESEARCH's OUTBOX onto LINE X's INBOX", "observed": { "plan": "send · SEND EVERY RESULT TO LINE X", "arcs": "only the ghost arc from that OUTBOX while aiming", "after": "SENDS EVERY RESULT TO LINE X" } },
+    { "id": "build-15", "action": "Ctrl+X a whole line that receives a SEND TO; right-click its INBOX", "observed": { "ctrlX": "THIS CUTS 1 SEND TO FROM LINE RESEARCH — CUT (CTRL+X) AGAIN TO CONTINUE · UNDO RESTORES THEM", "rightClick": "THIS CUTS 1 SEND TO FROM LINE RESEARCH — RIGHT-CLICK / REMOVE AGAIN TO CONTINUE · UNDO RESTORES THEM", "nothingRemoved": true } },
+    { "id": "build-16", "action": "Ctrl+click a belt tile", "observed": { "beltCard": true, "linksUnchanged": true } },
+    { "id": "build-18", "action": "select a BAY, SAVE & EXIT, reopen BUILD MODE", "observed": { "before": ["p13"], "after": [], "hasSelection": 0 } },
+    { "id": "build-19", "action": "click a BAY, then 0.1 s later double-click empty floor", "observed": { "selection": [] } },
+    { "id": "build-20", "action": "double-click a line, press a member, 4 px across a tile seam, release", "observed": { "mid": "grouppress", "unmoved": true, "selection": ["p12"] } },
+    { "id": "build-22", "action": "box two BAYs and the three belts the box crosses, Ctrl+C", "observed": { "toast": "COPIED · 2 PIECES · 1 BELT · 2 BELTS LEFT OUT (THEY RUN OUTSIDE THE COPY)" } },
+    { "id": "worldmodel-07", "action": "ALLOWANCE DESK from the LINES shelf, twice (the second laid out to fit)", "observed": { "names": ["LINE ALLOWANCE", "LINE ALLOWANCE 2"] } },
+    { "id": "worldmodel-09", "action": "drag a selected line BAY into a walled 2x2 pocket", "observed": { "ghost": "ITS BELT CAN’T FOLLOW HERE", "release": "Its belt finds no clear route from there. Move it where the belt can follow, or take the belt up first.", "moved": false } },
+    { "id": "worldmodel-11", "action": "re-aim a SEND TO with the hand, Ctrl+Z", "observed": { "float": "UNDID · SEND TO", "sendToRestored": true } },
+    { "id": "conveyor-ui-09", "action": "TEST view of a COPY (parallel) line, hover the STEP chip", "observed": { "chipOff": true, "tip": "STEP THROUGH carries one crate at a time and cannot finish this parallel line. Use RUN ONE REAL JOB to test the whole line, or TEST THIS STEP on a single BAY." } }
+  ],
+  "pageErrors": []
+}

@@ -190,7 +190,10 @@
     return base() + u.pathname + u.search;
   }
 
-  const api = { fileUrl, runUrl, viewUrl, pluginUrl, draftUrl, appUrl, sseUrl, saveBeaconUrl, sign, mint,
+  // Reuse the byte-tested digest for content verification when WebCrypto is unavailable.
+  const sha256Text = text => Array.from(sha256(utf8(String(text))), b => b.toString(16).padStart(2, '0')).join('');
+
+  const api = { fileUrl, runUrl, viewUrl, pluginUrl, draftUrl, appUrl, sseUrl, saveBeaconUrl, sign, mint, sha256Text,
     _test: { sha256, hmacSha256, utf8, b64url, mintWith, scopeFile, scopeRun, scopeView, scopePlugin, scopeDraft, scopeApp, SCOPE_SSE, SCOPE_SAVE, KINDS } };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.ApiTicket = api;

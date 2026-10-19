@@ -47,7 +47,9 @@ const ProjectHome = (() => {
   function close() {
     ++epoch; clearTimeout(timer); root = homeId = '';
     if (panel) { showView(''); actions.hidden = true; updates.remove(); }
-    document.getElementById('comms-title').textContent = 'COMMS';
+    // ORG P26: the project home hands the title back — the open session's name, never a bare 'COMMS'
+    const title = document.getElementById('comms-title'); title.removeAttribute('data-session');
+    if (typeof Chat !== 'undefined' && Chat.paintTitle) Chat.paintTitle(); else title.textContent = 'COMMS';
     document.getElementById('comms-idbar').classList.remove('ph-project');
   }
   async function open(projectRoot) {
@@ -76,7 +78,8 @@ const ProjectHome = (() => {
     const log = document.getElementById('chat-log');
     if (updates.parentNode !== log) log.appendChild(updates);
     notice(data.project.blessed ? '' : 'Folder access is revoked. Re-add this folder before starting new work.');
-    document.getElementById('comms-title').textContent = data.project.name || root.split(/[\\/]/).pop();
+    const title = document.getElementById('comms-title'); title.removeAttribute('data-session'); title.removeAttribute('data-tip');
+    title.textContent = data.project.name || root.split(/[\\/]/).pop();
     const crewList = panel.querySelector('.ph-crew-list');
     const signature = JSON.stringify(data.crew.map(a => [a.id, a.name]));
     if (!crewDirty && crewList.dataset.signature !== signature + JSON.stringify(data.project.preferredAgents)) {
@@ -160,5 +163,6 @@ const ProjectHome = (() => {
       if (token === epoch) poll(token);
     }, 2500);
   }
-  return { open, close, onSession: id => { if (root && id !== homeId) close(); } };
+  // owns(): the project home names the COMMS title while it is shown (Chat.paintTitle steps aside)
+  return { open, close, owns: () => !!root, onSession: id => { if (root && id !== homeId) close(); } };
 })();

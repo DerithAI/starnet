@@ -198,7 +198,7 @@ if (clamp) {
 // complete placement and clamp calculation in visual px, then divide the two style writes once.
 const build = read('frontend', 'app', 'build.js');
 const finStart = build.indexOf('function positionFinCard()');
-const finEnd = build.indexOf('function noteLineDelivered(', finStart);
+const finEnd = build.indexOf('function finLiveStation(', finStart);
 const finPos = finStart >= 0 && finEnd > finStart ? build.slice(finStart, finEnd) : '';
 A.ok(finPos, 'build.js still positions the FINISH-THE-LINE card');
 A.ok(/const\s+uiz\s*=\s*U\.uiZoom\(\)/.test(finPos),

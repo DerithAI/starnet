@@ -224,4 +224,110 @@ const geoChain = bound => ({
   A.eq(g.peek().boxes.length, 0, 'a non-deployable plan projects nothing (a ghost may never ride a loop)');
 }
 
+/* ---- 7. captions are LAID OUT, never piled (walk 10-14 #13): two captions printed on top of each other on the busy
+   station, and one crossed the hull into space. draw() places each caption where no caption drawn this frame sits,
+   asks the caller's fit (keep it on the station; null = that spot is taken) at each spot it tries, and leaves out a
+   caption with no clear spot. ---- */
+{
+  const geo = geoChain(false);
+  const plan = P.compileRoutingPlan(geo), g = GhostLine.create();
+  g.setContext({ plan, comps: P.lineComponents(geo), offset: { tx: 0, ty: 0 } });
+  const jm = jmapOf(plan);
+  let plates = [];
+  const target = { fillStyle: '', measureText: t => ({ width: String(t).length * 4 }), getTransform: () => ({ a: 1 }),
+    fillRect(x, y, w, h) { if (target.fillStyle === 'rgba(4,6,8,0.86)') plates.push({ x, y, w, h }); } };
+  const ctx = new Proxy(target, { get: (o, k) => (k in o ? o[k] : () => {}), set: (o, k, v) => { o[k] = v; return true; } });
+  const over = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  let now = 0, crowded = 0, piled = 0, outside = 0, oneSpot = 0, refused = 0, moved = 0, below = 0;
+  const room = { x: -30, y: -40, w: 180, h: 60 };
+  const keepIn = b => { b.x = Math.max(room.x, Math.min(room.x + room.w - b.w, b.x)); return b; };
+  for (let i = 0; i < 2600; i++) {
+    now += 16; g.tick(16, now, geo.belts, jm, { feed: { known: false, fed: false } });
+    const notes = g.peek().notes;
+    if (notes.length < 2) continue;
+    crowded++;
+    plates = []; g.draw(ctx, now, 12, 8, null, keepIn);
+    for (let a = 0; a < plates.length; a++) for (let b = a + 1; b < plates.length; b++) if (over(plates[a], plates[b])) piled++;
+    for (const p of plates) if (p.x < room.x - 0.01 || p.x + p.w > room.x + room.w + 0.01) outside++;
+    plates = []; g.draw(ctx, now, 12, 8, null, b => ({ x: 0, y: 0, w: b.w, h: b.h }));   // every spot is the same spot
+    if (plates.length === 1) oneSpot++;
+    plates = []; g.draw(ctx, now, 12, 8, null, () => null);                            // every spot is taken by something real
+    if (plates.length === 0) refused++;
+    // the newest caption is laid out first; refuse ONLY its own first spot and it must land on its next one
+    const first = notes[notes.length - 1], isDock = / WOULD RUN IT$/.test(first.text), firstSpot = (first.y + 1) * 12 + 3;   // a dock caption hangs under its tile
+    if (isDock) {
+      below++;
+      plates = []; g.draw(ctx, now, 12, 8, null, (b, n) => (n && n.text === first.text && n.x === first.x && b.y === firstSpot) ? null : b);
+      if (plates.length && plates[0].y !== firstSpot && Math.abs(plates[0].y - (first.y * 12 - 3 - 8 * 1.36)) < 8) moved++;
+    }
+  }
+  A.ok(crowded > 0, 'the chain line shows two captions at once at some point (' + crowded + ' frames)');
+  A.eq(piled, 0, 'no two captions drawn in one frame overlap');
+  A.eq(outside, 0, 'every caption stays inside the box the caller keeps it in (the station, never space)');
+  A.eq(oneSpot, crowded, 'when every candidate spot is the same spot, ONE caption is drawn there, never a pile');
+  A.eq(refused, crowded, 'a caption whose every spot is taken by something real sits the pass out');
+  A.ok(below > 0 && moved === below, 'a dock caption refused under its tile goes over it instead (' + moved + '/' + below + ' frames)');
+  A.ok(/if \(!b\) continue;/.test(require('fs').readFileSync(require('path').join(__dirname, '../frontend/app/ghostline.js'), 'utf8')), 'draw() leaves out a caption with no clear spot');
+}
+
+/* ---- 8. a caption the caller's arbiter DECLINES holds no spot (review 10-14): `say` answering false means "not painted",
+   so the next caption may take that spot; an arbiter that paints later (BUILD MODE's voice queue answers nothing) keeps
+   the spot reserved, so its queue never receives two piled plates. ---- */
+{
+  const geo = geoChain(false);
+  const plan = P.compileRoutingPlan(geo), g = GhostLine.create();
+  g.setContext({ plan, comps: P.lineComponents(geo), offset: { tx: 0, ty: 0 } });
+  const jm = jmapOf(plan);
+  let plates = [];
+  const target = { fillStyle: '', measureText: t => ({ width: String(t).length * 4 }), getTransform: () => ({ a: 1 }),
+    fillRect(x, y, w, h) { if (target.fillStyle === 'rgba(4,6,8,0.86)') plates.push({ x, y, w, h }); } };
+  const ctx = new Proxy(target, { get: (o, k) => (k in o ? o[k] : () => {}), set: (o, k, v) => { o[k] = v; return true; } });
+  const sameSpot = b => ({ x: 0, y: 0, w: b.w, h: b.h });
+  let now = 0, crowded = 0, twoLive = 0, tookFreedSpot = 0, deferredOffers = 0, deferredOnce = 0;
+  for (let i = 0; i < 2600; i++) {
+    now += 16; g.tick(16, now, geo.belts, jm, { feed: { known: false, fed: false } });
+    if (g.peek().notes.length < 2) continue;
+    crowded++;
+    // how many captions are live in draw this frame (every spot distinct, so each is offered once)
+    let live = 0, far = 0;
+    plates = []; g.draw(ctx, now, 12, 8, (b, paint) => { live++; return true; }, b => ({ x: (far++) * 1000, y: 0, w: b.w, h: b.h }));
+    // the arbiter declines the first caption it is offered and paints the rest
+    let offered = 0;
+    plates = []; g.draw(ctx, now, 12, 8, (b, paint) => { if (offered++ === 0) return false; paint(); return true; }, sameSpot);
+    if (live === 2) { twoLive++; if (offered === 2 && plates.length === 1) tookFreedSpot++; }   // (a caption that expires inside draw is never offered)
+    // an arbiter that queues (paints after draw returns) keeps the first caption's spot: the second is never offered onto it
+    const queued = [];
+    plates = []; g.draw(ctx, now, 12, 8, (b, paint) => { queued.push(paint); }, sameSpot);
+    deferredOffers += queued.length; if (queued.length === 1) deferredOnce++;
+  }
+  A.ok(crowded > 0, 'the chain line shows two captions at once at some point (' + crowded + ' frames)');
+  A.ok(twoLive > 0, 'two captions are live inside draw on ' + twoLive + ' frames');
+  A.eq(tookFreedSpot, twoLive, 'a declined caption frees its spot: the next caption is offered it and painted there');
+  A.eq(deferredOnce, crowded, 'a queueing arbiter is offered ONE caption per spot, never a pile (' + deferredOffers + ' offers)');
+}
+
+/* ---- 9. BUILD MODE's caption fit refuses a bay's name plate (review 10-14): its fit only slid a caption onto the glass,
+   so a dock caption whose spot under its tile was taken went OVER the tile — onto the gantry plate naming the agent. ---- */
+{
+  const fs = require('fs'), path = require('path');
+  const build = fs.readFileSync(path.join(__dirname, '../frontend/app/build.js'), 'utf8');
+  A.ok(/ghost\.draw\(ctx, now, t, capFs\(\), \(box, paint\) => voiceSay\('ghostCaption', box, box, paint\), ghostCaptionFit\)/.test(build), 'BUILD MODE lays its WOULD-captions out with ghostCaptionFit');
+  const src = (build.match(/function ghostCaptionFit\(box, n\) \{[\s\S]*?\n  \}/) || [''])[0];
+  A.ok(!!src, 'ghostCaptionFit is defined in build.js');
+  // one room, tiles 0..11 x 0..7 (px 0..144 x 0..96, its north wall face 30px above), and a bound bay at tiles 5-6 x 3
+  const rooms = GhostLine.roomBoxes([{ x1: 0, y1: 0, x2: 11, y2: 7 }], 12, 0, 0, 30);
+  const fit = src ? new Function('captionFit', 'T', 'frameBayLabels', 'GhostLine', 'buildRoomBoxes', src + '; return ghostCaptionFit;')(b => b, () => 12, [{ x: 5, y: 3, w: 2, agentId: 'nova', t: 'bay' }], GhostLine, () => rooms) : () => ({});
+  const bay = { x: 5, y: 3, text: '◇ NOVA WOULD RUN IT' };
+  // the plate: centred on the 2-wide bay (x 60..84 -> 60.5..83.5), straddling its top edge (y 31.5..42.5)
+  A.eq(fit({ x: 50, y: 22, w: 40, h: 11 }, bay), null, 'a caption over the bay\'s name plate is refused');
+  A.ok(!!fit({ x: 50, y: 60, w: 40, h: 11 }, bay), 'a caption under the bay is kept');
+  A.ok(!!fit({ x: 50, y: 44, w: 40, h: 11 }, bay), 'a caption just clear of the plate is kept');
+  // …and it keeps the live floor's on-station law (GhostLine.onStation): in its room, never past the hull into space
+  const wide = fit({ x: 120, y: 60, w: 60, h: 11 }, { x: 11, y: 4, text: 'X' });
+  A.ok(!!wide && wide.x + wide.w <= 142 + 0.01, 'a caption at the hull wall slides back into its room (it ran past the hull in BUILD MODE)');
+  A.eq(fit({ x: 50, y: 100, w: 40, h: 11 }, { x: 5, y: 7, text: 'X' }), null, 'a caption under the last floor row (the hull\'s skirt, then space) is refused, so it takes its other side');
+  const ps = fs.readFileSync(path.join(__dirname, '../frontend/app/propsprites.js'), 'utf8');
+  A.ok(/const width = Math\.max\(12,\(p\.w \|\| 1\)\*TILE-1\)/.test(ps) && /const x=\(p\.x\+\(p\.w\|\|1\)\/2\)\*TILE,anchor=p\.y\*TILE-surfaceLift\(p\)\+1,h=11;/.test(ps), 'the plate it refuses is the one PropSprites.drawBayNames paints (same width, centre, top edge, 11px)');
+}
+
 A.report('ghostline');

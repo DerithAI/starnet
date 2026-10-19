@@ -52,6 +52,7 @@ function makeRunTranscript(opts) {
   const streamId = o.streamId;
   const agentId = o.agentId;
   const runId = o.runId;
+  const dispatchState = o.dispatchState === 'pending' || o.dispatchState === 'internal' ? o.dispatchState : undefined;
   const onFailure = typeof o.onFailure === 'function' ? o.onFailure : function () {};
   // a delegated worker's directive was written by the agent that dispatched it, never typed by the Commander
   const from = o.from ? String(o.from) : '';
@@ -63,7 +64,7 @@ function makeRunTranscript(opts) {
 
   function writeDirective() {
     if (directiveWritten || !directive) return;
-    store.appendStrict({ streamId: streamId, agentId: agentId, role: 'user', content: directive, sourceRunId: runId, taint: taintNow(), from: from || undefined });
+    store.appendStrict({ streamId: streamId, agentId: agentId, role: 'user', content: directive, sourceRunId: runId, dispatchState, taint: taintNow(), from: from || undefined });
     directiveWritten = true;
   }
 
@@ -71,7 +72,7 @@ function makeRunTranscript(opts) {
   // unproven row (the compaction tiers rely on that: a failed drain leaves the history unfolded).
   function drain(messages) {
     writeDirective();
-    return Array.isArray(messages) ? store.appendNewStrict(streamId, agentId, messages, { sourceRunId: runId, taint: taintNow() }) : 0;
+    return Array.isArray(messages) ? store.appendNewStrict(streamId, agentId, messages, { sourceRunId: runId, dispatchState, taint: taintNow() }) : 0;
   }
 
   function waitsForNextBoundary(phase, messages) {

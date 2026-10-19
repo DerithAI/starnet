@@ -1,0 +1,1381 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-12T08:10:35.086Z",
+  "sourceCommit": "fd3817394331072749556f35840e70723fe3c4f1",
+  "repairCommits": [
+    "cc5bc014749ec5bbb90bc2ad0574d46797bfd80b",
+    "fd3817394331072749556f35840e70723fe3c4f1"
+  ],
+  "baselineCommit": "bbe1aa1066de6a65c5b06c59d99824e3bc3e0280",
+  "reports": [
+    {
+      "id": "GitHub #99",
+      "url": "https://github.com/androoAGI/starnet/issues/99",
+      "reportedConfiguration": "StarNet 0.13.2 on Windows; qwen3:8b then llama3.1:8b; Ollama version and hardware not supplied",
+      "originalSymptom": "Named agent stays Working until manual cancel; discovery and direct native/compatible API calls reportedly succeed",
+      "state": "OPEN",
+      "commentCount": 0,
+      "lastIssueUpdate": "2026-10-09T10:04:34Z",
+      "customerCause": "unproved",
+      "customerRecovery": "unverified"
+    },
+    {
+      "id": "E43 / 5274c7b7",
+      "reportedConfiguration": "StarNet 0.11.2 on Windows; Ollama 0.5.7; qwen2.5:7b; 127.0.0.1:11434",
+      "originalSymptom": "About 605102ms timeout; discovery and second TCP connection observed, chat POST not observed by reporter",
+      "state": "open",
+      "customerCause": "unproved",
+      "customerRecovery": "unconfirmed"
+    }
+  ],
+  "verdict": "A controlled HTTP error-body stall is reproduced and repaired. The available customer reports do not establish that either encountered this condition. Neither report is closed.",
+  "cause": "The response headers disarmed the connect guard, including its caller-abort forwarding, and responseErrorDetail awaited res.text() without the idle watchdog or original run signal. A non-ending error body therefore outlived cancellation and the configured body-idle interval.",
+  "repair": "Read error-body chunks using the existing idleGuardedReader and original signal; propagate timeout/abort; preserve progressing error payloads and metadata. Change the loop diagnostic to describe idle expiry without asserting that no prior bytes arrived.",
+  "untouched": [
+    "Ollama allocation-error classification and retry path owned by the graphics lane",
+    "Ollama 300000ms connect allowance",
+    "Existing retry policy and native/compatible success parser",
+    "Shared schema/events",
+    "Trunk"
+  ],
+  "fixture": {
+    "node": "v22.23.0",
+    "entry": "node dev/seed.js --keep --workspace <isolated temporary fixture>",
+    "provider": "production Ollama factory against controlled localhost HTTP",
+    "models": [
+      "qwen3:8b",
+      "llama3.1:8b",
+      "qwen2.5:7b"
+    ],
+    "catalogStatus": 200,
+    "idleMs": 350,
+    "headerDelayMs": 700,
+    "timingSemantics": "All case times are elapsed wall-clock milliseconds. Provider headerMs/firstByteMs record server writes, not packet-capture arrival. clientHeadersMs and token/event times record the probe client receiving the actual sidecar response. No real model was loaded.",
+    "cleanup": "Fixture-owned dev launcher process tree was stopped, isolated workspace/profile disposed, and controlled endpoint closed after collection. Cancellation response-close assertions precede forced endpoint release."
+  },
+  "before": [
+    {
+      "case": "healthy-qwen",
+      "requestedModel": "qwen3:8b",
+      "configuration": null,
+      "runId": "3d961866-1220-4a1f-9c68-7fc487bd58c3",
+      "httpStatus": 200,
+      "clientHeadersMs": 293,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 304,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 304,
+          "firstByteMs": 304,
+          "closedMs": 305,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 326,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 326,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 326,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "3d961866-1220-4a1f-9c68-7fc487bd58c3",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          305
+        ]
+      },
+      "forcedEndpointReleaseMs": 326,
+      "terminal": [
+        {
+          "atMs": 326,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "3d961866-1220-4a1f-9c68-7fc487bd58c3",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 326,
+      "clientError": null
+    },
+    {
+      "case": "healthy-llama",
+      "requestedModel": "llama3.1:8b",
+      "configuration": null,
+      "runId": "f008a8c5-bd6c-43a6-9ec5-c2ce84b9b1fc",
+      "httpStatus": 200,
+      "clientHeadersMs": 19,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "llama3.1:8b",
+          "arrivedMs": 47,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 47,
+          "firstByteMs": 47,
+          "closedMs": 47,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 81,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 81,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 81,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "f008a8c5-bd6c-43a6-9ec5-c2ce84b9b1fc",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          47
+        ]
+      },
+      "forcedEndpointReleaseMs": 81,
+      "terminal": [
+        {
+          "atMs": 81,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "f008a8c5-bd6c-43a6-9ec5-c2ce84b9b1fc",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 81,
+      "clientError": null
+    },
+    {
+      "case": "older-config-control",
+      "requestedModel": "qwen2.5:7b",
+      "configuration": null,
+      "runId": "0bdd9fa1-9c57-477a-8ecb-54e2a9b73b09",
+      "httpStatus": 200,
+      "clientHeadersMs": 27,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen2.5:7b",
+          "arrivedMs": 48,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 48,
+          "firstByteMs": 48,
+          "closedMs": 48,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 64,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 64,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 64,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "0bdd9fa1-9c57-477a-8ecb-54e2a9b73b09",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          48
+        ]
+      },
+      "forcedEndpointReleaseMs": 64,
+      "terminal": [
+        {
+          "atMs": 64,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "0bdd9fa1-9c57-477a-8ecb-54e2a9b73b09",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 64,
+      "clientError": null
+    },
+    {
+      "case": "slow-headers",
+      "requestedModel": "qwen3:8b",
+      "configuration": null,
+      "runId": "249b8008-b43f-46d5-aec1-27811cb119aa",
+      "httpStatus": 200,
+      "clientHeadersMs": 45,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 64,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 765,
+          "firstByteMs": 765,
+          "closedMs": 765,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 799,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 799,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 799,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "249b8008-b43f-46d5-aec1-27811cb119aa",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          765
+        ]
+      },
+      "forcedEndpointReleaseMs": 799,
+      "terminal": [
+        {
+          "atMs": 799,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "249b8008-b43f-46d5-aec1-27811cb119aa",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 799,
+      "clientError": null
+    },
+    {
+      "case": "pre-header-cancel",
+      "requestedModel": "qwen3:8b",
+      "configuration": null,
+      "runId": "e348f53d-a496-48de-9067-0f4936c0a62d",
+      "httpStatus": 200,
+      "clientHeadersMs": 27,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 34,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": null,
+          "firstByteMs": null,
+          "closedMs": 158,
+          "closedBeforeEnd": true
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": 140,
+      "cancel": {
+        "status": 200,
+        "text": "ok",
+        "atMs": 159
+      },
+      "beforeForcedEndpointRelease": {
+        "atMs": 173,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 173,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "e348f53d-a496-48de-9067-0f4936c0a62d",
+              "reason": "cancelled",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          158
+        ]
+      },
+      "forcedEndpointReleaseMs": 173,
+      "terminal": [
+        {
+          "atMs": 173,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "e348f53d-a496-48de-9067-0f4936c0a62d",
+            "reason": "cancelled",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 173,
+      "clientError": null
+    },
+    {
+      "case": "body-cancel",
+      "requestedModel": "qwen3:8b",
+      "configuration": null,
+      "runId": "e4e0878b-bdf6-4b46-bc43-f521feb23ae1",
+      "httpStatus": 200,
+      "clientHeadersMs": 28,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 32,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 32,
+          "firstByteMs": null,
+          "closedMs": 157,
+          "closedBeforeEnd": true
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": 139,
+      "cancel": {
+        "status": 200,
+        "text": "ok",
+        "atMs": 157
+      },
+      "beforeForcedEndpointRelease": {
+        "atMs": 170,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 170,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "e4e0878b-bdf6-4b46-bc43-f521feb23ae1",
+              "reason": "cancelled",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          157
+        ]
+      },
+      "forcedEndpointReleaseMs": 170,
+      "terminal": [
+        {
+          "atMs": 170,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "e4e0878b-bdf6-4b46-bc43-f521feb23ae1",
+            "reason": "cancelled",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 170,
+      "clientError": null
+    },
+    {
+      "case": "native-held-terminal",
+      "requestedModel": "qwen3:8b",
+      "configuration": null,
+      "runId": "b99f14e1-291e-4fd2-93bb-b93dc4740984",
+      "httpStatus": 200,
+      "clientHeadersMs": 27,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 48,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 48,
+          "firstByteMs": 48,
+          "closedMs": 80,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 80,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 80,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 80,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "b99f14e1-291e-4fd2-93bb-b93dc4740984",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          null
+        ]
+      },
+      "forcedEndpointReleaseMs": 80,
+      "terminal": [
+        {
+          "atMs": 80,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "b99f14e1-291e-4fd2-93bb-b93dc4740984",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 80,
+      "clientError": null
+    },
+    {
+      "case": "error-hold-idle",
+      "requestedModel": "qwen3:8b",
+      "configuration": null,
+      "runId": "fdbcb3eb-8236-4ca8-ac0e-a3ae77fc5d4d",
+      "httpStatus": 200,
+      "clientHeadersMs": 27,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 47,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 47,
+          "firstByteMs": 47,
+          "closedMs": 964,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 964,
+        "settled": false,
+        "terminal": [],
+        "errors": [],
+        "providerResponseClosed": [
+          null
+        ]
+      },
+      "forcedEndpointReleaseMs": 964,
+      "terminal": [
+        {
+          "atMs": 980,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "fdbcb3eb-8236-4ca8-ac0e-a3ae77fc5d4d",
+            "reason": "error",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 980,
+      "clientError": null
+    },
+    {
+      "case": "error-hold-cancel",
+      "requestedModel": "qwen3:8b",
+      "configuration": null,
+      "runId": "2307ecf1-7f04-46dd-a088-db80430469e1",
+      "httpStatus": 200,
+      "clientHeadersMs": 44,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 62,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 62,
+          "firstByteMs": 62,
+          "closedMs": 1102,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": 170,
+      "cancel": {
+        "status": 200,
+        "text": "ok",
+        "atMs": 187
+      },
+      "beforeForcedEndpointRelease": {
+        "atMs": 1101,
+        "settled": false,
+        "terminal": [],
+        "errors": [],
+        "providerResponseClosed": [
+          null
+        ]
+      },
+      "forcedEndpointReleaseMs": 1101,
+      "terminal": [
+        {
+          "atMs": 1130,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "2307ecf1-7f04-46dd-a088-db80430469e1",
+            "reason": "cancelled",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 1130,
+      "clientError": null
+    }
+  ],
+  "after": [
+    {
+      "case": "healthy-qwen",
+      "requestedModel": "qwen3:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen3:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "52bf4097-ed66-48c2-8a59-8b22c9d13e40",
+      "httpStatus": 200,
+      "clientHeadersMs": 561,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 588,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 588,
+          "firstByteMs": 588,
+          "closedMs": 588,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 615,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 615,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 615,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "52bf4097-ed66-48c2-8a59-8b22c9d13e40",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          588
+        ]
+      },
+      "forcedEndpointReleaseMs": 615,
+      "terminal": [
+        {
+          "atMs": 615,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "52bf4097-ed66-48c2-8a59-8b22c9d13e40",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 615,
+      "clientError": null
+    },
+    {
+      "case": "healthy-llama",
+      "requestedModel": "llama3.1:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "llama3.1:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "58b29562-1325-4d70-8b5e-c55df9df7fa1",
+      "httpStatus": 200,
+      "clientHeadersMs": 61,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "llama3.1:8b",
+          "arrivedMs": 79,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 79,
+          "firstByteMs": 79,
+          "closedMs": 79,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 101,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 101,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 101,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "58b29562-1325-4d70-8b5e-c55df9df7fa1",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          79
+        ]
+      },
+      "forcedEndpointReleaseMs": 101,
+      "terminal": [
+        {
+          "atMs": 101,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "58b29562-1325-4d70-8b5e-c55df9df7fa1",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 101,
+      "clientError": null
+    },
+    {
+      "case": "older-config-control",
+      "requestedModel": "qwen2.5:7b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen2.5:7b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "ae05c75d-86a9-4001-9e26-c0fc49468489",
+      "httpStatus": 200,
+      "clientHeadersMs": 57,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen2.5:7b",
+          "arrivedMs": 78,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 78,
+          "firstByteMs": 78,
+          "closedMs": 78,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 95,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 95,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 95,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "ae05c75d-86a9-4001-9e26-c0fc49468489",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          78
+        ]
+      },
+      "forcedEndpointReleaseMs": 95,
+      "terminal": [
+        {
+          "atMs": 95,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "ae05c75d-86a9-4001-9e26-c0fc49468489",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 95,
+      "clientError": null
+    },
+    {
+      "case": "slow-headers",
+      "requestedModel": "qwen3:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen3:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "7af66541-bd42-4b64-92e9-6a1ee05ea9f4",
+      "httpStatus": 200,
+      "clientHeadersMs": 44,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 50,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 757,
+          "firstByteMs": 757,
+          "closedMs": 758,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 789,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 789,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 789,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "7af66541-bd42-4b64-92e9-6a1ee05ea9f4",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          758
+        ]
+      },
+      "forcedEndpointReleaseMs": 789,
+      "terminal": [
+        {
+          "atMs": 789,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "7af66541-bd42-4b64-92e9-6a1ee05ea9f4",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 789,
+      "clientError": null
+    },
+    {
+      "case": "pre-header-cancel",
+      "requestedModel": "qwen3:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen3:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "b27be542-b4a3-4d08-8d37-183bab30984a",
+      "httpStatus": 200,
+      "clientHeadersMs": 42,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 49,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": null,
+          "firstByteMs": null,
+          "closedMs": 172,
+          "closedBeforeEnd": true
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": 154,
+      "cancel": {
+        "status": 200,
+        "text": "ok",
+        "atMs": 173
+      },
+      "beforeForcedEndpointRelease": {
+        "atMs": 188,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 188,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "b27be542-b4a3-4d08-8d37-183bab30984a",
+              "reason": "cancelled",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          172
+        ]
+      },
+      "forcedEndpointReleaseMs": 188,
+      "terminal": [
+        {
+          "atMs": 188,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "b27be542-b4a3-4d08-8d37-183bab30984a",
+            "reason": "cancelled",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 188,
+      "clientError": null
+    },
+    {
+      "case": "body-cancel",
+      "requestedModel": "qwen3:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen3:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "f131de83-4af5-4877-bba1-81b673c916e7",
+      "httpStatus": 200,
+      "clientHeadersMs": 60,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 62,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 62,
+          "firstByteMs": null,
+          "closedMs": 175,
+          "closedBeforeEnd": true
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": 159,
+      "cancel": {
+        "status": 200,
+        "text": "ok",
+        "atMs": 176
+      },
+      "beforeForcedEndpointRelease": {
+        "atMs": 190,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 190,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "f131de83-4af5-4877-bba1-81b673c916e7",
+              "reason": "cancelled",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          175
+        ]
+      },
+      "forcedEndpointReleaseMs": 190,
+      "terminal": [
+        {
+          "atMs": 190,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "f131de83-4af5-4877-bba1-81b673c916e7",
+            "reason": "cancelled",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 190,
+      "clientError": null
+    },
+    {
+      "case": "native-held-terminal",
+      "requestedModel": "qwen3:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen3:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "3c36ddea-90c5-47a6-9021-fdd770c9a29e",
+      "httpStatus": 200,
+      "clientHeadersMs": 58,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 63,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 63,
+          "firstByteMs": 63,
+          "closedMs": 79,
+          "closedBeforeEnd": false
+        }
+      ],
+      "firstTokenMs": 78,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 79,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 78,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "3c36ddea-90c5-47a6-9021-fdd770c9a29e",
+              "reason": "done",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          null
+        ]
+      },
+      "forcedEndpointReleaseMs": 79,
+      "terminal": [
+        {
+          "atMs": 78,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "3c36ddea-90c5-47a6-9021-fdd770c9a29e",
+            "reason": "done",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 79,
+      "clientError": null
+    },
+    {
+      "case": "error-hold-idle",
+      "requestedModel": "qwen3:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen3:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "da1b7d3c-a9dc-416d-a047-906d37bdfa9f",
+      "httpStatus": 200,
+      "clientHeadersMs": 34,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 47,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 48,
+          "firstByteMs": 48,
+          "closedMs": 405,
+          "closedBeforeEnd": true
+        },
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 825,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 825,
+          "firstByteMs": 825,
+          "closedMs": 1182,
+          "closedBeforeEnd": true
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": null,
+      "cancel": null,
+      "beforeForcedEndpointRelease": {
+        "atMs": 1198,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 1198,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "da1b7d3c-a9dc-416d-a047-906d37bdfa9f",
+              "reason": "error",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [
+          {
+            "atMs": 1198,
+            "name": "agent.run.error",
+            "payload": {
+              "agentId": "agent",
+              "runId": "da1b7d3c-a9dc-416d-a047-906d37bdfa9f",
+              "message": "model stalled: 2 consecutive attempts on qwen3:8b hit the response idle timeout (provider stream idle timed out after 350ms with no bytes received) — stopped instead of waiting out the rest of the retry ladder. The provider may be down or overloaded; try again later or switch models.",
+              "transient": true
+            }
+          }
+        ],
+        "providerResponseClosed": [
+          405,
+          1182
+        ]
+      },
+      "forcedEndpointReleaseMs": 1198,
+      "terminal": [
+        {
+          "atMs": 1198,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "da1b7d3c-a9dc-416d-a047-906d37bdfa9f",
+            "reason": "error",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 1198,
+      "clientError": null
+    },
+    {
+      "case": "error-hold-cancel",
+      "requestedModel": "qwen3:8b",
+      "configuration": {
+        "saveStatus": 200,
+        "saveOk": true,
+        "readback": {
+          "agentId": "agent",
+          "name": "NOVA",
+          "model": "qwen3:8b",
+          "provider": "ollama"
+        }
+      },
+      "runId": "48a2be0b-d80e-4c47-8c2d-07d67dfb8e1c",
+      "httpStatus": 200,
+      "clientHeadersMs": 61,
+      "providerRequests": [
+        {
+          "path": "/api/chat",
+          "model": "qwen3:8b",
+          "arrivedMs": 64,
+          "numCtx": 8192,
+          "messageCount": 2,
+          "toolCount": 0,
+          "headerMs": 64,
+          "firstByteMs": 65,
+          "closedMs": 188,
+          "closedBeforeEnd": true
+        }
+      ],
+      "firstTokenMs": null,
+      "cancelStartedMs": 171,
+      "cancel": {
+        "status": 200,
+        "text": "ok",
+        "atMs": 188
+      },
+      "beforeForcedEndpointRelease": {
+        "atMs": 204,
+        "settled": true,
+        "terminal": [
+          {
+            "atMs": 204,
+            "name": "agent.run.end",
+            "payload": {
+              "agentId": "agent",
+              "runId": "48a2be0b-d80e-4c47-8c2d-07d67dfb8e1c",
+              "reason": "cancelled",
+              "turns": 1,
+              "usd": 0
+            }
+          }
+        ],
+        "errors": [],
+        "providerResponseClosed": [
+          188
+        ]
+      },
+      "forcedEndpointReleaseMs": 204,
+      "terminal": [
+        {
+          "atMs": 204,
+          "name": "agent.run.end",
+          "payload": {
+            "agentId": "agent",
+            "runId": "48a2be0b-d80e-4c47-8c2d-07d67dfb8e1c",
+            "reason": "cancelled",
+            "turns": 1,
+            "usd": 0
+          }
+        }
+      ],
+      "eofMs": 204,
+      "clientError": null
+    }
+  ],
+  "otherAdapterObservations": {
+    "source": "bbe1aa1066de6a65c5b06c59d99824e3bc3e0280",
+    "idleMs": 180,
+    "compatibleLateUsage": "Text/done followed by late usage and [DONE] completes with usage preserved.",
+    "compatibleIncompleteTerminal": "finish_reason without [DONE]/EOF while the body stays open eventually raises the existing idle timeout. Reproduced at factory boundary; not attributed to the customer or changed by this repair.",
+    "nativeTerminal": "Native done:true ends the actual sidecar run even when the controlled provider holds its HTTP body open."
+  },
+  "tests": [
+    {
+      "command": "node test/provider.error-body.test.js",
+      "result": "pass",
+      "assertions": 62
+    },
+    {
+      "command": "node test/provider.ollama-native.test.js",
+      "result": "pass",
+      "assertions": 89
+    },
+    {
+      "command": "node test/provider.ollama-system.test.js",
+      "result": "pass"
+    },
+    {
+      "command": "node test/loop.prestream-outage-ladder.test.js",
+      "result": "pass",
+      "assertions": 57
+    },
+    {
+      "command": "node test/loop.stall-giveup.test.js",
+      "result": "pass",
+      "assertions": 32
+    },
+    {
+      "command": "Final live sidecar controlled matrix",
+      "result": "pass",
+      "cases": 9
+    },
+    {
+      "command": "New error-body regressions with original bbe1 adapter substituted in memory",
+      "result": "expected failure",
+      "failedAssertions": 21,
+      "passedAssertions": 41,
+      "scope": "Negative control; no checkout edits and not a current source gate"
+    },
+    {
+      "command": "Syntax checks and git diff --check for changed source/tests",
+      "result": "pass"
+    }
+  ],
+  "limitations": [
+    "No affected customer machine, installed binary, real Ollama 0.5.7, or real model evaluation was available. qwen2.5:7b is a separate model-ID control, not an emulation of the older runtime.",
+    "Roster/model save and readback were exercised through real HTTP routes; browser focus changes and the Michael Scott UI session were not reproduced.",
+    "The baseline model-catalog probe used an incorrect route and returned 404; it provides no discovery proof. Final source uses the supported route, returns all three model IDs, and disables named auxiliary fixture jobs.",
+    "Baseline SKYNET_AUX_BUDGET=0 means unlimited, not disabled. It was removed from the final probe; all matching run requests and controlled endpoint releases are retained.",
+    "The historical 605-second observation does not prove the timeout phase. Ollama connect failures still use the existing ordinary ladder; this repair changes no pre-header deadline.",
+    "Full fast/HTTP/journey and installed-app acceptance gates belong to integration coordination and were not run here."
+  ],
+  "requiredAcceptance": [
+    "Capture a failing original-configuration run with provider/model/base URL, POST arrival, header/first-byte timing, retry phase, cancellation acknowledgement, terminal event and EOF correlated by run ID.",
+    "Compare the identical sanitized streaming payload with a direct client on the affected Ollama/runtime.",
+    "Verify the built and installed artifact after integration; do not treat source/model-ID controls as customer recovery."
+  ],
+  "artifacts": [
+    {
+      "path": ".bugloops/ollama-comms-1012/adapter-probe.cjs",
+      "sha256": "3cbecb81628dbe17e55722b5e4835f85da8e17035f4e21434029fa525164dfab"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/adapter-receipt.json",
+      "sha256": "8c9406576d6b9381348207cc6a360672e69be0a2cc6c9857b2462234a8ef97de"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/baseline-live-probe.cjs",
+      "sha256": "cc346fb725515fb96f6b17a53f8a29873141675e5eb0383fc3d6c1a35aac3206"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/baseline-live-receipt.json",
+      "sha256": "1f19212bd4328453a9028f6302f371f6c2da402836d1403adfaec123675e5477"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/live-probe.cjs",
+      "sha256": "518de8a3315ddb797dd392784525db8be7194836c20dd9d77d1964f46a7269af"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/live-fixed-receipt.json",
+      "sha256": "e5c4424db61cc4ba9cdb064a5b51604d287da781b30417089c49f154da102d7e"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/baseline-adapter-preload.cjs",
+      "sha256": "a81d0e56e69e7a8a47989d7d782132ea882b663796d57c820ce6103b15ca4a49"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/baseline-regression.json",
+      "sha256": "306dfe0646eedb7b392d45b84a3b69276e4278e8564b5b37759411fadb269147"
+    },
+    {
+      "path": ".bugloops/ollama-comms-1012/baseline-regression.log",
+      "sha256": "5c31df9889e5d3942142592faaeb8e93627885e8f29403f161aa64009975a471"
+    }
+  ]
+}

@@ -67,7 +67,9 @@ const WORKER_ONLY = composeOffice({ surface: 'autonomous', lead: false });
   const roster = new Map([['builder', { system: 'B', name: 'BUILD MANAGER' }], ['scout', { system: 'S', name: 'SCOUT' }]]);
   const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', perWorker: 1, newId: counter() });
   A.eq(dispatchTool.schema.properties.workers.items.properties.builder, { type: 'boolean' }, 'a worker takes builder: boolean');
-  A.ok(/BUILDER: builder:true lends that worker your station\.map\/plan\/build for this job; each build still asks the Commander\./.test(dispatchTool.description), 'the dispatch tool says what builder:true lends');
+  A.ok(/BUILDER: builder:true lends that worker your station\.map\/plan\/build for this job; builds follow your approval setting\./.test(dispatchTool.description), 'the dispatch tool says what builder:true lends');
+  // review threads-backend-13: under Full Access or a cached grant a lent build shows no card, so never promise one
+  A.ok(!/asks the Commander|approves each build/.test(dispatchTool.description), 'the dispatch tool never promises a card on every build');
   await dispatchTool.run({ workers: [{ agentId: 'builder', prompt: 'rebuild the lab', builder: true }, { agentId: 'scout', prompt: 'look around' }] }, leadCtx(LEAD));
   A.eq(ro.calls.length, 2, 'both workers ran');
   A.eq(types(ro.calls[0]), ['builder', 'workbench'], 'the Build Manager runs with the lent builder on top of the workbench');

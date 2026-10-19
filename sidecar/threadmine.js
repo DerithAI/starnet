@@ -37,7 +37,7 @@
   const MIN_DO = 12;              // the DO line must name a real deliverable; shorter means the model had nothing
 
   // strip a recall fence the model may have echoed (parity with reflect.js) so a forged block can't be mined.
-  const RECALL_FENCE = /<recalled-memory>[\s\S]*?<\/recalled-memory>|<\/?recalled-memory>/gi;
+  const RECALL_FENCE = /<(recalled-memory|run_context|crew_call)>[\s\S]*?<\/\1>|<\/?(?:recalled-memory|run_context|crew_call)>/gi;   // + the per-run <run_context> and <crew_call> notes (lean-prompt 2026-10-12)
   // the tagged block format the prompt demands: THREAD / QUOTE / DO / CONFIDENCE. Tolerant of bullet prefixes.
   const THREAD_LINE = /^\s*[-*•]?\s*THREAD\s*[:\-—]\s*(.+?)\s*$/i;
   const QUOTE_LINE = /^\s*[-*•]?\s*QUOTE\s*[:\-—]\s*(.+?)\s*$/i;

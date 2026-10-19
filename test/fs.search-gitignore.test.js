@@ -13,6 +13,7 @@ const path = require('path');
 const os = require('os');
 const { spawn, spawnSync } = require('child_process');
 const { makeFsTools } = require('../sidecar/tools/builtin/fs.js');
+const failopen = require('../sidecar/failopen.js');
 
 const ROOT = path.join(os.tmpdir(), 'starnet-fs-gitignore-' + process.pid);
 const WS = path.join(ROOT, 'gi');
@@ -90,6 +91,13 @@ async function contract(tools, label) {
   A.ok(lines(logGlob).indexOf('build.log') < 0, label + ': a file_glob never re-includes a .gitignored file (an rg -g glob overrides ignore rules)');
   const flat = await tools.searchTool.run({ query: 'guide', limit: 100 }, ctx);
   A.eq(flat.content, 'docs/guide.md:1: NEEDLE guide', label + ': the flat path:line: text row is byte-identical');
+  // A missing path is an ordinary answer, not a swallowed failure: it says so, and it stays out of fail-open diagnostics.
+  failopen.resetForTests();
+  const gone = await tools.searchTool.run({ query: 'NEEDLE', path: 'no-such-dir' }, ctx);
+  A.eq(gone.content, '(no such path: no-such-dir)', label + ': a missing path says it does not exist, not "no matches"');
+  const goneFiles = await tools.searchTool.run({ query: '*.js', target: 'files', path: 'docs/guide.md/inner' }, ctx);
+  A.eq(goneFiles.content, '(no such path: docs/guide.md/inner)', label + ': a path through a file (ENOTDIR) is missing too');
+  A.eq(failopen.counts()['fs.search.start.stat'], undefined, label + ': a missing path is not counted as a fail-open failure');
 }
 
 (async () => {

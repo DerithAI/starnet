@@ -130,7 +130,7 @@ for (const raw of [
   A.eq(v.action, 'settings', 'the missing-credential response points at provider settings');
   A.eq(v.retryable, false, 'missing credentials never offer a blind retry');
   const btn = actionButton(v);
-  A.ok(btn && /key|settings/i.test(btn.label), 'the recovery action opens the provider-key door');
+  A.eq(btn && btn.label, '▸ OPEN AI & MODELS', 'the recovery action opens AI & MODELS (org P03: one label for that door)');
 }
 
 // ---- expired ChatGPT sign-in => oauth, and still offers the key alternative ----
@@ -210,6 +210,34 @@ for (const raw of [
   // a PROVIDER 403 (no sidecar-gate marker) keeps the auth path — only the sidecar's own gate means "reload"
   A.eq(friendlyError(new Error('invalid api key'), 403).kind, 'auth', 'a provider 403 (key rejected) still classifies as auth');
 }
+// ---- a page the station KEPT its key from is not a restarted station (review threads-backend-05 / sidecar-index-06) ----
+// The sidecar withholds the key when it cannot prove this browser runs as its own OS user; every keyed call then 403s
+// exactly like a stale page, but a reload re-runs the same check — "the station restarted — reload" is false and a dead door.
+{
+  const NOTICE = 'StarNet could not confirm this browser runs as your own user account (the ownership check timed out or failed), so it won’t take commands from this page. TEST NOTICE';
+  const withheldHarness = { tokenWithheld: () => 'lookup-failed', tokenWithheldNotice: () => NOTICE };
+  globalThis.Harness = withheldHarness;
+  try {
+    for (const [err, status] of [[new Error('sidecar HTTP 403 — forbidden token')], [new Error('sidecar HTTP 403')], [new Error('forbidden token'), 403]]) {
+      const v = friendlyError(err, status);
+      A.eq(v.userMessage, NOTICE, 'a withheld page leads with the station\'s own withheld notice: ' + err.message);
+      A.ok(!/restart|reload/i.test(v.userMessage), 'a withheld page never claims a restart or offers a reload');
+      A.eq(v.action, null, 'a withheld page gets no RELOAD door (a reload re-runs the same check)');
+      A.eq(actionButton(v), null, 'actionButton offers no door for a withheld page');
+      A.eq(v.retryable, false, 'a withheld page is not fixed by a retry');
+      A.eq(v.withheld, true, 'the verdict says the key was withheld (diagnostics)');
+    }
+    A.eq(friendlyError(new Error('invalid api key'), 403).kind, 'auth', 'a provider 403 on a withheld page is still the provider\'s auth');
+    // a Harness without the notice still never says "restarted"
+    globalThis.Harness = { tokenWithheld: () => 'other-user' };
+    const bare = friendlyError(new Error('sidecar HTTP 403'));
+    A.ok(/STARNET_TRUST_LOCAL_PEERS=1/.test(bare.userMessage) && !/restart(ed)? —|reload/i.test(bare.userMessage), 'the fallback withheld copy names the escape hatch: ' + bare.userMessage);
+    // a page that DOES hold a key keeps the stale-session reload door
+    globalThis.Harness = { tokenWithheld: () => '' };
+    const stale = friendlyError(new Error('sidecar HTTP 403 — forbidden token'));
+    A.ok(stale.kind === 'stale_session' && stale.action === 'reload' && /restarted/.test(stale.userMessage), 'a keyed page\'s stale 403 keeps the restart + reload copy');
+  } finally { delete globalThis.Harness; }
+}
 
 // ---- EL-11 FIX 3 (ladder half): a pre-stream sidecar failure that CARRIES its body reaches the oauth door ----
 {
@@ -218,7 +246,7 @@ for (const raw of [
   const v = friendlyError(new Error('sidecar HTTP 500 — sidecar failure: Not signed in to ChatGPT — connect a ChatGPT subscription first. (codex_not_connected)'));
   A.eq(v.kind, 'oauth', 'a pre-stream codex_not_connected body classifies as oauth once the body survives');
   const btn = actionButton(v);
-  A.ok(btn && /RECONNECT CHATGPT/i.test(btn.label), 'the door is RECONNECT CHATGPT, not a generic retry');
+  A.eq(btn && btn.label, '⏼ SIGN IN TO CHATGPT', 'a never-signed-in ChatGPT reads SIGN IN TO CHATGPT (org P03), not a generic retry');
 }
 
 // ---- no "max_iters"-style raw token leaks in any KINDS message (jargon hygiene) ----
@@ -241,7 +269,7 @@ for (const raw of [
   A.ok(!threw, "the REFIT button's run() degrades quietly when no surface is loaded");
   // auth (no ChatGPT connected in node) → a key/settings door
   const authBtn = actionButton(friendlyError(new Error('no API key set')));
-  A.ok(authBtn && typeof authBtn.run === 'function' && /key|settings/i.test(authBtn.label), 'an auth verdict yields a key/settings door');
+  A.ok(authBtn && typeof authBtn.run === 'function' && authBtn.label === '▸ OPEN AI & MODELS', 'an auth verdict yields the ▸ OPEN AI & MODELS door');
 }
 
 // ---- CAP_INFO covers every capId the sidecar can deny (parity guard against a missing gear entry) ----
@@ -327,6 +355,16 @@ for (const raw of [
   A.eq(kindOf("sidecar HTTP 429 — codex: You've hit your usage limit. Resets in 3 days").kind,
     friendlyError(Object.assign(new Error("codex http 429 — You've hit your usage limit. Resets in 3 days"), { status: 429 })).kind,
     'the browser fallback and the shared sidecar table give the SAME verdict');
+  // BROWSER: both stale-session sites (the "sidecar HTTP 403" ladder and kindFromRaw's bare 403) on a page the station
+  // kept its key from lead with the withheld notice and offer no reload door (review threads-backend-05)
+  sandbox.Harness = { tokenWithheld: () => 'peer-not-found', tokenWithheldNotice: () => 'WITHHELD NOTICE' };
+  for (const [m, st] of [['http 403 forbidden'], ['sidecar HTTP 403 — forbidden token'], ['forbidden token', 403]]) {
+    const v = kindOf(m, st);
+    A.ok(v.userMessage === 'WITHHELD NOTICE' && v.action === null && B.actionButton(v) === null,
+      'BROWSER: a withheld page\'s 403 (' + m + ') leads with the withheld notice, no reload door');
+  }
+  delete sandbox.Harness;
+  A.eq(kindOf('http 403 forbidden').action, 'reload', 'BROWSER: a keyed page\'s bare 403 keeps the reload door');
 }
 
 /* ---- PROVIDER 5xx/OVERLOAD => name the PROVIDER's servers, never the local service (2026-07-30) ----
@@ -396,7 +434,8 @@ for (const raw of [
   A.eq(noKey.kind, 'auth', 'a keyed guard stays auth');
   A.ok(/No XAI API key is connected yet/.test(noKey.userMessage), 'the missing-key copy names XAI (got: ' + noKey.userMessage + ')');
   A.ok(!/chatgpt/i.test(noKey.userMessage), 'a keyed provider miss does not mention ChatGPT');
-  A.eq(actionButton(noKey).label, '＋ Add a key', 'the keyed door is still the key field');
+  A.eq(actionButton(noKey).label, '▸ OPEN AI & MODELS', 'the keyed door is ▸ OPEN AI & MODELS (org P03)');
+  A.eq(noKey.provider, 'xai', 'the keyed guard names the XAI card the door lands on');
   // a provider whose label already ends in API ("OPENAI API") must not read "OPENAI API API key"
   const openaiKey = friendlyError(new Error('sidecar HTTP 400 — missing key/model — connect a OPENAI API API key'));
   A.ok(/No OPENAI API key is connected yet/.test(openaiKey.userMessage) && !/API API/.test(openaiKey.userMessage),
@@ -435,6 +474,11 @@ for (const raw of [
     'the interrupted cause names the run and the SETTLE fix (got: ' + interrupted.userMessage + ')');
   const unsaved = friendlyError('Spend history could not be saved to disk, so the spending limits you set can’t be checked. Restart StarNet to recover it.');
   A.ok(/Restart StarNet/.test(unsaved.userMessage) && !/Settle/.test(unsaved.userMessage), 'a failed save says restart, never settle (got: ' + unsaved.userMessage + ')');
+  // d688ea20: the loop's damaged-line cause (sidecar/loop.js) is spend_unknown, names the damaged line and keeps the SETTLE door
+  const damagedLine = friendlyError('A line of the spend record is damaged, so what it recorded is unknown and the spending limits you set can’t be checked. Settle it in SETTINGS › SPENDING LIMITS.');
+  A.eq(damagedLine.kind, 'spend_unknown', 'the damaged-line refusal is spend_unknown');
+  A.ok(/line of StarNet's spend record is damaged/.test(damagedLine.userMessage) && /Settle it in SETTINGS › SPENDING LIMITS/.test(damagedLine.userMessage) && !/earlier run/.test(damagedLine.userMessage),
+    'the damaged cause is never called an interrupted run (got: ' + damagedLine.userMessage + ')');
   const unread = friendlyError('Spend history could not be read, so the spending limits you set can’t be checked. See SETTINGS › SPENDING LIMITS.');
   A.eq(unread.userMessage, KINDS.spend_unknown.msg, 'an unreadable record gets the cause-neutral headline');
   A.ok(/spend history is unknown/.test(KINDS.spend_unknown.msg), 'the fallback headline says spend history is unknown');
@@ -454,4 +498,170 @@ for (const raw of [
   A.eq(friendlyError('the spending limit on your OpenAI account was reached').kind !== 'spend_unknown', true, 'a provider spending-limit sentence is not StarNet\'s ledger');
 }
 
-A.report('friendlyerror.test');
+// GH#111: the OLLAMA card pointed at LM Studio. The adapter's sentence names the server and the card that speaks to it;
+// COMMS leads with that sentence (not "Something went wrong — try again"), offers no doomed retry, and its door lands on
+// the CUSTOM card. The text is the real adapter's, produced by the real adapter against LM Studio's 200 reply.
+// (async: report() below waits for it, since report() exits the process)
+const wrongServerCase = (async () => {
+  const { makeOpenAICompatibleProvider } = require('../sidecar/providers/openai-compatible.js');
+  const lmStudio = makeOpenAICompatibleProvider({ baseUrl: 'http://127.0.0.1:1234/v1', nativeOllama: true, fetch: async (url, init) =>
+    new Response(JSON.stringify({ error: 'Unexpected endpoint or method. (' + ((init && init.method) || 'GET') + ' ' + new URL(url).pathname + ')' }), { status: 200 }) });
+  let thrown = null;
+  try { for await (const _ of lmStudio.stream({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })) { /* drain */ } } catch (e) { thrown = e; }
+  A.ok(thrown && /is not an Ollama server/.test(thrown.message), 'the adapter names the wrong server: ' + (thrown && thrown.message));
+  const raw = String(thrown && thrown.message);
+  const { kindFromRaw } = require('../frontend/app/friendlyerror.js')._internals;
+  // the page receives the in-band error TEXT (the browser path); the node path also sees the Error with its flag
+  for (const input of [raw, thrown]) {
+    const v = friendlyError(input, null, { engineAlive: true });
+    A.eq(v.kind, 'endpoint_mismatch', 'a wrong server behind the OLLAMA card has its own kind (' + typeof input + ')');
+    A.ok(/^The OLLAMA card's URL \(127\.0\.0\.1:1234\) is not an Ollama server: .*SETTINGS → AI & MODELS → CUSTOM with its \/v1 URL instead\.$/.test(v.userMessage),
+      'the headline IS the adapter sentence, without the bracketed server words: ' + v.userMessage);
+    A.eq(v.retryable, false, 'no ↻ Try again: a resend reaches the same server');
+    A.eq([v.action, v.provider], ['settings', 'custom'], 'the door is AI & MODELS, landing on the CUSTOM card');
+    A.eq(v.raw, raw, 'the server\'s own words stay in raw for diagnostics');
+  }
+  A.eq(kindFromRaw(raw), 'endpoint_mismatch', 'the browser fallback ladder reads the adapter sentence too');
+  A.eq(actionButton(friendlyError(raw)).label, '▸ OPEN AI & MODELS', 'the door is the existing AI & MODELS key, no new control');
+  const focused = [], priorUI = global.StationUI;
+  global.StationUI = { focusProvider(pid) { focused.push(pid); }, openTerm() {} };
+  try { actionButton(friendlyError(raw)).run(); } finally { if (priorUI === undefined) delete global.StationUI; else global.StationUI = priorUI; }
+  A.eq(focused, ['custom'], 'pressing it lands on the CUSTOM card');
+  // only the adapter's sentence: the bare LM Studio words (an unknown proxy) and Ollama's own errors keep their kinds
+  A.eq(kindFromRaw('Unexpected endpoint or method. (POST /api/chat)'), 'unknown', 'the bare server sentence alone proves nothing about the card');
+  A.ok(friendlyError('model runner has unexpectedly stopped').kind !== 'endpoint_mismatch', 'Ollama\'s own error is not a wrong server');
+})();
+
+// An explicit Ollama allocation failure is terminal and points at the primary model picker.
+{
+  const raw = 'Local model ran out of memory. Close other local models. [openai-compatible http 500 - llama-server terminated: cudaMalloc failed: out of memory]';
+  for (const input of [raw, Object.assign(new Error(raw), { status: 500, localModelMemory: true })]) {
+    const verdict = friendlyError(input);
+    A.eq(verdict.kind, 'local_model_memory', 'local allocation failure has its own actionable UI kind');
+    A.eq(verdict.retryable, false, 'no blind retry button on an exhausted local runtime');
+    A.ok(/Close other local models/.test(verdict.userMessage) && /smaller model/.test(verdict.userMessage), 'the memory remedy names actual choices');
+    A.ok(/restart StarNet after freeing memory/.test(verdict.userMessage), 'restart guidance is conditional on a blank/disconnected station and freed memory');
+    A.eq(verdict.raw, raw, 'raw runtime allocation detail stays available for diagnostics');
+  }
+  // Review providers-tools-05: a remote model server's allocation failure keeps the memory kind, and its words.
+  const remoteRaw = 'The model server at ollama.lan ran out of memory. Free memory on that machine, or choose a smaller model from the model picker in COMMS before trying again. [http 500 - failed to allocate CUDA0 buffer]';
+  const remote = friendlyError(Object.assign(new Error(remoteRaw), { status: 500, localModelMemory: true }));
+  A.eq(remote.kind, 'local_model_memory', 'a remote allocation failure has the memory kind');
+  A.ok(/^The model server at ollama\.lan ran out of memory\./.test(remote.userMessage) && !/Close other local models|restart StarNet/.test(remote.userMessage), 'and says which machine, never local advice: ' + remote.userMessage);
+  A.eq(require('../frontend/app/friendlyerror.js')._internals.kindFromRaw(remoteRaw, 500), 'local_model_memory', 'the browser fallback reads the remote prefix too');
+  A.eq(require('../frontend/app/friendlyerror.js')._internals.kindFromRaw(raw, 500), 'local_model_memory',
+    'browser fallback does not mistake the runtime termination for a network loss or generic 500');
+  const opened = [], prior = global.ModelDock, priorTimer = global.setTimeout;
+  global.ModelDock = { open() { opened.push('models'); } };
+  global.setTimeout = fn => { fn(); };
+  try { actionButton(friendlyError(raw)).run(); } finally { global.setTimeout = priorTimer; if (prior === undefined) delete global.ModelDock; else global.ModelDock = prior; }
+  A.eq(opened, ['models'], 'the action opens the primary model picker');
+  A.eq(friendlyError('openai-compatible http 500 - cudaMalloc failed: out of memory').kind, 'provider_server_error',
+    'an unmarked hosted provider allocation failure is not asserted to be local');
+}
+
+/* ---- org P03: the AI & MODELS doors have ONE label and land on the provider's card ----
+   Four labels ('⚙ Open Settings', '＋ Add a key', '▸ OPEN AI & MODELS', '⏼ RECONNECT …') all opened the top of a long
+   page with no provider focus, and RECONNECT only navigated. Now: ▸ OPEN AI & MODELS lands on the named provider's
+   card; a sign-in door names its provider and presses that card's own sign-in; billing names the account. */
+{
+  const { providerFromRaw } = require('../frontend/app/friendlyerror.js')._internals;
+  A.eq(providerFromRaw('openrouter http 402 — insufficient credits'), 'openrouter', 'the adapter signature names openrouter');
+  A.eq(providerFromRaw('anthropic http 400 - Your credit balance is too low'), 'anthropic', 'the adapter signature names anthropic');
+  A.eq(providerFromRaw('Kimi For Coding http 401 - token expired'), 'kimi', 'a device-OAuth label names kimi');
+  A.eq(providerFromRaw('sidecar HTTP 400 — missing key/model — connect a OPENAI API API key'), 'openai', 'the credential guard label maps to its card id');
+  A.eq(providerFromRaw('configure the CUSTOM base URL'), 'custom', 'a missing base URL names the CUSTOM card');
+  A.eq(providerFromRaw('openai-compatible http 402 - payment required'), null, 'an unnamed openai-compatible error names nobody (no guess)');
+  A.eq(providerFromRaw('openrouter.ai says: anthropic/claude model unavailable'), 'openrouter', 'a model path naming anthropic inside an openrouter body stays openrouter');
+
+  const or = friendlyError(Object.assign(new Error('openrouter http 402 — This request requires more credits'), { status: 402 }));
+  A.eq(or.kind, 'billing', 'an openrouter 402 is billing');
+  A.ok(/^Your OpenRouter account is out of credit/.test(or.userMessage), 'the billing copy names the account (got: ' + or.userMessage + ')');
+  A.eq(or.provider, 'openrouter', 'the billing verdict carries the provider');
+  const anon = friendlyError(Object.assign(new Error('insufficient credit'), { status: 402 }));
+  A.eq(anon.userMessage, KINDS.billing.msg, 'an unnamed billing error keeps the provider-neutral copy (truthful: nothing named it)');
+
+  // every non-sign-in AI & MODELS door reads ▸ OPEN AI & MODELS; the retired labels are gone from the module
+  A.eq(actionButton(or).label, '▸ OPEN AI & MODELS', 'billing opens AI & MODELS');
+  A.eq(actionButton({ kind: 'quota_exhausted', action: 'settings' }).label, '▸ OPEN AI & MODELS', 'quota opens AI & MODELS');
+  A.eq(actionButton({ kind: 'managed_credit', action: 'store' }).label, '▸ OPEN AI & MODELS', 'managed credits open AI & MODELS');
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../frontend/app/friendlyerror.js'), 'utf8');
+  A.ok(!/'⚙ Open Settings'|'＋ Add a key'/.test(src), "the retired '⚙ Open Settings' / '＋ Add a key' labels are gone");
+
+  // the door's run() hands the provider (and the sign-in press) to StationUI.focusProvider
+  const calls = [];
+  global.StationUI = { focusProvider: (pid, o) => calls.push([pid, !!(o && o.signin)]), openTerm: (k, s) => calls.push(['term:' + k, s]) };
+  try {
+    actionButton(or).run();
+    actionButton(friendlyError(new Error('GROK OAUTH sign-in needed: Not signed in to GROK OAUTH — connect it first.'))).run();
+    actionButton(friendlyError(new Error('ChatGPT sign-in needed: refresh_token_reused — sign in with ChatGPT again'))).run();
+    actionButton(anon).run();
+    actionButton({ kind: 'managed_credit', action: 'store' }).run();
+  } finally { delete global.StationUI; }
+  A.eq(JSON.stringify(calls[0]), JSON.stringify(['openrouter', false]), 'billing lands on the OPENROUTER card');
+  A.eq(JSON.stringify(calls[1]), JSON.stringify(['grok', true]), 'SIGN IN TO GROK lands on the GROK card and presses its sign-in');
+  A.eq(JSON.stringify(calls[2]), JSON.stringify(['codex', true]), 'RECONNECT CHATGPT lands on the CHATGPT card and presses its sign-in');
+  A.eq(JSON.stringify(calls[3]), JSON.stringify(['term:settings', 'providers']), 'an unnamed provider opens AI & MODELS without a card focus');
+  A.eq(JSON.stringify(calls[4]), JSON.stringify(['starnet', false]), 'managed credits land on the STARNET MANAGED card');
+  A.eq(actionButton(friendlyError(new Error('ChatGPT sign-in needed: refresh_token_reused — sign in with ChatGPT again'))).label, '⏼ RECONNECT CHATGPT',
+    'a dead ChatGPT refresh reads RECONNECT CHATGPT');
+
+  // stationui: focusProvider exists, is exported, presses the card's own prov-oauth-signin; the card status never
+  // reads a bare NOT VERIFIED when the probe gave no reason
+  const ui = require('fs').readFileSync(require('path').join(__dirname, '../frontend/app/stationui.js'), 'utf8');
+  A.ok(/function focusProvider\(pid, opts\)/.test(ui) && /openTerm, focusProvider,/.test(ui), 'StationUI.focusProvider is defined and exported');
+  A.ok(/querySelector\('\[data-act="prov-oauth-signin"\]'\); if \(b\) b\.click\(\)/.test(ui), 'a sign-in door presses the card\'s own prov-oauth-signin key');
+  A.ok(/the provider answered but did not confirm this key/.test(ui) && /the check got no answer from the provider/.test(ui), 'an empty probe error prints a fallback reason');
+}
+
+/* ---- org P03 (final round): a sign-in SUBSCRIPTION has no wallet ----
+   ChatGPT (codex), Grok (SuperGrok / X Premium+) and Kimi for Coding are plans (registry: oauth_device_code + unmetered).
+   Naming the account made a ChatGPT 402 read "Your ChatGPT account is out of credit — top it up": there is nothing to top
+   up — the plan allowance resets on the provider's schedule. Every billing/quota verdict on one says that instead. */
+{
+  const { providerFromRaw, kindFromRaw } = require('../frontend/app/friendlyerror.js')._internals;
+  A.eq(providerFromRaw("codex http 429 — You've hit your usage limit"), 'codex', 'the ChatGPT adapter signature names codex');
+  const subs = [
+    ['codex http 402 — Payment Required', 402, 'codex', 'ChatGPT'],
+    ['codex http 429 — insufficient_quota', 429, 'codex', 'ChatGPT'],
+    ['codex http 429 — Codex quota exceeded', 429, 'codex', 'ChatGPT'],
+    ['Grok (xAI) http 402 - insufficient credits', 402, 'grok', 'Grok'],
+    ['Kimi For Coding http 429 - quota exceeded', 429, 'kimi', 'Kimi'],
+    ['Kimi For Coding http 402 - payment required', 402, 'kimi', 'Kimi']
+  ];
+  for (const [raw, status, id, nm] of subs) {
+    const v = friendlyError(Object.assign(new Error(raw), { status }));
+    A.eq(v.kind, 'quota_exhausted', raw + ' — a sign-in subscription\'s spent plan, never billing');
+    A.ok(!/out of credit|top (?:it )?up/i.test(v.userMessage), raw + ' — never "out of credit — top it up": ' + v.userMessage);
+    A.ok(new RegExp('^Your ' + nm + ' plan allowance is used up — it resets on ' + nm + "'s own schedule").test(v.userMessage), raw + ' — names the plan and its reset: ' + v.userMessage);
+    A.ok(/switch to another provider or key under SETTINGS → AI & MODELS/.test(v.userMessage), raw + ' — the way to keep working now');
+    A.eq(v.retryable, false, raw + ' — no doomed retry');
+    A.eq(v.provider, id, raw + ' — the verdict carries the provider');
+    A.eq(actionButton(v).label, '▸ OPEN AI & MODELS', raw + ' — the AI & MODELS door');
+  }
+  A.ok(/weekly/.test(friendlyError(Object.assign(new Error('codex http 402 — Payment Required'), { status: 402 })).userMessage), 'ChatGPT keeps its weekly reset');
+  // the BROWSER ladder still reads these as billing (in step with errorClass.js); the provider-aware re-read happens in friendlyError
+  A.eq(kindFromRaw('codex http 402 — payment required', null), 'billing', 'the browser ladder alone says billing (the subscription re-read sits above it)');
+  // a per-minute quota on a subscription is still a busy moment, and a wallet provider is still out of credit
+  const perMin = friendlyError(Object.assign(new Error('Kimi For Coding http 429 - quota exceeded: requests per minute'), { status: 429 }));
+  A.eq(perMin.kind, 'rate_limit', 'a per-minute quota on a subscription stays a rate limit');
+  const wallet = friendlyError(Object.assign(new Error('openrouter http 402 — insufficient credits'), { status: 402 }));
+  A.ok(wallet.kind === 'billing' && /^Your OpenRouter account is out of credit — top it up/.test(wallet.userMessage), 'a wallet provider keeps "out of credit — top it up"');
+  const xaiKey = friendlyError(Object.assign(new Error('xai http 402 - add credits at console.x.ai'), { status: 402 }));
+  A.ok(xaiKey.kind === 'billing' && /^Your xAI account is out of credit/.test(xaiKey.userMessage), 'the xAI API key (a wallet) is not the Grok sign-in: ' + xaiKey.userMessage);
+  const unnamed = friendlyError(Object.assign(new Error("You've hit your usage limit. Resets in 3 days"), { status: 429 }));
+  A.eq(unnamed.userMessage, KINDS.quota_exhausted.msg, 'an unnamed spent allowance keeps the neutral quota copy');
+  // a ChatGPT adapter auth failure names codex: its door is the reconnect, never a key field
+  const codexAuth = friendlyError(Object.assign(new Error('codex http 401 — Unauthorized'), { status: 401 }));
+  A.eq(codexAuth.provider, 'codex', 'a codex 401 names codex');
+  A.eq(actionButton(codexAuth).label, '⏼ RECONNECT CHATGPT', 'its door reconnects ChatGPT');
+  // (org P03 wiring) and its words say the same thing as that door: the sign-in was refused, never "no model is connected"
+  for (const [raw, status] of [['codex http 401 — Unauthorized', 401], ['codex http 403 — Forbidden', 403], ['codex http 401 — {"error":"token has expired"}', 401]]) {
+    const v = friendlyError(Object.assign(new Error(raw), { status }));
+    A.eq(v.userMessage, 'ChatGPT refused this sign-in — reconnect it (or add a provider key instead).', 'a ChatGPT ' + status + ' names the refused sign-in: ' + raw);
+    A.ok(v.userMessage !== KINDS.auth.msg, 'never the bare "No model is connected yet" beside RECONNECT CHATGPT');
+    A.eq(actionButton(v).label, '⏼ RECONNECT CHATGPT', 'copy and door agree for ' + raw);
+  }
+}
+
+wrongServerCase.then(() => A.report('friendlyerror.test'), e => { A.ok(false, 'the wrong-server case threw: ' + (e && e.stack)); A.report('friendlyerror.test'); });

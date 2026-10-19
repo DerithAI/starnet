@@ -12,6 +12,7 @@ class Element {
   replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   remove() { if(this.parent) this.parent.children = this.parent.children.filter(n => n !== this); this.parent = this.parentNode = null; }
   setAttribute() {}
+  removeAttribute() {}   // org P26: project-home hands the COMMS title back through data-session / data-tip
   focus() {}
   scrollIntoView() {}
   set innerHTML(html) {

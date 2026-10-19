@@ -74,6 +74,9 @@ function inspect({ installation, reference, installer, signature = false, files 
   if (!files.length) throw new Error('Select at least one application file');
   const root = path.resolve(installation), ref = reference ? path.resolve(reference) : null;
   if (ref && (process.platform === 'win32' ? ref.toLowerCase() === root.toLowerCase() : ref === root)) throw new Error('Reference must be a separate extracted directory');
+  // a mistyped --installation is an invalid invocation (exit 2), never a report that every selected file is "missing"
+  const disk = diskEvidence(root);
+  if (disk.state !== 'observed' && ['ENOENT', 'ENOTDIR', 'NOT_DIRECTORY'].includes(disk.error)) throw new Error('--installation is not an existing directory: ' + root);
   const rows = [...new Set(files.map(selectedPath))].map(relativePath => {
     const installed = readFileEvidence(path.join(root, relativePath));
     const expected = ref ? readFileEvidence(path.join(ref, relativePath)) : { state: 'unverified', error: 'REFERENCE_NOT_PROVIDED' };
@@ -97,7 +100,7 @@ function inspect({ installation, reference, installer, signature = false, files 
   return {
     schema: 'starnet.installation-integrity.v1', observedAt: new Date().toISOString(), installation: root, reference: ref,
     scope: 'Selected files only; exact bytes from an explicitly extracted reference. No modules executed, profiles searched, repair attempted, or root cause inferred. This is not a full-tree or atomic snapshot.',
-    files: rows, disk: diskEvidence(root), installer: packageEvidence,
+    files: rows, disk, installer: packageEvidence,
     summary: rows.reduce((counts, row) => { counts[row.comparison] = (counts[row.comparison] || 0) + 1; return counts; }, {})
   };
 }

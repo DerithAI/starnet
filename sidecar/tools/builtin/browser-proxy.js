@@ -22,6 +22,18 @@ const REFUSALS_KEPT = 32;
 async function startPinnedProxy({ validate, resolve }) {
   const localOrigins = new Set();
   const refusals = [];
+  // Only endpoints created/accepted by this proxy are ever destroyed during teardown.
+  const clients = new Set(), outgoing = new Set();
+  // A shared keep-alive pool could lend a tracked socket to another caller before this proxy closes.
+  const agent = new http.Agent(http.globalAgent.options);
+  let closing = false, closePromise = null;
+  function track(set, endpoint) {
+    if (!set.has(endpoint)) {
+      set.add(endpoint);
+      endpoint.once('close', () => set.delete(endpoint));
+    }
+    return endpoint;
+  }
   let refusalSeq = 0;   // a sequence, not a clock: "since this navigation began" needs order, not time
   function refused(host, e) {
     refusals.push({ host: String(host || '').toLowerCase().replace(/^\[|\]$/g, ''), reason: String((e && e.message) || e || 'refused'),
@@ -43,20 +55,25 @@ async function startPinnedProxy({ validate, resolve }) {
   const server = http.createServer((req, res) => {
     (async () => {
       const { u, address } = await destination(req.url);
+      if (closing || req.destroyed || res.destroyed) return;
       if (u.protocol !== 'http:') throw new Error('HTTPS requires CONNECT');
-      const upstream = http.request({ hostname: address, port: Number(u.port) || 80,
+      const upstream = track(outgoing, http.request({ agent, hostname: address, port: Number(u.port) || 80,
         path: u.pathname + u.search, method: req.method,
         headers: Object.assign({}, req.headers, { host: u.host }) }, incoming => {
+        if (closing || res.destroyed) { incoming.destroy(); return; }
         res.writeHead(incoming.statusCode, incoming.headers);
         incoming.on('error', () => res.destroy());
         incoming.pipe(res);
-      });
-      upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+      }));
+      upstream.on('socket', socket => { track(outgoing, socket); if (closing) socket.destroy(); });
+      upstream.on('error', () => { if (closing || res.destroyed) return; if (!res.headersSent) res.writeHead(502); res.end(); });
       req.on('error', () => upstream.destroy());
       res.on('error', () => upstream.destroy());
+      res.on('close', () => upstream.destroy());
       req.pipe(upstream);
-    })().catch(e => { refused(hostOfTarget(req.url), e); if (!res.headersSent) res.writeHead(403); res.end(); });
+    })().catch(e => { if (closing || res.destroyed) return; refused(hostOfTarget(req.url), e); if (!res.headersSent) res.writeHead(403); res.end(); });
   });
+  server.on('connection', client => { track(clients, client); if (closing) client.destroy(); });
   server.on('connect', (req, client, head) => {
     let upstream = null;
     client.on('error', () => { if (upstream) upstream.destroy(); });   // before any await: see the header
@@ -64,11 +81,12 @@ async function startPinnedProxy({ validate, resolve }) {
     (async () => {
       if (!/^[^@/]+:\d+$/.test(req.url)) throw new Error('invalid CONNECT authority');
       const { u, address } = await destination('https://' + req.url + '/');
-      if (client.destroyed) return;   // the browser went away while DNS resolved
+      if (closing || client.destroyed) return;   // the browser went away while DNS resolved
       const port = Number(u.port) || 443;
-      upstream = net.connect({ host: address, port });
+      upstream = track(outgoing, net.connect({ host: address, port }));
       let established = false;
       upstream.once('connect', () => {
+        if (closing || client.destroyed) { upstream.destroy(); return; }
         established = true;
         client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (head && head.length) upstream.write(head);
@@ -84,7 +102,7 @@ async function startPinnedProxy({ validate, resolve }) {
       });
     })().catch(e => {
       refused(String(req.url || '').replace(/:\d+$/, ''), e);
-      if (!client.destroyed) client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
+      if (!closing && !client.destroyed) client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
     });
   });
   server.on('upgrade', (req, client, head) => {
@@ -94,9 +112,10 @@ async function startPinnedProxy({ validate, resolve }) {
     (async () => {
       const { u, address } = await destination(req.url.replace(/^ws:/i, 'http:'));
       if (u.protocol !== 'http:') throw new Error('unsupported upgrade target');
-      if (client.destroyed) return;
-      upstream = net.connect({ host: address, port: Number(u.port) || 80 });
+      if (closing || client.destroyed) return;
+      upstream = track(outgoing, net.connect({ host: address, port: Number(u.port) || 80 }));
       upstream.once('connect', () => {
+        if (closing || client.destroyed) { upstream.destroy(); return; }
         const headers = req.rawHeaders.slice();
         for (let i = 0; i < headers.length; i += 2) {
           if (headers[i].toLowerCase() === 'host') headers[i + 1] = u.host;
@@ -110,7 +129,7 @@ async function startPinnedProxy({ validate, resolve }) {
       upstream.on('error', () => client.destroy());
     })().catch(e => {
       refused(hostOfTarget(String(req.url || '').replace(/^ws:/i, 'http:')), e);
-      if (!client.destroyed) client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
+      if (!closing && !client.destroyed) client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
     });
   });
   // a malformed or reset request from the browser: drop that connection, never the station
@@ -130,7 +149,19 @@ async function startPinnedProxy({ validate, resolve }) {
     // refusalMark() before a navigation, refusalsSince(mark) after it (oldest first): what the driver names at a tunnel failure
     refusalMark: () => refusalSeq,
     refusalsSince: mark => refusals.filter(r => r.seq > Number(mark || 0)).map(r => Object.assign({}, r)),
-    close: () => new Promise(resolveClose => server.close(resolveClose))
+    close() {
+      if (closePromise) return closePromise;
+      closing = true;
+      closePromise = new Promise((resolveClose, rejectClose) => {
+        server.close(e => e && e.code !== 'ERR_SERVER_NOT_RUNNING' ? rejectClose(e) : resolveClose());
+        // server.close alone waits for active HTTP and leaves upgraded CONNECT/WebSocket sockets alive.
+        // Pending DNS handlers check closing before opening anything after this owned set is drained.
+        agent.destroy();
+        for (const endpoint of outgoing) endpoint.destroy();
+        for (const client of clients) client.destroy();
+      });
+      return closePromise;
+    }
   };
 }
 

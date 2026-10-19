@@ -68,8 +68,10 @@ function validateQuestionFields(c, call) {
   if (!question || VAGUE.test(question)) return { ok: false, error: 'ask one concrete, non-vague question' };
   const conversational = c.mode === 'conversation';
   if (!conversational && options.length < 2) return { ok: false, error: multiSelect ? 'provide 2-6 genuinely different options' : 'provide 2-3 genuinely different options' };
+  // A recommendation that matches no option is DROPPED (the question shows with no ★), never a rejection: a rejected
+  // brief_ask sent the model to the marker fallback, and it asked the same question twice — once in prose, once as a
+  // card (live walkthrough 2026-10-13). matchOption still never guesses between chips.
   const pick = matchOption(options, recommended);
-  if ((!conversational || recommended) && !pick) return { ok: false, error: 'recommended must match one option (copy it verbatim from options)' };
   if (!reason) return { ok: false, error: 'state why this decision materially changes the result' };
   if ((call || c).discoverable !== false) return { ok: false, error: 'inspect available context first; discoverable must be false' };
   return { ok: true, question: { dimension, question, text: question, options, recommended: pick, reason,
@@ -165,8 +167,21 @@ function validateProceed(candidate) {
   return { ok: true, brief: out };
 }
 
-function canMutate(brief, tool) {
+// is THIS call exempt? A function exemption reads the call's args (action-aware, like taint.js lockedFor): station.control is
+// exempt only for its setup actions. No call reads as {} (no action), and a predicate that throws holds the call.
+function exemptFor(tool, call) {
+  if (typeof tool.briefExempt !== 'function') return tool.briefExempt === true;
+  try { return tool.briefExempt((call && call.args) || {}) === true; } catch (_) { return false; /* fail closed: held */ }
+}
+function canMutate(brief, tool, call) {
   if (!brief || !tool) return { ok: true };
+  // SETUP, NOT THE DELIVERABLE: hiring a crew member (team.summon) shapes the station, not the work the brief settles,
+  // and it has its own approval card. "Get me a researcher and a copywriter, then…" used to be refused outright
+  // until the brief was settled (live walkthrough 2026-10-13). A tool opts in with briefExempt:true, or (args) => exempt.
+  // …and seating crew in this chat (station.control group.add) is the same kind of setup: "bring two crew in to help me
+  // write a launch post" picked group.add and was refused until a brief interview finished (rc walk 10-14, Haiku 4.5) —
+  // the Commander answered questions before the crew they asked for could join. An action-aware tool exempts by its args (exemptFor).
+  if (exemptFor(tool, call)) return { ok: true };
   // Built-in reads are non-consequential, but MCP tools are deliberately `external-unknown` even when an
   // untrusted server advertises readOnlyHint. That annotation may shape grants; it cannot bypass the brief gate.
   if (tool.scope === 'read' && tool.impact !== 'external-unknown') return { ok: true };

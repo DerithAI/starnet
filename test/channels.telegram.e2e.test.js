@@ -13,9 +13,27 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
 const { allocatePort } = require('./helpers/sidecar-fixture.js');
+// host notes (the <run_context> note, recall) ride the newest user turn on this non-Claude wire: read them, and the
+// Commander's own words, through the helper rather than one placement (provider.js userSideHostNotes)
+const { runContextOf, userWords, lastUserWords, hostText } = require('./helpers/host-notes.js');
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
+
+// This case stays on the real paired-owner Telegram path, with no roster seeded yet.
+const CREWLESS_REQUEST = 'Delegate one temporary subtask for the crewless Telegram proof.';
+const CREWLESS_WORKER_REQUEST = 'Return exactly CREWLESS_WORKER_OK.';
+const CREWLESS_DONE = 'CREWLESS_TELEGRAM_DONE';
+const CREWLESS_FAILED = 'CREWLESS_TELEGRAM_FAILED';
+const lastUserText = body => lastUserWords(body.messages || []);
+function crewlessRuntime(body) {
+  const text = runContextOf(body.messages || []);
+  return { agentId: (/Agent id: (\S+)/.exec(text) || [])[1] || '', runId: (/Run id: (\S+)/.exec(text) || [])[1] || '' };
+}
+function crewlessRows(messages) {
+  const result = messages.find(m => m && m.role === 'tool' && m.tool_call_id === 'crewless_spawn');
+  try { const rows = JSON.parse(result && result.content); return Array.isArray(rows) ? rows : []; } catch (_) { return []; }
+}
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -65,8 +83,45 @@ function startMockOpenRouter() {
              messages the model answers plainly, or the run would loop forever. */
           const msgs = (parsed && parsed.messages) || [];
           const lastUser = [...msgs].reverse().find(m => m && m.role === 'user');
-          const parityTask = /delegate telegram parity/i.test(String((lastUser && lastUser.content) || ''));
-          const parityWorker = /return worker parity proof/i.test(String((lastUser && lastUser.content) || ''));
+          const lastUserOwn = lastUser ? userWords(lastUser) : '';   // the Commander's words, without the leading host notes
+          if (lastUserOwn === CREWLESS_REQUEST) {
+            const current = msgs.slice(msgs.lastIndexOf(lastUser) + 1);
+            const results = current.filter(m => m && m.role === 'tool');
+            const brief = results.find(m => m.tool_call_id === 'crewless_brief');
+            const search = results.find(m => m.tool_call_id === 'crewless_search');
+            const spawnResult = results.find(m => m.tool_call_id === 'crewless_spawn');
+            const wire = (parsed.tools || []).map(t => t.function && t.function.name);
+            const sameRun = crewlessRuntime(parsed).runId;
+            const attempt = requests.filter(q => lastUserText(q) === CREWLESS_REQUEST && crewlessRuntime(q).runId === sameRun).length;
+            let call = null;
+            if (sameRun && attempt <= 3 && !results.length && wire.includes('brief_proceed'))
+              call = { id: 'crewless_brief', name: 'brief_proceed', args: { objective: 'Delegate one temporary proof subtask and return its actual result.' } };
+            // team_spawn stays advertised for a crewless lead (lean-prompt review 2026-10-12: clones need no crew), so the
+            // settled brief goes straight to a real spawn — no search step
+            else if (sameRun && attempt <= 3 && brief && String(brief.content).includes('Task Brief settled.') && !search && !spawnResult && wire.includes('team_spawn'))
+              call = { id: 'crewless_spawn', name: 'team_spawn', args: { tasks: [{ prompt: CREWLESS_WORKER_REQUEST, label: 'crewless Telegram proof' }], background: false } };
+            if (call) {
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] }) + '\n\n');
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) + '\n\n');
+            } else {
+              // A missing reveal, refusal, or worker failure terminates this bounded script honestly.
+              const rows = crewlessRows(current);
+              const complete = attempt === 3 && rows.length === 1 && rows[0].reason === 'done' && rows[0].result === 'CREWLESS_WORKER_OK';
+              const answer = complete ? CREWLESS_DONE + ': CREWLESS_WORKER_OK' : CREWLESS_FAILED;
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: answer } }] }) + '\n\n');
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) + '\n\n');
+            }
+            res.end('data: [DONE]\n\n');
+            return;
+          }
+          if (lastUserOwn === CREWLESS_WORKER_REQUEST) {
+            res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'CREWLESS_WORKER_OK' } }] }) + '\n\n');
+            res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) + '\n\n');
+            res.end('data: [DONE]\n\n');
+            return;
+          }
+          const parityTask = /delegate telegram parity/i.test(lastUserOwn);
+          const parityWorker = /return worker parity proof/i.test(lastUserOwn);
           if (parityTask) {
             const lastUserIndex = msgs.lastIndexOf(lastUser);
             const currentTools = msgs.slice(lastUserIndex + 1).filter(m => m && m.role === 'tool');
@@ -82,7 +137,7 @@ function startMockOpenRouter() {
               return;
             }
           }
-          if (/run telegram shell proof/i.test(String((lastUser && lastUser.content) || '')) && !msgs.some(m => m && m.role === 'tool')) {
+          if (/run telegram shell proof/i.test(lastUserOwn) && !msgs.some(m => m && m.role === 'tool')) {
             // A task-shaped request first settles the same Task Brief that a desktop run settles. This proves
             // owner parity through the genuine task pipeline rather than bypassing unrelated task semantics.
             res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_brief', type: 'function', function: { name: 'brief_proceed', arguments: '{"objective":"Run the requested Telegram shell proof"}' } }] } }] }) + '\n\n');
@@ -91,7 +146,7 @@ function startMockOpenRouter() {
             res.end();
             return;
           }
-          if (/run telegram shell proof/i.test(String((lastUser && lastUser.content) || '')) && msgs.some(m => m && m.role === 'tool')
+          if (/run telegram shell proof/i.test(lastUserOwn) && msgs.some(m => m && m.role === 'tool')
               && !msgs.some(m => m && m.role === 'tool' && /TELEGRAM_SHELL_OK/.test(JSON.stringify(m)))) {
             res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_shell', type: 'function', function: { name: 'shell_exec', arguments: '{"cmd":"echo TELEGRAM_SHELL_OK"}' } }] } }] }) + '\n\n');
             res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) + '\n\n');
@@ -99,7 +154,7 @@ function startMockOpenRouter() {
             res.end();
             return;
           }
-          if (/who can you reach/i.test(String((lastUser && lastUser.content) || '')) && !msgs.some(m => m && m.role === 'tool')) {
+          if (/who can you reach/i.test(lastUserOwn) && !msgs.some(m => m && m.role === 'tool')) {
             res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_t', type: 'function', function: { name: 'channel.targets', arguments: '{}' } }] } }] }) + '\n\n');
             res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) + '\n\n');
             res.write('data: [DONE]\n\n');
@@ -112,7 +167,7 @@ function startMockOpenRouter() {
           const answer = appliedFollowup ? 'Follow-up applied: TELEGRAM_FOLLOWUP_APPLIED'
             : parityWorker ? 'WORKER_PARITY_OK' : parityTask ? 'DELEGATION_PARITY_DONE' : 'Telegram answer';
           res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: answer } }] }) + '\n\n');
-          if (gate.armed && lastUser && lastUser.content === gate.userText) {
+          if (gate.armed && lastUser && lastUserOwn === gate.userText) {
             gate.armed = false;   // auxiliary requests cannot steal another task's gate
             gate.request = parsed;
             await new Promise(r => { gate._release = r; if (gate._startedResolve) gate._startedResolve(); });
@@ -210,6 +265,21 @@ function startMockTelegram() {
             message: {
               message_id: ++messageId,
               date: Math.floor(Date.now() / 1000),
+              chat: { id: chatId, type: 'private' },
+              from: { id: userId, username: 'commander' },
+              text
+            }
+          });
+          flush();
+        },
+        pushForward(chatId, userId, text) {
+          queued.push({
+            update_id: ++updateId,
+            message: {
+              message_id: ++messageId,
+              date: Math.floor(Date.now() / 1000),
+              forward_date: Math.floor(Date.now() / 1000) - 60,
+              forward_sender_name: 'someone else',
               chat: { id: chatId, type: 'private' },
               from: { id: userId, username: 'commander' },
               text
@@ -405,10 +475,14 @@ async function waitUntil(fn, ms, label) {
     await sse.waitFor(events => events.some(e => e.name === 'agent.run.end' && e.payload && e.payload.agentId === 'tg_4242'), 5000, 'SSE run end');
     await sse.waitFor(events => events.some(e => e.name === 'channel.delivery' && e.payload && e.payload.channel === 'telegram' && e.payload.chatId === '4242' && e.payload.ok === true), 5000, 'channel delivery');
 
-    const tr = await (await fetch(B + '/api/transcript?stream=global&agent=tg_4242&limit=20', { headers: { 'X-StarNet-Token': token, Origin: B } })).json();
+    // the chat's FIRST exchange is filed under the chat's own stream (it used to land in the global catch-all, COMMS
+    // General: a new chat had no record yet, and hub.js resolvedStreamId's guard read the missing record as a stream id)
+    const tr = await (await fetch(B + '/api/transcript?stream=channel_telegram_4242&agent=tg_4242&limit=20', { headers: { 'X-StarNet-Token': token, Origin: B } })).json();
     const turns = (tr && tr.turns) || [];
     A.ok(turns.some(t => t.role === 'user' && String(t.content || '').indexOf('research AI trend now') >= 0), 'transcript captured Telegram user turn');
     A.ok(turns.some(t => t.role === 'assistant' && String(t.content || '').indexOf('Telegram answer') >= 0), 'transcript captured Telegram assistant reply');
+    const gl = await (await fetch(B + '/api/transcript?stream=global&agent=tg_4242&limit=200', { headers: { 'X-StarNet-Token': token, Origin: B } })).json();
+    A.ok(!((gl && gl.turns) || []).some(t => String(t.content || '').indexOf('research AI trend now') >= 0), 'and NOT under the global catch-all stream');
 
     // ---- authenticated owner DM: real agent shell execution + defined command execution ------------------
     const shellChat = 4244;
@@ -420,8 +494,10 @@ async function waitUntil(fn, ms, label) {
     A.ok(shellWire.indexOf('shell_exec') >= 0, 'owner Telegram run advertises shell_exec to the provider');
     A.ok(shellWire.indexOf('verify_run') >= 0, 'owner Telegram run advertises verify_run to the provider');
     A.ok(shellWire.indexOf('spotify_play') >= 0, 'owner Telegram run advertises media control to the provider');
-    A.ok(shellWire.indexOf('team_dispatch') >= 0, 'owner Telegram run advertises task delegation to the provider');
     const shellSystem = String((shellReqs[0].messages.find(m => m.role === 'system') || {}).content || '');
+    // the station has no crew yet: the lean-prompt diet (2026-10-12) advertises team_summon and keeps the rest of the crew
+    // kit GRANTED but deferred (named in the prompt, revealed by tool_search) until a crew exists
+    A.ok(shellWire.indexOf('team_summon') >= 0 && /These exist and you CAN use them: [^\n]*team_dispatch/.test(shellSystem), 'owner Telegram run advertises task delegation to the provider (crewless: summon on the wire, dispatch granted + named)');
     A.ok(shellSystem.includes('[ORCHESTRATION]'), 'owner Telegram task receives the crew briefing for its advertised delegation tools');
     // the owner away from the station (self-driving lane 2): a pointer to manual.read — never the ~6K index, never nothing
     const Manual = require('../sidecar/manual.js');
@@ -430,6 +506,70 @@ async function waitUntil(fn, ms, label) {
     const shellToolMessages = shellReqs.flatMap(r => (r.messages || []).filter(m => m && m.role === 'tool'));
     A.ok(shellToolMessages.some(m => /TELEGRAM_SHELL_OK/.test(JSON.stringify(m))),
       'the shell output returns through the real tool loop before the agent replies: ' + JSON.stringify(shellToolMessages));
+
+    // Crewless owner Telegram: a deferred schema must lead to real work, not merely appear in a prompt.
+    // This precedes parityRoster; use the existing local paired owner, real brief and real dispatcher.
+    {
+      const chat = 4247, agentId = 'tg_' + chat;
+      const headers = { 'X-StarNet-Token': token, Origin: B };
+      const initial = await (await fetch(B + '/api/runtime/agent', { headers })).json();
+      A.eq(initial.agents, [], 'crewless Telegram begins with no saved crew');
+      const requestFrom = llm.requests.length, eventFrom = sse.events.length, sendFrom = tg.sends.length;
+      tg.pushText(chat, 99, CREWLESS_REQUEST);
+      await waitUntil(() => tg.sends.slice(sendFrom).some(s => String(s.chat_id) === String(chat)
+        && (rendered(s.text).includes(CREWLESS_DONE) || rendered(s.text).includes(CREWLESS_FAILED))), 20000, 'crewless Telegram final outcome');
+      const leads = llm.requests.slice(requestFrom).filter(q => lastUserText(q) === CREWLESS_REQUEST && crewlessRuntime(q).agentId === agentId);
+      A.eq(leads.length, 3, 'crewless parent makes exactly brief, spawn and final provider requests');
+      const runId = leads.length ? crewlessRuntime(leads[0]).runId : '';
+      A.ok(!!runId && leads.every(q => crewlessRuntime(q).runId === runId), 'crewless stages keep the same parent run identity');
+      const first = leads[0] || { messages: [], tools: [] };
+      A.ok(String((first.messages[0] || {}).content).includes('You have no crew yet'), 'crewless parent receives the compact briefing');
+      A.ok(!(first.tools || []).some(t => t.function && t.function.name === 'team_dispatch'), 'crewless dispatch is deferred (no crew to address)');
+      const revealed = (first.tools || []).find(t => t.function && t.function.name === 'team_spawn');
+      const params = revealed && revealed.function.parameters;
+      A.ok(params && params.properties && params.properties.tasks && params.properties.tasks.type === 'array'
+        && params.properties.tasks.items && (params.properties.tasks.items.required || []).includes('prompt')
+        && params.properties.background && params.properties.background.type === 'boolean', 'the crewless parent is offered the actual executable team_spawn schema from its first request');
+      const parentEvents = () => sse.events.slice(eventFrom).filter(e => e.payload && e.payload.agentId === agentId && e.payload.runId === runId);
+      await sse.waitFor(() => parentEvents().some(e => e.name === 'agent.run.end'), 5000, 'crewless parent end');
+      const calls = parentEvents().filter(e => e.name === 'agent.tool_call').map(e => e.payload);
+      // Task Brief controls are intentionally hidden from SSE; their real result is on the next provider request.
+      const briefMessages = leads[1] && leads[1].messages || [];
+      const briefResult = briefMessages.find(m => m.role === 'tool' && m.tool_call_id === 'crewless_brief');
+      A.eq(briefResult && briefResult.content, 'Task Brief settled. Consequential tools are unlocked.', 'real Task Brief succeeds before the spawn request');
+      A.ok(briefMessages.some(m => (m.tool_calls || []).some(c => c.id === 'crewless_brief' && c.function && c.function.name === 'brief_proceed')), 'brief result belongs to the real parent control call');
+      A.eq(calls.map(c => c.name.replace('_', '.')), ['team.spawn'], 'a real spawn follows the settled brief');
+      for (const callId of ['crewless_spawn']) {
+        const outcomes = parentEvents().filter(e => e.name === 'agent.tool_result' && e.payload.callId === callId);
+        A.eq(outcomes.length, 1, callId + ' has one attributed outcome');
+        A.ok(outcomes[0] && outcomes[0].payload.ok === true && outcomes[0].payload.isError === false, callId + ' really succeeded');
+      }
+      const rows = crewlessRows(leads[2] && leads[2].messages || []);
+      A.eq(rows.length, 1, 'one actual worker result returns to the parent');
+      const worker = rows[0] || {};
+      A.ok(worker.reason === 'done' && worker.result === 'CREWLESS_WORKER_OK' && /^sub-/.test(worker.agentId || ''), 'worker outcome identifies a completed temporary child and its marker');
+      const workerRequests = llm.requests.slice(requestFrom).filter(q => lastUserText(q) === CREWLESS_WORKER_REQUEST && crewlessRuntime(q).agentId === worker.agentId);
+      A.eq(workerRequests.length, 1, 'the identified worker really called the provider once');
+      const workerRequest = workerRequests[0] || { messages: [], tools: [] };
+      const workerRunId = crewlessRuntime(workerRequest).runId;
+      A.ok(!!workerRunId && workerRunId !== runId, 'the worker has its own run identity');
+      A.ok(!(workerRequest.tools || []).some(t => t.function && ['team_spawn', 'team_dispatch'].includes(t.function.name)), 'temporary worker cannot recursively delegate');
+      const historyResponse = await fetch(B + '/api/runs?agent=*&runId=' + encodeURIComponent(workerRunId), { headers });
+      A.eq(historyResponse.status, 200, 'identified child run history is readable');
+      const history = await historyResponse.json(), childRows = history.runs || [];
+      A.eq(childRows.length, 1, 'identified child has one durable run receipt');
+      A.ok(childRows[0] && childRows[0].parentRunId === runId && childRows[0].delegatedBy === agentId
+        && childRows[0].agentId === worker.agentId && childRows[0].reason === 'done', 'durable child receipt binds successful work to this parent and owner-agent');
+      A.eq(parentEvents().filter(e => e.name === 'agent.run.start').length, 1, 'one parent task starts');
+      A.eq(parentEvents().filter(e => e.name === 'agent.run.end').map(e => e.payload.reason), ['done'], 'the same parent task completes once');
+      await sse.waitFor(events => events.slice(eventFrom).some(e => e.name === 'channel.delivery' && e.payload
+        && e.payload.channel === 'telegram' && String(e.payload.chatId) === String(chat) && e.payload.runId === runId && e.payload.ok), 5000, 'crewless Telegram delivery receipt');
+      const completed = tg.sends.slice(sendFrom).filter(s => String(s.chat_id) === String(chat) && rendered(s.text).includes(CREWLESS_DONE));
+      A.eq(completed.length, 1, 'Telegram receives exactly one final completion marker (progress sends are allowed)');
+      A.ok(completed[0] && rendered(completed[0].text).includes('CREWLESS_WORKER_OK'), 'Telegram final carries the actual worker result');
+      const after = await (await fetch(B + '/api/runtime/agent', { headers })).json();
+      A.eq(after.agents, [], 'temporary work does not manufacture saved crew');
+    }
 
     // Same named lead and specialist through desktop and owner Telegram; a wire tool
     // alone is not proof that the worker ran or that its result reached the parent.
@@ -442,10 +582,12 @@ async function waitUntil(fn, ms, label) {
     const checkParity = (start, label) => {
       const reqs = llm.requests.slice(start);
       const leads = reqs.filter(r => String((r.messages.find(m => m.role === 'system') || {}).content || '').includes('[ORCHESTRATION]'));
-      A.ok(leads.some(r => String(r.messages[0].content).includes('Agent id: parity_lead')), label + ': the same saved lead identity handles the task');
+      // [RUNTIME] (Agent id) rides the per-run <run_context> system note since lean-prompt (2026-10-12), not messages[0]
+      A.ok(leads.some(r => hostText(r.messages).includes('Agent id: parity_lead')), label + ': the same saved lead identity handles the task');
       A.ok(leads.some(r => JSON.stringify(r.messages[0]).includes('parity_worker (Parity Worker)')), label + ': briefing names the saved specialist');
       A.ok(reqs.some(r => (r.messages || []).some(m => m.role === 'tool' && /WORKER_PARITY_OK/.test(JSON.stringify(m)))), label + ': worker result returned through the real tool loop');
-      const worker = reqs.find(r => (r.messages || []).some(m => m.role === 'user' && /return worker parity proof/i.test(String(m.content))));
+      // the Commander's (here: the lead's) own words — a lead request's leading host notes (recall, earlier conversation) can quote them
+      const worker = reqs.find(r => (r.messages || []).some(m => m.role === 'user' && /return worker parity proof/i.test(userWords(m))));
       A.ok(!!worker, label + ': specialist made a real provider call');
       A.ok(worker && !(worker.tools || []).some(t => t.function?.name === 'team_dispatch'), label + ': worker cannot recursively delegate');
       A.ok(worker && !String(worker.messages[0].content).includes('[ORCHESTRATION]'), label + ': worker gets no lead briefing');
@@ -630,7 +772,7 @@ async function waitUntil(fn, ms, label) {
     llm.gate.arm(original5555);
     tg.pushText(5555, 99, original5555);
     await waitUntil(() => !!llm.gate._release, 8000, 'the exact original task reaches the fixture gate');
-    A.ok(llm.gate.request && llm.gate.request.messages.some(m => m && m.role === 'user' && m.content === original5555),
+    A.ok(llm.gate.request && llm.gate.request.messages.some(m => m && m.role === 'user' && userWords(m) === original5555),
       'the held provider request is the original task, not an auxiliary completion');
     await sse.waitFor(() => starts5555().length === 1, 5000, 'held run start (tg_5555)');
     const heldRunId = starts5555()[0].payload.runId;
@@ -651,7 +793,7 @@ async function waitUntil(fn, ms, label) {
     const appliedRequest = () => llm.requests.find(r => (r.messages || []).some(m => m && m.role === 'system'
       && /<steering_note>/.test(String(m.content || '')) && String(m.content || '').includes(followup5555)));
     await waitUntil(() => !!appliedRequest(), 8000, 'the follow-up reaches the production provider as a steering note');
-    A.ok(appliedRequest().messages.some(m => m && m.role === 'user' && m.content === original5555),
+    A.ok(appliedRequest().messages.some(m => m && m.role === 'user' && userWords(m) === original5555),
       'the provider receives the follow-up with the original task still in context');
     await waitUntil(() => replies5555().some(s => /Follow-up applied: TELEGRAM_FOLLOWUP_APPLIED/.test(rendered(s.text))),
       12000, 'the provider answer that applied the follow-up is delivered');
@@ -679,9 +821,10 @@ async function waitUntil(fn, ms, label) {
     await llm.gate.started;                           // run #1 is provably in-flight (slot held) now
     await sse.waitFor(events => events.some(e => e.name === 'agent.run.start' && e.payload && e.payload.agentId === 'tg_5556'), 5000, 'run #1 start (tg_5556)');
 
-    // Explicit cancel bypasses steering: aborts #1, then races the still-held workspace slot -> transient refusal ->
-    // the hub's bounded retry recovers once #1's abort frees the slot.
-    tg.pushText(5556, 99, 'cancel');
+    // A forwarded message never steers a run (third-party words), so it supersedes: aborts #1, then races the still-held
+    // workspace slot -> transient refusal -> the hub's bounded retry recovers once #1's abort frees the slot. (A plain
+    // "cancel" from the owner is /stop now — it stops #1 and starts nothing — so it can no longer drive this race.)
+    tg.pushForward(5556, 99, 'please summarise this forwarded note');
 
     // the user's SECOND message must EVENTUALLY get a real answer delivered to chat 5556 (the whole point of the fix).
     await waitUntil(() => tg.sends.some(s => String(s.chat_id) === '5556' && String(s.text || '').indexOf('Telegram answer') >= 0), 12000, 'chat 5556 eventually gets the real answer for message #2');

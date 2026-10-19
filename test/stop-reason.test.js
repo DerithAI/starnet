@@ -30,6 +30,25 @@ A.ok(/no published price|no price/.test(SR.stopSentence('budget', { unpricedMode
 A.ok(!/^run ended without completion: empty$/.test(SR.incompleteRunMessage('empty')) && /empty reply/.test(SR.incompleteRunMessage('empty')) && /\[empty\]$/.test(SR.incompleteRunMessage('empty')),
   'a routine settlement reads in words and keeps the machine reason for triage: ' + SR.incompleteRunMessage('empty'));
 A.ok(/missing terminal outcome/.test(SR.incompleteRunMessage('')), 'a missing outcome is named, never blank');
+// a routine/loop has no conversation to say "continue" to: its settlement names a door that exists (review conveyor-backend-12)
+for (const r of ['max_iters', 'empty']) {
+  for (const extra of [undefined, { toolsRan: 2 }]) {
+    const line = SR.incompleteRunMessage(r, extra);
+    A.ok(!/continue/.test(line) && /run it again/.test(line), 'an unattended ' + r + ' end never says "continue": ' + line);
+  }
+}
+A.ok(/continue/.test(SR.stopSentence('max_iters')) && /continue/.test(SR.stopSentence('empty')), 'the chat wording (Telegram/Discord) keeps its "continue" door');
+A.ok(!/continue/.test(SR.stopSentence('done', { finishReason: 'length', unattended: true })), 'an unattended cut reply never says "continue"');
+A.ok(!/continue/.test(SR.stopSentence('budget', { subscriptionModel: 'claude', unattended: true })), 'an unattended subscription ceiling never says "continue"');
+// an empty end AFTER tools ran must never say "nothing was done" — a file may already be written (review threads-backend-03)
+{
+  const afterTools = SR.stopSentence('empty', { toolsRan: 2 });
+  A.ok(!/nothing was done/.test(afterTools) && /2 tool steps/.test(afterTools) && /may already have made changes/.test(afterTools) && /continue/.test(afterTools),
+    'an empty end after tool steps says they ran and may have changed things: ' + afterTools);
+  A.ok(/1 tool step\b/.test(SR.stopSentence('empty', { toolsRan: 1 })), 'one tool step reads singular: ' + SR.stopSentence('empty', { toolsRan: 1 }));
+  A.ok(!/nothing was done/.test(SR.incompleteRunMessage('empty', { toolsRan: 3 })) && /\[empty\]$/.test(SR.incompleteRunMessage('empty', { toolsRan: 3 })),
+    'a routine/loop settlement after tool steps never says nothing was done: ' + SR.incompleteRunMessage('empty', { toolsRan: 3 }));
+}
 
 /* ---- 2. one vocabulary for the harness's own stops ---- */
 // the real loop / breaker sources still emit the shapes the explainers key on
@@ -68,10 +87,21 @@ A.eq(Friendly.friendlyError(Object.assign(new Error('aborted'), { name: 'AbortEr
 /* ---- 3. COMMS ---- */
 // the work-log line for a run that ENDED without a clean delivery
 A.ok(/empty reply, so nothing was done/.test(Friendly.stopLine('empty')), 'COMMS: empty is explained, never "stopped (empty)"');
-A.ok(/outside this chat/.test(Friendly.stopLine('cancelled')) && /E-STOP/.test(Friendly.stopLine('cancelled')), 'COMMS: a cancel that was not yours says it came from elsewhere');
-A.ok(/E-STOP this run pressed/.test(Friendly.stopLine('cancelled', { cancelSource: 'estop_by_run' })), 'COMMS: the run\'s own E-STOP keeps its line');
+// an empty end AFTER tool steps: COMMS says what the chat surfaces say, in the same words (review threads-backend-03)
+for (const n of [1, 2]) {
+  const line = Friendly.stopLine('empty', { toolsRan: n });
+  A.ok(!/nothing was done/.test(line), 'COMMS: an empty end after ' + n + ' tool step(s) never says nothing was done: ' + line);
+  A.eq(line, SR.stopSentence('empty', { toolsRan: n }), 'COMMS mirrors the chat wording for an empty end after ' + n + ' tool step(s)');
+}
+A.eq(Friendly.stopLine('empty', { toolsRan: 0 }), SR.stopSentence('empty'), 'COMMS mirrors the chat wording for an empty end with no tool step');
+A.ok(/outside this chat/.test(Friendly.stopLine('cancelled')) && /Pause Automation in the StarNet tray menu/.test(Friendly.stopLine('cancelled')), 'COMMS: a cancel that was not yours says it came from elsewhere, naming the tray\'s real Pause Automation');
+A.ok(!/E-STOP/.test(Friendly.stopLine('cancelled')) && !/E-STOP/.test(Friendly.stopLine('cancelled', { cancelSource: 'estop_by_run' })), 'COMMS: stop lines never name an E-STOP the desk does not show (org P30)');
+A.ok(/this run paused all automation/.test(Friendly.stopLine('cancelled', { cancelSource: 'estop_by_run' })) && /RESUME AUTOMATION/.test(Friendly.stopLine('cancelled', { cancelSource: 'estop_by_run' })), 'COMMS: the run\'s own automation pause keeps its line');
 A.eq(Friendly.stopLine('done'), '', 'COMMS: a clean end has no stop line');
 A.ok(/Friendly\.stopLine\(endReason/.test(chat), 'COMMS routes its stop lines through Friendly.stopLine');
+// threads-backend-03: the stop line hears how many tool calls this run made, so an "empty" end after real steps is
+// never told "nothing was done" (callNames is the run's own callId -> tool map that onToolCall fills)
+A.ok(/Friendly\.stopLine\(endReason, \{[^}]*toolsRan: Object\.keys\(callNames\)\.length/.test(chat), 'COMMS passes the run\'s tool-call count to its stop line');
 A.ok(/stopActive\('esc'\)/.test(chat) && /■ STOPPED BY YOU \(ESC\)/.test(chat), 'Esc stops say STOPPED BY YOU (ESC) on the card');
 
 // the ⚠ row keeps the real reason (unknown verdicts carry their raw text) …
@@ -97,6 +127,57 @@ A.ok(/stopActive\('esc'\)/.test(chat) && /■ STOPPED BY YOU \(ESC\)/.test(chat)
 // the stop reason rides the stopped turn and replays after a reload
 A.ok(/function noteStopReason\(/.test(chat) && /m\.stopped && m\.stopNote\) toolLine\('⏹ ' \+ m\.stopNote\)/.test(chat), 'a stopped turn keeps its ⏹ reason across a reload');
 
+// org pass 10-14 (P29): /goal is a SESSION goal — its set line says so and carries a real door key into AUTOMATE › GOAL LOOPS
+{
+  const src = A.fnBody(chat, 'function goalCommand(');
+  const lines = [], opened = [];
+  // the set line is a system row; its door row is that row's own child (systemDoor, P29-sys), never inside the prose
+  const mkEl = () => { const el = { type: '', className: '', textContent: '', onclick: null, kids: [], dataset: {} }; el.appendChild = n => { el.kids.push(n); return n; }; el.classList = { contains: c => (' ' + el.className + ' ').indexOf(' ' + c + ' ') >= 0 }; Object.defineProperty(el, 'children', { get: () => el.kids }); el.querySelectorAll = () => []; return el; };
+  const row = mkEl(); row.className = 'cmsg system';
+  const doc = { createElement: mkEl, createTextNode: t => ({ text: t }) };
+  const GoalLoop = { create: (goal) => ({ goal, maxTurns: 8, status: 'active' }), statusLine: () => '' };
+  let kicked = 0;
+  const goal = new Function('GoalLoop', 'activeWs', 'goalOf', 'localLine', 'persistGoal', 'kickGoal', 'StationUI', 'document', A.fnBody(chat, 'function systemDoor(') + '\n' + src + '\nreturn goalCommand;')(
+    GoalLoop, { id: 'w' }, () => null, t => { lines.push(t); return row; }, () => {}, () => { kicked++; }, { openTerm: (k, sec) => opened.push(k + ':' + sec) }, doc);
+  goal('ship the landing page');
+  A.ok(/^⊙ goal set for this session only: ship the landing page \(budget 8 turns\)\./.test(lines[0]) && !/ {2}|lasting goal loops/.test(lines[0]), 'the /goal set line says session-only, one space before the budget, no dangling door label: ' + lines[0]);
+  A.ok(/It works while StarNet is open and stays with this session through a reload\./.test(lines[0]), 'org P19: it says when it runs — while StarNet is open, and that a reload keeps it on this session');
+  const doorRow = row.kids.find(k => k && k.className === 'sys-doors');
+  A.ok(doorRow && doorRow.kids[0] && doorRow.kids[0].className === 'sys-doors-lead' && doorRow.kids[0].textContent === 'Lasting goal loops:', 'P29 polish: the door rides a row of its own, labelled Lasting goal loops:');
+  const door = doorRow && doorRow.kids.find(k => k && k.className && /goal-loops-door/.test(k.className));
+  A.ok(door && door.type === 'button' && /\bsys-door\b/.test(door.className) && door.textContent === '▸ AUTOMATE › GOAL LOOPS', 'a real door key rides the line (not a menu path)');
+  door.onclick(); A.eq(opened, ['automation:loops'], 'the door opens AUTOMATE › GOAL LOOPS');
+  A.eq(kicked, 1, 'the session goal still starts working');
+  A.ok(!/goal loop (paused|resumed|set)|No goal loop to|Cleared the goal loop|No paused goal loop/.test(src), 'every /goal control line says session goal');
+}
+// (live walk 10-14) /goal said 'Working toward it…' then sat silent while an optional curiosity nudge was up: a gentle nudge no
+// longer holds the loop, and any real wait is SAID once
+{
+  const body = A.fnBody(chat, 'function goalWaitReason(') + '\n' + A.fnBody(chat, 'function goalBlocked(') + '\n'
+    + 'const goalRetry = new Set();\nconst goalWaitSaid = new WeakMap();\n' + A.fnBody(chat, 'function kickGoal(') + '\nreturn { kickGoal, goalBlocked };';
+  const mk = (st) => {
+    const lines = [], sent = [], timers = [];
+    const g = { status: 'active' };
+    const f = new Function('S', 'goalOf', 'GoalLoop', 'isActiveWs', 'isBusy', 'studyBusy', 'threadBusy', 'taskQuestionLive', 'localLine', 'send', 'setTimeout',
+      'let interview = S.interview, activeTurnin = S.turnin, activeNudge = S.nudge;\n' + body)(
+      st, () => g, { isActive: x => x.status === 'active', continuationPrompt: () => 'NEXT STEP' }, () => true, () => false, () => false, () => false,
+      () => !!st.question, t => lines.push(t), (p, o) => sent.push([p, o]), (fn) => timers.push(fn));
+    return { f, lines, sent, timers };
+  };
+  const gentle = mk({ nudge: { row: {}, choiceRow: {}, dim: 'tone', beat: null } });
+  gentle.f.kickGoal({ id: 'w' });
+  A.eq(gentle.sent, [['NEXT STEP', { goalContinuation: true }]], 'an unanswered curiosity nudge does not hold the goal loop: the step is sent');
+  A.eq(gentle.lines, [], '…and nothing claims a wait');
+  const held = mk({ nudge: { keepUntilDecision: true } });
+  held.f.kickGoal({ id: 'w' }); held.timers.shift()(); held.f.kickGoal({ id: 'w' });
+  A.eq(held.sent, [], 'a nudge that must be decided still holds the loop');
+  A.eq(held.lines, ['⏸ session goal waiting for your choice on the card above — the next step starts once that is settled.'], 'the wait is said ONCE, naming what it waits for: ' + held.lines.join(' | '));
+  A.eq(held.timers.length, 1, '…and one re-check stays armed');
+  const q = mk({ question: true });
+  q.f.kickGoal({ id: 'w' });
+  A.ok(q.sent.length === 0 && /waiting for your answer to the question above/.test(q.lines[0] || ''), 'an unanswered task question holds the loop and says so');
+  A.ok(/goalBlocked\(activeWs\)/.test(chat.slice(chat.indexOf('function loopTick'), chat.indexOf('function loopCommand'))), '/loop ticks keep the same discipline (goalBlocked)');
+}
 // a goal-loop step that stopped pauses the loop WITH the reason, instead of leaving it "active" with nothing firing
 {
   const src = A.fnBody(chat, 'async function judgeGoalTurn(');
@@ -109,7 +190,7 @@ A.ok(/function noteStopReason\(/.test(chat) && /m\.stopped && m\.stopNote\) tool
     await judge({ id: 'w' }, null, true, 'the model sent back an empty reply, so nothing was done');
     A.eq(s.status, 'paused', 'a stopped continuation pauses the goal loop (no silent stall)');
     A.eq(paused, 'the model sent back an empty reply, so nothing was done', 'with the real reason');
-    A.ok(/⏸ goal loop paused: the model sent back an empty reply/.test(lines[0]) && /\/goal resume/.test(lines[0]), 'and says so with the existing resume control: ' + lines[0]);
+    A.ok(/⏸ session goal paused: the model sent back an empty reply/.test(lines[0]) && /\/goal resume/.test(lines[0]), 'and says so with the existing resume control: ' + lines[0]);
     A.report('stop-reason.test');
   })().catch(e => { console.error(e); process.exit(1); });
 }

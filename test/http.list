@@ -58,6 +58,8 @@ test/taint-inherited-refusal.e2e.test.js
 test/e2e.trigger-fullaccess-taint.test.js
 test/e2e.pathtrust.test.js
 test/e2e.subagent-background.test.js
+test/e2e.approval-lifecycle.test.js
+test/e2e.run-truth-1017.test.js
 test/google-signin.e2e.test.js
 test/google-files.e2e.test.js
 test/google-release-deferred.e2e.test.js
@@ -101,6 +103,7 @@ test/threads.e2e.test.js
 test/cron.session-transcript.e2e.test.js
 test/channels.telegram.e2e.test.js
 test/channels.telegram.connect-pairing.e2e.test.js
+test/channels.connect-large-prompt.e2e.test.js
 test/channels.telegram.multibot.e2e.test.js
 test/channels.keychain-all.e2e.test.js
 test/channels.telegram.botchain.e2e.test.js
@@ -111,6 +114,7 @@ test/cron.arm.test.js
 test/lifecycle-armed.http.test.js
 test/checkpoint-store.test.js
 test/checkpoint-maintenance.test.js
+test/checkpoint-stale-lock.test.js
 test/shell.test.js
 test/shell.process-tree.test.js
 test/verify.run.test.js
@@ -142,6 +146,7 @@ test/credits-heal-join.e2e.test.js
 test/routing.persist.e2e.test.js
 test/run-recovery.api.test.js
 test/routing.sample.e2e.test.js
+test/routing.line-admission.e2e.test.js
 test/routing.sample-provider.e2e.test.js
 test/routing.fix-suggest.e2e.test.js
 test/routing.line-jobs.e2e.test.js
@@ -207,10 +212,21 @@ test/subscription-stacking-oauth.e2e.test.js
 test/apps.http.test.js
 test/checkpoint-git.test.js
 test/checkpoint-maintenance.e2e.test.js
+test/checkpoint-stale-lock.e2e.test.js
 test/crew-call.http.test.js
 test/legacy-spend-provenance.http.test.js
+test/ledger-damaged-line.http.test.js
 
+test/connector-recovery-reconnect.http.test.js
+
+test/connector-reset-runtime.http.test.js
+
+# Customer-backed memory and evaluated skill recovery
 test/memory-learning-boundary.http.test.js
-
 test/skills.candidate-lifecycle.http.test.js
 test/skills.evaluation-spend.http.test.js
+test/lean-prompt.e2e.test.js
+test/host-notes.strict-template.e2e.test.js
+test/cross-run-cache.e2e.test.js
+test/cron.channel-media.e2e.test.js
+test/cron.images-grant.e2e.test.js

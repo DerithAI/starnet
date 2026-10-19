@@ -127,6 +127,13 @@ const group = (members, extra = {}) => ({ id: 'direct', title: 'Direct', members
   assert.equal(homeCreate.body.history, undefined, 'General history is not copied into the group');
   assert.equal(homeCreate.body.title, 'Lead + Peer');
   assert.deepEqual(home.opened, [homeCreate.body.id], 'COMMS opens the new group');
+  // org(P27): in General the @ row says the pick opens a NEW group beside General (General is never converted)
+  const homeAt = await boot({ general: true });
+  await homeAt.type('ask @pe');
+  const homeRows = walk(homeAt.find('gc-mentions')).filter(e => e.attrs.role === 'option');
+  assert.equal(homeRows.length, 1);
+  assert.match(text(homeRows[0]), /opens a group chat with Lead beside General/, 'the General @ row names the group that opens beside it');
+  assert.doesNotMatch(text(homeRows[0]), /starts a group with/, 'General never reads as converting');
 
   // ---- @ in a DIRECT chat: lists the crew, keyboard picks, picking starts the group ----
   const at = await boot();
@@ -190,5 +197,56 @@ const group = (members, extra = {}) => ({ id: 'direct', title: 'Direct', members
   const one = twice.ctx.GroupChat.startWith(['peer']), two = twice.ctx.GroupChat.startWith(['peer']);
   gate.resolve(); const [g1, g2] = await Promise.all([one, two]);
   assert.equal(creates, 1, 'a second Enter joins the conversion in flight'); assert.equal(g1, g2);
+  // ---- NO SENTENCES UNDER TILES (walk 10-14 #9): a picker row is portrait + name; its description is the row's hover tip ----
+  const tipped = await boot({ crew: [{ id: 'agent', name: 'Lead', role: 'overseer' }, { id: 'peer', name: 'Peer', role: 'Answers with every claim sourced' }, { id: 'third', name: 'Third' }] });
+  tipped.request(async () => ok({ roster: [{ id: 'agent', name: 'Lead' }, { id: 'peer', name: 'Peer' }, { id: 'third', name: 'Third' }], groups: [] }));
+  await tipped.click('+ Add agents');
+  const rowOf = id => walk(tipped.find('gc-picker')).find(e => e.attrs.role === 'listitem' && e.attrs['data-agent-name'] === id);
+  const peerRow = rowOf('peer');
+  assert.ok(peerRow, 'the picker lists Peer');
+  assert.ok(!walk(peerRow).some(e => /\bgc-tag\b/.test(e.className || '')), 'no description line is built under the name');
+  assert.ok(!/Answers with every claim sourced/.test(text(peerRow)), 'the sentence is not printed on the row');
+  assert.equal(peerRow.attrs.title, 'Answers with every claim sourced', 'the description is the row\'s hover tip (adopted into the station tooltip)');
+  assert.equal(peerRow.attrs['aria-description'], 'Answers with every claim sourced', 'and is still read to a screen reader');
+  assert.equal(rowOf('third').attrs.title, undefined, 'no description, no tip (never an invented job title)');
+  assert.match(text(tipped.find('gc-picker')), /Talk to one agent with/, 'the how-to line is kept (simplify = organization, never removal)');
+  await tipped.click('DONE');
+  // the picker fills its window and never overflows it: the lists flex, the how-to line and the footer stay in the flow
+  const pickerCss = (source.match(/\.gc-picker\{[^}]*\}/) || [''])[0];
+  assert.match(pickerCss, /height:100%/, 'the picker is exactly its window\'s height (min-height:100% let it overflow under its sticky footer)');
+  assert.doesNotMatch(pickerCss, /min-height:100%/, 'no min-height:100% that grows the picker past its window');
+  assert.match(source, /\.gc-empty:empty\{display:none\}/, 'an empty "whole crew is here" slot takes no room from the add list');
+  /* the ADD list keeps a floor of TWO rows (review 10-14: at min-height:0 a 5-member group's add list was 1.3 rows at
+     1440x900 and none at all on a window ~80px shorter — 1366x768, a larger TEXT SIZE, a dragged picker). The members list
+     gives way first, down to one row; below both floors the window body scrolls with the how-to line and footer in the flow. */
+  const outRule = (source.match(/\.gc-sect\.out\{[^}]*\}/) || [''])[0], inRule = (source.match(/\.gc-sect\.in\{[^}]*\}/) || [''])[0];
+  assert.match(outRule, /min-height:calc\(var\(--gc-head-h\) \+ 2 \* var\(--gc-row-h\) \+ 2px\)/, 'the add list never shrinks below its heading and two agents');
+  assert.match(inRule, /flex:0 1 auto/, 'the members list gives way when the window is short');
+  assert.match(inRule, /min-height:calc\(var\(--gc-head-h\) \+ var\(--gc-row-h\) \+ 2px\)/, 'but never below its heading and one agent');
+  // the row height the floors count in is the row's real height: the 38px portrait plus its padding and its 1px rule
+  const thumbH = +(source.match(/thumbHTML\(.*?, 32, (\d+), 'gc-av'\)/) || [])[1];
+  const basePad = +((source.match(/\.gc-row\{[^}]*padding:(\d+)px/) || [])[1]);
+  const glassCss = fs.readFileSync(path.join(__dirname, '../frontend/css/glass-comms.css'), 'utf8');
+  const glassPad = +((glassCss.match(/body\.glass-demo \.gc-picker \.gc-row \{[^}]*padding: (\d+)px/) || [])[1]);
+  assert.equal(+((source.match(/\.gc-picker\{[^}]*--gc-row-h:(\d+)px/) || [])[1]), thumbH + 2 * basePad + 1, 'the base row height the floors count in');
+  assert.equal(+((source.match(/body\.glass-demo \.gc-picker\{--gc-row-h:(\d+)px/) || [])[1]), thumbH + 2 * glassPad + 1, 'the glass row (11px padding) height the floors count in');
+  assert.match(source, /\.gc-sect-h\{[^}]*line-height:18px/, 'the section heading has a fixed line the floors count in');
+  assert.match(source, /--gc-head-h:22px/, 'the heading is its 18px line plus its 4px gap');
+  assert.doesNotMatch((source.match(/\.gc-picker-footer\{[^}]*\}/) || [''])[0], /position:sticky/, 'the footer sits in the flow under the how-to line, never stuck over text that scrolls behind its 95%-alpha panel');
+  // the picker opens tall enough to show its roster, like the other pick-from windows (an explicit drag still wins)
+  assert.match(source, /className: 'gc-picker-win'/, 'the ADD AGENTS window names itself to the dock');
+  const glass = fs.readFileSync(path.join(__dirname, '../frontend/app/glass-demo.js'), 'utf8');
+  assert.match(glass, /const roster = w\.classList\.contains\('gc-picker-win'\)/, 'the dock knows the picker is a roster');
+  assert.match(glass, /roster \? Math\.max\(available \* \.8, rosterNeed\)/, 'and opens it at 80% of the band, not the 56% that showed one and a half agents — or taller, to hold its floors');
+  // a short screen (1366x768): at 80% the floors overflowed by 18px and DONE sat under the fold; once the roster is drawn the
+  // dock re-seats the window to the height its floors need (an explicit drag still wins, a short band still caps it)
+  assert.match(glass, /const rosterNeed = rosterBody \? w\.offsetHeight - rosterBody\.clientHeight \+ rosterBody\.scrollHeight : 0;/, 'the dock reads what the roster still needs from its own overflow');
+  assert.match(source, /if \(search\) search\.addEventListener\('input', render\);\s*render\(\);\s*const win = dialog\.closest \? dialog\.closest\('\.term'\) : null;\s*if \(win && typeof win\._fitDockedSheet === 'function'\) win\._fitDockedSheet\(\);/, 'the picker asks the dock to re-seat it once its roster is drawn');
+  // tiny text (walk 10-14 #14): the footer status, section heads, how-to line and the lead tag read at the 14px glass floor
+  for (const sel of ['.gc-sect-h', '.gc-picker-footer .gc-delta', '.gc-hint', '.gc-row .gc-lead']) {
+    const rule = (source.match(new RegExp(sel.replace(/[.]/g, '\\.').replace(/ /g, ' ') + '\\{[^}]*\\}')) || [''])[0];
+    assert.match(rule, /font-size:var\(--sn-type-meta,14px\)/, sel + ' reads at 14px (was 11-13px)');
+  }
+
   console.log('group-chat-picker: loading, failure, cancellation, + ADD/✕ REMOVE save at once, nothing claimed before the backend, General never converted, @ menu in a direct chat with keyboard pick, exact @handle resolution PASS');
 })().catch(e => { console.error(e); process.exitCode = 1; });

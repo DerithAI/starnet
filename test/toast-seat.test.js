@@ -80,8 +80,8 @@ A.ok(/\.nav-coach/.test(body),
 // ---- 3 · it actually runs at the two moments that matter ---------------------------------
 A.ok(/seatToastRack\(stack\);/.test(ui),
   'toast() re-seats the rack before the card is visible (a rail drag may have moved the seam)');
-A.ok(/function reseatToasts\(\)[^\n]*seatToastRack\(document\.getElementById\('toast-stack'\)\)/.test(ui),
-  'reseatToasts() re-seats a card that is already on screen');
+A.ok(/function reseatToasts\(\)[^\n]*const st = document\.getElementById\('toast-stack'\); if \(st && st\.childElementCount\) seatToastRack\(st\);/.test(ui),
+  'reseatToasts() re-seats a card that is already on screen (and skips the layout read while the rack is empty: the next card seats at emit)');
 A.ok(/addEventListener\('resize'[\s\S]{0,900}reseatToasts\(\)/.test(ui),
   'the resize path calls it (a TEXT SIZE flip dispatches a synthetic resize, so that is covered too)');
 
@@ -90,5 +90,13 @@ const rackMirror = ruleFor(motionMirror, '#toast-stack');
 A.ok(rackMirror && /left:\s*var\(--toast-x/.test(rackMirror) && /bottom:\s*var\(--toast-b/.test(rackMirror),
   'the website mirror carries the measured anchor too');
 A.ok(/function seatToastRack\(/.test(uiMirror), 'the website mirror carries the positioner too');
+
+// the 4-docks hint shows ONCE per page: a flicker effect toggles #screen-game's class every 7 s, and the class observer
+// re-showed it all session (live walkthrough 2026-10-13)
+{
+  const nav = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'navdock.js'), 'utf8');
+  A.ok(nav.indexOf('let coachShown = false;') >= 0 && nav.indexOf('if (!coach || !coach.hidden || coachShown) return;') >= 0 && nav.indexOf('coachShown = true;') >= 0,
+    'the nav coach shows once per page, however often #screen-game changes class');
+}
 
 A.report('toast-seat.test');

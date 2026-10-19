@@ -55,7 +55,49 @@
      This is load-bearing, not polish: measured against the real 22 deferred browser tools, unweighted scoring
      answered "go back to the previous page" with browser.eval first and returned 8 tools for a query with one
      obvious answer, because common words accumulated enough weak description hits to clear the floor. */
-  function weigh(pool, qs) {
+  /* PHRASES (rc walk 10-14). A lead told to search "station builder" searched "station builder - create assembly lines and
+     workflows": "create" is a whole tool NAME (app.create, loop.create), so those outscored every builder tool, whose
+     descriptions carry "station builder" only as two weak words — and two of three real runs spent a second search. Two
+     adjacent words of the query (neither a stop word) that a description's LEADING LABEL carries word for word score like an
+     exact name. The label only — the words before its first ':' when they are a heading of at most four words ("STATION
+     BUILDER, step 2"), never a sentence: scored anywhere in a description, "every assembly line" in station.layout's text
+     buried the builder for "build an assembly line", and "previous page" revealed the 13 KB station.plan beside browser.back
+     (review, measured on the real browser + station shelf: test/toolsearch.phrases-real.test.js). */
+  function label(tool) {
+    const d = String((tool && tool.description) || '').toLowerCase(), i = d.indexOf(':');
+    if (i < 0) return '';
+    const head = d.slice(0, i);
+    return head.split(/[^a-z0-9_.]+/).filter(Boolean).length <= 4 ? head : '';
+  }
+  function phrases(s) {
+    const words = String(s == null ? '' : s).toLowerCase().split(/[^a-z0-9_.]+/).filter(Boolean), out = [];
+    for (let i = 0; i + 1 < words.length; i++) {
+      const a = words[i], b = words[i + 1];
+      if (a.length > 1 && b.length > 1 && !STOP.has(a) && !STOP.has(b)) out.push(a + ' ' + b);
+    }
+    return out;
+  }
+  /* A NUMBERED FAMILY ("STATION BUILDER, step 3:"): a later step needs what the earlier ones make (station.build builds only
+     a plan station.plan made), so a revealed step brings its family's earlier steps with it, and one search is enough. The
+     fix round's live run searched "build an assembly line or workflow on the station", got station.build alone, and spent a
+     second search (a whole turn of the run's context) on "see the station floor map and plan changes". */
+  function stepOf(tool) {
+    const m = /^(.+?),\s*step\s+(\d+)\s*$/.exec(label(tool));
+    return m ? { family: m[1].trim(), n: Number(m[2]) } : null;
+  }
+  function withEarlierSteps(hits, pool) {
+    const out = hits.slice(), has = new Set(hits.map(h => h.t.name));
+    for (const h of hits) {
+      const s = stepOf(h.t);
+      if (!s) continue;
+      for (const t of pool) {
+        const o = stepOf(t);
+        if (o && o.family === s.family && o.n < s.n && !has.has(t.name)) { has.add(t.name); out.push({ t, s: 0 }); }
+      }
+    }
+    return out;
+  }
+  function weigh(pool, qs, query) {
     const out = [];
     for (const q of qs) {
       let df = 0;
@@ -63,6 +105,13 @@
       // Absent from the shelf, or present on ALL of it — either way it cannot discriminate.
       out.push({ q, w: (!df || df >= pool.length) ? 0 : Math.log(pool.length / df) });
     }
+    // a phrase weighs what its two words weigh; one no tool (or every tool) carries cannot discriminate either
+    out.phrases = phrases(query).map(p => {
+      let df = 0;
+      for (const t of pool) if (label(t).indexOf(p) >= 0) df++;
+      const [a, b] = p.split(' '), wa = (out.find(x => x.q === a) || {}).w || 0, wb = (out.find(x => x.q === b) || {}).w || 0;
+      return { p, w: (!df || df >= pool.length) ? 0 : wa + wb };
+    }).filter(x => x.w);
     return out;
   }
 
@@ -80,6 +129,8 @@
       if (desc.indexOf(q) >= 0) base += 4;
       s += base * w;
     }
+    const head = (weighted.phrases || []).length ? label(tool) : '';
+    for (const { p, w } of weighted.phrases || []) if (head.indexOf(p) >= 0) s += 100 * w;
     return s;
   }
 
@@ -206,7 +257,7 @@
     }
     if (!shown.length) return none;
     const all = pool.concat(shown);
-    const weighted = weigh(all, terms(q));
+    const weighted = weigh(all, terms(q), q);
     let best = 0;
     for (const t of all) best = Math.max(best, score(t, weighted));
     if (!best) return none;
@@ -256,7 +307,7 @@
         }
         if (!q.trim()) return { content: 'Provide a `query` describing the capability you want.', summary: 'no query' };
 
-        const weighted = weigh(pool, terms(q));
+        const weighted = weigh(pool, terms(q), q);
         const scored = pool
           .map(t => ({ t, s: score(t, weighted) }))
           .filter(h => h.s > 0)
@@ -265,7 +316,7 @@
         // sibling's description otherwise drags the family along, quietly re-advertising on the first search
         // the very set the deferral exists to withhold.
         const best = scored.length ? scored[0].s : 0;
-        const hits = scored.filter(h => h.s * 3 >= best && (!match.keep || match.keep(h.t))).slice(0, MAX_HITS);
+        const hits = withEarlierSteps(scored.filter(h => h.s * 3 >= best && (!match.keep || match.keep(h.t))).slice(0, MAX_HITS), pool);
 
         if (!hits.length && (blocked || listed)) return { content: [blocked, listed].filter(Boolean).join('\n'), summary: blocked ? 'withheld' : 'already listed' };
         if (!hits.length) {

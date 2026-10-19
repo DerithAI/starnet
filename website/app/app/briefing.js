@@ -22,8 +22,10 @@ const Briefing = (() => {
   const TITLE = 'While you were away';
   const AWAY_MS = 30 * 60000;       // "genuinely away" — matches the sidecar's NIGHTSHIFT_AWAY_MS default
   const BOOT_DELAY_MS = 1600;       // let the floor + COMMS settle (same cadence family as ReturnStore)
+  const SEEN_EVERY_MS = 60000;      // presence stamps while the Commander is here — one a minute vs the 30-minute threshold
   let enabled = false, wired = false, inFlight = false;
   let lastInputAt = Date.now(), hiddenAt = 0;
+  let bootSettled = false, lastSeenAt = 0;
   let agentId = 'agent';
   let lastItems = null;             // the last delivered briefing's items (from the server), for the chips
 
@@ -38,6 +40,14 @@ const Briefing = (() => {
     try { if (typeof Intake !== 'undefined' && Intake.isRunning && Intake.isRunning()) return true; } catch (_) {}
     try { if (typeof Dialogue !== 'undefined' && Dialogue.isOpen && Dialogue.isOpen()) return true; } catch (_) {}
     return false;
+  }
+  /* A WAITING ASK OUTRANKS THE REPORT (live walk 10-14: a reload jumped to the briefing and took the screen off the
+     conversation whose worker approval was still pending). The station's own count rides the delivery — a reloaded
+     page may not have refiled a background ask yet — and any ask this page already holds counts too. */
+  function asksWaiting(j) {
+    if (j && Number(j.asksWaiting) > 0) return true;
+    try { return typeof Channels !== 'undefined' && !!Channels.allPending && Channels.allPending().length > 0; }
+    catch (e) { console.warn('[briefing] could not read the open asks; staying put', e); return true; }
   }
 
   // adopt (idempotent) the ONE briefing session: pinned, unread (real unseen content), never a duplicate row.
@@ -59,8 +69,10 @@ const Briefing = (() => {
   async function deliver(why) {
     if (!enabled || inFlight) return null;
     inFlight = true;
+    lastSeenAt = Date.now();   // a delivery moves the stamp itself; the next presence stamp waits its turn behind it
     try {
-      const r = await fetch('/api/away/briefing/deliver', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tzOffsetMin: tzOffsetMin(), why: String(why || '') }) });
+      // minAwayMs: the sidecar briefs only an absence at least this long — a reload or a restart is not one
+      const r = await fetch('/api/away/briefing/deliver', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tzOffsetMin: tzOffsetMin(), why: String(why || ''), minAwayMs: AWAY_MS }) });
       if (!r.ok) return null;
       const j = await r.json().catch(() => null);
       if (!j || !j.delivered) return j;
@@ -70,7 +82,7 @@ const Briefing = (() => {
       const onScreen = typeof Workstreams !== 'undefined' && Workstreams.activeId && Workstreams.activeId() === STREAM;
       if (ws && onScreen && typeof Chat !== 'undefined' && Chat.load) {
         try { Chat.load(ws); } catch (_) {}   // already on screen: re-sync from the server so the new turn shows
-      } else if (ws && !engaged() && typeof App !== 'undefined' && App.openWorkstream) {
+      } else if (ws && !engaged() && !asksWaiting(j) && typeof App !== 'undefined' && App.openWorkstream) {
         try { App.openWorkstream(STREAM); } catch (_) {}
       }
       return j;
@@ -128,19 +140,36 @@ const Briefing = (() => {
 
   // has the Commander been gone (no input) long enough that new unattended work belongs to a briefing?
   function isAway(now) { return ((now || Date.now()) - lastInputAt) >= AWAY_MS; }
+  /* PRESENCE (live walk 10-14). The briefing stamp used to move only when a briefing was delivered, so a reload briefed
+     everything that had ended since the PREVIOUS one — work the Commander had watched land. While they are here the page
+     stamps their presence (throttled), and on the way out (tab hidden, reload, close) it stamps the moment they left.
+     Never before the boot delivery settles and never while a delivery is in flight: a stamp racing ahead of a return
+     would swallow the very absence it is about to brief. A page with the briefing OFF (the awakening) still stamps: a
+     stamp delivers nothing, and without it a new station's first reload briefed its whole first session (review 10-14). */
+  function stampPresence(leaving) {
+    // isAway: an idle page is not a present Commander — hiding or reloading it after an hour untouched must not erase that hour
+    if (!wired || !bootSettled || inFlight || isAway()) return;
+    const now = Date.now();
+    if (!leaving && now - lastSeenAt < SEEN_EVERY_MS) return;
+    lastSeenAt = now;
+    fetch('/api/away/briefing/deliver', { method: 'POST', keepalive: !!leaving, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seen: true }) })
+      .catch(e => console.warn('[briefing] presence stamp did not land (the next one retries)', e));
+  }
   function noteInput() {
     const now = Date.now();
     const wasAway = isAway(now);
     lastInputAt = now;
-    if (wasAway) deliver('return').catch(() => {});
+    if (wasAway && enabled) deliver('return').catch(e => console.warn('[briefing] return delivery failed', e));
+    else stampPresence(false);   // present — or back on a page that never briefs (the awakening): either way they are here now
   }
   function onVisibility() {
     try {
-      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
-      if (hiddenAt && Date.now() - hiddenAt >= AWAY_MS) { lastInputAt = Date.now(); deliver('return').catch(() => {}); }
+      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); stampPresence(true); return; }
+      if (hiddenAt && Date.now() - hiddenAt >= AWAY_MS) { lastInputAt = Date.now(); deliver('return').catch(e => console.warn('[briefing] return delivery failed', e)); }
       hiddenAt = 0;
-    } catch (_) {}
+    } catch (e) { console.warn('[briefing] visibility change not handled', e); }
   }
+  function onPageHide() { stampPresence(true); }
 
   // init({ enabled, agentId }) — called from enterGame. enabled:false (the awakening) never briefs.
   function init(opts) {
@@ -148,18 +177,21 @@ const Briefing = (() => {
     enabled = opts.enabled !== false;
     if (opts.agentId) agentId = String(opts.agentId);
     lastInputAt = Date.now();
+    bootSettled = !enabled;   // no boot delivery to wait for on a page that never briefs: presence stamps from the first input
     if (!wired && typeof window !== 'undefined') {
       wired = true;
       try {
         window.addEventListener('pointerdown', noteInput, { capture: true, passive: true });
         window.addEventListener('keydown', noteInput, { capture: true, passive: true });
+        window.addEventListener('pagehide', onPageHide);
         document.addEventListener('visibilitychange', onVisibility);
-      } catch (_) {}
+      } catch (e) { console.warn('[briefing] could not watch for the Commander returning', e); }
     }
-    if (enabled) setTimeout(() => { deliver('boot').catch(() => {}); }, BOOT_DELAY_MS);
+    if (enabled) setTimeout(() => deliver('boot').catch(e => console.warn('[briefing] boot delivery failed', e)).then(() => { bootSettled = true; }), BOOT_DELAY_MS);
   }
   function ownsReturn() { return enabled; }
-  function reset() { enabled = false; lastItems = null; }
+  // a fresh start: nothing stamps until the next page's init (the awakening's own init stamps again from there)
+  function reset() { enabled = false; lastItems = null; bootSettled = false; }
 
   return { init, reset, deliver, presentFor, ownsReturn, isAway, chipsFor, STREAM, TITLE, _ensureSession: ensureSession };
 })();

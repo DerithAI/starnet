@@ -134,10 +134,13 @@ body.glass-demo :is(#model-dock,.gd-agent-menu,#chat-slash,.model-dock-tip) {
   box-shadow: inset 0 1px 0 var(--gd-light), 0 10px 28px rgba(0,0,0,.35);
 }
 body.glass-demo #model-dock {
-  padding: 10px; gap: 9px; width: min(350px,calc(100vw - 34px)); max-height: min(65vh,480px);
-  background: var(--gd-face); border-color: var(--gd-edge); box-shadow: var(--gd-shadow);
+  padding: 10px; gap: 9px; width: min(350px,calc(100vw - 34px)); max-height: min(65vh,480px,var(--comms-fit,100vh));
+  /* the picker fill, like the slash palette and agent menu: --gd-face is 82-92% and the transcript ghosted through */
+  background: var(--gd-pop); border-color: var(--gd-edge); box-shadow: var(--gd-shadow);
   backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
 }
+/* narrow: the composer-wide picker (app.css left/right 8px). The fixed width above ran ~40px off a phone's right edge. */
+@media (max-width: 780px) { body.glass-demo #model-dock { width: auto; } }
 body.glass-demo #model-dock .model-dock-head {
   display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 10px; margin: -10px -10px 1px; padding: 11px 12px;
   border-bottom: 1px solid var(--gd-edge); background: linear-gradient(180deg,rgba(var(--ph-rgb),.14),rgba(var(--ph-rgb),.025));
@@ -177,7 +180,7 @@ body.glass-demo #model-dock .model-dock-effort.sel {
   color: var(--ph-bright); background: var(--gd-hover);
   box-shadow: inset 0 1px 0 var(--gd-light), inset 0 -2px 0 rgba(var(--ph-rgb),.65);
 }
-body.glass-demo #model-dock .model-dock-list { min-height: 0; flex: 1 1 auto; max-height: 260px; border-color: var(--gd-edge); border-top: 0; padding-block: 2px; }
+body.glass-demo #model-dock .model-dock-list { min-height: 92px; flex: 1 1 auto; max-height: 260px; border-color: var(--gd-edge); border-top: 0; padding-block: 2px; }
 body.glass-demo #model-dock .model-dock-group { border: 0; font-size: 14px; padding: 8px 8px 4px; letter-spacing: .6px; color: var(--text); opacity: .8; }
 body.glass-demo #model-dock .model-dock-row { padding: 9px 8px; border: 1px solid rgba(var(--ph-rgb),.12); border-radius: 4px; margin-block: 4px;
   background: var(--gd-face); box-shadow: inset 0 1px 0 var(--gd-light); }
@@ -196,7 +199,9 @@ body.glass-demo #model-dock .model-dock-foot :is(button,a) {
   background: var(--gd-face); box-shadow: inset 0 1px 0 var(--gd-light);
 }
 body.glass-demo #model-dock .model-dock-foot :is(button,a):is(:hover,:focus-visible) { color: var(--ph-bright); background: var(--gd-hover); }
-body.glass-demo .gd-agent-menu { position: absolute; top: calc(100% + 5px); left: 7px; right: 7px; z-index: 90; padding: 5px; max-height: 260px; overflow-y: auto; }
+/* a short COMMS: the riser covers the agent header, so its row is lifted over the header's z 6 (glass-comms.js FIT LAW) */
+body.glass-demo #chat-panel.comms-pop-over #chat-inputrow { z-index: 7; }
+body.glass-demo .gd-agent-menu { position: absolute; top: calc(100% + 5px); left: 7px; right: 7px; z-index: 90; padding: 5px; max-height: min(260px,var(--comms-fit,260px)); overflow-y: auto; }
 body.glass-demo .gd-agent-option { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 9px; font: 16px/1.2 'VT323',monospace; text-align: left; color: var(--ph); background: transparent; border: 1px solid transparent; border-radius: 3px; }
 body.glass-demo .gd-agent-option[aria-selected="true"] { background: rgba(var(--ph-rgb),.09); border-color: var(--gd-edge); color: var(--ph-bright); box-shadow: inset 2px 0 0 var(--ph); }
 body.glass-demo .gd-agent-option:hover { background: var(--gd-hover); border-color: var(--gd-edge); }

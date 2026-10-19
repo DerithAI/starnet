@@ -13,6 +13,28 @@
       return s ? '<p>' + s + '</p>' : '';
     }).join('');
   }
+  // markdown -> one plain line (a card's glance): links keep their words, heading/list/quote marks and **, __, `, * drop.
+  // THE ONE GLANCE (walk 10-14): TO REVIEW's preview, the COMMS INBOX card's quote and a goal's milestones read through this
+  // same line — a fenced block, a table's rule row and pipes, a --- rule drop too, and a stripped `code` leaves no stray space.
+  // …and a reply that is ONLY code reads as that code's own words (fences and language tag dropped) — never an empty glance,
+  // or a card whose quote "below" says nothing (review 10-14).
+  function plainLine(raw) {
+    const src = String(raw || '');
+    const words = flatLine(src.replace(/\x60\x60\x60[\s\S]*?(\x60\x60\x60|$)/g, ' '));
+    if (words || src.indexOf('\x60\x60\x60') === -1) return words;
+    return src.replace(/\x60\x60\x60[^\n]*(\n|$)/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function flatLine(raw) {
+    return raw
+      .replace(/(^|\n)[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*(?=\n|$)/g, '$1')   // a table's rule row
+      .replace(/(^|\n)[ \t]*([-*_])([ \t]*\2){2,}[ \t]*(?=\n|$)/g, '$1')                             // a --- / *** rule
+      .replace(/[ \t]*\|[ \t]*/g, ' ')
+      .replace(/!?\[([^\]]+)\]\([^)]*\)/g, '$1')   // a link or an image keeps its words (an image's '!' drops too)
+      .replace(/(^|\n)\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)/g, '$1')
+      .replace(/(^|\s)#{1,6}\s+/g, '$1')   // a heading inside a summary the server already folded onto one line
+      .replace(/(\*\*|__|\x60)/g, '').replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=[\s).,:;!?]|$)/g, '$1$2')
+      .replace(/\s+/g, ' ').trim();
+  }
   function csvRows(raw, maxRows, maxCols) {
     const rows = []; let row = [], cell = '', quoted = false;
     raw = String(raw || '').slice(0, 512 * 1024); maxRows = Math.max(1, maxRows || 50); maxCols = Math.max(1, maxCols || 20);
@@ -37,12 +59,18 @@
   function openUrl(url) { return (typeof ApiTicket !== 'undefined' && ApiTicket.sign) ? ApiTicket.sign(url) : String(url || ''); }
   const fmtSize = n => n == null ? 'size unknown' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
   const apiBase = () => typeof window !== 'undefined' ? String(window.__STARNET_API__ || '') : '';
-  const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; });
+  const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(async r => { const j = await r.json(); if (!r.ok) throw Object.assign(new Error(j.error || ('HTTP ' + r.status)), { status: r.status }); return j; });
 
   function fileHref(f) {
     const href = openUrl(f && f.openUrl);
     const base = apiBase();
     return base && href.charAt(0) === '/' ? base + href : href;
+  }
+  // OPENING a text deliverable (not previewing it in a card) asks for the station's readable document view, never raw text on
+  // a white tab (live walk 10-14; Chat.readableUrl keeps the one list of text formats). The in-card preview still reads fileHref.
+  function openHref(f) {
+    const href = fileHref(f);
+    return (typeof Chat !== 'undefined' && Chat && typeof Chat.readableUrl === 'function' && /^[^?#]*\/api\/file\?/.test(href)) ? Chat.readableUrl(href, f && f.path) : href;
   }
   // The backend's openUrl already carries the exact jailed path it proved. Read that value instead of
   // rebuilding Workshop paths from display fields (a kept/pending row may have a different lifecycle shape).
@@ -54,6 +82,43 @@
   function tauriCore() {
     return (typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
   }
+  /* WHERE A LIBRARY FILE IS SAVED (org pass 10-14, P24), read off the backend's own openUrl — never rebuilt from display
+     fields: { agentId, path, inProject }. 'path' is what the shared folder / copy-path keys take (relative = the agent's
+     workspace, absolute as is); 'inProject' is true only when the URL proves the file sits in that project folder
+     (?project=), false only when it proves the file is NOT in it, null when there is no project. 'inWorkspace' is true only
+     where the URL proves the agent's own workspace (a relative path with no ?project=, a workshop run) and null for an absolute
+     path: that can be any granted folder (a path: grant on the Desktop, say), so only outsideNote's check against the agent's
+     real workspace root may call it the workspace. */
+  const normPath = p => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const pathWithin = (root, p) => !!root && normPath(p).indexOf(normPath(root) + '/') === 0;
+  function savedLocation(r, f, project) {
+    const url = String((f && f.openUrl) || '');
+    const isAbs = p => /^(?:[A-Za-z]:[\\/]|\/)/.test(p);
+    const dec = s => { try { return decodeURIComponent(s); } catch (_) { return ''; } };
+    const within = full => project ? pathWithin(project, full) : null;
+    const ws = /^\/workshop-run\/([^/?#]+)\/([^/?#]+)\/([^?#]+)/.exec(url);
+    if (ws) return { agentId: dec(ws[1]) || r.agentId || 'agent', path: 'workshop/' + dec(ws[2]) + '/' + ws[3].split('/').map(dec).join('/'), inProject: project ? false : null, inWorkspace: true };
+    const agent = dec((/[?&]agent=([^&#]*)/.exec(url) || [])[1] || '') || r.agentId || 'agent';
+    const rel = artifactPath(f);
+    if (!rel) return null;
+    const root = dec((/[?&]project=([^&#]*)/.exec(url) || [])[1] || '');
+    if (root && !isAbs(rel)) {
+      const sep = root.indexOf('\\') >= 0 ? '\\' : '/';
+      const full = root.replace(/[\\/]+$/, '') + sep + rel.replace(/^[\\/]+/, '').replace(/[\\/]/g, sep);
+      return { agentId: agent, path: full, inProject: within(full), inWorkspace: false };
+    }
+    if (isAbs(rel)) return { agentId: agent, path: rel, inProject: within(rel), inWorkspace: null };   // any folder the run was let write
+    return { agentId: agent, path: rel, inProject: project ? false : null, inWorkspace: true };   // relative, no project: the agent's own workspace
+  }
+  /* the outside-the-project note a FILES row's keys carry (P24): '<AGENT> workspace' only where that is PROVEN, by savedLocation's
+     inWorkspace or by an absolute path inside the agent's real workspace root (wsRoot, from Chat.fullSavedPath(agent, '')). Any other
+     absolute path outside the project (a granted Desktop folder) is said as outside the project, never as the workspace. */
+  function outsideNote(loc, project, who, wsRoot) {
+    if (!loc || loc.inProject !== false) return '';
+    const s = String(project || '').replace(/[\\/]+$/, ''), leaf = s.split(/[\\/]/).pop() || s;
+    const inWs = loc.inWorkspace === true || (loc.inWorkspace == null && pathWithin(wsRoot, loc.path));
+    return inWs ? 'saved in ' + who + ' workspace, not in ' + leaf : 'saved outside ' + leaf;
+  }
   function revokePreview(state) {
     if (!state) return;
     state.previewId = (state.previewId || 0) + 1;
@@ -62,7 +127,7 @@
     if (state.blobUrl) try { URL.revokeObjectURL(state.blobUrl); } catch (_) {}
     state.blobUrl = '';
   }
-  async function openDesktop(r, f, href, say) {
+  async function openDesktop(r, f, href, say, folderKey, pointBelow) {
     const core = tauriCore();
     if (!core || !core.invoke) return false;
     if (f.sandboxed) {
@@ -76,8 +141,16 @@
       // Cancel at the host confirmation is an answer. Falling through would bypass the user's refusal.
       if (/declined at the host/i.test(String(err || ''))) return true;
       // re-mint: the host confirmation above may have outlasted the first ticket's few-minute life
-      try { await core.invoke('open_external_url', { url: fileHref(f) }); }
-      catch (_) { if (say) say('Could not open that file — use its session or workspace folder to find it on disk.', true); }
+      try { await core.invoke('open_external_url', { url: openHref(f) }); }
+      // the file row's own folder key takes over (org pass 10-14, P24): reveal it in its folder, or copy its full path.
+      // No key on this row: a TO REVIEW FILES row (outbox.js) has no key slot; it points at the library below ONLY while a
+      // library card for its run is really drawn there (pointBelow) — a cleared or filtered-out run has none, so it and a
+      // library row whose key never wired keep the old real places to look.
+      catch (_) {
+        if (folderKey && folderKey.click) { folderKey.click(); if (say) say('Could not open that file — showing where it is saved instead.', true); }
+        else if (say && pointBelow) say('Could not open that file — open its run in the library below; the folder key on its file row shows where it is saved.', true);
+        else if (say) say('Could not open that file — use its session or workspace folder to find it on disk.', true);
+      }
     }
     return true;
   }
@@ -146,6 +219,13 @@
     }
     return null;
   }
+  // is a library card for this run drawn in the window holding this link? (TO REVIEW lists cleared runs too: includeCleared=1)
+  function libraryShows(link, runId) {
+    if (!runId || !link || !link.closest) return false;
+    const win = link.closest('.dlv');   // the library TO REVIEW is mounted inside (stationui's DELIVERABLES builder)
+    if (!win || !win.querySelectorAll) return false;
+    return Array.prototype.some.call(win.querySelectorAll('article.dlv-card[data-run]'), el => el.getAttribute('data-run') === String(runId));
+  }
   async function handleOpenClick(ev, rows, state, say) {
     const link = ev && ev.target && ev.target.closest ? ev.target.closest('a[data-file]') : null;
     if (!link) return false;
@@ -166,10 +246,13 @@
     const core = tauriCore();
     // A browser-only non-preview is already a real href; let the anchor perform its native navigation — with a
     // FRESH ticket (the rendered one may be past its few-minute life; a click handler runs before the navigation).
-    if ((!core || !core.invoke) && (!f.preview || f.sandboxed)) { try { link.href = fileHref(f); } catch (_) {} return false; }
+    if ((!core || !core.invoke) && (!f.preview || f.sandboxed)) { try { link.href = openHref(f); } catch (_) {} return false; }
     ev.preventDefault();
     ev.stopPropagation();
-    if (core && core.invoke) return openDesktop(r, f, fileHref(f), say);
+    if (core && core.invoke) {
+      const li = link.closest('li'); const slot = li && li.querySelector ? li.querySelector('.dlv-floc') : null;
+      return openDesktop(r, f, fileHref(f), say, slot ? slot.querySelector('.deliverable-folder') : null, !slot && libraryShows(link, r.runId));
+    }
     return previewInCard(f, card.querySelector('[data-preview]'), state || {}, say);
   }
 
@@ -225,30 +308,42 @@
     return String(id || 'agent');
   }
 
+  // the server refuses to clear an undecided build (it still needs KEEP IT or DISCARD), so a clear never counts one
+  const clearableRow = r => !!r && r.status !== 'pending';
   function rowsForRun(items, runId, query) {
     const needle = String(query || '').trim().toLowerCase();
     return items.filter(r => r.runId === runId && (!needle || [r.title, r.summary, r.ask].join(' ').toLowerCase().includes(needle)));
   }
   function mount(body) {
-    let rows = [], projects = [], kinds = [], summary = null, loadSeq = 0, project = '', kind = '', total = 0;
+    let rows = [], projects = [], kinds = [], summary = null, loadSeq = 0, project = '', kind = '', total = 0, clearable = 0;   // clearable null = unknown
     let runFilter = null;
+    let lastUndo = null;   // the last clear's { text, token }: its UNDO comes back after an arm/disarm or a reload blanks the line
     const openState = { blobUrl: '', previewHost: null };
     const revoke = () => revokePreview(openState);
     // self-driving lane 5: no second DELIVERABLES heading under the MY WORK tab that already says it, and one short line where
     // a four-line paragraph sat (TO REVIEW still lands right after this p.muted — stationui's deliverables builder)
     body.innerHTML = '<div class="cfg dlv"><p class="muted dlv-lead" title="Previews open safely inside StarNet in a browser; desktop OPEN uses your file app.">Everything your crew made, filed by project — open one for the ask, the answer and every file.</p>' +
       '<div id="dl-head" class="dlv-head-strip"></div><div id="dl-run-scope" class="cfg-block" hidden></div>' +
-      '<div class="deliverables-toolbar"><input id="dl-query" aria-label="Search deliverables" placeholder="search title, agent, project"><select id="dl-status" aria-label="Filter deliverables"><option value="">ALL</option><option value="pending">NEEDS A DECISION</option><option value="produced">DONE</option><option value="kept">KEPT</option><option value="implemented">IMPLEMENTED</option><option value="failed">FAILED</option><option value="discarded">DISCARDED</option></select><button class="bb sm" id="dl-refresh">REFRESH</button><button class="bb sm" id="dl-clear-shown" hidden>CLEAR ALL</button><button class="bb sm" id="dl-clean">CLEAN OLD RECORDS</button></div>' +
+      '<div class="deliverables-toolbar"><input id="dl-query" aria-label="Search deliverables" placeholder="search title, agent, project"><select id="dl-status" aria-label="Filter deliverables"><option value="">ALL</option><option value="pending">NEEDS A DECISION</option><option value="produced">DONE</option><option value="kept">KEPT</option><option value="implemented">IMPLEMENTED</option><option value="failed">FAILED</option><option value="discarded">DISCARDED</option></select><button class="bb sm" id="dl-clear-shown" data-tip="Takes these cards out of the library (not TO REVIEW&rsquo;s rating list) — the files stay on disk, and UNDO brings them back." hidden>CLEAR ALL</button>' +
+        // the two upkeep keys fold behind ONE quiet MORE key (org pass 10-14, P13): search, the status filter, the KIND chips and
+        // CLEAR ALL/THESE stay in view (FOLD BY FREQUENCY); the fold opens inline in this row — never a popover.
+        '<details class="dlv-tools" id="dl-tools"><summary class="bb sm" aria-label="More library tools">MORE <span class="dlv-tools-car" aria-hidden="true">▸</span></summary>' +
+        '<span class="dlv-tools-keys"><button class="bb sm" id="dl-refresh">REFRESH</button><button class="bb sm" id="dl-clean" data-tip="Previews first: removes only the records of failed and discarded runs — files are not deleted, and UNDO brings them back">DELETE FAILED &amp; DISCARDED RECORDS</button></span></details></div>' +
       '<div id="dl-kinds" class="dlv-kinds"></div>' +
       '<div id="dl-msg" class="msg" aria-live="polite"></div><div id="dl-cleanup"></div>' +
       '<div class="dlv-split"><nav id="dl-rail" class="dlv-rail" aria-label="Projects"></nav><div id="dl-list" class="dlv-main"></div></div></div>';
     const q = body.querySelector('#dl-query'), status = body.querySelector('#dl-status'), list = body.querySelector('#dl-list'), rail = body.querySelector('#dl-rail'), msg = body.querySelector('#dl-msg'), cleanup = body.querySelector('#dl-cleanup'), head = body.querySelector('#dl-head'), kindbar = body.querySelector('#dl-kinds');
     const say = (s, bad) => { msg.textContent = s || ''; msg.className = 'msg ' + (bad ? 'bad' : 'ok'); };
+    const restoreMsg = () => lastUndo ? sayUndo(lastUndo.text, lastUndo.token) : say('');
     const runScope = body.querySelector('#dl-run-scope');
     const renderRunScope = () => {
       runScope.hidden = !runFilter;
       runScope.innerHTML = runFilter ? '<b>OUTPUTS FROM THIS STEP</b><p>' + esc(runFilter.label) + '</p><button class="bb sm" id="dl-all-runs">SHOW ALL WORK</button>' : '';
       runScope.querySelector('button')?.addEventListener('click', () => { runFilter = null; q.value = ''; status.value = ''; project = ''; kind = ''; renderRunScope(); load(); });
+    };
+    // org P01: NEEDS YOU's build row lands here on NEEDS A DECISION — the same status filter the summary's route drives
+    body._deliverablesShowStatus = (st) => {
+      runFilter = null; q.value = ''; project = ''; kind = ''; status.value = String(st || ''); renderRunScope(); load();
     };
     body._deliverablesShowRun = (runId, label) => {
       runFilter = { runId: String(runId), label: String(label || 'Selected step') };
@@ -290,6 +385,8 @@
     function detailHtml(r) {
       const run = r.run || null;
       const files = r.files || [];
+      const mainAt = r.main ? files.findIndex(f => f && f.path === r.main) : -1;
+      const mainFirst = lis => (mainAt > 0 ? [lis[mainAt]].concat(lis.filter((_, i) => i !== mainAt)) : lis).join('');
       const sec = (label, inner) => inner ? '<div class="dlv-sec"><h5>' + label + '</h5>' + inner + '</div>' : '';
       // THE ASK — the Commander's own words, quoted rather than paraphrased.
       const ask = sec('WHAT YOU ASKED FOR', r.ask ? '<p class="dlv-quote">' + esc(r.ask) + '</p>' : '');
@@ -299,19 +396,22 @@
       // what you just read is the added complexity this pass exists to remove.
       // (a WORKFLOW job's row carries what the line delivered — the job record's own output — 10-03)
       const said = (run && run.deliveryText) || r.output || '';
-      const back = sec('WHAT CAME BACK', said ? '<div class="dlv-said">' + esc(said) + '</div>' : '');
+      // read as the agent wrote it — headings, bold, code — through the same safe renderer the file preview uses (rc walk #48: raw **marks**)
+      const back = sec('WHAT CAME BACK', said ? '<div class="dlv-said md">' + safeMarkdown(said) + '</div>' : '');
       // THE FILES — each openable on its own, with the size measured off disk.
       const fileRows = files.length
-        ? '<ul class="dlv-files">' + (r.files || []).map((f, fi) => f.openUrl
-            ? '<li><a class="bb sm' + (r.main && f.path === r.main ? ' dlv-hero' : '') + '" data-file="' + fi + '" href="' + esc(fileHref(f)) + '" target="_blank" rel="noopener">OPEN</a><span class="dlv-fname">' + esc(f.path) + '</span><span class="dlv-fsize">' + esc(fmtSize(f.bytes)) + '</span>' + (r.main && f.path === r.main ? '<span class="dlv-fmain">the main one</span>' : '') + '</li>'
-            : '<li><span class="dlv-fname off">' + esc(f.path) + '</span><span class="dlv-fsize">no longer available</span></li>').join('') + '</ul>'
+        // the main file leads the list (its OPEN is the drawer's first key — org pass 10-14, P13); the rows are built in the
+        // backend's order first, so every data-file index still points at its own file
+        ? '<ul class="dlv-files">' + mainFirst((r.files || []).map((f, fi) => f.openUrl
+            ? '<li><a class="bb sm' + (r.main && f.path === r.main ? ' dlv-hero' : '') + '" data-file="' + fi + '" href="' + esc(openHref(f)) + '" target="_blank" rel="noopener">OPEN</a><span class="dlv-fname">' + esc(f.path) + '</span><span class="dlv-fsize">' + esc(fmtSize(f.bytes)) + '</span>' + (r.main && f.path === r.main ? '<span class="dlv-fmain">the main one</span>' : '') + '<span class="dlv-floc" data-floc="' + fi + '"></span></li>'
+            : '<li><span class="dlv-fname off">' + esc(f.path) + '</span><span class="dlv-fsize">no longer available</span></li>')) + '</ul>'
         : '<p class="dlv-none">This run recorded no files.</p>';
       const openSession = (r.jobId ? '<button class="bb sm" data-act="workflow">OPEN IN WORKFLOWS</button>' : '') + ((run && run.streamId) ? '<button class="bb sm" data-act="session">↗ OPEN THE FULL CONVERSATION</button>' : '');
       const decide = ((r.actions && r.actions.keep) ? '<button class="bb sm" data-act="keep">KEEP IT</button>' : '') +
         ((r.actions && r.actions.discard) ? '<button class="bb sm danger" data-act="discard">DISCARD</button>' : '') +
         // DONE WITH IT (2026-10-10): clears the card out of the library — files stay on disk, UNDO brings it back. An
         // undecided build is the one row that can't go: it still needs KEEP IT or DISCARD (the backend refuses it too).
-        (r.status !== 'pending' ? '<button class="bb sm" data-act="clear" title="Takes it out of this library. The files stay on disk.">✓ DONE · CLEAR</button>' : '');
+        (r.status !== 'pending' ? '<button class="bb sm" data-act="clear" data-tip="Takes it out of this library. The files stay on disk.">✓ DONE · CLEAR</button>' : '');
       const acts = (openSession || decide) ? '<div class="row dlv-acts">' + openSession + decide + '</div>' : '';
       return ask + back + sec('FILES', fileRows) + acts;
     }
@@ -320,16 +420,18 @@
       const pill = pillOf(r.status);
       const nFiles = (r.files || []).length;
       // THE SAY BAND — the agent's words, or an honest admission that there aren't any.
-      const say2 = r.authored
-        ? '<b class="dlv-title">' + esc(r.title || 'Untitled output') + '</b>' + (r.summary ? '<p class="dlv-sum">' + esc(r.summary) + '</p>' : '')
-        : '<b class="dlv-title plain">' + esc(r.title || 'Untitled output') + '</b>' + (r.summary ? '<p class="dlv-sum">' + esc(r.summary) + '</p>' : '<p class="dlv-sum none">the agent did not name this one</p>');
+      /* (rc walk #48) the one-line summary is read as plain words — a workflow job's summary is the head of its markdown answer,
+         and "**TEASER 1:**" on the glance is markup, not a sentence. An unnamed file says nothing under its name: its name and
+         the facts band are the plain facts ("the agent did not name this one" was an apology, not information). */
+      const sum = plainLine(r.summary);
+      const say2 = '<b class="dlv-title' + (r.authored ? '' : ' plain') + '">' + esc(r.title || 'Untitled output') + '</b>' + (sum ? '<p class="dlv-sum">' + esc(sum) + '</p>' : '');
       // THE FACTS BAND — every item here is provable from the run log.
       // "size unknown" is for a file we could not measure. A row with NO files has nothing to measure, so it says
       // so — the two are different facts and the wrong one reads as a failed read.
       const bulk = nFiles ? (nFiles + (nFiles === 1 ? ' file · ' : ' files · ') + fmtSize(r.size)) : 'no files';
       const facts = '<span class="dlv-pill ' + pill.cls + '">' + esc(pill.label) + '</span>' + crewHtml(r) +
         '<span class="dlv-meta">' + esc(bulk) + (r.createdAt ? ' · ' + esc(agoOf(r.createdAt, now)) : '') + '</span>';
-      return '<article class="dlv-card" data-i="' + i + '">' +
+      return '<article class="dlv-card" data-i="' + i + '"' + (r.runId ? ' data-run="' + esc(r.runId) + '"' : '') + '>' +
         '<button class="dlv-head" type="button" aria-expanded="false" aria-controls="dlv-more-' + i + '">' +
         '<span class="dlv-caret" aria-hidden="true">▸</span><span class="dlv-headmain"><span class="dlv-say">' + say2 + '</span>' +
         '<span class="dlv-facts">' + facts + '</span></span></button>' +
@@ -353,10 +455,15 @@
     }
 
     // KIND chips — the second axis, after project. Counts are pre-filter for the same reason the rail's are.
+    // the chip reads a plain plural (org pass 10-14, P13) — the raw kind word stays the filter value; an unknown kind reads in caps.
+    // It covers every kind a row really carries: a run artifact's own kind too (runstore ARTIFACT_KINDS — the live walk read
+    // 'FILE', because the mocked rows only ever said 'files'; the sidecar now files a run's 'file' under 'files')
+    const KIND_LABEL = { files: 'FILES', file: 'FILES', image: 'IMAGES', message: 'MESSAGES', workflow: 'WORKFLOW JOBS', build: 'BUILDS', patch: 'CODE PATCHES', skill: 'SKILLS', report: 'REPORTS', damaged: 'DAMAGED RECORDS' };
+    const kindLabel = k => KIND_LABEL[String(k || '').toLowerCase()] || String(k || '').toUpperCase();
     function renderKinds() {
       if (!kinds.length) { kindbar.innerHTML = ''; return; }
       const chip = (k, label, count) => '<button class="dlv-chip' + (kind === k ? ' on' : '') + '" data-kind="' + esc(k) + '">' + esc(label) + '<span>' + count + '</span></button>';
-      kindbar.innerHTML = chip('', 'ALL KINDS', kinds.reduce((n, k) => n + k.count, 0)) + kinds.map(k => chip(k.kind, k.kind, k.count)).join('');
+      kindbar.innerHTML = chip('', 'ALL KINDS', kinds.reduce((n, k) => n + k.count, 0)) + kinds.map(k => chip(k.kind, kindLabel(k.kind), k.count)).join('');
     }
 
     function render() {
@@ -376,11 +483,12 @@
         return;
       }
       const now = Date.now();
-      const groups = {};
-      rows.forEach((r, i) => { const b = bucketOf(Number(r.createdAt) || 0, now); (groups[b] = groups[b] || []).push(cardHtml(r, i, now)); });
+      const groups = {}, canClear = {};
+      rows.forEach((r, i) => { const b = bucketOf(Number(r.createdAt) || 0, now); (groups[b] = groups[b] || []).push(cardHtml(r, i, now)); if (clearableRow(r)) canClear[b] = true; });
       // each time heading carries its own CLEAR — "I'm done with everything from before this week" is one click, not forty
+      // (a heading over only undecided builds has nothing the server would clear, so it carries none)
       list.innerHTML = BUCKETS.filter(b => groups[b] && groups[b].length)
-        .map(b => '<section class="dlv-bucket"><h4><span>' + b + '</span><button type="button" class="dlv-bclear" data-bucket="' + b + '">CLEAR ' + b + '</button></h4>' + groups[b].join('') + '</section>').join('');
+        .map(b => '<section class="dlv-bucket"><h4><span>' + b + '</span>' + (canClear[b] ? '<button type="button" class="dlv-bclear" data-bucket="' + b + '">CLEAR ' + b + '</button>' : '') + '</h4>' + groups[b].join('') + '</section>').join('');
       wireDiscards();
       wireClears();
     }
@@ -395,6 +503,7 @@
       return b === 'TODAY' ? { after: t } : b === 'THIS WEEK' ? { after: week, before: t } : { before: week };
     }
     function sayUndo(text, token) {
+      if (token) lastUndo = { text, token };   // a clear that took nothing leaves the earlier clear's UNDO standing
       msg.className = 'msg ok';
       msg.innerHTML = esc(text) + (token ? ' <button type="button" class="bb sm" data-undo-clear="' + esc(token) + '">UNDO</button>' : '');
     }
@@ -409,25 +518,39 @@
           : (j.skipped ? 'Nothing cleared —' + kept.replace(/ and stayed\.$/, ': KEEP IT or DISCARD first.') : 'Nothing to clear here.'), j.cleared ? j.undoToken : '');
       } catch (e) { if (b) b.disabled = false; say('Could not clear: ' + e.message, true); }
     }
+    // the count is what the clear will actually take (undecided builds stay), or no count when the page cannot prove it
     function clearShownLabel() {
       const filtered = !!(runFilter || project || kind || q.value || status.value);
-      return (filtered ? 'CLEAR THESE ' : 'CLEAR ALL ') + (runFilter ? rows.length : total);
+      const n = runFilter ? rows.filter(clearableRow).length : clearable;
+      return (filtered ? 'CLEAR THESE' : 'CLEAR ALL') + (n == null ? '' : ' ' + n);
+    }
+    /* What a clear of this view would take. A sidecar that sends its own count (clearable) is the answer. Otherwise only
+       a count this page can prove: the complete list it was sent; a status filter (every match has that one status); or
+       the unfiltered library, whose summary counts the same rows. A list cut short at 500 under any other filter has no
+       provable count: null, and the label names none. */
+    function provableClearable(j, sent, all) {
+      if (typeof j.clearable === 'number' && isFinite(j.clearable)) return j.clearable;
+      if (sent.length >= all) return sent.filter(clearableRow).length;
+      if (status.value) return status.value === 'pending' ? 0 : all;
+      const s = j.summary;
+      if (!runFilter && !q.value && !project && !kind && s && Number(s.total) === all && isFinite(Number(s.pending))) return Math.max(0, all - Number(s.pending));
+      return null;
     }
     function wireClears() {
       const shown = body.querySelector('#dl-clear-shown');
-      shown.hidden = !rows.length;
+      shown.hidden = !rows.length || (runFilter ? !rows.some(clearableRow) : clearable === 0);
       if (shown.dataset.armed !== '1') shown.textContent = clearShownLabel();
       if (shown.dataset.wired !== '1' && typeof ArmConfirm !== 'undefined' && ArmConfirm.wire) {
         shown.dataset.wired = '1';
         ArmConfirm.wire(shown, {
           armedLabel: 'CLEAR THEM — SURE?',
           onArm: () => say('Clears every deliverable in this view out of the library (anything still waiting for a decision stays). The files stay on disk, and UNDO brings them back. Click again to confirm.'),
-          onDisarm: () => { shown.textContent = clearShownLabel(); say(''); },
+          onDisarm: () => { shown.textContent = clearShownLabel(); restoreMsg(); },
           onConfirm: () => clearRows(runFilter ? { ids: rows.map(r => r.id) } : { filter: curFilter() }, shown)
         });
       }
       shown.disabled = false;
-      // the resting label names the real scope — the whole library, or the filtered view — with the server's own count
+      // the resting label names the real scope — the whole library, or the filtered view — with a count it can prove
       const label = clearShownLabel();
       if (shown.dataset.armed !== '1') shown.textContent = label;
       list.querySelectorAll('button.dlv-bclear').forEach(btn => {
@@ -436,7 +559,7 @@
         ArmConfirm.wire(btn, {
           armedLabel: 'CLEAR ' + bucket + ' — SURE?',
           onArm: () => say('Clears everything under ' + bucket + ' in this view out of the library. The files stay on disk, and UNDO brings them back. Click again to confirm.'),
-          onDisarm: () => say(''),
+          onDisarm: restoreMsg,
           onConfirm: () => {
             const now = Date.now();
             return clearRows(runFilter ? { ids: rows.filter(r => bucketOf(Number(r.createdAt) || 0, now) === bucket).map(r => r.id) }
@@ -449,8 +572,11 @@
     msg.addEventListener('click', async ev => {
       const b = ev.target.closest && ev.target.closest('button[data-undo-clear]'); if (!b) return;
       b.disabled = true;
-      try { const u = await post('/api/deliverables/clear-undo', { undoToken: b.dataset.undoClear }); await load(); say('Brought back ' + u.restored + (u.restored === 1 ? ' deliverable.' : ' deliverables.')); }
-      catch (e) { b.disabled = false; say(e.message, true); }
+      try { const u = await post('/api/deliverables/clear-undo', { undoToken: b.dataset.undoClear }); lastUndo = null; await load(); say('Brought back ' + u.restored + (u.restored === 1 ? ' deliverable.' : ' deliverables.')); }
+      catch (e) {
+        if (e.status === 404) lastUndo = null;   // the server no longer holds that clear (aged out, or used elsewhere): never offer it again
+        b.disabled = false; say(e.message, true);
+      }
     });
     // Re-wired after every render: innerHTML replaces the buttons, so the previous listeners die with the
     // old nodes and there is nothing to dispose. If armconfirm.js somehow did not load, the buttons stay
@@ -470,7 +596,7 @@
         ArmConfirm.wire(b, {
           armedLabel: 'DISCARD — SURE?',
           onArm: () => say('Discarding “' + (r.title || 'this output') + '” also removes its Workshop files permanently. Click again to confirm.', true),
-          onDisarm: () => say(''),   // disarming just clears the warning; it is not an excuse to restate the count
+          onDisarm: restoreMsg,   // disarming just clears the warning (the last clear's UNDO comes back); it is not an excuse to restate the count
           onConfirm: () => decide(r, 'discard', b)
         });
       });
@@ -483,6 +609,7 @@
         if (seq !== loadSeq) return;
         rows = j.items || [];
         total = Number(j.total) || rows.length;   // the FULL match count — the list itself ships at most 500
+        clearable = provableClearable(j, rows, total);   // before the run narrowing below: the server's view, not the run's
         // The backend's text search narrows the request; equality supplies the actual provenance boundary.
         if (runFilter) rows = rowsForRun(rows, runFilter.runId, q.value);
         projects = Array.isArray(j.projects) ? j.projects : [];   // an older sidecar simply sends none -> rail shows ALL WORK only
@@ -491,8 +618,8 @@
         render();
         // The summary strip above already states the count. This line is for TRANSIENT status only — loading,
         // errors, and the result of an action — so a second standing count does not sit under it saying the
-        // same number in different words.
-        say('');
+        // same number in different words. (The last clear's UNDO is an action result: it stays.)
+        restoreMsg();
       }
       catch (e) { say('Could not load the library: ' + e.message, true); }
     }
@@ -504,7 +631,7 @@
     async function decide(r, act, b) {
       if (b.disabled) return;   // belt to the once-wiring: a second confirm on an in-flight decide is never a second POST
       b.disabled = true;
-      try { const j = await post('/api/workshop/decide', { agentId: r.agentId, runId: r.runId, decision: act }); say(j.decision === 'keep' ? ('Kept ' + r.title + (j.destPath ? ' in ' + j.destPath : '')) : ('Discarded ' + r.title)); await load(); }
+      try { const j = await post('/api/workshop/decide', { agentId: r.agentId, runId: r.runId, decision: act }); lastUndo = null; if (typeof NeedsYou !== 'undefined' && NeedsYou.refreshFeeds) NeedsYou.refreshFeeds(true); say(j.decision === 'keep' ? ('Kept ' + r.title + (j.destPath ? ' in ' + j.destPath : '')) : ('Discarded ' + r.title)); await load(); }
       catch (e) { b.disabled = false; say(e.message, true); }
     }
     /* ONE DRAWER OPEN AT A TIME — the same rule the OUTBOX accordion follows. Two open drawers turn a scannable
@@ -524,7 +651,66 @@
         headBtn.setAttribute('aria-expanded', 'true');
         headBtn.classList.add('on');
         wireDiscards();   // the drawer's DISCARD only exists once it is open
+        wireLocations(card);
+        proseSaid(more, rows[Number(card.dataset.i)]);
       }
+    }
+    /* FIND IT ON DISK (org pass 10-14, P24): each FILES row gets the COMMS '▤ saved' row's own keys — folder (desktop reveals
+       the file, a browser copies its path) and, on desktop, copy path. The full path rides the key's tip, never printed on the
+       card (Andrew cut a printed path); when the file provably sits outside this item's project, the tip says so first. */
+    function wireLocations(card) {
+      if (typeof Chat === 'undefined' || !Chat.folderButton || !Chat.copyPathButton) return;
+      const r = rows[Number(card.dataset.i)]; if (!r) return;
+      card.querySelectorAll('.dlv-floc[data-floc]').forEach(slot => {
+        if (slot.dataset.wired === '1') return;
+        const f = r.files && r.files[Number(slot.dataset.floc)];
+        const loc = f && savedLocation(r, f, r.project || '');
+        if (!loc) return;
+        slot.dataset.wired = '1';
+        // a browser cannot reveal a folder, so its one key is the COMMS copy-path key itself (its own ⧉ glyph — the folder glyph
+        // belongs to the desktop key that really opens the folder)
+        const keys = [tauriCore() ? Chat.folderButton(loc.agentId, loc.path) : Chat.copyPathButton(loc.agentId, loc.path)];
+        if (tauriCore()) keys.push(Chat.copyPathButton(loc.agentId, loc.path));
+        // each tip line reads as a sentence, like the window's other key tips ('Copy the full saved path.') — P24 polish 2
+        const sentence = t => { const v = String(t || '').trim(); return v ? v.charAt(0).toUpperCase() + v.slice(1) + (/[.!?…]$/.test(v) ? '' : '.') : ''; };
+        let lead = sentence(outsideNote(loc, r.project, agentLabel(loc.agentId), '')), shown = loc.path;
+        /* ICON KEYS (org pass 10-14, P24 polish): the row's width belongs to the file NAME — labelled keys squeezed it to nothing.
+           Each key is its glyph alone at the row's end; what it does rides its tip and aria-label, and its feedback word
+           ('path copied', 'opened', 'no path') still shows on the key while it lasts (.fb-live). */
+        const verbs = keys.map(k => sentence(k.getAttribute('title') || ''));
+        /* the tip is a PATH card (data-tip-path → tooltip.js widens it and keeps these line breaks): what the key does, the
+           outside-the-project note, then the path on lines of its own — breaking only after a folder separator, never mid-name */
+        const breakable = p => String(p || '').replace(/([\\/])(?=.)/g, '$1\u200b');
+        const tip = p => { shown = p; keys.forEach((k, ki) => { k.removeAttribute('title'); k.setAttribute('data-tip-path', ''); k.setAttribute('data-tip', [verbs[ki], lead, breakable(p)].filter(Boolean).join('\n')); }); };
+        keys.forEach((k, ki) => {
+          k.classList.add('bb', 'sm', 'dlv-loc-key');
+          if (verbs[ki]) k.setAttribute('aria-label', verbs[ki]);
+          const lbl = k.querySelector && k.querySelector('.fb-label');
+          if (lbl && typeof MutationObserver !== 'undefined') new MutationObserver(() => k.classList.toggle('fb-live', lbl.textContent !== k.getAttribute('data-default-label'))).observe(lbl, { childList: true, characterData: true, subtree: true });
+          slot.appendChild(k);
+        });
+        tip(loc.path);
+        if (Chat.fullSavedPath) Promise.resolve(Chat.fullSavedPath(loc.agentId, loc.path)).then(full => { if (full) tip(full); }, () => tip(loc.path));
+        // an absolute path outside the project: the workspace wording only once the agent's real workspace root proves it holds the file
+        if (Chat.fullSavedPath && loc.inProject === false && loc.inWorkspace == null) Promise.resolve(Chat.fullSavedPath(loc.agentId, '')).then(root => {
+          const proven = sentence(outsideNote(loc, r.project, agentLabel(loc.agentId), root));
+          if (proven !== lead) { lead = proven; tip(shown); }
+        }, () => {});
+      });
+    }
+    /* ONE READING OF AN ANSWER (walk 10-14): WHAT CAME BACK is drawn by COMMS' own renderer (Chat.renderProse — escape-first;
+       lists, code blocks, tables), exactly as TO REVIEW above it, WORKFLOWS and the Workflow panel draw the same reply — once,
+       when the drawer first opens. The safe-markdown HTML stays where COMMS' renderer is not loaded. */
+    function proseSaid(more, r) {
+      const said = more.querySelector('.dlv-said');
+      const text = r ? ((r.run && r.run.deliveryText) || r.output || '') : '';
+      if (!said || said.__prose || !text || typeof Chat === 'undefined' || !Chat.renderProse) return;
+      said.__prose = true;
+      said.classList.add('wf-md');
+      // its file links and images open where THIS run put them — the row's agent, at the root its run record ran with (r.run) —
+      // never the agent open in COMMS (renderProse's default with no refs), so they agree with the FILES section beside them
+      const files = Chat.workspaceFileRefs ? Chat.workspaceFileRefs(String(r.agentId || 'agent'), null, (r.run && r.run.projectRoot) || undefined) : undefined;
+      Chat.renderProse(said, text, files ? { files } : undefined);
     }
 
     list.addEventListener('click', async ev => {
@@ -590,6 +776,8 @@
       load();
     });
     let debounce = 0; q.addEventListener('input', () => { clearTimeout(debounce); debounce = setTimeout(load, 180); }); status.addEventListener('change', load); body.querySelector('#dl-refresh').addEventListener('click', load);
+    const tools = body.querySelector('#dl-tools');
+    if (tools && tools.addEventListener) tools.addEventListener('toggle', () => { const c = tools.querySelector('.dlv-tools-car'); if (c) c.textContent = tools.open ? '▾' : '▸'; });
     body.querySelector('#dl-clean').addEventListener('click', async () => {
       try { const p = await post('/api/deliverables/cleanup-preview', { statuses: ['discarded', 'failed'] }); cleanup.innerHTML = '<div class="cfg-block"><b>CLEANUP PREVIEW</b><p>' + p.targets.length + ' discarded/failed lifecycle record(s) will be removed. ' + p.protected.length + ' pending, kept, or produced record(s) are protected. Files are not deleted.</p>' + (p.targets.length ? '<details class="dlv-clean-list"><summary>SEE THE ' + p.targets.length + ' RECORD' + (p.targets.length === 1 ? '' : 'S') + '</summary><ul>' + p.targets.map(r => '<li>' + esc(r.title) + ' · ' + esc(r.status) + ' · ' + esc(r.runId || r.id) + '</li>').join('') + '</ul></details>' : '') + '<div class="row dlv-acts"><button class="bb sm danger" id="dl-clean-apply" ' + (p.targets.length ? '' : 'disabled') + '>REMOVE EXACTLY THESE ' + p.targets.length + ' RECORDS</button><button class="bb sm" id="dl-clean-cancel">CANCEL</button></div></div>'; cleanup.querySelector('#dl-clean-cancel').addEventListener('click', () => { cleanup.innerHTML = ''; }); const apply = cleanup.querySelector('#dl-clean-apply'); if (apply) apply.addEventListener('click', async () => { try { const c = await post('/api/deliverables/cleanup', { statuses: p.statuses, fingerprint: p.fingerprint }); cleanup.innerHTML = '<div class="msg ok">Removed ' + c.removed + ' record(s). <button class="bb sm" id="dl-undo">UNDO</button></div>'; cleanup.querySelector('#dl-undo').addEventListener('click', async () => { const u = await post('/api/deliverables/cleanup-undo', { undoToken: c.undoToken }); say('Restored ' + u.restored + ' record(s).'); cleanup.innerHTML = ''; await load(); }); await load(); } catch (e) { say(e.message, true); } }); }
       catch (e) { say('Could not preview cleanup: ' + e.message, true); }
@@ -597,9 +785,13 @@
     body._deliverablesCleanup = revoke;
     load();
   }
+  function showStatus(body, st) {
+    if (!body || typeof body._deliverablesShowStatus !== 'function') return false;
+    body._deliverablesShowStatus(st); return true;
+  }
   function showRun(body, runId, label) {
     if (!runId || !body || typeof body._deliverablesShowRun !== 'function') return false;
     body._deliverablesShowRun(runId, label); return true;
   }
-  return { esc, safeMarkdown, safeCsv, openUrl, fileHref, artifactPath, handleOpenClick, bucketOf, pillOf, agentLabel, agoOf, fmtSize, mount, showRun, rowsForRun, BUCKETS };
+  return { esc, safeMarkdown, plainLine, safeCsv, openUrl, fileHref, artifactPath, savedLocation, outsideNote, handleOpenClick, bucketOf, pillOf, agentLabel, agoOf, fmtSize, mount, showRun, showStatus, rowsForRun, BUCKETS };
 });

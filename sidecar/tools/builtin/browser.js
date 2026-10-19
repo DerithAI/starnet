@@ -609,17 +609,28 @@
     h = String(h).toLowerCase();
     return h === '::1' || h === '::' || /^::ffff:/.test(h) || /^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{2}:/.test(h);
   }
+  /* A refusal the HOST wrote (never page bytes): it does not taint the run (index.js taint observation), and its row
+     says why in a few words instead of "✗ error" (registry toolSummary). Live walkthrough 2026-10-13: an agent's
+     browser.navigate to its OWN saved file:// page was refused, the refusal latched "outside content", and a later
+     shell call was locked with a false reason. */
+  function hostRefusal(msg, summary) {
+    const e = new Error(msg);
+    e.hostAuthored = true;
+    if (summary) e.toolSummary = summary;
+    return e;
+  }
   function assertSafeUrl(raw) {
     let u;
-    try { u = new URL(raw); } catch (e) { throw new Error('invalid URL: ' + raw); }
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('only http(s) URLs are allowed');
+    try { u = new URL(raw); } catch (e) { throw hostRefusal('invalid URL: ' + raw, 'invalid URL'); }
+    if (u.protocol === 'file:') throw hostRefusal('only http(s) URLs are allowed. To check a file you saved, fs_read it; the Commander opens it from its deliverable card.', 'not a web address (file://)');
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw hostRefusal('only http(s) URLs are allowed', 'not a web address');
     const h = hostOf(u);
     const numericHost = /^\d+$/.test(h) || /^0x[0-9a-f]+$/i.test(h);
     const blockedName = h === 'localhost' || h === '0.0.0.0' || h.endsWith('.localhost') || h.endsWith('.local') ||
       h.endsWith('.internal') || h.endsWith('.lan') || h.endsWith('.intranet') || h.endsWith('.home') || h.endsWith('.corp');
     const bareName = h.indexOf('.') < 0 && h.indexOf(':') < 0 && !numericHost;
     if (blockedName || bareName || numericHost || isPrivateV4(h) || isPrivateV6(h)) {
-      throw new Error('refusing to navigate to private/loopback/intranet host: ' + h);
+      throw hostRefusal('refusing to navigate to private/loopback/intranet host: ' + h, 'private address refused');
     }
     return u;
   }
@@ -682,11 +693,11 @@
   // scoped browser.test_navigate tool may use this validator, and only for an agent's local dev UI.
   function assertLoopbackUrl(raw) {
     let u;
-    try { u = new URL(raw); } catch (e) { throw new Error('invalid local test URL: ' + raw); }
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('local browser tests allow http(s) only');
+    try { u = new URL(raw); } catch (e) { throw hostRefusal('invalid local test URL: ' + raw, 'invalid URL'); }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw hostRefusal('local browser tests allow http(s) only — they drive a dev server you started, not a saved file. To check a file you saved, fs_read it.', 'not a dev-server address');
     const h = hostOf(u);
     if (h !== 'localhost' && h !== '127.0.0.1' && h !== '::1') {
-      throw new Error('local browser tests are restricted to loopback (127.0.0.1/localhost/::1)');
+      throw hostRefusal('local browser tests are restricted to loopback (127.0.0.1/localhost/::1)', 'not a local address');
     }
     return u;
   }
@@ -892,6 +903,7 @@
 
     let proc = null, procExited = false, procError = null, procClosePromise = null, cdp = null, consoleLog = [], dialog = null, attachedPort = null;
     let networkProxy = null, proxyFailed = false;
+    const proxyCloseResults = new WeakMap();   // retain each proxy's pending/failed cleanup across close callers
     // true once tab 0's target went away and no other tab was left to take its place (see openerLost)
     let pageLost = false;
     const allowedLocalOrigins = new Set();
@@ -2774,27 +2786,49 @@
         try { return await Promise.race([waitForClose, new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); })]); }
         finally { clearTimeout(timer); }
       }
-      // Only OUR persistent browser: a forced kill can lose newly written login cookies. Browser.close
-      // flushes Chromium's profile stores. An attached user browser has no owned process and is never closed.
-      let exited = false;
-      if (owned && cdp && onPersistent()) {
-        let timer;
-        try {
-          await Promise.race([cdp.send('Browser.close').catch(swallow('browser.profile.close')), new Promise(resolve => { timer = setTimeout(resolve, 1500); })]);
-        } finally { clearTimeout(timer); }
-        exited = await exitedWithin(2000);
+      let closeError = null;
+      try {
+        // Only OUR persistent browser: a forced kill can lose newly written login cookies. Browser.close
+        // flushes Chromium's profile stores. An attached user browser has no owned process and is never closed.
+        let exited = false;
+        if (owned && cdp && onPersistent()) {
+          let timer;
+          try {
+            await Promise.race([cdp.send('Browser.close').catch(swallow('browser.profile.close')), new Promise(resolve => { timer = setTimeout(resolve, 1500); })]);
+          } finally { clearTimeout(timer); }
+          exited = await exitedWithin(2000);
+        }
+        try { cdp && cdp.close(); } catch (_) {}
+        // only a process that has NOT exited is still ours to kill: an exited one's id may already be someone else's
+        if (owned && !exited && !procExited) { if (process.platform === 'win32' && owned.pid && spawn === CP.spawn) await killTree(owned.pid); else { try { owned.kill('SIGKILL'); } catch (e) { failNote('browser.close.kill', e); } } }
+        cdp = null;
+        if (owned && waitForClose && !exited) {
+          // a force-killed process can take seconds to leave on a busy Windows box (antivirus holding a freshly unpacked
+          // browser's files, measured 2026-09-30): wait long enough before calling it stuck
+          exited = await exitedWithin(8000);
+          if (!exited) throw new Error('owned Chromium did not exit after synthetic test session closed');
+        }
+        // Retain ownership after a failed close: a later close must still prove exit before deleting the profile.
+        proc = null;
+      } catch (e) {
+        closeError = e;
+        throw e;
+      } finally {
+        // The proxy owns sockets even when Chromium cannot be confirmed closed. Release them without
+        // replacing the original shutdown error or reaching profile cleanup on that failed path.
+        if (networkProxy) {
+          const proxy = networkProxy;
+          let closing = proxyCloseResults.get(proxy);
+          if (!closing) {
+            closing = Promise.resolve().then(() => proxy.close());
+            proxyCloseResults.set(proxy, closing);
+          }
+          try {
+            await closing;
+            if (networkProxy === proxy) networkProxy = null;
+          } catch (e) { if (!closeError) throw e; failNote('browser.close.proxy', e); }
+        }
       }
-      try { cdp && cdp.close(); } catch (_) {}
-      // only a process that has NOT exited is still ours to kill: an exited one's id may already be someone else's
-      if (owned && !exited && !procExited) { if (process.platform === 'win32' && owned.pid && spawn === CP.spawn) await killTree(owned.pid); else { try { owned.kill('SIGKILL'); } catch (e) { failNote('browser.close.kill', e); } } }
-      cdp = null; proc = null;
-      if (owned && waitForClose && !exited) {
-        // a force-killed process can take seconds to leave on a busy Windows box (antivirus holding a freshly unpacked
-        // browser's files, measured 2026-09-30): wait long enough before calling it stuck
-        exited = await exitedWithin(8000);
-        if (!exited) throw new Error('owned Chromium did not exit after synthetic test session closed');
-      }
-      if (networkProxy) { const proxy = networkProxy; networkProxy = null; await proxy.close(); }
       // keepProfile: a dead browser being replaced — its successor is about to start on this same directory
       if (deps.cleanupProfile === true && !(opts && opts.keepProfile)) { try { FS.rmSync(profileDir, { recursive: true, force: true }); } catch (_) {} }
       // the held-profile fallback's temporary dir is this driver's alone (a successor makes its own): always removed —
@@ -3464,7 +3498,9 @@
       await assertResolvedSafe(u, doLookup);   // same rebinding bar as navigate — a login window is not a weaker surface
       const host = hostOf(u);
       const approved = d => !!d && d !== 'deny';
-      if (!approved(await attended.prompt({ tool: 'browser.login', scope: 'execute', argsSummary: host }))) {
+      // fresh: both asks approve THIS sign-in only. askHuman marks the prompt freshConsent, so handleConsent applies and
+      // echoes a standing answer (always, full, session) as 'once': no surface confirms a grant the station never made
+      if (!approved(await attended.prompt({ tool: 'browser.login', scope: 'execute', argsSummary: host, fresh: true }))) {
         return { status: 'declined', host };
       }
       // The durable profile is what makes the login outlive this run. When a host wires one, contention is a
@@ -3485,7 +3521,7 @@
            they are typing a password or a 2FA code into. thaw() also retires every ref minted before. */
         const wasFrozen = frozenBy;
         if (!wasFrozen) freeze('sign-in at ' + host);
-        try { doneHere = approved(await attended.prompt({ tool: 'browser.login.done', scope: 'execute', argsSummary: host })); }
+        try { doneHere = approved(await attended.prompt({ tool: 'browser.login.done', scope: 'execute', argsSummary: host, fresh: true })); }
         finally {
           if (!wasFrozen) thaw();
           if (typeof deps.onLoginClose === 'function') { try { deps.onLoginClose({ host }); } catch (e) { failNote('browser.login.close', e); } }
@@ -3508,7 +3544,7 @@
         await relaunch({ headed: deps.preferVisible === true ? wantedHeaded(undefined) : false });
         throw e;
       }
-      const done = approved(await attended.prompt({ tool: 'browser.login.done', scope: 'execute', argsSummary: host }));
+      const done = approved(await attended.prompt({ tool: 'browser.login.done', scope: 'execute', argsSummary: host, fresh: true }));
       // Done or cancelled, the window closes and research mode resumes on the SAME profile — any cookies the
       // site set during the attempt are already durable.
       await relaunch({ headed: deps.preferVisible === true ? wantedHeaded(undefined) : false });

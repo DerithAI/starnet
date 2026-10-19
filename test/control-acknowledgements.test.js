@@ -18,7 +18,7 @@ let checks=0,failed=0;const check=fn=>{checks++;try{fn();}catch(e){failed++;cons
   }
  }
  for(const reply of [{ok:false,j:{}},{ok:true,j:{}},{ok:true,j:{connected:false,persisted:false}},{ok:true,j:{connected:true,persisted:true}},{ok:true,j:{connected:false,persisted:true}}]){
-  const notices=[];await vm.runInNewContext('(async()=>{'+disconnectCode+'})()', {Harness:{api:{post:async()=>reply}},c:{id:'telegram'},msgEl:{},setMsg:(_el,text)=>notices.push(text),sfx:()=>{},refreshAll:()=>{}});
+  const notices=[];await vm.runInNewContext('(async()=>{'+disconnectCode+'})()', {Harness:{api:{post:async()=>reply}},c:{id:'telegram'},msgEl:{},setMsg:(_el,text)=>notices.push(text),noAnswerText:(e,fallback)=>(e&&e.message)||fallback,sfx:()=>{},refreshAll:()=>{}});
   check(()=>assert.equal(notices.some(x=>x.startsWith('disconnected — token kept')),reply.ok&&reply.j.connected===false&&reply.j.persisted===true,'disconnect must be confirmed and durable'));
  }
  console.log(`control acknowledgements: ${checks-failed}/${checks} checks passed`);process.exitCode=failed?1:0;

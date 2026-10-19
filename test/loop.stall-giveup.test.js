@@ -86,11 +86,27 @@ async function runWith(provider, extra) {
     A.eq(up.posts.length, 2, 'two silent attempts, then stop (was 7 x the idle window)');
     A.eq([res.failureStage, res.failureCode], ['provider_stream', 'provider_stalled'], 'failureCode provider_stalled');
     const err = seq.find(e => e.name === 'agent.run.error');
-    A.ok(err && /^model stalled: 2 consecutive attempts on fixture-model received no response bytes/.test(err.payload.message), 'the Commander reads that the model stopped responding: ' + (err && err.payload.message));
+    A.ok(err && /^model stalled: 2 consecutive attempts on fixture-model hit the response idle timeout/.test(err.payload.message), 'the Commander reads that the model stopped responding: ' + (err && err.payload.message));
     A.ok(/idle timed out after 40ms/.test(err.payload.message), 'with the watchdog\'s own evidence');
     A.eq(err.payload.transient, true, 'a stall is transient (try again later)');
     A.eq(waits, [400], 'one ordinary rung between the two stalls, then no further waiting');
     A.eq(recov.map(r => [r.action, r.reason]), [['retry', 'timeout']], 'recovery telemetry: one retry, no phantom ladder');
+  }
+
+  // Error bytes can arrive before the body stalls: the status line already arrived, so the run fails as THAT status
+  // (review providers-tools-07: a 401 behind a hanging proxy must reach its reconnect door) — one attempt, since a
+  // 4xx is not retried — and the diagnostic never denies the bytes that arrived.
+  {
+    const up = upstream(() => new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode('{"error":')); }
+    }), { status: 400 }));
+    const { res, seq } = await runWith(adapter(up.fetch));
+    A.eq(res.reason, 'error', 'a stalled partial error body never becomes a completed reply');
+    A.eq(up.posts.length, 1, 'a 400 whose body stalls is that 400: not retried as a stall');
+    const err = seq.find(e => e.name === 'agent.run.error');
+    A.ok(err && !err.payload.message.includes('received no response bytes'), 'the diagnostic does not deny error bytes that arrived');
+    A.ok(err && /400/.test(err.payload.message) && /error body did not finish/.test(err.payload.message), 'the diagnostic names the status and says the body stalled: ' + (err && err.payload.message));
+    A.eq(seq.filter(e => e.name === 'agent.run.end').map(e => e.payload.reason), ['error'], 'one truthful terminal for the failed run');
   }
 
   // ---- with a fallback configured, the stall moves to it and the run completes ----

@@ -35,6 +35,10 @@ async function main() {
   await flow.start('attempt4', 'github'); clock += 900001; assert.equal((await flow.poll('attempt4')).state, 'error');
   await flow.start('attempt5', 'github'); clock += 5000; mode = 'denied'; assert.match((await flow.poll('attempt5')).error, /declined/);
   await flow.start('attempt6', 'github'); await flow.start('attempt7', 'github'); assert.equal((await flow.poll('attempt6')).state, 'error');
+  await flow.start('reset_other', 'other');
+  flow.cancelAll();
+  assert.equal((await flow.poll('attempt7')).state, 'error');
+  assert.equal((await flow.poll('reset_other')).state, 'error');
   assert(calls.filter(c => c.url === TOKEN_ENDPOINT).every(c => !c.opts.body.includes('client_secret')));
   await assert.rejects(oauth.refreshTokens({ fetchImpl: async () => ({ status: 200, json: async () => ({ error: 'invalid_grant' }) }), tokenEndpoint: TOKEN_ENDPOINT, now: clock }), /invalid_grant/);
   console.log('github-device: polling, slowdown, single-flight, cancellation, stale-config, expiry, denial, refresh error and secret redaction passed');

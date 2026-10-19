@@ -99,7 +99,10 @@
       return {
         streamId: str(row.streamId),           // lets a card offer "open the session this came from"
         // the agent's closing message for this run — real recorded output, not a summary anyone generated
-        deliveryText: str(row.deliveryText)
+        deliveryText: str(row.deliveryText),
+        // the root THIS run ran with ('' = its agent's own workspace) — where the closing message's relative file links resolve.
+        // Not projectOf(): a delegated worker files under its lead's project but wrote its files in its own workspace.
+        projectRoot: str(row.projectRoot)
       };
     }
 

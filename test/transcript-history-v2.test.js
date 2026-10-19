@@ -217,4 +217,151 @@ function ioAt(base, extra) {
   } finally { remove(dir); }
 }
 
+
+// Accepted output remains lossless at the validator's maximum even when JSON escaping exceeds segment target.
+{
+  const dir = temp('history-full-accepted');
+  const hash = text => require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+  try {
+    const content = '{"answer":"' + '\ud800'.repeat(1048576 - 13) + '"}';
+    A.eq(content.length, 1048576, 'large accepted text reaches the exact JS-character contract limit');
+    A.ok(require('../sidecar/result-contract.js').inspect({ type: 'object' }, content).ok, 'max-size escaped Unicode JSON is accepted by the real validator');
+    let store = makeTranscriptStore({ io: ioAt(dir, { segmentBytes: 4 * 1024 * 1024 }), clock: { now: () => 1 } });
+    store.appendStrict({ streamId: 'full', sourceRunId: 'original', role: 'assistant', dispatchState: 'final', content, textLength: content.length, textSha256: hash(content), dispatchReason: 'done' });
+    A.ok(fs.statSync(path.join(dir, 'history', 'segment-000001.jsonl')).size > 4 * 1024 * 1024, 'escaped durable row exceeds segment roll target without being cut');
+    store = makeTranscriptStore({ io: ioAt(dir, { segmentBytes: 4 * 1024 * 1024 }), clock: { now: () => 2 } });
+    const restored = store.history('full', { sourceRunId: 'original', dispatchState: 'final', strict: true, limit: 1 })[0];
+    A.eq(restored.content.length, content.length, 'restarted segmented history preserves maximum full length');
+    A.eq(hash(restored.content), hash(content), 'restarted segmented history preserves maximum full UTF-8 hash');
+    A.ok(restored.content === content, 'restarted segmented history preserves exact surrogate code units too');
+    // A torn fragment of some OTHER row never names this run, so it was never this run's accepted answer:
+    // it must not fail the acceptance lookup (it used to fail every worker finalize until the segment rolled).
+    const seg = path.join(dir, 'history', 'segment-000001.jsonl');
+    fs.appendFileSync(seg, '{bad line}\n');
+    const afterTorn = store.history('full', { sourceRunId: 'original', dispatchState: 'final', strict: true, limit: 1 })[0];
+    A.ok(!!afterTorn && hash(afterTorn.content) === hash(content), 'an unrelated torn line no longer fails the strict acceptance lookup');
+    // A damaged line that names this run may be its accepted answer: that still fails closed, never falls back to RAM.
+    fs.appendFileSync(seg, '{"streamId":"full","sourceRunId":"original","dispatchState":"fin\n');
+    A.throws(() => store.history('full', { sourceRunId: 'original', dispatchState: 'final', strict: true }), 'strict acceptance lookup rejects a damaged line naming this run rather than falling back to RAM');
+  } finally { remove(dir); }
+}
+
+// Conversation previews use indexed visible prompts, never internal repair instructions, without per-thread scans.
+{
+  const dir = temp('history-conversation-preview');
+  try {
+    let reads = 0, tick = 1;
+    const countedFs = Object.create(fs); countedFs.readFileSync = (...args) => { reads++; return fs.readFileSync(...args); };
+    let io = ioAt(dir, { fs: countedFs, segmentBytes: 500 });
+    let store = makeTranscriptStore({ io, clock: { now: () => tick++ } });
+    store.appendStrict({ streamId: 'chat', role: 'user', content: 'Original visible question', taint: null });
+    store.appendStrict({ streamId: 'chat', sourceRunId: 'original', dispatchState: 'pending', role: 'user', content: 'RAW CONTRACT' });
+    store.appendStrict({ streamId: 'chat', sourceRunId: 'repair', dispatchState: 'internal', role: 'user', content: 'INTERNAL REPAIR PROMPT' });
+    A.eq(store.streams().find(r => r.streamId === 'chat').preview, 'Original visible question', 'pending/internal rows never replace indexed visible preview');
+    store.appendStrict({ streamId: 'chat', sourceRunId: 'original', dispatchState: 'final', role: 'assistant', content: 'accepted', dispatchPrompt: 'Accepted work request', dispatchReason: 'done', taint: 'web_fetch' });
+    store.appendStrict({ streamId: 'chat', sourceRunId: 'repair', dispatchState: 'internal', role: 'user', content: 'LATE INTERNAL PROMPT' });
+    const before = reads;
+    A.eq(store.streams().find(r => r.streamId === 'chat').preview, 'Accepted work request', 'accepted projection supplies the original visible work request as preview');
+    A.eq(reads, before, 'indexed stream previews require no transcript body reads');
+    A.eq(store.streams().find(r => r.streamId === 'chat').previewTaint, 'web_fetch', 'accepted visible preview carries its own source, not earlier clean user metadata');
+    store = makeTranscriptStore({ io: ioAt(dir, { segmentBytes: 500 }), clock: { now: () => tick++ } });
+    A.eq(store.streams().find(r => r.streamId === 'chat').preview, 'Accepted work request', 'safe preview survives segmented restart');
+    A.eq(store.streams().find(r => r.streamId === 'chat').previewTaint, 'web_fetch', 'accepted preview provenance survives restart with its text');
+    A.ok(store.history('chat', { sourceRunId: 'repair' }).some(r => r.content === 'INTERNAL REPAIR PROMPT'), 'preview filtering never removes raw execution evidence');
+    // Old closed-segment summaries have no visibility provenance; their preview is never trusted. A deferred one-time
+    // upgrade rebuilds it from the immutable JSONL (see the next block), so it can never keep the planted text.
+    const manifestFile = path.join(dir, 'history', 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    for (const segment of manifest.segments) if (segment.number !== manifest.activeSegment && segment.streams.chat) {
+      delete segment.streams.chat.previewVersion; segment.streams.chat.preview = 'UNVERIFIED OLD REPAIR PREVIEW';
+    }
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+    const later = [];
+    store = makeTranscriptStore({ io: ioAt(dir, { segmentBytes: 500, schedule: fn => later.push(fn) }), clock: { now: () => tick++ } });
+    A.ok(!/UNVERIFIED/.test(store.streams().find(r => r.streamId === 'chat').preview), 'unversioned closed preview metadata is not trusted as visible conversation text');
+    while (later.length) later.shift()();
+    A.ok(!/UNVERIFIED/.test(store.streams().find(r => r.streamId === 'chat').preview), 'the upgrade rebuilds the preview from the JSONL, never the planted text');
+  } finally { remove(dir); }
+}
+
+// A conversation whose latest activity sits in a closed segment written before preview provenance existed gets its
+// preview back: a deferred, one-segment-at-a-time upgrade (never a boot-time scan of every segment).
+{
+  const dir = temp('history-preview-upgrade');
+  const sha = v => require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
+  try {
+    let tick = 1;
+    let store = makeTranscriptStore({ io: ioAt(dir, { segmentBytes: 500 }), clock: { now: () => tick++ } });
+    store.appendStrict({ streamId: 'old-chat', role: 'user', content: 'Plan the garden beds', taint: null });
+    store.appendStrict({ streamId: 'old-chat', role: 'assistant', content: 'Raised beds, north side.', taint: null });
+    for (let i = 0; i < 12; i++) store.appendStrict({ streamId: 'other', role: 'assistant', content: 'filler '.repeat(20), taint: null });
+    // rewrite every closed segment's summary the way the previous release wrote it (no previewVersion)
+    const manifestFile = path.join(dir, 'history', 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    let downgraded = 0;
+    for (const meta of manifest.segments) {
+      if (meta.number === manifest.activeSegment) continue;
+      const idxPath = path.join(dir, 'history', 'segment-' + String(meta.number).padStart(6, '0') + '.index.json');
+      const index = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+      for (const sid of Object.keys(index.streams)) { const s = index.streams[sid]; delete s.previewVersion; delete s.previewTaint; delete s.previewTaintKnown; }
+      fs.writeFileSync(idxPath, JSON.stringify(index));
+      meta.streams = index.streams; meta.indexHash = sha(index); downgraded++;
+    }
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+    A.ok(downgraded >= 2, 'several closed segments carry pre-upgrade summaries');
+    const later = [];
+    let reads = 0;
+    const countedFs = Object.create(fs); countedFs.readFileSync = (...args) => { if (/\.jsonl$/.test(String(args[0]))) reads++; return fs.readFileSync(...args); };
+    store = makeTranscriptStore({ io: ioAt(dir, { fs: countedFs, segmentBytes: 500, schedule: fn => later.push(fn) }), clock: { now: () => tick++ } });
+    A.eq(store.streams({ limit: 10 }).find(r => r.streamId === 'old-chat').preview, '', 'before the upgrade an unversioned preview is not shown');
+    A.ok(later.length === 1, 'the upgrade is scheduled, not run during boot');
+    const bootReads = reads;
+    let steps = 0;
+    while (later.length && steps < 100) { later.shift()(); steps++; }
+    A.ok(steps >= 2 && reads - bootReads === steps, 'each deferred step reads one closed segment (' + steps + ' steps, ' + (reads - bootReads) + ' reads)');
+    A.eq(store.streams({ limit: 10 }).find(r => r.streamId === 'old-chat').preview, 'Plan the garden beds', 'the pre-upgrade conversation lists with its preview again');
+    store = makeTranscriptStore({ io: ioAt(dir, { segmentBytes: 500, schedule: fn => later.push(fn) }), clock: { now: () => tick++ } });
+    A.eq(store.streams({ limit: 10 }).find(r => r.streamId === 'old-chat').preview, 'Plan the garden beds', 'the upgraded preview survives restart');
+    A.eq(later.length, 0, 'an upgraded store schedules nothing on the next boot');
+    A.ok(store.search('old-chat', 'garden', { scope: 'all' }).length === 1, 'search still finds the upgraded segment\'s rows');
+  } finally { remove(dir); }
+}
+
+// A torn line left by a killed sidecar must not block worker finalization, and finalize must not
+// re-read every old segment of a long stream ('global') that predates the run.
+{
+  const dir = temp('history-finalize-torn');
+  const hash = text => require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+  const { makeRunStore } = require('../sidecar/runstore.js');
+  const { finalizeDispatchDelivery, recoverPendingDeliveries } = require('../sidecar/dispatch-delivery.js');
+  try {
+    let now = 1000;
+    const clock = { now: () => now };
+    const reads = [];
+    const countedFs = Object.create(fs);
+    countedFs.readFileSync = (file, ...rest) => { reads.push(path.basename(String(file))); return fs.readFileSync(file, ...rest); };
+    const io = ioAt(dir, { fs: countedFs, segmentBytes: 700 });
+    const transcriptStore = makeTranscriptStore({ io, clock });
+    for (let i = 0; i < 12; i++) transcriptStore.appendStrict({ streamId: 'global', role: 'assistant', content: 'old global chatter ' + i + ' ' + 'x'.repeat(80) });
+    const oldSegments = io.status().segments.filter(s => s.number !== io.status().activeSegment).map(s => s.file);
+    A.ok(oldSegments.length >= 2, 'the old global history spans several closed segments');
+    // the sidecar died mid-append in an OLD segment and in the ACTIVE one
+    fs.appendFileSync(path.join(dir, 'history', oldSegments[0]), '{"streamId":"global","role":"assi\n');
+    now = 1000 + 2 * 24 * 60 * 60 * 1000;
+    fs.appendFileSync(path.join(dir, 'history', 'segment-' + String(io.status().activeSegment).padStart(6, '0') + '.jsonl'), '{"streamId":"global","con');
+    const runStore = makeRunStore({ io: { readAll: () => [], append() {} }, clock });
+    transcriptStore.appendStrict({ streamId: 'global', sourceRunId: 'w1', dispatchState: 'pending', role: 'user', content: 'Summarize the inbox' });
+    runStore.record({ runId: 'w1', agentId: 'ada', reason: 'done', startedAt: now, dispatchDelivery: { state: 'pending' } });
+    now += 1000;
+    reads.length = 0;
+    const deps = { runStore, transcriptStore, redact: t => t, hash };
+    let row = null;
+    A.notThrows(() => { row = finalizeDispatchDelivery(deps, 'w1', { text: 'Three unread invoices.', reason: 'done' }); }, 'a torn line from another row never fails this worker\'s finalization');
+    A.eq(row && row.dispatchDelivery && row.dispatchDelivery.state, 'final', 'the worker\'s delivery is final, not left pending');
+    A.ok(!oldSegments.some(f => reads.includes(f)), 'finalize never re-reads closed segments that end before the run started (read: ' + reads.join(',') + ')');
+    A.eq(transcriptStore.history('global', { sourceRunId: 'w1', dispatchState: 'final' }).length, 1, 'exactly one accepted final row is written');
+    A.notThrows(() => finalizeDispatchDelivery(deps, 'w1', { text: 'Three unread invoices.', reason: 'done' }), 'a repeated finalize stays idempotent past the torn lines');
+    A.eq(recoverPendingDeliveries(Object.assign({ onFailure: e => { throw e; } }, deps)), 0, 'no pending delivery is left to recover');
+  } finally { remove(dir); }
+}
 A.report('transcript-history-v2.test');

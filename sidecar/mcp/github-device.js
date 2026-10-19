@@ -97,6 +97,7 @@ function createDeviceFlow({ fetchImpl, complete, snapshot, now, clientId = CLIEN
     })();
     return a.flight;
   }
-  return { start, poll, cancel };
+  function cancelAll() { for (const key of attempts.keys()) cancel(key); }
+  return { start, poll, cancel, cancelAll };
 }
 module.exports = { createDeviceFlow, CLIENT_ID, TOKEN_ENDPOINT };

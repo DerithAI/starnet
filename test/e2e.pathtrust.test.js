@@ -7,6 +7,7 @@
    and revoking the grant makes the very next run prompt again. No real key, no network. */
 'use strict';
 const A = require('./_assert.js');
+const { userWords } = require('./helpers/host-notes.js');   // the user's own words: the run-context note leads the newest user message on this wire
 const http = require('http');
 const path = require('path');
 const os = require('os');
@@ -33,7 +34,7 @@ function startMockOpenRouter() {
           requests.push(msgs);
           const hasToolResult = msgs.some(m => m && m.role === 'tool');
           const lastUser = [...msgs].reverse().find(m => m && m.role === 'user');
-          const target = lastUser ? String(lastUser.content || '') : '';
+          const target = lastUser ? userWords(lastUser) : '';
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
           if (!hasToolResult) {
             res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'r1', type: 'function', function: { name: 'fs_read', arguments: JSON.stringify({ path: target }) } }] } }] }) + '\n\n');

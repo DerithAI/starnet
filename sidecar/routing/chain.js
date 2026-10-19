@@ -86,30 +86,45 @@ function effectiveLimits(raw, fallback, poolCap) {
    (routing/steptest.js) runs one dock at a time on the SAME decisions, never a second dialect of them.
    advance() calls each exactly where its inline code used to sit; behaviour is byte-for-byte unchanged. */
 
-/* loopDecision(step, ctx, n, visited, text) -> { again, target, text, exhausted } — THE ONE LOOP RULE
+/* loopDecision(step, ctx, n, visited, text) -> { again, target, text, exhausted, why? } — THE ONE LOOP RULE
    (2026-08-22, matches the LOOP card word for word):
      when = a VERDICT word   -> the crate goes BACK while the reviewer's verdict is NOT that word
                                 (no verdict line = not that word); leaves on DONE the moment it is;
      when = a classifier tag -> goes back while the output still READS as that kind of work;
      no when                 -> every pass goes back;
    and in every case MAX PASSES ends it on DONE. A `when` still unmet when the passes ran out marks the
-   done-lane handoff EXHAUSTED so the downstream stage knows nobody approved it. `n` = passes already taken
-   round this gate; `text` = the output about to be handed on (returned annotated). Pure: mutates nothing. */
-function loopDecision(step, ctx, n, visited, text) {
+   done-lane handoff EXHAUSTED so the downstream stage knows nobody approved it (and `why` says so in words for the job's own
+   out.unapproved — GitHub #122). `n` = passes already taken
+   round this gate; `text` = the output about to be handed on (returned annotated). Pure: mutates nothing.
+   `reviewed` (token-burn audit 2026-10-17) = what the reviewing stage was HANDED. The writer used to see its own draft on a
+   loop-back only because the resume seed replayed the line's whole transcript into every hop; hops no longer take that
+   seed, so a loop-back turn carries the work under review itself, clipped, ahead of the review. */
+const REVIEWED_HEAD = 12000, REVIEWED_TAIL = 4000;
+function clipReviewed(s) {
+  if (s.length <= REVIEWED_HEAD + REVIEWED_TAIL) return s;
+  return s.slice(0, REVIEWED_HEAD) + '\n[… ' + (s.length - REVIEWED_HEAD - REVIEWED_TAIL) + ' characters of the work omitted …]\n' + s.slice(-REVIEWED_TAIL);
+}
+function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);
   const wants = !step.when ? true : byVerdict ? (ctx.verdict !== String(step.when).toLowerCase()) : (ctx.tag === step.when);
   const again = step.backTo && n < step.max && wants;
+  const draft = (typeof reviewed === 'string' && reviewed.trim()) ? reviewed : '';
+  const workBlock = draft ? 'THE WORK UNDER REVIEW (what the reviewer was handed):\n' + clipReviewed(draft) + '\n\nREVIEW:\n' : '';
   if (again) {
     return { again: true, target: step.backTo, exhausted: false,
-      text: '[LOOP — pass ' + (n + 1) + ' of ' + step.max + ' round the gate at ' + step.loop + ']\n' + text };
+      text: '[LOOP — pass ' + (n + 1) + ' of ' + step.max + ' round the gate at ' + step.loop + ']\n' + workBlock + text };
   }
   // spent (or the verdict passed): leave on the done lane — an APPROVED crate leaves without its VERDICT line (R1: the line is the
   // gate's control signal; it never ships as part of the work). An exhausted crate keeps it: the reviewer's last word is evidence.
   // (a reply that is ONLY the verdict line keeps it: stripping it would hand on an empty crate, which the next hop refuses)
   const stripped = (byVerdict && !wants) ? Verdict.stripVerdict(text) : text;
-  let target = step.next, out = (typeof stripped === 'string' && stripped.trim()) ? stripped : text, exhausted = false;
+  let target = step.next, out = (typeof stripped === 'string' && stripped.trim()) ? stripped : text, exhausted = false, why = '';
   if (step.when && wants && n >= step.max) {
     exhausted = true;
+    /* WHY, IN WORDS (GitHub #122): the job carries this as out.unapproved past the line — the OUTBOX product, SEND TO, SHIPPED and
+       the job record read it, so work nobody approved is never delivered downstream as if it were (the flow itself is unchanged) */
+    why = 'the review loop used all ' + n + ' pass' + (n === 1 ? '' : 'es')
+      + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when);
     /* THE ESCALATION LANE (2026-08-30): a gate with a third wired lane sends verdict-exhausted
        work THERE — a fresh dock (the fixer, the human-facing summarizer) instead of an apology
        stapled to the done lane. The escalated dock is a real stage: its output continues down
@@ -117,16 +132,21 @@ function loopDecision(step, ctx, n, visited, text) {
        note stands, never a silent second run. */
     if (step.esc && !visited[nodeKey(step.esc)]) {
       target = step.esc;
+      why += ', so the work went to the escalation lane unapproved';
       out = '[LOOP — escalated: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
         + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
-        + ' — handed to the escalation lane]\n' + text;
+        + ' — handed to the escalation lane]\n' + workBlock + text;   // the fixer needs the work, not only the notes on it
     } else {
+      why += ', so the work went on unapproved';
+      // a downstream dock gets the unapproved work with the notes; a crate that ships straight out keeps the reviewer's word
       out = '[LOOP — exhausted: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
         + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
-        + ' — leaving on DONE unapproved]\n' + text;
+        + ' — leaving on DONE unapproved]\n'
+        // a done lane that meets a JOINER compiles with next = null and the dock past it in afterJoin.next: that dock needs the work too
+        + ((step.next || (step.afterJoin && step.afterJoin.next)) ? workBlock : '') + text;
     }
   }
-  return { again: false, target, text: out, exhausted };
+  return why ? { again: false, target, text: out, exhausted, why } : { again: false, target, text: out, exhausted };
 }
 
 /* preHopRefusal({ visited, target, loopHop, hop, loopHops, lim, spent, dayLedger, lineId, text, cur }) -> the
@@ -279,10 +299,24 @@ function makeChainRunner(o) {
      (a direct order never ships anywhere), the line did not stop (stopped == null: no refusal, no failed or empty stage, no hop
      or $ ceiling, no STOP), and the stage that produced the answer is one whose lane ships to an OUTBOX (lastStage). Never
      awaited and never thrown through — A CHAIN NEVER GATES THE REPLY (law 1): the hand-off is queued, the reply goes now.
-     rec = { lineId, agentId, dockId, outboxId, text, originalText, usd, streamId, since } (streamId / since from the seed, when
+     rec = { lineId, entryRunId, agentId, dockId, outboxId, text, originalText, usd, streamId, since } (streamId / since from the seed, when
      the caller has them: the job's own stream and the time its entry run started, so the runner reads back exactly its runs;
-     outboxId = the OUTBOX the job's last walk landed in — a line with two OUTBOXes hands on only from the one that sends). */
+     outboxId = the OUTBOX the job's last walk landed in — a line with two OUTBOXes hands on only from the one that sends).
+     rec.partial (runtime repair 2026-10-12) = why a JOINER sent this job on without every branch (out.partial below): the host
+     still hears of it — so SEND TO can say on the next line why nothing came — but never counts or hands it on as a clean job.
+     rec.entryTrusted / rec.hostPowerKept (conveyor-backend-04) = true only when the seed carried them as a literal true (shipped below). */
   const onShipped = typeof o.onShipped === 'function' ? o.onShipped : null;
+  /* cleanJob({ lineId, entryRunId, streamId }) -> bool (runtime audit 2026-10-12): did EVERY run of this job end clean? The
+     line-output authority below releases a held product on the floor; it must judge a job by the same rule the shipment receipt
+     and SEND TO do (line-shipments.cleanJobRows over the job's own run rows), or a job with a failed COPY branch, or a hop that
+     ended max_iters with some text, put a product at the OUTBOX while SHIPPED stayed 0. Absent = every job is clean (the runner
+     alone cannot see run rows); a throw = not proven clean, so nothing is released. */
+  const cleanJob = typeof o.cleanJob === 'function' ? o.cleanJob : null;
+  function provenClean(s) {
+    if (!cleanJob) return true;
+    try { return cleanJob({ lineId: String(s.lineId), entryRunId: s.runId != null ? String(s.runId) : null, streamId: s.streamId != null ? String(s.streamId) : null }) === true; }
+    catch (e) { failNote('chain.cleanJob', e); return false; }
+  }
 
   /* THE JOIN BARRIER — in-memory, keyed "joinTile|runId". A branch DELIVERS its output; the barrier releases
      when `expect` deliveries are in, or when a waiter's timeout (the joiner's timeoutMin) fires with fewer —
@@ -372,7 +406,18 @@ function makeChainRunner(o) {
        `agentId` who produced it, `stopped` a short honest reason when the line did not run to its end (null
        when it did). Never throws: a chain is an enhancement to a reply the caller already holds. */
   async function advance(seed) {
-    const out = await advanceLine(seed);
+    const evidence = { workitemIds: [] };
+    const out = await advanceLine(seed, evidence);
+    const s = seed || {};
+    // Exact terminal authority for the floor: a barrier release alone may have more work after it.
+    // Existing event, additive metadata (like dockId): no output text or guessed route leaves here.
+    if (s.lineId && out && out.stopped == null && !out.partial && out.outboxId && String(out.text || '').trim() && provenClean(s)) {
+      say('workitem.delivered', withDock({ workitemId: newId(), finalQueueId: 'outbox', agentId: out.agentId,
+        box: 'line-output', lineId: String(s.lineId), outboxId: out.outboxId,
+        entryRunId: s.runId ? String(s.runId) : null, workitemIds: evidence.workitemIds, ms: 0, ts: now(),
+        // (GitHub #122, additive like dockId) a review loop ran out of passes: the product is at the OUTBOX, but nobody approved it
+        ...(out.unapproved ? { unapproved: String(out.unapproved) } : {}) }, out.dockId));
+    }
     if (onShipped) shipped(seed || {}, out);
     return out;
   }
@@ -383,13 +428,22 @@ function makeChainRunner(o) {
     let ships = false;
     try { ships = !!(lastStage && (out.dockId ? lastStage(out.agentId, out.dockId) : lastStage(out.agentId))); } catch (e) { failNote('chain.onShipped.lastStage', e); ships = false; }
     if (!ships) return;
-    const rec = { lineId, agentId: out.agentId, dockId: out.dockId || null, outboxId: out.outboxId || null, text: String(out.text), originalText: String(s.originalText != null ? s.originalText : (s.text || '')),
+    const rec = { lineId, entryRunId: (s.runId != null && String(s.runId)) || null, agentId: out.agentId, dockId: out.dockId || null, outboxId: out.outboxId || null, text: String(out.text), originalText: String(s.ask != null ? s.ask : s.originalText != null ? s.originalText : (s.text || '')),   // SEND TO carries the routine's own directive, never its untrusted context block
       usd: ((typeof s.entryUsd === 'number' && isFinite(s.entryUsd) && s.entryUsd > 0) ? s.entryUsd : 0) + (out.usd || 0),
       streamId: (s.streamId != null && String(s.streamId)) || null, since: (typeof s.since === 'number' && isFinite(s.since)) ? s.since : null };
+    // a PARTIAL joined job still reaches the host — the receipt refuses it and SEND TO says why on the next line — never as clean
+    if (out.partial) rec.partial = String(out.partial);
+    // an UNAPPROVED job (a review loop ran out of passes — out.unapproved, GitHub #122) still went on: SEND TO hands it on and says so,
+    // the receipt never counts it as clean SHIPPED work
+    if (out.unapproved) rec.unapproved = String(out.unapproved);
+    /* SEND TO VERDICTS (conveyor-backend-04): the producing job's entry verdicts, carried only when the seed holds them as a literal
+       true (the channel hub stamps them — it ran the job under them). Absent = the hand-off runs untrusted + withheld (handoff-runner). */
+    if (s.entryTrusted === true) rec.entryTrusted = true;
+    if (s.hostPowerKept === true) rec.hostPowerKept = true;
     try { const r = onShipped(rec); if (r && typeof r.then === 'function') r.then(null, e => failNote('chain.onShipped', e)); }
     catch (e) { failNote('chain.onShipped', e); }
   }
-  async function advanceLine(seed) {
+  async function advanceLine(seed, evidence) {
     const s = seed || {};
     const startAgent = s.agentId, originalText = s.originalText != null ? s.originalText : s.text;
     // the line this work ENTERED on (null for a direct order — the gate then keeps every dock terminal)
@@ -406,6 +460,16 @@ function makeChainRunner(o) {
     let pool = null; try { pool = poolCap(); } catch (_) { pool = null; }
     const lim = effectiveLimits(s.limits || fromPlan, { maxHops, maxUsd }, pool);
     const out = { text: s.text, agentId: startAgent, hops: [], usd: 0, stopped: null, limits: { maxHops: lim.maxHops, maxUsd: lim.maxUsd, maxUsdPerDay: lim.maxUsdPerDay, clamped: lim.clamped } };
+    /* THE PARTIAL JOB (runtime repair 2026-10-12): a JOINER that sends on without every branch — one failed, or never delivered
+       before the timeout — marks the merged crate PARTIAL in its text (Pipeline.joinPayload) and the job on `out.partial` (why, in
+       words). The job still runs to its end (law 1: the next stage gets the partial set, marked), but it never counts as a clean
+       product: no line-output, no shipment receipt, no SEND TO, no 'delivered' verdict. The run rows alone cannot tell — a hop the
+       host refused before it ran (no credential, the floor changed) writes none, and a branch still out at the timeout has none. */
+    const joined = (parts, missing, failed) => {
+      const why = (failed || []).concat((missing || []).map(m => m + ' never reached the joiner'));
+      if (why.length) out.partial = (out.partial ? out.partial + '; ' : '') + why.join(', ');
+      return Pipeline.joinPayload(parts, missing, failed);
+    };
     if (!nextAgent || !runAgent || !startAgent) return out;
     // the entry run's spend lands in the line's DAY bucket here — the caller never sees this ledger
     // (out.usd stays HOP-ONLY; the ledger is the only place entry + hops are summed across messages).
@@ -440,6 +504,7 @@ function makeChainRunner(o) {
        ones named as missing (it used to return the first branch's answer and strand the rest at the barrier). */
     let fan = null;
     let fromTile = null, via = null, loopHops = 0;
+    let lastHanded = String(originalText || '');   // what the stage that just ran was handed (a loop-back shows it the work under review)
     // inside a loop pass every hop is a re-visit by design (the body runs again); `looping` is raised at a
     // re-entry and lowered when the gate lets the crate out on its done lane
     let looping = false;
@@ -457,7 +522,7 @@ function makeChainRunner(o) {
       let sib = [];
       try { sib = (dockMode && fanSiblingsDock) ? (fanSiblingsDock(cur.dockId, { lineId }) || []) : (fanSiblings(cur.agentId, { lineId }) || []); } catch (_) { sib = []; }
       for (const a of sib) { const n = asNode(a); if (n) pending.push({ node: n, text: originalText, from: null, entry: true }); }
-      if (pending.length) fan = { width: 1 + pending.length, failed: [], joinKey: null, joinStep: null };
+      if (pending.length) fan = { width: 1 + pending.length, failed: [], joinKey: null, joinStep: null, handed: String(originalText || '') };
     }
     // a branch that ends (terminal / parked at the joiner) hands the loop to the next queued branch
     const nextPending = () => { const b = pending.shift(); if (!b) return false; cur = b.from || cur; out.text = b.text; branchMode = true; return b; };
@@ -476,22 +541,26 @@ function makeChainRunner(o) {
       for (const b of items) {
         if (!b.node || !b.node.dockId) return null;
         for (const tag of ['general', 'code', 'research']) {
-          const rch = {};
-          let st = null; try { st = peekDock(b.node.dockId, { tag, lineId, reach: rch }); } catch (_) { st = null; }
+          let st = null; try { st = peekDock(b.node.dockId, { tag, lineId }); } catch (_) { st = null; }
           if (!st || !st.join || (js && st.join !== js.join)) return null;
-          if (!js) { js = st; js.reach = rch; }   // SEND TO: the OUTBOX the merged job lands in (Pipeline.chainStepDock ctx.reach)
+          if (!js) js = st;   // only "can these branches batch?" — where the merged job goes is walked after the release
         }
       }
       return js;
     };
     async function runBatch(items, hop0) {
+      /* INSIDE A LOOP PASS every branch is a re-visit by design — the same reading the one-after-another hop takes (`if (looping)
+         loopHop = true` below), so a COPY section a review loop sends work back through runs its second pass instead of stopping on
+         "the line loops back to …" (wave 2 review, conveyor-backend-01). Those hops count off the stage ceiling like any loop hop. */
+      const lp = looping;
       for (let i = 0; i < items.length; i++) {
         const b = items[i], k = nodeKey(b.node);
-        if (visited[k]) return { refused: 'the line loops back to ' + b.node.agentId };
-        const refused = preHopRefusal({ visited, target: b.node.agentId, targetKey: k, loopHop: true, hop: hop0 + i, loopHops, lim, spent, dayLedger, lineId, text: b.text, cur: (b.from || cur).agentId });
+        if (visited[k] && !lp) return { refused: 'the line loops back to ' + b.node.agentId };
+        const refused = preHopRefusal({ visited, target: b.node.agentId, targetKey: k, loopHop: true, hop: hop0 + i, loopHops: loopHops + (lp ? i + 1 : 0), lim, spent, dayLedger, lineId, text: b.text, cur: (b.from || cur).agentId });
         if (refused) return { refused };
       }
-      for (const b of items) visited[nodeKey(b.node)] = true;
+      if (lp) loopHops += items.length;
+      else for (const b of items) visited[nodeKey(b.node)] = true;
       const share = Math.max(0, lim.maxUsd - spent) / items.length;
       const results = await Promise.all(items.map(async (b, i) => {
         const t = b.node, from = b.entry ? null : (b.from || cur), workitemId = newId(), t0 = now();
@@ -516,12 +585,12 @@ function makeChainRunner(o) {
           return { node: t, usd, error: r.error ? t.agentId + ' failed' : t.agentId + ' returned nothing' };
         }
         say('workitem.delivered', withDock({ workitemId, finalQueueId: t.agentId, agentId: t.agentId, box: '', ms: now() - t0, ts: now() }, t.dockId));
-        return { node: t, usd, text: r.text, ms: now() - t0 };
+        return { node: t, workitemId, usd, text: r.text, ms: now() - t0 };
       }));
       for (const x of results) {
         out.usd += x.usd; spent += x.usd;
         if (dayLedger && x.usd) { try { dayLedger.note(lineId, x.usd); } catch (e) { failNote('chain.dayLedger.batch', e); } }
-        if (!x.error) { const rec = { agentId: x.node.agentId, usd: x.usd, ms: x.ms }; if (x.node.dockId) rec.dockId = x.node.dockId; out.hops.push(rec); }
+        if (!x.error) { evidence.workitemIds.push(x.workitemId); const rec = { agentId: x.node.agentId, usd: x.usd, ms: x.ms }; if (x.node.dockId) rec.dockId = x.node.dockId; out.hops.push(rec); }
       }
       return { results };
     }
@@ -554,10 +623,12 @@ function makeChainRunner(o) {
         if (step && step.loop) {
           // THE ONE LOOP RULE — loopDecision (module level) holds it; the step-through test reads the same one
           const n = iter[step.loop] || 0;
-          const d = loopDecision(step, ctx, n, visited, out.text);
+          // a gate whose back lane re-enters the dock that just ran: lastHanded is that dock's previous loop turn, not a draft under review
+          const selfLoop = !!step.backTo && nodeKey(asNode(step.backTo)) === nodeKey(cur);
+          const d = loopDecision(step, ctx, n, visited, out.text, selfLoop ? '' : lastHanded);
           target = asNode(d.target); out.text = d.text;
           if (d.again) { iter[step.loop] = n + 1; loopHop = true; openLoops.add(step.loop); looping = true; fromTile = null; }
-          else { openLoops.delete(step.loop); looping = openLoops.size > 0; if (d.exhausted) out.loopExhausted = true; }
+          else { openLoops.delete(step.loop); looping = openLoops.size > 0; if (d.exhausted) { out.loopExhausted = true; if (d.why) out.unapproved = (out.unapproved ? out.unapproved + '; ' : '') + d.why; } }
           // the gate let the work out onto a DONE lane that meets a JOINER: this branch parks there like any other
           if (!d.again && !target && step.afterJoin) step = step.afterJoin;
           else loopDone = true;
@@ -571,11 +642,11 @@ function makeChainRunner(o) {
              at all = every branch works the whole job, and each is told why. */
           let texts = null, partsInfo = null;
           if (step.divide && br.length > 1) {
-            const parts = Pipeline.divideJob(out.text, br.length) || Pipeline.divideJob(originalText, br.length);
+            const parts = Pipeline.divideJob(out.text, br.length) || Pipeline.divideJob(s.ask != null ? String(s.ask) : originalText, br.length);
             if (parts) { br.length = parts.length; texts = parts.map((p, i) => Pipeline.partTurn(out.text, p, i, parts.length)); partsInfo = parts.map((p, i) => ({ text: p, i, k: parts.length })); out.divided = parts.length; }
             else { const note = '(This job was meant to be split between ' + br.length + ' agents, but the step before the splitter gave no numbered parts — so every branch has the whole job.)\n\n'; texts = br.map(() => note + out.text); out.divided = 0; }
           }
-          if (br.length) fan = { width: br.length, failed: [], joinKey: null, joinStep: null };
+          if (br.length) fan = { width: br.length, failed: [], joinKey: null, joinStep: null, handed: String(out.text || '') };   // what the branches were handed (a gate past the joiner reviews it)
           const allAt = joinOfAll(br.map(n => ({ node: n })));
           if (allAt) {
             const items = br.map((n, i) => ({ node: n, text: texts ? texts[i] : out.text, from: cur, part: partsInfo ? partsInfo[i] : null }));
@@ -587,11 +658,14 @@ function makeChainRunner(o) {
             const rel = batchToBarrier(b.results, bk, allAt);
             if (!rel || !rel.parts.length) { out.text = leadText; out.stopped = (fan.failed[0] || 'every branch failed'); return out; }
             const last = rel.parts[rel.parts.length - 1];
-            out.text = Pipeline.joinPayload(rel.parts, [], fan.failed);
+            out.text = joined(rel.parts, [], fan.failed);
             out.agentId = last.agentId; if (last.dockId) out.dockId = last.dockId;
             say('workitem.delivered', withDock({ workitemId: newId(), finalQueueId: last.agentId, agentId: last.agentId, box: 'join:' + allAt.join, ms: 0, ts: now() }, last.dockId));
-            branchMode = false; fan = null; fromTile = tileOf(allAt.join);
-            if (!allAt.next) { out.stopped = null; if (allAt.reach && allAt.reach.outboxId) out.outboxId = allAt.reach.outboxId; return out; }
+            /* the merged crate walks on from the joiner's exit — always, even when no dock is past it: the peek above never moves a
+               splitter and only read the 'general' route, so its answer must not pick the OUTBOX (a TAKE TURNS splitter after the
+               joiner stuck on one exit, a FILTER never read the merged job; runtime audit 2026-10-12). The next pass walks with the
+               advancing pick and the merged job's tag, and a walk that ends at an OUTBOX names it there (!target below). */
+            lastHanded = (fan && fan.handed) || ''; branchMode = false; fan = null; fromTile = tileOf(allAt.join);
             continue;
           }
           if (texts) out.text = texts[0];
@@ -603,7 +677,7 @@ function makeChainRunner(o) {
           const bk = step.join + '|' + runId;
           const fw = fan ? Math.max(1, fan.width - fan.failed.length) : 0;
           const r = barrier.deliver(bk, fw || step.expect, cur.agentId, out.text, step.timeoutMin, cur.dockId);
-          if (fan) { fan.joinKey = bk; fan.joinStep = step; fan.joinReach = reach.outboxId || null; }
+          if (fan) { fan.joinKey = bk; fan.joinStep = step; }
           const failedNames = fan ? fan.failed.slice() : [];
           if (!r.released && pending.length > 1 && joinOfAll(pending) && joinOfAll(pending).join === step.join) {
             const items = pending.splice(0);
@@ -611,12 +685,12 @@ function makeChainRunner(o) {
             if (b.refused) { barrier.release(bk); out.stopped = b.refused; return out; }
             hop += items.length - 1;
             const rel = batchToBarrier(b.results, bk, step);
-            out.text = Pipeline.joinPayload(rel.parts, [], fan ? fan.failed : []);
+            out.text = joined(rel.parts, [], fan ? fan.failed : []);
             const last = rel.parts[rel.parts.length - 1];
             out.agentId = last.agentId; if (last.dockId) out.dockId = last.dockId;
             say('workitem.delivered', withDock({ workitemId: newId(), finalQueueId: last.agentId, agentId: last.agentId, box: 'join:' + step.join, ms: 0, ts: now() }, last.dockId));
-            branchMode = false; fan = null; fromTile = tileOf(step.join);
-            if (!step.next) { out.stopped = null; if (reach.outboxId) out.outboxId = reach.outboxId; return out; }
+            // the merged job walks on from the joiner's exit (see the release below), never where an arriving branch's walk ended
+            lastHanded = (fan && fan.handed) || ''; branchMode = false; fan = null; fromTile = tileOf(step.join);
             continue;
           }
           if (!r.released) {
@@ -624,15 +698,18 @@ function makeChainRunner(o) {
             // nothing left to run in THIS call: wait for another deliverer (same run) or the joiner's timeout
             const w = await barrier.wait(step.join + '|' + runId, step.timeoutMin, s.signal);
             if (!w) { out.stopped = (s.signal && s.signal.aborted) ? 'stopped' : 'the joiner at ' + step.join + ' lost its branches'; return out; }
-            out.text = Pipeline.joinPayload(w.parts, w.missing, failedNames);
+            out.text = joined(w.parts, w.missing, failedNames);
             say('workitem.delivered', withDock({ workitemId: newId(), finalQueueId: cur.agentId, agentId: cur.agentId, box: 'join:' + step.join, ms: 0, ts: now() }, cur.dockId));
           } else {
-            out.text = Pipeline.joinPayload(r.parts, [], failedNames);
+            out.text = joined(r.parts, [], failedNames);
+            say('workitem.delivered', withDock({ workitemId: newId(), finalQueueId: cur.agentId, agentId: cur.agentId, box: 'join:' + step.join, ms: 0, ts: now() }, cur.dockId));
           }
-          branchMode = false; fan = null;
-          // the merged crate continues from the joiner's exit; the last deliverer is its producer
+          lastHanded = (fan && fan.handed) || ''; branchMode = false; fan = null;
+          /* the merged crate continues from the joiner's exit; the last deliverer is its producer. ALWAYS from the joiner — even
+             with no dock past it (runtime repair 2026-10-12): the arriving branch's step only LOOKED past the joiner (step.next is a
+             quiet look-ahead), so a TAKE TURNS splitter there turns once per merged job and a FILTER reads the merged job's tag; a
+             walk that ends at an OUTBOX names it (!target below) — the joiner shipping straight out, merged text as the answer. */
           fromTile = tileOf(step.join);
-          if (!step.next) { out.stopped = null; if (reach.outboxId) out.outboxId = reach.outboxId; return out; }   // the joiner ships straight out: merged text IS the answer
           hop--; continue;
         } else if (loopDone) {
           // (decided above)
@@ -690,6 +767,7 @@ function makeChainRunner(o) {
       call.ceilingUsd = Math.max(0, lim.maxUsd - spent);
       if (target.dockId) { call.dockId = target.dockId; call.fromDock = entryBranch ? null : cur.dockId; }
       if (lineId) call.lineId = lineId;   // LINE WATCH (additive): the host stamps the hop's run row with its line
+      lastHanded = entryBranch ? String(originalText || '') : hopPart ? String(hopPart.text || '') : String(out.text || '');
       try { r = await runAgent(call); }
       catch (e) { r = { error: (e && e.message) || String(e || 'stage failed') }; }
       r = r || {};
@@ -707,13 +785,12 @@ function makeChainRunner(o) {
           if (pending.length) { forced = nextPending(); continue; }
           const rel = fan.joinKey ? barrier.release(fan.joinKey) : null;
           if (rel && rel.parts.length) {
-            const js = fan.joinStep, jr = fan.joinReach, last = rel.parts[rel.parts.length - 1];
-            out.text = Pipeline.joinPayload(rel.parts, [], fan.failed);
+            const js = fan.joinStep, last = rel.parts[rel.parts.length - 1];
+            out.text = joined(rel.parts, [], fan.failed);
             say('workitem.delivered', withDock({ workitemId: newId(), finalQueueId: last.agentId, agentId: last.agentId, box: 'join:' + js.join, ms: 0, ts: now() }, last.dockId));
             cur = { agentId: last.agentId, dockId: dockMode ? (last.dockId || null) : null };
             out.agentId = last.agentId; if (last.dockId) out.dockId = last.dockId;
-            branchMode = false; fan = null; fromTile = tileOf(js.join);
-            if (!js.next) { out.stopped = null; if (jr) out.outboxId = jr; return out; }
+            lastHanded = (fan && fan.handed) || ''; branchMode = false; fan = null; fromTile = tileOf(js.join);   // on from the joiner's exit, like every release
             continue;
           }
         }
@@ -722,6 +799,7 @@ function makeChainRunner(o) {
         return out;
       }
       say('workitem.delivered', withDock({ workitemId, finalQueueId: target.agentId, agentId: target.agentId, box: '', ms: now() - t0, ts: now() }, target.dockId));
+      evidence.workitemIds.push(workitemId);
       const hopRec = { agentId: target.agentId, usd, ms: now() - t0 };
       if (target.dockId) hopRec.dockId = target.dockId;
       out.hops.push(hopRec);

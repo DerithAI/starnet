@@ -4,22 +4,30 @@
 
      hear   { utt, part, frames:[b64 opus], frameMs, last }   collect one utterance in order; on `last`,
                                                                transcribe it with the station's STT chain -> { text }
-     speak  { text }                                           synthesize in the station's spoken voice
+     speak  { text }                                           synthesize in the station's default built-in voice
                                                                -> { id, mime, bytes, provider }
      speech { id, offset, length }                             that audio, in chunks -> { data, offset, bytes, done }
 
    Audio up is raw Opus frames exactly as the device's encoder made them (mono, one frame per element). The
    station wraps them in an Ogg container here — pure JS, no codec — and hands that to the SAME decoder and STT
-   chain Telegram voice notes use. Audio down is whatever the voice engine produced (WAV from the local engine,
-   MP3 from the Edge floor); the device decodes both, so the station never transcodes.
+   chain Telegram voice notes use. Audio down: a WAV reply (the local engine, or a keyed WAV leg) is levelled for
+   the small speaker and re-encoded as IMA ADPCM (ADPCM_MIME, an 'SNA1' + rate stream). MP3 from the Edge floor is
+   passed through as it is.
 
    Laws:
      · One utterance and one reply per device at a time. A new utterance replaces an unfinished one; a new reply
-       replaces the old one. Nothing is written to disk and nothing outlives VOICE_TTL_MS.
-     · Parts must arrive in order (0, 1, 2 …). A gap or a repeat is refused, never silently stitched.
+       replaces the old one. Nothing is written to disk and nothing is served after VOICE_TTL_MS. sweep() drops
+       expired audio and transcripts; it runs on every voice verb and once a minute on its own unref'd timer (a
+       device that never calls again), and a revoke (forget) drops a device's audio at once.
+     · Parts must arrive in order (0, 1, 2 …). A gap or a repeat is refused, never silently stitched. The one
+       exception: a repeat of the FINAL part (same utterance, part and audio — the reply was lost on the relay)
+       returns the same transcript, never a second STT call. A new utterance, a revoke or VOICE_TTL_MS drops it.
      · Every size is capped: frames per utterance, bytes per frame, text per reply, bytes per chunk.
      · An utterance too short to be speech returns an empty transcript instead of reaching a paid STT leg. */
 'use strict';
+
+const nodeCrypto = require('crypto');
+const { note } = require('../failopen.js');
 
 const MAX_FRAMES = 1000;            // 60 s of 60 ms frames
 const MAX_FRAME_BYTES = 1500;       // one Opus packet; the device's 16 kHz mono frames are ~100–200 bytes
@@ -28,6 +36,7 @@ const MIN_SPEECH_MS = 300;
 const MAX_SPEAK_TEXT = 1200;
 const MAX_SPEECH_CHUNK = 64 * 1024;
 const VOICE_TTL_MS = 5 * 60 * 1000;
+const SWEEP_EVERY_MS = 60 * 1000;
 const FRAME_MS = [10, 20, 40, 60];
 const UTT_RE = /^[A-Za-z0-9_-]{1,40}$/;
 
@@ -110,11 +119,10 @@ function opusFramesToOgg(frames, o) {
   return Buffer.concat(pages);
 }
 
-/* ---------- WAV for a small decoder and a small speaker ----------
-   The local voice engine writes 32-bit float WAV at normal speech loudness (peaks ~-3 dBFS, average ~-22 dBFS);
-   on a palm-sized speaker that is barely audible (2026-10-09, first live test). Returns a mono 16-bit WAV levelled
-   for a small speaker: average raised toward SPEAKER_RMS (at most MAX_GAIN), peaks above the knee bent smoothly
-   under full scale instead of clipping. null when the bytes are not a WAV this can read. */
+/* ---------- levelling for a small speaker ----------
+   The local engine writes 16-bit PCM WAV at speech level (decodeWavMono also reads 32-bit float). On a palm-sized
+   speaker that is still quiet (2026-10-09, first live test), so the average is raised toward SPEAKER_RMS (at most
+   MAX_GAIN) and peaks above the knee are bent smoothly under full scale instead of clipping. */
 const SPEAKER_RMS = 0.16;   // ~-16 dBFS average
 const MAX_GAIN = 3;         // never lift a near-silent take into hiss
 const KNEE = 0.7;
@@ -167,16 +175,15 @@ function levelToInt16(mono, gain) {
   }
   return out;
 }
+/* A test seam for the levelling the ADPCM path uses (the same decodeWavMono + speakerGain + levelToInt16): a WAV
+   in, a mono 16-bit WAV out, levelled for the small speaker. null when the bytes are not a WAV this can read. */
 function wavToPcm16(buf) {
   const w = decodeWavMono(buf);
   if (!w) return null;
-  const frames = w.samples.length, mono = w.samples, fmt = { rate: w.rate };
-  const gain = speakerGain(mono);
-  const out = Buffer.alloc(frames * 2);
-  for (let i = 0; i < frames; i++) {
-    const v = speakerLevel(mono[i], gain);
-    out.writeInt16LE(v < 0 ? Math.round(v * 32768) : Math.round(v * 32767), i * 2);
-  }
+  const fmt = { rate: w.rate };
+  const pcm = levelToInt16(w.samples, speakerGain(w.samples));
+  const out = Buffer.alloc(pcm.length * 2);
+  for (let i = 0; i < pcm.length; i++) out.writeInt16LE(pcm[i], i * 2);
   const h = Buffer.alloc(44);
   h.write('RIFF', 0, 'latin1'); h.writeUInt32LE(36 + out.length, 4); h.write('WAVE', 8, 'latin1');
   h.write('fmt ', 12, 'latin1'); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
@@ -241,10 +248,12 @@ function decodeAdpcm(buf) {   // the device's decoder, in JS: what the tests (an
   return { rate, samples: out };
 }
 
-/* Sentences, so the first one is spoken while the rest are still being synthesised. */
+/* Sentences, so the first one is spoken while the rest are still being synthesised. A sentence ends only at
+   terminal punctuation followed by a space or the end (the local engine's own rule, local-voice speechPieces):
+   "3.5", "0.13.2" and "$4.99" are one number each, never "three. five". */
 const MAX_SENTENCE = 240;
 function splitSentences(text) {
-  const parts = String(text).match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) || [String(text)];
+  const parts = String(text).match(/[^]*?[.!?]+["')\]]*(?=\s|$)\s*|[^]+$/g) || [String(text)];
   const out = [];
   for (let p of parts) {
     p = p.trim();
@@ -272,20 +281,27 @@ function makeRemoteVoice(deps) {
   const now = deps && deps.now;
   if (typeof now !== 'function') throw new Error('makeRemoteVoice needs an injected clock (deps.now)');
   const transcribeOgg = deps.transcribeOgg;     // async (oggBuf) -> { ok, text } | { ok:false, reason }
-  const synthesize = deps.synthesize;           // async (text) -> { ok, buf, mime, provider } | { ok:false, reason }
+  const synthesize = deps.synthesize;           // async (text, { provider }?) -> { ok, buf, mime, provider } | { ok:false, reason }
   const newId = deps.newId;
   if (typeof newId !== 'function') throw new Error('makeRemoteVoice needs deps.newId');
 
   const utterances = new Map();   // deviceId -> { utt, next, frames, bytes, frameMs, at }
   const replies = new Map();      // deviceId -> { id, buf, mime, provider, at }
   const pendingReplies = new Map(); // deviceId -> first-chunk owner, installed before awaiting synthesis
+  const heard = new Map();        // deviceId -> { utt, part, sig, p (the transcript's promise), at }: the last final part
 
   function sweep() {
     const t = now();
     for (const [k, u] of utterances) if (t - u.at > VOICE_TTL_MS) utterances.delete(k);
     for (const [k, r] of replies) if (t - r.at > VOICE_TTL_MS) replies.delete(k);
     for (const [k, r] of pendingReplies) if (t - r.at > VOICE_TTL_MS) pendingReplies.delete(k);
+    for (const [k, h] of heard) if (t - h.at > VOICE_TTL_MS) heard.delete(k);
   }
+  // A device that never calls again (unplugged mid-reply) must not keep its audio or transcript until another
+  // device speaks: sweep also runs once a minute on its own timer, unref'd so it never keeps the sidecar alive.
+  const every = typeof deps.setInterval === 'function' ? deps.setInterval : setInterval;
+  const sweepTimer = every(() => { try { sweep(); } catch (e) { note('remote.voice.sweep', e); } }, SWEEP_EVERY_MS);
+  if (sweepTimer && typeof sweepTimer.unref === 'function') sweepTimer.unref();
 
   async function hear(deviceId, a) {
     sweep();
@@ -297,10 +313,17 @@ function makeRemoteVoice(deps) {
     const raw = Array.isArray(a.frames) ? a.frames : [];
     if (raw.length > MAX_FRAMES_PER_PART) return { ok: false, error: 'too many frames in one part' };
 
+    // The final part again, same audio: its reply was lost on the relay. Hand back the same transcript (or the
+    // one still being made) instead of "start again" and a second paid STT call.
+    const sig = a.last === true ? nodeCrypto.createHash('sha256').update(raw.map(String).join('.')).digest('base64url') : '';
+    const h = heard.get(deviceId);
+    if (sig && h && h.utt === utt && h.part === part && h.sig === sig) { h.at = now(); return h.p; }
+
     let u = utterances.get(deviceId);
     if (part === 0) {
       u = { utt, next: 0, frames: [], bytes: 0, frameMs, at: now() };
       utterances.set(deviceId, u);
+      heard.delete(deviceId);   // a new utterance replaces the old transcript
     }
     if (!u || u.utt !== utt) return { ok: false, error: 'that utterance is not open (start again from part 0)' };
     if (part !== u.next) return { ok: false, error: 'part ' + part + ' arrived out of order (expected ' + u.next + ')' };
@@ -317,30 +340,38 @@ function makeRemoteVoice(deps) {
     if (a.last !== true) return { ok: true, data: { utt, received: u.frames.length } };
 
     utterances.delete(deviceId);
-    const ms = u.frames.length * u.frameMs;
-    if (ms < MIN_SPEECH_MS) return { ok: true, data: { utt, text: '', ms, short: true } };
-    if (typeof transcribeOgg !== 'function') return { ok: false, error: 'this station cannot transcribe speech' };
-    const ogg = opusFramesToOgg(u.frames, { frameMs: u.frameMs });
-    let r;
-    try { r = await transcribeOgg(ogg); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e) }; }
-    if (!r || !r.ok) return { ok: false, error: 'the station could not transcribe that (' + String((r && r.reason) || 'no transcription').slice(0, 160) + ')' };
-    // Whisper turns room noise into timestamps or punctuation ("00:00:01 - 00:00:03", first live test): a
-    // transcript with no letters in any script is not speech, and must not become a run on the overseer.
-    const text = String(r.text || '').trim();
-    if (!/\p{L}/u.test(text)) return { ok: true, data: { utt, text: '', ms, noise: text.slice(0, 80) } };
-    return { ok: true, data: { utt, text, ms } };
+    const p = (async () => {
+      const ms = u.frames.length * u.frameMs;
+      if (ms < MIN_SPEECH_MS) return { ok: true, data: { utt, text: '', ms, short: true } };
+      if (typeof transcribeOgg !== 'function') return { ok: false, error: 'this station cannot transcribe speech' };
+      const ogg = opusFramesToOgg(u.frames, { frameMs: u.frameMs });
+      let r;
+      try { r = await transcribeOgg(ogg); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e) }; }
+      if (!r || !r.ok) return { ok: false, error: 'the station could not transcribe that (' + String((r && r.reason) || 'no transcription').slice(0, 160) + ')' };
+      // Whisper turns room noise into timestamps or punctuation ("00:00:01 - 00:00:03", first live test): a
+      // transcript with no letters in any script is not speech, and must not become a run on the overseer.
+      const text = String(r.text || '').trim();
+      if (!/\p{L}/u.test(text)) return { ok: true, data: { utt, text: '', ms, noise: text.slice(0, 80) } };
+      return { ok: true, data: { utt, text, ms } };
+    })();
+    heard.set(deviceId, { utt, part, sig, p, at: now() });
+    return p;
   }
 
-  async function synthOne(text) {
+  // provider: the engine the reply's first sentence came from. Later sentences are pinned to it, so a voice model
+  // that finishes loading mid-reply (or a flaky leg) never changes the speaker or the format halfway through.
+  async function synthOne(text, provider) {
     let r;
-    try { r = await synthesize(text); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e) }; }
+    try { r = await synthesize(text, provider ? { provider } : undefined); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e) }; }
     if (!r || !r.ok || !Buffer.isBuffer(r.buf) || !r.buf.length) return { ok: false, reason: String((r && r.reason) || 'no audio') };
     return r;
   }
 
   // Encode one synthesised sentence onto the reply. WAV becomes levelled ADPCM; MP3 (the Edge floor) is
-  // appended as it is (MP3 frames concatenate). A later sentence in a different format ends the reply there.
+  // appended as it is (MP3 frames concatenate). A later sentence in a different format, or from a different
+  // engine (another speaker), ends the reply there: silence beats a voice that changes halfway.
   function append(rec, r) {
+    if (rec.provider && String(r.provider || '') !== rec.provider) return 'the station voice changed mid-reply';
     const mime = String(r.mime || '');
     if (/wav/.test(mime)) {
       if (rec.mime !== ADPCM_MIME) return 'the voice changed format mid-reply';
@@ -388,7 +419,7 @@ function makeRemoteVoice(deps) {
     (async () => {
       for (let i = 1; i < sentences.length; i++) {
         if (replies.get(deviceId) !== rec) return;   // replaced or forgotten: stop spending on it
-        const r = await synthOne(sentences[i]);
+        const r = await synthOne(sentences[i], rec.provider);
         if (replies.get(deviceId) !== rec || now() - rec.at > VOICE_TTL_MS) {
           if (replies.get(deviceId) === rec) replies.delete(deviceId);
           return;
@@ -419,9 +450,9 @@ function makeRemoteVoice(deps) {
     return { ok: true, data: { id: r.id, offset, bytes: r.buf.length, data: chunk.toString('base64url'), done, pending: !done && !chunk.length, error: r.error || undefined } };
   }
 
-  function forget(deviceId) { utterances.delete(deviceId); replies.delete(deviceId); pendingReplies.delete(deviceId); }
+  function forget(deviceId) { utterances.delete(deviceId); replies.delete(deviceId); pendingReplies.delete(deviceId); heard.delete(deviceId); }
 
-  return { hear, speak, speech, forget, _sizes: () => ({ utterances: utterances.size, replies: replies.size }) };
+  return { hear, speak, speech, forget, sweep, _sizes: () => ({ utterances: utterances.size, replies: replies.size, heard: heard.size }) };
 }
 
 module.exports = { makeRemoteVoice, opusFramesToOgg, oggCrc, wavToPcm16, decodeAdpcm, makeAdpcmEncoder, splitSentences, ADPCM_MIME, MAX_FRAMES, MAX_SPEECH_CHUNK, MAX_SPEAK_TEXT, VOICE_TTL_MS };

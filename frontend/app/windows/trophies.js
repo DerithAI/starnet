@@ -44,7 +44,7 @@
 
     const trophiesHtml = surf.trophies.length
       ? '<div class="gx-tros">' + surf.trophies.map(troRow).join('') + '</div>'
-      : '<div class="gx-tros"><p class="dim" style="font-style:italic;">the case stands empty &mdash; dust on the glass. ship real work and your first honour lands here.</p></div>';
+      : '<div class="gx-tros"><p class="dim" style="font-style:italic;">the case stands empty &mdash; dust on the glass. ship real work and your first milestone lands here.</p></div>';
 
     const toolsHtml = surf.tools.length
       ? '<div class="gx-sec" style="margin-top:14px;"><span class="gx-title">LIVING TOOLS</span> <span class="gx-tag">' + surf.tools.length + '</span></div>'
@@ -52,8 +52,8 @@
       : '';
 
     body.innerHTML = '<div class="gx">'
-      + '<div class="dim" style="margin:2px 0 10px;">the station&rsquo;s real achievements, made permanent. every honour here is a completion that genuinely happened &mdash; never points, never invented. no dates are guessed.</div>'
-      + '<div class="gx-sec"><span class="gx-title">HONOURS</span> <span class="gx-tag">' + surf.earned + ' EARNED</span></div>'
+      + '<div class="dim" style="margin:2px 0 10px;">the station&rsquo;s real achievements, made permanent. every milestone here is a completion that genuinely happened &mdash; never points, never invented. no dates are guessed.</div>'
+      + '<div class="gx-sec"><span class="gx-title">MILESTONES</span> <span class="gx-tag">' + surf.earned + ' EARNED</span></div>'
       + trophiesHtml
       + toolsHtml
       + '</div>';

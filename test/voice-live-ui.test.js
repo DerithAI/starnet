@@ -86,19 +86,39 @@ function bodyOf(name) {
   const availabilityFailure = new Function(m[1] + '\nreturn availabilityFailure;')();
   assert.deepEqual(
     availabilityFailure({ ok: false, status: 403 }),
-    { probeFailed: true, staleSession: true, status: 403 },
+    { probeFailed: true, staleSession: true, tokenWithheld: '', status: 403 },
     'an old sidecar token is recognized as a stale page, not allowed into a silent voice session'
   );
   assert.deepEqual(
     availabilityFailure({ ok: false, status: 500 }),
-    { probeFailed: true, staleSession: false, status: 500 },
+    { probeFailed: true, staleSession: false, tokenWithheld: '', status: 500 },
     'other sidecar failures are also refused before the microphone opens'
   );
   assert.equal(availabilityFailure({ ok: true, status: 200 }), null, 'a healthy probe proceeds normally');
+  /* A page the station KEPT its key from (Harness.tokenWithheld) gets the same 403, but it is not a restart: a reload
+     only re-runs the same ownership check. It carries the withheld notice and never reads as stale (threads-backend-05). */
+  // eslint-disable-next-line no-new-func
+  const withHarness = H => new Function('Harness', m[1] + '\nreturn availabilityFailure;')(H);
+  assert.deepEqual(
+    withHarness({ tokenWithheld: () => 'other-user', tokenWithheldNotice: () => 'WITHHELD NOTICE' })({ ok: false, status: 403 }),
+    { probeFailed: true, staleSession: false, tokenWithheld: 'WITHHELD NOTICE', status: 403 },
+    'a withheld page\'s 403 carries the withheld notice, never a stale (restarted) session'
+  );
+  const bare = withHarness({ tokenWithheld: () => 'peer-not-found' })({ ok: false, status: 403 });
+  assert.ok(bare.staleSession === false && /could not confirm this browser/.test(bare.tokenWithheld) && !/restart|reload/i.test(bare.tokenWithheld),
+    'an older Harness without the notice still names the check, never a restart: ' + bare.tokenWithheld);
+  assert.deepEqual(
+    withHarness({ tokenWithheld: () => '' })({ ok: false, status: 403 }),
+    { probeFailed: true, staleSession: true, tokenWithheld: '', status: 403 },
+    'a keyed page\'s 403 is still a stale session'
+  );
 }
 {
   const startBody = bodyOf('start');
   assert.match(startBody, /readiness\.probeFailed[\s\S]*?reload this page to reconnect voice/, 'stale pages receive an actionable reload message');
+  assert.match(startBody, /if \(withheld\) setUnrecoverableError\(withheld\);/, 'a withheld page shows the withheld notice as its error');
+  assert.ok(startBody.indexOf('withheld ?') > 0 && startBody.indexOf('withheld ?') < startBody.indexOf('station restarted'),
+    'the withheld check comes before every restart line');
   assert.ok(
     startBody.indexOf('readiness.probeFailed') < startBody.indexOf('openMicrophone(seq)'),
     'a failed sidecar probe is refused before requesting microphone access'
@@ -213,12 +233,23 @@ assert.match(bodyOf('refreshTask'), /announceWaits\(\)/, 'the live tick announce
   // question was read as "Approval needed: brief.ask — {json}. Say approve…", then "approve" was refused for it)
   const spokenSrc = /(  function spokenAsk\(p, ws\) \{[\s\S]*?\n  \})\n/.exec(source);
   assert.ok(spokenSrc, 'voice-live.js defines spokenAsk()');
+  // its helpers: the question line, the card's own words (askParts) and the once-only asks
+  const helperSrc = ['questionLine', 'askParts'].map(name => {
+    const m = new RegExp('(  function ' + name + '\\(pending, ws\\) \\{[\\s\\S]*?\\n  \\})\\n').exec(source);
+    assert.ok(m, 'voice-live.js defines ' + name + '()');
+    return m[1];
+  });
+  const onceOnlySrc = /  const ONCE_ONLY = new Set\([^\n]*\);/.exec(source);
+  assert.ok(onceOnlySrc, 'voice-live.js defines ONCE_ONLY');
   // eslint-disable-next-line no-new-func
-  const spokenAsk = new Function('App', 'Chat', spokenSrc[1] + '\nreturn spokenAsk;')(
+  const spokenAsk = new Function('App', 'Chat', onceOnlySrc[0] + '\n' + helperSrc.join('\n') + '\n' + spokenSrc[1] + '\nreturn spokenAsk;')(
     { agentName: id => ({ lead: 'NOVA', writer: 'VEX' })[id] || id }, { consentPhrase: p => 'change ' + JSON.parse(p.argsSummary).path });
   assert.equal(spokenAsk({ tool: 'fs.write', argsSummary: '{"path":"notes.md"}' }, { agentId: 'lead' }), 'NOVA needs approval to change notes.md. Say approve, always allow, or deny.', 'the lead\'s own ask: the exact words that answer it');
   assert.equal(spokenAsk({ tool: 'fs.write', argsSummary: '{"path":"email.md"}', workerAgentId: 'writer' }, { agentId: 'lead' }), 'VEX needs approval to change email.md. Say approve or deny.', 'a worker\'s ask names the worker and offers once-or-deny only, like its row');
-  assert.equal(spokenAsk({ tool: 'brief.ask', argsSummary: '{"question":"Which tier leads?"}', workerAgentId: 'writer' }, { agentId: 'lead' }), 'VEX has a question for you: Which tier leads? Answer it on screen.', 'a question is never read as an approval');
+  // a question is read as the question, in the asking worker's name, with only the answers voice can give (questionLine)
+  const questionSaid = spokenAsk({ tool: 'brief.ask', argsSummary: '{"question":"Which tier leads?"}', workerAgentId: 'writer' }, { agentId: 'lead' });
+  assert.equal(questionSaid, 'VEX asks: Which tier leads? Say use your judgment, or answer on the card.', 'a question is never read as an approval');
+  assert.doesNotMatch(questionSaid, /approv|always allow|deny/i, 'a question never offers approval answers');
   assert.match(bodyOf('announceWaits'), /speakLocal\(spokenAsk\(pending, ws\)\)/, 'the live tick speaks it');
 }
 assert.doesNotMatch(bodyOf('announceWaits'), /Say one/, 'chips are never narrated — the blurt class is dead, approvals are the only spoken wait');
@@ -314,12 +345,12 @@ const consentEnd = chatSource.indexOf('  // the channel\'s record', consentStart
 assert.ok(approvalStart >= 0 && approvalEnd > approvalStart && approvalEnd - approvalStart < 4000, 'complete bounded voice approval controller is present');
 assert.ok(consentStart >= 0 && consentEnd > consentStart && consentEnd - consentStart < 6000, 'complete bounded confirmed-answer contract is present');
 const flushApproval = () => new Promise(resolve => setImmediate(resolve));
-function approvalFixture() {
+function approvalFixture(opts = {}) {
   const Channels = require('../frontend/app/channels.js'); Channels.reset();
   const ws = { id: 'voice-parallel', agentId: 'lead' }, calls = [], events = [], spoken = [];
   Channels.begin(ws.id, 1000); Channels.setRunId(ws.id, 'lead-run');
   Channels.setPending(ws.id, { promptId: 'worker-first', tool: 'fs.write' }, 2000);
-  Channels.setPending(ws.id, { promptId: 'worker-second', tool: 'shell.exec' }, 3000);
+  Channels.setPending(ws.id, { promptId: 'worker-second', tool: opts.tool || 'shell.exec', ...(opts.worker ? { workerAgentId: opts.worker } : {}) }, 3000);
   const Workstreams = { active: () => ws, get: id => id === ws.id ? ws : null };
   let respond = (_run, _prompt, decision) => ({ ok: true, decision });
   const Harness = { consent: (...args) => { calls.push(args); return respond(...args); } };
@@ -331,12 +362,13 @@ function approvalFixture() {
     Harness, Channels, Workstreams, U, clock, { notify() {}, settleNotifs() {} },
     () => 'worker', () => 'write a file', () => false, () => {}, () => {}
   );
+  Object.assign(Chat, opts.chat || {});   // e.g. the real module's consentPhrase
   // Supply module state, not another implementation of approval or settlement.
   // eslint-disable-next-line no-new-func
-  const controller = new Function('Workstreams', 'Channels', 'Chat', 'speakLocal', 'refreshTask',
+  const controller = new Function('Workstreams', 'Channels', 'Chat', 'App', 'speakLocal', 'refreshTask',
     "let active = true, sessionSeq = 1, boundWsId = 'voice-parallel';\n" + source.slice(approvalStart, approvalEnd) +
     '\nreturn { answer: approvalCommand, end: () => { active = false; }, replaceCall: () => { sessionSeq++; }, rebind: id => { boundWsId = id; } };')(
-    Workstreams, Channels, Chat, text => spoken.push(text), () => {}
+    Workstreams, Channels, Chat, opts.App, text => spoken.push(text), () => {}
   );
   return { ...controller, Channels, ws, calls, events, spoken, respond: fn => { respond = fn; },
     pending: () => Channels.pendingAllOf(ws.id).map(p => p.promptId) };
@@ -420,7 +452,105 @@ function approvalFixture() {
     f.answer('approve'); await flushApproval();
     f.Channels.clearPending(f.ws.id, 8000, 'worker-second'); reject(new Error('local response lost')); await flushApproval();
     assert.deepEqual(f.pending(), ['worker-first']);
-    assert.deepEqual(f.spoken, [], 'a failed local request does not claim the remotely resolved prompt still waits');
+    assert.deepEqual(f.spoken, ['That approval is no longer waiting.'], 'a failed local request on a prompt settled elsewhere says so, never that it still waits (review app-shell-ui-08)');
+  }
+  // review app-shell-ui-03: the leash, the login window and a plugin install are answered fresh every time — the station
+  // grants that ONE call whatever grade arrives. A spoken "always allow" there must submit once and say so, never
+  // "Always allowed." (the station's echo of a requested 'always' is not a standing grant for these)
+  for (const tool of ['station.power', 'browser.login', 'browser.login.done', 'plugin.submit']) {
+    const f = approvalFixture({ tool });
+    f.answer('always allow'); await flushApproval();
+    assert.deepEqual(f.calls, [['lead-run', 'worker-second', 'once']], tool + ': a spoken always is submitted as once');
+    assert.ok(f.spoken.every(t => !/Always allowed/.test(t)), tool + ': voice never confirms a standing grant');
+    assert.match(f.spoken.at(-1) || '', /can only be approved once\. Approved once/, tool + ': voice says why it approved once');
+  }
+  {
+    const f = approvalFixture();
+    f.answer('always allow'); await flushApproval();
+    assert.deepEqual(f.calls, [['lead-run', 'worker-second', 'always']], 'an ordinary card still takes a spoken always');
+    assert.equal(f.spoken.at(-1), 'Always allowed.');
+  }
+  // review app-shell-ui-08: with several asks open, the spoken outcome names which one it answered — who asked, for what
+  {
+    const phrase = p => ({ 'shell.exec': 'run a command: npm test', 'plugin.submit': 'install the plugin it built “x” — it stays OFF until you approve its code' })[p.tool] || 'write a file';
+    const App = { agentName: id => ({ nova: 'NOVA', mira: 'MIRA', lead: 'LEAD' })[id] || null };
+    const f = approvalFixture({ worker: 'nova', chat: { consentPhrase: phrase }, App });
+    f.answer('approve'); await flushApproval();
+    assert.equal(f.spoken.at(-1), 'Approved once: NOVA to run a command: npm test.', 'the outcome names the asker and the action');
+    f.respond(() => ({ ok: true, decision: 'deny' })); f.answer('deny'); await flushApproval();
+    assert.equal(f.spoken.at(-1), 'Denied: LEAD to write a file.', 'the lead\'s own ask names the lead');
+    const g = approvalFixture({ tool: 'plugin.submit', worker: 'mira', chat: { consentPhrase: phrase }, App });
+    g.answer('always allow'); await flushApproval();
+    assert.equal(g.spoken.at(-1), 'This one can only be approved once. Approved once: MIRA to install the plugin it built “x”.', 'speech drops the card\'s fine print');
+    const h = approvalFixture({ chat: { consentPhrase: phrase } });
+    h.answer('approve'); await flushApproval();
+    assert.equal(h.spoken.at(-1), 'Approved once: run a command: npm test.', 'with no name to give, the outcome still names the action');
+  }
+  // the hands-free announcement offers only the keys the card has
+  {
+    const waitsStart = source.indexOf('  function announceWaits() {');
+    const waitsEnd = source.indexOf('  /* Answer visible chips by voice.', waitsStart);
+    assert.ok(waitsStart >= 0 && waitsEnd > waitsStart, 'announceWaits() is present');
+    const say = (tool, extra) => {
+      const Channels = require('../frontend/app/channels.js'); Channels.reset();
+      Channels.setPending('w', Object.assign({ promptId: 'p-' + tool, tool }, extra || {}), 1000);
+      const spoken = [];
+      // eslint-disable-next-line no-new-func
+      new Function('Workstreams', 'Channels', 'Chat', 'App', 'speakLocal',
+        "let active = true, boundWsId = 'w', spokenApprovalId = null, sessionSeq = 1; const boundSession = () => ({ id: 'w', agentId: 'lead' });\n" +
+        source.slice(waitsStart, waitsEnd) + source.slice(approvalStart, approvalEnd) + '\nannounceWaits();')(
+        { activeId: () => 'w', active: () => ({ id: 'w' }) }, Channels, chat || {}, App, t => spoken.push(t));
+      return spoken.join(' ');
+    };
+    let chat = null, App;
+    for (const tool of ['station.power', 'browser.login', 'browser.login.done', 'plugin.submit']) {
+      assert.match(say(tool), /Say approve or deny\.$/, tool + ': a card with no Always is never offered "always allow" aloud');
+    }
+    assert.match(say('fs.write'), /Say approve, always allow, or deny\.$/, 'an ordinary card keeps all three answers');
+    // …and names who asks and what for, in the card's words, never the raw tool id (review app-shell-ui-08)
+    chat = { consentPhrase: p => p.tool === 'shell.exec' ? 'run a command: npm test' : 'write a file' };
+    App = { agentName: id => (id === 'lead' ? 'NOVA' : null) };
+    assert.equal(say('shell.exec'), 'NOVA needs approval to run a command: npm test. Say approve, always allow, or deny.');
+    // a question is not an approval: it is spoken as the question, with only the answers voice can give — the card's
+    // one-tap options (chipCommand presses them) — never approve/always/deny, which approvalCommand ignores for brief.ask
+    const question = q => say('brief.ask', { argsSummary: typeof q === 'string' ? q : JSON.stringify(q) });
+    assert.equal(question({ question: 'Which database should I use?', options: ['Postgres', 'SQLite'] }),
+      'NOVA asks: Which database should I use? Say Postgres, SQLite, or use your judgment.', 'a question is read aloud with its options');
+    assert.equal(question({ question: 'Ship it today', options: [] }), 'NOVA asks: Ship it today. Say use your judgment, or answer on the card.');
+    assert.equal(question({ question: 'Which pages?', options: ['Home', 'About'], multiSelect: true }), 'NOVA asks: Which pages? Answer on the card.',
+      'a multi-select card is not offered by voice: its keys only toggle');
+    assert.equal(question({ question: 'Tell me about the last export.', mode: 'conversation' }), 'NOVA asks: Tell me about the last export. Answer on the card.');
+    assert.equal(question('not json'), 'NOVA has a quick question for you. Answer on the card.');
+    for (const line of [question({ question: 'Which one?', options: ['A'] }), question('not json')]) {
+      assert.doesNotMatch(line, /approv|always allow|deny/i, 'a question never offers approval answers');
+    }
+  }
+  // a spoken pick presses a pending question's real option key first; a multi-select card's toggles are never pressed
+  {
+    const chipStart = source.indexOf('  function chipButtons() {');
+    const chipEnd = source.indexOf('  /* ⛔ THE ONLY WAIT THAT SPEAKS', chipStart);
+    const cmdStart = source.indexOf('  function matchChoice(said, labels) {');
+    const cmdEnd = source.indexOf('  const approvalSubmissions = new Set();', cmdStart);
+    assert.ok(chipStart >= 0 && chipEnd > chipStart && cmdStart > chipEnd && cmdEnd > cmdStart, 'chipButtons() and chipCommand() are present');
+    const button = (label, cls) => ({ textContent: label, disabled: false, cls: cls || '', clicked: 0, click() { this.clicked++; } });
+    const dom = (askRows, chips) => ({ querySelectorAll: sel => sel === '#chat-log [data-clarify-prompt] .consent-btns'
+      ? askRows.map(btns => ({ querySelector: q => (q === '.consent-confirm' && btns.some(b => /consent-confirm/.test(b.cls))) ? {} : null, querySelectorAll: () => btns }))
+      : sel === '#chat-log .choice-row button.choice' ? chips : [] });
+    const press = (document, said) => {
+      const spoken = [];
+      // eslint-disable-next-line no-new-func
+      const handled = new Function('document', 'speakLocal', 'refreshTask', source.slice(chipStart, chipEnd) + source.slice(cmdStart, cmdEnd) + '\nreturn chipCommand;')(
+        document, t => spoken.push(t), () => {})(said);
+      return { handled, spoken };
+    };
+    const pg = button('★ Postgres'), sq = button('SQLite'), judge = button('use your judgment'), old = button('Postgres');
+    const r1 = press(dom([[pg, sq, judge]], [old]), 'postgres');
+    assert.ok(r1.handled && pg.clicked === 1 && old.clicked === 0, 'the pending question\'s own key is pressed, not an older chip of the same name');
+    assert.deepEqual(r1.spoken, ['Postgres.']);
+    const home = button('Home'), confirm = button('✔ confirm', 'consent-btn consent-confirm'), chip = button('Home');
+    const r2 = press(dom([[home, confirm]], [chip]), 'home');
+    assert.ok(home.clicked === 0, 'a multi-select toggle is never pressed by voice');
+    assert.ok(r2.handled && chip.clicked === 1, 'with no single-pick question open, chips answer as before');
   }
   assert.equal(source, fs.readFileSync(path.join(root, 'website', 'app', 'app', 'voice-live.js'), 'utf8'), 'the website voice controller matches the desktop');
   console.log('voice-live-ui.test.js: ok (confirmed ownership, siblings, pause accounting, refusal, duplicate, inflight and call-generation controls)');

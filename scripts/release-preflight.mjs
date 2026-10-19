@@ -25,8 +25,8 @@
  * PHASES. `--phase pre-bump` (default) is the runbook's section 0 + 1 preconditions: pins still on
  * the CURRENT version, gate-at-HEAD is informational (the binding gate is the POST-bump one —
  * MISTAKES.md "Gate order"). `--phase post-bump` is what release-ritual.mjs runs right before the
- * tag: pins must already equal the target, RELEASE_NOTES must be real (no TODO scaffold), the
- * claims lock must be current, and a fresh green gate receipt for HEAD is a HARD requirement.
+ * tag: pins must already equal the target, RELEASE_NOTES must be real (no TODO scaffold, no HTML
+ * comment), the claims lock must be current, and a fresh green gate receipt for HEAD is a HARD requirement.
  *
  * GATE RECEIPTS. `npm run test:fast` writes no durable artifact of its own, so this lane defines one:
  * `.dogfood/gate-receipts/<full-sha>.<fast|http>.json` (gitignored, machine-local), written ONLY by
@@ -80,6 +80,15 @@ export function bumpSemver(current, kind) {
 
 // Strip a UTF-8 BOM (PowerShell `>` writes one; node JSON.parse then fails SILENTLY upstream).
 export function stripBom(s) { return String(s == null ? '' : s).replace(/^﻿/, ''); }
+
+/** The first HTML comment in the release notes (whitespace folded, 120 chars), or null. RELEASE_NOTES.md is published
+ *  byte-for-byte — the GitHub release body, latest.json `notes` (the updater text) and the public source mirror — so a
+ *  placeholder or internal note left in a comment ships to users, and a comment line between list items splits the
+ *  list. The cut refuses it until it is filled or deleted. */
+export function notesHtmlComment(text) {
+  const m = /<!--[\s\S]*?(?:-->|$)/.exec(String(text == null ? '' : text));
+  return m ? m[0].replace(/\s+/g, ' ').slice(0, 120) : null;
+}
 
 /** The five version pins docs/BRAIN.md names. Returns [{label, value|null, path}]. */
 export function readVersionPins(io) {
@@ -334,8 +343,10 @@ export function runPreflight(ctx, io) {
     const notes = io.readText('RELEASE_NOTES.md');
     const header = notes == null ? null : (/^#\s*StarNet\s+v?(\S+)/m.exec(stripBom(notes)) || [])[1];
     const todo = notes != null && /TODO: summarize/.test(notes);
+    const comment = notes == null ? null : notesHtmlComment(notes);
     if (notes == null) rows.push(row('notes', 'RELEASE_NOTES.md for ' + (target ? 'v' + target : 'target'), 'FAIL', 'RELEASE_NOTES.md missing', 'release-bump scaffolds it; write the real user-facing notes'));
-    else if (target && header === target && !todo) rows.push(row('notes', 'RELEASE_NOTES.md for v' + target, 'PASS', 'header matches, no TODO scaffold'));
+    else if (target && header === target && !todo && comment) rows.push(row('notes', 'RELEASE_NOTES.md for v' + target, phase === 'post-bump' ? 'FAIL' : 'WARN', 'still holds an HTML comment: ' + comment, 'fill it or delete it: the notes are published as-is (GitHub release body, the updater text, the source mirror), so a placeholder or internal note in a comment ships to users. Then `git add RELEASE_NOTES.md && git commit --amend --no-edit` on the release commit (runbook §1.2)'));
+    else if (target && header === target && !todo) rows.push(row('notes', 'RELEASE_NOTES.md for v' + target, 'PASS', 'header matches, no TODO scaffold, no HTML comment'));
     else if (target && header === target && todo) rows.push(row('notes', 'RELEASE_NOTES.md for v' + target, phase === 'post-bump' ? 'FAIL' : 'WARN', 'still the TODO scaffold', 'write the real notes (they become the GitHub release body AND the in-app UPDATE CENTER text), then `git add RELEASE_NOTES.md && git commit --amend --no-edit` on the release commit (runbook §1.2)'));
     else rows.push(row('notes', 'RELEASE_NOTES.md for ' + (target ? 'v' + target : 'target'), phase === 'post-bump' ? 'FAIL' : 'WARN', 'header is v' + header + (phase === 'pre-bump' ? ' — release-bump rewrites it to a TODO scaffold for the new version' : ''), phase === 'pre-bump' ? 'after the bump: replace the TODO with real notes and amend them into the release commit (runbook §1.2)' : 'write notes for v' + target + ' and amend the release commit'));
   }

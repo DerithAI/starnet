@@ -34,6 +34,23 @@ const CLEAR_FLOOR = `(() => {
   return { belts: st.belts().length };
 })()`;
 
+/* the LINES shelves open FOLDED (org P18): only ANY JOB and the armed line's shelf show their tiles, so a line in a
+   folded shelf has no tile until its shelf is opened — open it the way the Commander does (its shelf key), then
+   click the tile. Returns whether the tile was found; callers throw when it was not, so a scene never silently
+   shoots whatever line was already armed. */
+const pickLineTile = (id) => `(() => {
+  const id = ${JSON.stringify(id)}, sel = '.refit-linetile[data-line="' + id + '"]';
+  let c = document.querySelector(sel);
+  if (!c) {
+    const bp = ((typeof WorldModel !== 'undefined' && WorldModel.BLUEPRINTS) || []).find(b => b.id === id);
+    const tog = bp && document.querySelector('.refit-lineshelf-tog[data-shelf="' + (bp.work || 'decide') + '"]');
+    if (tog && tog.getAttribute('aria-expanded') !== 'true') tog.click();
+    c = document.querySelector(sel);
+  }
+  if (c) c.click();
+  return !!c;
+})()`;
+
 const findSpot = (bpId) => `(() => {
   const st = Build.__test__.station();
   const b = st.bounds();
@@ -112,7 +129,7 @@ async function main() {
       // the shelf cards are `.refit-linetile[data-line]` — the old `.refit-linecard,[data-bp]`
       // selector matched NOTHING, so this walk silently ghosted whatever blueprint was already
       // armed (research_line) at the sorting office's anchor, and the "stamp" never landed.
-      await evalJS(cdp, `(() => { const c = document.querySelector('.refit-linetile[data-line="sorting_office"]'); if (c) c.click(); return !!c; })()`);
+      if (!(await evalJS(cdp, pickLineTile('sorting_office')))) throw new Error('no SORTING OFFICE tile on the LINES shelf');
       await sleep(400);
       /* findSpot returns an ORIGIN, but the pointer addresses a blueprint by its CENTRE tile (the
          ghost is centred under the cursor). Aiming at the origin put the cursor ~4.5 tiles off any

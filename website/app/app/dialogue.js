@@ -28,6 +28,8 @@ const Dialogue = (() => {
   let pendingSay = null;       // the in-flight say()'s idempotent finish — teardown flushes it even MID-TYPE
                                // (cancelType drops onDone by design, so without this a close during typing
                                // would strand the awaiting flow forever)
+  let offer = null;            // a MID-GAME OFFER's own ways out { notNow(), stepAside(why) } — see armOffer
+  let offerKey = null, offerUnwatch = null;   // its Esc listener + its layout watcher's teardown
 
   // GENESIS never leaves a mind nameless-yet-labelled. If the Commander wakes an overseer without typing a name,
   // the flow used to fall back to the bland literal 'AGENT' (name = n || name) with no nudge — a blank ceremony.
@@ -120,10 +122,91 @@ const Dialogue = (() => {
     if (speakerEl) speakerEl.textContent = name;
     document.body.classList.add('fnv-mode');
     if (panel) panel.classList.add('show');
+    armOffer(opts && opts.offer);
+  }
+
+  /* AN OFFER NEVER STANDS OVER WHAT NEEDS THE COMMANDER (soak 2026-10-15). The goal-path confirm opened over COMMS mid-
+     conversation, and inset:0 covered the transcript AND the message box: a team.dispatch approval that landed under it took
+     19 approve clicks that all hit .fnv-line, a new conversation's message box sat under .fnv-opts, and Esc did nothing. The
+     awakening, the quick tour and the first-task hand-off still own the whole of COMMS — they ARE the conversation. A caller
+     that OFFERS something mid-game passes `offer: { notNow, stepAside }`, and then:
+     · the panel ends above the message box and its queued-message pills, so typing is never covered (refit as they grow);
+     · Esc answers it the way its own "not now" key does (offer.notNow) — but only an Esc aimed at it: nothing focused, its own
+       keys, or the message box. ONE Esc, ONE owner (review 10-15): never a station field's, never one the message box used (it
+       stops a run, closes the / menu), never one on another key (the model dock's chips, Local Live, a transcript card), and
+       never one a document-level owner marked used (the model dock closing, Local Live ending) — that would be a false decline;
+     · Dialogue.stepAside(why) hands the moment back (offer.stepAside): COMMS calls it when an approval or question reaches the
+       Commander and when they send a turn, and the caller closes the panel unanswered, as a delivery landing already does. */
+  function armOffer(o) {
+    disarmOffer();
+    offer = (o && typeof o === 'object') ? o : null;
+    if (!panel) return;
+    panel.classList.toggle('fnv-offer', !!offer);
+    if (!offer) { panel.style.bottom = ''; return; }
+    if (host) host.classList.add('fnv-offer-host');   // app.css lifts the message box over the panel: its / menu and model dock open upward
+    offerKey = e => {
+      if (!open || !offer || !e || e.key !== 'Escape' || e.defaultPrevented) return;
+      const t = e.target;
+      if (fromTextField(e) && !(t && t.id === 'chat-input')) return;   // a station field's Esc is that field's
+      const aimed = !t || t.nodeType !== 1 || t === document.body || t === document.documentElement || t.id === 'chat-input' || (panel && panel.contains(t));
+      if (!aimed) return;   // any other key's Esc (in COMMS or another surface) is that key's
+      e.preventDefault();
+      if (typeof offer.notNow === 'function') offer.notNow();
+    };
+    window.addEventListener('keydown', offerKey);
+    fitOffer();
+    if (!host) return;   // the free-floating fallback is already a small corner panel
+    const refit = () => fitOffer();
+    // the transcript is the stretchy row: it shrinks whenever anything under it grows (pills, the @ menu, a long draft)
+    const watched = [host].concat(OFFER_WATCH.map(id => document.getElementById(id))).filter(Boolean);
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(refit) : null;
+    if (ro) watched.forEach(n => ro.observe(n));
+    window.addEventListener('resize', refit);
+    offerUnwatch = () => { if (ro) ro.disconnect(); window.removeEventListener('resize', refit); };
+  }
+  function disarmOffer() {
+    if (offerKey) { window.removeEventListener('keydown', offerKey); offerKey = null; }
+    if (offerUnwatch) { offerUnwatch(); offerUnwatch = null; }
+    if (host) host.classList.remove('fnv-offer-host');
+    offer = null;
+  }
+  // the composer stack under the transcript: the queued-message pills, the @ menu (group chat puts it above the box), the box
+  const COMPOSER_STACK = ['chat-queued', 'gc-mentions', 'chat-inputrow'];
+  const OFFER_WATCH = ['chat-log', 'group-chat'].concat(COMPOSER_STACK);
+  // the top of the composer stack in the host's own px. Rects are VISUAL px under the TEXT SIZE body zoom while the panel's
+  // style px are layout px: scale once (the uiZoom law). null = no composer laid out (COMMS hidden: the panel keeps inset 0).
+  function composerTop() {
+    if (!host || !host.getBoundingClientRect) return null;
+    const hr = host.getBoundingClientRect();
+    const k = host.offsetHeight ? (hr.height / host.offsetHeight) || 1 : 1;
+    let top = null;
+    for (const id of COMPOSER_STACK) {
+      const n = document.getElementById(id);
+      if (!n || !host.contains(n) || !n.getBoundingClientRect) continue;
+      const r = n.getBoundingClientRect();
+      if (!(r.height > 0)) continue;   // an empty pill strip has no box
+      const y = (r.top - hr.top) / k - (host.clientTop || 0);
+      if (top == null || y < top) top = y;
+    }
+    return top;
+  }
+  function fitOffer() {
+    if (!panel || !offer || !host) return;
+    const top = composerTop();
+    panel.style.bottom = (top != null && top > 0) ? Math.max(0, Math.round(host.clientHeight - top)) + 'px' : '';
+  }
+  // hand the moment back to an open offer's caller (an approval / question landed, the Commander sent a turn). Returns whether
+  // an offer was there to step aside; a panel with no offer (the awakening, the tour, the first-task hand-off) is never yanked.
+  function stepAside(why) {
+    if (!open || !offer || typeof offer.stepAside !== 'function') return false;
+    offer.stepAside(String(why || ''));
+    return true;
   }
   function flushSay() { if (pendingSay) { const f = pendingSay; pendingSay = null; try { f(); } catch (_) {} } }
 
   function closePanel() {
+    const wasOpen = open;
+    disarmOffer();
     cancelType(); clearKeys(); clearOpts();
     clearGate(true);      // a torn-down panel FLUSHES a waiting narration beat — an awaiting caller must never hang
     flushSay();           // …including one still MID-TYPE (cancelType dropped its onDone, so the gate never armed)
@@ -135,6 +218,8 @@ const Dialogue = (() => {
     if (panel) panel.remove();
     panel = speakerEl = lineEl = optsEl = moreEl = inkEl = stageEl = host = null;
     stageTitle = stageDetail = '';
+    // COMMS is uncovered again: a hint that points at COMMS (navdock's coach) waits for this (org P31 review fix).
+    if (wasOpen && typeof document !== 'undefined' && typeof CustomEvent === 'function') document.dispatchEvent(new CustomEvent('starnet:dialogue-closed'));
   }
 
   /* THE INK STAMP — show one line landing in the operating file ("» filed · pain: …"). Non-blocking:
@@ -328,7 +413,7 @@ const Dialogue = (() => {
       // the flow into the ✎ box mid-sentence (the awakening answer-swallow bug, 2026-07-20).
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      if (e.key === 'Escape' && cfg.dismissable) { e.preventDefault(); finishPick({ value: '', skip: true, dismissed: true }); return; }
+      if (e.key === 'Escape' && cfg.dismissable && !e.defaultPrevented) { e.preventDefault(); finishPick({ value: '', skip: true, dismissed: true }); return; }   // an Esc another owner used (the model dock, Local Live) is not a dismiss
       if (e.key === 'Enter' && cfg.allowCustom) { e.preventDefault(); openCustom(cfg, finishPick); return; }
       const n = parseInt(e.key, 10);
       if (!isNaN(n) && n >= 1 && n <= rows.length) { e.preventDefault(); rows[n - 1].click(); }
@@ -423,7 +508,7 @@ const Dialogue = (() => {
     pendingPick.finishPick({ value: out.value != null ? out.value : out.label, label: out.label, skip: !!out.skip });
     return true;
   }
-  return { open: openPanel, close: closePanel, say, node, answer, setName, setStage, ink, yieldTour, isOpen: () => open, codename, isUnnamed };
+  return { open: openPanel, close: closePanel, say, node, answer, setName, setStage, ink, yieldTour, stepAside, isOpen: () => open, codename, isUnnamed };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { Dialogue };

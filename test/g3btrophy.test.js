@@ -52,6 +52,8 @@ A.ok(/registerWindow\('trophies',\s*'TROPHY CASE',\s*buildTrophies/.test(uiSrc) 
 A.ok(/Trophies\.build/.test(uiSrc), '…and it projects through the pure Trophies engine (real completions only)');
 A.ok(/SeedReuseStore\.livingTools/.test(uiSrc), '…and reads the living-tools shelf from the seed-reuse aggregate');
 A.ok(/date unknown/.test(uiSrc), 'the surface renders "date unknown" (never a fabricated 1969) for an undated completion');
+// org P28: the window names its count MILESTONES, and its empty state says the same word (the floor plaque's lettering is art: Andrew's call)
+A.ok(/<span class="gx-title">MILESTONES<\/span>/.test(uiSrc) && /your first milestone lands here/.test(uiSrc) && !/first honour/.test(uiSrc), 'the empty case promises a first MILESTONE, the word its section uses');
 
 const rsSrc = fs.readFileSync(path.join(__dirname, '../frontend/app/returnstore.js'), 'utf8');
 A.ok(/SeedReuseStore\.recordAnnotatedRows/.test(rsSrc), 'the digest feeds provenance-matched rows into the seed-reuse aggregate');

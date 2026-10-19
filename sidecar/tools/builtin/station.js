@@ -202,7 +202,9 @@
       schema: { type: 'object', properties: { agentId: { type: 'string' } } },
       run: async (args) => {
         const out = await ask('station.agent_config', { agentId: args && args.agentId });
-        return out.ok ? { content: JSON.stringify(out.result), summary: 'crew configuration' } : refuse(out.error);
+        // revealTools: reading a Dossier is the step before editing it — team.configure is one call away even where a
+        // tool budget holds it deferred (a no-op wherever it is already advertised; loop.js reveal)
+        return out.ok ? { content: JSON.stringify(out.result), summary: 'crew configuration', control: { revealTools: ['team.configure'] } } : refuse(out.error);
       }
     };
     // Rewrites text ANOTHER agent obeys on every later run (including unattended ones), so: its own consent class
@@ -276,8 +278,13 @@
         const b = call(lf.budget, L.lineId);
         if (b) { L.budget = { maxHops: b.maxHops, maxUsdPerMessage: b.maxUsdPerMessage, maxUsdPerDay: b.maxUsdPerDay == null ? null : b.maxUsdPerDay }; if (b.clamped && b.clamped.length) L.budget.clamped = b.clamped; }
         const t = byLine[L.lineId];
-        if (t) L.today = { runs: t.runs, shipped: t.shipped, failed: t.failed, tests: t.tests, usd: t.usdToday, capUsdPerDay: t.capUsdPerDay, medianMs: t.medianMs, day: t.spendDay === 'utc' ? 'UTC day' : 'local day' };
-        else if (today) L.today = null;   // the router runs no such line (routing off, or edits not sent): no numbers to claim
+        if (t) {
+          L.today = { runs: t.runs, shipped: t.shipped, failed: t.failed, tests: t.tests, usd: t.usdToday, capUsdPerDay: t.capUsdPerDay, medianMs: t.medianMs, day: t.spendDay === 'utc' ? 'UTC day' : 'local day' };
+          // shipped null = UNKNOWN (the shipment history could not be read) — said, so the lead never reports it as nothing shipped
+          if (t.shipped == null && t.shippedUnknown) L.today.shippedUnknown = String(t.shippedUnknown);
+          // a LOWER BOUND (some of today's jobs have no saved record): said, so the lead never reports it as the exact count
+          if (t.shipped != null && t.shippedAtLeast) L.today.shippedAtLeast = true;
+        } else if (today) L.today = null;   // the router runs no such line (routing off, or edits not sent): no numbers to claim
         for (const s of (L.steps || [])) { const d = docks[s.propId]; if (d) s.lastRun = lastRun(d, now); }
       }
       for (const b of (r.loneBays || [])) { const d = docks[b.propId]; if (d) b.lastRun = lastRun(d, now); }
@@ -292,6 +299,8 @@
         const x = { lineId: L.lineId, name: L.name, status: L.status, ready: L.ready, howItRuns: L.howItRuns, blocking: L.blocking, hints: L.hints,
           starts: { schedules: L.starts.schedules, channels: L.starts.channels, events: L.starts.events, paused: L.starts.paused } };
         if (L.startsUnread) x.startsUnread = L.startsUnread;
+        // an unnamed line: the word its plate shows (LINE F — final floor lane M25), which line= also takes
+        if (!L.name && L.word) x.word = L.word;
         // SEND TO (2026-10-10): where every finished job goes next / which lines hand theirs to this one — never "it ends at the OUTBOX"
         if (L.sendsWorkTo) x.sendsWorkTo = L.sendsWorkTo.map(s => s.name);
         if (L.getsWorkFromLines) x.getsWorkFromLines = L.getsWorkFromLines.map(s => s.name);
@@ -367,7 +376,8 @@
         const fitted = fitLayout(shaped, Math.max(2000, max - 64), !!line);
         const lines = r.lines || [];
         const routing = r.routing && r.routing.state ? 'routing ' + r.routing.state : 'routing unknown';
-        const head = lines.length === 1 ? '"' + (lines[0].name || 'unnamed line') + '": ' + (lines[0].status || '?') : lines.length + ' line(s)';
+        // (an unnamed line by the word its plate shows — LINE F — the same word the result carries; repair: 'unnamed line')
+        const head = lines.length === 1 ? '"' + (lines[0].name || lines[0].word || 'unnamed line') + '": ' + (lines[0].status || '?') : lines.length + ' line(s)';
         return { content: JSON.stringify(fitted), summary: head + ' · ' + routing };
       }
     };
@@ -453,7 +463,7 @@
     const planTool = {
       name: 'station.plan', capability: 'orchestrator', scope: 'read', requiresConsent: false,
       get description() {
-        return 'STATION BUILDER, step 2: plan a change to the station floor. You are the station\'s designer: the Commander\'s words are the brief, and the design is yours to decide (where each room goes, its shape and size, how rooms join, where every piece stands and which way it faces), as freely as the Commander can in Refit mode. A plan is built on a copy and checked against the station\'s own rules (walls, doorways, what stands on what); nothing changes until station.build. Two ways to work, mixed freely: design it yourself, tile by tile, or use a shortcut and let StarNet place things. '
+        return 'STATION BUILDER, step 2: plan a change to the station floor (rooms, furniture, conveyor and assembly lines). You are the station\'s designer: the Commander\'s words are the brief, and the design is yours to decide (where each room goes, its shape and size, how rooms join, where every piece stands and which way it faces), as freely as the Commander can in Refit mode. A plan is built on a copy and checked against the station\'s own rules (walls, doorways, what stands on what); nothing changes until station.build. Two ways to work, mixed freely: design it yourself, tile by tile, or use a shortcut and let StarNet place things. '
           + 'RESHAPE THE WHOLE STATION (spread it out, a wider or better shape, rooms re-oriented, more hallways joining things up): { rearrange: "diamond" } re-lays every room where it stands, with everything in it (furniture, lines, desks, agents), on the diamond grid round the main room (wide by default; { rearrange: { shape: "tall" | "even", links: false } }), takes up every old hallway and lays clean ones, planted and lit, joining neighbouring rooms. Never reshape a station by moving rooms one by one and drawing corridors by hand: a moved room leaves its hallways behind, and a refit that leaves a hallway leading nowhere is refused. '
           + 'DESIGN IT YOURSELF with a REFIT: { refit: [ edits ] }, the Commander\'s own Refit-mode tools on exact tiles, as many edits as the design needs (up to 1500 in one plan), applied in order, one approval, one undo. Read before you design: station.map (the floor), station.map { room } (every piece\'s id, type, place, size; belts; doorways; the room drawn) and station.map { catalog: true } (every piece type and size, room types, floors, walls, bay roles, lines, line edits). Tiles are world x, y (x east, y south; a piece\'s x, y is its top-left). Edits: '
           + '{ op: "room", name, kind, x, y, w, h } (or rects: [ {x, y, w, h}, … ] for an L or U; kind hab, bridge, lab, factory, quarters, storage) · { op: "hall", x, y, w, h } (one straight run, 1-3 wide; several make any route) · { op: "resize", room, x, y, w, h } · { op: "move", room, x, y } · { op: "delete", room | hall | prop } (a hall by the name station.map or a refusal gives it) · { op: "rename", room, name } · { op: "type", room, kind } · { op: "floor" | "walls" | "hull", room, style, mat } · { op: "paint", room, style, tiles: [[x, y], …] } · { op: "style", room, style } (furnish in a room style) · '
@@ -468,7 +478,7 @@
           + 'Each room is furnished wall to wall in its style (floor, walls, feature wall, centrepiece, plants) and the corridors are planted and lit. Room styles: ' + roomText() + '. A room given lines is a conveyor hall (works); a works room without lines is kept clear for lines to come. '
           + 'replace: true lays the whole station out again around the main room: every other room is replaced, the main room, agents and conversations stay, and the old layout is backed up for RESTORE PREVIOUS. Use it when the Commander wants the station redone, or when there is no clear space round the main room. '
           + '2 ROOMS where the Commander says: { "rooms": [ { name, style | zones | lines, size, beside, side, hallway, align, type } or { into: an existing room, style | zones | lines } ], "hallways": [ { from, to } ] } (straight, or round one corner when the rooms stand diagonally apart). size: small 12×8, medium 18×11, large 24×14, giant 36×20, or { w, h }. beside: a room name ("bridge" or "main" = the main room); side: north, south, east, west; hallway: true (default), false (open plan) or 2-8 long. With no beside or side, a new room takes the station\'s next free place (on the diamond grid, or down its concourse), at its size; a conveyor hall is giant unless sized.'
-          + '3 ONE LINE: { line | shape | purpose, where, beside, side, hallway, name, steps, dailyCap, tries }; with no where it goes into a conveyor hall that has room for it, else a room of its own on the grid, and lines sharing a room stand in rows with walkways between. LINES: ' + menuText() + '. shape = stages in order: a role ("RESEARCHER"), { together: [roles] }, { turns: [roles] }, { sort: { code: role, research: role } }, { review: true, tries: 3 }. steps (or a line\'s staff): [ { step, agent, instructions } ], agent = a crew name or "lead"; "new" recruits a new specialist ONLY when the Commander asks for new crew (each gets a desk by its line); otherwise leave agent out and the card lists the step as still to do. '
+          + '3 ONE LINE: { line | shape | purpose, where, beside, side, hallway, name, steps, dailyCap, tries }; with no where it goes into a conveyor hall that has room for it, else a room of its own on the grid, and lines sharing a room stand in rows with walkways between. LINES: ' + menuText() + '. shape = stages in order: a role ("RESEARCHER"), { together: [roles] }, { turns: [roles] }, { sort: { code: role, research: role } }, { review: true, tries: 3 }. steps (or a line\'s staff): [ { "step": 1, "agent": "lead", "instructions": "…" } ] (step = the step\'s NUMBER in run order), agent = a crew name or "lead"; "new" recruits a new specialist ONLY when the Commander asks for new crew (each gets a desk by its line); otherwise leave agent out and the card lists the step as still to do. '
           + '4 { kit | preset, replace, where, name }: KITS ' + kitText() + '; PRESETS ' + presetText() + ' (replace: true swaps the whole station for the preset). '
           + '5 { zones: [ { area, style } | { area, line | purpose | shape, … } ], where, name, size, beside, side }: area left, right, back, front, back-left, back-right, front-left, front-right or whole; zone styles ' + styleText() + '. '
           + '6 { restyle: { room, type, floorStyle, floorMat, name } } changes a floor or a name only. '
@@ -476,10 +486,12 @@
           + '8 { undo: true } takes back the lead\'s own last build ("no, undo that"), only while nothing has changed since; repeat it to go back further. '
           + 'It answers a planId and a plain summary: tell the Commander the summary, then call station.build with the planId. If it refuses it says why and what does fit: fix the request and plan again. Never give up after one refusal, and never say something was built that station.build did not report.';
       },
+      // a step's NUMBER is typed so the harness's own argument check says it first; null on its other fields means "leave it out",
+      // as the builder has always taken it (a model sends agent: null for a step nobody works yet)
       schema: { type: 'object', properties: {
         layout: { type: 'object', properties: { pattern: { type: 'string' }, around: { type: 'string' }, side: { type: 'string' }, rooms: { type: 'array', items: { type: 'object' } } } },
         replace: { type: 'boolean' }, rooms: { type: 'array', items: { type: 'object' } }, hallways: { type: 'array', items: { type: 'object' } },
-        line: { type: 'string' }, shape: { type: 'array', items: {} }, purpose: { type: 'string' }, steps: { type: 'array', items: { type: 'object' } }, dailyCap: {}, tries: { type: 'integer' },
+        line: { type: 'string' }, shape: { type: 'array', items: {} }, purpose: { type: 'string' }, steps: { type: 'array', items: { type: 'object', properties: { step: { type: 'integer' }, role: { type: ['string', 'null'] }, agent: { type: ['string', 'null'] }, instructions: { type: ['string', 'null'] } } } }, dailyCap: {}, tries: { type: 'integer' },
         kit: { type: 'string' }, preset: { type: 'string' }, zones: { type: 'array', items: { type: 'object' } }, restyle: { type: 'object' }, remove: {}, refurnish: { type: 'object' }, clear: {}, add: { type: 'object' }, seat: { type: 'object' }, move: { type: 'object' }, staff: { type: 'object' }, undo: { type: 'boolean' }, refit: { type: 'array', items: { type: 'object' } },
         where: { type: 'string' }, name: { type: 'string' }, size: {}, beside: { type: 'string' }, side: { type: 'string' }, hallway: {}, type: { type: 'string' }, floorStyle: { type: 'string' }, floorMat: { type: 'string' } } },
       run: async (args) => {
@@ -513,7 +525,27 @@
         planMemo.delete(planId);
         const r = out.result || {};
         const what = (r.line && r.line.name) || (r.rooms || []).map(x => x.name).join(', ') || ((r.hallways || []).length ? 'a hallway' : r.where || 'the plan');
-        return { content: JSON.stringify(r), summary: 'built ' + what + (r.line ? (r.ready ? ' · ready to run' : ' · ' + ((r.blocking || []).length) + ' to do') : '') };
+        /* DONE, said as DONE (rc walk 10-14, A3): the receipt tells the model the job is finished, so it reports and stops instead of
+           reaching for more tools (the walk's lead, out of plans, made a loop nobody asked for). The receipt's own readiness decides
+           the words: ready, or exactly what is still to do — never more than it proves. */
+        /* Every line the build laid or touched counts (review): the one ready-made line, or each of r.lines (a custom shape, a room
+           of lines, a refit's or a restaff's lines as they now stand), each named; machines left on no line are still to do too. */
+        const lines = r.line ? [{ name: r.line.label || r.line.name, ready: !!r.ready, blocking: r.blocking || [] }] : (Array.isArray(r.lines) ? r.lines : []).filter(Boolean);
+        const named = l => lines.length > 1 && (l.label || l.name) ? (l.label || l.name) + ': ' : '';
+        const left = [].concat(...lines.map(l => (l.blocking || []).filter(Boolean).map(b => named(l) + String(b))));
+        if (!r.line) for (const b of (r.blocking || []).filter(Boolean).map(String)) if (!lines.some(l => (l.blocking || []).indexOf(b) >= 0)) left.push(b);
+        for (const m of r.loose || []) left.push(String(m) + ' stands on no line yet');
+        /* only crew is missing (the third live re-run staffed a built line through guessed ids, a map, a plan and a second card):
+           the one form that staffs a line by its own name and step numbers, for when the Commander said who works them */
+        const short = lines.filter(l => (l.blocking || []).length), crewOnly = left.length && short.length && !(r.loose || []).length && short.every(l => (l.label || l.name) && l.blocking.every(b => /needs an agent/i.test(b)));
+        const staff = crewOnly ? ' If the Commander said who works those steps, staff ' + (short.length > 1 ? 'each line in its own plan' : 'them in one plan') + ': station.plan { "staff": { "line": ' + JSON.stringify(String(short[0].label || short[0].name)) + ', "steps": [ { "step": 1, "agent": "a crew name" } ] } }, then station.build; otherwise tell the Commander exactly that, and stop.' : '';
+        // a refit that laid the line by hand fixes what it left; a design laid by hand keeps its one look (the planner's LOOK at your work)
+        const fix = r.kind === 'refit' ? ' Fix that with one more refit plan and build it; if you cannot, tell the Commander exactly what is left, and stop.' : ' Tell the Commander exactly that, and stop: build nothing else for this unless they ask.';
+        const look = r.handLaid ? 'You laid pieces by hand: look at the room once (station.map { look: the room }) and fix only what is wrong; then tell the Commander what was built in a sentence or two, and stop.'
+          : 'Tell the Commander what was built in a sentence or two, and stop: there is nothing left to build or check for this.';
+        if (r.built) r.next = 'DONE: it is built' + (left.length ? '. Still to do before it runs: ' + left.join('; ').replace(/\.$/, '') + '.' + (staff || fix) : (lines.length ? ' and ready to run' : '') + '. ' + look);
+        const ready = lines.length && !left.length;
+        return { content: JSON.stringify(r), summary: 'built ' + what + (lines.length || left.length ? (ready ? ' · ready to run' : ' · ' + left.length + ' to do') : '') };
       }
     };
 
@@ -611,8 +643,9 @@
         const out = {
           line: L.name, status, cost: '$' + (Number(o.totalUsd) || 0).toFixed(2),
           steps: runs.map((x, i) => ({ step: i + 1, at: stepOf(x), ended: x.reason || 'unknown', usd: typeof x.usd === 'number' ? Math.round(x.usd * 1000) / 1000 : null })),
-          verdict: o.ok ? (/LOOP — exhausted/.test(said) ? 'The job reached the OUTBOX, but its review loop ran out of passes without an approval: the reviewer never said VERDICT: approved. Read what it delivered below; tighten the step it reviews or the reviewer\'s brief, or allow more passes.' : 'The job reached the OUTBOX: read what it delivered below and judge whether the line did the job well.')
-            : o.stopped ? 'The Commander stopped the job.' : String(o.error || 'The job did not finish').replace(/[.\s]*$/, '.') + ' Look at which step ended badly, fix the line, and test again.',
+          // (GitHub #122) the route's own unapproved mark — a publisher after the loop leaves no LOOP note in what was said
+          verdict: o.ok ? ((o.unapproved || /LOOP — exhausted/.test(said)) ? 'The job reached the OUTBOX, but its review loop ran out of passes without an approval: the reviewer never said VERDICT: approved. Read what it delivered below; tighten the step it reviews or the reviewer\'s brief, or allow more passes.' : 'The job reached the OUTBOX: read what it delivered below and judge whether the line did the job well.')
+            : o.stopped ? (o.stoppedBy === 'fault' ? 'The station hit an internal fault and stopped the job.' : 'The Commander stopped the job.') : String(o.error || 'The job did not finish').replace(/[.\s]*$/, '.') + ' Look at which step ended badly, fix the line, and test again.',
           jobId: o.jobId || null
         };
         // Only the durable job link proves that work was sent onward. A configured destination is not a running job.
@@ -622,8 +655,20 @@
             note: send.refused ? 'The downstream hand-off was refused: ' + send.refused
               : 'A separate downstream job was created. Its current state, result and cost are on its own job record; this cost covers only the tested line.' };
           if (send.refused) out.sentOnTo.refused = send.refused;
-        } else if (Array.isArray(o.onwardDestinations) && o.onwardDestinations.length) {
-          out.sentOnTo = { destinations: o.onwardDestinations, state: 'unconfirmed',
+        } else if (o.ok && Array.isArray(o.onwardDestinations) && o.onwardDestinations.length) {
+          /* (wave 2 review, conveyor-backend-10) only a job that reached its OUTBOX is ever handed on: a failed or stopped test claims
+             no onward hand-off, not even an unconfirmed one. Each destination is named the way this tool names a line (station.line_ref,
+             the page's own rule), so the lead can tell the Commander WHICH line — never a bare machine id. */
+          const destinations = [];
+          for (const d of o.onwardDestinations.slice(0, 8)) {
+            if (!d || d.lineId == null || !String(d.lineId)) continue;
+            const named = await ask('station.line_ref', { line: String(d.lineId).slice(0, 80) });
+            const dest = { lineId: String(d.lineId) };
+            if (named.ok && named.result && named.result.name) dest.line = String(named.result.name);
+            if (d.outboxId != null && String(d.outboxId)) dest.outboxId = String(d.outboxId);
+            destinations.push(dest);
+          }
+          out.sentOnTo = { destinations, state: 'unconfirmed',
             note: 'SEND TO is configured, but no downstream job link was recorded when this reply was read. Check this job again; no downstream start or completion is claimed.' };
         }
         const shown = said.length > 6000 ? said.slice(0, 6000) + ' …(' + (said.length - 6000) + ' more characters in the OUTBOX)' : said;

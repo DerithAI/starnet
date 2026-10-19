@@ -84,5 +84,21 @@ const B = require('../frontend/app/briefing.js');
   await B.deliver('engaged');
   A.eq(opened.length, 0, 'engaged Commander → no focus jump');
 
+  /* LIVE WALK 10-14: a reload made the briefing the active session and took the screen off the conversation whose
+     worker approval was still waiting. A waiting ask outranks the report: the station's own count (a reloaded page may
+     not have refiled the ask yet) or one this page holds keeps the Commander where they are. */
+  engaged = false; active = 'ws-launch'; opened = [];
+  reply.asksWaiting = 1;
+  await B.deliver('boot');
+  A.eq(opened.length, 0, 'an approval waiting on the station → the briefing stays an unread row, no focus jump');
+  reply.asksWaiting = 0;
+  global.Channels = { allPending: () => [{ wsId: 'ws-launch', p: { promptId: 'p1' } }] };
+  await B.deliver('boot');
+  A.eq(opened.length, 0, 'an ask this page holds → no focus jump');
+  global.Channels = { allPending: () => [] };
+  await B.deliver('boot');
+  A.eq(opened.join(','), 'briefing', 'nothing waiting and nothing engaged → the briefing still opens itself on a real return');
+  A.eq(deliverBody.minAwayMs, 30 * 60000, 'every delivery names the page\'s away threshold: a reload is not an absence');
+
   A.report('briefing-frontend');
 })().catch(e => { console.error(e); process.exit(1); });
