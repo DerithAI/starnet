@@ -1,0 +1,18 @@
+/* website/maps.css — the community maps gallery (maps.html). Built on market.css (loaded first) and the site's own
+   tokens; nothing here is loaded by any other page. */
+
+.mp-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+@media (max-width:960px){ .mp-grid{ grid-template-columns:repeat(2,1fr); } }
+@media (max-width:620px){ .mp-grid{ grid-template-columns:1fr; } }
+
+.mp-card{
+  border:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-width:0;
+  transition:border-color .15s, box-shadow .15s;
+}
+.mp-card:hover{ border-color:var(--amber-d); box-shadow:0 0 22px rgba(255,140,30,.12); }
+.mp-art{ aspect-ratio:16/10; max-width:100%; background:#040302; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:center; overflow:hidden; }
+.mp-art img{ display:block; width:100%; height:100%; object-fit:contain; }
+.mp-body{ padding:14px 16px 14px; display:flex; flex-direction:column; gap:8px; flex:1 1 auto; }
+.mp-card h4{ margin:0; font-weight:400; font-size:21px; line-height:1.15; letter-spacing:1.2px; color:var(--amber-b); text-shadow:0 0 8px rgba(255,157,47,.3); }
+.mp-holds{ margin:0; font-size:15px; letter-spacing:.6px; color:var(--amber-d); }
+.mp-body .mk-dl-row{ margin-top:auto; }

@@ -316,6 +316,11 @@
       // everything rather than silencing a room we cannot prove we were not addressed in.
       botUsername: o.botUsername,
       requireMention: o.requireMention,
+      // Wake words, observe-only and our own membership changes were all passed by index.js and silently DROPPED
+      // here until 2026-10-19 — calling the bot by name, /mention observe and "you were kicked" did nothing.
+      mentionPatterns: o.mentionPatterns,
+      observeUnmentioned: o.observeUnmentioned,
+      onMembership: o.onMembership,
       ignoreBots: o.ignoreBots,
       allowedUsers: o.allowedUsers,
       dropPendingOnConnect: o.dropPendingOnConnect !== false   // Telegram default: discard offline backlog on connect

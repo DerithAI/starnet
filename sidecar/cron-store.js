@@ -65,12 +65,13 @@
      ticked it, so every pre-existing job loads with no new power. 'workbench' = terminal (shell.exec) +
      verify.run. 'connectors' = the Commander's connected MCP servers (capability 'mcp:<connectorId>'); a
      connector the Commander switched OFF still contributes no tools, so this can never re-enable one.
+     'studio' = image_generate: the routine may make images with nobody there to approve each one.
 
      This list is STORAGE, not authority. sidecar/inputpolicy.js owns the authoritative whitelist
      (GRANTABLE_UNATTENDED) and re-filters it at the gate on every run, so a hand-edited or migrated
      cron.jobs.json can never widen a run past what the host models — the two filters are deliberately
      independent (defense in depth), which is also why this module needs no cross-require of the policy. */
-  const GRANTABLE = ['workbench', 'connectors'];
+  const GRANTABLE = ['workbench', 'connectors', 'studio'];
   function normGrants(v) {
     if (!Array.isArray(v)) return [];
     const out = [];

@@ -363,6 +363,9 @@
     // /models responses). Both stay null/off unless the profile asserts them — capability claims must
     // come from somewhere provable, never be assumed.
     const sendReasoningEffort = opts.sendReasoningEffort === true;
+    // Prompt-cache breakpoints for an endpoint that relays to a cache_control-honoring backend (the managed proxy ->
+    // OpenRouter): (messages, model, cacheSystemPrefix) -> messages. Absent = the body is byte-identical to before.
+    const cacheControl = typeof opts.cacheControl === 'function' ? opts.cacheControl : null;
     // OUTPUT CEILING (2026-09-15, issue #17): this adapter never capped output, so an endpoint with no ceiling of
     // its own (Ollama) ran to end-of-sequence — a 3B local model typed for ten minutes. Off unless the PROFILE opts
     // in (factory: profile.maxOutputTokens) or the caller passes max_tokens explicitly; hosted endpoints that
@@ -677,6 +680,7 @@
       // Strict Chat Completions endpoints (Mistral: 422 extra_forbidden) reject StarNet's own bookkeeping keys on a
       // message (ts, streamId, agentId, the `reasoning` parking field) — only Chat Completions message keys leave.
       body.messages = provider.chatWireMessages(body.messages);
+      if (cacheControl) body.messages = cacheControl(body.messages, req.model, req.cacheSystemPrefix);
       // OLLAMA NATIVE: size the window to THIS request before it leaves (the model's trained maximum is one local
       // /api/show, cached per model). requestWithRetry resizes once more if Ollama counts more tokens than estimated.
       let wire = null;

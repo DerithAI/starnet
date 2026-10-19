@@ -10,6 +10,7 @@ test/tool-model-fallback.e2e.test.js
 test/sidecar.http.test.js
 test/channels.replay.e2e.test.js
 test/config-permissions-import.e2e.test.js
+test/config-export-save.e2e.test.js
 test/secret-redaction.e2e.test.js
 test/harness-scan-local.e2e.test.js
 test/child-env.e2e.test.js
@@ -110,6 +111,7 @@ test/channels.telegram.botchain.e2e.test.js
 test/channels.telegram.buttons.e2e.test.js
 test/webhook-replay.e2e.test.js
 test/channels.relay-owner.e2e.test.js
+test/channels.telegram.group-allow.e2e.test.js
 test/cron.arm.test.js
 test/lifecycle-armed.http.test.js
 test/checkpoint-store.test.js
@@ -127,6 +129,7 @@ test/browser-minimized-window.e2e.test.js
 test/browser.stepin.e2e.test.js
 test/servicekeys.http.test.js
 test/servicekeys.shell.e2e.test.js
+test/servicekeys-1password.http.test.js
 test/skills.gate.http.test.js
 test/skill-exchange.http.test.js
 test/skills.gate.prompt.e2e.test.js
@@ -228,3 +231,6 @@ test/skills.candidate-lifecycle.http.test.js
 test/skills.evaluation-spend.http.test.js
 test/lean-prompt.e2e.test.js
 test/host-notes.strict-template.e2e.test.js
+test/cross-run-cache.e2e.test.js
+test/cron.channel-media.e2e.test.js
+test/cron.images-grant.e2e.test.js
