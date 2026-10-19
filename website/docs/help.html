@@ -98,7 +98,7 @@
 </div>
 
 <h2 id="help-inside-the-app">Help inside the app</h2>
-<p>Open <b>&#9635; SYSTEM &rsaquo; &sect; FIELD MANUAL</b>. The <b>FIRST STEPS</b> tab has a <b>REPLAY QUICK TOUR</b> button that re-runs the real onboarding tour &mdash; the same one that placed your first gear and ran your first command. Every button in the station also has a tooltip that says what it does and, where one exists, its shortcut.</p>
+<p>Open <b>&#9635; SYSTEM &rsaquo; &sect; FIELD MANUAL</b>. The <b>FIRST MISSION</b> tab has a <b>REPLAY QUICK TOUR</b> button that re-runs the real onboarding tour &mdash; the same one that placed your first gear and ran your first command. Every button in the station also has a tooltip that says what it does and, where one exists, its shortcut.</p>
 
 <h2 id="common-questions">Common questions</h2>
 <div class="faq">
@@ -109,9 +109,9 @@
   <details><summary>Can I run it without installing?</summary><p>Yes &mdash; clone the repo and <code>npm install &amp;&amp; npm start</code> with Node 18+. The station opens at <code>localhost:8787</code>. Keys live in a local file instead of the OS keychain in that mode.</p></details>
 
   <h3 id="keys-models-and-cost">Keys, models and cost</h3>
-  <details><summary>Which providers work?</summary><p>Eighteen, including OpenRouter (the default), OpenAI, Anthropic, Gemini, xAI, Groq, Mistral, DeepSeek, Together, Fireworks, Perplexity, Cerebras, any OpenAI-compatible endpoint, and Ollama (free, fully local). Three need no key at all &mdash; ChatGPT, Grok, and Kimi sign in with a device code. Full list in <a href="providers.html">Providers &amp; Keys</a>.</p></details>
+  <details><summary>Which providers work?</summary><p>Eighteen, including OpenRouter (the default), OpenAI, Anthropic, Gemini, xAI, Groq, Mistral, DeepSeek, Together, Fireworks, Perplexity, Cerebras, any OpenAI-compatible endpoint, and Ollama (free, fully local). Four need no key at all &mdash; ChatGPT, Grok, and Kimi sign in with a device code, and Claude CLI uses your Claude Code sign-in. Full list in <a href="providers.html">Providers &amp; Keys</a>.</p></details>
   <details><summary>Where is my API key stored?</summary><p>In the desktop app: your operating system&rsquo;s keychain, handed to the local sidecar at start. It is sent only to the provider you chose, from your machine. Nothing goes to a StarNet server. See <a href="../legal/privacy.html">privacy</a>.</p></details>
-  <details><summary>How do I stop it spending money?</summary><p>Every conveyor line has a per-job budget ($2.00 unless you raise it). <b>SETTINGS &rsaquo; BUDGET</b> adds hard caps per run, per agent, per day, and globally, enforced against the real ledger. Use Stop in COMMS for the current task, and pause scheduled work in its own panel.</p></details>
+  <details><summary>How do I stop it spending money?</summary><p>Every conveyor line has a per-job budget ($2.00 unless you raise it). <b>SETTINGS &rsaquo; SPENDING LIMITS</b> adds hard caps per run, per agent, per day, and globally, enforced against the real ledger. Use Stop in COMMS for the current task, and pause scheduled work in its own panel.</p></details>
   <details><summary>What do StarNet Credits change?</summary><p>Nothing about how the app works &mdash; it&rsquo;s one more provider, <b>STARNET</b>, that runs on a prepaid balance instead of a key you manage. Linking a station opens an account on the billing service; payment always happens in your browser, never in the app. Optional, never required.</p></details>
 
   <h3 id="belts-and-lines">Belts and lines</h3>
@@ -127,14 +127,14 @@
   <details><summary>Does the level unlock anything?</summary><p>No. Levels are proof of work you rated well. Every tool, model, and permission is available from minute one. <a href="guides/goals.html">Goals, quests &amp; XP</a>.</p></details>
 
   <h3 id="night-shift-and-phones">Autonomy and phones</h3>
-  <details><summary>Will it do things while I&rsquo;m away?</summary><p>Not until you turn the dial. INITIATIVE starts at <b>SUGGEST</b> &mdash; it lines up suggestions but never acts on its own. Even at <b>FREE</b>, REACH stays at <b>SANDBOX</b> &mdash; nothing leaves your machine unless you raise it yourself. <a href="guides/night-shift.html">Set up autonomy</a>.</p></details>
-  <details><summary>Can I talk to my agents from my phone?</summary><p>Yes &mdash; pair Telegram, Discord, Slack, Matrix, or Signal. Your agents show up as contacts. <a href="guides/channels.html">Run it from your phone</a>.</p></details>
+  <details><summary>Will it do things while I&rsquo;m away?</summary><p>Not until you turn the dial. ON ITS OWN starts at <b>SUGGEST</b> &mdash; it lines up suggestions but never acts on its own. Even at <b>FREE</b>, REACH stays at <b>LOCAL ONLY</b> &mdash; nothing leaves your machine unless you raise it yourself. <a href="guides/night-shift.html">Set up autonomy</a>.</p></details>
+  <details><summary>Can I talk to my agents from my phone?</summary><p>Yes &mdash; pair Telegram, Discord, Slack, Matrix, or Signal. Your agents show up as contacts. Or pair the phone itself in <b>SETTINGS &rsaquo; REMOTE</b>. <a href="guides/channels.html">Run it from your phone</a>.</p></details>
   <details><summary>My Telegram bot says DMs BLOCKED</summary><p>Telegram requires owner pairing so the first stranger to DM your bot doesn&rsquo;t own it. Hit <b>PAIR OWNER</b> in the CHANNELS window, then send <code>/pair</code> plus the one-time code to the bot within 10 minutes.</p></details>
 </div>
 
 <h2 id="reach-a-human">Reach a human</h2>
 <div class="help-contact">
-  <a href="https://github.com/androoAGI/starnet/issues" target="_blank" rel="noopener"><span class="hk">BUG OR REQUEST</span><span class="hv">GitHub issues</span><span class="hn">Best for anything reproducible. Include your version (bottom of the SYSTEM window) and OS.</span></a>
+  <a href="https://github.com/androoAGI/starnet/issues" target="_blank" rel="noopener"><span class="hk">BUG OR REQUEST</span><span class="hv">GitHub issues</span><span class="hn">Best for anything reproducible. Include your version (SYSTEM &rsaquo; UPDATES) and OS.</span></a>
   <a href="mailto:androo.agi@gmail.com"><span class="hk">EMAIL</span><span class="hv">androo.agi@gmail.com</span><span class="hn">Trust failures, install problems, anything you&rsquo;d rather not post publicly.</span></a>
   <a href="https://github.com/androoAGI/starnet" target="_blank" rel="noopener"><span class="hk">READ THE SOURCE</span><span class="hv">github.com/androoAGI/starnet</span><span class="hn">MIT licensed. Every claim on this site can be checked against it.</span></a>
 </div>

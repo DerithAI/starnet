@@ -170,7 +170,8 @@ folders listed in <a href="#where-starnet-keeps-your-data">Where StarNet keeps y
 
 <h2 id="behind-a-vpn-or-corporate-proxy">Behind a VPN or corporate proxy</h2>
 <p>The app window honors your system proxy, but the engine's own outbound connections — AI providers and
-messaging channels like Telegram or Discord — go out directly and do not route through a proxy. On a
+messaging channels like Discord — go out directly and do not route through a proxy (Telegram is the one
+exception: it honors <code>HTTPS_PROXY</code> / <code>ALL_PROXY</code>). On a
 network that forces one, the UI and browser sign-ins can look perfectly healthy while runs and channel
 connects fail with a plain network error. There is no proxy setting yet; you need direct access to the
 provider and platform APIs. <b>COPY DIAGNOSTICS</b> (under any failed turn) shows whether a proxy is

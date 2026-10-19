@@ -96,9 +96,9 @@
   <dt>AGENT</dt><dd>One AI worker with a name, a class, a model, a desk, and its own memory. Every sprite on the floor is one. Runs are real model calls with real tools.</dd>
   <dt>OVERSEER</dt><dd>The first agent you create. It runs the station and recruits every agent after it. It can&rsquo;t be deleted.</dd>
   <dt>COMMANDER</dt><dd>You. The dossier the crew keeps on its commander is what &ldquo;it studies you&rdquo; means.</dd>
-  <dt>CLASS <span class="app">RECRUITMENT BAY</span></dt><dd>A head start, not a cage: a Researcher comes tuned for digging, an Engineer for code. 35 curated classes on the roster, a 20-deep <b>SPECIALIST ARCHIVE</b>, plus any custom classes you build or save from an agent.</dd>
+  <dt>CLASS <span class="app">RECRUITMENT BAY</span></dt><dd>A head start, not a cage: a Researcher comes tuned for digging, an Engineer for code. 35 curated classes on the roster, a 20-deep <b>CLASS ARCHIVE</b>, plus any custom classes you build or save from an agent.</dd>
   <dt>CREW</dt><dd>All your agents together. Gear you place is shared by the whole crew; only a computer is per agent.</dd>
-  <dt>SKIN</dt><dd>The character an agent wears. 36 to pick from, any class, changeable any time in the agent&rsquo;s CONFIG tab. Cosmetic only.</dd>
+  <dt>SKIN</dt><dd>The character an agent wears. 53 to pick from, any class, changeable any time in the agent&rsquo;s CONFIG tab. Cosmetic only.</dd>
   <dt>DELEGATION</dt><dd>One agent dispatching subtasks to crew it summons, then folding the results back. You watch the whole tree run on the floor.</dd>
 </dl>
 
@@ -134,15 +134,15 @@
   <dt>RUN</dt><dd>One agent doing one job: a real model call with real tools, a real timer, and a real cost line in the ledger.</dd>
   <dt>DELIVERY</dt><dd>What a run produced &mdash; a file, a report, a reply. Lands in the OUTBOX or in COMMS for you to read and rate.</dd>
   <dt>RATE THE WORK</dt><dd>The beat after any run that did real work: <b>&#9650; nailed it</b> mints XP; <b>&#9670; close</b> and <b>&#9660; missed</b> are noted with no XP and no penalty.</dd>
-  <dt>RECIPE <span class="app">WORK &rsaquo; RECIPES</span></dt><dd>WHAT to run: a ready-made job with a small form. 101 built in; save your own.</dd>
-  <dt>ROUTINE <span class="app">WORK &rsaquo; AUTOMATION</span></dt><dd>WHEN it runs: a job on a schedule. Drops in at the INBOX. Only fires while scheduling is enabled.</dd>
-  <dt>SKILL <span class="app">BUILD &rsaquo; ABILITIES</span></dt><dd>HOW to do it: a procedure an agent consults mid-task when the work matches. 73 built in, more written by agents themselves or installed from a SKILL.md you inspected.</dd>
+  <dt>RECIPE <span class="app">WORK &rsaquo; MY WORK &rsaquo; RECIPES</span></dt><dd>WHAT to run: a ready-made job with a small form. 45 built in; save your own.</dd>
+  <dt>ROUTINE <span class="app">WORK &rsaquo; AUTOMATE &rsaquo; SCHEDULES</span></dt><dd>WHEN it runs: a job on a schedule. Runs a whole line only when started from that line&rsquo;s INBOX. Only fires while scheduling is enabled.</dd>
+  <dt>SKILL <span class="app">BUILD &rsaquo; CONNECT &rsaquo; ABILITIES</span></dt><dd>HOW to do it: a procedure an agent consults mid-task when the work matches. 74 built in, more written by agents themselves or installed from a SKILL.md you inspected.</dd>
   <dt>TASKS</dt><dd>Where live work sits &mdash; the queue you can see.</dd>
 </dl>
 
 <h2 id="learning">Learning</h2>
 <dl class="gloss">
-  <dt>DOSSIER <span class="app">CREW &rsaquo; COMMANDER</span></dt><dd>What the station has learned about you, in nine dimensions (identity, stack, goals, working style, standing orders, pain points, ambitions, people, schedule). Every agent&rsquo;s briefing folds it in. Local-first; pin, edit, or forget anything.</dd>
+  <dt>DOSSIER <span class="app">CREW &rsaquo; YOU</span></dt><dd>What the station has learned about you, in nine dimensions (identity, stack, goals, working style, standing orders, pain points, ambitions, people, schedule). Every agent&rsquo;s briefing folds it in. Local-first; pin, edit, or forget anything.</dd>
   <dt>BELIEF</dt><dd>One thing the dossier holds, traced to where it came from. Proposed after runs; you <b>Keep</b>, <b>Edit</b>, or <b>Discard</b>.</dd>
   <dt>MEMORY CORE <span class="app">AGENT DOSSIER &rsaquo; MEMORY</span></dt><dd>An agent&rsquo;s own long-term notebook. Each memory traces to the run that earned it. Trust grows with use and halves every 30 days unused; low trust is de-weighted, never silently dropped.</dd>
   <dt>XP / LEVEL</dt><dd>Minted only by your <b>nailed it</b> verdict. Levels record what shipped and gate nothing. Level 2 at 50 XP, 5 at 500, 10 at 2,250.</dd>
@@ -153,8 +153,8 @@
 <h2 id="autonomy">Autonomy</h2>
 <dl class="gloss">
   <dt>AUTONOMY <span class="app">WHILE YOU&rsquo;RE AWAY</span></dt><dd>The station choosing a small grounded job while you&rsquo;re away (30 minutes idle), about every 45 minutes, inside your leash. Off by default.</dd>
-  <dt>INITIATIVE</dt><dd>Does it start work on its own? <b>WAIT</b> &middot; <b>SUGGEST</b> (default) &middot; <b>BUILD</b> &middot; <b>FREE</b>.</dd>
-  <dt>REACH</dt><dd>How far an unattended action may go. <b>OBSERVE</b> (read only) &middot; <b>SANDBOX</b> (default; nothing leaves the machine) &middot; <b>SEND &amp; PUBLISH</b>.</dd>
+  <dt>ON ITS OWN</dt><dd>What it does while you are away. <b>WAIT</b> &middot; <b>SUGGEST</b> (default) &middot; <b>SMALL JOBS</b> &middot; <b>FREE</b>.</dd>
+  <dt>REACH</dt><dd>How far an unattended action may go. <b>OBSERVE</b> (read only) &middot; <b>LOCAL ONLY</b> (default; nothing leaves the machine) &middot; <b>SEND &amp; PUBLISH</b>.</dd>
   <dt>PACE / LEASH</dt><dd>How many unattended jobs per day: LIGHT 1, STANDARD 3 (default), BUSY 6, MAX 12.</dd>
   <dt>MORNING REPORT</dt><dd>What COMMS prints when you return: what fired, what was skipped and why, drafts to review. Every line maps to a real record.</dd>
   <dt>DECISION LEDGER <span class="app">RECENT DECISIONS</span></dt><dd>An append-only trail of every autonomous fire, skip, and defer with the gate that decided it.</dd>
@@ -163,15 +163,15 @@
 
 <h2 id="plumbing">Plumbing</h2>
 <dl class="gloss">
-  <dt>SIDECAR</dt><dd>The small local server that does the actual work, on <code>127.0.0.1</code>. The app window talks to it; nothing talks to a StarNet server.</dd>
-  <dt>WORKSPACE</dt><dd>Where your station state lives on disk: transcripts, memory, ledgers, routines. On Windows under <code>%LOCALAPPDATA%\StarNet</code>; on macOS under <code>~/Library/Application Support</code>.</dd>
-  <dt>PROVIDER</dt><dd>Who runs the model. Eighteen supported, OpenRouter by default; three sign in with no key; Ollama is free and fully local. <b>STARNET</b> is the optional prepaid one.</dd>
+  <dt>SIDECAR</dt><dd>The small local server that does the actual work, on <code>127.0.0.1</code>. The app window talks to it. It reaches a StarNet server only for the Skill Market, Remote, and StarNet credits.</dd>
+  <dt>WORKSPACE</dt><dd>Where your station state lives on disk: transcripts, memory, ledgers, routines. On Windows under <code>%APPDATA%i.skynet.harness</code>; on macOS under <code>~/Library/Application Support/ai.skynet.harness</code>.</dd>
+  <dt>PROVIDER</dt><dd>Who runs the model. Eighteen supported, OpenRouter by default; four sign in with no key; Ollama is free and fully local. <b>STARNET</b> is the optional prepaid one.</dd>
   <dt>BYOK</dt><dd>Bring your own key. Your key, your provider&rsquo;s bill, real cost shown per run. No markup.</dd>
   <dt>LEDGER</dt><dd>The append-only record of every run&rsquo;s true spend. What the cost readouts are read from.</dd>
   <dt>CHANNEL</dt><dd>A paired chat app &mdash; Telegram, Discord, Slack, Matrix, Signal &mdash; where your agents appear as contacts and take orders.</dd>
-  <dt>OWNER PAIRING</dt><dd>Telegram only: a one-time 10-minute code you send the bot as <code>/pair</code>, so the first stranger to message it doesn&rsquo;t own it.</dd>
+  <dt>OWNER PAIRING</dt><dd>Every channel: a one-time 10-minute code you send the bot as <code>/pair</code>, so the first stranger to message it doesn&rsquo;t own it.</dd>
   <dt>CONNECTOR / MCP</dt><dd>A way to plug in an outside service (Gmail, a calendar, a docs tool) or to let another harness drive your station. Granted explicitly, never assumed.</dd>
-  <dt>SERVICE KEYS <span class="app">the KEYS tab</span></dt><dd>Keys for the services your agents call &mdash; kept locally, separate from your model provider key.</dd>
+  <dt>SERVICE KEYS <span class="app">SAVED API CONNECTIONS</span></dt><dd>Keys for the services your agents call &mdash; kept locally, separate from your model provider key.</dd>
   <dt>LIVE VOICE</dt><dd>Hands-free talking to the station on a speech engine built into the app. No key, no account, your voice never leaves the machine.</dd>
 </dl>
 <nav class="doc-pager" aria-label="More in Troubleshooting &amp; help"><a class="pg prev" href="shortcuts.html"><span class="pg-k">&larr; PREVIOUS</span><span class="pg-t">Keyboard shortcuts</span></a><a class="pg next" href="index.html#help"><span class="pg-k">Explore this topic &rarr;</span><span class="pg-t">Troubleshooting &amp; help</span></a></nav>

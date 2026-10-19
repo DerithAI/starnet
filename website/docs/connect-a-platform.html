@@ -173,10 +173,10 @@ through the model, and the limit is 20MB per file / 25MB per request.</p>
 
 <h2 id="letting-it-run-while-you-are-away">Letting it run while you are away</h2>
 <p>By default a key is usable only in <b>watched sessions</b> — you are at the station and approve the call.
-Scheduled routines, autonomy, and agents messaged over Telegram cannot spend it.</p>
+Scheduled routines, autonomy, and channel messages cannot spend it &mdash; except your own direct message as the paired owner, which counts as watched.</p>
 <p>To change that for one platform, tick <b>&ldquo;usable in scheduled &amp; messaged runs&rdquo;</b> on that key's row in
 SAVED API CONNECTIONS. It is per key, off by default, and revocable at any time — the next tool call sees the change
-immediately. Nothing else about unattended runs widens: they still cannot run shell commands, and they still
+immediately. Nothing else about unattended runs widens: they still cannot run shell commands (unless you let that routine use the terminal), and they still
 cannot spend any key you have not ticked.</p>
 
 <h2 id="when-it-does-not-work">When it does not work</h2>
@@ -196,7 +196,7 @@ cannot spend any key you have not ticked.</p>
   <tr><td>A connector sits red on &ldquo;stdio&rdquo;</td>
       <td>The selected owner is no longer on <b>SAFE CELL</b>, Docker is unavailable, or the command failed
           inside the container. Restore that profile/runtime and reload; StarNet will not run it on the host.</td></tr>
-  <tr><td>&ldquo;refusing private/loopback/intranet host&rdquo;</td>
+  <tr><td>&ldquo;refusing to fetch private/loopback/intranet host&rdquo;</td>
       <td>Working as intended: agents cannot reach your local network or cloud metadata endpoints.</td></tr>
   <tr><td>&ldquo;the page did not finish loading within 30s&rdquo; (browser)</td>
       <td>The site stalled the agent's browser — often a slow origin or a bot challenge. The load is
