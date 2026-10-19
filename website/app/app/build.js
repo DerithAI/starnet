@@ -2899,7 +2899,8 @@ const Build = (() => {
     g.innerHTML = '<div class="refit-guide-box station-build-box"><div class="station-build-heading"><div><span class="station-build-eyebrow">BUILD MODE / STATION PRESETS</span><h2>A place for your work</h2></div><button class="bb sm" data-workflow-close>BACK TO BUILD</button></div>' +
       '<p class="station-build-intro">Pick a station for the kind of work you do, then make it yours. Every station includes your workstation and all five essentials.</p>' +
       '<div class="station-build-scroll">' + PRESET_GROUPS.map(([id, label, blurb]) => '<section class="station-build-section" data-build-section="' + id + '"><div class="station-build-section-head"><h3>' + label + '</h3><p>' + esc(blurb) + '</p></div><div class="station-build-grid" aria-label="' + esc(label.toLowerCase()) + '"></div></section>').join('') +
-      (typeof BuildShare !== 'undefined' ? '<section class="station-build-section" data-build-section="shared"><div class="station-build-section-head"><h3>SHARED BUILDS</h3><p>Save this layout as a file to share, or open one someone sent you. Only rooms, furniture and conveyors travel.</p><span class="station-build-share-keys"><button class="bb sm" type="button" data-export-build>EXPORT THIS STATION</button><button class="bb sm" type="button" data-import-build>IMPORT A BUILD…</button><input type="file" accept=".json,application/json" hidden data-import-file></span></div><div class="station-build-grid" aria-label="shared builds"></div></section>' : '') + '</div>' +
+      (typeof BuildShare !== 'undefined' ? '<section class="station-build-section" data-build-section="shared"><div class="station-build-section-head"><h3>SHARED BUILDS</h3><p>Save this layout as a file to share, or open one someone sent you. Only rooms, furniture and conveyors travel.</p><span class="station-build-share-keys"><button class="bb sm" type="button" data-export-build>EXPORT THIS STATION</button><button class="bb sm" type="button" data-import-build>IMPORT A BUILD…</button>' + (typeof CommunityMaps !== 'undefined' ? '<button class="bb sm" type="button" data-share-community>SHARE TO COMMUNITY</button>' : '') + '<input type="file" accept=".json,application/json" hidden data-import-file></span></div><div class="station-build-grid" aria-label="shared builds"></div></section>' : '') +
+      (typeof BuildShare !== 'undefined' && typeof CommunityMaps !== 'undefined' ? '<section class="station-build-section" data-build-section="community"><div class="station-build-section-head"><h3>COMMUNITY MAPS</h3><p>Stations other players built and shared. Only layouts travel: you choose who works them.</p><span class="station-build-share-keys"><button class="bb sm" type="button" data-community-refresh>REFRESH</button><span class="station-build-community-note" role="status"></span></span></div><div class="station-build-grid" aria-label="community maps"></div></section>' : '') + '</div>' +
       '<div class="station-build-footer"><div class="station-build-status" role="status">Select a preset to see what it builds.</div>' +
       '<div class="station-build-actions"><button class="bb" data-restore-build>RESTORE PREVIOUS</button><button class="bb refit-primary" data-use-build disabled>CHOOSE A PRESET</button></div><small class="station-build-note">Applying replaces rooms, props and conveyors. Your current layout is backed up; agents and conversations stay.</small></div></div>';
     g.style.setProperty('--station-build-scale', typeof U.uiZoom === 'function' ? U.uiZoom() : 1);
@@ -2916,28 +2917,33 @@ const Build = (() => {
     let selected = null, armed = false;
     const backupButton = g.querySelector('[data-restore-build]');
     try { backupButton.disabled = !localStorage.getItem(backupKey); } catch (_) { backupButton.disabled = true; }
-    // one card per build — a preset, or a build file opened in SHARED BUILDS (item.file holds its text; preview() its copy)
+    /* one card per build — a preset, a build file opened in SHARED BUILDS (item.file holds its text; preview() its copy),
+       or a COMMUNITY map: no doc yet (item.stats carries its counts), its picture drawn from item.picture() and its file
+       fetched on first click by item.open() -> { text, preview } — only then can it be chosen */
     const addCard = (item, doc, grid, preview) => {
       const button = document.createElement('button'); button.className = 'bb station-build-card';
       button.type = 'button'; button.dataset.stationBuild = item.id; button.setAttribute('aria-pressed','false');
-      const bays = doc.props.filter(p=>p.t==='bay').length;
-      button.innerHTML = '<div class="station-build-art"><canvas width="460" height="280" aria-hidden="true"></canvas><span class="station-build-check" aria-hidden="true">✓</span></div><div class="station-build-copy"><div class="station-build-meta"><span>' + item.rooms + (item.rooms === 1 ? ' ROOM' : ' ROOMS') + '</span>' + (bays ? '<span>'+bays+'-STEP LINE</span>' : '') + '</div><b>' + esc(item.name) + '</b><small>' + esc(item.description) + '</small></div>';
-      const bounds = WorldModel.create(doc).bounds(), ctx = button.querySelector('canvas').getContext('2d');
-      ctx.scale(2,2);
-      const theme = getComputedStyle(root), accent = theme.getPropertyValue('--ph').trim() || '#b6a375';
-      const scale = Math.min(210/(bounds.maxTx-bounds.minTx+1),120/(bounds.maxTy-bounds.minTy+1));
-      const ox = (230-(bounds.maxTx-bounds.minTx+1)*scale)/2, oy = (140-(bounds.maxTy-bounds.minTy+1)*scale)/2;
-      for (const room of Object.values(doc.rooms)) for (const r of room.rects) {
-        ctx.fillStyle = room.kind==='corridor'?'#343636':room.floorMat==='plank'?'#494139':'#343e43'; ctx.strokeStyle=accent;
-        const x=ox+(r.x1-bounds.minTx)*scale,y=oy+(r.y1-bounds.minTy)*scale,w=(r.x2-r.x1+1)*scale,h=(r.y2-r.y1+1)*scale;
-        ctx.fillRect(x,y,w,h);ctx.strokeRect(x+.5,y+.5,w-1,h-1);
-      }
-      for(const key of Object.keys(doc.belts)) {const [x,y]=key.split(',').map(Number);ctx.fillStyle='#b6a375';ctx.fillRect(ox+(x-bounds.minTx)*scale,oy+(y-bounds.minTy)*scale,scale,scale);}
-      for(const p of doc.props) {ctx.fillStyle=WorldModel.capForProp(p.t)?'#d2b276':'#6d957e';ctx.fillRect(ox+(p.x-bounds.minTx)*scale,oy+(p.y-bounds.minTy)*scale,Math.max(2,p.w*scale),Math.max(2,p.h*scale));}
-      button.onclick = () => {
+      const bays = doc ? doc.props.filter(p=>p.t==='bay').length : 0, lines = !doc && item.stats ? item.stats.lines : 0;
+      button.innerHTML = '<div class="station-build-art"><canvas width="460" height="280" aria-hidden="true"></canvas><span class="station-build-check" aria-hidden="true">✓</span></div><div class="station-build-copy"><div class="station-build-meta"><span>' + item.rooms + (item.rooms === 1 ? ' ROOM' : ' ROOMS') + '</span>' + (bays ? '<span>'+bays+'-STEP LINE</span>' : lines ? '<span>' + lines + (lines === 1 ? ' LINE' : ' LINES') + '</span>' : '') + '</div><b>' + esc(item.name) + '</b><small>' + esc(item.description) + '</small></div>';
+      const cv = button.querySelector('canvas'), ctx = cv.getContext('2d');
+      if (doc) { ctx.scale(2,2); drawPlan(ctx, doc, 230, 140); }
+      else if (item.picture) item.picture().then(url => {
+        const im = new Image();
+        im.onload = () => { const k = Math.min(cv.width / im.width, cv.height / im.height), w = im.width * k, h = im.height * k; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(im, (cv.width - w) / 2, (cv.height - h) / 2, w, h); };
+        im.src = url;
+      }).catch(() => {});
+      const choose = () => {
         selected=item;armed=false;apply.disabled=false;apply.textContent='USE '+item.name;
         for(const b of g.querySelectorAll('[data-station-build]'))b.setAttribute('aria-pressed',b===button?'true':'false');
         status.innerHTML=preview();
+      };
+      button.onclick = () => {
+        if (item.file || !item.open) return choose();
+        if (button.dataset.opening) return;
+        button.dataset.opening = '1'; status.textContent = 'Opening ' + item.name + '…';
+        item.open().then(r => { item.file = r.text; preview = r.preview; choose(); })
+          .catch(e => { status.textContent = String(e && e.message || 'That map could not be opened.'); sfx('bad'); })
+          .finally(() => { delete button.dataset.opening; });
       };
       grid.appendChild(button);
       return button;
@@ -2947,6 +2953,9 @@ const Build = (() => {
       addCard(item, doc, g.querySelector('[data-build-section="' + (item.group === 'work' ? 'work' : 'look') + '"] .station-build-grid'), () => presetPreviewHTML(item, doc));
     }
     wireSharedBuilds(g, status, addCard);
+    wireCommunityMaps(g, status, addCard);
+    const shareKey = g.querySelector('[data-share-community]');
+    if (shareKey) shareKey.onclick = () => openShareToCommunity(g.querySelector('[data-build-section="shared"]'), status);
     apply.onclick = () => {
       if(!selected)return;
       if(!armed){armed=true;apply.textContent='CONFIRM — USE '+selected.name;status.textContent='Replace the current rooms, props, and conveyors with '+selected.name+'? Agents and conversations remain. Click again to apply.';return;}
@@ -2977,6 +2986,114 @@ const Build = (() => {
      the crew's desks, step instructions, Inbox folders and limits, connections and made props. IMPORT reads a file back
      through the SAME cleaner and shows it as a card, so it lands through the presets' own confirm, backup and one-step
      undo. Nothing is fetched or sent anywhere: a build travels however the Commander chooses to pass the file on. */
+  /* THE FLOOR PLAN of a station doc (the preset cards' sketch): rooms, belts, props, fitted into w×h with a margin.
+     Also the community picture whenever the stage's own still would not match the build (communitymaps.js). */
+  function drawPlan(ctx, doc, w, h) {
+    const bounds = WorldModel.create(doc).bounds();
+    const accent = (root && getComputedStyle(root).getPropertyValue('--ph').trim()) || '#b6a375';
+    const pad = Math.min(10, w * .045);
+    const scale = Math.min((w-2*pad)/(bounds.maxTx-bounds.minTx+1),(h-2*pad)/(bounds.maxTy-bounds.minTy+1));
+    const ox = (w-(bounds.maxTx-bounds.minTx+1)*scale)/2, oy = (h-(bounds.maxTy-bounds.minTy+1)*scale)/2;
+    for (const room of Object.values(doc.rooms)) for (const r of room.rects) {
+      ctx.fillStyle = room.kind==='corridor'?'#343636':room.floorMat==='plank'?'#494139':'#343e43'; ctx.strokeStyle=accent;
+      const x=ox+(r.x1-bounds.minTx)*scale,y=oy+(r.y1-bounds.minTy)*scale,rw=(r.x2-r.x1+1)*scale,rh=(r.y2-r.y1+1)*scale;
+      ctx.fillRect(x,y,rw,rh);ctx.strokeRect(x+.5,y+.5,rw-1,rh-1);
+    }
+    for(const key of Object.keys(doc.belts)) {const [x,y]=key.split(',').map(Number);ctx.fillStyle='#b6a375';ctx.fillRect(ox+(x-bounds.minTx)*scale,oy+(y-bounds.minTy)*scale,scale,scale);}
+    for(const p of doc.props) {ctx.fillStyle=WorldModel.capForProp(p.t)?'#d2b276':'#6d957e';ctx.fillRect(ox+(p.x-bounds.minTx)*scale,oy+(p.y-bounds.minTy)*scale,Math.max(2,p.w*scale),Math.max(2,p.h*scale));}
+  }
+
+  /* SHARE TO COMMUNITY (community maps, 2026-10-18). Opens IN the SHARED BUILDS section (never a popup): the picture
+     that will go with it, a name, a credit, an optional line and the CC BY agreement. SEND FOR REVIEW hands the cleaned
+     build to the linked account; what it says next is what the cloud answered — a share is a request for review. */
+  const MAP_CREDIT_KEY = 'starnet.communityMapCredit';
+  function openShareToCommunity(section, status) {
+    const grid = section.querySelector('.station-build-grid');
+    if (!grid || typeof CommunityMaps === 'undefined') return;
+    const r = BuildShare.exportBuild(station.serialize(), WorldModel, { name: station.doc().meta.name });
+    if (r.error) { status.textContent = 'This station could not be shared: it has no layout to send.'; sfx('bad'); return; }
+    const read = BuildShare.readBuild(r.text, WorldModel, 1);
+    const pic = CommunityMaps.picture(read.doc, r.dropped, drawPlan);
+    let credit = ''; try { credit = localStorage.getItem(MAP_CREDIT_KEY) || ''; } catch (_) {}
+    const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+    const travels = [n(r.stats.rooms, 'room', 'rooms'), n(r.stats.props, 'prop', 'props')].concat(r.stats.lines ? [n(r.stats.lines, 'line', 'lines')] : []).join(' · ');
+    grid.hidden = true;
+    section.querySelector('.station-build-sharepanel')?.remove();
+    const panel = document.createElement('div');
+    panel.className = 'station-build-sharepanel';
+    panel.innerHTML = '<div class="sbs-pic"><img alt="The picture that goes with this map"></div><div class="sbs-form">' +
+      '<label for="sbs-title">NAME</label><input id="sbs-title" class="refit-input" maxlength="40" autocomplete="off">' +
+      '<label for="sbs-credit">CREDIT ME AS</label><input id="sbs-credit" class="refit-input" maxlength="40" autocomplete="off" placeholder="your name or handle">' +
+      '<label for="sbs-desc">ONE LINE ABOUT IT <span class="sbs-dim">optional</span></label><input id="sbs-desc" class="refit-input" maxlength="200" autocomplete="off">' +
+      '<label class="sbs-agree"><input type="checkbox" id="sbs-agree"> <span>I made this station and share it under CC BY 4.0: anyone may build it and change it, with credit to me.</span></label>' +
+      '<p class="sbs-travel">Only the layout travels: <b>' + esc(travels) + '</b>. Your crew, step instructions, project folders and connections stay home' + (r.dropped.made ? ', and so do your ' + n(r.dropped.made, 'made prop', 'made props') : '') + '.' + (pic.why ? ' ' + esc(pic.why) : '') + '</p>' +
+      '<p class="sbs-travel">A person looks at every map before it appears in the community gallery.</p>' +
+      '<div class="sbs-keys"><button class="bb refit-primary" type="button" data-sbs-send>SEND FOR REVIEW</button><button class="bb" type="button" data-sbs-cancel>CANCEL</button></div></div>';
+    panel.querySelector('img').src = pic.dataUrl;
+    const title = panel.querySelector('#sbs-title'), creditIn = panel.querySelector('#sbs-credit'), desc = panel.querySelector('#sbs-desc'), agree = panel.querySelector('#sbs-agree');
+    title.value = String(station.doc().meta.name || '').slice(0, 40); creditIn.value = credit;
+    const send = panel.querySelector('[data-sbs-send]');
+    const close = () => { panel.remove(); grid.hidden = false; };
+    panel.querySelector('[data-sbs-cancel]').onclick = () => { close(); status.textContent = 'Nothing was shared.'; };
+    send.onclick = async () => {
+      const fields = { title: title.value.trim(), credit: creditIn.value.trim(), description: desc.value.trim(), agree: agree.checked, build: r.text, still: pic.dataUrl };
+      if (!fields.title) { status.textContent = 'Give the map a name.'; title.focus(); return; }
+      if (!fields.credit) { status.textContent = 'Add the name you want credited in the gallery.'; creditIn.focus(); return; }
+      if (!fields.agree) { status.textContent = 'Turn on the CC BY 4.0 agreement to share it: it is how others may build your station.'; agree.focus(); return; }
+      send.disabled = true; send.textContent = 'SENDING…'; status.textContent = 'Sending ' + fields.title + ' for review…';
+      try { localStorage.setItem(MAP_CREDIT_KEY, fields.credit); } catch (_) {}
+      const res = await CommunityMaps.share(fields);
+      send.disabled = false; send.textContent = 'SEND FOR REVIEW';
+      if (res.ok && res.submission) {
+        close();
+        status.innerHTML = '<span>Sent for review: <b>' + esc(res.submission.title || fields.title) + '</b>.</span><span class="station-build-need">A person looks at it next. Once it is approved it appears in the community gallery with your name on it. Your Maps tab on account.starnetos.com shows where it stands.</span>';
+        sfx('click');
+        return;
+      }
+      status.textContent = res.linked === false
+        ? 'Link this station to your StarNet account first (STORE › LINK STATION). A free account works. Nothing was shared.'
+        : (res.error || 'StarNet refused the map.') + (res.status === 0 ? '' : ' Nothing was shared.');
+      sfx('bad');
+    };
+    section.appendChild(panel);
+    title.focus(); title.select();
+  }
+
+  /* COMMUNITY MAPS: the signed gallery, as the sidecar verified it. A card's picture and file come only through the
+     sidecar (every byte checked against the signed index); choosing one opens it through BuildShare.readBuild, so it
+     lands through the same confirm, backup and undo as a preset. */
+  function wireCommunityMaps(g, status, addCard) {
+    const section = g.querySelector('[data-build-section="community"]');
+    if (!section || typeof CommunityMaps === 'undefined') return;
+    const grid = section.querySelector('.station-build-grid'), note = section.querySelector('.station-build-community-note');
+    const refresh = section.querySelector('[data-community-refresh]');
+    const render = async (fresh) => {
+      note.textContent = 'Reading the community gallery…'; refresh.disabled = true;
+      const c = await CommunityMaps.load(fresh);
+      refresh.disabled = false;
+      for (const old of grid.querySelectorAll('[data-station-build]')) old.remove();
+      if (!c.ok) { note.textContent = c.off ? 'The community gallery is switched off on this station.' : 'The community gallery could not be read: ' + String(c.error || 'unknown error') + '.'; return; }
+      if (!c.maps.length) { note.textContent = 'No community maps yet. Be the first: SHARE TO COMMUNITY, above.'; return; }
+      note.textContent = c.maps.length + (c.maps.length === 1 ? ' map' : ' maps') + ', each one checked by a person.';
+      for (const m of c.maps) {
+        const item = {
+          id: 'community-' + m.slug, name: m.title, rooms: m.stats.rooms, stats: m.stats,
+          description: 'by ' + m.credit + (m.description ? ' · ' + m.description : ''),
+          picture: () => CommunityMaps.stillUrl(m),
+          open: async () => {
+            const text = await CommunityMaps.buildText(m);
+            const r = BuildShare.readBuild(text, WorldModel, station.doc()._nid + 100);
+            if (!r.ok) throw new Error(r.message);
+            return { text, preview: () => sharedBuildCopy(m.title, r.stats, r.dropped, 'By ' + esc(m.credit) + ' · CC BY 4.0 · ') };
+          }
+        };
+        addCard(item, null, grid, () => '');
+      }
+    };
+    refresh.onclick = () => render(true);
+    render(false);
+  }
+
   function sharedBuildCopy(name, stats, dropped, lead) {
     const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
     const left = ['Crew, step instructions, project folders and connections stay with the station that made it.'];
