@@ -193,6 +193,10 @@ function filesUnder(dir) {
     await waitUntil(() => sentTo(OWNER, from).some(s => /Idle|Working/.test(String(s.text || ''))), 8000, 'barrier /status');
     await sleep(900);
   }
+  // "Spends no model call" is a claim about THAT message, so it is measured by what reached the model, not by a raw
+  // request count: the station's own background passes (the quest master's slate refresh, live-caught 2026-10-19)
+  // hit the same mock endpoint on their own schedule and landed inside the window under load.
+  const callsCarrying = (text, from) => llm.runs.slice(from).filter(r => JSON.stringify(r.messages || []).indexOf(text) >= 0);
   let child = null;
   try {
     let live = await boot(await allocatePort(), env, 20);
@@ -212,7 +216,7 @@ function filesUnder(dir) {
     tg.group(G, OWNER, '@' + BOT + ' what is two plus two?');
     await settled();
     A.eq(sentTo(G, mark).length, 0, 'before /allow an @mention in the group gets no reply');
-    A.eq(llm.runs.length, runs0, 'before /allow an @mention in the group spends no model call');
+    A.eq(callsCarrying('what is two plus two?', runs0).length, 0, 'before /allow an @mention in the group spends no model call');
 
     // ---- 3. the owner admits the group ----------------------------------------------------------------
     mark = tg.sends.length;
@@ -227,6 +231,7 @@ function filesUnder(dir) {
     tg.group(G, MEMBER, '@' + BOT + ' what is two plus two?');
     await waitUntil(() => sentTo(G, mark).some(s => /GROUP ANSWER/.test(String(s.text || ''))), 15000, 'the model answer to an @mention in the admitted group');
     A.ok(llm.runs.length > runs0, 'the @mention in the admitted group ran the model');
+    A.ok(callsCarrying('what is two plus two?', runs0).length > 0, 'that message reached the model (the no-call checks measure by this same match, so they can see a leak)');
 
     // ---- 5. wake word: calling the bot by its getMe NAME is being addressed ----------------------------
     mark = tg.sends.length;
@@ -239,7 +244,7 @@ function filesUnder(dir) {
     tg.group(G, MEMBER, 'lunch at noon, everyone?');
     await settled();
     A.eq(sentTo(G, mark).length, 0, 'an unaddressed group message gets no reply');
-    A.eq(llm.runs.length, runs0, 'an unaddressed group message spends no model call');
+    A.eq(callsCarrying('lunch at noon, everyone?', runs0).length, 0, 'an unaddressed group message spends no model call');
 
     // ---- 6. /mention observe: heard and filed, never answered ------------------------------------------
     mark = tg.sends.length;
@@ -249,7 +254,7 @@ function filesUnder(dir) {
     tg.group(G, MEMBER, 'the hangar code is 4471-OBSERVED');
     await settled();
     A.eq(sentTo(G, mark).length, 0, 'an observed message gets no reply');
-    A.eq(llm.runs.length, runs0, 'an observed message spends no model call');
+    A.eq(callsCarrying('4471-OBSERVED', runs0).length, 0, 'an observed message spends no model call');
     const filed = filesUnder(path.join(ws, 'channels')).some(f => { try { return fs.readFileSync(f, 'utf8').indexOf('4471-OBSERVED') >= 0; } catch (_) { return false; } });
     A.ok(filed, 'the observed message was filed in the chat history (observeUnmentioned reaches the adapter)');
     mark = tg.sends.length;
