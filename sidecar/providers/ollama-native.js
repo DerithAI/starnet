@@ -260,10 +260,14 @@
      A missing row does not establish that a load is underway; a loaded row does not prove prompt reading.
      Pure: psJson is the /api/ps body (or null when it could not be read). `place` says where the server is
      ('on this computer' for loopback, else 'at <host>'): a GPU box on the LAN is not this computer. */
+  function psRow(psJson, model) {
+    const id = String(model || '');
+    return psJson && Array.isArray(psJson.models) ? psJson.models.find(m => m && (m.name === id || m.model === id)) || null : null;
+  }
   function placementNote(psJson, model, promptTokens, place) {
     const server = 'Ollama ' + (place || 'on this computer');
     const id = String(model || '');
-    const row = psJson && Array.isArray(psJson.models) ? psJson.models.find(m => m && (m.name === id || m.model === id)) : null;
+    const row = psRow(psJson, model);
     const prompt = promptTokens > 0 ? ' a ~' + Math.round(promptTokens / 1000) + 'k-token prompt' : ' the prompt';
     if (!psJson) return server + ' sent nothing back, and its status (/api/ps) could not be read.';
     if (!row) return server + ' sent nothing back, and ' + id + ' was not listed as loaded when its status was checked. It may still be loading, but this status does not establish why no response arrived.';
@@ -277,13 +281,32 @@
       + (!vram || (size && vram < size) ? 'A model running on the CPU reads StarNet task prompts slowly; a smaller model, or one that fits the GPU, answers sooner.' : '');
   }
 
+  /* THE SAME EVIDENCE AS ONE SHORT LINE, while a request is still unanswered (#99). Ollama sends no headers until its
+     first token, so a model load and a long prompt read are one silent pending request; the live wait line shows this
+     instead of nothing. Facts only, in Ollama's own terms (its `ollama ps` PROCESSOR column reads "55%/45% CPU/GPU"):
+     the prompt size StarNet sent, where the model sits, the window it holds. Never a stage: a loaded row does not prove
+     the prompt is being read, a missing row does not prove a load. `server` names a remote one ('Ollama at <host>'). */
+  function placementFacts(psJson, model, promptTokens, server) {
+    const who = server || 'Ollama';
+    const prompt = promptTokens > 0 ? '~' + Math.round(promptTokens / 1000) + 'k-token prompt · ' : '';
+    if (!psJson) return prompt + who + '\'s status (/api/ps) could not be read';
+    const row = psRow(psJson, model);
+    if (!row) return prompt + who + ' does not list it as loaded';
+    const size = Number(row.size) || 0, vram = Number(row.size_vram) || 0;
+    const ctx = Number(row.context_length) || 0;
+    const gpu = size ? Math.round(vram / size * 100) : 0;
+    const where = !vram ? ' runs it entirely on CPU'
+      : (size && vram < size) ? ' has it ' + gpu + '% on GPU, ' + (100 - gpu) + '% on CPU'
+      : ' has it fully on GPU';
+    return prompt + who + where + (ctx ? ' at a ' + Math.round(ctx / 1024) + 'k window' : '');
+  }
+
   // The window a model is CURRENTLY loaded at according to /api/ps, or 0 (not loaded / unreadable).
   function loadedWindow(psJson, model) {
-    const id = String(model || '');
-    const row = psJson && Array.isArray(psJson.models) ? psJson.models.find(m => m && (m.name === id || m.model === id)) : null;
+    const row = psRow(psJson, model);
     return row ? (Math.floor(Number(row.context_length)) || 0) : 0;
   }
 
-  return { CTX_LADDER, DEFAULT_MAX_CTX, placementNote, loadedWindow, nativeRoot, leadingSystemMessages, toNativeMessages, toNativeRequest, estimateTokens, pickNumCtx,
+  return { CTX_LADDER, DEFAULT_MAX_CTX, placementNote, placementFacts, loadedWindow, nativeRoot, leadingSystemMessages, toNativeMessages, toNativeRequest, estimateTokens, pickNumCtx,
     exceedFrom, makeChunkTranslator, showFacts };
 });

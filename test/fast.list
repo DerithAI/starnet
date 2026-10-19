@@ -26,6 +26,7 @@ test/diagnostics-dead-engine.test.js
 test/diagnostics-copy-gesture.test.js
 test/bootguard.test.js
 test/mac-boot-compat.test.js
+test/webkit-floor-syntax.test.js
 test/live-doctor.test.js
 test/live-doctor-ui.test.js
 test/report-0110-regressions.test.js
@@ -43,6 +44,7 @@ test/logbound.test.js
 test/budget.test.js
 test/budget-caps.test.js
 test/budget-stop-door.test.js
+test/unpriced-ceiling-setting.test.js
 test/fallback-chain.test.js
 test/voice-chat-route.test.js
 test/configexport.test.js
@@ -102,6 +104,7 @@ test/provider.openrouter.test.js
 test/provider.openai-compatible.test.js
 test/provider.ollama-native.test.js
 test/provider.ollama-system.test.js
+test/ollama-wait-truth.test.js
 test/provider.host-notes.test.js
 test/provider.host-fences.test.js
 test/realtime-voice.test.js
@@ -232,6 +235,7 @@ scripts/lint-evidence-secrets.mjs
 test/environment.test.js
 test/servicekeys.test.js
 test/servicekeys.env.test.js
+test/onepassword.test.js
 test/web-request.test.js
 test/servicekeys-catalog.test.js
 test/tools.test.js
@@ -334,6 +338,7 @@ test/voice.draftguard.test.js
 test/save.test.js
 test/saveversion.test.js
 test/backup-secrets.test.js
+test/station-export-location.test.js
 test/schema-stamp.test.js
 test/rename-migrate.test.js
 test/update-state-parity.test.js
@@ -1084,6 +1089,8 @@ test/projection-load-geometry.test.js
 dev/industrial-textures/prop-catalog-review.test.cjs
 test/projection-depth-rendering.test.js
 test/station-templates.test.js
+test/build-share.test.js
+test/community-maps.test.js
 test/remaster-physical-fit.test.js
 test/arrival.test.js
 test/genesis-wake-credential.test.js

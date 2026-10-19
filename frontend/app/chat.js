@@ -422,8 +422,11 @@ const Chat = (() => {
         retry: { attempt: p.attempt, maxAttempts: p.maxAttempts, reason: String(p.reason || ''), delayMs: p.delayMs } };
     }
     if (name === 'agent.waiting') {
-      // a beat during the backoff keeps the retry it belongs to; any other phase means the retry already went out
+      // a beat during the backoff keeps the retry it belongs to; any other phase means the retry already went out.
+      // `note` = the sidecar's own facts about this wait, as the beat states them (#99: where Ollama has the model); a beat
+      // without one means there is none now, so it is never carried over from an earlier beat.
       return { model: String(p.model || (prev && prev.model) || ''), phase: String(p.phase || ''), sinceMs: p.sinceMs,
+        note: String(p.note || '').slice(0, 240),
         retry: (p.phase === 'retry_backoff' && prev && prev.retry) ? prev.retry : null };
     }
     if (name === 'agent.token') return p.delta ? null : prev;   // an empty delta shows the Commander nothing
@@ -457,6 +460,8 @@ const Chat = (() => {
     }
     if (n.phase === 'retry_backoff') return 'retry backoff' + (since >= 1000 ? ', ' + fmtElapsed(since) + ' so far' : '') + ' — ' + name;
     const dur = since >= 1000 ? ' for ' + fmtElapsed(since) : '';
+    // the sidecar's facts about the wait (#99, a local Ollama: prompt size, GPU/CPU share, window) follow the duration
+    if (n.note) return 'waiting' + dur + ' · ' + n.note + ' — ' + name;
     if (n.phase === 'connect') return 'connecting' + dur + ' to ' + name;   // (the model id is always LAST: renderPresence splits it off)
     return 'waiting' + dur + (n.phase === 'streaming' ? ' (stream open)' : '') + ' on ' + name;
   }
@@ -9067,6 +9072,7 @@ const Chat = (() => {
   // Budget-stop legibility (2026-07-23): a 'budget' stop names WHICH spend cap fired and how big it is, in money
   // words — the old "reached this run's limit" read as a runtime setting and sent users hunting in the wrong
   // panel. Scope/cap ride the additive agent.run.end fields; an old sidecar omits them and gets the generic line.
+  // Issue #135: the unpriced ceiling's own lever is its Runtime limits row; a save applies from the next run.
   function budgetStopLine(scope, capUsd, atBalance, unpriced, subscription) {
     /* THE UNPRICED-MODEL TOKEN CEILING IS NOT A $ CAP (2026-10-11). A model with no known price is bounded per run in
        TOKENS (loop.js maxUnpricedTokens, 2,000,000 by default); the $ settings never read it, so "hit the per-run spend
@@ -9074,7 +9080,7 @@ const Chat = (() => {
        agent.run.end fields. Name the real limit and the real ways out. */
     if (unpriced && unpriced.model) {
       const n = Number(unpriced.capTokens) > 0 ? Number(unpriced.capTokens).toLocaleString('en-US') + '-token' : 'token';
-      return 'hit the ' + n + ' safety ceiling for ' + unpriced.model + ', a model StarNet has no price for — raising the $ spending limit does not change this; pick a priced model to keep going';
+      return 'hit the ' + n + ' safety ceiling for ' + unpriced.model + ', a model StarNet has no price for — raising the $ spending limit does not change this; raise UNPRICED MODEL TOKEN CEILING in SETTINGS › APP & BACKUP › Runtime limits (0 = no ceiling), or pick a priced model to keep going';
     }
     // nor is the SUBSCRIPTION-token ceiling (loop.js maxSubscriptionTokens): a Claude Code sign-in books $0 per turn
     if (subscription && subscription.model) {
