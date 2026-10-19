@@ -286,6 +286,7 @@ const mcpSchemaCache = require('./mcp/schema-cache.js');
 const connectorCatalog = require('./mcp/catalog.js');       // curated one-click MCP connector catalog (pure data + selectors)
 const serviceKeysMod = require('./servicekeys.js');         // ABILITIES › SAVED API CONNECTIONS: custom service API keys (pure core — env injection + masked list)
 const serviceKeysCatalog = require('./servicekeys-catalog.js');   // SAVED API CONNECTIONS: the curated PLATFORM directory (pure data)
+const onePassword = require('./onepassword.js');             // KEYS: op:// references read with the 1Password CLI, held in memory only
 const mcpOauth = require('./mcp/oauth.js');                 // generic OAuth 2.1 client for MCP connectors (discover/DCR/PKCE/refresh)
 const { sameEndpoint, resolveConnectorOauthTarget, catalogSignInAvailable, signedInConfig } = require('./mcp/oauth-target.js');
 const connectorStateMod = require('./connectorstate.js');   // one transactional envelope for connector config + OAuth secrets
@@ -5195,7 +5196,7 @@ function saveExecutionSettings(next) {
 // web_request. Host authority — it comes from the run, never from tool args.
 const executionEnvironmentDeps = { spawn: childSpawn, fs: fs, pathMod: path, root: WORKSPACES, bg: shellBg, redact: redact, clock: { now: () => Date.now() }, env: process.env,
   ledger: procLedger,   // h2 F2: the LOCAL backend receipts foreground shell children for the boot orphan sweep
-  serviceEnv: (surface) => serviceKeysMod.runEnv(serviceKeys, process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
+  serviceEnv: (surface) => serviceKeysMod.runEnv(liveServiceKeys(), process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
   idleCleanupMs: () => Number(executionSettings.idleCleanupMinutes || 0) * 60000,
   sshConfig: (agentId) => executionSettingsMod.targetFor(executionSettings, agentId),
   // station-wide reap (E-STOP / Quit / shutdown): every agent with a configured remote target, read lazily so a
@@ -5904,7 +5905,21 @@ function applyServiceKeyCatalogPolicy(record) {
 }
 let serviceKeys = loadServiceKeys();
 let serviceKeysOwnedEnv = {};   // env vars WE set (the applyEnv clobber guard) — rebuilt on every apply
-function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(serviceKeys, process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
+/* 1PASSWORD REFERENCES: a KEYS row may hold op://vault/item/field instead of the key (servicekeys.js stores only the
+   reference). The value lives ONLY in this cache, read with the 1Password CLI on save and before a run that may spend
+   it. `serviceKeys` stays the PERSISTED list (every edit + save goes through it); liveServiceKeys() is the list every
+   SPENDER reads: the env, web_request, the prompt block, the panel and known-value redaction. Spend from serviceKeys
+   and a 1Password key silently vanishes; persist liveServiceKeys() and its value lands on disk. */
+const serviceKeyRefs = onePassword.makeRefCache({
+  reader: onePassword.makeOpReader({ execFile: execFile, env: process.env, platform: process.platform, join: path.join,
+    exists: p => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } } }),
+  now: () => Date.now(),
+  sleep: ms => new Promise(res => { const t = setTimeout(res, ms); if (t && t.unref) t.unref(); }),
+  onChange: () => applyServiceKeysEnv()   // a new value reaches the next shell child at once
+});
+function liveServiceKeys() { return serviceKeyRefs.live(serviceKeys); }
+function publicServiceKey(record) { return serviceKeysMod.toPublic(serviceKeyRefs.live([record])[0]); }
+function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(liveServiceKeys(), process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
 applyServiceKeysEnv();          // boot: persisted keys are live for the first run without any UI touch
 /* KNOWN-VALUE REDACTION (security audit 2026-09-25). redact() only knew vendor SHAPES, so a shapeless secret —
    a service key the model was promised it would never see, a custom connector token, a Mistral key, a rotated
@@ -5926,7 +5941,7 @@ function stationSecretValues() { return collectSecretValues([
   { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
   // the Gmail app password ALONE (its token is 'address:password'; the whole token is listed above)
   { values: (connectorConfigs || []).map(gmailImapTransport.passwordOf) },
-  { keyed: serviceKeys }
+  { keyed: liveServiceKeys() }   // a value read from 1Password is held only in the live list
 ]); }
 setKnownSecretSource(stationSecretValues);
 // Helper processes: strip the same held values, plus every name the sidecar itself exported (service keys).
@@ -14445,6 +14460,7 @@ async function handleConfigReset(req, res) {
     case 'servicekeys': {
       if (!saveServiceKeyRemoval([])) return json(500, { ok: false, section, error: 'service-key reset could not be verified in both protected recovery copies; active keys were left unchanged' });
       serviceKeys = [];
+      serviceKeyRefs.clear();   // and every value read from 1Password
       applyServiceKeysEnv();   // scrubs the injected env vars only after both disk copies prove the reset
       break;
     }
@@ -14769,7 +14785,7 @@ function handleConnectorsList(req, res) {
    protected sibling file, applied to process.env, and NEVER echoed back (the list carries a masked last4). ---- */
 function handleServiceKeysList(req, res) {
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify({ keys: serviceKeys.map(serviceKeysMod.toPublic).sort((a, b) => a.name.localeCompare(b.name)) }));
+  res.end(JSON.stringify({ keys: liveServiceKeys().map(serviceKeysMod.toPublic).sort((a, b) => a.name.localeCompare(b.name)) }));
 }
 async function handleServiceKeyUpsert(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14783,9 +14799,14 @@ async function handleServiceKeyUpsert(req, res) {
   if (r.error) return json(400, { error: r.error });
   serviceKeys = r.list.map(applyServiceKeyCatalogPolicy);
   const record = serviceKeys.find(row => row.id === r.record.id) || r.record;
+  if (!record.ref) serviceKeyRefs.drop(record.id);   // a pasted key replaced a 1Password reference: forget the value read for it
   applyServiceKeysEnv();
   const saved = saveServiceKeys();   // verified read-back; on false the key is LIVE but not durable — say so honestly
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(record), error: saved ? undefined : 'key is active for this session but could not be verified on disk' });
+  // A 1Password reference is READ now (the Commander is here to unlock and approve), so the row says at once whether it
+  // works. Saved either way: a locked vault is a state to fix, not a reason to lose the reference.
+  if (record.ref) await serviceKeyRefs.refresh(record, { timeoutMs: 60000 });
+  applyServiceKeysEnv();
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(record), error: saved ? undefined : 'key is active for this session but could not be verified on disk' });
 }
 async function handleServiceKeyToggle(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14796,7 +14817,7 @@ async function handleServiceKeyToggle(req, res) {
   serviceKeys = r.list;
   applyServiceKeysEnv();
   const saved = saveServiceKeys();
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(r.record) });
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(r.record) });
 }
 // The PLATFORM directory behind the KEYS picker. Pure curated data + a live `installed` cross-ref against
 // the Commander's own keys; carries no secrets (the store is consulted only for env-var NAMES).
@@ -14819,7 +14840,7 @@ async function handleServiceKeyAutonomy(req, res) {
   if (r.error) return json(serviceKeys.some(row => row && row.id === String(body.id || '')) ? 409 : 404, { error: r.error });
   serviceKeys = r.list;
   const saved = saveServiceKeys();
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(r.record) });
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(r.record) });
 }
 async function handleServiceKeyRemove(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14829,6 +14850,7 @@ async function handleServiceKeyRemove(req, res) {
   const saved = saveServiceKeyRemoval(r.list);
   if (!saved) return json(500, { ok: false, saved: false, removed: false, error: 'key removal could not be verified in both protected recovery copies; the active key was left unchanged' });
   serviceKeys = r.list;
+  serviceKeyRefs.drop(r.removed && r.removed.id);   // and the value read from 1Password, if it was a reference
   applyServiceKeysEnv();   // scrubs the owned env var so the very next run no longer sees it
   return json(200, { ok: true, saved: true, removed: String(body.id || '') });
 }
@@ -15503,7 +15525,7 @@ function widgetSources() {
   const out = connectors.list().map(c => ({ kind: 'connector', id: c.id, label: redact(c.label || c.id),
     state: !c.enabled ? 'disabled' : c.authRequired ? 'sign-in required' : c.state,
     available: c.enabled !== false && ['up', 'cached'].includes(c.state) && !c.authRequired }));
-  for (const k of serviceKeys) if (k && k.key) out.push({ kind: 'servicekey', id: k.envVar,
+  for (const k of liveServiceKeys()) if (k && k.key) out.push({ kind: 'servicekey', id: k.envVar,
     label: redact(k.name), state: k.enabled === false ? 'disabled' : 'configured', available: k.enabled !== false });
   out.push({ kind: 'agent', id: 'starnet', label: 'StarNet', state: 'available', available: true });
   return out;
@@ -20345,7 +20367,7 @@ async function runOnceCore(o) {
     politeness: stationWebPoliteness,
     // reservedEnv lets web_request tell a model-provider key apart from a missing one: KEYS refuses provider
     // keys, so "add it in KEYS" would send the Commander round a loop they can never finish.
-    resolveServiceKey: (name, sfc) => serviceKeysMod.resolveForRequest(serviceKeys, name, sfc, { reservedEnv: SERVICEKEYS_RESERVED_ENV }),
+    resolveServiceKey: (name, sfc) => serviceKeysMod.resolveForRequest(liveServiceKeys(), name, sfc, { reservedEnv: SERVICEKEYS_RESERVED_ENV }),
     // workspace files in outbound requests (${file:...} body refs / multipart parts): resolved through the
     // per-agent workspace jail only (no ctx/pathTrust, unlike fs.read and browser.upload), so a request can only carry this agent's own workspace files.
     readWorkspaceFile: async (aid, rel) => {
@@ -20356,7 +20378,7 @@ async function runOnceCore(o) {
     // ONLY when the Commander has actually connected one. Resolved through the same grant as any other key,
     // so an unattended run without the tick simply uses the direct fallback instead of failing.
     jinaKey: (() => {
-      try { const r = serviceKeysMod.resolveForRequest(serviceKeys, 'JINA_API_KEY', accessSurface); return r.ok ? r.value : ''; }
+      try { const r = serviceKeysMod.resolveForRequest(liveServiceKeys(), 'JINA_API_KEY', accessSurface); return r.ok ? r.value : ''; }
       catch (_) { return ''; }
     })()
   }).register(registry);
@@ -21277,7 +21299,7 @@ async function runOnceCore(o) {
         const refs = [];
         for (const k of Object.keys(hs)) String(hs[k]).replace(/\$\{([A-Z][A-Z0-9_]*)\}/g, (m, n) => { refs.push(n); return m; });
         if (!refs.length) return false;   // references no credential -> nothing was pre-approved; ask/deny as usual
-        return refs.every(n => serviceKeysMod.resolveForRequest(serviceKeys, n, accessSurface).ok);
+        return refs.every(n => serviceKeysMod.resolveForRequest(liveServiceKeys(), n, accessSurface).ok);
       } catch (_) { return false; }
     },
     // UNATTENDED TERMINAL GRANT: this routine's recorded "may use the terminal" approval. Read off the SAME
@@ -22622,8 +22644,14 @@ async function runOnceCore(o) {
     const canShell = kt.indexOf('shell.exec') >= 0;
     const canRequest = kt.indexOf('web_request') >= 0;
     if (canShell || canRequest) {
+      // 1PASSWORD rows this run may spend are read BEFORE the block names them (bounded: an interactive run waits up to
+      // 30 s for the Commander to unlock/approve, an unattended one 15 s). One that cannot be read is named in the block
+      // with the reason, never advertised as present. No 1Password rows -> no wait, no change.
+      const refWaitMs = accessSurface === 'interactive' ? 30000 : 15000;
+      try { if (await serviceKeyRefs.ensureFresh(serviceKeys, { surface: accessSurface, waitMs: refWaitMs, timeoutMs: refWaitMs })) applyServiceKeysEnv(); }
+      catch (e) { failNote('servicekeys.1password', e); }
       // the key syntax follows the shell that runs (#128): %NAME% only for local cmd.exe; Docker/SSH run POSIX sh
-      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
+      const b = serviceKeysMod.promptBlock(liveServiceKeys(), { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
       if (b) serviceKeysBlock = '\n\n' + b;
     }
   } catch (_) { serviceKeysBlock = ''; }
