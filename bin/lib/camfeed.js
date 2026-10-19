@@ -3,8 +3,8 @@
    a bank of wall screens and a whiteboard, a rack and a console), the camera easing after the agent the way the station's
    camera lock does. Each frame is put on StarNet's palette (lit reds on the wordmark's ramp, the rest on the station's warm
    greys) and turned into ASCII: every 3 × 6 px cell becomes the glyph whose shape matches its bright pixels (bin/lib/ascii-glyphs.js),
-   drawn in their colour over a dimmed copy of the picture. Kept dark and fading into the panel's black at its edges, so it
-   sits in the CREW panel rather than on it (LOOK).
+   drawn in their colour on black — pure ASCII, no picture under it. Kept dark and fading into the panel's black at its edges,
+   so it sits in the CREW panel rather than on it (LOOK).
 
    What the agent does follows its real state:
      idle        it goes about the room: coffee, the couch, the wall screens, the whiteboard, the rack, the console — a few
@@ -47,14 +47,14 @@ function nearest(r, g, b) {
   return LUT[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)];
 }
 
-/* THE LOOK: dark, so the feed sits IN the panel rather than on it — the room near black, only real light (screens, the
-   visor) on the red ramp, everything else in deep warm greys, the agent a little brighter than its room, and the picture
-   fading into the panel's own black at its edges. Overridable (STARNET_FEED_LOOK as JSON) for tuning. */
+/* THE LOOK: dark pure ASCII, so the feed sits IN the panel rather than on it — lit characters on black (no picture under
+   them), only real light (screens, LEDs) on the red ramp, everything else in deep warm greys, the agent a little brighter
+   than its room, and the whole fading into the panel's own black at its edges. Overridable (STARNET_FEED_LOOK as JSON) for tuning. */
 const LOOK = Object.assign({
   wall: [15, 11, 12], trim: [60, 15, 21], floorLine: [18, 13, 14],
-  redStrict: 2.0, redGamma: 1.15, redMax: 0.8,
-  greyFloor: 0.04, bgScale: 0.62, bgGamma: 1.05, agentFloor: 0.16, agentScale: 1.0, agentGamma: 0.55,
-  under: 0.26, skip: 0.17, liftBase: 112, liftSpan: 90, liftMax: 1.6,
+  redStrict: 2.0, redGamma: 1.15, redMax: 0.75,
+  greyFloor: 0.04, bgScale: 0.55, bgGamma: 1.05, agentFloor: 0.16, agentScale: 0.9, agentGamma: 0.55,
+  under: 0, skip: 0.14, liftBase: 96, liftSpan: 80, liftMax: 1.45,   // under 0: nothing but the lit characters on black
   vigX: 0.2, vigY: 0.24, rimK: 0.6
 }, (() => { try { return JSON.parse(process.env.STARNET_FEED_LOOK || '{}'); } catch (_) { return {}; } })());
 
