@@ -16072,13 +16072,21 @@ function handleCronUpdate(req, res) {
     } catch (e) { return json(400, { error: (e && e.message) || String(e) }); }
     // pause/resume is not an EDITABLE field on updateJob — pull it out and apply via the dedicated reducers.
     let enabled; if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) { enabled = patch.enabled !== false; delete patch.enabled; }
+    /* GRANT ON AN EXISTING ROUTINE (2026-10-18): `addGrants` (body, beside patch) adds to the grants the routine holds
+       NOW, read inside the lock. The row's ▣ ALLOW IMAGES sends it. A page sending its rendered list instead could
+       re-add a grant that was dropped since that row was drawn (an agent rewriting the task clears them all). */
+    const addGrants = Array.isArray(body.addGrants) ? body.addGrants.map(g => String(g == null ? '' : g).trim()).filter(Boolean) : [];
     try {
       // G4.3: the full edit (updateJob + optional pause/resume) is ONE re-read-modify-write under the lock,
       // so it cannot clobber a concurrent advance and the pause/resume sees the just-updated job.
       await withCronWrite(jobs => {
-        const candidate = Object.assign({}, cronStore.getJob(jobs, id), patch);
+        const current = cronStore.getJob(jobs, id);
+        const edit = addGrants.length
+          ? Object.assign({}, patch, { unattendedGrants: (Array.isArray(patch.unattendedGrants) ? patch.unattendedGrants : ((current && current.unattendedGrants) || [])).concat(addGrants) })
+          : patch;
+        const candidate = Object.assign({}, current, edit);
         if (String(candidate.deliver || 'local').trim() === 'local' && candidate.attachToSession && !(candidate.origin && (candidate.origin.sessionId || candidate.origin.streamId))) throw new Error('follow-up needs a captured session origin');
-        let next = cronStore.updateJob(jobs, id, patch, { now: Date.now(), defaultTz: CRON_HOST_TZ });
+        let next = cronStore.updateJob(jobs, id, edit, { now: Date.now(), defaultTz: CRON_HOST_TZ });
         if (enabled === true) next = cronStore.resumeJob(next, id, { now: Date.now(), defaultTz: CRON_HOST_TZ });
         else if (enabled === false) next = cronStore.pauseJob(next, id);
         return next;
@@ -21290,6 +21298,22 @@ async function runOnceCore(o) {
     // UNATTENDED CONNECTOR GRANT: same host-side source as the authority gate, so an offered MCP tool can
     // never be refused by consent (the incoherent state the terminal lane hit before this was wired).
     connectorGrant: (call, tool) => !execution.taintedBy() && (ownerTrusted || unattendedGrants.indexOf('connectors') >= 0),
+    /* UNATTENDED IMAGES GRANT (2026-10-18): this routine's recorded "may make images" approval, off the same durable
+       job record as the two above, lifted by taint like them. It covers the routine's OWN agent only: a worker it
+       delegates to asks through this broker inside askedBy (attributeAsks) and gets nothing from it, and a line hop
+       is handed unattendedGrants: [] by its caller. */
+    studioGrant: (call, tool) => !askedBy.getStore() && !execution.taintedBy() && unattendedGrants.indexOf('studio') >= 0,
+    // the refusal names the switch that exists, so the model stops inventing one ("pre-authorize image generation on
+    // this routine"). Only a routine's own run gets it; every other autonomous caller keeps the plain refusal.
+    studioRefusal: () => {
+      if (askedBy.getStore() || !(trigger === 'schedule' && String(o.cronJobId || ''))) return null;
+      if (unattendedGrants.indexOf('studio') >= 0 && execution.taintedBy()) {
+        return 'this routine may make images, but that was switched off for the rest of THIS run because it read content from outside StarNet (' +
+          String(execution.taintedBy()).slice(0, 120) + '). No image was made. Do NOT retry it; finish without the picture.';
+      }
+      return 'this routine is not allowed to make images unattended, so no image was made. Do NOT retry it. End your reply with one short clause ' +
+        'telling the Commander they can allow it with ▣ ALLOW IMAGES on this routine in AUTOMATE › SCHEDULES.';
+    },
     surface: surface, prompt: prompt
   });
   // B1 (Cortex seam): thread runId onto capCtx so a tool's dispatch can stamp provenance (sourceRunId)
