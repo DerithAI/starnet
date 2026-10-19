@@ -209,4 +209,11 @@ for (const finishRun of [undefined, () => { throw new Error('cleanup unavailable
   A.eq([L.pendingRuns(), L.markUnsettled('complete'), L.health().durable], [0, false, true], 'durable charge proves completion even without successful receipt cleanup');
 }
 
+// ---- token-burn audit 2026-10-17: the ledger row carries the cache-served input (additive, only when > 0) ----
+{
+  const L = makeLedger({ io: fakeIo(), clock });
+  A.eq(L.record({ runId: 'c1', tokens: 1000, cachedTokens: 640 }).cachedTokens, 640, 'cachedTokens is recorded on the ledger row');
+  A.ok(!('cachedTokens' in L.record({ runId: 'c2', tokens: 1000 })), 'no cache reads, no key (old row shape)');
+}
+
 A.report('ledger.test');

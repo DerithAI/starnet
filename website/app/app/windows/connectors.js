@@ -92,7 +92,7 @@
     // capability your agents can use, grouped into toolsets…"). Every pane in this console had the same
     // stutter. The `desc` is the one that stays — it is also what the search box matches on.
     const secToolsets =
-      '<label class="mc-hint" for="ts-agent">Abilities of</label><select id="ts-agent" class="ab-agent-pick" aria-label="Show the abilities of agent"></select>' +
+      '<label class="mc-hint" for="ts-agent">Show abilities of</label><select id="ts-agent" class="ab-agent-pick" aria-label="Show the abilities of agent"></select>' +
       '<button class="bb xs" id="ts-refresh" type="button">REFRESH ACCESS</button>' +
       '<div id="ts-authority" class="set-about" role="status"></div>' +
       '<div class="ts-core set-row"><span class="ts-glyph" aria-hidden="true">◉</span>' +
@@ -841,7 +841,7 @@
           '<div><b>' + list.filter(t => t.available).length + '</b><span>AVAILABLE</span></div>' +
           '<div><b>' + list.filter(t => tsAvailability(t) === 'NEEDS PROP').length + '</b><span>NEED A PROP</span></div>' +
           '<div><b>' + list.filter(t => !t.available && tsAvailability(t) !== 'NEEDS PROP').length + '</b><span>UNAVAILABLE</span></div></div>' +
-          '<p class="ability-legend">AVAILABLE means this agent has the capability through equipment or access settings. Service connections and task permissions still apply.</p>' +
+          '<p class="ability-legend">AVAILABLE means this agent has the capability through equipment or access settings. Service connections and task permissions still apply. Each switch below applies to every agent.</p>' +
           list.map(tsRowHTML).join('');
         if (body.querySelector('#sp-connect')) setupSpotify(body);   // wire Spotify now the sp-* markup is in the JUKEBOX row
       } catch (_) { if (request !== tsRequest) return; tsAuthorityEl.textContent = 'Effective authority unavailable.'; tsListEl.innerHTML = '<div class="mc-detail">Cannot read current capabilities. Reopen ABILITIES after reconnecting.</div>'; }

@@ -347,6 +347,9 @@
     // /models responses). Both stay null/off unless the profile asserts them — capability claims must
     // come from somewhere provable, never be assumed.
     const sendReasoningEffort = opts.sendReasoningEffort === true;
+    // Prompt-cache breakpoints for an endpoint that relays to a cache_control-honoring backend (the managed proxy ->
+    // OpenRouter): (messages, model, cacheSystemPrefix) -> messages. Absent = the body is byte-identical to before.
+    const cacheControl = typeof opts.cacheControl === 'function' ? opts.cacheControl : null;
     // OUTPUT CEILING (2026-09-15, issue #17): this adapter never capped output, so an endpoint with no ceiling of
     // its own (Ollama) ran to end-of-sequence — a 3B local model typed for ten minutes. Off unless the PROFILE opts
     // in (factory: profile.maxOutputTokens) or the caller passes max_tokens explicitly; hosted endpoints that
@@ -360,6 +363,8 @@
     // classifier couldn't route a dead grok/kimi sign-in to its ⏼ RECONNECT door — users got the
     // keyed-provider "＋ Add a key" door for a keyless subscription sign-in.
     const errLabel = String(opts.label || 'openai-compatible');
+    // false = this endpoint's own ids may be vendor/model (CUSTOM, Ollama): no routed-catalog hint on a refused model (#126)
+    const routedIdHint = opts.routedIdHint !== false;
     const profileSupportsTools = (typeof opts.supportsTools === 'boolean') ? opts.supportsTools : null;
     /* PRICE FAMILY (2026-08-21). OpenAI's /v1/models — and every vendor that clones it — carries NO pricing
        block, so priceOf() returned null on openai/xai/groq/mistral/deepseek/together/fireworks and cost.js
@@ -620,6 +625,7 @@
       // Strict Chat Completions endpoints (Mistral: 422 extra_forbidden) reject StarNet's own bookkeeping keys on a
       // message (ts, streamId, agentId, the `reasoning` parking field) — only Chat Completions message keys leave.
       body.messages = provider.chatWireMessages(body.messages);
+      if (cacheControl) body.messages = cacheControl(body.messages, req.model, req.cacheSystemPrefix);
       // OLLAMA NATIVE: size the window to THIS request before it leaves (the model's trained maximum is one local
       // /api/show, cached per model). requestWithRetry resizes once more if Ollama counts more tokens than estimated.
       let wire = null;
@@ -915,10 +921,16 @@
         // line the user sees only the vendor's bare "invalid model ID" and has no path back (2026-08-25
         // stranded-user incident) — name the mismatch and the fix. Slash-native catalogs (together, fireworks,
         // groq) are safe: their ids resolve on their own endpoints, so this only fires on a real mismatch.
+        // An endpoint the Commander runs or names (CUSTOM: Hive, LiteLLM, vLLM…; Ollama) serves vendor/model ids NATIVELY:
+        // there that line was false and sent a Hive user to switch providers (#126). It names the id that was sent instead.
         if ((res.status === 400 || res.status === 404)
-          && /invalid model|is not a valid model|model .*(does not exist|not found)/i.test(String(detail))
-          && String(body.model || '').indexOf('/') > 0) {
-          detail += ' — "' + body.model + '" is a routed-catalog model id (vendor/model), but this provider calls the vendor API directly. Switch the provider in the model picker (STARNET or OPENROUTER for routed ids), or pick a model from this provider\'s own catalog.';
+          && /invalid model|is not a valid model|model .*(does not exist|not found)/i.test(String(detail))) {
+          const sent = String(body.model || '');
+          if (routedIdHint && sent.indexOf('/') > 0) {
+            detail += ' — "' + sent + '" is a routed-catalog model id (vendor/model), but this provider calls the vendor API directly. Switch the provider in the model picker (STARNET or OPENROUTER for routed ids), or pick a model from this provider\'s own catalog.';
+          } else if (!routedIdHint && sent && String(detail).indexOf(sent) < 0) {
+            detail += ' — the endpoint did not accept the model id "' + sent + '"; check the exact id in your endpoint\'s model list.';
+          }
         }
         const err = new Error(errLabel + ' http ' + res.status + ' - ' + detail);
         err.status = res.status;

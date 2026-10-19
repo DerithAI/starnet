@@ -415,4 +415,12 @@ const clock = { now: () => clk };
   A.eq(s.latest('o1').ownerDirective, true, 'ownerDirective survives a replay from disk');
 }
 
+// ---- token-burn audit 2026-10-17: the cache-served part of a run's input rides the row (additive, only when > 0) ----
+{
+  const s = makeRunStore({ io: memIo(), clock });
+  A.eq(s.record({ runId: 'c1', tokens: 1000, cachedTokens: 800 }).cachedTokens, 800, 'cachedTokens is recorded on the run row');
+  A.ok(!('cachedTokens' in s.record({ runId: 'c2', tokens: 1000 })), 'a run with no cache reads keeps the old row shape (no key)');
+  A.ok(!('cachedTokens' in s.record({ runId: 'c3', tokens: 1000, cachedTokens: 'x' })), 'a garbage value is dropped, never stored');
+}
+
 A.report('runstore.test');

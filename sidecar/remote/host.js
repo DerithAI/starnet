@@ -354,6 +354,9 @@ function makeRemoteHost(d) {
     new Promise((resolve) => setImmediate(resolve)).then(() => d.runOnce({
       key: cred.key, model: cred.model, provider: cred.provider, baseUrl: cred.baseUrl || '', reasoningEffort: cred.reasoningEffort,
       system: o.voice ? withVoiceStyle(cred.system) : cred.system, messages, agentId: o.agentId, isTask,
+      // the persona (host credentials()) carries only its standing half; the station's observed evidence rides this run's
+      // context note (a phone task's brief already carries it, so the host adds it only to a run without one)
+      stationEvidence: true,
       voiceTurn: o.voice === true || undefined,   // a question spoken on a voice-only device is a voice turn: the voice chat model may answer it
       emit, signal: ac.signal, runId, streamId, trigger: 'event',
       surface: 'interactive', prompt, ownerTrusted: true, floorless: true, broadcast: true, reflect: true,

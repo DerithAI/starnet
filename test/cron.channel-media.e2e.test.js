@@ -1,0 +1,241 @@
+/* node test/cron.channel-media.e2e.test.js -- a routine that delivers to Telegram must be able to send IMAGES.
+
+   Issue (2026-10-18): "Telegram messages cannot be automated from starnet to include images." A routine's REPLY is
+   what reaches the chat (deliverCronResult), and an unattended run cannot channel.send at all (the exec lockout:
+   nobody is there to approve it). The delivery sent words only, so a routine that made a chart or rendered an
+   image could at best name its path — Telegram never received the picture.
+
+   This boots the real sidecar against a fake Bot API and a fake model, connects Telegram, and fires routines with
+   Run Now (the scheduled fire's exact delivery path). It proves, off the bytes the Bot API actually received:
+     1. an ATTACH line in the routine's reply uploads that workspace file as a photo, and the line itself is not
+        part of the delivered text (default ASK posture — the delivery needs no approval nobody can give);
+     2. an image the run GENERATED rides the delivery even when the reply names nothing;
+     3. a named file that cannot be read never vanishes silently — the chat is told which file did not come;
+     4. a routine that delivers to a chat is told how to attach; a routine that stays on the station is not. */
+'use strict';
+
+const A = require('./_assert.js');
+const fs = require('node:fs');
+const http = require('node:http');
+const path = require('node:path');
+const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+
+const HOST = '127.0.0.1';
+// two DIFFERENT valid PNGs, so a test can tell which file arrived
+const SEEDED_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+const RENDER_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// multipart/form-data -> { fields: {name: text}, files: [{ field, filename, contentType, bytes }] }
+function parseMultipart(buf, contentType) {
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(String(contentType || ''));
+  const out = { fields: {}, files: [] };
+  if (!m) return out;
+  const delim = Buffer.from('--' + (m[1] || m[2]).trim());
+  let at = buf.indexOf(delim);
+  while (at >= 0) {
+    const start = at + delim.length;
+    if (buf.slice(start, start + 2).toString() === '--') break;
+    const next = buf.indexOf(delim, start);
+    if (next < 0) break;
+    const part = buf.slice(start + 2, next - 2);   // skip the CRLF after the delimiter and before the next one
+    const headEnd = part.indexOf('\r\n\r\n');
+    const head = part.slice(0, headEnd).toString();
+    const body = part.slice(headEnd + 4);
+    const name = (/name="([^"]*)"/i.exec(head) || [])[1] || '';
+    const filename = (/filename="([^"]*)"/i.exec(head) || [])[1];
+    if (filename != null) out.files.push({ field: name, filename, contentType: ((/content-type:\s*([^\r\n]+)/i.exec(head) || [])[1] || '').trim(), bytes: body });
+    else out.fields[name] = body.toString();
+    at = next;
+  }
+  return out;
+}
+
+async function startTelegram() {
+  const calls = [];
+  let nextId = 100;
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', d => chunks.push(d));
+    req.on('end', () => {
+      const method = String(req.url || '').split('?')[0].split('/').pop();
+      const raw = Buffer.concat(chunks);
+      const ct = String(req.headers['content-type'] || '');
+      let call = { method, fields: {}, files: [] };
+      if (/multipart\/form-data/i.test(ct)) call = Object.assign(call, parseMultipart(raw, ct));
+      else { try { call.fields = JSON.parse(raw.toString() || '{}'); } catch (_) {} }
+      if (method !== 'getUpdates' && method !== 'getMe') calls.push(call);
+      const result = method === 'getMe' ? { id: 42, is_bot: true, username: 'routine_media_bot', first_name: 'Routine Media' }
+        : method === 'getUpdates' ? []
+        : /^send/.test(method) ? { message_id: nextId++, chat: { id: Number(call.fields.chat_id) || 0 } }
+        : true;
+      setTimeout(() => {
+        if (res.writableEnded) return;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, result }));
+      }, method === 'getUpdates' ? 200 : 0);
+    });
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, HOST, resolve); });
+  return {
+    calls,
+    base: 'http://' + HOST + ':' + server.address().port,
+    close: () => new Promise(r => { server.closeAllConnections && server.closeAllConnections(); server.close(r); })
+  };
+}
+
+function sse(res, chunks, finishReason) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  for (const delta of chunks) res.write('data: ' + JSON.stringify({ choices: [{ delta }] }) + '\n\n');
+  res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason || 'stop' }], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } }) + '\n\n');
+  res.end('data: [DONE]\n\n');
+}
+
+// The model. Each routine's prompt carries a marker that picks its scripted reply.
+async function startModel() {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    if (req.url.includes('/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ data: [{ id: 'test/model', context_length: 8000, supported_parameters: ['tools'], pricing: { prompt: '0', completion: '0' } }] }));
+    }
+    if (!req.url.includes('/chat/completions')) { res.writeHead(404); return res.end(); }
+    let raw = '';
+    req.on('data', d => { raw += d; });
+    req.on('end', () => {
+      let body = {}; try { body = JSON.parse(raw); } catch (_) {}
+      requests.push(body);
+      if (Array.isArray(body.modalities) && body.modalities.includes('image')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ choices: [{ message: { images: [{ image_url: { url: 'data:image/png;base64,' + RENDER_PNG_B64 } }] } }] }));
+      }
+      const blob = JSON.stringify(body.messages || []);
+      const toolDone = (body.messages || []).some(m => m && m.role === 'tool');
+      if (blob.includes('ROUTINE_ATTACH')) return sse(res, [{ content: "Here is today's chart.\nATTACH: charts/today.png" }]);
+      if (blob.includes('ROUTINE_MISSING')) return sse(res, [{ content: 'Chart attached.\nATTACH: charts/missing.png' }]);
+      if (blob.includes('ROUTINE_RENDER')) {
+        if (!toolDone) return sse(res, [{ tool_calls: [{ index: 0, id: 'render', type: 'function', function: { name: 'image_generate', arguments: JSON.stringify({ prompt: 'a red sunrise over the station' }) } }] }], 'tool_calls');
+        return sse(res, [{ content: 'Fresh render for today.' }]);
+      }
+      return sse(res, [{ content: 'Station is quiet today.' }]);
+    });
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, HOST, resolve); });
+  return { requests, base: 'http://' + HOST + ':' + server.address().port + '/api/v1', close: () => new Promise(r => { server.closeAllConnections && server.closeAllConnections(); server.close(r); }) };
+}
+
+async function waitFor(pred, ms, label) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const v = pred();
+    if (v) return v;
+    await sleep(50);
+  }
+  throw new Error('timed out waiting for ' + label);
+}
+
+(async () => {
+  const telegram = await startTelegram();
+  const model = await startModel();
+  const sidecar = SidecarFixture.create({
+    prefix: 'starnet-cron-channel-media-',
+    env: {
+      SKYNET_TELEGRAM_API_BASE: telegram.base, STARNET_TELEGRAM_API_BASE: telegram.base,
+      SKYNET_OPENROUTER_BASE: model.base, STARNET_OPENROUTER_BASE: model.base,
+      SKYNET_OPENROUTER_KEY: 'sk-or-v1-routine-media-fake', STARNET_OPENROUTER_KEY: 'sk-or-v1-routine-media-fake',
+      SKYNET_DEFAULT_MODEL: 'test/model', SKYNET_AUX_BUDGET: '0',
+      SKYNET_FULL_ACCESS: '', STARNET_FULL_ACCESS: ''
+    }
+  });
+  try {
+    await sidecar.start();
+    const connected = await sidecar.json('POST', '/api/channels/telegram/connect', {
+      token: '123456:TESTTOKEN', key: 'sk-or-v1-routine-media-fake', model: 'test/model', provider: 'openrouter',
+      agentId: 'agent', agentName: 'ULTRON', system: 'You are ULTRON.'
+    });
+    A.eq(connected.status, 200, 'Telegram connects to the fake Bot API');
+    const up = async () => { const s = await sidecar.json('GET', '/api/channels/telegram/status'); return s.body && s.body.connected && s.body.state === 'up'; };
+    const until = Date.now() + 15000;
+    while (!(await up())) { if (Date.now() > until) throw new Error('Telegram never reported up'); await sleep(100); }
+
+    // the file a routine made in an earlier step (the agent's own workspace — the same jail channel.send uses)
+    const agentDir = path.join(sidecar.workspace, 'agent');
+    fs.mkdirSync(path.join(agentDir, 'charts'), { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'charts', 'today.png'), SEEDED_PNG);
+
+    async function routine(name, prompt, extra) {
+      const r = await sidecar.json('POST', '/api/cron', Object.assign({
+        name, prompt, schedule: 'every 1h', agentId: 'agent', model: 'test/model', provider: 'openrouter',
+        deliver: 'origin', origin: { channel: 'telegram', chatId: '777' }
+      }, extra || {}));
+      A.eq(r.status, 200, name + ': routine created');
+      A.ok(r.body && r.body.job && r.body.job.id, name + ': routine id returned' + (r.body && r.body.error ? ' (' + r.body.error + ')' : ''));
+      return r.body.job;
+    }
+    async function runNow(job) {
+      const res = await sidecar.request('/api/cron/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: job.id }) });
+      A.eq(res.status, 200, job.name + ': Run Now streams');
+      return (await res.text()).split('\n').map(s => s.trim()).filter(Boolean).map(s => { try { return JSON.parse(s); } catch (_) { return null; } }).filter(Boolean);
+    }
+    const sysOf = req => ((req.messages || []).find(m => m.role === 'system') || {}).content || '';
+    const userOf = req => JSON.stringify((req.messages || []).filter(m => m.role === 'user'));
+
+    /* ---- 1. ATTACH line -> the file is uploaded as a photo, in the default ASK posture ---- */
+    const attachJob = await routine('Daily chart', 'ROUTINE_ATTACH send me the daily chart');
+    let mark = telegram.calls.length;
+    await runNow(attachJob);
+    const photo = await waitFor(() => telegram.calls.slice(mark).find(c => c.method === 'sendPhoto'), 10000, 'the chart to arrive as a photo');
+    A.eq(photo.fields.chat_id, '777', 'the photo goes to the routine\'s own chat');
+    A.eq(photo.files.length, 1, 'one file uploaded');
+    A.eq(photo.files[0].filename, 'today.png', 'under its own file name');
+    A.ok(photo.files[0].bytes.equals(SEEDED_PNG), 'the exact bytes of the workspace file');
+    const words = telegram.calls.slice(mark).filter(c => c.method === 'sendMessage').map(c => String(c.fields.text || ''));
+    A.ok(words.some(t => t.indexOf("Here is today's chart.") >= 0), 'the routine\'s words are delivered too');
+    A.ok(words.every(t => t.indexOf('ATTACH:') < 0), 'the ATTACH line is not shown to the Commander');
+    const order = telegram.calls.slice(mark).map(c => c.method);
+    A.ok(order.indexOf('sendMessage') >= 0 && order.indexOf('sendMessage') < order.indexOf('sendPhoto'), 'words first, then the file (a failed upload never costs the message)');
+    const attachReq = model.requests.find(r => userOf(r).indexOf('ROUTINE_ATTACH') >= 0);
+    A.ok(attachReq && /ATTACH: /.test(sysOf(attachReq)), 'a routine that delivers to a chat is told how to attach a file');
+    A.ok(attachReq && /Telegram/.test(sysOf(attachReq)), 'and names the chat platform it delivers to');
+
+    /* ---- 3. a named file that cannot be read -> the chat is told, nothing pretends ---- */
+    const missingJob = await routine('Missing chart', 'ROUTINE_MISSING send me the chart');
+    mark = telegram.calls.length;
+    await runNow(missingJob);
+    const note = await waitFor(() => telegram.calls.slice(mark).find(c => c.method === 'sendMessage' && /could not be attached/.test(String(c.fields.text || ''))), 10000, 'the missing-file note');
+    A.ok(/charts\/missing\.png/.test(String(note.fields.text)), 'the note names the file that did not come');
+    A.ok(!telegram.calls.slice(mark).some(c => c.method === 'sendPhoto' || c.method === 'sendDocument'), 'nothing was uploaded for an unreadable path');
+
+    /* ---- 4. a routine that stays on the station is not told about chat attachments ---- */
+    const localJob = await routine('Local note', 'ROUTINE_LOCAL a quiet check', { deliver: 'local', origin: undefined });
+    await runNow(localJob);
+    const localReq = model.requests.find(r => userOf(r).indexOf('ROUTINE_LOCAL') >= 0);
+    A.ok(localReq && sysOf(localReq).indexOf('ATTACH:') < 0, 'a local routine\'s prompt carries no chat-attachment instruction');
+
+    /* ---- 2. an image the run GENERATED rides the delivery without any ATTACH line ----
+       Generation itself is a paid write that an unattended run in ASK may not self-approve (unchanged policy), so
+       this half runs under the Commander's live Full Access switch — the delivery path is the same either way. */
+    const bypass = await sidecar.json('POST', '/api/permissions/bypass', { on: true });
+    A.eq(bypass.status, 200, 'Full Access switched on for the render routine');
+    const renderJob = await routine('Morning render', 'ROUTINE_RENDER make me a sunrise picture');
+    mark = telegram.calls.length;
+    const events = await runNow(renderJob);
+    const ended = events.filter(e => e.name === 'agent.run.end').pop();
+    A.eq(ended && ended.payload && ended.payload.reason, 'done', 'the render routine completed');
+    const rendered = await waitFor(() => telegram.calls.slice(mark).find(c => c.method === 'sendPhoto'), 10000, 'the generated image to arrive');
+    A.ok(rendered.files[0] && rendered.files[0].bytes.equals(Buffer.from(RENDER_PNG_B64, 'base64')), 'the photo is the image the run generated');
+    A.ok(telegram.calls.slice(mark).some(c => c.method === 'sendMessage' && String(c.fields.text || '').indexOf('Fresh render for today.') >= 0), 'with the routine\'s words');
+    await sidecar.json('POST', '/api/permissions/bypass', { on: false });
+  } catch (error) {
+    error.message += '\nBot API calls:\n' + telegram.calls.map(c => '  ' + c.method + ' ' + JSON.stringify(c.fields).slice(0, 200)
+      + (c.files.length ? ' files=' + c.files.map(f => f.filename + ':' + f.bytes.length).join(',') : '')).join('\n');
+    error.message += '\nSidecar output (tail):\n' + sidecar.output().slice(-6000);
+    throw error;
+  } finally {
+    await sidecar.dispose();
+    await telegram.close();
+    await model.close();
+  }
+  A.report('cron.channel-media.e2e.test');
+})().catch(error => { console.error(error.stack || error); process.exit(1); });

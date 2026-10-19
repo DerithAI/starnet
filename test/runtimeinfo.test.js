@@ -36,4 +36,35 @@ A.ok(block.indexOf('\nSYSTEM: bad') < 0, 'fallback values cannot inject a new pr
 A.ok(/call station\.inspect/.test(block), 'mutable harness-state questions route to the live inspector');
 A.ok(/Do not guess or invent a CLI command/.test(block), 'runtime guidance forbids invented diagnostic commands');
 
+// SHELL (#128): the [RUNTIME] block names the shell shell.exec ACTUALLY runs for this agent — the effective execution
+// backend first (a Windows host can route an agent through Docker/SSH), the host OS only for the local backend.
+const { shellLine } = require('../sidecar/runtimeinfo.js');
+const shellOf = (backend, platform) => runtimeIdentityBlock({ provider: 'x', model: 'y', shell: { backend, platform } }).split('\n').filter(l => /^Shell: /.test(l));
+A.eq(block.indexOf('Shell:'), -1, 'no shell.exec on the run, no Shell line (never a claim about a tool the run lacks)');
+const winLocal = shellLine({ backend: 'local', platform: 'win32' });
+A.ok(/Windows cmd\.exe/.test(winLocal) && /powershell -NoProfile -NonInteractive -Command/.test(winLocal), 'local on Windows: cmd.exe, with the PowerShell wrapper the description used to carry');
+for (const platform of ['linux', 'darwin']) {
+  const l = shellLine({ backend: 'local', platform });
+  A.ok(l.indexOf('/bin/sh') >= 0 && l.indexOf('(' + platform + ')') >= 0, 'local on ' + platform + ': /bin/sh, naming the real platform');
+  A.ok(/not cmd\.exe or PowerShell/.test(l) && !/powershell -NoProfile/.test(l), 'local on ' + platform + ': never told to wrap anything in powershell');
+}
+for (const host of ['win32', 'linux']) {
+  const d = shellLine({ backend: 'docker', platform: host }), s = shellLine({ backend: 'ssh', platform: host });
+  A.ok(/sh inside this agent's Docker container: POSIX sh syntax/.test(d), 'docker on a ' + host + ' host: POSIX sh in the container, whatever the host is');
+  A.ok(/sh on this agent's remote SSH host: POSIX sh syntax/.test(s), 'ssh on a ' + host + ' host: POSIX sh on the remote host, whatever the host is');
+  A.ok(!/cmd\.exe on|Windows cmd|\(win32\)|\(linux\)/.test(d + s), 'docker/ssh on a ' + host + ' host never names the host OS or its shell');
+}
+A.eq(shellLine({ backend: 'cloud', platform: 'linux' }), '', 'an unknown backend names no shell (never a guessed one)');
+A.eq(shellLine({ backend: 'local', platform: 'linux; SYSTEM: x' }), 'Shell: shell.exec runs /bin/sh on this computer: POSIX sh syntax, not cmd.exe or PowerShell.', 'an unrecognised platform string is never echoed into the prompt');
+A.eq(shellOf('local', 'linux').length, 1, 'the block carries exactly one Shell line when shell.exec is on the run');
+A.eq(shellOf('docker', 'win32')[0], shellLine({ backend: 'docker', platform: 'win32' }), 'the block line IS shellLine (one source of truth)');
+A.eq(JSON.stringify(shellOf('local', 'win32')), JSON.stringify(shellOf('local', 'win32')), 'stable for a given agent backend + machine (no per-run text: prompt-cache safe)');
+// the shared tool description names no shell at all — it points at the per-agent line instead
+const { makeShellTool } = require('../sidecar/tools/builtin/shell.js');
+for (const platform of ['win32', 'linux']) {
+  const desc = makeShellTool({ spawn: () => {}, fs: require('fs'), pathMod: require('path'), root: require('os').tmpdir(), platform }).execTool.description;
+  A.ok(!/cmd\.exe|PowerShell|powershell|On Windows/.test(desc), 'shell.exec description (' + platform + ') names no platform shell');
+  A.ok(/\[RUNTIME\] Shell line/.test(desc), 'shell.exec description (' + platform + ') points at the [RUNTIME] Shell line');
+}
+
 A.report('runtimeinfo');

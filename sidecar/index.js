@@ -51,7 +51,7 @@ const { makeWorkspaceLease } = require('./workspace-lease.js');
 const { makeWorkspaceOwner, makeBootedAt, describeIdentity: describeOwnerIdentity } = require('./workspace-owner.js');
 const { makeProcessIdentity } = require('./process-identity.js');
 const { classifyWorkspace, workspaceCandidates } = require('./workspace-safety.js');
-const { inspectWorkspaceLineage, startFresh: startFreshWorkspace } = require('./workspace-lineage.js');
+const { inspectWorkspaceLineage, hasStationState, startFresh: startFreshWorkspace } = require('./workspace-lineage.js');
 const workspaceRecovery = require('./workspace-recovery.js');
 const { makeUpdatePreparation } = require('./update-preparation.js');
 const { makeAgentLifecycle } = require('./agent-lifecycle.js');
@@ -210,7 +210,7 @@ function channelBodyError(e) {
     : 'bad json';
 }
 const { MIME, CHANNEL_UPLOAD_MAX_BYTES, mimeForPath, safeDownloadName, isActiveDeliverable, parseRange, isTextDocument, documentViewHtml, DOC_VIEW_CSP, DOC_VIEW_MAX_BYTES } = require('./file-response.js');
-const { reflect, reflectSalient, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
+const { reflect, reflectSalient, refusedAction, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
 const FeedbackMemory = require('./feedbackmemory.js');   // THE COMMANDER'S TASTE: verdicts + corrections -> durable like/dislike memory
 const TasteRef = require('./tasteref.js');   // DESIGN ANCHOR: the rated run's real files / palette / fonts / image args / method, captured on a verdict
 const Failreview = require('./failreview.js');   // failure-review aux pass: PURE lesson producer for FAILED runs (reflect.js mold)
@@ -436,6 +436,7 @@ const { makeStationControlTools, cardFor: stationControlCard } = require('./tool
 const { makeRoutineTools } = require('./tools/builtin/routines.js'); // ROUTINES: agent-created StarNet cron jobs
 const { makeLoopTools } = require('./tools/builtin/loops.js');       // LOOPS: model-facing durable standing-objective controls
 const { makeCommsTools } = require('./tools/builtin/comms.js');      // COMMS: outbound reach — an agent messages a connected chat
+const RoutineMedia = require('./routine-media.js');                   // a chat-bound routine's delivery carries its files (ATTACH lines / generated images)
 const cronGuard = require('./cron-guard.js');                        // routine prompt-injection tripwire (pure, see file header)
 // Every child this file spawns gets the station-secret-free env by default (child-env.js, audit 2026-09-25 #13):
 // git in user repos, shell hooks, loop checks, the folder picker, fs.search's rg. An explicit `env` (the agent
@@ -2672,8 +2673,21 @@ function cronIdentityFor(agentId) {
 }
 // GROWTH Tier 2: the dossier block a cron persona folds in, with the active goal-arc note appended (direction the
 // unattended run should work toward). Empty when both are empty → withDossier stays a no-op (the cron test invariant).
+/* CROSS-RUN CACHE (token-burn follow-up, 2026-10-17). This used to fold the WHOLE evidence pack into the persona —
+   topic counts, open threads, recent activity, verdict tallies and the TRACK RECORD's "X of N recent runs" — so every
+   server-composed system prompt (routine fires, line hops, night-shift beats, loops, workshop shifts, phone runs)
+   differed on every run: 321 of 321 same-agent hop pairs on a real station had different instructions, which moved the
+   Codex cache route and broke every provider's cached prefix between runs. The persona now carries only the STANDING
+   half (dossier + active goal: they change when the Commander changes them, not per run); the observed half rides the
+   run's <run_context> note (stationEvidenceNote, below — runOnceCore's `stationEvidence` option). */
 function dossierWithGoals() {
-  return commanderEvidenceContext('');
+  let goal = null; try { goal = commanderGoals.get() || null; } catch (e) { failNote('persona.goal', e); }
+  return CommanderContext.compose({ dossier: commanderDossier.get(), goal });
+}
+// The per-run half: the same bounded, provenance-labelled evidence block commanderEvidenceContext composes, minus the
+// dossier and goal the persona already carries. '' when the station has observed nothing (never an empty header).
+function stationEvidenceNote() {
+  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), { dossier: '', goal: null }));
 }
 function cronSystemFor(agentId) {
   const ident = cronIdentityFor(agentId);
@@ -3753,7 +3767,7 @@ async function runBackgroundSkillReview(o) {
   finally {
     clearTimeout(timer);
     if (result && result.usd) {
-      try { ledger.record({ runId: reviewRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, model: model || '', unmetered }); } catch (_) {}   // model: the spend row names what it spent on, like every other aux row
+      try { ledger.record({ runId: reviewRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, cachedTokens: result.cachedTokens || 0, model: model || '', unmetered }); } catch (_) {}   // model: the spend row names what it spent on, like every other aux row
     }
   }
   // false asks verdictreview to retry: only a pass that failed before it changed the skillbase (a budget/turn-ceiling/
@@ -3812,7 +3826,7 @@ async function runSkillCurator(o) {
   finally {
     clearTimeout(timer);
     if (result && result.usd) {
-      try { ledger.record({ runId: curatorRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, model: model || '', unmetered }); } catch (_) {}
+      try { ledger.record({ runId: curatorRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, cachedTokens: result.cachedTokens || 0, model: model || '', unmetered }); } catch (_) {}
     }
   }
 }
@@ -5471,7 +5485,7 @@ async function tickOverseer() {
         const instruction = delegatedReportPrompt(members, waiting, review.followUp === true);
         try {
           await runOnceCoreCounted({ agentId: review.agentId, key, provider, baseUrl, model: ident.model,
-            system: ident.system || cronSystemFor(review.agentId), lead: true, isTask: true,
+            system: ident.system || cronSystemFor(review.agentId), stationEvidence: !ident.system, lead: true, isTask: true,
             syntheticTrigger: true,
             surface: 'autonomous', signal: reviewAbort.signal, streamId: parent.id, runId, parentRunId: members[0].runId,
             // the workers' text rides in `instruction`: any tainted worker hands its taint to the reviewing LEAD
@@ -6481,6 +6495,26 @@ const cronEmit = (name, payload) => { try { return cronEmitValidated(name, redac
    Shared by the autonomous notifier and the agent's channel.send tool: a second copy of this fan-out would
    eventually disagree about which adapter serves a channel, and the failure mode is a message going to the
    wrong platform or silently nowhere. */
+/* readChannelUpload(agentId, rel) -> { ok, buffer, name, mime } | { ok:false, error } — the JAIL PROOF for every file
+   that leaves the station for a chat: channel.send's `files` and a routine delivery's attachments (routine-media.js)
+   both read through it. resolveInside is the same proof the fs.* tools and user attachments use, so only a file
+   inside the agent's OWN workspace can go — `../` or an absolute path is a refusal, not a traversal. Never throws:
+   a miss is { ok:false, error } the caller reports honestly. */
+async function readChannelUpload(agentId, rel) {
+  try {
+    // resolveInside THROWS on a jail violation ('illegal path' / 'path escapes workspace') and otherwise
+    // answers { base, abs } — the catch below turns a violation into an honest refusal, never a traversal.
+    const r = await fsJail.resolveInside(String(agentId || ''), String(rel || ''), { scope: 'read' });
+    const abs = r && r.abs;
+    if (!abs) return { ok: false, error: 'that path is outside your workspace' };
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st || !st.isFile()) return { ok: false, error: 'not a file' };
+    if (st.size > CHANNEL_UPLOAD_MAX_BYTES) return { ok: false, error: 'file is ' + Math.round(st.size / (1024 * 1024)) + 'MB (limit ' + Math.round(CHANNEL_UPLOAD_MAX_BYTES / (1024 * 1024)) + 'MB)' };
+    const buffer = await fsp.readFile(abs);
+    if (!buffer.length) return { ok: false, error: 'file is empty' };
+    return { ok: true, buffer: buffer, name: path.basename(abs), mime: mimeForPath(abs) };
+  } catch (e) { return { ok: false, error: (e && e.message) || 'read failed' }; }
+}
 function liveChannelFor(channel) {
   /* The DEV channel is a REAL channel — it has a hub and a working send (it captures replies for
      GET/POST /api/dev/inbound) — it just has no bot server behind it, so it never appears in genericChannels.
@@ -6624,6 +6658,24 @@ function cronReturnsToSession(job) {
   return (mode === 'local' && !!job.attachToSession)
     || (mode === 'origin' && !origin.target && !(origin.channel && origin.chatId));
 }
+/* cronDeliveryNote(job) -> the [DELIVERY] paragraph a CHAT-bound routine's run carries (routine-media.js): how to
+   attach a file to the reply the station delivers. Resolved like deliverCronResult resolves targets, so only a routine
+   whose reply really goes to a chat is told — local and session routines compose the exact pre-note system. */
+function cronDeliveryNote(job) {
+  try {
+    const mode = String((job && job.deliver) || 'local').trim();
+    let recs = [];
+    if (mode === 'origin' && job.origin && job.origin.target) recs = [channelStore.getChatRecord(String(job.origin.target))];
+    else if (mode === 'origin' && job.origin && job.origin.channel && job.origin.chatId) recs = [job.origin];
+    else if (mode.indexOf('targets:') === 0) recs = mode.slice(8).split(',').map(s => s.trim()).filter(Boolean).slice(0, 16).map(t => channelStore.getChatRecord(t));
+    const names = recs.filter(Boolean).map(r => {
+      const base = String(r.channel || 'telegram').split(':')[0];
+      const desc = channelRegistry.get(base);
+      return (desc && desc.label) || base;
+    });
+    return RoutineMedia.deliveryNote(names);
+  } catch (e) { failNote('cron.deliveryNote', e); return ''; }
+}
 function cronPreflightConfig(job) {
   const mode = String((job && job.deliver) || 'local').trim();
   if (mode === 'local') {
@@ -6685,6 +6737,22 @@ async function deliverCronResult(job, result) {
     return out;
   }
   if (!targets.length) return { ok: true, skipped: true };
+  /* FILES RIDE THE CHAT DELIVERY (routine-media.js, 2026-10-18). An unattended run cannot channel.send (the exec
+     lockout), so this is the only way a routine's image or chart reaches the chat: the ATTACH lines its reply names,
+     else the images the fire generated (its run rows' artifacts — durable, so a retried delivery finds them too).
+     Same approved target, same workspace jail as channel.send. A reply with no ATTACH line and no generated image
+     delivers byte-identically to before. */
+  let chatBody = String(result.text || ''), chatText = text, attach = { files: [], dropped: [] }, named = [], runs = [];
+  if (result.outcome !== 'failed') {
+    const parsed = RoutineMedia.parseReply(result.text);
+    try { runs = runStore.list(null, { streamId: 'cron-' + result.runId, limit: 50 }) || []; } catch (_) { runs = []; }
+    named = parsed.files;
+    attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId });
+    if (named.length) {
+      chatBody = parsed.text;
+      chatText = '✦ ' + (job.name || 'Routine') + (parsed.text.trim() ? '\n\n' + parsed.text : '');
+    }
+  }
   let failed = 0, firstError = '';
   const deliveredTargets = new Set(Array.isArray(result.deliveredTargets) ? result.deliveredTargets : []);
   for (const target of Array.from(new Set(targets)).slice(0, 16)) {
@@ -6693,15 +6761,32 @@ async function deliverCronResult(job, result) {
     if (!rec) { failed++; firstError = firstError || 'unknown chat target ' + target; continue; }
     const channel = String(rec.channel || 'telegram'), live = liveChannelFor(channel);
     if (!(live && live.adapter)) { failed++; firstError = firstError || channel + ' is not connected'; continue; }
+    const chatId = String(rec.chatId || target), route = rec.threadId ? { threadId: rec.threadId } : undefined;
     try {
-      const sent = await live.adapter.send(String(rec.chatId || target), redact(text), rec.threadId ? { threadId: rec.threadId } : undefined);
+      const sent = await live.adapter.send(chatId, redact(chatText), route);
       if (sent && sent.ok === false) throw new Error(sent.error || 'send failed');
       deliveredTargets.add(target);
       if (job.attachToSession) {
         channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
-        channelStore.appendTurn(job.agentId, 'assistant', String(result.text || ''));
+        channelStore.appendTurn(job.agentId, 'assistant', chatBody);
       }
-    } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); }
+    } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); continue; }
+    // The words landed, so this target is delivered: a file that fails is told to the chat, never retried (a retry
+    // would resend the message), and never silent — the Commander would be waiting for a picture that is not coming.
+    // A Full Access fire may already have put its own files here with channel.send — never the same picture twice.
+    if ((attach.files.length || (named.length && attach.dropped.length)) && !RoutineMedia.filesAlreadySent(runs, target, chatId)) {
+      const files = await RoutineMedia.sendFiles(attach.files, {
+        read: readChannelUpload,
+        send: (item) => typeof live.adapter.sendMedia === 'function'
+          ? live.adapter.sendMedia(chatId, item, route)
+          : Promise.resolve({ ok: false, error: channel + ' cannot carry files' })
+      });
+      for (const f of files.failed) console.warn('[cron] routine ' + job.id + ' file "' + f.path + '" not attached [' + channel + ']: ' + f.error);
+      const missed = files.failed.map(f => f.path).concat(named.length ? attach.dropped : []);
+      if (missed.length) {
+        try { await live.adapter.send(chatId, RoutineMedia.missedNote(missed), route); } catch (e) { failNote('cron.delivery.missedNote', e); }
+      }
+    }
   }
   return { ok: failed === 0, error: firstError || null, deliveredTargets: Array.from(deliveredTargets) };
 }
@@ -6802,11 +6887,12 @@ const cronDriver = makeCronDriver({
   // persona is a GETTER so each fire folds in the LIVE Commander dossier (it changes as the user edits it);
   // withDossier is a no-op when the dossier is empty, so this is byte-identical to CRON_PERSONA until one exists.
   persona: (agentId) => cronSystemFor(agentId),
+  deliveryNoteFor: (job) => cronDeliveryNote(job),   // a chat-bound routine is told how to ATTACH files to its delivered reply
   /* THE WORK LINE for a scheduled fire: run the stages drawn downstream of the routine's dock. Same executor,
      same caps, same per-hop crates as a channel message — only the way a hop is executed differs (a routine has
      no chat transcript; its hops ride the routine's own stream so the session shows the whole line). */
   advanceChain: (o) => chainRunner.advance({
-    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, signal: o.signal,
+    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, ask: o.ask, signal: o.signal,
     runId: o.runId, streamId: o.streamId || undefined,   // the fire's own stream ('cron-<runId>'): a SEND TO hand-off reads back exactly this fire's runs
     // the entry run's reconciled spend: MAX_CHAIN_USD bounds the WHOLE chain, and stage one is part of the
     // chain (2026-08-10 audit — the entry run rode outside its own line's $ ceiling on every path).
@@ -6851,10 +6937,11 @@ const cronDriver = makeCronDriver({
         await runOnce({
           key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
           baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
-          system: cronSystemFor(h.agentId),
+          system: cronSystemFor(h.agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
           messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: o.runsLine === true ? router.lineOfAgent(o.agentId, o.dockId ? router.dockOf(o.agentId, o.dockId) : undefined) : null, isTask: true,
           ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
+          resumeSeed: false,   // the handoff carries the upstream output: never re-send earlier stages' transcript (runOnceCore seed)
           surface: 'autonomous', trigger: 'schedule', reflect: true,
           station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
           lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
@@ -7235,7 +7322,7 @@ async function nightshiftChat(o) {
   try {
     await runOnce({
       key: key, model: model, provider: provider,
-      system: (o && o.system) || (ident.system && String(ident.system)) || cronSystemFor(agentId),
+      system: (o && o.system) || (ident.system && String(ident.system)) || cronSystemFor(agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: o.messages, agentId: agentId, isTask: false, emit: sink, signal: o && o.signal,
       runId: runId, streamId: 'nightshift-' + runId, surface: 'autonomous', trigger: 'nightshift', broadcast: !!(o && o.broadcast)
     });
@@ -8433,7 +8520,7 @@ async function runNightshiftActShift(opts) {
   let threw = null;
   try {
     await runOnce({
-      key, model, provider, system,
+      key, model, provider, system, stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId, isTask: true, emit: (typeof opts.emit === 'function' ? opts.emit : function () {}), signal: sig,
       runId, streamId: 'nightshift-act-' + runId, surface: 'autonomous', trigger: 'nightshift', broadcast: !!opts.broadcast,
@@ -9934,6 +10021,10 @@ function questRefreshTick() {
   // calls a provider, stamps refresh state, or mints quests on its own. The explicit /refresh/run route does not
   // come through this function; a Commander pressing REFRESH QUESTS remains the authority for a manual cycle.
   if (!(commanderPosture.summary() || {}).enabled) return;
+  // NO STATION, NO LOOK (#123): background initiative plans for a station a Commander created. On a workspace the
+  // recovery gate reads as station-less (a fresh install before onboarding) this tick writes nothing — its stamp +
+  // 'skipped' note used to be the first files on disk. The manual /refresh/run route never comes through here.
+  if (!hasStationState({ fs, path, workspaceRoot: WORKSPACES })) return;
   // V3 §6 note: the readiness gate is applied INSIDE the cycle as dossier ADMISSIBILITY (a synced not-ready
   // verdict blanks the dossier out of the evidence, so a blitzed onboarding can't mint quests) — never here
   // at the tick, so the cadence still spends and the honest 'skipped' ledger semantics survive.
@@ -12804,6 +12895,10 @@ async function runSampleJob(readArgs) {
     // a PARTIAL joined job (a COPY branch failed or never reached the JOINER — chain out.partial) is not delivered, even when every
     // run row that exists ended done: a hop refused before it ran writes none (runtime repair 2026-10-12)
     const partial = (sampleLineOutcome && sampleLineOutcome.partial) ? String(sampleLineOutcome.partial) : '';
+    /* UNAPPROVED (GitHub #122): a review loop on the line used all its passes without the verdict it waits for and sent the work on (the
+       LOOP card's rule — the job still reaches its OUTBOX, so it is still delivered). Its record, its crate, the answer and the SHIPPED note
+       say nobody approved it; the receipt (line-shipments) never counts it as clean SHIPPED work. */
+    const unapproved = (sampleLineOutcome && sampleLineOutcome.unapproved) ? String(sampleLineOutcome.unapproved) : '';
     const completed = onLine && runs.length > 0 && runs.every(r => r.reason === 'done')
       && !!sampleLineOutcome && !sampleLineOutcome.stopped && !partial
       && router.chainShipsToOutbox(sampleLineOutcome.agentId, sampleLineOutcome.dockId);
@@ -12822,7 +12917,7 @@ async function runSampleJob(readArgs) {
     if (jobId) {
       const stoppedJob = !!sampleInFlight.stopRequested;
       // (wave 2 repair) the station's own fault containment stopped it (stopCause 'fault'): said as that, never "you stopped this job"
-      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs,
+      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs, unapproved: completed ? unapproved : '',
         status: completed ? 'delivered' : stoppedJob ? 'stopped' : runs.length ? 'problem' : 'failed',
         error: completed ? '' : stoppedJob ? (sampleInFlight.stopCause === 'fault' ? 'the station hit an internal fault and stopped this job' : 'you stopped this job') :!onLine ? 'the job did not enter through this line' : (partial && runs.every(r => r.reason === 'done')) ? 'the joiner sent on without every branch (' + partial + ')' : runs.length ? 'a step did not finish cleanly' : (refusedSaid || firstWarn || 'no step ran') }));
       sampleInFlight.jobId = null;
@@ -12837,7 +12932,7 @@ async function runSampleJob(readArgs) {
     if (line && plan.sendTo) onward.onwardDestinations = Object.entries(plan.sendTo).filter(([outboxId, s]) => s && s.fromLine === line && !(sampleLineOutcome && sampleLineOutcome.outboxId && String(sampleLineOutcome.outboxId) !== outboxId)).map(([outboxId, s]) => ({ lineId: s.toLine, outboxId }));
     if (workitemId) {
       const d = bumpQueue(agentId, -1);
-      if (completed) chanEmit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true });
+      if (completed) chanEmit('workitem.delivered', Object.assign({ workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true }, unapproved ? { unapproved } : null));
       chanEmit('queue.status', { queueId: agentId, depth: d, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
     }
     if (!completed) {
@@ -12867,7 +12962,8 @@ async function runSampleJob(readArgs) {
       ok: true, sample: true, chatId: SAMPLE_CHAT, streamId: streamId,
       agentId: agentId || null, isTask: isTask, workitemId: workitemId || null,
       replies: sampleReplies.slice(), runs: runs, delivered: delivered, totalUsd: totalUsd, shipped
-    }, shippedWhy ? { shippedWhy } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
+    // (GitHub #122) an unapproved job is never a receipt: that is the reason, said before any other
+    }, (shipped === false && unapproved) ? { shippedWhy: 'unapproved' } : shippedWhy ? { shippedWhy } : null, unapproved ? { unapproved } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
   } finally {
     // a job whose route threw after it went out is never left "running"
     if (sampleInFlight && sampleInFlight.jobId) { try { lineJobsSet(LineJobs.finish(lineJobs, sampleInFlight.jobId, { at: Date.now(), status: 'failed', error: 'the station hit an error while the job was out' })); } catch (e) { failNote('linejobs.finish', e); } }
@@ -13398,6 +13494,7 @@ async function stepTestRunDock(h) {
       reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
       messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
       runId, trigger: 'event', streamId: h.streamId,
+      resumeSeed: false,   // every step shares one steptest stream: a step (or a NEEDS CHANGES re-run / rewind) must not inherit the others' turns
       lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId,   // LINE WATCH: the row records the step's line + bay (run.start names its crate)
       initialTaint: h.entry ? null : 'upstream agent output',
       surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
@@ -16182,8 +16279,9 @@ async function handleCronRun(req, res) {
   try {
     await runOnce({
       key: key, model: model,
-      system: cronSystemFor(job.agentId)
-        + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : ''),
+      stationEvidence: true, system: cronSystemFor(job.agentId)   // the persona's observed half rides the run context (dossierWithGoals)
+        + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : '')
+        + cronDeliveryNote(job),   // the scheduled fire's own [DELIVERY] note (cron-driver deliveryNoteFor) — same posture
       messages: [{ role: 'user', content: assembledPrompt }],
       agentId: job.agentId, isTask: true, emit: teeEmit, signal: ac.signal,
       // streamId 'cron-'+runId matches the SCHEDULED fire (cron-driver.js): Run Now must persist its transcript
@@ -16237,7 +16335,7 @@ async function handleCronRun(req, res) {
       try {
         const line = await chainRunner.advance({
           agentId: job.agentId, dockId: job.dockId ? (router.dockOf(job.agentId, job.dockId) || undefined) : undefined,
-          text: state.buf, originalText: String(job.prompt || ''), signal: ac.signal,
+          text: state.buf, originalText: assembledPrompt, ask: String(job.prompt || ''), signal: ac.signal,   // contextFrom + directive, as the scheduled fire hands it (hops no longer replay the stream)
           // the fire's own stream, exactly as the scheduled fire passes it: a SEND TO hand-off reads back THIS run's rows (the
           // every-step-ended-done check and the files it made) — without it Run Now handed on half-finished work the schedule refuses
           runId, streamId: 'cron-' + runId,
@@ -16277,10 +16375,11 @@ async function handleCronRun(req, res) {
               await runOnce({
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
                 baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
-                system: cronSystemFor(h.agentId),
+                system: cronSystemFor(h.agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
                 messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: job.runsLine === true ? router.lineOfAgent(job.agentId, job.dockId ? router.dockOf(job.agentId, job.dockId) : undefined) : null, isTask: true,
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
+                resumeSeed: false,   // the handoff carries the upstream output: never re-send earlier stages' transcript (runOnceCore seed)
                 surface: 'autonomous', trigger: 'schedule', broadcast: true, reflect: true,
                 station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
                 lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
@@ -16358,7 +16457,9 @@ function workshopPrompt(runId, item, ctx) {
     + '- Whatever the format: ZERO SETUP on their end — self-contained, one-click openable, no external files or build step; a script ships with its single run command in "howToUse".\n'
     + '- Put every file for this deliverable UNDER the folder "' + dir + '/" in your workspace (use fs.write with paths like "' + dir + '/<file>").\n'
     + '- Do the actual work with your real tools (web search/read, files, memory). Ground factual claims in what the tools return.\n'
-    + '- You CANNOT run commands or tests here, so do not claim anything was tested — list what a human still needs to verify.\n'
+    // (token-burn audit 2026-10-17: was "You CANNOT run commands or tests here" — false whenever the bay holds a terminal, and
+    // the act then wrote its report first and verify-on-stop bought a second pass to check it; same wording as the act prompt)
+    + '- If you have a shell, CHECK the work BEFORE you write the manifest (a patch: `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved; list what a human still needs to verify.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + ((item && item.id) || '') + '",\n'
     + '    "title": "<short name>", "kind": "tool|fix|draft|doc|patch|other",\n'
@@ -16501,7 +16602,7 @@ async function runWorkshopShift(agentId, opts) {
   let threw = null;
   try {
     await runOnce({
-      key: key, model: model, system: cronSystemFor(id),
+      key: key, model: model, system: cronSystemFor(id), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId: id, isTask: true, emit: emit, signal: signal,
       runId: runId, streamId: 'workshop-' + runId, surface: 'autonomous', trigger: 'schedule', provider: provider, broadcast: !!o.broadcast,
@@ -16618,7 +16719,8 @@ function implementPrompt(runId, source, ctx) {
         : '- There is no blessed project to patch here, so build the working artifact itself: the script, the tool, the\n'
          + '  file that does the job. ZERO SETUP — self-contained, one-click openable or one command to run.\n')
     + '- Write every file for this build UNDER "' + dir + '/" (use paths like "' + dir + '/<file>").\n'
-    + '- Do the real work with your tools. You CANNOT run commands or tests here, so never claim anything was tested —\n'
+    + '- Do the real work with your tools. If you have a shell, CHECK the work BEFORE you write the manifest (a patch:\n'
+    + '  `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved;\n'
     + '  list what a human still needs to check.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + String(c.backlogId || '') + '",\n'
@@ -16724,7 +16826,7 @@ async function runImplementBuild(agentId, sourceRunId, opts) {
   let threw = null;
   try {
     await runOnce({
-      key: key, model: model, system: cronSystemFor(id), provider: provider,
+      key: key, model: model, system: cronSystemFor(id), provider: provider, stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId: id, isTask: true, emit: (typeof o.emit === 'function' ? o.emit : function () {}), signal: signal,
       runId: runId, streamId: 'workshop-' + runId, surface: 'autonomous', trigger: 'directive', broadcast: !!o.broadcast,
@@ -19707,7 +19809,7 @@ async function runOnce(o) {
       // Refresh ordinary queued chat after the preceding turn has persisted.
       // Preserve the new user message (including attachments); checkpoint and
       // group histories retain their own provider-valid assembly contracts.
-      if (queued && !o.recovery && !o.groupTools && !o.parentRunId
+      if (queued && o.resumeSeed !== false && !o.recovery && !o.groupTools && !o.parentRunId
         && (o.messages || []).at(-1)?.role === 'user') {
         o = { ...o, messages: (o.messages || []).filter(m => m.role === 'system')
           .concat(transcriptStore.reconstruct(o.streamId, { limit: 100 }), o.messages.slice(-1)) };
@@ -20858,25 +20960,8 @@ async function runOnceCore(o) {
       // stay just under the true ceiling: the transport may add its own prefix/footer to a chunk.
       return (isFinite(n) && n > 200) ? (n - 100) : 1900;
     },
-    /* OUTBOUND FILES (2026-07-29). readFile is the JAIL PROOF and it lives here, not in the tool: comms.js is
-       pure and must not learn about the filesystem. resolveInside is the same proof the fs.* tools and user
-       attachments use, so an agent can only attach something inside its OWN workspace — `../` or an absolute
-       path is a refusal, not a traversal. Never throws: a miss is { ok:false, error } the tool reports honestly. */
-    readFile: async (agentId, rel) => {
-      try {
-        // resolveInside THROWS on a jail violation ('illegal path' / 'path escapes workspace') and otherwise
-        // answers { base, abs } — the catch below turns a violation into an honest refusal, never a traversal.
-        const r = await fsJail.resolveInside(String(agentId || ''), String(rel || ''), { scope: 'read' });
-        const abs = r && r.abs;
-        if (!abs) return { ok: false, error: 'that path is outside your workspace' };
-        const st = await fsp.stat(abs).catch(() => null);
-        if (!st || !st.isFile()) return { ok: false, error: 'not a file' };
-        if (st.size > CHANNEL_UPLOAD_MAX_BYTES) return { ok: false, error: 'file is ' + Math.round(st.size / (1024 * 1024)) + 'MB (limit ' + Math.round(CHANNEL_UPLOAD_MAX_BYTES / (1024 * 1024)) + 'MB)' };
-        const buffer = await fsp.readFile(abs);
-        if (!buffer.length) return { ok: false, error: 'file is empty' };
-        return { ok: true, buffer: buffer, name: path.basename(abs), mime: mimeForPath(abs) };
-      } catch (e) { return { ok: false, error: (e && e.message) || 'read failed' }; }
-    },
+    // OUTBOUND FILES (2026-07-29): the jail proof lives in the host (readChannelUpload), never in the pure tool.
+    readFile: readChannelUpload,
     // Upload through the SAME target-key resolution sendTo uses, so an agent can attach a file exactly where it
     // may already send words — known-targets-only is unchanged by this feature.
     sendMediaTo: (target, item) => {
@@ -21020,6 +21105,27 @@ async function runOnceCore(o) {
   const preAuthorityTools = resolved.tools.slice();
   resolved = enforceRunAuthority(resolved, registry, userControlAuthority);
   resolved = enforceEnabledToolsets(resolved, registry, unrestrictedHostNow() ? null : o.enabledToolsets);
+  /* THE WIDGET'S OWN UPDATE RUN PUBLISHES IT (releases#6). A widget refresh runs in that widget's conversation
+     ('widget-<id>'), a scheduled update as a routine whose job names the widget; both are told to publish with
+     widget.set, which otherwise rides the NOTEBOOK prop + MEMORY switch an interactive run often lacks (the agent
+     then searched for it until stopped). Host-derived from the stream id / the job's own meta, never from text, and
+     only for a widget the Commander configured: exactly widget.get + widget.set (no consent, no network), applied
+     after the narrowing above because a per-run list must not strip the one tool this run exists to call. The run may
+     read and publish ITS OWN widget only (widgetScope on the tool ctx below; widgets.js refuses any other id). */
+  let widgetScope = '';
+  {
+    const widgetJob = (trigger === 'schedule' && o.cronJobId) ? cronJobs.find(j => j && j.id === String(o.cronJobId)) : null;
+    widgetScope = widgetTools.updateRunOf({ streamId: o.streamId, widgetId: widgetJob && widgetJob.meta && widgetJob.meta.widgetId }) || '';
+    if (widgetScope) {
+      const grants = (CAP_REGISTRY.notebook || []).filter(g => g && /^widget\./.test(g.tool));
+      resolved = Object.assign({}, resolved, {
+        tools: resolved.tools.concat(grants.map(g => g.tool).filter(n => resolved.tools.indexOf(n) < 0)),
+        grants: resolved.grants.concat(grants.filter(g => !resolved.grants.some(x => x && x.tool === g.tool))),
+        approvalRules: Object.assign({}, resolved.approvalRules), networkCaps: Object.assign({}, resolved.networkCaps)
+      });
+      for (const g of grants) { resolved.approvalRules[g.tool] = { requiresConsent: false, scope: g.scope, network: false }; resolved.networkCaps[g.tool] = false; }
+    }
+  }
   /* WITHHELD COMMANDS, EXPLAINED (issue #77). The authority above removes workspace-process tools (shell.exec,
      verify.run, terminal.start …) from an ASK-mode non-interactive run even with a WORKBENCH placed — by design.
      Record which ones it removed (and the toolset switch would otherwise have allowed) so tool.search, the
@@ -21238,6 +21344,8 @@ async function runOnceCore(o) {
     // Host-minted routine identity for routine.notepad. Interactive/model-authored runs cannot name another
     // job: only the autonomous schedule path receives this context field.
     cronJobId: (surface === 'autonomous' && trigger === 'schedule') ? String(o.cronJobId || '') : '',
+    // Host-minted: a widget's own update run (its conversation or routine) reads and publishes that widget id only.
+    widgetScope,
     // tool.search explains what the direct-domain policy keeps off this run (resolved.deferred already excludes it)
     policyWithheld: directDomainTask ? {
       names: (resolved.tools || []).filter(directDomainWithheld),
@@ -22145,6 +22253,15 @@ async function runOnceCore(o) {
     return content;
   };
 
+  // #128: the shell shell.exec ACTUALLY runs for this agent — its effective execution backend (Full Power forces local,
+  // Safe Cell is Docker, Remote SSH is ssh), then this host's OS for local. Named on the [RUNTIME] Shell line and used
+  // for the service-key syntax; null when shell.exec is not on this task run (no line, no claim).
+  const shellRuntime = (() => {
+    if (!(isTask && resolved && Array.isArray(resolved.tools) && resolved.tools.indexOf('shell.exec') >= 0)) return null;
+    try { return { backend: executionEnvironment.backendIdFor(agentId), platform: process.platform }; }
+    catch (e) { failNote('runtime.shell-backend', e); return null; }
+  })();
+  const shellIsCmd = !!(shellRuntime && shellRuntime.backend === 'local' && shellRuntime.platform === 'win32');
   // tell the model, plainly + capability-driven, that it has real tools right now (so it never claims it can't act)
   const wireNames = toolDefs.map(d => d.function.name);
   // The deferred names the PARTIAL list may call usable: every deferred declaration except a connector server's
@@ -22175,7 +22292,7 @@ async function runOnceCore(o) {
     + 'Act with tools NOW and keep going until the task is done or genuinely blocked; if blocked, say so honestly and try a different path — NEVER invent output you did not produce. '
     + 'Always take the QUIETEST path that achieves the goal: (1) a DEDICATED tool for the target service'
     + (hasJukebox ? ' (e.g. spotify_play for Spotify)' : '') + ' — try it FIRST even if you are unsure it is connected; '
-    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs, PowerShell)' : '')
+    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs' + (shellIsCmd ? ', PowerShell' : '') + ')' : '')
     + (hasBrowserTools ? (hasShellExec ? ', and browser_* handles the web unseen' : ' — browser_* handles the web unseen') : '') + '; '
     + (hasBackgroundComputer ? 'For native apps, computer_use can discover exact windows and use background accessibility input without bringing them forward. Prefer its fresh element tokens and verify the result. ' : '')
     + (hasScreenTools
@@ -22415,7 +22532,7 @@ async function runOnceCore(o) {
   const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
     : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';
   const runtimeVersion = computeVersionSurface();
-  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now() });
+  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now(), shell: shellRuntime });
   // RUNTIME SKILL LIBRARY (skill-builder-gap): index the agent's own authored skills + preload any it invokes,
   // riding the same skill.view/skill.manage capability gate. Never breaks a run.
   try {
@@ -22531,7 +22648,8 @@ async function runOnceCore(o) {
     const canShell = kt.indexOf('shell.exec') >= 0;
     const canRequest = kt.indexOf('web_request') >= 0;
     if (canShell || canRequest) {
-      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: process.platform, notesFor: serviceKeysCatalog.notesFor });
+      // the key syntax follows the shell that runs (#128): %NAME% only for local cmd.exe; Docker/SSH run POSIX sh
+      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
       if (b) serviceKeysBlock = '\n\n' + b;
     }
   } catch (_) { serviceKeysBlock = ''; }
@@ -22602,11 +22720,20 @@ async function runOnceCore(o) {
      journeyBlock. */
   const taskDoctrine = taskBrief ? '\n\n' + TaskIntent.directive('') : '';                     // TaskIntent.directive(cx) = doctrine + '\n' + cx
   const taskBriefContext = taskBrief && String(taskContextBlock || '').trim() ? '\n\n' + String(taskContextBlock).trim() : '';
+  /* THE OBSERVED HALF OF A SERVER-COMPOSED PERSONA (cross-run cache, 2026-10-17; see dossierWithGoals). A routine fire,
+     line hop, night-shift beat, loop or workshop shift asks for it with `stationEvidence: true`: the topic counts, open
+     threads, recent activity and TRACK RECORD it used to carry in its system prompt ride this run's <run_context> note,
+     so that prompt (and the Codex cache route hashed from it) is byte-identical from one run to the next. A run with a
+     Task Brief already carries the same evidence inside its brief block, so it never gets a second copy. */
+  let stationEvidenceBlock = '';
+  if (o.stationEvidence === true && !internal && !taskBrief) {
+    try { const t = stationEvidenceNote(); if (t) stationEvidenceBlock = '\n\n' + t; } catch (e) { failNote('run.stationEvidence', e); }
+  }
   // the crew call is NOT a run-context block: it trails the Commander's words as its own <crew_call> note (below)
-  const perRunBlocks = runtimeSkillBlock + preloadedSkillBlock + taskBriefContext + awayBriefingNote + directDomainBlock + runtimeBlock;
+  const perRunBlocks = runtimeSkillBlock + preloadedSkillBlock + taskBriefContext + stationEvidenceBlock + awayBriefingNote + directDomainBlock + runtimeBlock;
   const taskSystem = stablePrefix
     ? FinishLine.append(cacheSystemPrefix + serviceKeysBlock + taskDoctrine + journeyBlock + deliverableNote, { isTask, internal, tools: resolved.tools })
-    : FinishLine.append(cacheSystemPrefix + runtimeSkillBlock
+    : FinishLine.append(cacheSystemPrefix + stationEvidenceBlock + runtimeSkillBlock
       + preloadedSkillBlock + serviceKeysBlock + taskIntentNote + awayBriefingNote + directDomainBlock + journeyBlock
       + deliverableNote + crewCallNote + runtimeBlock, { isTask, internal, tools: resolved.tools });
   const sys = internal
@@ -22628,7 +22755,11 @@ async function runOnceCore(o) {
   }
   let convo = messages;
   try {
-    if (!o.recovery && !o.groupTools && !internal && streamId && Array.isArray(messages) && messages.filter(m => m && m.role !== 'system').length <= 1) {
+    /* A work-line HOP opts out (resumeSeed:false, token-burn audit 2026-10-17). It arrives as ONE handoff turn on the
+       line's shared stream, which already carries the original request and the upstream output — so this resume
+       seed re-sent every earlier stage's tool calls and results (another agent's work, as if it were this one's own
+       past turns) ahead of it, on every stage. Measured on a real station: line hops averaged 50k tokens a call. */
+    if (!o.recovery && !o.groupTools && !internal && o.resumeSeed !== false && streamId && Array.isArray(messages) && messages.filter(m => m && m.role !== 'system').length <= 1) {
       const seed = transcriptStore.reconstruct(streamId, { limit: 100 });
       if (seed.length) {
         // Keep the incoming turn (including attachment blocks), but not its older retry copy or
@@ -23155,7 +23286,8 @@ async function runOnceCore(o) {
     const finalUsd = effectiveRunUsd({ usd: (result && result.usd) || 0, mediaUsd, unmetered: runUnmetered, unpricedUsage: result && result.unpricedUsage, priceOf: provider && provider.priceOf });
     const finalTurns = (result && result.turns) || 0;
     const finalTokens = (result && result.tokens) || 0;
-    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0 }); } catch (_) {}
+    const finalCachedTokens = (result && result.cachedTokens) || 0;   // the cache-served part of finalTokens' input (additive on both rows)
+    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0 }); } catch (_) {}
     // managed-credit SETTLE: reconcile the reservation to the real spend — refund the unused headroom to the
     // account (billing.js caps finalUsd at the reservation). Inert/no-op unless this run actually reserved credit.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: finalUsd, tokens: finalTokens, turns: finalTurns, reason: (result && result.reason) || 'done' }); } catch (_) {} }
@@ -23173,7 +23305,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -23302,6 +23434,7 @@ async function runOnceCore(o) {
     await captureTrustedLearning({ agentId, runId, projectRoot: o.projectRoot || '', input: trustedLearningInput, learningEvidence });
   }
   const _gateReflect = !!(o.reflect && memoryConfig.reflectEnabled && isTask && _auxDone && !_lineHop && reflectSalient(result.messages, o.recurring)
+      && !refusedAction(execution.toolTraceList())   // a run whose approval was not given proposes no memories (reflect.js refusedAction)
       && personalizationStore.read().enabled   // the personalization PAUSE never even offers the candidate (runReflection re-checks the same authority)
       && !reflectingNow.has(agentId) && (Date.now() - (lastReflectAt.get(agentId) || 0) >= memoryConfig.reflectCooldownMs));
   // failure-review: reflection's exact gate shape on the FAILURE side — o.reflect (real-work hosts only; delegated

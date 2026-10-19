@@ -51,6 +51,9 @@ function normEnd(e) {
   const out = { line: key(e.line), jobId: ID_RE.test(String(e.jobId || '')) ? String(e.jobId) : null, name: str(e.name, 48) };
   const why = str(e.refused, 300).trim();
   if (why) out.refused = why;   // (additive) the hand-off was REFUSED: nothing was sent on — the reason
+  // (additive, GitHub #122) the work handed on came out of a review loop that ran out of passes: nobody approved it — the reason
+  const ua = str(e.unapproved, 300).trim();
+  if (ua) out.unapproved = ua;
   return out;
 }
 function normJob(j) {
@@ -66,6 +69,10 @@ function normJob(j) {
   };
   // (additive, SEND TO) what the sending line delivered, beside the job as it first arrived — only on a handed-on job
   if (job.from) { const h = str(j.handedIn, MAX_OUTPUT); if (h) job.handedIn = h; }
+  /* (additive, GitHub #122) a DELIVERED job whose review loop used all its passes without approving it: the LOOP sent the work on, so
+     it is delivered — and this says, in words, that nobody approved it (the route's own reason; absent on every clean job) */
+  const ua = str(j.unapproved, 300).trim();
+  if (ua) job.unapproved = ua;
   // (additive) a standing refusal counted on one record: how many hand-offs it stands for
   const rep = Math.floor(num(j.repeats));
   if (rep > 1) job.repeats = Math.min(rep, 1e6);
@@ -90,7 +97,7 @@ function start(state, o) {
 function finish(state, id, o) {
   const i = idx(state, id);
   if (i < 0) return { state, job: null };
-  const job = normJob(Object.assign({}, state.jobs[i], { status: o.status, endedAt: o.at, usd: o.usd, output: o.output, error: o.error, runs: o.runs }));
+  const job = normJob(Object.assign({}, state.jobs[i], { status: o.status, endedAt: o.at, usd: o.usd, output: o.output, error: o.error, runs: o.runs, unapproved: o.unapproved }));
   const jobs = state.jobs.slice(); jobs[i] = job;
   return { state: { jobs }, job };
 }
@@ -150,6 +157,7 @@ function summary(j) {
     usd: j.usd, steps: j.runs.length, preview: j.output.replace(/\s+/g, ' ').trim().slice(0, 240), error: j.error, retryOf: j.retryOf,
     streamId: j.streamId, notes: j.notes.length, from: j.from || null, sentTo: j.sentTo || null };
   if (j.repeats > 1) s.repeats = j.repeats;
+  if (j.unapproved) s.unapproved = j.unapproved;
   return s;
 }
 function list(state, o) {

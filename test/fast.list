@@ -128,6 +128,7 @@ test/provider.prices.test.js
 test/prices.all-providers.test.js
 test/provider.timeouts.test.js
 test/provider.registry.test.js
+test/managed-cache.test.js
 test/ratelimits.test.js
 test/provider.codex-auth.test.js
 test/purge-leaked-codex-tokens.test.js
@@ -164,6 +165,7 @@ test/loop.acceptance-on-stop.test.js
 test/loop.parallel-tools.test.js
 test/loop.tool-images.test.js
 test/loop.media-cost.test.js
+test/loop.cached-tokens.test.js
 test/loop.turn-budget.test.js
 test/loop.provider-recovery.test.js
 test/loop.failure-recovery.test.js
@@ -183,6 +185,7 @@ test/desktop-lifecycle-preferences.test.js
 test/desktop-installed-cdp-forwarding.test.js
 test/cloudsavecore.test.js
 test/cloudsave-refusal.test.js
+test/growth-stale-save-recovery.test.js
 test/cloudsave-unknown.test.js
 test/save-quota-writethrough.test.js
 test/freshstart.test.js
@@ -283,6 +286,7 @@ test/autopilot-focus-veto.test.js
 test/apiauth.test.js
 test/peerowner.test.js
 test/provider-key-check.test.js
+test/custom-provider-model-id.test.js
 test/engine-credential.test.js
 test/engine-key-sync.test.js
 test/kimi-region.test.js
@@ -773,6 +777,7 @@ test/plan-poster.test.js
 test/chain.test.js
 test/chain.join-loop.test.js
 test/chain.limits.test.js
+test/hop-resume-seed.test.js
 test/chain.multibay.test.js
 test/routing.steptest.test.js
 test/routing.steptest.multibay.test.js
@@ -1256,3 +1261,8 @@ test/comms-render-seams.test.js
 test/markdown-everywhere.test.js
 test/walk-consistency-1014.test.js
 test/delegated-ledger-first-read.test.js
+test/visible-text-caps.test.js
+test/abilities-switch-scope.test.js
+test/loop-unapproved-truth.test.js
+test/build-paint-material.test.js
+test/routine-media.test.js

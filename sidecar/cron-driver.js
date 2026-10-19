@@ -45,6 +45,8 @@
                                                  //   crews (index.js injects router.stageBrief). Appended to
                                                  //   the entry run's system context under the hub's exact
                                                  //   section header. PROMPT TEXT ONLY — never grants/tools.
+     deps.deliveryNoteFor  -> (job) -> string    // OPTIONAL: appended to the entry run's system when its reply goes
+                                                 //   to a chat (how to ATTACH files). PROMPT TEXT ONLY.
      deps.placeWorkitem(agentId, prompt, runId)
                            -> void               // OPTIONAL: ride the routine's instruction onto the CONVEYOR as a
                                                  //   box bound for its agent (the SAME workitem.placed plumbing a
@@ -116,6 +118,10 @@
     // a brief never changes who runs, what tools they hold, or what grants apply. Optional + injected so this
     // file stays determinism-clean; absent -> pre-brief behavior, byte-identical.
     const stageBriefFor = typeof d.stageBriefFor === 'function' ? d.stageBriefFor : null;
+    // CHAT DELIVERY NOTE (2026-10-18): deliveryNoteFor(job) -> the paragraph that tells a chat-bound routine how to
+    // attach a file to the reply the station delivers (index.js cronDeliveryNote), '' for a routine that stays on the
+    // station. PROMPT TEXT ONLY; absent or '' -> the exact pre-note system string.
+    const deliveryNoteFor = typeof d.deliveryNoteFor === 'function' ? d.deliveryNoteFor : null;
     const maxRunMs = d.maxRunMs || (8 * 60 * 1000);
     // NS-0 LEASE HEARTBEAT knobs (all injected, determinism-clean; host threads env). The lease sweep no
     // longer reclaims on a fixed wall-clock age — it reclaims only when a run's HEARTBEAT is stale (the run
@@ -487,8 +493,11 @@
       let dockBrief = null;
       // (multi-bay) a routine that FIRES AT one of several bays is briefed with THAT bay's brief (job.dockId)
       if (stageBriefFor) { try { dockBrief = job.dockId ? stageBriefFor(job.agentId, job.dockId) : stageBriefFor(job.agentId); } catch (_) { dockBrief = null; } }
+      let deliveryNote = '';
+      if (deliveryNoteFor) { try { deliveryNote = String(deliveryNoteFor(job) || ''); } catch (e) { failNote('cron.deliveryNote', e); deliveryNote = ''; } }
       const system = ((ident.system && String(ident.system)) || personaOf(job.agentId, job))
-        + (dockBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(dockBrief).slice(0, 2000) : '');
+        + (dockBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(dockBrief).slice(0, 2000) : '')
+        + deliveryNote;
 
       const messages = [{ role: 'user', content: assembledPrompt }];
       // launch the run SYNCHRONOUSLY (so the fire is ordered with the lease/cron.fire), but route both a
@@ -497,6 +506,9 @@
       try {
         p = runOnce({
           key: key, model: model, system: system, messages: messages,
+          // the persona carries only its standing half (dossier + goal); the host puts the station's observed evidence
+          // in this run's own context note, so the system prompt (and the provider's cached prefix) is the same every fire
+          stationEvidence: true,
           agentId: job.agentId, isTask: true, emit: sink, signal: ac.signal,
           // streamId 'cron-'+runId makes this run's transcript durable under a per-RUN named stream (runId is a
           // fresh newId() already in scope — determinism-clean). Without it the reply is buffered into `state.buf`
@@ -553,7 +565,9 @@
           // hops ride the ROUTINE'S OWN stream so its session reads as one multi-stage job, and each hop renews
           // the lease — a line that outran the heartbeat would be declared a zombie and re-fired mid-work.
           Promise.resolve(advanceChain({
-            agentId: job.agentId, dockId: job.dockId || undefined, text: state.buf, originalText: String(job.prompt || ''),
+            // the ASSEMBLED prompt (contextFrom output + directive): hops no longer replay the stream, so a downstream stage
+            // sees the routine's upstream context only if the handoff's "original request" carries it (token-burn audit 2026-10-17)
+            agentId: job.agentId, dockId: job.dockId || undefined, text: state.buf, originalText: assembledPrompt, ask: String(job.prompt || ''),
             signal: ac.signal, runId: runId, streamId: 'cron-' + runId, key: key, model: model, provider: provider,
             // the entry run's reconciled spend: the chain's $ ceiling covers the WHOLE line, stage one
             // included (2026-08-10 audit — the entry run rode outside its own line's cap on every path).

@@ -59,6 +59,7 @@ test/e2e.trigger-fullaccess-taint.test.js
 test/e2e.pathtrust.test.js
 test/e2e.subagent-background.test.js
 test/e2e.approval-lifecycle.test.js
+test/e2e.run-truth-1017.test.js
 test/google-signin.e2e.test.js
 test/google-files.e2e.test.js
 test/google-release-deferred.e2e.test.js
@@ -228,3 +229,5 @@ test/skills.candidate-lifecycle.http.test.js
 test/skills.evaluation-spend.http.test.js
 test/lean-prompt.e2e.test.js
 test/host-notes.strict-template.e2e.test.js
+test/cross-run-cache.e2e.test.js
+test/cron.channel-media.e2e.test.js

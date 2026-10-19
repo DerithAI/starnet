@@ -58,6 +58,30 @@ function threeStageChain(sends) {
 }
 
 async function run() {
+  /* ---- 0. A LINE IS HANDED WHAT THE MEMBER ACTUALLY ASKED (token-burn audit 2026-10-17). Hops no longer replay the chat stream,
+          so the chain's original ask is the only place a downstream stage meets the quoted message a reply points at (or a
+          captionless voice note's transcript). The edit marker names a message the stage never saw: it stays out. ---- */
+  {
+    let handed = null;
+    const hub = makeChannelHub({
+      runOnce: runOnceFor({ tg_555: SCOUT_SAID }), store: fakeStore(),
+      send: () => Promise.resolve({ ok: true }), secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen(),
+      chain: { stopNote: () => '', advance: async (o) => { handed = o.originalText; return { hops: [], text: SCOUT_SAID, agentId: 'tg_555', stopped: null }; } }
+    });
+    const first = dm('summarise this for the team');
+    first.replyTo = { text: 'QUOTED: Q3 revenue rose 14% on the new tier.', userName: 'Dana' };
+    await hub.onInbound(first);
+    A.ok(typeof handed === 'string' && handed.indexOf('QUOTED: Q3 revenue rose 14% on the new tier.') >= 0, 'a reply\'s quoted message reaches the line');
+    handed = null;
+    const msg = dm('summarize this for the team');   // the member edits their latest message (same messageId)
+    msg.replyTo = first.replyTo;
+    msg.edited = true;
+    await hub.onInbound(msg);
+    A.ok(typeof handed === 'string' && handed.indexOf('QUOTED: Q3 revenue rose 14% on the new tier.') >= 0 && handed.indexOf('summarize this for the team') >= 0,
+      'the line is handed the quoted message AND the member\'s words, as the entry run read them');
+    A.ok(handed.indexOf('the previous message was edited') < 0, 'the edit marker (a message the stage never saw) stays out of the line\'s ask');
+  }
+
   /* ---- A. THE DEFECT: the entry dock records ITS OWN text, never the delivered one ---- */
   {
     const sends = []; const store = fakeStore(); const events = [];

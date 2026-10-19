@@ -458,17 +458,33 @@ const { note: failNote } = require('../../failopen');
       }
     };
 
-    // recursive directory walk -> relative paths (dirs end with '/'), bounded so a huge tree can't flood the prompt
-    async function walk(absDir, prefix, out, limit) {
-      if (out.length >= limit) return;
+    /* recursive directory walk -> relative paths (dirs end with '/'), bounded so a huge tree can't flood the prompt.
+       NOT EXPANDED (token-burn audit 2026-10-17): VCS internals, dependency trees, build/tool caches and a browser profile's
+       cache folders. One recursive listing on a real station was 58 KB, 85-93% of it .git / node_modules / a Chrome test
+       profile, and it rode every later call of the run (~1.5M tokens) while pushing the real files past the cap. Each such
+       folder is still LISTED, marked, so the model knows it exists and how to look inside — never silently hidden. */
+    const LIST_NOT_EXPANDED = new Set(['.git', '.hg', '.svn', 'node_modules', 'bower_components', '__pycache__', '.venv', 'venv',
+      '.cache', '.next', '.nuxt', '.turbo', '.parcel-cache', '.gradle', '.pytest_cache', '.mypy_cache',
+      'Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache',
+      'Service Worker', 'IndexedDB', 'blob_storage', 'Crashpad']);
+    const LIST_MAX_CHARS = 16000;
+    // `hintBase` = the path the CALLER listed, so a not-expanded hint names a path that resolves where the folder really is
+    async function walk(absDir, prefix, out, limit, budget, hintBase) {
       let entries;
       try { entries = await fsp.readdir(absDir, { withFileTypes: true }); }
       catch (e) { if (e && e.code === 'ENOENT') return; throw e; }
+      // at the cap already: anything this folder holds is dropped, and the listing must say so
+      if (out.length >= limit || budget.chars >= LIST_MAX_CHARS) { if (entries.length) budget.truncated = true; return; }
       for (const ent of entries) {
-        if (out.length >= limit) { out.push('…[truncated]'); return; }
+        if (out.length >= limit || budget.chars >= LIST_MAX_CHARS) { budget.truncated = true; return; }
         const rel = prefix ? (prefix + '/' + ent.name) : ent.name;
-        if (ent.isDirectory()) { out.push(rel + '/'); await walk(P.join(absDir, ent.name), rel, out, limit); }
-        else out.push(rel);
+        let line = rel;
+        if (ent.isDirectory() && LIST_NOT_EXPANDED.has(ent.name)) {
+          const hint = hintBase ? (P.isAbsolute(hintBase) ? P.join(hintBase, rel) : hintBase.replace(/\\/g, '/') + '/' + rel) : rel;
+          line = rel + '/  [not expanded — fs.list {"path":' + JSON.stringify(hint) + '} to look inside]';
+        } else if (ent.isDirectory()) line = rel + '/';
+        out.push(line); budget.chars += line.length + 1;
+        if (ent.isDirectory() && !LIST_NOT_EXPANDED.has(ent.name)) await walk(P.join(absDir, ent.name), rel, out, limit, budget, hintBase);
       }
     }
 
@@ -479,8 +495,10 @@ const { note: failNote } = require('../../failopen');
       run: async (args, ctx) => {
         const { abs } = await resolveInside((ctx && ctx.agentId) || 'agent', (args && args.path) || '.', { scope: 'read', ctx });
         if (args && args.recursive) {
-          const out = []; await walk(abs, '', out, 500);
-          return { content: out.length ? out.join('\n') : '(empty)', summary: out.length + ' entr' + (out.length === 1 ? 'y' : 'ies') };
+          const listed = (args && args.path && String(args.path).trim() !== '.') ? String(args.path).trim().replace(/[\\/]+$/, '') : '';
+          const out = [], budget = { chars: 0, truncated: false }; await walk(abs, '', out, 500, budget, listed);
+          if (budget.truncated) out.push('…[truncated at ' + out.length + ' entries — list one subdirectory with fs.list {"path":"<dir>","recursive":true}, or find files with fs.search]');
+          return { content: out.length ? out.join('\n') : '(empty)', summary: out.length + ' entr' + (out.length === 1 ? 'y' : 'ies') + (budget.truncated ? ' (truncated)' : '') };
         }
         let names;
         try { names = await fsp.readdir(abs); }
