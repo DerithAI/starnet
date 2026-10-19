@@ -100,7 +100,7 @@ const QuestRefreshStore = (() => {
       shown = Chat.nudge(line, [{ label: 'Confirm ✓', value: 'yes' }, { label: 'Not quite', value: 'no' }, { label: 'Open QUEST LOG', value: 'log', skip: true }], choice => {
         if (choice && choice.value === 'yes') { verdict('confirm').then(afterVerdict); }
         else if (choice && choice.value === 'no') { verdict('decline').then(afterVerdict); }
-        else if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('quests');
+        else if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('quests', 'goals');   // the north star + REFRESH QUESTS live under GOALS › Quest suggestions
       });
       // a nudge that actually claimed the slot spends one unit of the shared budget (a refused one spent nothing)
       if (shown && typeof Chat.spendAsk === 'function') { try { Chat.spendAsk(); } catch (_) {} }

@@ -142,7 +142,9 @@
     if (open > 0 || steps > 0) out.push(mk('steps', 'Finish ' + Math.max(1, Math.min(2, open + steps)) + ' planned step' + (Math.min(2, open + steps) > 1 ? 's' : '') + ' on “' + clip(goal.text, 48) + '”',
       steps, Math.max(1, Math.min(2, open + steps)), '+10 PTS EACH', { view: 'goals' }));
     const quests = wk.filter(e => e.kind === 'quest' && !e.step).length;
-    out.push(mk('quests', 'Clear 3 quests', quests, 3, '+10 PTS EACH', { view: 'available' }));
+    // only a goal-linked quest the Commander CONFIRMS earns points (journey-store recordQuest: commander-confirmed +
+    // an active registered goal) — station / dossier / build / fix-it quests never do, so the challenge names exactly that.
+    out.push(mk('quests', 'Confirm 3 quests for your goals', quests, 3, '+10 PTS EACH', { view: 'available', category: 'missions' }));
     const activeDays = new Set(wk.map(e => ordinal(e.at))).size;
     out.push(mk('days', 'Earn points on 3 different days', activeDays, 3, 'BUILDS YOUR STREAK', { view: 'available' }));
     if (input.metric && input.metric.label) {

@@ -76,6 +76,7 @@ A.eq(byId('steps').have, 2, 'both step-shaped awards on the active goal this wee
 A.ok(byId('steps').done, 'two steps finishes the step challenge');
 A.eq(byId('quests').have, 2, 'plain quests count across goals, steps excluded, last week excluded');
 A.ok(!byId('quests').done, 'three are needed');
+A.ok(/^Confirm 3 quests for your goals$/.test(byId('quests').title) && byId('quests').go.category === 'missions', 'the quest challenge names the only quests that earn points and lands on Missions');
 A.eq(byId('days').have, 3, 'Mon/Tue/Wed = three active days');
 A.eq(byId('metric').have, 1, 'a metric checkpoint on the goal counts');
 A.ok(!byId('outcome'), 'no confirm-outcome challenge until the plan is complete');

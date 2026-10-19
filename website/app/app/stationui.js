@@ -10660,7 +10660,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       + '<span class="bp-chal-main"><span class="bp-chal-title">' + esc(c.title) + '</span>'
       + '<span class="bp-chal-meter"><span class="bp-mini">' + esc(BattlePass.bar(c.have / c.need * 100, Math.min(12, c.need * 4))) + '</span> ' + c.have + '/' + c.need
       + ' <span class="bp-pts">' + esc(c.pts) + '</span></span></span>'
-      + (c.done ? '<span class="bp-done-tag">DONE</span>' : '<button class="consent-btn bp-go" data-view="' + esc(c.go.view) + '">GO</button>') + '</li>').join('');
+      + (c.done ? '<span class="bp-done-tag">DONE</span>' : '<button class="consent-btn bp-go" data-view="' + esc(c.go.view) + '"' + (c.go.category ? ' data-category="' + esc(c.go.category) + '"' : '') + '>GO</button>') + '</li>').join('');
     return '<section class="bp bp-frame-' + esc(f.name.toLowerCase().replace(/\s+/g, '-')) + '" aria-label="Battle pass">'
       + bpRule(f, 'SEASON ' + m.season.no + ' · ' + m.season.name + ' · ' + m.season.daysLeft + 'D LEFT')
       + '<div class="bp-hero">'
@@ -10676,7 +10676,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       + '<ol class="bp-track">' + nodes + '</ol>'
       + bpRule(f, 'WEEKLY CHALLENGES · RESETS IN ' + m.week.resetsIn)
       + '<ul class="bp-chals">' + chal + '</ul>'
-      + '<p class="sub dim bp-law">Points come only from real progress on your goals: +10 for each finished quest, planned step, or metric checkpoint, and +100 when you confirm a goal is achieved. Tiers give titles and frames only. Every tool works at every tier.</p>'
+      + '<p class="sub dim bp-law">Points come only from real progress on your goals: +10 for each goal quest you confirm, planned step you finish, or metric checkpoint you pass, and +100 when you confirm a goal is achieved. Station, profile, and build quests earn no points. Tiers give titles and frames only. Every tool works at every tier.</p>'
       + bpRule(f, '')
       + '</section>';
   }
@@ -11407,7 +11407,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       body.dataset.bpFlash = String(t);
       rerender('quests');
     }));
-    body.querySelectorAll('.bp-go').forEach(b => b.addEventListener('click', () => { selectQuestView(b.dataset.view); body.scrollTop = 0; }));
+    body.querySelectorAll('.bp-go').forEach(b => b.addEventListener('click', () => {
+      // a challenge that names a NOW category (goal quests → Missions) lands on that filter — the category list is built
+      // at render, so set both and repaint; a view-only GO just switches the tab.
+      if (b.dataset.category) { body.dataset.questView = b.dataset.view; body.dataset.questCategory = b.dataset.category; body.dataset.questSelected = ''; rerender('quests'); }
+      else selectQuestView(b.dataset.view);
+      body.scrollTop = 0;
+    }));
     if (body.dataset.bpFlash) {
       const lit = body.querySelectorAll('.bp-node.bp-done, .bp-node.bp-now');
       lit.forEach(n => n.classList.add('bp-flash'));
