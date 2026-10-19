@@ -29,6 +29,9 @@
   const trackChild = (typeof require === 'function') ? require('../../procledger.js').trackChild : function () { return { exited: function () {}, done: function () {} }; };
   const shellFailNote = (typeof require === 'function') ? require('../../failopen.js').note : function () {};
   const visibleOutputPath = (typeof require === 'function') ? require('../../output-artifacts.js').visibleOutputPath : function (p) { return p; };
+  // fullOut is bounded (head + tail, output-capture.js): an unbounded `+=` crashed the station at V8's max string length
+  const makeFullCapture = (typeof require === 'function') ? require('../../output-capture.js').makeFullCapture
+    : function () { let s = ''; return { push: function (t) { s += t; }, value: function () { return s; }, elided: function () { return 0; } }; };
   function safeAgentId(id) { if (!AID_RE.test(id || '')) throw new Error('bad agentId'); return id; }
   function clip(s, n) { s = String(s == null ? '' : s); n = n || 200; return s.length > n ? s.slice(0, n) + '…' : s; }
   function clamp(n, lo, hi) { n = Number(n); if (!isFinite(n)) return lo; return Math.max(lo, Math.min(hi, n)); }
@@ -771,10 +774,11 @@
       const receipt = trackChild(opts.ledger || null, child && child.pid, { cmd: opts.ledgerCmd != null ? opts.ledgerCmd : '', kind: 'shell.fg', pinAfterMs: opts.ledgerPinAfterMs, exitStampMs: opts.ledgerExitStampMs });
       if (typeof child.on === 'function') child.on('exit', function () { receipt.exited(); });
       const t0 = now();
-      let out = '', fullOut = '', total = 0, truncated = false, settled = false, timedOut = false, aborted = false;
+      let out = '', total = 0, truncated = false, settled = false, timedOut = false, aborted = false;
+      const full = makeFullCapture(opts.fullOutMax);
       const append = function (text) {
         const complete = String(text);
-        fullOut += complete;
+        full.push(complete);
         if (total >= maxBytes) { truncated = true; return; }
         let s = complete;
         if (total + s.length > maxBytes) { s = s.slice(0, maxBytes - total); truncated = true; }
@@ -799,7 +803,7 @@
         receipt.done();
         // Stripped HERE, at the single exit of the shared primitive, so shell.exec and the background tail
         // (shellbg.js reads r.out) are both covered by one strip that cannot drift into two.
-        resolve({ exitCode: (typeof code === 'number') ? code : -1, out: stripAnsi(out), fullOut: stripAnsi(fullOut), ms: Math.max(0, now() - t0), truncated: truncated, timedOut: timedOut, aborted: aborted });
+        resolve({ exitCode: (typeof code === 'number') ? code : -1, out: stripAnsi(out), fullOut: stripAnsi(full.value()), ms: Math.max(0, now() - t0), truncated: truncated, timedOut: timedOut, aborted: aborted });
       }
       // a spawn failure (no PID) is the only 'error' that ends the command; it has no receipt to keep either way
       child.on('error', function (e) { if (settled) return; settled = true; clearTimeout(timer); if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} } receipt.done(); reject(new Error('shell error: ' + ((e && e.message) || e))); });

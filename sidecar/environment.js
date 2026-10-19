@@ -26,6 +26,7 @@
   const { trackChild } = require('./procledger.js');   // F2: foreground receipts for the boot orphan sweep
   const { stationChildEnv } = require('./child-env.js');   // the shared station-secret strip (audit 2026-09-25 #13)
   const { assertWorkspaceId } = require('./workspace-reserved.js');   // station-owned dirs are never agent jails
+  const { makeFullCapture } = require('./output-capture.js');   // fullOut is bounded (head + tail), never one unbounded string
   const WIN = (typeof process !== 'undefined' && process.platform) === 'win32';
   const DEFAULT_DOCKER_IMAGE = 'node:20-bookworm';
 
@@ -225,10 +226,12 @@
       }
 
       const t0 = now();
-      let out = '', fullOut = '', total = 0, truncated = false, timedOut = false, aborted = false, settled = false;
+      let out = '', total = 0, truncated = false, timedOut = false, aborted = false, settled = false;
+      // BOUNDED (output-capture.js): an unbounded `fullOut +=` crashed the station at V8's max string length.
+      const full = opts.captureFullOut !== false ? makeFullCapture(opts.fullOutMax) : null;
       const append = function (text) {
         const complete = text == null ? '' : String(text);
-        if (opts.captureFullOut !== false) fullOut += complete;
+        if (full) full.push(complete);
         if (total >= maxBytes) { truncated = true; return; }
         let s = complete;
         if (total + s.length > maxBytes) { s = s.slice(0, maxBytes - total); truncated = true; }
@@ -261,7 +264,7 @@
         resolve({
           exitCode: (typeof code === 'number' && !timedOut && !aborted) ? code : -1,
           out: out,
-          fullOut: fullOut,
+          fullOut: full ? full.value() : '',
           ms: Math.max(0, now() - t0),
           truncated: truncated,
           timedOut: timedOut,

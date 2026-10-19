@@ -1276,3 +1276,4 @@ test/build-paint-material.test.js
 test/routine-media.test.js
 test/routine-images-grant.test.js
 test/index-strict-mode.test.js
+test/output-capture.test.js
