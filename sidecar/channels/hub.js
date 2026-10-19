@@ -281,6 +281,33 @@
     return { cmd: head, arg: arg };
   }
 
+  /* parseUserCommand(text, names) — recognise one of the Commander's OWN commands (`names` = what the sidecar's
+     usercommands.json defines). Returns { name, line }, where `line` is the canonical "/name args" the slash
+     registry can read, or null when the text is not one of them.
+
+     Two forms a messenger produces that the registry cannot read raw (2026-10-18 — custom commands did not work
+     in a bot's groups):
+       '/standup@starnetbot'  Telegram appends the bot's @name when a command is picked in a group, and in privacy
+                              mode it is often the only form the bot is sent at all. The registry refuses an '@', so
+                              this answered "Unknown command." Stripped here exactly as parseCommand strips it for
+                              the built-ins.
+       '/disk_usage'          Telegram's command grammar has no '-', so a "/disk-usage" command can only be listed in
+                              the "/" menu (and tapped) as "/disk_usage". Accepted as the same command — but an exact
+                              name always wins, so a Commander who defined both keeps both.
+     The head must end at whitespace or the end of the text: "/standup/notes.md" is a path, not a command. */
+  function parseUserCommand(text, names) {
+    const s = String(text == null ? '' : text).trim();
+    const m = /^\/([A-Za-z0-9_-]+)(?:@[A-Za-z0-9_]+)?(?=\s|$)/.exec(s);
+    if (!m) return null;
+    const list = (Array.isArray(names) ? names : []).map(n => String(n).toLowerCase());
+    const typed = m[1].toLowerCase();
+    let name = list.indexOf(typed) !== -1 ? typed : null;
+    if (!name && typed.indexOf('_') !== -1 && list.indexOf(typed.replace(/_/g, '-')) !== -1) name = typed.replace(/_/g, '-');
+    if (!name) return null;
+    const rest = s.slice(m[0].length).trim();
+    return { name: name, line: '/' + name + (rest ? ' ' + rest : '') };
+  }
+
   // Forgiving roster lookup: exact agentId, then case-insensitive exact name, then case-insensitive prefix on
   // name OR agentId (a unique prefix wins; an ambiguous prefix returns { ambiguous:[...] } so we can list them).
   function matchAgent(roster, query) {
@@ -437,6 +464,8 @@
     // The composition root may mint this only for an authenticated Telegram owner DM. It deliberately lives at
     // the hub edge so every other channel and every Telegram group message stays on its ordinary policy.
     const ownerTrustedFor = typeof o.ownerTrusted === 'function' ? o.ownerTrusted : (() => false);
+    // whether this hub HAS an owner DM that can be trusted — what a shell-command refusal may point the owner to
+    const ownerDmExec = typeof o.ownerTrusted === 'function';
     /* OWNER IDENTITY for control commands and Full Power inheritance (2026-09-25, sec-owner-gates).
        isOwner(msg) answers "is this sender the bound owner?" in ANY chat type (the owner may /model from their own
        group); it is minted by the composition root from the adapter's paired owner id, never from message text.
@@ -1577,23 +1606,29 @@
       // otherwise fall through and be answered by the MODEL — spending a turn to say it doesn't understand.
       // Match only against the names the sidecar actually reports, so an ordinary message that happens to start
       // with a slash (a path, say) still reaches the agent untouched. The registry itself decides what a given
-      // command may do here: an alias resolves and runs, a shell exec is refused off-desktop.
+      // command may do here: an alias resolves and runs, a shell exec runs only in the owner's trusted DM.
       // Same provenance rule as the built-in table above: forwarded / forward-quoting text is a third party's words,
       // never the Commander's command — it flows on to the (tainted) run as ordinary text.
-      const userNamed = carriesThirdPartyText(msg) ? null : /^\/([A-Za-z0-9_-]+)/.exec(String(msg.text || ''));
-      if (userNamed && runSlashFn && userCommandNames().indexOf(userNamed[1].toLowerCase()) !== -1) {
+      // The name list is read only for a slash-led message: it re-reads the Commander's file.
+      const userCmd = (runSlashFn && !carriesThirdPartyText(msg) && String(msg.text || '').trim().charAt(0) === '/')
+        ? parseUserCommand(msg.text, userCommandNames()) : null;
+      if (userCmd) {
         // the Commander's own commands run the Commander's own aliases — owner-only, same gate as the table above
-        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userNamed[1]), '', 'command'); return; }
+        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userCmd.name), '', 'command'); return; }
         // resolve the agent the SAME way handleCommand does, so a user command is scoped to whoever this chat
         // is actually talking to rather than a default
         const ucAgent = currentBoundAgent(chatId, boundAgentId, sec);
+        // chatType + ownerDmExec let the registry word a shell-command refusal truthfully for THIS chat: a group
+        // never runs one (the output would post to the whole room), and only a hub that can mint ownerTrusted has
+        // an owner DM where one does run.
+        const ucCtx = { agentId: ucAgent, ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec };
         let r;
-        try { r = await runSlashFn(String(msg.text).trim(), { agentId: ucAgent, ownerTrusted: ownerTrusted }); }
+        try { r = await runSlashFn(userCmd.line, ucCtx); }
         catch (e) { try { console.error('[' + channel + '] user command threw:', (e && e.message) || e); } catch (_) {} r = null; }
         const body = (r && Array.isArray(r.lines) && r.lines.length)
           ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
           : String((r && r.text) || '');
-        await deliver(chatId, body || ('/' + userNamed[1] + ' had nothing to report.'), '', 'command');
+        await deliver(chatId, body || ('/' + userCmd.name + ' had nothing to report.'), '', 'command');
         return;
       }
 
@@ -2321,5 +2356,5 @@
     };
   }
 
-  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });
