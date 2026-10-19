@@ -233,6 +233,30 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
     A.ok(/Venture Crucible 5d ago +\+1\s*$/.test(fl) && !/RIFT/.test(fl), 'a flow that does not fit is counted, never cut off mid-word: ' + fl.slice(56));
   }
   {
+    // MARKDOWN: an agent's reply reads as formatted text, never raw ** ` ``` markers
+    const m6 = crew();
+    m6.apply('agent.run.start', { runId: 'md', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'how?' }, T0);
+    m6.apply('agent.token', { runId: 'md', agentId: 'astra', delta: '## Steps\nDo it **here**, with `/model`:\n- first *thing*\n2. second [docs](https://starnetos.com/d)\n```\nstarnet ls\n```' }, T0 + 1);
+    m6.apply('agent.run.end', { runId: 'md', agentId: 'astra', reason: 'done' }, T0 + 2);
+    const segs = screen(m6, {}, 110, 34, T0 + 5);
+    const t6 = segs.map(tui.toPlain);
+    A.ok(t6.some(l => /│ ASTRA +Steps +│|ASTRA {3,}Steps/.test(l)) && !t6.some(l => /\*\*|```|`\/model`|## /.test(l)), 'markdown markers never reach the screen');
+    A.ok(t6.some(l => /Do it here, with \/model:/.test(l)) && t6.some(l => /• first thing/.test(l)) && t6.some(l => /2\. second docs \(https:\/\/starnetos\.com\/d\)/.test(l)) && t6.some(l => /│ starnet ls/.test(l)), 'bold, code, bullets, numbered items, links and code blocks read as a terminal shows them');
+    const bold = segs.flat().find(([t, s]) => t === 'here' && /hi b/.test(s)), code = segs.flat().find(([t, s]) => t === '/model' && /\bam\b/.test(s));
+    A.ok(!!bold && !!code, 'bold is bold white, inline code is amber');
+    // the PICKER (/model, /resume): filter by every typed word, the current item marked, the selection on the bar
+    const items = [['codex', 'gpt-6.1-sol'], ['codex', 'gpt-5.6-sol'], ['openrouter', 'anthropic/claude-sonnet-5-5'], ['claude-cli', 'claude-opus-5-5']].map(([p, id]) => ({ cols: [[p + '  ', 'dim'], [id, 'fg']], search: p + ' ' + id, current: id === 'gpt-5.6-sol' }));
+    A.eq(tui.pickerView({ items, filter: 'claude opus' }).map(i => i.search), ['claude-cli claude-opus-5-5'], 'the filter keeps items matching every word');
+    const pk = screen(crew(), { picker: { title: 'MODEL · ASTRA', note: 'now codex · gpt-5.6-sol', filter: 'gpt', sel: 1, items } }, 110, 34, T0).map(tui.toPlain);
+    A.ok(pk.some(l => /MODEL · ASTRA .*now codex · gpt-5\.6-sol/.test(l)) && pk.some(l => /› gpt.* 2 of 4/.test(l)), 'the picker says what it picks for, what it is now, the filter and the count');
+    A.ok(pk.some(l => /▌● codex +gpt-5\.6-sol/.test(l)) && pk.some(l => / {2}codex +gpt-6\.1-sol/.test(l)) && !pk.some(l => /claude/.test(l)), 'the selection sits on the bar, the current one is marked, filtered-out items are gone');
+    // a conversation switch starts the pane over
+    const m7 = crew();
+    m7.noteSent('astra', 'old talk', 'cli-astra', T0);
+    m7.resetLog('astra', '— a new conversation with ASTRA —');
+    A.eq(m7.logOf('astra').map(e => e.text), ['— a new conversation with ASTRA —'], '/new: the pane starts over under one divider');
+  }
+  {
     // the edges a long-lived station reaches: a long name, an hour-long run, a web request, a roster not loaded yet
     const m4 = crew();
     m4.setRoster({ agents: [{ agentId: 'comms-lead', name: 'Communications Lead', model: 'm' }] });

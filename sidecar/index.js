@@ -11749,6 +11749,7 @@ const ROUTES = [
   { m: 'POST', exact: '/api/channels/telegram/owner/pair', h: handleTelegramOwnerPair },
   { m: 'POST', exact: '/api/channels/telegram/owner/revoke', h: handleTelegramOwnerRevoke },
   { m: 'POST', exact: '/api/roster', h: handleRoster },
+  { m: 'POST', exact: '/api/agent/model', h: handleAgentModel },   // the terminal's /model: one agent's model + provider (via the page when open)
   { m: 'POST', exact: '/api/agent/delete', h: handleAgentDelete },
   { m: 'POST', exact: '/api/dossier', h: handleDossier },
   { m: 'POST', exact: '/api/goals', h: handleGoals },   // GROWTH Tier 2: the active goal-arc summary for cron personas
@@ -18374,6 +18375,37 @@ async function handleRoster(req, res) {
 // truth and re-pushes the surviving crew via /api/roster right after; this route's job is the server-side stores
 // the roster push can't touch. The hero ('agent') is never deletable — refused here as a second line of defence
 // behind the UI guard (you can't archive the founder without corrupting resume).
+/* POST /api/agent/model { agentId, model, provider, effort? } — the terminal's /model: pin ONE agent's model the way the desktop's
+   picker does. With a StarNet page connected, the PAGE applies it (station.control agent.model → setAgentModelPin: roster push +
+   save) — the page owns the crew, so a roster-only write would be reverted by its next push; a headless station (no page) is
+   its own source of truth and the roster takes it directly. A provider that is not connected is refused (the agent's next run
+   would fail), and an unknown agent too. Answers { ok, agentId, model, provider, via: 'page'|'roster' }. */
+async function handleAgentModel(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  let body; try { body = JSON.parse(await readBody(req, 1 << 14)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
+  const agentId = String(body.agentId || '');
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });
+  const cur = agentRoster.get(agentId);
+  if (!cur) return json(404, { error: 'no agent "' + agentId + '" on this station' });
+  const model = String(body.model == null ? '' : body.model).trim().slice(0, 200);
+  const provider = normalizeProviderId(String(body.provider || cur.provider || '').trim());
+  const effort = body.effort == null ? '' : String(body.effort).trim().slice(0, 20);
+  if (!model) return json(400, { error: 'no model named' });
+  if (!provider) return json(400, { error: 'no provider named' });
+  if (!providerHasCredential(provider, providerRuntimeKey(provider, ''), providerRuntimeBaseUrl(provider, ''))) {
+    return json(409, { error: 'the provider "' + provider + '" is not connected on this station (no key or sign-in)' });
+  }
+  // a StarNet page is connected (the phones' own tee is always one listener — the same test the remote host uses)
+  if (sse.size() > 1) {
+    const out = await stationBridge.request('station.control', Object.assign({ action: 'agent.model', agent: agentId, model, provider }, effort ? { effort } : {}));
+    if (out && out.ok) return json(200, Object.assign({ ok: true, agentId, model, provider, via: 'page' }, effort ? { effort } : {}));
+    if (!(out && out.unattended)) return json(409, { error: String((out && out.error) || 'the station page refused the change') });
+    // the page never answered (closed between the check and the ask): fall through to the roster
+  }
+  agentRoster.set(agentId, Object.assign({}, cur, { model, provider }, effort ? { reasoningEffort: effort } : {}));
+  if (!saveAgentRoster()) { agentRoster.set(agentId, cur); return json(500, { error: 'could not save the roster' }); }
+  return json(200, Object.assign({ ok: true, agentId, model, provider, via: 'roster' }, effort ? { effort } : {}));
+}
 async function handleAgentDelete(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 1 << 16)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }

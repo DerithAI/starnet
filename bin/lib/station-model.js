@@ -343,6 +343,12 @@ function makeStation() {
     if (i >= 0) st.sent.splice(i, 1);
     log(agent(agentId), { k: 'bad', text: 'not sent: ' + String(message || 'the station refused the message'), at: now });
   }
+  // a conversation switch (/new, /resume): the agent's pane starts over, with one line saying which conversation this is
+  function resetLog(agentId, note) {
+    const a = agent(agentId);
+    a.log = [];
+    if (note) log(a, { k: 'sys', text: String(note), at: 0, divider: true });
+  }
   function seedHistory(agentId, turns) {
     const a = agent(agentId);
     const lines = [];
@@ -444,7 +450,7 @@ function makeStation() {
   }
 
   return {
-    state: st, agent, setRoster, apply, applySnapshot, describePrompt, applyBudget, applyLines, noteSeen, noteSent, sendFailed, seedHistory, tick,
+    state: st, agent, setRoster, apply, applySnapshot, describePrompt, applyBudget, applyLines, noteSeen, noteSent, sendFailed, seedHistory, resetLog, tick,
     rows, header, flows, findAgent, findLine, statusOf, front: () => st.prompts[0] || null, logOf: (id) => (st.agents.get(String(id)) || { log: [] }).log
   };
 }

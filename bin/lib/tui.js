@@ -99,11 +99,15 @@ function makeGrid(cols, rows) {
 
 // ---- the screen ------------------------------------------------------------------------------------------
 const HELP = [
-  ['@name message', 'talk to an agent (it queues if busy)'],
   ['message', 'talk to the agent shown in COMMS'],
+  ['@name message', 'talk to another agent (it queues if busy)'],
+  ['/model [name]', 'show or switch the shown agent\'s model'],
+  ['/new', 'start a fresh conversation with it'],
+  ['/resume', 'go back to an earlier conversation'],
   ['y  n  v', 'answer the open ask: yes, no, view'],
   ['1-6 or text', 'answer an open question'],
-  ['tab  ↑  ↓', 'switch the agent shown in COMMS'],
+  ['tab  shift+tab', 'switch the agent shown in COMMS'],
+  ['↑  ↓', 'your earlier messages'],
   ['pgup  pgdn', 'scroll COMMS'],
   ['/stop', 'stop the shown agent\'s runs'],
   ['/flow', 'list workflows'],
@@ -268,7 +272,8 @@ function render(model, ui, size, now) {
   const card = front ? cardLines(front, model, cw, H) : [];
   const cardTop = iy1 - card.length + 1;
   const paneBot = card.length ? cardTop - 1 : iy1 + 1;
-  if (ui.overlay) drawOverlay(g, ui.overlay, iy0, paneBot, ix0, ix1);
+  if (ui.picker) drawPicker(g, ui.picker, iy0, paneBot, ix0, ix1, blink);
+  else if (ui.overlay) drawOverlay(g, ui.overlay, iy0, paneBot, ix0, ix1);
   else if (!focusRow) g.put(ix0, iy0, trunc(head.feed === 'connecting' ? 'connecting to the station…' : 'no agents on this station yet', ix1 - ix0 + 1), 'dim');
   else drawPane(g, focusRow ? model.logOf(focusRow.id) : [], focusRow, iy0, paneBot, ix0, ix1, ui, now);
   if (card.length) drawCard(g, card, cardTop, ix0, cw, blink);
@@ -278,7 +283,8 @@ function render(model, ui, size, now) {
   let px = g.put(0, promptY, (focusRow ? focusRow.name.toLowerCase() : 'starnet') + ' ', 'dim');
   px = g.put(px, promptY, '▸ ', 'brand b');
   const room = W - px - 2 - (flashKey ? 8 : 0);
-  const inp = width(ui.input) > room ? '…' + tail(ui.input, room - 1) : ui.input;
+  const typed = String(ui.input || '').replace(/\n/g, ' ⏎ ');   // a pasted multi-line message shows its breaks as ⏎
+  const inp = width(typed) > room ? '…' + tail(typed, room - 1) : typed;
   px = g.put(px, promptY, inp, 'hi');
   g.put(px, promptY, blink ? '█' : ' ', 'ph');
   if (flashKey) g.putR(W, promptY, '[' + ui.keyFlash.k + ']', 'am b');
@@ -287,7 +293,7 @@ function render(model, ui, size, now) {
   else {
     const t = front
       ? (front.question ? (front.question.options.length ? '1-' + front.question.options.length + ' pick · ' : '') + 'type an answer + enter · esc clears' : 'y allow once · n deny · v ' + (front.view ? 'hide' : 'view') + ' · ' + (narrow ? 'tab agent' : 'tab next agent'))
-      : narrow ? 'tab agent · @name talk · /help · ctrl+c quit' : 'tab ↑ ↓ next agent  ·  @name talk  ·  pgup/pgdn scroll  ·  /flow  ·  /stop  ·  /help  ·  ctrl+c quit';
+      : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  ctrl+c quit';
     g.put(0, hintY, trunc(t, W), 'dim');
   }
   return g.out();
@@ -306,6 +312,69 @@ function feedWord(f) { return f === 'connecting' ? 'connecting…' : f === 'down
 function spark(act) { const mx = Math.max(4, ...act); return act.map(v => BARS[Math.min(7, Math.round(v / mx * 7))]).join(''); }
 function tail(s, n) { const a = [...String(s)]; let out = '', w = 0; for (let i = a.length - 1; i >= 0; i--) { const cw = cpWidth(a[i].codePointAt(0)); if (w + cw > n) break; out = a[i] + out; w += cw; } return out; }
 
+/* MARKDOWN, the way a terminal shows it: an agent writes markdown, and raw `**`, backticks and fences read as noise. Block level:
+   fenced code (a dim bar down its left, no fences shown), headings (bold white), bullets (•) and numbered items, quotes, rules.
+   Inline: **bold** / __bold__ (bold white), `code` (amber), [text](url) (the text, then the url dim). Everything else is text. */
+function mdInline(s, base) {
+  base = base || 'fg';
+  const out = [];
+  const re = /\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(?<![\w*])\*(\S(?:[^*]*\S)?)\*(?![\w*])/g;
+  let last = 0, m;
+  while ((m = re.exec(s))) {
+    if (m.index > last) out.push([s.slice(last, m.index), base]);
+    if (m[1] || m[2]) out.push([m[1] || m[2], 'hi b']);
+    else if (m[3]) out.push([m[3], 'am']);
+    else if (m[4]) { out.push([m[4], base === 'fg' ? 'hi' : base]); out.push([' (' + m[5] + ')', 'dim']); }
+    else out.push([m[6], base]);   // *emphasis*: a terminal has no italic to give it, so the words stand plain
+    last = re.lastIndex;
+  }
+  if (last < s.length) out.push([s.slice(last), base]);
+  return out.length ? out : [['', base]];
+}
+function mdLines(text) {
+  const out = [];
+  let code = false;
+  for (const raw of clean(text).split('\n')) {
+    if (/^\s*```/.test(raw)) { code = !code; continue; }
+    if (code) { out.push({ pre: [['│ ', 'dim']], segs: [[raw || ' ', 'fg']] }); continue; }
+    let m;
+    if ((m = /^#{1,6}\s+(.*)$/.exec(raw))) { out.push({ pre: [], segs: mdInline(m[1], 'hi b') }); continue; }
+    if ((m = /^(\s*)[-*+]\s+(.*)$/.exec(raw))) { out.push({ pre: [[' '.repeat(Math.min(6, m[1].length)) + '• ', 'ph']], segs: mdInline(m[2]) }); continue; }
+    if ((m = /^(\s*)(\d{1,3})[.)]\s+(.*)$/.exec(raw))) { out.push({ pre: [[' '.repeat(Math.min(6, m[1].length)) + m[2] + '. ', 'ph']], segs: mdInline(m[3]) }); continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(raw)) { out.push({ pre: [], segs: [['────', 'rule']] }); continue; }
+    if ((m = /^\s*>\s?(.*)$/.exec(raw))) { out.push({ pre: [['│ ', 'dim']], segs: mdInline(m[1], 'dim') }); continue; }
+    out.push({ pre: [], segs: mdInline(raw) });
+  }
+  return out;
+}
+// styled segments → lines no wider than w, broken at spaces (a longer word is cut), styles kept
+function wrapSegs(segs, w) {
+  w = Math.max(4, w);
+  const lines = [[]];
+  let lw = 0;
+  const cur = () => lines[lines.length - 1];
+  const add = (t, s) => { const L = cur(); if (L.length && L[L.length - 1][1] === s) L[L.length - 1][0] += t; else L.push([t, s]); };
+  const breakLine = () => { const L = cur(); if (L.length) L[L.length - 1][0] = L[L.length - 1][0].replace(/ +$/, ''); lines.push([]); lw = 0; };
+  for (const [text, style] of segs) {
+    for (const tok of String(text).split(/( +)/)) {
+      if (!tok) continue;
+      if (/^ +$/.test(tok)) { if (lw && lw + tok.length <= w) { add(tok, style); lw += tok.length; } else if (lw) breakLine(); continue; }
+      let word = tok;
+      while (width(word) > w) {
+        if (lw) breakLine();
+        let head = '', hw = 0;
+        for (const ch of word) { const cw = cpWidth(ch.codePointAt(0)); if (hw + cw > w) break; head += ch; hw += cw; }
+        add(head, style); breakLine(); word = word.slice(head.length);
+      }
+      if (!word) continue;
+      if (lw && lw + width(word) > w) breakLine();
+      add(word, style); lw += width(word);
+    }
+  }
+  if (lines.length > 1 && !cur().length) lines.pop();
+  return lines;
+}
+
 // the conversation as rows: { label, lc, segs } (null = a blank row between exchanges); the text column is `tw` wide
 function paneRows(log, focusRow, tw, now) {
   const out = [];
@@ -323,7 +392,18 @@ function paneRows(log, focusRow, tw, now) {
     if (e.k === 'you') { label = 'YOU'; lc = 'hi b'; tc = e.queued ? 'dim' : 'hi'; }
     else if (e.k === 'start' && e.source === 'desktop') { label = 'YOU'; lc = 'hi b'; tc = 'hi'; note = '· from the app'; if (!text) text = e.adopted ? '(a run already under way when this terminal attached)' : '(a run from the app)'; }
     else if (e.k === 'start') { label = e.source.toUpperCase().slice(0, 7); lc = 'dim b'; tc = 'fg'; if (!text) text = e.adopted ? '(a ' + e.source + ' run, already under way when this terminal attached)' : '(' + e.source + ' run)'; }
-    else if (e.k === 'agent') { label = name; lc = 'ph b'; if (e.live) text += '▍'; }
+    else if (e.k === 'agent') {
+      // the agent's words, rendered as markdown: each block line wrapped under its own prefix (bullet, code bar)
+      let first = true;
+      for (const ml of mdLines(text + (e.live ? '▍' : ''))) {
+        const pw = ml.pre.reduce((n, s) => n + width(s[0]), 0);
+        wrapSegs(ml.segs, tw - pw).forEach((segs, j) => {
+          out.push({ label: first ? name : '', lc: 'ph b', segs: (j ? (pw ? [[' '.repeat(pw), '']] : []) : ml.pre).concat(segs) });
+          first = false;
+        });
+      }
+      return;
+    }
     else if (e.k === 'ok') tc = 'ok';
     else if (e.k === 'bad') tc = 'bad';
     else if (e.k === 'ask') tc = 'am';
@@ -355,6 +435,38 @@ function drawPane(g, log, focusRow, top, bot, x0, x1, ui, now) {
     let x = x0 + L;
     for (const [t, s] of r.segs) { const room = x1 + 1 - x; if (room <= 0) break; x = g.put(x, yy, trunc(t, room), s); }
   });
+}
+/* A PICKER (/model, /resume): a filterable list inside the COMMS frame. p: { title, note, filter, sel, items: [{ cols:
+   [[text, style]…], search, current }], loading, error, foot }. The selected row sits on the highlight bar, the current one is
+   marked ●, the window scrolls to keep the selection in view. Pure: it only reads p (sel is clamped by the caller's keys). */
+function pickerView(p) {
+  const terms = String(p.filter || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return (p.items || []).filter(it => terms.every(t => String(it.search || '').indexOf(t) >= 0));
+}
+function drawPicker(g, p, top, bot, x0, x1, blink) {
+  let y = top;
+  let x = g.put(x0, y, p.title || 'PICK', 'hi b');
+  if (p.note) g.putR(x1 + 1, y, trunc(p.note, Math.max(0, x1 - x - 3)), 'dim');
+  y++;
+  const list = pickerView(p);
+  x = g.put(x0, y, '› ', 'brand b');
+  x = g.put(x, y, trunc(p.filter || '', Math.max(4, x1 - x0 - 24)), 'hi');
+  g.put(x, y, blink ? '█' : ' ', 'ph');
+  g.putR(x1 + 1, y, p.loading ? 'loading…' : list.length + ' of ' + (p.items || []).length, 'dim');
+  y += 2;
+  const rowsAvail = Math.max(1, bot - 1 - y);
+  if (p.error && !list.length) { g.put(x0, y, trunc(p.error, x1 - x0 + 1), 'bad'); }
+  else if (!list.length && !p.loading) g.put(x0, y, p.filter ? 'nothing matches "' + trunc(p.filter, 40) + '"' : 'nothing to pick', 'dim');
+  const sel = Math.max(0, Math.min(list.length - 1, p.sel | 0));
+  const start = Math.max(0, Math.min(sel - Math.floor(rowsAvail / 2), list.length - rowsAvail));
+  list.slice(start, start + rowsAvail).forEach((it, i) => {
+    const yy = y + i, on = start + i === sel;
+    g.put(x0, yy, it.current ? '●' : ' ', 'ph b');
+    let xx = x0 + 2;
+    for (const [t, s] of it.cols) { if (xx > x1) break; xx = g.put(xx, yy, trunc(t, Math.max(0, x1 + 1 - xx)), on ? 'hi b' : s); }
+    if (on) { g.put(x0 - 1 < 0 ? x0 : x0 - 1, yy, '▌', 'ph b'); g.hl(yy, x0, x1 + 1, 'sel'); }
+  });
+  g.put(x0, bot - 1, trunc(p.foot || '↑ ↓ pick · enter choose · esc close · type to filter', x1 - x0 + 1), 'dim');
 }
 function drawOverlay(g, o, top, bot, x0, x1) {
   let y = top;
@@ -484,4 +596,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, pickerView };

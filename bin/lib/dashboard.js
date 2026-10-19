@@ -31,7 +31,7 @@ function runDashboard(station, opts) {
   const model = makeStation();
   const level = tui.colorLevel(env, !!out.isTTY);
   const ui = {
-    focus: '', input: '', overlay: null, flash: null, scroll: 0, keyFlash: null, quitArmed: 0, quitNote: '',
+    focus: '', input: '', overlay: null, picker: null, streams: {}, history: [], histAt: null, histDraft: '', pasting: false, flash: null, scroll: 0, keyFlash: null, quitArmed: 0, quitNote: '',
     // which station this is, in words: the desktop app's own, a private one this terminal booted, or one at an address
     stationLabel: station.mode === 'spawned' ? 'private station · port ' + client.base.replace(/^.*:/, '')
       : station.workspace ? 'desktop station · port ' + client.base.replace(/^.*:/, '')
@@ -64,12 +64,78 @@ function runDashboard(station, opts) {
     const [s, j] = await Promise.all([get('/api/routing/lines/stats'), get('/api/line-jobs?limit=40')]);
     if (s.ok && s.status === 200 && j.ok && j.status === 200) model.applyLines(s.json || {}, (j.json && j.json.jobs) || []);
   }
+  /* CONVERSATIONS. Each agent talks on one terminal conversation at a time (a stream: cli-<agent> or cli-<agent>-<time>). The
+     station keeps no list of them, but every run row names its stream, so the terminal's own conversations are read off
+     GET /api/runs: newest first, with when, how many messages and the run title. At launch each agent reopens its newest. */
+  const convs = new Map();   // agentId -> [{ streamId, last, first, msgs, title }]
+  const streamOf = id => ui.streams[id] || core.cliStreamId(id);
+  async function loadConversations() {
+    const r = await get('/api/runs?agent=*&limit=500', 15000);
+    if (!(r.ok && r.status === 200 && r.json && Array.isArray(r.json.runs))) return false;
+    const by = new Map();
+    for (const x of r.json.runs) {
+      const sid = String((x && x.streamId) || ''), aid = String((x && x.agentId) || '');
+      if (!aid || !(sid === core.cliStreamId(aid) || sid.indexOf(core.cliStreamId(aid) + '-') === 0) || x.internal) continue;
+      const t = Number(x.startedAt || x.ts) || 0;
+      const key = aid + '\n' + sid;
+      const c = by.get(key) || { agentId: aid, streamId: sid, last: 0, first: Infinity, msgs: 0, title: '' };
+      c.msgs++;
+      if (t >= c.last) c.last = t;
+      if (t < c.first) { c.first = t; c.title = String(x.title || x.sessionTitle || c.title || ''); }
+      by.set(key, c);
+    }
+    convs.clear();
+    for (const c of by.values()) { if (!convs.has(c.agentId)) convs.set(c.agentId, []); convs.get(c.agentId).push(c); }
+    for (const list of convs.values()) list.sort((a, b) => b.last - a.last);
+    return true;
+  }
+  async function loadStream(id, sid) {
+    const r = await get('/api/transcript?agent=' + encodeURIComponent(id) + '&stream=' + encodeURIComponent(sid) + '&limit=60');
+    if (r.ok && r.status === 200 && r.json && Array.isArray(r.json.turns)) model.seedHistory(id, r.json.turns);
+  }
   async function loadHistory() {
-    const ids = model.state.order.slice(0, 12);
-    await Promise.all(ids.map(async id => {
-      const r = await get('/api/transcript?agent=' + encodeURIComponent(id) + '&stream=' + encodeURIComponent(core.cliStreamId(id)) + '&limit=40');
-      if (r.ok && r.status === 200 && r.json && Array.isArray(r.json.turns)) model.seedHistory(id, r.json.turns);
-    }));
+    await loadConversations().catch(() => false);
+    for (const [id, list] of convs) if (list.length && !ui.streams[id]) ui.streams[id] = list[0].streamId;   // each agent's newest
+    await Promise.all(model.state.order.slice(0, 16).map(id => loadStream(id, streamOf(id))));
+  }
+  function newConversation() {
+    const a = model.state.agents.get(ui.focus);
+    if (!a) return flash('no agent to start a conversation with');
+    ui.streams[a.id] = core.cliStreamId(a.id) + '-' + Date.now().toString(36);
+    model.resetLog(a.id, '— a new conversation with ' + a.name + ' —');
+    ui.scroll = 0; ui.overlay = null;
+    flash('new conversation with ' + a.name + ' · /resume goes back to an earlier one', 'ok');
+  }
+  async function openResumePicker() {
+    const a = model.state.agents.get(ui.focus);
+    if (!a) return flash('no agent shown');
+    const p = { kind: 'resume', title: 'CONVERSATIONS · ' + a.name, note: 'from this terminal', filter: '', sel: 0, items: [], loading: true,
+      foot: '↑ ↓ pick · enter opens it · esc close · type to filter', onPick: it => switchConversation(a.id, it.streamId, it.when) };
+    ui.picker = p; ui.overlay = null; paint();
+    await loadConversations().catch(() => false);
+    const cur = streamOf(a.id);
+    const list = (convs.get(a.id) || []).slice();
+    // the station lists a run once it ENDS: a conversation whose first reply is still running is this one, said as such
+    const sentHere = model.logOf(a.id).some(e => e.k === 'you');
+    if (!list.some(c => c.streamId === cur)) list.unshift({ streamId: cur, last: now(), msgs: 0, title: sentHere ? '(this conversation — its first reply is still running)' : '(this conversation — nothing sent yet)' });
+    p.items = list.map(c => {
+      const when = c.msgs ? require('./station-model.js').ago(now() - c.last) : 'now';
+      return { streamId: c.streamId, when, current: c.streamId === cur, search: (when + ' ' + c.title).toLowerCase(),
+        cols: [[padTo(when, 10), 'dim'], [padTo(c.msgs ? c.msgs + ' msg' + (c.msgs === 1 ? '' : 's') : '', 9), 'dim'], [c.title || '(untitled)', 'fg']] };
+    });
+    p.sel = Math.max(0, p.items.findIndex(i => i.current));
+    p.loading = false;
+    paint();
+  }
+  async function switchConversation(agentId, sid, when) {
+    const a = model.state.agents.get(agentId);
+    if (!a) return;
+    if (sid === streamOf(agentId)) return paint();
+    ui.streams[agentId] = sid;
+    model.resetLog(agentId, '');
+    ui.scroll = 0;
+    await loadStream(agentId, sid);
+    flash('back in the conversation from ' + when + ' with ' + a.name, 'ok');
   }
   function pickFocus() {
     const rows = model.rows(now());
@@ -120,7 +186,7 @@ function runDashboard(station, opts) {
     const a = model.state.agents.get(agentId);
     if (!a) return flash('no agent named ' + agentId);
     if (!a.model) return flash(a.name + ' has no model set — pick one in the app first');
-    const streamId = core.cliStreamId(agentId);
+    const streamId = streamOf(agentId);
     model.noteSent(agentId, text, streamId, now());
     ui.scroll = 0;
     // tools only for a task, decided the way the page decides it (the agent's last reply lets a bare "yes" to its offer count)
@@ -192,6 +258,75 @@ function runDashboard(station, opts) {
     const n = rs.filter(r => r.ok && r.json && r.json.ok).length;
     flash(n ? 'stopping ' + n + ' run(s) of ' + a.name : 'the station did not confirm the stop', n ? 'ok' : 'am');
   }
+  // ---- /model: every model of every CONNECTED provider, the one the agent runs on marked ------------------------------
+  let modelsCache = null;
+  async function loadModels() {
+    if (modelsCache && now() - modelsCache.at < 5 * 60000) return modelsCache.items;
+    const pr = await get('/api/providers', 10000);
+    if (!(pr.ok && pr.status === 200 && pr.json)) throw new Error(pr.error || 'HTTP ' + pr.status);
+    const provs = (pr.json.providers || []).filter(p => p && p.id && p.configured);
+    const lists = await Promise.all(provs.map(async p => {
+      const r = await get('/api/models/' + encodeURIComponent(p.id), 20000);
+      return { p, models: (r.ok && r.status === 200 && r.json && Array.isArray(r.json.models)) ? r.json.models : [] };
+    }));
+    const items = [];
+    for (const { p, models } of lists) for (const m of models) if (m && m.id) items.push({ provider: p.id, id: String(m.id), name: String(m.displayName || m.name || ''), tools: m.supportsTools !== false });
+    modelsCache = { at: now(), items };
+    return items;
+  }
+  const padTo = (s, n) => { const t = tui.trunc(String(s), n); return t + ' '.repeat(Math.max(0, n - tui.width(t))); };
+  async function openModelPicker(filter) {
+    const a = model.state.agents.get(ui.focus);
+    if (!a) return flash('no agent to set a model for');
+    const p = {
+      kind: 'model', title: 'MODEL · ' + a.name, note: 'now ' + (a.provider ? a.provider + ' · ' : '') + (a.model || 'not set'),
+      filter: String(filter || ''), sel: 0, items: [], loading: true,
+      foot: '↑ ↓ pick · enter switches ' + a.name + ' · esc close · type to filter',
+      onPick: it => setModel(a.id, it.provider, it.model)
+    };
+    ui.picker = p; ui.overlay = null; paint();
+    try {
+      const items = await loadModels();
+      p.items = items.map(m => ({
+        provider: m.provider, model: m.id, current: m.provider === a.provider && m.id === a.model,
+        search: (m.provider + ' ' + m.id + ' ' + m.name).toLowerCase(),
+        cols: [[padTo(m.provider, 12), 'dim'], [m.id, 'fg'], [m.name && m.name.toLowerCase() !== m.id.toLowerCase() ? '   ' + m.name : '', 'dim'], [m.tools ? '' : '   no tools', 'am']]
+      }));
+      const ci = tui.pickerView(p).findIndex(i => i.current);
+      p.sel = ci >= 0 ? ci : 0;
+    } catch (e) { p.error = 'the station did not list its models: ' + ((e && e.message) || e); }
+    p.loading = false;
+    // /model <name> that matches exactly one model switches at once
+    if (p.filter && ui.picker === p) { const v = tui.pickerView(p); if (v.length === 1) { ui.picker = null; return setModel(a.id, v[0].provider, v[0].model); } }
+    paint();
+  }
+  async function setModel(agentId, provider, modelId) {
+    const a = model.state.agents.get(agentId);
+    if (!a) return;
+    flash('switching ' + a.name + ' to ' + provider + ' · ' + modelId + '…', 'am', 15000);
+    const r = await client.request('POST', '/api/agent/model', { agentId, model: modelId, provider }, { timeoutMs: 15000 });
+    if (r.ok && r.status === 200 && r.json && r.json.ok) {
+      a.model = String(r.json.model); a.provider = String(r.json.provider);
+      flash(a.name + ' now runs on ' + a.provider + ' · ' + a.model + ' (from its next message)', 'ok', 6000);
+    } else flash('the model did not change: ' + ((r.json && r.json.error) || r.error || (r.status === 404 ? 'this station is older than /model' : 'HTTP ' + r.status)), 'bad', 9000);
+    loadRoster().then(paint, () => {});
+  }
+  function pickerKey(str, k) {
+    const p = ui.picker, list = tui.pickerView(p);
+    if (k.name === 'escape') { ui.picker = null; return paint(); }
+    if (k.name === 'up') { p.sel = Math.max(0, (p.sel | 0) - 1); return paint(); }
+    if (k.name === 'down') { p.sel = Math.max(0, Math.min(list.length - 1, (p.sel | 0) + 1)); return paint(); }
+    if (k.name === 'pageup') { p.sel = Math.max(0, (p.sel | 0) - 10); return paint(); }
+    if (k.name === 'pagedown') { p.sel = Math.max(0, Math.min(list.length - 1, (p.sel | 0) + 10)); return paint(); }
+    if (k.name === 'return' || k.name === 'enter') { const it = list[p.sel | 0]; if (it && p.onPick && !p.loading) { ui.picker = null; p.onPick(it); } return paint(); }
+    if (k.name === 'backspace') { p.filter = p.filter.slice(0, -1); p.sel = 0; return paint(); }
+    if (k.sequence && /^\x1b\[[?\d;]*[ct]$/.test(k.sequence)) return;
+    if (typeof str !== 'string' || !str || k.ctrl || k.meta || str.charCodeAt(0) === 27) return;
+    const ch = str.replace(/[\x00-\x1f\x7f]/g, '');
+    if (ch && p.filter.length < 80) { p.filter += ch; p.sel = 0; }
+    paint();
+  }
+
   async function runFlow(word, text) {
     const line = model.findLine(word);
     if (!line) return flash('no workflow named ' + word + ' · /flow lists them');
@@ -207,10 +342,20 @@ function runDashboard(station, opts) {
   }
 
   // ---- input ------------------------------------------------------------------------------------------------
+  function historyStep(d) {
+    const h = ui.history;
+    if (!h.length) return;
+    if (ui.histAt == null) { if (d > 0) return; ui.histDraft = ui.input; ui.histAt = h.length; }
+    const i = Math.max(0, Math.min(h.length, ui.histAt + d));
+    ui.input = i === h.length ? ui.histDraft : h[i];
+    ui.histAt = i === h.length ? null : i;
+  }
   function submit(raw) {
     const text = String(raw || '').trim();
     ui.overlay = null;
+    ui.histAt = null; ui.histDraft = '';
     if (!text) return;
+    if (ui.history[ui.history.length - 1] !== text) { ui.history.push(text); if (ui.history.length > 200) ui.history.shift(); }
     const q = model.front();
     if (q && q.question && text[0] !== '@' && text[0] !== '/') return answerQuestion(text);
     if (text[0] === '/') return command(text);
@@ -229,6 +374,9 @@ function runDashboard(station, opts) {
     const parts = text.split(/\s+/), cmd = parts[0].toLowerCase();
     if (cmd === '/help' || cmd === '/?') { ui.overlay = { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' }; return paint(); }
     if (cmd === '/quit' || cmd === '/exit') return quit(true);
+    if (cmd === '/model' || cmd === '/models') return openModelPicker(parts.slice(1).join(' '));
+    if (cmd === '/new' || cmd === '/clear') return newConversation();
+    if (cmd === '/resume' || cmd === '/conversations') return openResumePicker();
     if (cmd === '/stop') { const a = parts[1] ? model.findAgent(parts[1]) : model.state.agents.get(ui.focus); return a ? stopAgent(a.id) : flash('no agent named ' + parts[1]); }
     if (cmd === '/flow' || cmd === '/flows') {
       if (parts[1] === 'run') {
@@ -263,10 +411,20 @@ function runDashboard(station, opts) {
     if (k.ctrl && k.name === 'c') return quit(false);
     if (k.ctrl && k.name === 'l') { redrawAll(); return; }
     ui.quitArmed = 0;
+    if (ui.picker) return pickerKey(str, k);
     if (k.name === 'escape') { ui.input = ''; ui.overlay = null; ui.scroll = 0; return paint(); }
+    // a PASTE is text (bracketed paste, ESC[?2004h): its newlines stay in the message — nothing is sent or answered mid-paste
+    if (k.name === 'paste-start') { ui.pasting = true; return; }
+    if (k.name === 'paste-end') { ui.pasting = false; return paint(); }
+    if (ui.pasting) {
+      if (k.name === 'return' || k.name === 'enter') { if (ui.input.length < 20000) ui.input += '\n'; return schedulePaint(); }
+      if (typeof str === 'string' && str) { const ch = str.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, ''); if (ch && ui.input.length < 20000) ui.input += ch; }
+      return schedulePaint();
+    }
+    // tab / shift+tab: the agent shown in COMMS · ↑ ↓: your earlier messages (and back to what you were typing)
     if (k.name === 'tab') { focusStep(k.shift ? -1 : 1); return paint(); }
-    if (k.name === 'up' && !ui.input) { focusStep(-1); return paint(); }
-    if (k.name === 'down' && !ui.input) { focusStep(1); return paint(); }
+    if (k.name === 'up') { historyStep(-1); return paint(); }
+    if (k.name === 'down') { historyStep(1); return paint(); }
     if (k.name === 'pageup') { ui.scroll += 8; return paint(); }
     if (k.name === 'pagedown') { ui.scroll = Math.max(0, ui.scroll - 8); return paint(); }
     if (k.name === 'return' || k.name === 'enter') { const t = ui.input; ui.input = ''; submit(t); return paint(); }
@@ -305,7 +463,7 @@ function runDashboard(station, opts) {
     if (s) try { out.write(s); } catch (_) {}
   }
   function enterScreen() {
-    out.write('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H');
+    out.write('\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H');   // …and bracketed paste on, so a paste arrives marked
     readline.emitKeypressEvents(inp);
     if (inp.isTTY && typeof inp.setRawMode === 'function') inp.setRawMode(true);
     inp.on('keypress', onKey);
@@ -344,7 +502,7 @@ function runDashboard(station, opts) {
     try { out.removeListener('resize', onResize); } catch (_) {}
     try { if (inp.isTTY && typeof inp.setRawMode === 'function') inp.setRawMode(false); } catch (_) {}
     try { inp.pause(); } catch (_) {}
-    try { out.write('\x1b[0m\x1b[?25h\x1b[?1049l'); } catch (_) {}
+    try { out.write('\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1049l'); } catch (_) {}
   }
   const onExit = () => { if (!stopped) leaveScreen(); };
   function stop(code) {

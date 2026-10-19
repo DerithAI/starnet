@@ -58,10 +58,10 @@ function startMockOpenRouter(script, seen) {
 }
 
 // a watcher: GET /api/observe with the header, every product frame collected as { name, payload }
-function watch(fixture, headers) {
+function watch(fixture, headers, feedPath) {
   const events = [];
   let status = 0;
-  const req = http.request({ host: HOST, port: fixture.port, path: '/api/observe', method: 'GET', headers: Object.assign({ Accept: 'text/event-stream', Origin: fixture.baseUrl }, headers) }, res => {
+  const req = http.request({ host: HOST, port: fixture.port, path: feedPath || '/api/observe', method: 'GET', headers: Object.assign({ Accept: 'text/event-stream', Origin: fixture.baseUrl }, headers) }, res => {
     status = res.statusCode;
     res.setEncoding('utf8');
     let buf = '';
@@ -210,6 +210,35 @@ async function until(fn, ms, label) {
       await run(fixture, Object.assign({}, base, { agentId: 'rook', rosterSystem: true, isTask: true, messages: [{ role: 'user', content: 'how do I make this run every morning?' }] }));
       const desk = seenSystems.find(s => s.indexOf('ROOK-OBSERVE-PERSONA') >= 0) || '';
       A.ok(desk.indexOf('[TERMINAL]') < 0 && desk.indexOf(DESKTOP) >= 0, 'the same task run from the page keeps the desktop manual and no terminal note');
+    }
+
+    /* ---- 6. /model from the terminal: POST /api/agent/model ---------------------------------------------------- */
+    {
+      const rosterOf = async id => ((await fixture.json('GET', '/api/runtime/agent')).body.agents || []).find(a => a.agentId === id) || {};
+      // no StarNet page connected: the roster takes it (a headless station is its own source of truth)
+      const r1 = await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: 'test/other-model', provider: 'openrouter' });
+      A.eq([r1.status, r1.body && r1.body.via], [200, 'roster'], 'headless: the roster takes the new model');
+      A.eq((await rosterOf('rook')).model, 'test/other-model', 'and the station reads it back');
+      A.eq((await fixture.json('POST', '/api/agent/model', { agentId: 'ghost', model: 'm', provider: 'openrouter' })).status, 404, 'an unknown agent is refused');
+      A.eq((await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: 'claude-x', provider: 'anthropic' })).status, 409, 'a provider with no key or sign-in is refused (its next run would fail)');
+      A.eq((await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: '', provider: 'openrouter' })).status, 400, 'no model named, nothing changes');
+      A.eq((await rosterOf('rook')).model, 'test/other-model', 'the refused calls changed nothing');
+      // a StarNet page connected: the PAGE applies it (it owns the crew; a roster-only write would be undone by its next push)
+      const asked = [];
+      const page = watch(fixture, { 'X-StarNet-Token': fixture.token }, '/api/channels/events');
+      const answering = setInterval(() => {
+        for (const e of page.events.splice(0)) {
+          if (e.name !== 'station.command' || !e.payload) continue;
+          asked.push(e.payload);
+          fixture.json('POST', '/api/station/ack', { id: e.payload.id, ok: true, result: { agent: 'ROOK', model: e.payload.args.model } });
+        }
+      }, 25);
+      await sleep(400);
+      const r2 = await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: 'test/page-model', provider: 'openrouter', effort: 'high' });
+      clearInterval(answering); page.close();
+      A.eq([r2.status, r2.body && r2.body.via], [200, 'page'], 'with a page connected, the page applies it: ' + JSON.stringify(r2.body));
+      const cmd = asked.find(c => c.verb === 'station.control') || {};
+      A.eq([cmd.args && cmd.args.action, cmd.args && cmd.args.agent, cmd.args && cmd.args.model, cmd.args && cmd.args.provider, cmd.args && cmd.args.effort], ['agent.model', 'rook', 'test/page-model', 'openrouter', 'high'], 'as the same station.control agent.model the agent tool sends');
     }
   } catch (e) {
     A.ok(false, 'observer e2e threw: ' + ((e && e.stack) || e));
