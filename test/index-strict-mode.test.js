@@ -36,9 +36,18 @@ const lead = src.replace(/^(?:\s+|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*/, '');
 A.ok(lead.startsWith("'use strict';"), "the first statement of sidecar/index.js is 'use strict';");
 
 // finalCompletionEvidence: declared per run inside runOnceCore, and defaulted before the settle path reads it.
-const core = A.fnBody(src, 'async function runOnceCore(o)');
-A.ok(core.length > 1000, 'found runOnceCore');
-A.ok(/\blet finalCompletionEvidence = null;/.test(core), 'finalCompletionEvidence is a per-run local of runOnceCore');
-A.ok(/\bif \(!finalCompletionEvidence\) finalCompletionEvidence = execution\.completionEvidence\(\);/.test(core), 'the settle path defaults it to THIS run\'s own evidence when the run threw before the postconditions pass');
+// The range is runOnceCore's own: from its header to the first column-0 `}` (A.fnBody's brace scan runs past it on
+// this file's regex literals, so it cannot bound the check).
+const start = src.indexOf('\nasync function runOnceCore(o) {');
+const end = start < 0 ? -1 : src.indexOf('\n}\n', start);
+A.ok(start > 0 && end > start && (end - start) < src.length / 4, 'found runOnceCore\'s own range (' + (end - start) + ' chars)');
+const core = src.slice(start, end);
+A.eq((src.match(/^[ \t]*(?:let|var|const) finalCompletionEvidence\b/gm) || []).length, 1,'finalCompletionEvidence is declared exactly once (no module-scope copy)');
+A.ok(/\n  let finalCompletionEvidence = null;/.test(core), 'finalCompletionEvidence is a function-level local of runOnceCore (per run)');
+const DEFAULT = 'if (!finalCompletionEvidence) finalCompletionEvidence = execution.completionEvidence();';
+const at = core.indexOf(DEFAULT);
+const fin = at < 0 ? -1 : core.lastIndexOf('\n  } finally {', at);
+A.ok(fin > 0 && /^\n  \} finally \{\s*(\/\/[^\n]*\s*)*$/.test(core.slice(fin, at)), 'the settle `finally` defaults it FIRST to this run\'s own evidence when the run threw before the postconditions pass');
+A.ok(at > 0 && at < core.indexOf("completionVerdict: 'not_assessed', effectVerdict: finalCompletionEvidence.effectVerdict"), 'the default lands before the settle path reads it');
 
 A.report('index-strict-mode.test');
