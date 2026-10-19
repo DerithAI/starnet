@@ -938,8 +938,8 @@ body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row.attn:has(> 
        Andrew kept the TRIMMED pass, no cursor on the selection, no blinking caret)
      · SESSIONS / PROJECTS is the Pip-Boy tab strip: one rule across the rail, the open tab boxed above it and open at
        the bottom; + NEW is a key on the rule
-     · a selected crew card or session is marked by four viewfinder corners (the CAM's own marks) over a faint tint; a
-       card or row that waits on you keeps its gold, corners included
+     · a selected crew card or session is framed: a 1px line over a faint tint, gold on a card or row that waits on you
+       (Andrew 10-18 retired the four viewfinder corners: "i kind of think it looks tacky")
      · statuses and steps are tracked caps; a working agent carries a calm Pip-Boy segmented meter (indeterminate: busy,
        never a %), hidden while it waits on your OK
      · every shape is a 2px terminal box; NEEDS YOU sits on a gold rule that runs out to its count
@@ -975,30 +975,21 @@ body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide::before {
 body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-search-toggle { --pip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='black' stroke-width='1.6'%3E%3Ccircle cx='5.8' cy='5.8' r='4.3'/%3E%3Cpath d='M9 9l4.2 4.2'/%3E%3C/svg%3E"); }
 body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-hide { --pip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='black' stroke-width='1.6'%3E%3Cpath d='M1.5 1v12'/%3E%3Cpath d='M10.5 3 6 7l4.5 4'/%3E%3C/svg%3E"); }
 
-/* ---- the selection: four bright corner marks over a faint tint, no box. --pip-mark / --pip-fill turn gold on a card or
-   row that waits on you, so a selected wait keeps its colour ---- */
+/* ---- the selection: a 1px frame over a faint tint (the cards' own frame). --pip-mark / --pip-fill turn gold on a card
+   or row that waits on you, so a selected wait keeps its colour. (Andrew 10-18 retired the four viewfinder corners that
+   drew it: "maybe we overdid it with the corner L i kind of think it looks tacky") ---- */
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row,
 body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row,
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-portrait { border-radius: 2px; }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row:is(.selected, .filtering, :focus-visible),
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.filtering.crew-row,
 body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row:is(.sel, :focus-visible) {
-  border-color: transparent; box-shadow: none;
-  background:
-    linear-gradient(var(--pip-mark), var(--pip-mark)) left top / 10px 1px no-repeat border-box,
-    linear-gradient(var(--pip-mark), var(--pip-mark)) left top / 1px 10px no-repeat border-box,
-    linear-gradient(var(--pip-mark), var(--pip-mark)) right top / 10px 1px no-repeat border-box,
-    linear-gradient(var(--pip-mark), var(--pip-mark)) right top / 1px 10px no-repeat border-box,
-    linear-gradient(var(--pip-mark), var(--pip-mark)) left bottom / 10px 1px no-repeat border-box,
-    linear-gradient(var(--pip-mark), var(--pip-mark)) left bottom / 1px 10px no-repeat border-box,
-    linear-gradient(var(--pip-mark), var(--pip-mark)) right bottom / 10px 1px no-repeat border-box,
-    linear-gradient(var(--pip-mark), var(--pip-mark)) right bottom / 1px 10px no-repeat border-box,
-    var(--pip-fill);
+  border-color: color-mix(in srgb, var(--pip-mark) 60%, transparent); box-shadow: none; background: var(--pip-fill);
 }
 body.glass-demo:not(.hud-mode) #screen-game :is(#crew .crew-row, #left #workstreams .ws-row) { --pip-mark: var(--ph-bright); --pip-fill: rgba(var(--ph-rgb), .085); }
 body.glass-demo:not(.hud-mode) #screen-game :is(#crew .crew-row.asking, #left #workstreams .ws-row.attn) { --pip-mark: var(--gold); --pip-fill: rgba(var(--gold-rgb), .09); }
 body.glass-demo:not(.hud-mode) #screen-game #left #crew .crew-row.asking:is(.selected, .filtering, :focus-visible),
-body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row.attn.sel { border-color: rgba(var(--gold-rgb), .35); }
+body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row.attn.sel { border-color: color-mix(in srgb, var(--gold) 60%, transparent); }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row:hover:not(.selected):not(.filtering):not(.asking),
 body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row:hover:not(.sel):not(.attn) { border-color: rgba(var(--ph-rgb), .18); background: rgba(var(--ph-rgb), .035); box-shadow: none; }
 
@@ -1106,8 +1097,8 @@ body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-runs { text-t
    the deck's stacking (app.css, locked by dock-focus-seams) and the menus' widths (mobile reachability) are untouched.
      · CREW / WORK / BUILD / SYSTEM hang from one rule (end ticks); the open group's tab is boxed below it, the rule
        bending down around it; a group with a window open keeps its gold underline
-     · a menu is one matte 2px terminal box: rows rest on hairlines, the lit row is drawn by four viewfinder corners,
-       an open window's row keeps a gold edge, every icon sits in a square well
+     · a menu is one matte 2px terminal box: rows rest on hairlines, the lit row is framed (the rail's selection; the
+       viewfinder corners retired 10-18), an open window's row keeps a gold edge, every icon sits in a square well
      · the alert chip is a square gold block, the widget + a square key, and CTX the crew card's segmented meter
    ============================================================ */
 body.glass-demo:not(.hud-mode) #screen-game #bottombar { column-gap: 0; }
@@ -1139,17 +1130,7 @@ body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu {
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb { border-radius: 2px; min-height: 54px; }
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb + .bb:not(:hover):not(:focus-visible):not(.active) { box-shadow: 0 -1px 0 rgba(var(--ph-rgb), .1); }
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb:is(:hover, :focus-visible, .active) {
-  border-color: transparent; color: var(--ph-bright); box-shadow: none;
-  background:
-    linear-gradient(var(--ph-bright), var(--ph-bright)) left top / 9px 1px no-repeat border-box,
-    linear-gradient(var(--ph-bright), var(--ph-bright)) left top / 1px 9px no-repeat border-box,
-    linear-gradient(var(--ph-bright), var(--ph-bright)) right top / 9px 1px no-repeat border-box,
-    linear-gradient(var(--ph-bright), var(--ph-bright)) right top / 1px 9px no-repeat border-box,
-    linear-gradient(var(--ph-bright), var(--ph-bright)) left bottom / 9px 1px no-repeat border-box,
-    linear-gradient(var(--ph-bright), var(--ph-bright)) left bottom / 1px 9px no-repeat border-box,
-    linear-gradient(var(--ph-bright), var(--ph-bright)) right bottom / 9px 1px no-repeat border-box,
-    linear-gradient(var(--ph-bright), var(--ph-bright)) right bottom / 1px 9px no-repeat border-box,
-    rgba(var(--ph-rgb), .085);
+  border-color: rgba(var(--ph-rgb), .55); color: var(--ph-bright); box-shadow: none; background: rgba(var(--ph-rgb), .085);
 }
 /* a window from this row is open: a gold edge on its left, lit or not */
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-menu .bb.active { box-shadow: inset 2px 0 0 var(--gold); }
