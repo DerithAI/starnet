@@ -374,6 +374,7 @@
         provider: provider,
         // the persona, plus the project-folder anchor when this loop works in a real folder
         system: (ident.system || personaOf()) + (projectLine ? String(projectLine(fresh) || '') : ''),
+        stationEvidence: true,   // the station's observed evidence rides the run context, so this persona is the same every iteration
         messages: buildMessages(fresh, snapshotText),
         agentId: fresh.agentId,
         isTask: true,

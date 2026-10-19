@@ -9,6 +9,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+const { userWords } = require('./helpers/host-notes.js');
 
 function startProvider() {
   return new Promise(resolve => {
@@ -28,8 +29,10 @@ function startProvider() {
         const results = (body.messages || []).filter(message => message && message.role === 'tool');
         const worker = (body.messages || []).some(message => message.role === 'system' && String(message.content).includes('PROJECT_WORKER_PROOF'));
         let call = null;
-        const routine = (body.messages || []).some(message => message.role === 'user' && String(message.content).includes('ROUTINE_WRITE_PROOF'));
-        const lapsed = (body.messages || []).some(message => message.role === 'user' && String(message.content).includes('LAPSED_WRITE_PROOF'));
+        // routed on the Commander's OWN words: a routine's run-context note quotes earlier chats as RECENT ACTIVITY
+        // (the LAPSED_WRITE_PROOF chat above), and that note is the leading text of the same user message
+        const routine = (body.messages || []).some(message => message.role === 'user' && userWords(message).includes('ROUTINE_WRITE_PROOF'));
+        const lapsed = (body.messages || []).some(message => message.role === 'user' && userWords(message).includes('LAPSED_WRITE_PROOF'));
         if (lapsed) call = results.length === 0 ? { id: 'lbrief', name: 'brief_proceed', args: { objective: 'write the proof file', deliverable: 'one write receipt', assumptions: ['The anchored folder may not be trusted'] } } : results.length === 1 ? { id: 'lwrite', name: 'fs_write', args: { path: 'Working/lapsed-proof.txt', content: 'LAPSED_PRIVATE' } } : null;
         else if (routine) call = results.length === 0 ? { id: 'rwrite', name: 'fs_write', args: { path: 'Working/routine-proof.txt', content: 'ROUTINE_IN_PROJECT' } } : null;
         else if (results.length === 0) call = { id: 'brief', name: 'brief_proceed', args: { objective: 'prove project-relative native tools', deliverable: 'two authoritative read receipts', assumptions: ['The project root is already blessed'] } };
