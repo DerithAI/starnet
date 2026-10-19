@@ -39,8 +39,9 @@ function stopSentence(reason, extra) {
     if (x.unpricedModel) {
       const cap = Number(x.unpricedCapTokens) > 0 ? Number(x.unpricedCapTokens).toLocaleString('en-US') + '-token' : 'token';
       // NOT the $ cap: a model with no known price is bounded in TOKENS (loop.js maxUnpricedTokens), and the $ setting
-      // never reads it — so "raise your spend cap" was a door onto a room without the lever. Name the real knobs.
-      return 'it reached the ' + cap + ' safety ceiling StarNet puts on ' + x.unpricedModel + ', a model it has no price for — raising the $ spending limit does not change this. Switch to a priced model, or raise the ceiling with the STARNET_MAX_UNPRICED_TOKENS environment variable, or give the model a price with SKYNET_MODEL_PRICES';
+      // never reads it — so "raise your spend cap" was a door onto a room without the lever. Name the real knobs: since
+      // issue #135 the ceiling is a Runtime limits row, and a save applies from the next run.
+      return 'it reached the ' + cap + ' safety ceiling StarNet puts on ' + x.unpricedModel + ', a model it has no price for — raising the $ spending limit does not change this. Raise UNPRICED MODEL TOKEN CEILING in SETTINGS › APP & BACKUP › Runtime limits (0 = no ceiling) or with STARNET_MAX_UNPRICED_TOKENS, switch to a priced model, or give the model a price with SKYNET_MODEL_PRICES';
     }
     if (x.subscriptionModel) {
       const cap = Number(x.subscriptionCapTokens) > 0 ? Number(x.subscriptionCapTokens).toLocaleString('en-US') + '-token' : 'token';

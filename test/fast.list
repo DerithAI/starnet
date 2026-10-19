@@ -44,6 +44,7 @@ test/logbound.test.js
 test/budget.test.js
 test/budget-caps.test.js
 test/budget-stop-door.test.js
+test/unpriced-ceiling-setting.test.js
 test/fallback-chain.test.js
 test/voice-chat-route.test.js
 test/configexport.test.js
