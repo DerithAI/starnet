@@ -25,7 +25,7 @@ import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { loadCleaner } from './build-map-catalog.mjs';
+import { loadCleaner, publishedVersions } from './build-map-catalog.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,28 +41,35 @@ const str = (v) => (v == null ? '' : String(v));
 export function plainCredit(s) { return str(s).replace(/[<>[\]()|`{}\\*_#\r\n]/g, '').replace(/https?:\/*|www\./gi, '').replace(/\s+/g, ' ').trim().slice(0, fmt.LIMITS.credit); }
 
 /**
- * planPull(submissions, ctx) -> { pulls: [{ sub, slug, version, meta, buildText, still, update }], skipped: [{ id, slug, why }] }
- *   ctx: { clean(text, name) (build-map-catalog loadCleaner), readMeta(slug) -> map.json | null }
- * Pure apart from the cleaner: decides, never writes. Every refusal says why, for the operator.
+ * planPull(submissions, ctx) -> { pulls: [{ sub, slug, version, meta, buildText, still, update }], skipped: [{ id, slug, why }],
+ *                                 waiting: [{ id, slug }] }
+ *   submissions: the cloud's metadata, each with .build (text) and .still (Buffer) fetched on their own
+ *   ctx: { clean(text, name) (build-map-catalog loadCleaner), readMeta(slug) -> map.json | null,
+ *          published(slug) -> [versions already in website/maps/<slug>/] }
+ * Pure apart from the cleaner: decides, never writes. Every refusal says why, for the operator. A map this PC already
+ * pulled (same submission id), still waiting for a deploy and --mark-live, is `waiting`, not pulled again.
  */
 export function planPull(submissions, ctx) {
-  const pulls = [], skipped = [], seen = new Set();
+  const pulls = [], skipped = [], waiting = [], seen = new Set();
   for (const s of submissions || []) {
     const slug = str(s && s.slug);
     const skip = (why) => skipped.push({ id: str(s && s.id), slug, why });
-    if (!fmt.SLUG_RE.test(slug) || slug.length > 48) { skip('bad name'); continue; }
+    if (!fmt.nameOk(slug)) { skip('bad name'); continue; }
     if (seen.has(slug)) { skip('two approved maps of the same name in one pull; pull again after this one is live'); continue; }
     if (!/^mp_[A-Za-z0-9_-]{6,40}$/.test(str(s.id)) || !/^[0-9a-f]{24}$/.test(str(s.owner))) { skip('the cloud sent no submission id / owner key'); continue; }
+    const prior = ctx.readMeta(slug);
+    if (prior && prior.submission && prior.submission.id === s.id) { waiting.push({ id: s.id, slug }); continue; }
     const buildText = str(s.build);
-    const still = Buffer.from(str(s.still), 'base64');
+    const still = Buffer.isBuffer(s.still) ? s.still : Buffer.from(str(s.still), 'base64');
     if (!buildText || !fmt.pngSize(still)) { skip('the cloud sent no build or no picture'); continue; }
     if (fmt.cloudDigest(buildText, still) !== str(s.digest)) { skip('the map does not match the digest the reviewer approved'); continue; }
     const c = ctx.clean(buildText, s.title);
     if (!c.ok) { skip('the app\'s cleaner refuses it: ' + c.message); continue; }
     if (c.dropped && (c.dropped.work || c.dropped.made)) { skip('it still carries crew, instructions or made props'); continue; }
-    const prior = ctx.readMeta(slug);
     if (prior && !(prior.submission && prior.submission.owner === s.owner)) { skip('another author\'s map already holds this name'); continue; }
-    const version = prior ? (Number(prior.version) || 0) + 1 : 1;
+    // the next version follows every version ever published, taken-down ones included (their folders stay on the site)
+    const versions = (ctx.published ? ctx.published(slug) : []).concat(prior ? [Number(prior.version) || 0] : []);
+    const version = (versions.length ? Math.max(...versions) : 0) + 1;
     const meta = {
       slug, version, title: fmt.cleanText(s.title, fmt.LIMITS.title), description: fmt.cleanText(s.description, fmt.LIMITS.description),
       credit: plainCredit(s.credit) || 'StarNet player', license: fmt.LICENSE, stats: c.stats,
@@ -72,7 +79,7 @@ export function planPull(submissions, ctx) {
     seen.add(slug);
     pulls.push({ sub: s, slug, version, meta, buildText: c.text, still, update: !!prior });
   }
-  return { pulls, skipped };
+  return { pulls, skipped, waiting };
 }
 
 function reviewToken() {
@@ -104,12 +111,28 @@ function restore(dir, snap) {
   for (const f of snap) writeFileSync(join(dir, f.name), f.bytes);
 }
 
+async function getBytes(url, token) {
+  const res = await fetch(url, { headers: { authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(60000) });
+  if (!res.ok) throw new Error(url + ' answered ' + res.status);
+  return Buffer.from(await res.arrayBuffer());
+}
+
 async function pull({ dryRun }) {
   const token = reviewToken();
+  // the list is metadata; each map's build and picture come on their own, so no answer holds the whole backlog
   const body = await getJson(CLOUD + '/v1/map-submissions/approved', { headers: { authorization: 'Bearer ' + token } });
-  const plan = planPull(body.submissions, { clean: loadCleaner(), readMeta });
+  const subs = [];
+  for (const s of body.submissions || []) {
+    const prior = readMeta(str(s.slug));
+    if (prior && prior.submission && prior.submission.id === s.id) { subs.push(s); continue; }   // already pulled: no download
+    const file = (which) => CLOUD + '/v1/map-submissions/file?id=' + encodeURIComponent(str(s.id)) + '&which=' + which;
+    try { subs.push(Object.assign({}, s, { build: (await getBytes(file('build'), token)).toString('utf8'), still: await getBytes(file('still'), token) })); }
+    catch (e) { subs.push(Object.assign({}, s, { build: '', still: Buffer.alloc(0) })); console.log('  could not download ' + s.slug + ': ' + str(e && e.message)); }
+  }
+  const plan = planPull(subs, { clean: loadCleaner(), readMeta, published: (slug) => publishedVersions(slug) });
   for (const s of plan.skipped) console.log('  skipped ' + (s.slug || s.id) + ': ' + s.why);
-  if (!plan.pulls.length) { console.log('pull-map-submissions: nothing new to pull (' + (body.submissions || []).length + ' approved, ' + plan.skipped.length + ' skipped)'); return plan.skipped.length ? 1 : 0; }
+  for (const w of plan.waiting) console.log('  already pulled, waiting for a deploy and --mark-live: ' + w.slug);
+  if (!plan.pulls.length) { console.log('pull-map-submissions: nothing new to pull (' + (body.submissions || []).length + ' approved, ' + plan.waiting.length + ' already pulled, ' + plan.skipped.length + ' skipped)'); return plan.skipped.length ? 1 : 0; }
   for (const p of plan.pulls) console.log('  ' + (dryRun ? 'would pull ' : 'pulling ') + p.slug + ' v' + p.version + (p.update ? ' (update)' : '') + ' by ' + p.meta.credit + ' · ' + p.meta.stats.rooms + ' rooms, ' + p.meta.stats.props + ' props');
   if (dryRun) return 0;
   const snaps = new Map(plan.pulls.map((p) => [p.slug, snapshot(join(MAPS_DIR, p.slug))]));

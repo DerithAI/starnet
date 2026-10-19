@@ -26,8 +26,12 @@ const BUILD_FILE = 'build.starnet-build.json';
 const STILL_FILE = 'still.png';
 const MAX_MAPS = 2000;
 const MAX_BUILD_BYTES = 2 * 1024 * 1024;
-const MAX_STILL_BYTES = 4 * 1024 * 1024;
+// under the guarded fetcher's 4,000,000-byte ceiling (sidecar/skills/exchange-fetch.js), above the cloud's 3.75 MiB
+const MAX_STILL_BYTES = 3990000;
 const LIMITS = Object.freeze({ title: 40, description: 200, credit: 40 });
+// each map is a folder named after it, and Windows cannot have a folder with these names (git cannot add one)
+const RESERVED_RE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/;
+const nameOk = slug => SLUG_RE.test(slug) && slug.length <= 48 && !RESERVED_RE.test(slug);
 
 const str = v => (v == null ? '' : String(v));
 const sha256hex = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -61,7 +65,7 @@ const filePath = (slug, version, name) => 'maps/' + slug + '/' + version + '/' +
 /* buildEntry(meta, buildBytes, stillBytes) -> the index entry for one published map version. Throws a sentence. */
 function buildEntry(meta, buildBytes, stillBytes) {
   const slug = str(meta && meta.slug);
-  if (!SLUG_RE.test(slug) || slug.length > 48) throw new Error((slug || 'a map') + ': bad name');
+  if (!nameOk(slug)) throw new Error((slug || 'a map') + ': bad name');
   if (!whole(meta.version, 1, 100000)) throw new Error(slug + ': version must be a whole number from 1');
   const title = cleanText(meta.title, LIMITS.title);
   if (!title) throw new Error(slug + ': no title');
@@ -77,7 +81,7 @@ function buildEntry(meta, buildBytes, stillBytes) {
   const count = v => (whole(v, 0, 100000) ? v : 0);
   return {
     slug, version: meta.version, title, description: cleanText(meta.description, LIMITS.description), credit, license: LICENSE,
-    stats: { rooms: count(st.rooms), props: count(st.props), belts: count(st.belts), lines: count(st.lines) },
+    stats: { rooms: count(st.rooms), props: count(st.props), belts: count(st.belts), lines: count(st.lines), steps: count(st.steps) },
     build: { path: filePath(slug, meta.version, BUILD_FILE), sha256: sha256hex(b), bytes: b.length },
     still: { path: filePath(slug, meta.version, STILL_FILE), sha256: sha256hex(s), bytes: s.length, width: size.width, height: size.height }
   };
@@ -98,7 +102,7 @@ function readCatalog(doc) {
   if (!isObj(doc) || doc.format !== FORMAT || !serialOf(doc) || !Array.isArray(doc.maps)) throw new Error('the community maps gallery returned an unsupported catalog');
   const maps = [], seen = new Set();
   for (const e of doc.maps.slice(0, MAX_MAPS)) {
-    if (!isObj(e) || !SLUG_RE.test(str(e.slug)) || seen.has(e.slug) || !whole(e.version, 1, 100000)) continue;
+    if (!isObj(e) || !nameOk(str(e.slug)) || seen.has(e.slug) || !whole(e.version, 1, 100000)) continue;
     const file = (f, name) => isObj(f) && f.path === filePath(e.slug, e.version, name) && /^[0-9a-f]{64}$/.test(str(f.sha256)) && whole(f.bytes, 1, name === BUILD_FILE ? MAX_BUILD_BYTES : MAX_STILL_BYTES);
     if (!file(e.build, BUILD_FILE) || !file(e.still, STILL_FILE)) continue;
     const title = cleanText(e.title, LIMITS.title), credit = cleanText(e.credit, LIMITS.credit);
@@ -108,7 +112,7 @@ function readCatalog(doc) {
     seen.add(e.slug);
     maps.push({
       slug: e.slug, version: e.version, title, credit, description: cleanText(e.description, LIMITS.description), license: LICENSE,
-      stats: { rooms: count(st.rooms), props: count(st.props), belts: count(st.belts), lines: count(st.lines) },
+      stats: { rooms: count(st.rooms), props: count(st.props), belts: count(st.belts), lines: count(st.lines), steps: count(st.steps) },
       build: { path: e.build.path, sha256: e.build.sha256, bytes: e.build.bytes },
       still: { path: e.still.path, sha256: e.still.sha256, bytes: e.still.bytes, width: whole(e.still.width, 1, 8192) ? e.still.width : 0, height: whole(e.still.height, 1, 8192) ? e.still.height : 0 }
     });
@@ -116,4 +120,4 @@ function readCatalog(doc) {
   return { serial: doc.serial, maps };
 }
 
-module.exports = { FORMAT, LICENSE, SLUG_RE, BUILD_FILE, STILL_FILE, MAX_BUILD_BYTES, MAX_STILL_BYTES, LIMITS, sha256hex, cleanText, pngSize, cloudDigest, buildEntry, catalogDocument, serialOf, readCatalog };
+module.exports = { FORMAT, LICENSE, SLUG_RE, nameOk, BUILD_FILE, STILL_FILE, MAX_BUILD_BYTES, MAX_STILL_BYTES, LIMITS, sha256hex, cleanText, pngSize, cloudDigest, buildEntry, catalogDocument, serialOf, readCatalog };

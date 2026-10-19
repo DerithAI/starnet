@@ -125,7 +125,7 @@ const BuildShare = (() => {
 
   function statsOf(doc) {
     const rooms = doc.order.filter(id => doc.rooms[id].kind !== 'corridor').length;
-    return { rooms, props: doc.props.length, belts: Object.keys(doc.belts).length, lines: doc.props.filter(p => p.t === 'intake').length };
+    return { rooms, props: doc.props.length, belts: Object.keys(doc.belts).length, lines: doc.props.filter(p => p.t === 'intake').length, steps: doc.props.filter(p => p.t === 'bay').length };
   }
   function slug(name) { return String(name || 'station').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'station'; }
 

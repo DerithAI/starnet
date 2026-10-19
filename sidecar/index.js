@@ -1965,7 +1965,10 @@ const communityMaps = require('./maps/community.js').makeCommunityMaps({
   trustedKeys: skillMarketSigning.TRUSTED_KEYS.concat(skillMarketSigning.keysFromEnv(process.env.STARNET_SKILL_MARKET_KEYS)),
   catalogUrl: () => { const v = process.env.STARNET_MAPS_URL; return v == null ? COMMUNITY_MAPS_DEFAULT_URL : (String(v).trim().toLowerCase() === 'off' ? '' : String(v).trim()); },
   cloud: () => { const c = resolveCreditsConfig(); return { url: c.url, token: c.apiKey }; },
-  fetch: (...a) => globalThis.fetch(...a), now: () => Date.now()
+  fetch: (...a) => globalThis.fetch(...a), now: () => Date.now(),
+  // the highest gallery serial this station has read, per gallery URL (a replayed older gallery stays refused after a restart)
+  loadState: () => loadResilient(path.join(WORKSPACES, 'community-maps.json'), 'community maps'),
+  saveState: (value) => saveResilient(path.join(WORKSPACES, 'community-maps.json'), value)
 });
 // THE MARKET'S KILL SWITCH: while at least one market skill is installed, re-read the small signed pulled-skills list
 // shortly after boot and every few minutes, and switch off anything the market has pulled. A station with no market
@@ -18929,7 +18932,7 @@ async function handleCommunityMapShare(req, res) {
   const body = await readJsonBody(req, readBody, 7 * 1024 * 1024, res);
   if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
   const r = await communityMaps.share(body);
-  respondJson(res, r.ok ? 202 : (r.status >= 400 && r.status < 600 ? r.status : 502), r);
+  respondJson(res, r.ok ? 202 : (r.outcome === 'unknown' ? 504 : (r.status >= 400 && r.status < 600 ? r.status : 502)), r);
 }
 /* POST /api/skill-market/share { agentId, id, title, description, category, license, credit, agree } — SHARE TO MARKET.
    The skill goes exactly as this agent's library holds it (read here, never sent by the page), with its plain-text
@@ -18943,16 +18946,33 @@ async function handleSkillMarketShare(req, res) {
   if (!isAgentId(agentId)) return respondJson(res, 403, { ok: false, error: 'forbidden' });
   const s = skillStore.view(agentId, String(body.id || ''), { includeArchived: true, bump: false });
   if (!s) return respondJson(res, 404, { ok: false, error: 'That skill is not in this agent\'s library.' });
+  // someone else's skill (installed from a package or a registry) is theirs to publish, not this Commander's
+  if (String(s.createdBy || '') === 'community' || s.sourceUrl || s.sourceAuthor) {
+    return respondJson(res, 409, { ok: false, outcome: 'refused', error: 'This skill came from ' + (s.sourceAuthor ? String(s.sourceAuthor).slice(0, 60) : 'someone else') + ', so it is theirs to publish. Only skills written on this station can be shared.' });
+  }
   const gate = skillGate.annotate([s], { verify: true })[0] || {};
-  if (gate.withheld) return respondJson(res, 409, { ok: false, error: 'The skill guard is holding this skill back from the agent, so it can\'t be shared. Edit out what it flagged first.' });
+  if (gate.withheld) return respondJson(res, 409, { ok: false, outcome: 'refused', error: 'The skill guard is holding this skill back from the agent, so it can\'t be shared. Edit out what it flagged first.' });
   const files = Array.isArray(s.files) ? s.files : Object.values(s.files || {});
-  const refs = files.filter(f => f && f.encoding !== 'base64' && MARKET_REF_EXT.test(String(f.path || '')))
-    .map(f => ({ name: String(f.path).split('/').pop(), content: String(f.content || '') }));
+  // plain-text references only; a file stored as base64 goes too when it really is UTF-8 text
+  const textOf = (f) => {
+    if (f.encoding !== 'base64') return String(f.content || '');
+    const t = Buffer.from(String(f.content || ''), 'base64').toString('utf8');
+    return t.includes(String.fromCharCode(0xFFFD)) || t.includes('\u0000') ? null : t;
+  };
+  const refs = [];
+  for (const f of files) {
+    if (!f || !MARKET_REF_EXT.test(String(f.path || '')) || refs.length >= communityMaps.SKILL_REFS_MAX) continue;
+    const content = textOf(f);
+    if (content != null) refs.push({ name: String(f.path).split('/').pop(), content });
+  }
+  // the skill as the agent reads it: its setup (when it has one) and then its steps
+  const setup = String(s.setup || '').trim(), steps = String(s.body || '');
+  const skillText = setup && !steps.includes(setup) ? '## Setup\n\n' + setup + '\n\n' + steps : steps;
   const r = await communityMaps.shareSkill({
     title: body.title, description: body.description, category: body.category, license: body.license, credit: body.credit,
-    agree: body.agree === true, skillText: String(s.body || ''), refs
+    agree: body.agree === true, skillText, refs
   });
-  respondJson(res, r.ok ? 202 : (r.status >= 400 && r.status < 600 ? r.status : 502), Object.assign({ referencesSent: refs.length, referencesLeftOut: files.length - refs.length }, r));
+  respondJson(res, r.ok ? 202 : (r.outcome === 'unknown' ? 504 : (r.status >= 400 && r.status < 600 ? r.status : 502)), Object.assign({ referencesSent: refs.length, referencesLeftOut: files.length - refs.length }, r));
 }
 // POST /api/skill-market/uninstall { slug } — remove a market install; a bundled original falls back to its bundled copy.
 async function handleSkillMarketUninstall(req, res) {

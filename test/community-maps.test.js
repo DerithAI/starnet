@@ -69,6 +69,13 @@ function sub(over) {
   plan = P.planPull([sub()], ctx({ 'night-shift-foundry': { version: 3, submission: { owner: OWNER } } }));
   A.eq([plan.pulls[0].version, plan.pulls[0].update], [4, true], 'an author\'s update is the next version');
   A.ok(/two approved maps/.test(P.planPull([sub(), sub({ id: 'mp_zzzzzzzz99' })], ctx()).skipped[0].why), 'one version of a name per pull');
+  // pulled twice before the deploy: the second pull waits instead of publishing the same map as a new version
+  plan = P.planPull([sub()], ctx({ 'night-shift-foundry': { version: 1, submission: { id: 'mp_abcdefgh12', owner: OWNER } } }));
+  A.eq([plan.pulls.length, plan.skipped.length, plan.waiting.map(w => w.slug)], [0, 0, ['night-shift-foundry']], 'an already-pulled map waits for its deploy, it is not re-published');
+  // a taken-down map keeps its published folders: a new share follows the highest version ever published
+  plan = P.planPull([sub()], { clean, readMeta: () => null, published: () => [1, 2, 3] });
+  A.eq(plan.pulls[0].version, 4, 'the next version follows every published folder, even with no map.json');
+  A.ok(/bad name/.test(why(sub({ slug: 'con' }))), 'a Windows-reserved name is never pulled (git cannot add the folder)');
   A.eq(P.plainCredit('**Ada** [me](https://x.example) <b>'), 'Ada mex.example b', 'a credit is plain text even if the cloud missed something');
 
   // ---- 2. the gallery build, in a scratch tree with a test key ----
@@ -77,7 +84,7 @@ function sub(over) {
   fs.writeFileSync(path.join(tmp, 'test.key'), kp.privateKeyPem);
   const env = Object.assign({}, process.env, {
     STARNET_MAPS_SRC: path.join(tmp, 'src'), STARNET_MAPS_OUT: path.join(tmp, 'site'),
-    STARNET_SKILL_MARKET_KEY: path.join(tmp, 'test.key'), STARNET_SKILL_MARKET_KEYS: JSON.stringify([{ id: 'test-maps', publicKey: kp.publicKey }])
+    STARNET_SKILL_MARKET_KEY: path.join(tmp, 'test.key'), STARNET_MAPS_TEST_KEYS: JSON.stringify([{ id: 'test-maps', publicKey: kp.publicKey }])
   });
   const build = (args) => spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-map-catalog.mjs')].concat(args || []), { encoding: 'utf8', env });
   const dir = path.join(tmp, 'src', p.slug);
@@ -100,7 +107,7 @@ function sub(over) {
   A.eq(build().stdout.includes('serial 1'), true, 'a rebuild with no change keeps the serial');
   fs.writeFileSync(path.join(dir, fmt.BUILD_FILE), JSON.stringify(leaked) + '\n');
   r = build();
-  A.ok(r.status === 1 && /not exactly what the app's cleaner keeps|still carries/.test(r.stderr), 'a source the cleaner would change is refused: ' + r.stderr.trim());
+  A.ok(r.status === 1 && /still carries/.test(r.stderr) && /nothing written/.test(r.stderr), 'a source with instructions in it is refused, and nothing is written: ' + r.stderr.trim());
   fs.writeFileSync(path.join(dir, fmt.BUILD_FILE), p.buildText);
   fs.writeFileSync(path.join(tmp, 'site', '.well-known', 'starnet-maps.json.sig'), signing.sign(Buffer.from('other bytes'), kp.privateKeyPem, keys));
   r = build(['--check']);
@@ -154,6 +161,19 @@ function sub(over) {
   err = ''; try { await station.catalog({ refresh: true }); } catch (e) { err = e.message; }
   A.ok(/older than one this station already read/.test(err), 'then an older signed gallery is refused');
   A.eq((await cm({ catalogUrl: () => '' }).catalog({})).off, true, 'STARNET_MAPS_URL=off switches the gallery off');
+  // the highest serial survives a restart (kept on disk, like the Skill Market's)
+  let saved = null;
+  served = { '/.well-known/starnet-maps.json': newerBytes, '/.well-known/starnet-maps.json.sig': Buffer.from(signing.sign(newerBytes, kp.privateKeyPem, keys)) };
+  await cm({ saveState: (v) => { saved = JSON.parse(JSON.stringify(v)); } }).catalog({});
+  A.eq(saved, { serials: { 'https://starnetos.com/.well-known/starnet-maps.json': 5 } }, 'the serial is saved per gallery');
+  served = {};
+  err = ''; try { await cm({ loadState: () => saved }).catalog({}); } catch (e) { err = e.message; }
+  A.ok(/older than one this station already read/.test(err), 'a restarted station still refuses the older gallery');
+  // two readers at once share one fetch
+  let reads = 0;
+  const counting = cm({ fetchDocument: async (u, o) => { reads++; return fetchDocument(u, o); } });
+  await Promise.all([counting.catalog({ refresh: true }), counting.catalog({ refresh: true }), counting.catalog({})]);
+  A.eq(reads, 2, 'three callers, one index + one signature fetch');
 
   // ---- 4. sharing ----
   const unlinked = await cm().share({ title: 'X', build: BUILD, still: 'data:' });
@@ -169,10 +189,15 @@ function sub(over) {
   A.eq(Object.keys(JSON.parse(calls[0].init.body)).sort(), ['agree', 'build', 'credit', 'description', 'still', 'title'], 'carrying only the share fields');
   const refused = await cm({ cloud: () => ({ url: 'https://account.example', token: 't' }), fetch: cloudFetch(409, { ok: false, error: { message: 'Another author already has a map named "night-shift-foundry". Pick a different name.', code: 'name_taken' } }) })
     .share({ title: 'Night Shift Foundry', agree: true, build: BUILD, still: 'x' });
-  A.eq([refused.ok, refused.status], [false, 409], 'a refusal keeps its status');
+  A.eq([refused.ok, refused.status, refused.outcome], [false, 409, 'refused'], 'a refusal keeps its status, and says nothing was stored');
+  const rejected = await cm({ cloud: () => ({ url: 'https://account.example', token: 'revoked' }), fetch: cloudFetch(401, { ok: false, error: { message: 'unauthorized' } }) }).share({ title: 'x' });
+  A.eq([rejected.linked, rejected.code], [true, 'token_rejected'], 'a cloud 401 on a linked station is a REJECTED link, never "not linked"');
+  A.ok(/no longer accepts this station's link/.test(rejected.error), 'and says to link it again');
+  const garbled = await cm({ cloud: () => ({ url: 'https://account.example', token: 't' }), fetch: async () => ({ ok: true, status: 202, text: async () => 'not json' }) }).share({ title: 'x' });
+  A.eq(garbled.outcome, 'unknown', 'a 2xx with no readable answer is unknown, not refused');
   A.ok(/Another author/.test(refused.error), 'and the cloud\'s sentence');
   const down = await cm({ cloud: () => ({ url: 'https://account.example', token: 't' }), fetch: async () => { throw new Error('ECONNRESET'); } }).share({ title: 'x' });
-  A.ok(!down.ok && /Nothing was shared/.test(down.error), 'an unreachable cloud says nothing was shared');
+  A.eq([down.ok, down.outcome, down.status], [false, 'unknown', 0], 'a dropped connection is UNKNOWN (it may have arrived), never "nothing was shared"');
 
   // ---- SHARE TO MARKET rides the same linked-account door ----
   const skillCalls = [];
@@ -188,7 +213,7 @@ function sub(over) {
   fs.rmSync(tmp, { recursive: true, force: true });
 
   // ---- the repo's own gallery is exactly what its sources build, and its signature verifies with the app's keys ----
-  const repoEnv = Object.assign({}, process.env); for (const k of ['STARNET_MAPS_SRC', 'STARNET_MAPS_OUT', 'STARNET_SKILL_MARKET_KEYS']) delete repoEnv[k];
+  const repoEnv = Object.assign({}, process.env); for (const k of ['STARNET_MAPS_SRC', 'STARNET_MAPS_OUT', 'STARNET_MAPS_TEST_KEYS', 'STARNET_SKILL_MARKET_KEYS']) delete repoEnv[k];
   const live = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-map-catalog.mjs'), '--check'], { encoding: 'utf8', env: repoEnv });
   A.eq(live.status, 0, 'website/ holds exactly the gallery maps-catalog/ builds: ' + (live.stderr || live.stdout).trim());
 
