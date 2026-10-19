@@ -209,7 +209,10 @@
 .station-build-share-keys { display: flex; flex-wrap: wrap; gap: 8px; flex-basis: 100%; margin-top: 6px; }
 /* COMMUNITY MAPS (2026-10-18): the share form opens inside SHARED BUILDS (the picture beside the fields), and the gallery's
    note sits on the REFRESH key's row. Same card glass and phosphor grades as the preset cards; no new chrome. */
-.station-build-community-note { align-self: center; font-size: 13px; color: var(--ph-dim); }
+.station-build-community-note { display: block; flex-basis: 100%; margin-top: 4px; font-size: 13px; color: var(--ph-dim); }
+/* the open share panel presses its key (one panel at a time); a community card keeps its line to two rows (the description is the card, not an essay) */
+.refit-overlay .station-build-share-keys .bb[aria-pressed="true"] { border-color: var(--ph); color: var(--ph-bright); background: rgba(var(--ph-rgb),.11); }
+.station-build-card-community small { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .station-build-sharepanel { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; padding: 12px; border: 1px solid var(--refit-edge); border-radius: 10px; background: rgba(0,0,0,.14); }
 .station-build-sharepanel .sbs-pic { display: flex; align-items: center; justify-content: center; min-width: 0; border-radius: 8px; background: rgba(0,0,0,.35); overflow: hidden; }
 .station-build-sharepanel .sbs-pic img { display: block; max-width: 100%; max-height: 300px; height: auto; }
@@ -226,6 +229,7 @@
 .station-build-sharepanel .sbs-agree input[type="checkbox"]:focus-visible { outline: 2px solid var(--ph); outline-offset: 3px; }
 .station-build-sharepanel .sbs-travel { margin: 4px 0 0; font-size: 13px; line-height: 1.4; color: var(--ph-dim); }
 .station-build-sharepanel .sbs-travel b { color: var(--ph-bright); font-weight: 400; }
+.station-build-sharepanel .sbs-travel.sbs-link { color: var(--ph-bright); }
 .station-build-sharepanel .sbs-keys { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 @media (max-width: 720px) { .station-build-sharepanel { grid-template-columns: minmax(0, 1fr); } }
 .refit-overlay .station-build-status { display: flex; flex-direction: column; gap: 4px; }

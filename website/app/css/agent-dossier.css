@@ -151,7 +151,7 @@
 /* SHARE TO MARKET (2026-10-18): the form opens inside the skill card (ABILITIES › skill library), like Edit. Shelf and license are pressed keys
    (never a native select or radio); the agreement is the SETTINGS toggle. */
 .sk-lib .sk-share { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(var(--ph-rgb),.18); }
-.sk-lib .sk-share > label { font-size: 12px; letter-spacing: 1.2px; color: var(--ph); margin-top: 6px; }
+.sk-lib .sk-share > :is(label,.skm-label) { font-size: 12px; letter-spacing: 1.2px; color: var(--ph); margin-top: 6px; }
 .sk-lib .sk-share .key-input { width: 100%; padding: 9px 12px; }
 .sk-lib .sk-share .skm-desc { min-height: 72px; }
 .sk-lib .skm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -163,3 +163,4 @@
 .sk-lib .skm-agree input[type="checkbox"]:checked { background: rgba(var(--ph-rgb), .18); border-color: var(--ph); }
 .sk-lib .skm-agree input[type="checkbox"]:checked::after { left: 17px; background: var(--ph-bright); }
 .sk-lib .skm-result:empty { display: none; }
+.sk-lib .skm-agree input[type="checkbox"]:focus-visible { outline: 2px solid var(--ph); outline-offset: 3px; }

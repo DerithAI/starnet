@@ -2900,11 +2900,11 @@ const Build = (() => {
       '<p class="station-build-intro">Pick a station for the kind of work you do, then make it yours. Every station includes your workstation and all five essentials.</p>' +
       '<div class="station-build-scroll">' + PRESET_GROUPS.map(([id, label, blurb]) => '<section class="station-build-section" data-build-section="' + id + '"><div class="station-build-section-head"><h3>' + label + '</h3><p>' + esc(blurb) + '</p></div><div class="station-build-grid" aria-label="' + esc(label.toLowerCase()) + '"></div></section>').join('') +
       (typeof BuildShare !== 'undefined' ? '<section class="station-build-section" data-build-section="shared"><div class="station-build-section-head"><h3>SHARED BUILDS</h3><p>Save this layout as a file to share, or open one someone sent you. Only rooms, furniture and conveyors travel.</p><span class="station-build-share-keys"><button class="bb sm" type="button" data-export-build>EXPORT THIS STATION</button><button class="bb sm" type="button" data-import-build>IMPORT A BUILD…</button>' + (typeof CommunityMaps !== 'undefined' ? '<button class="bb sm" type="button" data-share-community>SHARE TO COMMUNITY</button>' : '') + '<input type="file" accept=".json,application/json" hidden data-import-file></span></div><div class="station-build-grid" aria-label="shared builds"></div></section>' : '') +
-      (typeof BuildShare !== 'undefined' && typeof CommunityMaps !== 'undefined' ? '<section class="station-build-section" data-build-section="community"><div class="station-build-section-head"><h3>COMMUNITY MAPS</h3><p>Stations other players built and shared. Only layouts travel: you choose who works them.</p><span class="station-build-share-keys"><button class="bb sm" type="button" data-community-refresh>REFRESH</button><span class="station-build-community-note" role="status"></span></span></div><div class="station-build-grid" aria-label="community maps"></div></section>' : '') + '</div>' +
+      (typeof BuildShare !== 'undefined' && typeof CommunityMaps !== 'undefined' ? '<section class="station-build-section" data-build-section="community"><div class="station-build-section-head"><h3>COMMUNITY MAPS</h3><p>Stations other players built and shared. Only layouts travel: you choose who works them.</p><span class="station-build-community-note" role="status"></span></div><div class="station-build-grid" aria-label="community maps"></div></section>' : '') + '</div>' +
       '<div class="station-build-footer"><div class="station-build-status" role="status">Select a preset to see what it builds.</div>' +
       '<div class="station-build-actions"><button class="bb" data-restore-build>RESTORE PREVIOUS</button><button class="bb refit-primary" data-use-build disabled>CHOOSE A PRESET</button></div><small class="station-build-note">Applying replaces rooms, props and conveyors. Your current layout is backed up; agents and conversations stay.</small></div></div>';
     g.style.setProperty('--station-build-scale', typeof U.uiZoom === 'function' ? U.uiZoom() : 1);
-    const closeP = () => { g.remove(); root?.querySelector('#refit-stations')?.focus(); };
+    const closeP = () => { g.remove(); if (typeof CommunityMaps !== 'undefined') CommunityMaps.release(); root?.querySelector('#refit-stations')?.focus(); };
     cardRegister(g, closeP); root.appendChild(g);
     g.querySelector('[data-workflow-close]').onclick = closeP;
     const status = g.querySelector('.station-build-status'), apply = g.querySelector('[data-use-build]');
@@ -2914,7 +2914,16 @@ const Build = (() => {
       setup.onclick=openPresetExample; g.querySelector('.station-build-actions').prepend(setup);
     }
     const backupKey = 'starnet.layoutBackup.' + station.doc().meta.createdAt;
-    let selected = null, armed = false;
+    let selected = null, armed = false, openSeq = 0;
+    /* community pictures paint when their card is near the visible part of the sheet: a geometry check on a short timer
+       (layout is always current; an observer or scroll event needs the page's render steps, which a hidden window skips) */
+    const lazyPaint = new Set(), lazyScroller = g.querySelector('.station-build-scroll');
+    const lazyTimer = setInterval(() => {
+      if (!g.isConnected) { clearInterval(lazyTimer); lazyPaint.clear(); return; }
+      if (!lazyPaint.size || !lazyScroller) return;
+      const v = lazyScroller.getBoundingClientRect();
+      for (const job of lazyPaint) { const r = job.el.getBoundingClientRect(); if (r.bottom > v.top - 240 && r.top < v.bottom + 240) { lazyPaint.delete(job); job.paint(); } }
+    }, 350);
     const backupButton = g.querySelector('[data-restore-build]');
     try { backupButton.disabled = !localStorage.getItem(backupKey); } catch (_) { backupButton.disabled = true; }
     /* one card per build — a preset, a build file opened in SHARED BUILDS (item.file holds its text; preview() its copy),
@@ -2923,27 +2932,35 @@ const Build = (() => {
     const addCard = (item, doc, grid, preview) => {
       const button = document.createElement('button'); button.className = 'bb station-build-card';
       button.type = 'button'; button.dataset.stationBuild = item.id; button.setAttribute('aria-pressed','false');
-      const bays = doc ? doc.props.filter(p=>p.t==='bay').length : 0, lines = !doc && item.stats ? item.stats.lines : 0;
-      button.innerHTML = '<div class="station-build-art"><canvas width="460" height="280" aria-hidden="true"></canvas><span class="station-build-check" aria-hidden="true">✓</span></div><div class="station-build-copy"><div class="station-build-meta"><span>' + item.rooms + (item.rooms === 1 ? ' ROOM' : ' ROOMS') + '</span>' + (bays ? '<span>'+bays+'-STEP LINE</span>' : lines ? '<span>' + lines + (lines === 1 ? ' LINE' : ' LINES') + '</span>' : '') + '</div><b>' + esc(item.name) + '</b><small>' + esc(item.description) + '</small></div>';
+      const bays = doc ? doc.props.filter(p=>p.t==='bay').length : 0, st = !doc && item.stats ? item.stats : null;
+      // the same words a preset card uses: one line reads "N-STEP LINE" (the gallery counts its steps), more read "N LINES"
+      const lineMeta = bays ? bays + '-STEP LINE' : st && st.lines === 1 && st.steps ? st.steps + '-STEP LINE' : st && st.lines ? st.lines + (st.lines === 1 ? ' LINE' : ' LINES') : '';
+      if (item.picture) button.classList.add('station-build-card-community');
+      button.innerHTML = '<div class="station-build-art"><canvas width="460" height="280" aria-hidden="true"></canvas><span class="station-build-check" aria-hidden="true">✓</span></div><div class="station-build-copy"><div class="station-build-meta"><span>' + item.rooms + (item.rooms === 1 ? ' ROOM' : ' ROOMS') + '</span>' + (lineMeta ? '<span>' + lineMeta + '</span>' : '') + '</div><b>' + esc(item.name) + '</b><small>' + esc(item.description) + '</small></div>';
       const cv = button.querySelector('canvas'), ctx = cv.getContext('2d');
       if (doc) { ctx.scale(2,2); drawPlan(ctx, doc, 230, 140); }
-      else if (item.picture) item.picture().then(url => {
-        const im = new Image();
-        im.onload = () => { const k = Math.min(cv.width / im.width, cv.height / im.height), w = im.width * k, h = im.height * k; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(im, (cv.width - w) / 2, (cv.height - h) / 2, w, h); };
-        im.src = url;
-      }).catch(() => {});
+      else if (item.picture) {
+        // a community picture loads when its card scrolls into view, a few at a time (communitymaps.js queues them)
+        const noPicture = () => { ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, 0, cv.width, cv.height); ctx.fillStyle = (root && getComputedStyle(root).getPropertyValue('--ph-dim').trim()) || '#8a7a55'; ctx.font = '28px VT323, monospace'; ctx.textAlign = 'center'; ctx.fillText('NO PICTURE', cv.width / 2, cv.height / 2 + 9); };
+        const paint = () => item.picture().then(url => {
+          const im = new Image();
+          im.onload = () => { const k = Math.min(cv.width / im.width, cv.height / im.height), w = im.width * k, h = im.height * k; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(im, (cv.width - w) / 2, (cv.height - h) / 2, w, h); };
+          im.onerror = noPicture;
+          im.src = url;
+        }).catch(e => { if (!(e && e.message === 'released')) noPicture(); });
+        lazyPaint.add({ el: button, paint });
+      }
       const choose = () => {
         selected=item;armed=false;apply.disabled=false;apply.textContent='USE '+item.name;
         for(const b of g.querySelectorAll('[data-station-build]'))b.setAttribute('aria-pressed',b===button?'true':'false');
         status.innerHTML=preview();
       };
       button.onclick = () => {
+        const mine = ++openSeq;   // the LATEST click wins: an older card's file arriving later never takes the selection
         if (item.file || !item.open) return choose();
-        if (button.dataset.opening) return;
-        button.dataset.opening = '1'; status.textContent = 'Opening ' + item.name + '…';
-        item.open().then(r => { item.file = r.text; preview = r.preview; choose(); })
-          .catch(e => { status.textContent = String(e && e.message || 'That map could not be opened.'); sfx('bad'); })
-          .finally(() => { delete button.dataset.opening; });
+        status.textContent = 'Opening ' + item.name + '…';
+        item.open().then(r => { item.file = r.text; preview = r.preview; if (mine === openSeq && button.isConnected) choose(); })
+          .catch(e => { if (mine !== openSeq) return; status.textContent = String(e && e.message || 'That map could not be opened.'); sfx('bad'); });
       };
       grid.appendChild(button);
       return button;
@@ -2955,7 +2972,7 @@ const Build = (() => {
     wireSharedBuilds(g, status, addCard);
     wireCommunityMaps(g, status, addCard);
     const shareKey = g.querySelector('[data-share-community]');
-    if (shareKey) shareKey.onclick = () => openShareToCommunity(g.querySelector('[data-build-section="shared"]'), status);
+    if (shareKey) shareKey.onclick = () => openShareToCommunity(g, status, shareKey);
     apply.onclick = () => {
       if(!selected)return;
       if(!armed){armed=true;apply.textContent='CONFIRM — USE '+selected.name;status.textContent='Replace the current rooms, props, and conveyors with '+selected.name+'? Agents and conversations remain. Click again to apply.';return;}
@@ -3003,13 +3020,26 @@ const Build = (() => {
     for(const p of doc.props) {ctx.fillStyle=WorldModel.capForProp(p.t)?'#d2b276':'#6d957e';ctx.fillRect(ox+(p.x-bounds.minTx)*scale,oy+(p.y-bounds.minTy)*scale,Math.max(2,p.w*scale),Math.max(2,p.h*scale));}
   }
 
-  /* SHARE TO COMMUNITY (community maps, 2026-10-18). Opens IN the SHARED BUILDS section (never a popup): the picture
-     that will go with it, a name, a credit, an optional line and the CC BY agreement. SEND FOR REVIEW hands the cleaned
-     build to the linked account; what it says next is what the cloud answered — a share is a request for review. */
+  /* SHARE TO COMMUNITY (community maps, 2026-10-18). Opens IN the SHARED BUILDS section, above its cards (never a
+     popup, and one at a time: the key is pressed while it is open): the picture that will go with it, a name, a
+     credit, an optional line and the CC BY agreement. SEND FOR REVIEW hands the cleaned build to the linked account.
+     What it says next follows what is actually known: the cloud took it, the cloud refused it (nothing was stored),
+     or no answer came back (it may have arrived: check before sending again). A result that lands after the sheet was
+     closed still reaches the Commander, as a station notice. */
   const MAP_CREDIT_KEY = 'starnet.communityMapCredit';
-  function openShareToCommunity(section, status) {
-    const grid = section.querySelector('.station-build-grid');
+  function shareOutcomeText(res, what) {
+    if (res.ok) return '';
+    if (res.outcome === 'unknown') return (res.error ? res.error + ' ' : '') + 'This station cannot tell whether the ' + what + ' arrived. Check your account page on account.starnetos.com before you send it again.';
+    if (res.linked === false) return 'Link this station to your StarNet account first (STORE › LINK STATION). A free account works. Nothing was shared.';
+    if (res.code === 'token_rejected') return res.error;
+    return (res.error || 'StarNet refused it.') + ' Nothing was shared.';
+  }
+  function openShareToCommunity(g, status, shareKey) {
+    const section = g.querySelector('[data-build-section="shared"]');
+    const grid = section && section.querySelector('.station-build-grid');
     if (!grid || typeof CommunityMaps === 'undefined') return;
+    const open = section.querySelector('.station-build-sharepanel');
+    if (open) { open.querySelector('#sbs-title')?.focus(); return; }
     const r = BuildShare.exportBuild(station.serialize(), WorldModel, { name: station.doc().meta.name });
     if (r.error) { status.textContent = 'This station could not be shared: it has no layout to send.'; sfx('bad'); return; }
     const read = BuildShare.readBuild(r.text, WorldModel, 1);
@@ -3017,8 +3047,6 @@ const Build = (() => {
     let credit = ''; try { credit = localStorage.getItem(MAP_CREDIT_KEY) || ''; } catch (_) {}
     const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
     const travels = [n(r.stats.rooms, 'room', 'rooms'), n(r.stats.props, 'prop', 'props')].concat(r.stats.lines ? [n(r.stats.lines, 'line', 'lines')] : []).join(' · ');
-    grid.hidden = true;
-    section.querySelector('.station-build-sharepanel')?.remove();
     const panel = document.createElement('div');
     panel.className = 'station-build-sharepanel';
     panel.innerHTML = '<div class="sbs-pic"><img alt="The picture that goes with this map"></div><div class="sbs-form">' +
@@ -3033,7 +3061,8 @@ const Build = (() => {
     const title = panel.querySelector('#sbs-title'), creditIn = panel.querySelector('#sbs-credit'), desc = panel.querySelector('#sbs-desc'), agree = panel.querySelector('#sbs-agree');
     title.value = String(station.doc().meta.name || '').slice(0, 40); creditIn.value = credit;
     const send = panel.querySelector('[data-sbs-send]');
-    const close = () => { panel.remove(); grid.hidden = false; };
+    let unlinked = false;
+    const close = () => { panel.remove(); shareKey.setAttribute('aria-pressed', 'false'); if (g.isConnected) shareKey.focus(); };
     panel.querySelector('[data-sbs-cancel]').onclick = () => { close(); status.textContent = 'Nothing was shared.'; };
     send.onclick = async () => {
       const fields = { title: title.value.trim(), credit: creditIn.value.trim(), description: desc.value.trim(), agree: agree.checked, build: r.text, still: pic.dataUrl };
@@ -3043,36 +3072,50 @@ const Build = (() => {
       send.disabled = true; send.textContent = 'SENDING…'; status.textContent = 'Sending ' + fields.title + ' for review…';
       try { localStorage.setItem(MAP_CREDIT_KEY, fields.credit); } catch (_) {}
       const res = await CommunityMaps.share(fields);
-      send.disabled = false; send.textContent = 'SEND FOR REVIEW';
+      const shown = panel.isConnected && g.isConnected;
       if (res.ok && res.submission) {
+        const name = res.submission.title || fields.title;
+        if (!shown) { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify('Sent ' + name + ' for review. Your Maps tab on account.starnetos.com shows where it stands.', 'good'); return; }
         close();
-        status.innerHTML = '<span>Sent for review: <b>' + esc(res.submission.title || fields.title) + '</b>.</span><span class="station-build-need">A person looks at it next. Once it is approved it appears in the community gallery with your name on it. Your Maps tab on account.starnetos.com shows where it stands.</span>';
+        status.innerHTML = '<span>Sent for review: <b>' + esc(name) + '</b>.</span><span class="station-build-need">A person looks at it next. Once it is approved it appears in the community gallery with your name on it. Your Maps tab on account.starnetos.com shows where it stands.</span>';
         sfx('click');
         return;
       }
-      status.textContent = res.linked === false
-        ? 'Link this station to your StarNet account first (STORE › LINK STATION). A free account works. Nothing was shared.'
-        : (res.error || 'StarNet refused the map.') + (res.status === 0 ? '' : ' Nothing was shared.');
+      const text = shareOutcomeText(res.ok ? { ok: false, outcome: 'unknown', error: 'StarNet gave no readable answer.' } : res, 'map');
+      if (!shown) { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(fields.title + ': ' + text, 'warn'); return; }
+      send.textContent = 'SEND FOR REVIEW';
+      send.disabled = unlinked || res.linked === false;
+      status.textContent = text;
       sfx('bad');
     };
-    section.appendChild(panel);
+    section.insertBefore(panel, grid);
+    shareKey.setAttribute('aria-pressed', 'true');
     title.focus(); title.select();
+    // an unlinked station learns it NOW, not after uploading a picture (the station knows without asking the cloud)
+    CommunityMaps.load(false).then(c => {
+      if (!c || c.linked !== false || !panel.isConnected) return;
+      unlinked = true; send.disabled = true;
+      const p = document.createElement('p'); p.className = 'sbs-travel sbs-link';
+      p.textContent = 'This station is not linked to a StarNet account yet. Link it first: STORE › LINK STATION (a free account works), then open SHARE TO COMMUNITY again.';
+      panel.querySelector('.sbs-keys').before(p);
+    });
   }
 
-  /* COMMUNITY MAPS: the signed gallery, as the sidecar verified it. A card's picture and file come only through the
-     sidecar (every byte checked against the signed index); choosing one opens it through BuildShare.readBuild, so it
-     lands through the same confirm, backup and undo as a preset. */
+  /* COMMUNITY MAPS: the signed gallery, as the station verified it (read fresh each time the sheet opens). A card's
+     picture and file come only through the sidecar (every byte checked against the signed index); choosing one opens
+     it through BuildShare.readBuild, so it lands through the same confirm, backup and undo as a preset. */
   function wireCommunityMaps(g, status, addCard) {
     const section = g.querySelector('[data-build-section="community"]');
     if (!section || typeof CommunityMaps === 'undefined') return;
     const grid = section.querySelector('.station-build-grid'), note = section.querySelector('.station-build-community-note');
-    const refresh = section.querySelector('[data-community-refresh]');
-    const render = async (fresh) => {
-      note.textContent = 'Reading the community gallery…'; refresh.disabled = true;
-      const c = await CommunityMaps.load(fresh);
-      refresh.disabled = false;
-      for (const old of grid.querySelectorAll('[data-station-build]')) old.remove();
-      if (!c.ok) { note.textContent = c.off ? 'The community gallery is switched off on this station.' : 'The community gallery could not be read: ' + String(c.error || 'unknown error') + '.'; return; }
+    note.textContent = 'Reading the community gallery…';
+    CommunityMaps.load(true).then(c => {
+      if (!g.isConnected) return;
+      if (!c.ok) {
+        if (c.error) console.warn('[community maps] gallery not read:', c.error);
+        note.textContent = c.off ? 'The community gallery is switched off on this station.' : 'The community gallery could not be read right now. Close PRESETS and open it again to retry.';
+        return;
+      }
       if (!c.maps.length) { note.textContent = 'No community maps yet. Be the first: SHARE TO COMMUNITY, above.'; return; }
       note.textContent = c.maps.length + (c.maps.length === 1 ? ' map' : ' maps') + ', each one checked by a person.';
       for (const m of c.maps) {
@@ -3089,9 +3132,7 @@ const Build = (() => {
         };
         addCard(item, null, grid, () => '');
       }
-    };
-    refresh.onclick = () => render(true);
-    render(false);
+    });
   }
 
   function sharedBuildCopy(name, stats, dropped, lead) {
