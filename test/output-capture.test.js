@@ -112,5 +112,51 @@ function streamingSpawn(chunks, code) {
     A.ok(!!pm.cwd, 'real shell: the cwd is recovered from the marker past the cap');
   }
 
+  // ---- 8. the drop is REPORTED: fullOutElided rides the result; 0 under the cap ----
+  {
+    const big = Array.from({ length: 40 }, (_, i) => 'line-' + i + '-' + 'y'.repeat(100) + '\n');
+    const over = await runCommand({ spawn: streamingSpawn(big, 0), cmd: 'big', cwd: '.', timeoutMs: 5000, isWin: true, maxBytes: 64, fullOutMax: 1000 });
+    A.ok(over.fullOutElided > 3000, 'runCommand reports how much it dropped (' + over.fullOutElided + ')');
+    const under = await runProcess({ spawn: streamingSpawn(['small\n'], 0), file: 'x', args: null, spawnOptions: {}, timeoutMs: 5000, maxBytes: 64, isWin: true });
+    A.eq(under.fullOutElided, 0, 'runProcess reports 0 when nothing was dropped');
+  }
+
+  // ---- 9. ANSI is stripped from head and tail SEPARATELY: an escape cut at the head's edge cannot eat the tail ----
+  {
+    const ESC = '\u001b', BEL = '\u0007';
+    const chunks = ['a'.repeat(246), ESC + ']0;build 42%' + BEL, 'b'.repeat(2000), '\nTHE-END-MARKER\n'];
+    const res = await runCommand({ spawn: streamingSpawn(chunks, 1), cmd: 'x', cwd: '.', timeoutMs: 5000, isWin: true, maxBytes: 64, fullOutMax: 1000 });
+    A.ok(res.fullOut.includes('THE-END-MARKER'), 'the tail (and the exit marker in it) survives an OSC sequence cut at the head boundary');
+    A.ok(!res.fullOut.includes(ESC), 'no escape byte leaks into fullOut');
+  }
+
+  // ---- 10. shell.exec (production environment route) says the middle is gone, and the registry receipt does too ----
+  {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const { makeEnvironmentManager } = require('../sidecar/environment.js');
+    const { makeShellTool } = require('../sidecar/tools/builtin/shell.js');
+    const { makeRegistry } = require('../sidecar/tools/registry.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-fullout-'));
+    try {
+      const chunk = 'z'.repeat(65536) + '\n';
+      const env = makeEnvironmentManager({ spawn: streamingSpawn(Array.from({ length: 140 }, () => chunk), 0), fs, pathMod: path, root, clock: { now: () => 0 }, env: {}, config: { backend: 'local' } });
+      const tools = makeShellTool({ environment: env, fs, pathMod: path, root, clock: { now: () => 0 }, platform: 'win32' });
+      const out = await tools.execTool.run({ cmd: 'type huge.log' }, { agentId: 'a' });
+      A.ok(out.fullContentElided > 0, 'shell.exec hands the drop count to the registry (' + out.fullContentElided + ')');
+      A.ok(/characters from the middle of the output were not kept\]/.test(out.content), 'the visible trailer says the middle was not kept');
+
+      const reg = makeRegistry();
+      reg.register({ name: 'big', schema: { type: 'object', properties: {} }, run: async () => ({ content: 'preview', fullContent: 'p'.repeat(90000), fullContentElided: 12345, summary: 'ok' }) });
+      reg.register({ name: 'whole', schema: { type: 'object', properties: {} }, run: async () => ({ content: 'preview', fullContent: 'w'.repeat(90000), summary: 'ok' }) });
+      const park = { parkOutput: async () => ({ path: '.output/x-1.txt' }) };
+      const partial = await reg.dispatch({ name: 'big', args: {} }, park);
+      A.ok(/partial-output receipt: 12345 characters from the MIDDLE of this output were not kept/.test(partial.content), 'an elided capture gets a PARTIAL receipt');
+      A.ok(!/do not rerun the tool merely to recover output/.test(partial.content), 'and is never told a rerun cannot recover anything');
+      const whole = await reg.dispatch({ name: 'whole', args: {} }, park);
+      A.ok(whole.content.endsWith('[full-output receipt: 90000 characters / 90000 UTF-8 bytes before truncation; saved once to .output/x-1.txt. Read that file in ranges; do not rerun the tool merely to recover output.]'),
+        'a whole capture keeps the byte-identical full-output receipt');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
+  }
+
   A.report('output-capture.test');
 })().catch(e => { console.error(e); process.exit(1); });

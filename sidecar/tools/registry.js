@@ -277,7 +277,16 @@
     } catch (_) { return null; }
   }
 
-  function intrinsicReceipt(preview, fullChars, fullBytes, parkedPath) {
+  function intrinsicReceipt(preview, fullChars, fullBytes, parkedPath, elidedChars) {
+    // A bounded capture (output-capture.js) kept only the head + tail of a huge output: the saved copy is NOT the full
+    // output, so the receipt must not say it is, nor tell the model a rerun cannot recover anything.
+    const elided = Number(elidedChars) > 0 ? Number(elidedChars) : 0;
+    if (elided) {
+      return String(preview == null ? '' : preview) + '\n\n' + '[partial-output receipt: ' + elided + ' characters from the MIDDLE of this output were not kept. '
+        + (parkedPath ? 'The first and last parts (' + fullChars + ' characters / ' + fullBytes + ' UTF-8 bytes, the gap marked in place) are saved once to ' + parkedPath + '; read that file in ranges. '
+          : 'The kept first and last parts could not be stored durably. ')
+        + 'To see the dropped middle, rerun with narrower output (grep, head/tail, or write the output to a file and page it).]';
+    }
     const note = parkedPath
       ? '[full-output receipt: ' + fullChars + ' characters / ' + fullBytes + ' UTF-8 bytes before truncation; saved once to ' + parkedPath
         + '. Read that file in ranges; do not rerun the tool merely to recover output.]'
@@ -592,7 +601,7 @@
           parked = await parkIfOver(raw, call, ctx, limit, parkMeta(call, tool, out));
         }
         const fullBytes = typeof full === 'string' ? utf8Bytes(full) : null;
-        const visible = full !== raw && typeof full === 'string' ? intrinsicReceipt(raw, full.length, fullBytes, parked) : raw;
+        const visible = full !== raw && typeof full === 'string' ? intrinsicReceipt(raw, full.length, fullBytes, parked, shaped ? out.fullContentElided : 0) : raw;
         const done = okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null, hostCap);
         // RELAYED TAINT (additive): a tool that hands back ANOTHER run's text (team.dispatch / team.subagents …)
         // reports that run's host-proven taint; the run host latches it on the ingesting run (see taint.relayedTaint).
@@ -628,7 +637,7 @@
           try { const p = ctx && typeof ctx.parkOutput === 'function' ? await ctx.parkOutput(fullError, { tool: call.name }) : null; parked = p && p.path ? String(p.path) : null; } catch (e) { failNote('tools.registry.parkOutput', e); }
         }
         const fullErrorBytes = utf8Bytes(fullError);
-        const visibleError = fullError !== errorText ? intrinsicReceipt(errorText, fullError.length, fullErrorBytes, parked) : errorText;
+        const visibleError = fullError !== errorText ? intrinsicReceipt(errorText, fullError.length, fullErrorBytes, parked, e && e.fullContentElided) : errorText;
         // A tool may name its own failure (shell.exec: 'timeout' / 'cancelled' for a killed command) via a short
         // toolSummary on the thrown error; otherwise the generic labels stand.
         const thrownSummary = e && typeof e.toolSummary === 'string' && e.toolSummary.trim() ? e.toolSummary.trim().slice(0, 60) : '';

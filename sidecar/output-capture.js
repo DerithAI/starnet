@@ -12,7 +12,10 @@
    shell's exit-code / cwd marker is printed LAST, and the end of a log is where the error is.
    Under the cap the value is byte-identical to plain concatenation.
 
-     const cap = makeFullCapture();  cap.push(chunk) ...  cap.value() -> string;  cap.elided() -> chars dropped */
+     const cap = makeFullCapture();  cap.push(chunk) ...  cap.value(mapFn?) -> string;  cap.elided() -> chars dropped
+
+   Callers pass elided() on as `fullOutElided`, and every receipt built from fullOut must say the middle is
+   gone when it is non-zero: a saved head + tail is not "the full output". */
 'use strict';
 (function (root, factory) {
   const api = factory();
@@ -60,12 +63,17 @@
       if (tailLen > tailMax * 2) compact();
     }
 
-    function value() {
+    // mapFn (optional) transforms the head and the tail SEPARATELY once something was dropped — a transform run
+    // over the joined text could pair an escape sequence cut at the head's edge with bytes from the tail
+    // (stripAnsi's unterminated-OSC branch would then eat the whole tail, exit marker included).
+    function value(mapFn) {
       compact();
+      const map = typeof mapFn === 'function' ? mapFn : function (s) { return s; };
       const t = tail.length ? tail[0] : '';
-      if (!dropped) return head + t;
-      return head + '\n…[' + dropped + ' characters of output elided here: StarNet keeps the first ' + head.length
-        + ' and the last ' + t.length + ' characters of a command\'s output]…\n' + t;
+      if (!dropped) return map(head + t);
+      const h = map(head), tt = map(t);
+      return h + '\n…[' + dropped + ' characters of output elided here: StarNet keeps the first ' + h.length
+        + ' and the last ' + tt.length + ' characters of a command\'s output]…\n' + tt;
     }
 
     function elided() { compact(); return dropped; }

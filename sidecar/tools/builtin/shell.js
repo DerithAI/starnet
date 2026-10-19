@@ -803,7 +803,7 @@
         receipt.done();
         // Stripped HERE, at the single exit of the shared primitive, so shell.exec and the background tail
         // (shellbg.js reads r.out) are both covered by one strip that cannot drift into two.
-        resolve({ exitCode: (typeof code === 'number') ? code : -1, out: stripAnsi(out), fullOut: stripAnsi(full.value()), ms: Math.max(0, now() - t0), truncated: truncated, timedOut: timedOut, aborted: aborted });
+        resolve({ exitCode: (typeof code === 'number') ? code : -1, out: stripAnsi(out), fullOut: full.value(stripAnsi), fullOutElided: full.elided(), ms: Math.max(0, now() - t0), truncated: truncated, timedOut: timedOut, aborted: aborted });
       }
       // a spawn failure (no PID) is the only 'error' that ends the command; it has no receipt to keep either way
       child.on('error', function (e) { if (settled) return; settled = true; clearTimeout(timer); if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} } receipt.done(); reject(new Error('shell error: ' + ((e && e.message) || e))); });
@@ -951,7 +951,10 @@
           const exitCode = (pm.ec != null && !res.timedOut && !res.aborted) ? pm.ec : res.exitCode;
           const note = res.timedOut ? ' — KILLED (timed out after ' + timeoutMs + 'ms)' : res.aborted ? ' — KILLED (aborted)' : '';
           const body = redact((res.truncated ? preview.cleanOut : pm.cleanOut) || '(no output)');
-          const content = clampNote + body + '\n[exit ' + exitCode + (res.truncated ? ', output truncated to ' + Math.round(MAX_BYTES / 1000) + 'KB' : '') + note + ']';
+          // the bounded capture (output-capture.js) dropped the middle of a huge output: say so, never imply the saved copy is whole
+          const elided = Number(res.fullOutElided) > 0 ? Number(res.fullOutElided) : 0;
+          const content = clampNote + body + '\n[exit ' + exitCode + (res.truncated ? ', output truncated to ' + Math.round(MAX_BYTES / 1000) + 'KB' : '')
+            + (elided ? ', ' + elided + ' characters from the middle of the output were not kept' : '') + note + ']';
           const fullContent = res.truncated
             ? clampNote + redact(pm.cleanOut || '(no output)') + '\n[exit ' + exitCode + note + ']'
             : undefined;
@@ -976,9 +979,12 @@
             const killed = new Error(head + content);
             killed.toolSummary = res.timedOut ? 'timeout' : 'cancelled';
             if (fullContent) killed.fullContent = head + fullContent;
+            if (elided) killed.fullContentElided = elided;
             throw killed;
           }
-          return { content: content, fullContent: fullContent, summary: 'exit ' + exitCode + ' (' + res.ms + 'ms)' + (res.truncated ? ', truncated' : '') };
+          const done = { content: content, fullContent: fullContent, summary: 'exit ' + exitCode + ' (' + res.ms + 'ms)' + (res.truncated ? ', truncated' : '') };
+          if (elided) done.fullContentElided = elided;
+          return done;
         });
       }
     };

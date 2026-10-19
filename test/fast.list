@@ -1278,3 +1278,4 @@ test/routine-images-grant.test.js
 test/index-strict-mode.test.js
 test/output-capture.test.js
 test/channels.poll-signal.test.js
+test/ssh-bg-read-remote.test.js

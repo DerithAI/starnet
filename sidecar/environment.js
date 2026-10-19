@@ -265,6 +265,7 @@
           exitCode: (typeof code === 'number' && !timedOut && !aborted) ? code : -1,
           out: out,
           fullOut: full ? full.value() : '',
+          fullOutElided: full ? full.elided() : 0,
           ms: Math.max(0, now() - t0),
           truncated: truncated,
           timedOut: timedOut,
@@ -1171,16 +1172,51 @@
     function readBackground(agentId, bgId, opts) {
       opts = opts || {};
       const aid = safeAgentId(agentId || 'agent');
+      /* COUNT, GREP AND PAGE ON THE REMOTE HOST. This used to `cat` the whole remote log into one string and page it
+         here: unbounded RAM (a big log could crash the station), and once captures were bounded (output-capture.js)
+         a grep could no longer see the dropped middle. Now only the requested page crosses the wire, line numbers
+         are the file's own, and grep matches the local backend (shellbg.read): case-insensitive, no offset = the
+         first match; without grep, no offset = the last `limit` lines. A line longer than LINE_MAX is cut, visibly. */
       return enqueue(aid, async function () {
         const row = target(aid), dir = remoteJobDir(row, bgId);
-        const result = await runSsh(row, 'test -d ' + quote(dir) + ' || exit 44\ncat ' + quote(dir + '/out') + ' ' + quote(dir + '/err') + ' 2>/dev/null || true\n', { timeoutMs: 30000, maxBytes: 512000 });
+        const limit = clamp(opts.limit || 200, 1, 1000), LINE_MAX = 4000;
+        const grep = opts.grep == null ? '' : String(opts.grep);
+        const rawOffset = Number(opts.offset);
+        const offsetArg = Number.isFinite(rawOffset) ? String(Math.max(-1e9, Math.min(1e9, Math.trunc(rawOffset)))) : '';
+        const files = quote(dir + '/out') + ' ' + quote(dir + '/err');
+        const match = 'p=="" || index(tolower($0),p)>0';
+        const script = [
+          'test -d ' + quote(dir) + ' || exit 44',
+          'P=' + quote(grep) + '; export P',
+          "n=$(cat " + files + " 2>/dev/null | awk 'BEGIN{p=tolower(ENVIRON[\"P\"])} {t++} " + match + " {m++} END{printf \"%d %d\", t+0, m+0}')",
+          'set -- $n; t=${1:-0}; m=${2:-0}',
+          'if test -n "$P"; then c=$m; else c=$t; fi',
+          'o=' + quote(offsetArg),
+          'if test -z "$o"; then if test -n "$P"; then o=0; else o=$((c - ' + limit + ')); fi; elif test "$o" -lt 0; then o=$((c + o)); fi',
+          'test "$o" -lt 0 && o=0',
+          'test "$o" -gt "$c" && o=$c',
+          'printf "starnet-page %s %s %s\\n" "$t" "$m" "$o"',
+          "cat " + files + " 2>/dev/null | O=$o L=" + limit + " W=" + LINE_MAX + " awk 'BEGIN{p=tolower(ENVIRON[\"P\"]);o=ENVIRON[\"O\"]+0;l=ENVIRON[\"L\"]+0;w=ENVIRON[\"W\"]+0} "
+            + match + " {if(k>=o){s=$0; if(length(s)>w) s=substr(s,1,w) \" …[line cut at \" w \" characters]\"; print NR \"\\t\" s} k++; if(k>=o+l) exit}'",
+          'exit 0'
+        ].join('\n') + '\n';
+        const result = await runSsh(row, script, { timeoutMs: 30000, maxBytes: 512000 });
         if (result.exitCode === 44) return { ok: false, error: 'no such background process' };
-        let lines = String(result.fullOut || result.out || '').split(/\r?\n/), grep = opts.grep == null ? '' : String(opts.grep);
-        if (grep) lines = lines.filter(x => x.indexOf(grep) >= 0);
-        const total = lines.length, limit = clamp(opts.limit || 200, 1, 1000);
-        let offset = Number(opts.offset); if (!isFinite(offset)) offset = Math.max(0, total - limit); if (offset < 0) offset = Math.max(0, total + offset);
-        const page = lines.slice(offset, offset + limit);
-        return { ok: true, bgId: String(bgId), running: false, exitCode: null, killed: false, cmd: 'remote background process', totalLines: total, returned: page.length, offset, firstLineNo: page.length ? offset + 1 : 0, lines: page, lineNos: page.map((_x, i) => offset + i + 1), grep: grep || null, matchedLines: grep ? total : 0, truncatedStart: !!result.truncated };
+        let total = 0, matched = 0, offset = 0, header = false;
+        const lines = [], lineNos = [];
+        for (const text of String(result.fullOut || result.out || '').split('\n')) {
+          if (!header) {
+            const h = /^starnet-page (\d+) (\d+) (\d+)\r?$/.exec(text);
+            if (h) { total = Number(h[1]); matched = Number(h[2]); offset = Number(h[3]); header = true; }
+            continue;
+          }
+          const m = /^(\d+)\t/.exec(text);
+          if (!m) continue;
+          lineNos.push(Number(m[1]));
+          lines.push(text.slice(m[0].length).replace(/\r$/, ''));
+        }
+        if (!header) return { ok: false, error: 'could not read the remote background output' + (result.exitCode ? ' (ssh exit ' + result.exitCode + ')' : '') };
+        return { ok: true, bgId: String(bgId), running: false, exitCode: null, killed: false, cmd: 'remote background process', totalLines: total, returned: lines.length, offset, firstLineNo: lines.length ? lineNos[0] : 0, lines, lineNos, grep: grep || null, matchedLines: grep ? matched : 0, truncatedStart: false };
       });
     }
     function killBackground(agentId, bgId) {
