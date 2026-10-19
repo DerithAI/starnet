@@ -189,9 +189,13 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const ascii = screen(m, { logo: 'ascii' }, 110, 34, T0 + 3000);
   const starCell = ascii.slice(0, 4).flat().find(([t]) => t.indexOf('✦') >= 0);
   A.ok(logo.word.every((l, i) => tui.toPlain(ascii[i]).indexOf(l.trim()) >= 0) && starCell && /logohi/.test(starCell[1]), 'STARNET_LOGO=ascii draws the drawn-letter version, the star in its A glinting');
-  const crewRow = text.findIndex(l => /CREW /.test(l));
-  A.ok(crewRow === 1 && text[crewRow].indexOf('CREW') > Math.max(...dots.map(l => l.length)) && /‹ ▲ ASTRA ›/.test(text[crewRow]) && /○ NOVA/.test(text[crewRow]), 'the crew is a bar of names beside the logo, the agent in COMMS marked: ' + text[crewRow]);
-  A.ok(!text.some(l => /^NOW  /.test(l)), 'the ask on the card is not said again on a NOW line (the only busy agent is the one asking)');
+  const crewTop = text.findIndex(l => /^╭─ CREW 3 /.test(l));
+  const astraRow = text.findIndex(l => /^│▌ ▲ ASTRA +asks │/.test(l));
+  A.ok(crewTop === 5 && astraRow === crewTop + 2 && text.some(l => /^│  ○ NOVA +│/.test(l)), 'the crew is a framed list down the left under the header, the agent in COMMS marked, its ask said in a word: ' + text[astraRow]);
+  const sel = rows[astraRow].find(([t]) => /ASTRA/.test(t));
+  A.ok(sel && /sel/.test(sel[1]) && /hi b/.test(sel[1]), 'the agent in COMMS sits on the highlight bar, in white: ' + (sel && sel[1]));
+  A.ok(!rows.flat().some(([, st]) => /a[0-5]/.test(st)), 'one palette: no agent has a hue of its own');
+  A.ok(!text.some(l => /NOW {2}/.test(l)), 'the ask on the card is not said again on a NOW line (the only busy agent is the one asking)');
   {
     const m2 = crew();
     m2.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
@@ -199,13 +203,15 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
     m2.apply('agent.run.start', { runId: 'r2', agentId: 'cypher', trigger: 'schedule', surface: 'autonomous', prompt: 'nightly tests' }, T0);
     m2.apply('agent.tool_call', { runId: 'r2', agentId: 'cypher', callId: 'c1', name: 'shell_exec', argsSummary: '{"command":"npm test"}' }, T0 + 5);
     const t2 = screen(m2, {}, 110, 34, T0 + 3000).map(tui.toPlain);
-    const nowRow = t2.findIndex(l => /^NOW  /.test(l));
-    A.ok(nowRow === 4 && /^NOW  CYPHER › shell\.exec npm test/.test(t2[nowRow]) && !/ASTRA/.test(t2[nowRow]), 'a NOW line under the logo says what the other busy ones are doing: ' + t2[nowRow]);
+    const nowRow = t2.findIndex(l => /NOW {4}CYPHER › shell\.exec npm test/.test(l));
+    A.ok(nowRow === 1 && t2[nowRow].indexOf('NOW') > 56 && !/ASTRA/.test(t2[nowRow]), 'a NOW line beside the logo says what the other busy ones are doing: ' + t2[nowRow]);
+    A.ok(t2.some(l => /│  ● CYPHER +\d+s │/.test(l)), 'a working agent in the crew list shows how long its run has gone');
   }
-  const commsRow = text.findIndex(l => /^── COMMS ▸ ASTRA /.test(l));
-  A.ok(commsRow > 0 && commsRow <= 6, 'COMMS starts right under the header (row ' + commsRow + '), so it gets most of the screen');
+  const commsRow = text.findIndex(l => /╭─ COMMS ▸ ASTRA /.test(l));
+  A.ok(commsRow === crewTop && text[commsRow].indexOf('COMMS') > 20, 'COMMS is framed beside the crew, from right under the header, so it gets most of the screen');
   const compact = screen(m, {}, 70, 20, T0 + 3000).map(tui.toPlain);
-  A.ok(/S T A R N E T/.test(compact[0]) && /1 needs you/.test(compact[0]) && /^CREW /.test(compact[1]), 'a small terminal gets the one-line mark, counts on it, crew bar under it: ' + compact.slice(0, 2).join(' | '));
+  const cTop = compact.findIndex(l => /^╭─ COMMS ▸ ASTRA /.test(l));
+  A.ok(/S T A R N E T/.test(compact[0]) && /1 needs you/.test(compact[0]) && cTop > 0 && cTop <= 3 && /2\/3 ─╮$/.test(compact[cTop].trimEnd()) && !compact.some(l => /CREW/.test(l)), 'a small terminal gets the one-line mark with the counts, and COMMS full width, saying which agent of how many: ' + compact[cTop]);
   A.ok(!screen(m, { logo: 'plain' }, 110, 34, T0).map(tui.toPlain).some(l => l.indexOf(logo.word[1].trim()) >= 0), 'STARNET_LOGO=plain keeps to the one-line mark');
   A.ok(text.some(l => /ASTRA asks/.test(l)) && text.some(l => /\[y\] allow once/.test(l)), 'the open ask is a card with its keys');
   A.ok(text.some(l => /evil {2}text|evil text/.test(l)), 'model text is shown…');
@@ -214,7 +220,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!/\x1b\[2J|\x1b\]0;/.test(ansi), 'the ANSI output carries only our own styling');
   A.ok(!/\x1b\[(38|48);/.test(rows.map(r => tui.toAnsi(r, 0)).join('')), 'NO_COLOR level emits no colors');
   const narrow = screen(m, {}, 60, 30, T0).map(tui.toPlain);
-  A.ok(narrow.every(l => tui.width(l) <= 60) && narrow.some(l => /^CREW /.test(l)), 'narrow: still fits, crew bar kept');
+  A.ok(narrow.every(l => tui.width(l) <= 60) && narrow.some(l => /^╭─ COMMS ▸ ASTRA /.test(l)), 'narrow: still fits, COMMS framed');
   A.ok(/needs at least/.test(tui.toPlain(screen(m, {}, 40, 10, T0)[0])), 'a terminal too small says so');
   const help = screen(m, { overlay: { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' } }, 110, 34, T0).map(tui.toPlain);
   A.ok(help.some(l => /COMMANDS/.test(l)) && help.some(l => /\/flow run name text/.test(l)), '/help lists the commands');
@@ -263,7 +269,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const m = crew();
   const img = screen(m, { logoImage: { cols: 58, rows: 4 } }, 120, 30, T0).map(tui.toPlain);
   A.ok(img.slice(0, 4).every(l => l.slice(0, 58).trim() === ''), "the image's cells stay blank (the image is painted there, never written over)");
-  A.ok(/^CREW /.test(img[1].slice(61)), 'the crew bar sits beside the image: ' + img[1].slice(55, 90));
+  A.ok(/0 working/.test(img[0].slice(61)) && /^╭─ CREW /.test(img[5]), 'the counts sit beside the image, the crew list under it: ' + img[0].slice(55, 120));
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
 }
 

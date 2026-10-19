@@ -64,9 +64,9 @@ function argDigest(args, tool, nameOf) {
   return oneLine(raw);
 }
 
-function makeAgent(id, name, idx) {
+function makeAgent(id, name) {
   return {
-    id, name: String(name || id).toUpperCase().slice(0, 12), model: '', provider: '', inRoster: false, color: idx % 6,
+    id, name: String(name || id).toUpperCase().slice(0, 12), model: '', provider: '', inRoster: false,
     runs: new Set(), last: null, now: '', act: new Array(SLOTS).fill(0), bucket: 0, log: [], seq: 0
   };
 }
@@ -82,7 +82,7 @@ function makeStation() {
   function agent(id) {
     const key = String(id || 'agent');
     let a = st.agents.get(key);
-    if (!a) { a = makeAgent(key, key === 'agent' ? 'OVERSEER' : key, st.order.length); st.agents.set(key, a); st.order.push(key); }
+    if (!a) { a = makeAgent(key, key === 'agent' ? 'OVERSEER' : key); st.agents.set(key, a); st.order.push(key); }
     return a;
   }
   function log(a, entry) {
@@ -364,7 +364,7 @@ function makeStation() {
   function rows(now) {
     return st.order.map(id => st.agents.get(id)).filter(Boolean).map(a => {
       const status = statusOf(a, now);
-      return { id: a.id, name: a.name, model: a.model, color: a.color, status, now: nowOf(a, status), act: a.act.slice() };
+      return { id: a.id, name: a.name, model: a.model, status, now: nowOf(a, status), act: a.act.slice() };
     });
   }
   function header(now) {
