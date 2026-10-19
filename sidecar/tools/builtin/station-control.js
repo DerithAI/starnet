@@ -328,9 +328,12 @@
     run: (a, env) => env.route('POST', '/api/hooks/revoke', { event: a.event, command: a.command }) });
   def('hook.delete', { takes: '{event, command}', power: () => true, card: a => 'DELETE the automatic command "' + clip(a.command, 120) + '" on ' + clip(a.event, 30) + ' (if it is a guard, it stops guarding).',
     run: (a, env) => env.route('POST', '/api/hooks/delete', { event: a.event, command: a.command }) });
-  def('limits.set', { takes: '{maxIters? 0-200, maxConcurrentAgents? 0-32, consentTimeoutMs? 5000-600000, cronTickMs? 5000-600000} (0 = UNLIMITED, null = default; most apply at the next start)', power: () => true, keys: ['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs'],
-    card: a => 'change the station\'s runtime limits: ' + clip(['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs'].filter(k => k in a).map(k => k + ' ' + (a[k] === 0 ? 'UNLIMITED' : a[k] == null ? 'default' : a[k])).join(', ') || 'nothing named', 160) + ' (most take effect at the next start).',
-    run: (a, env) => env.route('POST', '/api/runtime/knobs', pick(a, ['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs'])) });
+  // every key of SETTINGS › APP & BACKUP › Runtime limits (stationui ADV_FIELDS), so the agent can do what that list does,
+  // incl. both per-run token ceilings (a Claude subscription; a model StarNet has no price for, issue #135)
+  const LIMIT_KEYS = ['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs', 'maxSubscriptionTokens', 'maxUnpricedTokens'];
+  def('limits.set', { takes: '{maxIters? 0-200, maxConcurrentAgents? 0-32, consentTimeoutMs? 5000-600000, cronTickMs? 5000-600000, maxSubscriptionTokens? 0-100000000, maxUnpricedTokens? 0-100000000} (0 = UNLIMITED, null = default; most apply at the next start)', power: () => true, keys: LIMIT_KEYS,
+    card: a => 'change the station\'s runtime limits: ' + clip(LIMIT_KEYS.filter(k => k in a).map(k => k + ' ' + (a[k] === 0 ? 'UNLIMITED' : a[k] == null ? 'default' : a[k])).join(', ') || 'nothing named', 160) + ' (most take effect at the next start).',
+    run: (a, env) => env.route('POST', '/api/runtime/knobs', pick(a, LIMIT_KEYS)) });
 
   /* ONE reading of the args, used by the tier check, the card's runner AND the page (sweep 2026-10-03). They read the
      same values differently before: the tier check took {on:"off"} as off (ordinary) while the page's !!a.on took it

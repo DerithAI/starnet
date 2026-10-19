@@ -800,7 +800,7 @@ let runtimeKnobs = (function loadRuntimeKnobsAtBoot() {
   function parseKnobs(raw) {
     const k = (raw && typeof raw === 'object' && raw.knobs && typeof raw.knobs === 'object') ? raw.knobs : {};
     const out = {};
-    for (const key of ['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs', 'maxSubscriptionTokens']) {
+    for (const key of ['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs', 'maxSubscriptionTokens', 'maxUnpricedTokens']) {
       const v = k[key];
       if (typeof v === 'number' && isFinite(v) && v >= 0) out[key] = Math.floor(v);
     }
@@ -828,7 +828,8 @@ function knobEnvLocked(envSuffix) { const e = envSuffix ? ENV(envSuffix) : null;
 // (toolBytesCapFor at the run seam) UNLESS SKYNET_MAX_TOOL_BYTES is explicitly set, which pins the cap
 // absolutely (deterministic tests + locked-down deploys).
 // maxUnpricedTokens: per-run TOKEN ceiling for turns no catalog/table could price on a METERED provider (the $ cap
-// is blind to them). SKYNET_MAX_UNPRICED_TOKENS overrides; 0 disables. OAuth/unmetered providers are exempt.
+// is blind to them). STARNET_MAX_UNPRICED_TOKENS or SETTINGS › APP & BACKUP (UNPRICED MODEL TOKEN CEILING, issue #135)
+// overrides; 0 disables. OAuth/unmetered providers are exempt.
 // maxSubscriptionTokens: per-run TOKEN ceiling for $0 subscription turns (a Claude Code sign-in); cache re-reads count
 // 1/10 (loop.js SUBSCRIPTION SEATBELT). STARNET_MAX_SUBSCRIPTION_TOKENS or SETTINGS › APP & BACKUP overrides; 0 disables.
 const CAPS = { maxIters: resolveKnob('MAX_ITERS', 'maxIters', 0), maxCostUsd: 1.00, maxRepeat: 3, toolTimeoutMs: 30000, maxToolBytes: resolveKnob('MAX_TOOL_BYTES', 'maxToolBytes', 120000), maxUnpricedTokens: resolveKnob('MAX_UNPRICED_TOKENS', 'maxUnpricedTokens', 2000000), maxSubscriptionTokens: resolveKnob('MAX_SUBSCRIPTION_TOKENS', 'maxSubscriptionTokens', 2000000) };
@@ -14485,7 +14486,8 @@ const RUNTIME_KNOB_DEFS = [
   { key: 'maxConcurrentAgents', env: 'MAX_CONCURRENT_AGENTS', def: 0, min: 0, max: 32 },
   { key: 'consentTimeoutMs', env: 'CONSENT_TIMEOUT_MS', def: 120000, min: 5000, max: 600000 },
   { key: 'cronTickMs', env: 'CRON_TICK_MS', def: 60000, min: 5000, max: 600000 },
-  { key: 'maxSubscriptionTokens', env: 'MAX_SUBSCRIPTION_TOKENS', def: 2000000, min: 0, max: 100000000 }
+  { key: 'maxSubscriptionTokens', env: 'MAX_SUBSCRIPTION_TOKENS', def: 2000000, min: 0, max: 100000000 },
+  { key: 'maxUnpricedTokens', env: 'MAX_UNPRICED_TOKENS', def: 2000000, min: 0, max: 100000000 }
 ];
 function saveRuntimeKnobs() {
   try { saveResilient(RUNTIME_KNOBS_FILE, { version: 1, knobs: runtimeKnobs }); }
