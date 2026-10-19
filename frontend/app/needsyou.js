@@ -22,14 +22,14 @@
      conversation is opened — StationUI.seenSession — or its run's waits end), never a second row beside a live ask in the
      same conversation.
    NOTIFICATIONS › NEEDS YOU renders this SAME list (StationUI buildNotifs), so its count, Dismiss and OPEN match the rail.
-   Actions are the real ones: Approve / Deny answer through the approval card's own path (Chat.answerConsent) — Approve
-   only when the rail's line is the whole request, else Review opens the card that shows all of it (a direct-chat ask
-   offers Review beside Approve once too, org P02) — Retry runs the
-   routine again (POST /api/cron/run), Open lands on the conversation (a worker's work unfolded on its card). */
+   (Andrew 10-19) IT IS AN INBOX: every row is the door to where its wait is answered — Open lands on the conversation (on
+   the approval or question card itself, a worker's work unfolded on its card) or on the window that holds it — and the
+   only keys are the safe one-tap actions: Deny refuses an approval through the card's own path (Chat.answerConsent),
+   Retry runs a failed routine again (POST /api/cron/run), Dismiss clears failed work you have seen. */
 const NeedsYou = (() => {
   const DAY = 86400000;
   const KEEP_FAILED_MS = 3 * DAY;      // a failure older than this is history, not a to-do
-  const SHOW = 3;                       // rows before "N more"
+  const SHOW = 6;                       // rows drawn before "N more" (fitRows then folds what the room cannot hold whole)
   const DISMISS_KEY = 'skynet.needs-dismissed';
   let expanded = false, wired = false, lastShape = '';
   // (org P01) the waits whose source is a sidecar read, not page state: re-read at most once a minute (and at once after a
@@ -242,88 +242,33 @@ const NeedsYou = (() => {
     return s < 60 ? 'now' : s < 3600 ? Math.floor(s / 60) + 'm' : s < DAY / 1000 ? Math.floor(s / 3600) + 'h' : Math.floor(s / 86400) + 'd';
   }
   const KIND = { approval: 'wants to', question: 'asks', group: '', failed: '', routine: '' };
-  // the rail shows one glance line. Approve from here only when that line IS the whole request; when the approval card
-  // holds more (INSPECT: a long command's tail, a file change, every argument; a station ask's own sentence: a build's
-  // plan, the job a line runs, what its runs spend, that it runs unattended), Review lands on that card instead. Deny
-  // stays one tap: refusing without the detail is safe. (Whether the rail shows that line whole is measured: below.)
-  function hiddenDetail(p) {
-    if (/^station[._]/.test(String((p && p.tool) || ''))) return true;
-    if (typeof Chat === 'undefined' || !Chat.consentInspect || !Chat.consentPhrase) return true;   // no way to tell: never approve blind
-    return !!Chat.consentInspect(p);
-  }
-  /* WHOLE ON THE RAIL, MEASURED, NEVER COUNTED (polish fix round 10-15). The line is .ny-what, clamped to two lines
-     (pipglass.css) in a column that moves with the rail (168/200/232px defaults, a dragged seam) while its type moves
-     with TEXT SIZE (a body zoom, 90% to 150%, that the counter-zoomed rail does not follow). No character count holds
-     across those: 48 let a 40-character ask be cut to "…", and 23 still cut "wants to use fs rm: a" at 145% while it
-     hid Approve once from a 28-character line that sat whole on a 232px rail at 100%. So the rail reads the box it drew,
-     chat.js fitWhole's own test: the line is whole when the clamped box holds all of it. Every render and every 1s
-     heartbeat re-reads it (a TEXT SIZE change or a dragged rail moves no list state), and the click reads it again.
-     Until a row's line has been read whole — and for one that cannot be read (hidden, not laid out) — it offers Review. */
-  const wholeLines = new Set();          // fitId of each approval row last read showing its whole line
-  const fitId = i => i.key + '\u0001' + i.what;
-  function shownWhole(li) {
-    const box = li && typeof li.querySelector === 'function' ? li.querySelector('.ny-what') : null;
-    return !!box && box.clientHeight > 0 && box.clientWidth > 0
-      && box.scrollHeight <= box.clientHeight + 2 && box.scrollWidth <= box.clientWidth + 2;
-  }
-  // read every approval row the rail shows; true when an answer moved (that row's keys follow). A row fitRows folded into
-  // "N more" shows nothing to read or press: it keeps its last reading, and is read afresh the moment it shows again (the
-  // heartbeat fits before it reads; an expand redraws, then reads). Reading it as "not whole" flipped its keys, which
-  // changed its height, which unfolded it, which read it whole again: the panel rebuilt twice a second at a fold boundary.
-  function measure(host, list) {
-    const asks = new Map(list.filter(i => i.kind === 'approval').map(i => [i.key, i]));
-    const whole = new Set();
-    if (asks.size) {
-      for (const li of host.querySelectorAll('li.ny-item[data-ny-key]')) {
-        const i = asks.get(li.dataset && li.dataset.nyKey);
-        if (!i) continue;
-        if (li.hidden) { if (wholeLines.has(fitId(i))) whole.add(fitId(i)); continue; }
-        if (shownWhole(li)) whole.add(fitId(i));
-      }
-    }
-    if (whole.size === wholeLines.size && [...whole].every(id => wholeLines.has(id))) return false;
-    wholeLines.clear(); whole.forEach(id => wholeLines.add(id));
-    return true;
-  }
-  const railApproves = i => !hiddenDetail(i.p) && wholeLines.has(fitId(i));
-  /* (org P02; g3 D1, final round) a direct-chat ask the rail can approve is REVIEWED through the row itself: the row, its
-     "in <where>" door and its ask line land on the COMMS card (the whole request, and its Always / Full access keys, which the
-     rail never grants). Three keys never fit the rail on one row at a readable size — they stacked into three full-width
-     keys — so its keys are Approve once · Deny, side by side. A worker's ask (background ones too) reviews on its Delegated
-     row's INSPECT instead. */
-  const reviewRow = i => !!(i && i.kind === 'approval' && railApproves(i) && !(i.p && (i.p.workerStreamId || i.p.workerRunId || i.p.background === true)));
-  const REVIEW_TIP = 'Review it on its card: the whole request, and its Always and Full access keys';
+  /* THE INBOX (Andrew 10-19: "Go with the inbox: drop the REVIEW/ANSWER keys, keep only the safe one-tap actions, compact
+     rows"). The rail approved from its row only when its one line was the whole request, which no file change ever is, so
+     nearly every approval read REVIEW: a key that did what the row itself does. NEEDS YOU is the station's inbox now —
+     every wait, each row the door to where it is answered (an approval and a question on their cards, with the whole
+     request and every key there) — and it keeps only what is safe in one tap with nothing more to read: Deny (refusing
+     needs no detail), Retry a failed routine, Dismiss failed work. Nothing is approved, answered or confirmed from the
+     rail, so it never has to judge whether its line shows the whole request. */
   function keysFor(i) {
     const k = (act, label, cls, off) => '<button type="button" class="ny-key' + (cls ? ' ' + cls : '') + '" data-ny-act="' + act + '" data-ny-key="' + esc(i.key) + '"' + (off ? ' disabled' : '') + '>' + label + '</button>';
     const sending = !!(i.p && answering.has(String(i.p.promptId))) || answering.has(i.key);
-    if (i.kind === 'approval') {
-      if (!railApproves(i)) return k('open', 'Review', 'primary') + k('deny', 'Deny', 'deny', sending);
-      // (a direct-chat ask's Review is its row's own open action: reviewRow above)
-      return k('once', 'Approve once', 'primary', sending) + k('deny', 'Deny', 'deny', sending);
-    }
-    // (Andrew 10-15) THE ROW IS THE DOOR, as a session row is: a click anywhere on it opens where the wait is, so a wait
-    // whose only action was Open has no key at all. Keys stay only for what is NOT opening: answer, retry, dismiss.
-    if (i.kind === 'question') return k('open', 'Answer', 'primary');
-    // a quest an agent says is done: the QUESTS card's own verdict keys (Confirm → done; Not yet keeps it open, the agent sees why)
-    // (the rail's key drops the card's ✓: a symbol glyph is a fallback font in a VT323 label and overran the key's edge)
-    if (i.kind === 'attest') return k('attest-yes', 'Confirm', 'primary', sending) + k('attest-no', 'Not yet', 'deny', sending);
+    if (i.kind === 'approval') return k('deny', 'Deny', 'deny', sending);
     if (i.kind === 'routine' && i.routineId) return k('retry', 'Retry', 'primary');
     if (i.kind === 'failed') return k('dismiss', 'Dismiss', 'quiet');
     if (i.kind === 'asked' && i.noDoor) return k('dismiss', 'Dismiss', 'quiet');   // no conversation to open: only its Dismiss
     return '';
   }
   // the row's line, the ask first so a clamp never cuts it: "wants to …", "asks …", "keep or discard · <build>",
-  // "23 builds to keep or discard · <the oldest build>". A failed routine's line is its name: its card's header already
-  // says ROUTINE FAILED (the whole sentence, 'routine "…" failed', stays its tip, its door's name and its bell row)
+  // "23 builds to keep or discard · <the oldest build>", "routine failed · <its name>" (the whole sentence, 'routine "…"
+  // failed', stays its tip, its door's name and its bell row)
   function lineHtml(i) {
     if (i.rail) return '<span class="ny-verb">' + esc(i.rail.verb) + '</span> · ' + esc(i.rail.text);
-    if (i.kind === 'routine' && i.routineName) return esc(i.routineName);
+    if (i.kind === 'routine' && i.routineName) return '<span class="ny-verb">routine failed</span> · ' + esc(i.routineName);
     return (KIND[i.kind] ? '<span class="ny-verb">' + esc(KIND[i.kind]) + '</span> ' : '') + esc(i.what);
   }
-  /* (Andrew 10-17, of three rendered: "C is def the best") every wait is a card under a header strip that names WHAT it is,
-     in the station's own word for that kind (the line under it still says the ask whole), with how long it has waited at
-     the strip's end. A group says which of its waits it is; an agent's builds say how many; a worker says whether it
-     failed or was stopped, as its own line does. */
+  /* what a wait is, in the station's own word for it: the start of its door's name for the keyboard and a screen reader
+     (the row's edge colour and its line's own verb say it on sight). A group says which of its waits it is; an agent's
+     builds say how many; a worker says whether it failed or was stopped, as its own line does. */
   const KIND_LABEL = { approval: 'Approval', question: 'Question', asked: 'Question', stepin: 'Step-in', attest: 'Quest done?',
     loop: 'Goal loop', extension: 'Extensions', routine: 'Routine failed' };
   function kindLabel(i) {
@@ -358,18 +303,16 @@ const NeedsYou = (() => {
     if (!list.length) return '';
     const rows = railRows(list), shown = expanded ? rows : rows.slice(0, SHOW), folded = list.length - waitsIn(shown);
     return '<div class="ny-head"><span class="ny-lamp" aria-hidden="true"></span><span class="ny-title">Needs you</span><span class="ny-count">' + list.length + '</span></div>'
-      + '<ul class="ny-list">' + shown.map(i => { const rv = reviewRow(i), keys = keysFor(i), color = colorOf(i.aid), place = ' — in ' + i.where; return '<li class="ny-item ' + i.kind + (rv ? ' ny-review' : '') + (placeSaid(i) ? ' ny-place-said' : '') + '" data-ny-key="' + esc(i.key) + '" data-ny-n="' + (i.n || 1) + '">'
-        // the card's header strip (Andrew 10-17, "C · ALERT CARDS"): what this wait is, and how long it has waited
-        + '<div class="ny-strip"><span class="ny-kind">' + esc(kindLabel(i)) + '</span><span class="ny-age">' + esc(age(i.since, now)) + '</span></div>'
-        // the CREW card, for a wait (Andrew 10-15: "premium"): the agent's portrait in its well (no lamp: the strip's colour
-        // says what it is), then WHO (in the agent's colour) · where, the line (the ask first; two lines at most, the whole of
-        // it on hover), then keys only when there is more than Open
-        + '<span class="ny-face" aria-hidden="true"' + (i.aid ? ' data-ny-aid="' + esc(i.aid) + '"' : '') + '><img alt="" draggable="false" hidden></span>'
-        // "in <where>" is the row's door for the keyboard and a screen reader on every rail (pipglass.css only hides it from
-        // sight where the line has no room): its name says who, what, and where it lands
+      + '<ul class="ny-list">' + shown.map(i => { const keys = keysFor(i), color = colorOf(i.aid), place = ' — in ' + i.where; return '<li class="ny-item ' + i.kind + (placeSaid(i) ? ' ny-place-said' : '') + '" data-ny-key="' + esc(i.key) + '" data-ny-n="' + (i.n || 1) + '">'
+        // (Andrew 10-19, the inbox: compact rows) line 1: WHO (in the agent's colour) · in <where> ....... how long it has
+        // waited; "in <where>" is the row's door for the keyboard and a screen reader on every rail (pipglass.css only hides it
+        // from sight where the line has no room): its name says what the wait is, who, what, and where it lands
         + '<div class="ny-line">' + (i.who ? '<span class="ny-who"' + (color ? ' style="color:' + esc(color) + '"' : '') + '>' + (i.whoHtml || esc(i.who)) + '</span>' : '')
-        + '<button type="button" class="ny-where" data-ny-act="open" data-ny-key="' + esc(i.key) + '" aria-label="' + esc((i.who ? i.who + ' ' : '') + lineOf(i) + place) + '"' + (rv ? ' data-tip="' + esc(REVIEW_TIP) + '"' : '') + '>in ' + esc(i.where) + '</button></div>'
-        + '<div class="ny-what" title="' + esc(i.what + (i.tip ? ' — ' + i.tip : '') + place + (rv ? ' — ' + REVIEW_TIP : '')) + '">' + lineHtml(i) + '</div>'
+        + '<button type="button" class="ny-where" data-ny-act="open" data-ny-key="' + esc(i.key) + '" aria-label="' + esc(kindLabel(i) + ': ' + (i.who ? i.who + ' ' : '') + lineOf(i) + place) + '">in ' + esc(i.where) + '</button>'
+        + '<span class="ny-age">' + esc(age(i.since, now)) + '</span></div>'
+        // line 2: the ask first, then what it is about (the whole of it on hover; the row opens the card that holds it all)
+        + '<div class="ny-what" title="' + esc(i.what + (i.tip ? ' — ' + i.tip : '') + place) + '">' + lineHtml(i) + '</div>'
+        // its key, only for a safe one-tap action (Deny, Retry, Dismiss): at the row's right edge
         + (keys ? '<div class="ny-keys">' + keys + '</div>' : '')
         + '</li>'; }).join('') + '</ul>'
       + (rows.length > 1 ? '<button type="button" class="ny-more" data-ny-act="more" data-ny-waits="' + list.length + '" aria-expanded="' + expanded + '"'
@@ -394,35 +337,22 @@ const NeedsYou = (() => {
     fold();
     while (shown > 1 && host.scrollHeight > host.clientHeight + 1) { const li = lis[--shown]; li.hidden = true; shownWaits -= waitsOf(li); fold(); }
   }
-  /* THE TEXT COLUMN NEVER MOVES WITH THE SECTION'S OWN SCROLL (review 10-16). The section reserves its scrollbar's gutter
+  /* THE ROWS NEVER MOVE WITH THE SECTION'S OWN SCROLL (review 10-16). The section reserves its scrollbar's gutter
      (pipglass.css: scrollbar-gutter: stable), and the gutter's width, measured here into --ny-gutter, is taken back out of
-     the panel's right margin: the panel keeps the rail's edges and its rows one width, scrolling or not. Before, a first row
-     whose Approve once · Deny overflowed the room brought the scrollbar in, the scrollbar narrowed the ask line to a third
-     line, the reading went to Review, Review fit, the scrollbar left, the line read whole… and the 1 s heartbeat redrew the
-     panel twice a beat, forever, painting Approve once over a line it had just read as cut. Read before the rows are fitted
-     and again after them (where no gutter is reserved, the scrollbar comes with the overflow fitRows settles), so measure()
-     always reads the one width. A hidden section (no box) keeps its last reading. */
+     the list's right margin: the rows keep the rail's edges and one width, scrolling or not (a scrollbar that came and went
+     moved every row's right edge and re-wrapped its line). Read before the rows are fitted and again after them (where no
+     gutter is reserved, the scrollbar comes with the overflow fitRows settles). A hidden section (no box) keeps its last
+     reading. */
   function fitGutter(host) {
     if (!host || !host.style || typeof host.style.setProperty !== 'function' || !(host.offsetWidth > 0)) return;
     const g = Math.max(0, host.offsetWidth - host.clientWidth - 2 * (Number(host.clientLeft) || 0)) + 'px';
     if (host.style.getPropertyValue('--ny-gutter') !== g) host.style.setProperty('--ny-gutter', g);
   }
   const fit = host => { fitGutter(host); fitRows(host); fitGutter(host); };
-  // each card's portrait: the same figure the CREW card paints (AgentPortraits), from the agent the wait names
-  function paintFaces(host) {
-    if (typeof AgentPortraits === 'undefined' || !AgentPortraits.paint || !has(App, 'agents')) return;
-    let roster = [];
-    try { roster = App.agents() || []; } catch (_) { return; }
-    host.querySelectorAll('.ny-face[data-ny-aid]').forEach(face => {
-      const a = roster.find(x => x && x.id === face.dataset.nyAid);
-      if (a) AgentPortraits.paint(face.querySelector('img'), a);
-    });
-  }
   // what the list shows apart from its ages: the rail's 1s heartbeat rebuilds the list only when this moves
   const shapeOf = list => list.map(i => [i.key, i.who, i.what, i.tip || '', i.where, keysFor(i)].join('\u0001')).join('\u0002') + '#' + expanded;
 
   const inSessionsView = () => typeof App === 'undefined' || !App || typeof App.railView !== 'function' || App.railView() === 'sessions';
-  let remeasured = false;               // a render the measurement asked for: it redraws once, never in a loop
   function render() {
     const host = typeof document !== 'undefined' && document.getElementById('ws-needs');
     if (!host) return;
@@ -442,7 +372,6 @@ const NeedsYou = (() => {
         if (el && el.textContent !== text) el.textContent = text;
       });
       fit(host);               // …and how many rows fit whole in the room (TEXT SIZE or the rail's width may have moved)
-      remeasure(host, list);   // …then re-read each line the rail now shows (a row just unfolded is read before it paints)
       return;
     }
     lastShape = shape;
@@ -454,10 +383,11 @@ const NeedsYou = (() => {
     if (f && parked && parked.key === fKey) { fAct = parked.act; fCls = parked.cls; }
     parked = null;
     host.innerHTML = html(list, now);
-    paintFaces(host);
+    // open, the list takes the rail's room (pipglass.css .ny-open), the sessions waiting under it
+    if (host.classList && typeof host.classList.toggle === 'function') host.classList.toggle('ny-open', expanded);
     fit(host);
     if (fAct) {
-      // "in <where>" and Review/Open share an action: the class tells them apart
+      // "in <where>" and a key may share an action: the class tells them apart
       const keys = Array.from(host.querySelectorAll('[data-ny-act]'));
       const same = keys.filter(n => n.dataset.nyAct === fAct && (fAct === 'more' || n.dataset.nyKey === fKey));
       const again = same.find(n => n.className === fCls) || same[0];
@@ -468,18 +398,6 @@ const NeedsYou = (() => {
       if (live && again && live !== again) parked = { act: fAct, cls: fCls, key: fKey };
       if (live && live.focus) live.focus({ preventScroll: true });
     }
-    remeasure(host, list);   // the rows are drawn: read which lines show whole, and give those (only) Approve once
-  }
-  // a line that now reads whole (or no longer does) redraws the list at once, in the same task, before anything paints
-  // or takes a click. Once per render, and that bounds only the one task: a reading that moved again in the redraw would
-  // move again on the next heartbeat (a row's own keys used to move the section's scrollbar, and with it the line's width:
-  // two rebuilds a beat, forever). What keeps it settled is that a row's keys cannot move its own reading — the line's
-  // width never follows the section's scroll (fitGutter), and a row fitRows folds keeps its last reading (measure). A
-  // stale Approve once meanwhile still meets the click's own reading in act().
-  function remeasure(host, list) {
-    if (!measure(host, list) || remeasured) return;
-    remeasured = true;
-    try { lastShape = ''; render(); } finally { remeasured = false; }
   }
   // (org P01) the waits that live in a window, not a conversation: Open goes through that window's own door
   function openDoor(i) {
@@ -523,24 +441,11 @@ const NeedsYou = (() => {
     const i = items().find(x => x.key === key);
     if (kind === 'more') { expanded = !expanded; lastShape = ''; render(); return; }
     if (!i) { lastShape = ''; render(); return; }
-    // never approve what the rail cannot show: the line read whole at the last render AND in the row clicked, read now
-    // (a TEXT SIZE change or a dragged rail since the last heartbeat cuts it before the keys follow)
-    const clicked = btn && typeof btn.closest === 'function' ? btn.closest('li.ny-item') : undefined;
-    if (kind === 'open' || (kind === 'once' && !(railApproves(i) && (clicked === undefined || shownWhole(clicked))))) return open(i);
+    // (the inbox) approving, answering and a quest's verdict happen where the wait is: the row and its "in <where>" open it
+    if (kind === 'open') return open(i);
     if (kind === 'dismiss') { if (i.kind === 'failed') dismiss(key); else if (canDismiss(i)) settleStored(i); lastShape = ''; render(); return; }
-    if ((kind === 'attest-yes' || kind === 'attest-no') && i.kind === 'attest' && typeof QuestLedgerStore !== 'undefined' && QuestLedgerStore.confirm) {
-      if (answering.has(key)) return;
-      answering.add(key); render(); if (btn) btn.disabled = true;
-      let r = null;
-      try { r = await QuestLedgerStore.confirm(i.questId, kind === 'attest-yes'); }
-      catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
-      finally { answering.delete(key); }
-      if (!(r && r.ok) && typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify('could not record that verdict', 'bad');
-      if (typeof StationUI !== 'undefined' && StationUI.rerender) StationUI.rerender('quests', false);
-      lastShape = ''; render(); if (typeof StationUI !== 'undefined' && StationUI.badges) StationUI.badges(); return;
-    }
-    if ((kind === 'once' || kind === 'deny') && i.p && typeof Chat !== 'undefined' && Chat.answerConsent) {
-      // one answer per ask: a re-render while it is on its way keeps both keys disabled, and a second click sends nothing
+    if (kind === 'deny' && i.p && typeof Chat !== 'undefined' && Chat.answerConsent) {
+      // one answer per ask: a re-render while it is on its way keeps the key disabled, and a second click sends nothing
       const promptId = String(i.p.promptId);
       if (answering.has(promptId)) return;
       // render first, while the clicked key still holds focus (the rebuild moves it to the row), then lock the key in hand
@@ -605,6 +510,6 @@ const NeedsYou = (() => {
   }
   function canDismiss(i) { return !!i && (i.kind === 'failed' || (i.kind === 'asked' && !!i.noDoor)); }
   const listShape = list => (list || items()).map(i => i.key + '\u0001' + i.what + '\u0001' + i.where).join('\u0002');
-  return { items, render, openKey, dismissKey, canDismiss, lineOf, listShape, refreshFeeds, _internals: { html, age, keysFor, measure, fitRows, railRows, dismissed, feeds: () => feeds } };
+  return { items, render, openKey, dismissKey, canDismiss, lineOf, listShape, refreshFeeds, _internals: { html, age, keysFor, fitRows, railRows, dismissed, feeds: () => feeds } };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = NeedsYou;
