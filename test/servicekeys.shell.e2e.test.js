@@ -81,6 +81,26 @@ const RESERVED = new Set(['OPENROUTER_API_KEY']);
     apply();
     const off = await tool.run({ cmd: ECHO }, ctx());
     A.ok(/MISSING/.test(off.content), 'disabling the key removes it from the very next shell call');
+
+    // ---- 6. a 1Password reference: the persisted row holds only op://…; the value read into the cache reaches the
+    //         child through the SAME applyEnv/runEnv path once index.js hands them the LIVE list ----
+    const OP = require('../sidecar/onepassword.js');
+    const ECHO_OP = 'node -e "console.log(process.env.VAULTED_API_KEY || \'MISSING\')"';
+    const refs = OP.makeRefCache({ reader: { read: () => Promise.resolve({ ok: true, value: 'test-vaulted-token-77d2' }) }, now: () => 1 });
+    keys = K.upsert(keys, { name: 'Vaulted', key: 'op://Private/Vaulted/credential' }, 5, { reservedEnv: RESERVED }).list;
+    const applyLive = () => { owned = K.applyEnv(refs.live(keys), hostEnv, owned, { reservedEnv: RESERVED }); };
+    const liveEnvironment = makeEnvironmentManager({
+      spawn, fs, pathMod: path, root, clock: makeClock(0), env: hostEnv,
+      serviceEnv: (surface) => K.runEnv(refs.live(keys), hostEnv, { reservedEnv: RESERVED, surface: surface })
+    });
+    const liveTool = makeShellTool({ spawn, fs, pathMod: path, root, environment: liveEnvironment, clock: makeClock(0), redact: (s) => s }).execTool;
+    applyLive();
+    A.ok(/MISSING/.test((await liveTool.run({ cmd: ECHO_OP }, ctx())).content), 'a reference not read yet gives the child nothing');
+    await refs.ensureFresh(keys, { surface: 'interactive', waitMs: 1000 });
+    applyLive();
+    const vaulted = await liveTool.run({ cmd: ECHO_OP }, ctx());
+    A.ok(/test-vaulted-token-77d2/.test(vaulted.content), 'the value read from 1Password reaches a real shell child — got: ' + JSON.stringify(vaulted.content.slice(0, 120)));
+    A.ok(JSON.stringify(keys).indexOf('test-vaulted-token-77d2') < 0, 'and is never in the persisted list');
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   }

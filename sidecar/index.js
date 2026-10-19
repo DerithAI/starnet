@@ -286,6 +286,7 @@ const mcpSchemaCache = require('./mcp/schema-cache.js');
 const connectorCatalog = require('./mcp/catalog.js');       // curated one-click MCP connector catalog (pure data + selectors)
 const serviceKeysMod = require('./servicekeys.js');         // ABILITIES › SAVED API CONNECTIONS: custom service API keys (pure core — env injection + masked list)
 const serviceKeysCatalog = require('./servicekeys-catalog.js');   // SAVED API CONNECTIONS: the curated PLATFORM directory (pure data)
+const onePassword = require('./onepassword.js');             // KEYS: op:// references read with the 1Password CLI, held in memory only
 const mcpOauth = require('./mcp/oauth.js');                 // generic OAuth 2.1 client for MCP connectors (discover/DCR/PKCE/refresh)
 const { sameEndpoint, resolveConnectorOauthTarget, catalogSignInAvailable, signedInConfig } = require('./mcp/oauth-target.js');
 const connectorStateMod = require('./connectorstate.js');   // one transactional envelope for connector config + OAuth secrets
@@ -1959,6 +1960,20 @@ const skillMarket = makeSkillMarket({
   trustedKeys: skillMarketSigning.TRUSTED_KEYS.concat(skillMarketSigning.keysFromEnv(process.env.STARNET_SKILL_MARKET_KEYS)),
   floorSerial: (() => { try { return Number(require('./skills/market-floor.json').serial) || 0; } catch (e) { failNote('skill-market.floor', e); return 0; } })(),
   loadJson: (file) => loadResilient(file, 'skill market'), saveJson: (file, value) => saveResilient(file, value)
+});
+// THE COMMUNITY MAPS GALLERY (sidecar/maps/community.js): station layouts players shared, reviewed by a person, signed
+// with the Skill Market's keys on the publisher's PC. Read through the same guarded fetcher; shared through the linked
+// account. STARNET_MAPS_URL=off switches the gallery off; any other value points it at another signed gallery.
+const COMMUNITY_MAPS_DEFAULT_URL = 'https://starnetos.com/.well-known/starnet-maps.json';
+const communityMaps = require('./maps/community.js').makeCommunityMaps({
+  fetchDocument: fetchSkillDocument, signing: skillMarketSigning,
+  trustedKeys: skillMarketSigning.TRUSTED_KEYS.concat(skillMarketSigning.keysFromEnv(process.env.STARNET_SKILL_MARKET_KEYS)),
+  catalogUrl: () => { const v = process.env.STARNET_MAPS_URL; return v == null ? COMMUNITY_MAPS_DEFAULT_URL : (String(v).trim().toLowerCase() === 'off' ? '' : String(v).trim()); },
+  cloud: () => { const c = resolveCreditsConfig(); return { url: c.url, token: c.apiKey }; },
+  fetch: (...a) => globalThis.fetch(...a), now: () => Date.now(),
+  // the highest gallery serial this station has read, per gallery URL (a replayed older gallery stays refused after a restart)
+  loadState: () => loadResilient(path.join(WORKSPACES, 'community-maps.json'), 'community maps'),
+  saveState: (value) => saveResilient(path.join(WORKSPACES, 'community-maps.json'), value)
 });
 // THE MARKET'S KILL SWITCH: while at least one market skill is installed, re-read the small signed pulled-skills list
 // shortly after boot and every few minutes, and switch off anything the market has pulled. A station with no market
@@ -5199,7 +5214,7 @@ function saveExecutionSettings(next) {
 // web_request. Host authority — it comes from the run, never from tool args.
 const executionEnvironmentDeps = { spawn: childSpawn, fs: fs, pathMod: path, root: WORKSPACES, bg: shellBg, redact: redact, clock: { now: () => Date.now() }, env: process.env,
   ledger: procLedger,   // h2 F2: the LOCAL backend receipts foreground shell children for the boot orphan sweep
-  serviceEnv: (surface) => serviceKeysMod.runEnv(serviceKeys, process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
+  serviceEnv: (surface) => serviceKeysMod.runEnv(liveServiceKeys(), process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
   idleCleanupMs: () => Number(executionSettings.idleCleanupMinutes || 0) * 60000,
   sshConfig: (agentId) => executionSettingsMod.targetFor(executionSettings, agentId),
   // station-wide reap (E-STOP / Quit / shutdown): every agent with a configured remote target, read lazily so a
@@ -5908,7 +5923,21 @@ function applyServiceKeyCatalogPolicy(record) {
 }
 let serviceKeys = loadServiceKeys();
 let serviceKeysOwnedEnv = {};   // env vars WE set (the applyEnv clobber guard) — rebuilt on every apply
-function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(serviceKeys, process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
+/* 1PASSWORD REFERENCES: a KEYS row may hold op://vault/item/field instead of the key (servicekeys.js stores only the
+   reference). The value lives ONLY in this cache, read with the 1Password CLI on save and before a run that may spend
+   it. `serviceKeys` stays the PERSISTED list (every edit + save goes through it); liveServiceKeys() is the list every
+   SPENDER reads: the env, web_request, the prompt block, the panel and known-value redaction. Spend from serviceKeys
+   and a 1Password key silently vanishes; persist liveServiceKeys() and its value lands on disk. */
+const serviceKeyRefs = onePassword.makeRefCache({
+  reader: onePassword.makeOpReader({ execFile: execFile, env: process.env, platform: process.platform, join: path.join,
+    exists: p => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } } }),
+  now: () => Date.now(),
+  sleep: ms => new Promise(res => { const t = setTimeout(res, ms); if (t && t.unref) t.unref(); }),
+  onChange: () => applyServiceKeysEnv()   // a new value reaches the next shell child at once
+});
+function liveServiceKeys() { return serviceKeyRefs.live(serviceKeys); }
+function publicServiceKey(record) { return serviceKeysMod.toPublic(serviceKeyRefs.live([record])[0]); }
+function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(liveServiceKeys(), process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
 applyServiceKeysEnv();          // boot: persisted keys are live for the first run without any UI touch
 /* KNOWN-VALUE REDACTION (security audit 2026-09-25). redact() only knew vendor SHAPES, so a shapeless secret —
    a service key the model was promised it would never see, a custom connector token, a Mistral key, a rotated
@@ -5930,7 +5959,7 @@ function stationSecretValues() { return collectSecretValues([
   { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
   // the Gmail app password ALONE (its token is 'address:password'; the whole token is listed above)
   { values: (connectorConfigs || []).map(gmailImapTransport.passwordOf) },
-  { keyed: serviceKeys }
+  { keyed: liveServiceKeys() }   // a value read from 1Password is held only in the live list
 ]); }
 setKnownSecretSource(stationSecretValues);
 // Helper processes: strip the same held values, plus every name the sidecar itself exported (service keys).
@@ -11932,6 +11961,11 @@ const ROUTES = [
   { m: 'GET', qsplit: '/api/skill-market', h: serveSkillMarket },                // the Skill Market: catalog + this station's install state
   { m: 'POST', exact: '/api/skill-market/install', h: handleSkillMarketInstall },
   { m: 'POST', exact: '/api/skill-market/uninstall', h: handleSkillMarketUninstall },
+  { m: 'GET', qsplit: '/api/community-maps', h: serveCommunityMaps },             // the community maps gallery (signed index)
+  { m: 'GET', qsplit: '/api/community-maps/file', h: serveCommunityMapFile },     // one map's build or picture, sha256-pinned
+  { m: 'GET', exact: '/api/community-maps/mine', h: serveCommunityMapsMine },
+  { m: 'POST', exact: '/api/community-maps/share', h: handleCommunityMapShare },
+  { m: 'POST', exact: '/api/skill-market/share', h: handleSkillMarketShare },          // SHARE TO MARKET: one of an agent's skills, for review
   { m: 'POST', exact: '/api/skill-exchange/inspect', h: handleSkillExchangeInspect },
   { m: 'POST', exact: '/api/skill-exchange/registry', h: handleSkillExchangeRegistry },
   { m: 'POST', exact: '/api/skill-exchange/discover', h: handleSkillExchangeDiscover },
@@ -14490,6 +14524,7 @@ async function handleConfigReset(req, res) {
     case 'servicekeys': {
       if (!saveServiceKeyRemoval([])) return json(500, { ok: false, section, error: 'service-key reset could not be verified in both protected recovery copies; active keys were left unchanged' });
       serviceKeys = [];
+      serviceKeyRefs.clear();   // and every value read from 1Password
       applyServiceKeysEnv();   // scrubs the injected env vars only after both disk copies prove the reset
       break;
     }
@@ -14819,7 +14854,7 @@ function handleConnectorsList(req, res) {
    protected sibling file, applied to process.env, and NEVER echoed back (the list carries a masked last4). ---- */
 function handleServiceKeysList(req, res) {
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify({ keys: serviceKeys.map(serviceKeysMod.toPublic).sort((a, b) => a.name.localeCompare(b.name)) }));
+  res.end(JSON.stringify({ keys: liveServiceKeys().map(serviceKeysMod.toPublic).sort((a, b) => a.name.localeCompare(b.name)) }));
 }
 async function handleServiceKeyUpsert(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14833,9 +14868,14 @@ async function handleServiceKeyUpsert(req, res) {
   if (r.error) return json(400, { error: r.error });
   serviceKeys = r.list.map(applyServiceKeyCatalogPolicy);
   const record = serviceKeys.find(row => row.id === r.record.id) || r.record;
+  if (!record.ref) serviceKeyRefs.drop(record.id);   // a pasted key replaced a 1Password reference: forget the value read for it
   applyServiceKeysEnv();
   const saved = saveServiceKeys();   // verified read-back; on false the key is LIVE but not durable — say so honestly
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(record), error: saved ? undefined : 'key is active for this session but could not be verified on disk' });
+  // A 1Password reference is READ now (the Commander is here to unlock and approve), so the row says at once whether it
+  // works. Saved either way: a locked vault is a state to fix, not a reason to lose the reference.
+  if (record.ref) await serviceKeyRefs.refresh(record, { timeoutMs: 60000 });
+  applyServiceKeysEnv();
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(record), error: saved ? undefined : 'key is active for this session but could not be verified on disk' });
 }
 async function handleServiceKeyToggle(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14846,7 +14886,7 @@ async function handleServiceKeyToggle(req, res) {
   serviceKeys = r.list;
   applyServiceKeysEnv();
   const saved = saveServiceKeys();
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(r.record) });
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(r.record) });
 }
 // The PLATFORM directory behind the KEYS picker. Pure curated data + a live `installed` cross-ref against
 // the Commander's own keys; carries no secrets (the store is consulted only for env-var NAMES).
@@ -14869,7 +14909,7 @@ async function handleServiceKeyAutonomy(req, res) {
   if (r.error) return json(serviceKeys.some(row => row && row.id === String(body.id || '')) ? 409 : 404, { error: r.error });
   serviceKeys = r.list;
   const saved = saveServiceKeys();
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(r.record) });
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(r.record) });
 }
 async function handleServiceKeyRemove(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14879,6 +14919,7 @@ async function handleServiceKeyRemove(req, res) {
   const saved = saveServiceKeyRemoval(r.list);
   if (!saved) return json(500, { ok: false, saved: false, removed: false, error: 'key removal could not be verified in both protected recovery copies; the active key was left unchanged' });
   serviceKeys = r.list;
+  serviceKeyRefs.drop(r.removed && r.removed.id);   // and the value read from 1Password, if it was a reference
   applyServiceKeysEnv();   // scrubs the owned env var so the very next run no longer sees it
   return json(200, { ok: true, saved: true, removed: String(body.id || '') });
 }
@@ -15553,7 +15594,7 @@ function widgetSources() {
   const out = connectors.list().map(c => ({ kind: 'connector', id: c.id, label: redact(c.label || c.id),
     state: !c.enabled ? 'disabled' : c.authRequired ? 'sign-in required' : c.state,
     available: c.enabled !== false && ['up', 'cached'].includes(c.state) && !c.authRequired }));
-  for (const k of serviceKeys) if (k && k.key) out.push({ kind: 'servicekey', id: k.envVar,
+  for (const k of liveServiceKeys()) if (k && k.key) out.push({ kind: 'servicekey', id: k.envVar,
     label: redact(k.name), state: k.enabled === false ? 'disabled' : 'configured', available: k.enabled !== false });
   out.push({ kind: 'agent', id: 'starnet', label: 'StarNet', state: 'available', available: true });
   return out;
@@ -18920,6 +18961,75 @@ async function handleSkillMarketInstall(req, res) {
     json(200, Object.assign({}, r, { enabled: !!(on && on.ok && on.enabled) }));
   } catch (e) { json(400, { ok: false, error: (e && e.message) || 'could not install that skill' }); }
 }
+// GET /api/community-maps[?refresh=1] — the community gallery as the signed index lists it (offline is a state, not a crash)
+async function serveCommunityMaps(req, res) {
+  try {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    const c = await communityMaps.catalog({ refresh: u.searchParams.get('refresh') === '1' });
+    respondJson(res, 200, c.ok ? { ok: true, serial: c.serial, maps: c.maps, linked: communityMaps.linked() } : Object.assign({ linked: communityMaps.linked() }, c));
+  } catch (e) { respondJson(res, 200, { ok: false, linked: communityMaps.linked(), error: (e && e.message) || 'could not reach the community gallery' }); }
+}
+// GET /api/community-maps/file?slug=&v=&which=build|still — only bytes that hash to what the signed index pins
+async function serveCommunityMapFile(req, res) {
+  const q = new URL(req.url, 'http://127.0.0.1').searchParams;
+  try {
+    const f = await communityMaps.file(q.get('slug') || '', Number(q.get('v')), q.get('which') === 'still' ? 'still' : 'build');
+    res.writeHead(200, { 'Content-Type': f.type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': f.bytes.length });
+    return res.end(f.bytes);
+  } catch (e) { return respondJson(res, 404, { ok: false, error: (e && e.message) || 'that map is not available' }); }
+}
+// GET /api/community-maps/mine — this account's shared maps and their review status, as the cloud reports them
+async function serveCommunityMapsMine(req, res) {
+  const r = await communityMaps.mine();
+  respondJson(res, 200, r);
+}
+// POST /api/community-maps/share { title, description, credit, agree, build, still } — ask for review; the cloud's answer verbatim
+async function handleCommunityMapShare(req, res) {
+  const body = await readJsonBody(req, readBody, 7 * 1024 * 1024, res);
+  if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
+  const r = await communityMaps.share(body);
+  respondJson(res, r.ok ? 202 : (r.outcome === 'unknown' ? 504 : (r.status >= 400 && r.status < 600 ? r.status : 502)), r);
+}
+/* POST /api/skill-market/share { agentId, id, title, description, category, license, credit, agree } — SHARE TO MARKET.
+   The skill goes exactly as this agent's library holds it (read here, never sent by the page), with its plain-text
+   reference files. A skill the skill guard holds back from the agent is not shared: the market reviewer would be the
+   second person to read what the guard already flagged. The answer is the cloud's, verbatim. */
+const MARKET_REF_EXT = /\.(?:md|txt|json|ya?ml|csv)$/i;
+async function handleSkillMarketShare(req, res) {
+  const body = await readJsonBody(req, readBody, 1 << 16, res);
+  if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
+  const agentId = String(body.agentId || 'agent');
+  if (!isAgentId(agentId)) return respondJson(res, 403, { ok: false, error: 'forbidden' });
+  const s = skillStore.view(agentId, String(body.id || ''), { includeArchived: true, bump: false });
+  if (!s) return respondJson(res, 404, { ok: false, error: 'That skill is not in this agent\'s library.' });
+  // someone else's skill (installed from a package or a registry) is theirs to publish, not this Commander's
+  if (String(s.createdBy || '') === 'community' || s.sourceUrl || s.sourceAuthor) {
+    return respondJson(res, 409, { ok: false, outcome: 'refused', error: 'This skill came from ' + (s.sourceAuthor ? String(s.sourceAuthor).slice(0, 60) : 'someone else') + ', so it is theirs to publish. Only skills written on this station can be shared.' });
+  }
+  const gate = skillGate.annotate([s], { verify: true })[0] || {};
+  if (gate.withheld) return respondJson(res, 409, { ok: false, outcome: 'refused', error: 'The skill guard is holding this skill back from the agent, so it can\'t be shared. Edit out what it flagged first.' });
+  const files = Array.isArray(s.files) ? s.files : Object.values(s.files || {});
+  // plain-text references only; a file stored as base64 goes too when it really is UTF-8 text
+  const textOf = (f) => {
+    if (f.encoding !== 'base64') return String(f.content || '');
+    const t = Buffer.from(String(f.content || ''), 'base64').toString('utf8');
+    return t.includes(String.fromCharCode(0xFFFD)) || t.includes('\u0000') ? null : t;
+  };
+  const refs = [];
+  for (const f of files) {
+    if (!f || !MARKET_REF_EXT.test(String(f.path || '')) || refs.length >= communityMaps.SKILL_REFS_MAX) continue;
+    const content = textOf(f);
+    if (content != null) refs.push({ name: String(f.path).split('/').pop(), content });
+  }
+  // the skill as the agent reads it: its setup (when it has one) and then its steps
+  const setup = String(s.setup || '').trim(), steps = String(s.body || '');
+  const skillText = setup && !steps.includes(setup) ? '## Setup\n\n' + setup + '\n\n' + steps : steps;
+  const r = await communityMaps.shareSkill({
+    title: body.title, description: body.description, category: body.category, license: body.license, credit: body.credit,
+    agree: body.agree === true, skillText, refs
+  });
+  respondJson(res, r.ok ? 202 : (r.outcome === 'unknown' ? 504 : (r.status >= 400 && r.status < 600 ? r.status : 502)), Object.assign({ referencesSent: refs.length, referencesLeftOut: files.length - refs.length }, r));
+}
 // POST /api/skill-market/uninstall { slug } — remove a market install; a bundled original falls back to its bundled copy.
 async function handleSkillMarketUninstall(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);
@@ -20403,7 +20513,7 @@ async function runOnceCore(o) {
     politeness: stationWebPoliteness,
     // reservedEnv lets web_request tell a model-provider key apart from a missing one: KEYS refuses provider
     // keys, so "add it in KEYS" would send the Commander round a loop they can never finish.
-    resolveServiceKey: (name, sfc) => serviceKeysMod.resolveForRequest(serviceKeys, name, sfc, { reservedEnv: SERVICEKEYS_RESERVED_ENV }),
+    resolveServiceKey: (name, sfc) => serviceKeysMod.resolveForRequest(liveServiceKeys(), name, sfc, { reservedEnv: SERVICEKEYS_RESERVED_ENV }),
     // workspace files in outbound requests (${file:...} body refs / multipart parts): resolved through the
     // per-agent workspace jail only (no ctx/pathTrust, unlike fs.read and browser.upload), so a request can only carry this agent's own workspace files.
     readWorkspaceFile: async (aid, rel) => {
@@ -20414,7 +20524,7 @@ async function runOnceCore(o) {
     // ONLY when the Commander has actually connected one. Resolved through the same grant as any other key,
     // so an unattended run without the tick simply uses the direct fallback instead of failing.
     jinaKey: (() => {
-      try { const r = serviceKeysMod.resolveForRequest(serviceKeys, 'JINA_API_KEY', accessSurface); return r.ok ? r.value : ''; }
+      try { const r = serviceKeysMod.resolveForRequest(liveServiceKeys(), 'JINA_API_KEY', accessSurface); return r.ok ? r.value : ''; }
       catch (_) { return ''; }
     })()
   }).register(registry);
@@ -21335,7 +21445,7 @@ async function runOnceCore(o) {
         const refs = [];
         for (const k of Object.keys(hs)) String(hs[k]).replace(/\$\{([A-Z][A-Z0-9_]*)\}/g, (m, n) => { refs.push(n); return m; });
         if (!refs.length) return false;   // references no credential -> nothing was pre-approved; ask/deny as usual
-        return refs.every(n => serviceKeysMod.resolveForRequest(serviceKeys, n, accessSurface).ok);
+        return refs.every(n => serviceKeysMod.resolveForRequest(liveServiceKeys(), n, accessSurface).ok);
       } catch (_) { return false; }
     },
     // UNATTENDED TERMINAL GRANT: this routine's recorded "may use the terminal" approval. Read off the SAME
@@ -22696,8 +22806,14 @@ async function runOnceCore(o) {
     const canShell = kt.indexOf('shell.exec') >= 0;
     const canRequest = kt.indexOf('web_request') >= 0;
     if (canShell || canRequest) {
+      // 1PASSWORD rows this run may spend are read BEFORE the block names them (bounded: an interactive run waits up to
+      // 30 s for the Commander to unlock/approve, an unattended one 15 s). One that cannot be read is named in the block
+      // with the reason, never advertised as present. No 1Password rows -> no wait, no change.
+      const refWaitMs = accessSurface === 'interactive' ? 30000 : 15000;
+      try { if (await serviceKeyRefs.ensureFresh(serviceKeys, { surface: accessSurface, waitMs: refWaitMs, timeoutMs: refWaitMs })) applyServiceKeysEnv(); }
+      catch (e) { failNote('servicekeys.1password', e); }
       // the key syntax follows the shell that runs (#128): %NAME% only for local cmd.exe; Docker/SSH run POSIX sh
-      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
+      const b = serviceKeysMod.promptBlock(liveServiceKeys(), { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
       if (b) serviceKeysBlock = '\n\n' + b;
     }
   } catch (_) { serviceKeysBlock = ''; }

@@ -6977,8 +6977,10 @@ const World = (() => {
         for (const it of items) it.draw();
       }
     } finally { if (strainBodies) SPRITES.setStrained(false); }
-    if (convey) convey.drawBoxes(ctx, now, T);   // boxes ride on top of the belts
-    if (ghost) {
+    // a LAYOUT-ONLY still (a community map's picture) shows the station as built: none of this station's live work
+    const liveWork = !(stillPass && stillPass.layoutOnly);
+    if (convey && liveWork) convey.drawBoxes(ctx, now, T);   // boxes ride on top of the belts
+    if (ghost && liveWork) {
       // the projection + its WOULD-captions (NAG_FONT size). A caption never prints over a line's plate (2026-09-28 retest:
       // the dock caption moved UNDER its tile — the plates own the space above docks — where an INBOX plate can sit). The
       // plate is the resting truth and the caption only a projection, so a caption that would collide sits that pass out.
@@ -6989,10 +6991,12 @@ const World = (() => {
       const capPx = 14 * (window.devicePixelRatio || 1) * ((typeof U !== 'undefined' && U.uiZoom && U.uiZoom()) || 1) / (scale || 1);
       ghost.draw(ctx, now, T, capPx, plates.length ? (bx, paint) => { if (onPlate(bx)) return false; paint(); return true; } : null, (bx, n) => captionInStation(bx, n, plates));
     }
+    if (liveWork) {
     drawHandoffBoxes(now);   // Stage 2: lead→worker delegation boxes fly over the entities
     drawSendCrates();        // SEND TO: a line's product crate flies from its OUTBOX to the next line's INBOX
     drawQueueJam(now);   // the live backlog as a physical jam of waiting crates at the INTAKE (world-space, under the lightmap)
     drawShippedPallet(now);   // SHIPPED TODAY: completed jobs stack as product crates at the OUTBOX (server-truth count)
+    }
 
     reviewMark('entities');
     const nextLight = sceneRenderer && sceneRenderer.drawLight(ctx, propLights, { ambient: StationBake.LIGHT.ambient, emission: CRT.emit });
@@ -7008,7 +7012,7 @@ const World = (() => {
     reviewMark('lighting');
     drawNavLights(now);   // small running lights on validated exterior armour mounts
     if (!(sceneRenderer && sceneRenderer.drawAtmosphere(ctx, { dust: CRT.dust }))) drawDust(now);
-    drawDeskFlashes(now);   // G0.4/G0.8: red distress strobe over a desk whose run just died (additive, with the glows)
+    if (liveWork) drawDeskFlashes(now);   // G0.4/G0.8: red distress strobe over a desk whose run just died (additive, with the glows)
     drawAwakenLight(now);   // the soul kindling: ignition spark + a growing halo + motes (world-space additive, awakening only)
     // the AWAKENING veil — now a SPOTLIGHT on the newborn (center light, corners dark) that warms cold->dawn,
     // drawn UNDER the speech bubble so its first words still glow while the room is dark.
@@ -7109,7 +7113,7 @@ const World = (() => {
     const landed = typeof Terrain !== 'undefined' && Terrain.active();
     let drawn = false;
     cv = off; ctx = g; scale = s; panX = cr ? -cr.x * s : 0; panY = cr ? -cr.y * s : 0; overlaysOn = false;
-    stillPass = { fill: landed ? Terrain.baseColor() : '#040302', noBodies: !!(opts && opts.noBodies) };
+    stillPass = { fill: landed ? Terrain.baseColor() : '#040302', noBodies: !!(opts && opts.noBodies), layoutOnly: !!(opts && opts.layoutOnly) };
     // the wall clock, never the last frame's time: a hidden or minimized window stops its frames, and a stale
     // clock froze every timed effect (a failed run's red desk flash stayed lit in every still)
     try { drawScene(performance.now(), 0); drawn = true; }
