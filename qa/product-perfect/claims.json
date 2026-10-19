@@ -18,8 +18,8 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "234ef507c1d4a2afac8436619b376fcd6f70d484",
-    "pathSetSha256": "213a4211bc1a66001a9f827b197c1b7aff1194373527f28d43c7ea6f2ebd706c",
+    "sourceCommit": "047ff0148548fda22c79d965b34022d71ce519a7",
+    "pathSetSha256": "a9ea2fb4700622975e42f13af9e4d1c81dc8854638c6954b4173700a1500850a",
     "files": [
       {
         "path": "INSTALL.md",
@@ -305,6 +305,11 @@
         "path": "frontend/app/backup.js",
         "bytes": 12326,
         "sha256": "528f4c90d9b4b17438253ccded51e7773c9207e654ac30e596078577d1866855"
+      },
+      {
+        "path": "frontend/app/battlepass.js",
+        "bytes": 12994,
+        "sha256": "da5790381aae6452a40fd6fb19747d13b819044c7e6be9e5009190c499f61cd3"
       },
       {
         "path": "frontend/app/beatcard.js",
@@ -1183,8 +1188,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 929083,
-        "sha256": "628e2a53ee647e1c1c72a8d8f876bc85b17f66398d188c3e00a1de44d8edf2fe"
+        "bytes": 950065,
+        "sha256": "4a59ea982ea1fa4be15ce1bd5881d2ef7c0613c6d5a4aec8c9dbd8eb1a7049b5"
       },
       {
         "path": "frontend/app/stepin.js",
@@ -1658,8 +1663,8 @@
       },
       {
         "path": "frontend/css/quests.css",
-        "bytes": 18033,
-        "sha256": "625075be897ffda1984d3968cb4a7ca6c2e3d460ea817bd4a1334182b79355e8"
+        "bytes": 25325,
+        "sha256": "063f910affea89bcf8063180ddd9078e9033fd8affd5ec74cd678abb60a35f44"
       },
       {
         "path": "frontend/css/readability.css",
@@ -1808,8 +1813,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 98802,
-        "sha256": "ca1af29c33717bdab27ec0238e0b8da785eb12f8723db4c00386c6cf3f02774d"
+        "bytes": 98984,
+        "sha256": "1dfb166f23c72a946e1b543a140708962a23515de77c5f8a59d4d006c0a58840"
       },
       {
         "path": "frontend/js/arcade.js",
