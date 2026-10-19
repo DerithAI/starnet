@@ -89,7 +89,7 @@ function crew() {
   astra = m.rows(T0 + 600).find(r => r.id === 'astra');
   A.eq(astra.status.key, 'needs', 'an open ask = needs you');
   A.eq(m.header(T0).needs, 1, 'the header counts it');
-  A.eq(m.front().summary, '{ "path": "auth.js" }', 'the ask reads as one line');
+  A.eq(m.front().summary, 'auth.js', 'the ask reads as what it acts on (the station sends the whole request; the terminal words its glance)');
   m.apply('permission.response', { runId: 'r1', agentId: 'astra', promptId: 'p1', decision: 'once', via: 'terminal' }, T0 + 700);
   A.eq([m.front(), m.rows(T0 + 800).find(r => r.id === 'astra').status.key], [null, 'working'], 'answered → back to working');
   A.ok(/allowed once from the terminal/.test(m.logOf('astra').slice(-1)[0].text), 'the conversation says who answered');
@@ -110,7 +110,7 @@ function crew() {
   A.ok(m.logOf('cypher').some(e => e.k === 'start' && e.adopted), 'a run already under way says so in its conversation');
   A.eq(m.logOf('cypher').find(e => e.k === 'ask').text, 'asks: fs.write', 'an adopted ask arrives without its words');
   m.describePrompt('pX', '{\n "path": "notes.md"\n}');
-  A.eq([m.logOf('cypher').find(e => e.k === 'ask').text, m.front().summary], ['asks: fs.write { "path": "notes.md" }', '{ "path": "notes.md" }'], 'once its request is read, the ask line names it');
+  A.eq([m.logOf('cypher').find(e => e.k === 'ask').text, m.front().summary], ['asks: fs.write notes.md', 'notes.md'], 'once its request is read, the ask line names it');
   m.applySnapshot({ runs: [], prompts: [] }, T0 + 1000);
   A.eq(m.rows(T0 + 1100).find(r => r.id === 'cypher').status.key, 'needs', 'inside the grace a run (and its ask) that just left the snapshot is not dropped');
   m.applySnapshot({ runs: [], prompts: [] }, T0 + 10000);
@@ -255,7 +255,15 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.eq(fmt({ name: 'agent.token', payload: { runId: 'r', agentId: 'astra', delta: 'there.\nNext' } }, at), ['12:04:31  ASTRA       Hello there.'], 'a finished line prints');
   A.eq(fmt({ name: 'agent.run.end', payload: { runId: 'r', agentId: 'astra', reason: 'done', usd: 0.0012 } }, at), ['12:04:31  ASTRA       Next', '12:04:31  ASTRA       ■ done · $0.0012'], 'the rest flushes at the end');
   const ask = fmt({ name: 'permission.prompt', payload: { agentId: 'astra', tool: 'fs_write', argsSummary: '{\n "path": "a"\n}' } }, at)[0];
-  A.ok(/▲ needs you · fs\.write \{ "path": "a" \}\s+\(starnet approve astra\)/.test(ask), 'watch: an ask on one line, with the command that answers it: ' + ask);
+  A.ok(/▲ needs you · fs\.write a\s+\(starnet approve astra\)/.test(ask), 'watch: an ask on one line, with the command that answers it: ' + ask);
+  {
+    const { askGlance, askInspect } = require('../bin/lib/station-model.js');
+    const w = JSON.stringify({ path: 'auth-fix.md', content: '# Fix\n\nKeep ?next= through.\n' }, null, 2);
+    A.eq(askGlance('fs.write', w), 'auth-fix.md (3 lines)', 'a file write asks as its file and how much goes in');
+    A.eq(askInspect('fs.write', w), 'File: auth-fix.md\n\n# Fix\n\nKeep ?next= through.\n', '[v] reads a file write as the file: its path, then its text as written');
+    A.eq(askGlance('shell.exec', JSON.stringify({ command: 'npm run test:fast', cwd: 'C:/w' }, null, 2)), 'npm run test:fast', 'a command asks as the command');
+    A.eq(askGlance('fs.write', 'auth.js (+2 −1)'), 'auth.js (+2 −1)', 'a summary the station already worded is kept');
+  }
 }
 
 // ---- the real logo as an image (Sixel) ----------------------------------------------------------------------------

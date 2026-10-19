@@ -63,6 +63,42 @@ function argDigest(args, tool, nameOf) {
   if (pairs.size === 1) return pairs.values().next().value;
   return oneLine(raw);
 }
+/* An ASK carries the WHOLE request (consentSummary: a file change is its pretty-printed JSON, a command every character),
+   and each surface words its own glance — the desktop card says "change notes.md". askGlance is the terminal's glance:
+   what the request acts on (the file and how many lines go in, the command, who gets the work), never the raw JSON.
+   askInspect is what [v] shows: a file change read as a file (its path, then the text exactly as it will be written), any
+   other request as "key: value" lines. Both are display only; the request itself is untouched. */
+function parseArgs(raw) { try { const o = JSON.parse(String(raw || '')); return o && typeof o === 'object' && !Array.isArray(o) ? o : null; } catch (_) { return null; } }
+function askGlance(tool, raw, nameOf) {
+  const t = String(tool || ''), s = String(raw == null ? '' : raw);
+  const o = parseArgs(s);
+  if (/^fs[._](?:write|append|edit|patch)$/.test(t) && o && typeof o.path === 'string') {
+    const text = typeof o.content === 'string' ? o.content : '';
+    const n = text ? text.replace(/\n$/, '').split('\n').length : 0;
+    return o.path + (n && /write|append/.test(t) ? ' (' + n + ' line' + (n === 1 ? '' : 's') + ')' : '');
+  }
+  if (/^(?:shell|terminal)[._]/.test(t) && o) { const c = [o.cmd, o.command, o.input, o.data].find(v => typeof v === 'string' && v); if (c) return oneLine(c, 300); }
+  if (/^routine[._](?:create|manage)$/.test(t) && o) return [o.action, o.name || o.id, o.schedule].filter(v => typeof v === 'string' && v).join(' · ') || 'a routine';
+  if (/^(?:station[._]|path\.trust$|browser\.login)/.test(t)) return oneLine(s.split('\n')[0], 300);
+  if (o && !/^team[._]/.test(t)) {
+    for (const k of ARG_KEYS) if (typeof o[k] === 'string' && o[k].trim()) return oneLine(o[k], 300);
+    const pairs = Object.keys(o).filter(k => (typeof o[k] === 'string' && o[k].trim()) || typeof o[k] === 'number' || typeof o[k] === 'boolean').slice(0, 2);
+    if (pairs.length) return pairs.map(k => k + ': ' + oneLine(String(o[k]), 60)).join(', ');
+  }
+  return oneLine(argDigest(s, t, nameOf), 300);
+}
+function askInspect(tool, raw) {
+  const t = String(tool || ''), s = String(raw == null ? '' : raw);
+  const o = parseArgs(s);
+  if (!o) return s;
+  if (/^fs[._](?:write|append|edit|patch)$/.test(t)) {
+    const heads = { content: '', find: 'Find:\n', replace: 'Replace with:\n', patch: 'Patch:\n' };
+    const parts = typeof o.path === 'string' ? ['File: ' + o.path] : [];
+    for (const k of Object.keys(o)) if (k !== 'path') parts.push((k in heads ? heads[k] : k + ': ') + (typeof o[k] === 'string' ? o[k] : JSON.stringify(o[k], null, 2)));
+    return parts.join('\n\n');
+  }
+  return Object.keys(o).map(k => k + ': ' + (typeof o[k] === 'string' ? o[k] : JSON.stringify(o[k]))).join('\n');
+}
 
 function makeAgent(id, name) {
   return {
@@ -85,6 +121,7 @@ function makeStation() {
     if (!a) { a = makeAgent(key, key === 'agent' ? 'OVERSEER' : key); st.agents.set(key, a); st.order.push(key); }
     return a;
   }
+  const nameOf = id => st.agents.has(String(id)) ? st.agents.get(String(id)).name : '';
   function log(a, entry) {
     entry.seq = ++a.seq;
     a.log.push(entry);
@@ -155,7 +192,7 @@ function makeStation() {
     if (!promptId || st.prompts.some(q => q.promptId === promptId)) return;
     const asker = String(p.workerAgentId || p.agentId || 'agent');
     const q = { promptId, runId: String(p.runId || ''), agentId: asker, leadId: String(p.agentId || asker), tool: toolName(p.tool),
-      scope: String(p.scope || ''), summary: oneLine(p.argsSummary, 400), raw: String(p.argsSummary || ''), askedAt: now, background: p.background === true, view: false, details: null };
+      scope: String(p.scope || ''), summary: askGlance(toolName(p.tool), p.argsSummary, nameOf), raw: String(p.argsSummary || ''), askedAt: now, background: p.background === true, view: false, details: null };
     if (q.tool === 'brief.ask') { try { const j = JSON.parse(q.raw); q.question = { text: String(j.question || ''), options: Array.isArray(j.options) ? j.options.map(String).slice(0, 6) : [], recommended: String(j.recommended || '') }; } catch (_) { q.question = { text: oneLine(q.raw, 400), options: [], recommended: '' }; } }
     st.prompts.push(q);
     const a = agent(asker);
@@ -166,7 +203,7 @@ function makeStation() {
   function describePrompt(promptId, args) {
     const q = st.prompts.find(x => x.promptId === String(promptId));
     if (!q || q.question) return;
-    q.summary = oneLine(args, 400); q.raw = String(args || '');
+    q.summary = askGlance(q.tool, args, nameOf); q.raw = String(args || '');
     if (q.entry) q.entry.text = askLine(q);
   }
   function settlePrompt(p, now) {
@@ -206,7 +243,7 @@ function makeStation() {
         const a = agent(run.agentId);
         if (run.text) run.text.live = false;
         run.text = null;
-        const t = log(a, { k: 'tool', runId: run.runId, name: toolName(p.name), args: oneLine(argDigest(p.argsSummary, toolName(p.name), id => st.agents.has(String(id)) ? st.agents.get(String(id)).name : ''), 300), running: true, res: '', at: now });
+        const t = log(a, { k: 'tool', runId: run.runId, name: toolName(p.name), args: oneLine(argDigest(p.argsSummary, toolName(p.name), nameOf), 300), running: true, res: '', at: now });
         if (p.callId) run.tools.set(String(p.callId), t);
         a.now = t.name + (t.args ? ' ' + t.args : '');
         a.bucket += 3;
@@ -426,4 +463,4 @@ function costText(cost) {
   return 'spend unknown';
 }
 
-module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RECENT_MS };
+module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, askGlance, askInspect, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RECENT_MS };

@@ -11,7 +11,7 @@
    control characters and escape sequences before it reaches a cell: model output can never drive the terminal. */
 'use strict';
 
-const { fmtDur, fmtShort, costText } = require('./station-model.js');
+const { fmtDur, fmtShort, costText, askInspect } = require('./station-model.js');
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
 const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
@@ -376,9 +376,10 @@ function cardLines(q, model, cw, H) {
   } else {
     lines.push({ kind: 'body', segs: [[q.tool, 'ph b'], ['  ' + q.summary, 'hi']] });
     if (q.view) {
-      const detail = q.details == null ? ['loading the full request…'] : String(q.details).split('\n');
+      // the request read as written: a file change as the file (its path, then its text), anything else as key: value lines
+      const detail = q.details == null ? ['loading the full request…'] : String(askInspect(q.tool, q.details)).split('\n');
       const room = Math.max(1, Math.min(10, (H || 30) - 22));
-      detail.slice(0, room).forEach(t => lines.push({ kind: 'body', segs: [[t, /^\+/.test(t) ? 'ok' : /^-/.test(t) ? 'bad' : 'dim']] }));
+      detail.slice(0, room).forEach(t => lines.push({ kind: 'body', segs: [[t, /^File: /.test(t) ? 'hi b' : /^\+/.test(t) ? 'ok' : /^-/.test(t) ? 'bad' : 'fg']] }));
       if (detail.length > room) lines.push({ kind: 'body', segs: [['… ' + (detail.length - room) + ' more line(s)', 'dim']] });
     }
   }
