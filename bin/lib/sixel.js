@@ -59,18 +59,26 @@ function logoSixel(opts) {
   }
   if (o.maxCols && cols > o.maxCols) return null;
   const light = resample(src, width, height);
-  const idx = new Int8Array(width * height).fill(-1);
+  const idx = new Int16Array(width * height).fill(-1);
   for (let i = 0; i < light.length; i++) {
     const v = light[i];
     if (v < FLOOR) continue;
     idx[i] = Math.min(RAMP.length - 1, Math.floor((v - FLOOR) / (1 - FLOOR) * RAMP.length));
   }
-  // DCS P1=0 (aspect 2:1 default, overridden by raster attributes), P2=1 (unset pixels stay transparent), q
-  let s = '\x1bP0;1;0q"1;1;' + width + ';' + height;
-  RAMP.forEach(([r, g, b], i) => { s += '#' + i + ';2;' + Math.round(r * 100 / 255) + ';' + Math.round(g * 100 / 255) + ';' + Math.round(b * 100 / 255); });
+  return { sixel: encodeSixel(idx, width, height, RAMP), cols, rows, width, height };
+}
+
+/* encodeSixel(idx, width, height, palette, { fill }) → a DCS Sixel string. idx: one palette index per pixel, -1 = no pixel.
+   Without fill the unset pixels stay transparent (P2=1: whatever the terminal drew there shows through); with fill they are
+   painted the terminal's background (P2=0), so a frame drawn over the last one replaces it whole. */
+function encodeSixel(idx, width, height, palette, opts) {
+  const fill = !!(opts && opts.fill);
+  // DCS P1=0 (aspect from the raster attributes), P2 (1 = transparent, 0 = background fill), q
+  let s = '\x1bP0;' + (fill ? 0 : 1) + ';0q"1;1;' + width + ';' + height;
+  palette.forEach(([r, g, b], i) => { s += '#' + i + ';2;' + Math.round(r * 100 / 255) + ';' + Math.round(g * 100 / 255) + ';' + Math.round(b * 100 / 255); });
   for (let band = 0; band < height; band += 6) {
     let first = true;
-    for (let c = 0; c < RAMP.length; c++) {
+    for (let c = 0; c < palette.length; c++) {
       // the sixel column codes for this color in this band, run-length encoded
       let line = '', used = false, run = 0, prev = -1;
       const flush = () => { if (run === 0) return; const ch = String.fromCharCode(63 + prev); line += run > 3 ? '!' + run + ch : ch.repeat(run); run = 0; };
@@ -87,15 +95,14 @@ function logoSixel(opts) {
     }
     s += '-';
   }
-  s += '\x1b\\';
-  return { sixel: s, cols, rows, width, height };
+  return s + '\x1b\\';
 }
 
 /* decodeSixel(str) → { width, height, px: Int8Array of color indexes (-1 = transparent) } — for the tests */
 function decodeSixel(str) {
   const m = /"1;1;(\d+);(\d+)/.exec(str);
   const width = Number(m[1]), height = Number(m[2]);
-  const px = new Int8Array(width * height).fill(-1);
+  const px = new Int16Array(width * height).fill(-1);
   const body = str.slice(str.indexOf(m[0]) + m[0].length, str.lastIndexOf('\x1b\\'));
   let x = 0, band = 0, color = 0, i = 0;
   while (i < body.length) {
@@ -172,4 +179,4 @@ function parseTermReplies(buf, cols, rows) {
   return out;
 }
 
-module.exports = { logoSixel, brailleLogo, decodeSixel, parseTermReplies, RAMP };
+module.exports = { logoSixel, encodeSixel, brailleLogo, decodeSixel, parseTermReplies, RAMP };

@@ -15,7 +15,7 @@ const { fmtDur, fmtShort, costText, askInspect } = require('./station-model.js')
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
 const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
-const agentArt = require('./agent-art.js');   // the agent in COMMS as a small animated ASCII figure
+const trooper = require('./trooper.js');   // the agent in COMMS as an armored trooper at its desk (pixel art)
 
 const BARS = '▁▂▃▄▅▆▇█';
 
@@ -235,13 +235,14 @@ function render(model, ui, size, now) {
     top = y;
   }
   const promptY = H - 2, hintY = H - 1, bot = promptY - 1;
+  let avatar = null;   // { x, y, cols, rows, look }: where the dashboard paints the trooper image
 
   // ---- CREW: a framed list down the left — lamp, name, and a word for what it is doing — the one in COMMS marked; at its
-  // foot, when the list leaves room, the agent in COMMS as a small ASCII figure doing what it is doing --------------
+  // foot, where the terminal draws images and the list leaves room, the agent in COMMS as a trooper at its desk -----
   const side = W >= 90 && rows.length > 0;
-  const sw = side ? Math.min(30, Math.max(28, Math.max(...rows.map(r => width(r.name))) + 14)) : 0;
+  const sw = side ? 30 : 0;   // room for a name and its tag, and for the trooper at its foot
   if (side) {
-    const card = focusRow && rows.length <= bot - top - 1 - AGENT_ROWS;
+    const card = ui.images && focusRow && rows.length <= bot - top - 1 - AGENT_ROWS;
     const listBot = card ? bot - AGENT_ROWS : bot;
     const inner = listBot - top - 1;
     const fi = Math.max(0, rows.indexOf(focusRow));
@@ -267,10 +268,8 @@ function render(model, ui, size, now) {
       const more = focusRow.status.key === 'working' ? '' : said;   // how long it has worked is on its row in the list
       const title = trunc(focusRow.name, Math.max(4, sw - 8 - width(word) - (more ? width(more) + 1 : 0)));
       edgeL(g, 2, listBot, [[title, 'hi b'], ['  ', ''], [word, wc]].concat(more ? [[' ' + more, 'dim']] : []));
-      agentArt.scene(focusRow.status.key, now, ui.still).forEach((segs, i) => {
-        let x = 2;
-        for (const [t, st] of segs) x = g.put(x, listBot + 1 + i, trunc(t, Math.max(0, sw - 2 - x)), st);
-      });
+      // the scene is an image the dashboard paints into these cells; the screen only says where, and what it shows
+      avatar = { x: 2, y: listBot + 1, cols: sw - 4, rows: AGENT_ROWS - 1, look: trooper.look(focusRow.status.key, now, ui.still) };
     }
   }
 
@@ -312,10 +311,12 @@ function render(model, ui, size, now) {
       : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  ctrl+c quit';
     g.put(0, hintY, trunc(t, W), 'dim');
   }
-  return g.out();
+  const out = g.out();
+  out.avatar = avatar;
+  return out;
 }
 
-const AGENT_ROWS = agentArt.H + 1;   // the titled rule above it + its scene
+const AGENT_ROWS = 9;   // the titled rule above it + its 8-row scene
 // what the agent in the card is doing, in words on its rule: [word, style, a second word]
 function stateWords(s, now, still) {
   if (s.key === 'working') return [spin(now, still) + ' working', 'ph b', fmtDur(now - (s.since || now))];
@@ -601,14 +602,14 @@ function toAnsi(segs, level) {
   return s;
 }
 function toPlain(segs) { return segs.map(s => s[0]).join(''); }
-// the segments from cell `col` on (the cells left of it are the logo image's, never written over)
-function sliceSegs(segs, col) {
-  if (!col) return segs;
+// the segments from cell `col` on (the cells left of it are the logo image's, never written over), up to `end` when given
+function sliceSegs(segs, col, end) {
+  if (!col && end == null) return segs;
   const out = [];
   let x = 0;
   for (const [t, style] of segs) {
     let piece = '';
-    for (const ch of t) { const w = cpWidth(ch.codePointAt(0)); if (x >= col) piece += ch; x += w; }
+    for (const ch of t) { const w = cpWidth(ch.codePointAt(0)); if (x >= col && (end == null || x + w <= end)) piece += ch; x += w; }
     if (piece) out.push([piece, style]);
   }
   return out;

@@ -21,6 +21,7 @@ const core = require('./cli-core.js');
 const { makeStation } = require('./station-model.js');
 const tui = require('./tui.js');
 const sixel = require('./sixel.js');
+const trooper = require('./trooper.js');
 
 function runDashboard(station, opts) {
   const o = opts || {};
@@ -452,12 +453,28 @@ function runDashboard(station, opts) {
     // character, and on consoles without a deferred wrap the bottom-right cell scrolls the whole screen
     const size = { cols: Math.max(20, (out.columns || 80) - 1), rows: out.rows || 24 };
     const skip = ui.logoImage ? ui.logoImage.cols : 0, skipRows = ui.logoImage ? ui.logoImage.rows : 0;
-    const rows = tui.render(model, ui, size, t).map((segs, y) => tui.toAnsi(y < skipRows ? tui.sliceSegs(segs, skip) : segs, level));
+    const screen = tui.render(model, ui, size, t);
+    const av = screen.avatar;   // where the trooper image goes, when the card is up
+    // every rendered row is padded to the full width, so no erase-to-end is needed (or wanted). A row beside the logo
+    // image starts to its right, a row beside the trooper is written either side of it: an image's cells are never
+    // written over (that would erase it)
+    const rows = screen.map((segs, y) => {
+      if (y < skipRows) return '\x1b[' + (y + 1) + ';' + (skip + 1) + 'H' + tui.toAnsi(tui.sliceSegs(segs, skip), level);
+      if (av && y >= av.y && y < av.y + av.rows) {
+        return '\x1b[' + (y + 1) + ';1H' + tui.toAnsi(tui.sliceSegs(segs, 0, av.x), level) + '\x1b[0m' +
+          '\x1b[' + (y + 1) + ';' + (av.x + av.cols + 1) + 'H' + tui.toAnsi(tui.sliceSegs(segs, av.x + av.cols), level);
+      }
+      return '\x1b[' + (y + 1) + ';1H' + tui.toAnsi(segs, level);
+    });
     let s = '';
-    // every rendered row is padded to the full width, so no erase-to-end is needed (or wanted); a row beside the logo
-    // image starts to its right, so the image's cells are never written over
-    for (let y = 0; y < rows.length; y++) if (prevRows[y] !== rows[y]) s += '\x1b[' + (y + 1) + ';' + (y < skipRows ? skip + 1 : 1) + 'H' + rows[y] + '\x1b[0m';
+    for (let y = 0; y < rows.length; y++) if (prevRows[y] !== rows[y]) s += rows[y] + '\x1b[0m';
     if (image && !imageShown) { s += '\x1b[1;1H' + image.sixel; imageShown = true; }
+    // the trooper: drawn again only when what it looks like (or where) changes
+    if (av) {
+      const pic = trooper.sixel(av.look, { cellW: term.cellW, cellH: term.cellH, cols: av.cols, rows: av.rows });
+      const key = av.look.key + '@' + av.x + ',' + av.y + ',' + av.cols + 'x' + av.rows;
+      if (key !== avatarShown) { s += '\x1b[0m\x1b[' + (av.y + 1) + ';' + (av.x + 1) + 'H' + pic.sixel; avatarShown = key; }
+    } else avatarShown = '';
     if (rows.length < prevRows.length) s += '\x1b[' + (rows.length + 1) + ';1H\x1b[J';
     prevRows = rows;
     if (s) try { out.write(s); } catch (_) {}
@@ -470,11 +487,11 @@ function runDashboard(station, opts) {
     inp.resume();
     out.on('resize', onResize);
   }
-  function redrawAll() { prevRows = []; imageShown = false; buildImage(); try { out.write('\x1b[2J'); } catch (_) {} paint(); }
+  function redrawAll() { prevRows = []; imageShown = false; avatarShown = ''; buildImage(); try { out.write('\x1b[2J'); } catch (_) {} paint(); }
   function onResize() { redrawAll(); }
 
   // ---- the real logo, as an image -----------------------------------------------------------------------------------
-  let term = {}, image = null, imageShown = false;
+  let term = {}, image = null, imageShown = false, avatarShown = '';
   // ask the terminal (before the screen opens) whether it draws Sixel and how big a cell is. Replies arrive in order, so
   // DA1, which every terminal answers, goes last and closes the probe.
   function probeTerminal(ms) {
@@ -493,6 +510,8 @@ function runDashboard(station, opts) {
   // the image fits three rows of this terminal's cells and leaves the crew bar at least 44 columns beside it
   function buildImage() {
     image = null; ui.logoImage = null;
+    // the trooper at the foot of CREW is an image too: only where the terminal draws them
+    ui.images = !!(term.sixel && term.cellW && term.cellH && ui.logo === 'full');
     if (!term.sixel || !term.cellW || !term.cellH || ui.logo !== 'full') return;
     const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 3, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
     if (r) { image = r; ui.logoImage = { cols: r.cols, rows: r.rows }; }

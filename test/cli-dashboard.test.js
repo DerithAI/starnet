@@ -331,52 +331,59 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
 }
 
-// ---- the agent: the one in COMMS as a small animated ASCII figure at the foot of CREW, doing what it is doing ---------
+// ---- the trooper: the agent in COMMS as pixel art at its desk, an image at the foot of CREW where the terminal draws them --
 {
-  const art = require('../bin/lib/agent-art.js');
-  const plain = rows => rows.map(tui.toPlain).join('\n');
-  const KEYS = ['idle', 'working', 'needs', 'done', 'stopped'];
-  const frame = (k, t, still) => art.scene(k, T0 + t, still);
-  for (const k of KEYS) {
-    const f = frame(k, 0, false);
-    A.ok(f.length === art.H && f.every(r => tui.width(tui.toPlain(r)) === art.W), k + ': a ' + art.W + ' × ' + art.H + ' scene');
-    A.ok(f.every(r => /^[\x20-\x7e]*$/.test(tui.toPlain(r))), k + ': plain ASCII, nothing a terminal font could miss');
-    A.ok(f.flat().every(([t, s]) => !t.trim() || /^(dim|rule|ph|brand|logohi|hi|fg|am|ok|bad)( b)?$/.test(s)), k + ': the station palette only, no hue of its own');
-    A.eq(plain(frame(k, 1234, false)), plain(frame(k, 1234, false)), k + ': the same moment draws the same scene');
-  }
-  A.ok(new Set(KEYS.map(k => plain(frame(k, 0, true)))).size === KEYS.length, 'each state is its own scene');
-  // every state is alive: frames change over a few seconds; a still screen holds one
-  for (const k of KEYS) {
-    const seen = new Set(), still = new Set();
-    for (let t = 0; t < 9000; t += 100) { seen.add(JSON.stringify(frame(k, t, false))); still.add(JSON.stringify(frame(k, t, true))); }
-    A.ok(seen.size >= 2 && still.size === 1, k + ': animated (' + seen.size + ' frames over 9 s), held still on a still screen');
-  }
-  // working: it faces its panel and the panel types — the strokes on it grow, line after line
-  const strokes = t => (plain(frame('working', t, false)).split('\n').map(l => l.slice(11)).join('').match(/[=>-]/g) || []).length;
-  const counts = [0, 140, 280, 420, 560].map(strokes);
-  A.ok(new Set(counts).size >= 3, 'working: the panel types as it works: ' + counts.join(' → '));
-  A.ok(/\( oo\)/.test(plain(frame('working', 0, true))) && /\.----------\./.test(plain(frame('working', 0, true))), 'working: eyes on its panel');
-  const eyeStyle = k => { const r = frame(k, 0, true)[2]; const hit = r.find(([t]) => /[ox^-]/.test(t) && /\(/.test(tui.toPlain(r))); return r.filter(([t]) => /^[ox^]+$/.test(t.trim()) && t.trim()).map(([, s]) => s)[0] || (hit && hit[1]); };
-  A.eq([eyeStyle('needs'), eyeStyle('done')], ['am b', 'ok b'], 'its eyes take the state colour: amber asking, green done');
-  A.ok(/\|\s*!\s*\|/.test(plain(frame('needs', 0, true))) && /\^ \^/.test(plain(frame('done', 0, true))) && /x x/.test(plain(frame('stopped', 0, true))), 'needs you shows a [!], done cheers ^ ^, stopped x x');
+  const tr = require('../bin/lib/trooper.js');
+  const sx = require('../bin/lib/sixel.js');
+  const STATES = ['idle', 'working', 'needs', 'done', 'stopped'];
+  const box = { cellW: 10, cellH: 20, cols: 26, rows: 8 };   // Windows Terminal's 10×20 cells, the card's 26×8
+  const looks = (st, ms, step, still) => { const s = new Set(); for (let t = 0; t < ms; t += step) s.add(tr.look(st, T0 + t, still).key); return s; };
+  A.ok(looks('working', 1000, 20, false).size >= 8, 'working: it types, a new frame every ~110 ms (' + looks('working', 1000, 20, false).size + ' in a second)');
+  A.ok(looks('idle', 3200, 50, false).size >= 4, 'idle: its light breathes, slowly (' + looks('idle', 3200, 50, false).size + ' steps in one swell)');
+  A.eq(looks('needs', 2000, 50, false).size, 2, 'needs you: the amber light pulses');
+  A.eq(looks('done', 2000, 50, false).size, 1, 'done: a steady green');
+  A.ok(looks('stopped', 9000, 20, false).size === 2, 'stopped: dark, with a last flicker now and then');
+  for (const st of STATES) A.eq(looks(st, 5000, 100, true).size, 1, st + ': a still screen holds one look');
+
+  const pic = tr.sixel(tr.look('working', T0, true), box);
+  const d = sx.decodeSixel(pic.sixel);
+  A.ok(d.width === tr.W * 2 && d.height === tr.H * 2 && pic.cols === 26, 'in 10×20 cells the art draws at exactly 2× — square pixels, 26 columns × 8 rows: ' + d.width + '×' + d.height);
+  A.ok(/^\x1bP0;1;0q/.test(pic.sixel), 'drawn transparent: the terminal\'s own background shows around it');
+  const inked = f => { let n = 0; for (const v of f.px) if (v >= 0) n++; return n; };
+  const outline = STATES.map(st => inked(sx.decodeSixel(tr.sixel(tr.look(st, T0 + 777, false), box).sixel)));
+  A.ok(new Set(outline).size === 1 && outline[0] > 0.3 * d.width * d.height, 'every state and frame inks the same outline, so a new frame covers the last whole: ' + outline[0] + ' px');
+  const hue = st => {
+    const lk = tr.look(st, T0, true), f = sx.decodeSixel(tr.sixel(lk, box).sixel);
+    const used = new Set(); for (const v of f.px) if (v >= 0) used.add(v);
+    return [...used].map(i => lk.palette[i]);
+  };
+  A.ok(hue('needs').some(([r, g, b]) => r > 200 && g > 130 && b < 90) && !hue('needs').some(([r, g, b]) => r > 150 && g < 60 && b < 70), 'needs you: its red light turns amber');
+  A.ok(hue('done').some(([r, g, b]) => g > 180 && g > r * 1.5), 'done: green');
+  A.ok(hue('working').some(([r, g, b]) => r > 180 && g < 80), 'working: the station red');
+  const small = tr.sixel(tr.look('idle', T0, true), { cellW: 8, cellH: 16, cols: 26, rows: 8 });
+  const ds = sx.decodeSixel(small.sixel);
+  A.ok(ds.height === 128 && ds.width <= 26 * 8 && small.cols <= 26, 'smaller cells: it scales to fit the card: ' + ds.width + '×' + ds.height);
 
   const m = crew();
   m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
-  const scr = screen(m, {}, 120, 34, T0 + 12000).map(tui.toPlain);
+  const withImg = screen(m, { images: true }, 120, 34, T0 + 12000);
+  const scr = withImg.map(tui.toPlain);
   const div = scr.findIndex(l => /^├─/.test(l));
   const crewTop = scr.findIndex(l => /^╭─ CREW /.test(l));
   const bot = scr.findIndex((l, i) => i > crewTop && /^╰─+╯/.test(l));
-  A.ok(div > crewTop && bot - div === art.H + 1, 'the agent stands at the foot of CREW under a rule: rows ' + div + '..' + bot);
-  A.ok(/^├─ ASTRA {2}⠋ working ─+┤/.test(scr[div]), 'the rule names it and says what it is doing: ' + scr[div]);
-  A.ok(scr.slice(div + 1, bot).some(l => /\( oo\)/.test(l)) && scr.slice(div + 1, bot).some(l => /\.----------\./.test(l)), 'under it, the figure at its panel');
-  A.ok((scr[crewTop].match(/╮/g) || []).length === 2, 'no panel of its own: CREW and COMMS only, COMMS keeps the width');
+  const av = withImg.avatar;
+  A.ok(div > crewTop && bot - div === 9 && /^├─ ASTRA {2}⠋ working ─+┤/.test(scr[div]), 'the card sits at the foot of CREW, its rule naming the agent and what it does: ' + scr[div]);
+  A.ok(av && av.x === 2 && av.y === div + 1 && av.cols === 26 && av.rows === 8 && av.look && /^w\d$/.test(av.look.key), 'the screen tells the dashboard where the trooper goes, and how it looks: ' + JSON.stringify(av && { x: av.x, y: av.y, cols: av.cols, rows: av.rows, key: av.look.key }));
+  A.ok(scr.slice(av.y, av.y + av.rows).every(l => l.slice(av.x, av.x + av.cols).trim() === ''), 'and leaves those cells empty for the image');
+  const noImg = screen(m, {}, 120, 34, T0 + 12000);
+  A.ok(!noImg.avatar && !noImg.map(tui.toPlain).some(l => /^├─/.test(l)), 'a terminal that cannot draw images has no card: the crew list keeps the room');
+  const room = makeStation();
+  room.setRoster({ agents: Array.from({ length: 12 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });   // + the overseer the model adds = 13
+  A.ok(screen(room, { focus: 'a3', images: true }, 120, 30, T0).avatar, 'a crew of 13 in a 120×30 window still has it');
   const big = makeStation();
   big.setRoster({ agents: Array.from({ length: 24 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });
-  const full = screen(big, { focus: 'a3' }, 120, 30, T0).map(tui.toPlain);
-  A.ok(!full.some(l => /^├─/.test(l)), 'when the crew list needs the room, the figure steps out of it');
-  const room = makeStation();
-  room.setRoster({ agents: Array.from({ length: 13 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });
-  A.ok(screen(room, { focus: 'a3' }, 120, 30, T0).map(tui.toPlain).some(l => /^├─/.test(l)), 'a crew of 13 in a 120×30 window still has it');
+  A.ok(!screen(big, { focus: 'a3', images: true }, 120, 30, T0).avatar, 'when the crew list needs the room, the card steps aside');
+  A.eq(tui.sliceSegs([['abcdef', 'x'], ['gh', 'y']], 2, 5), [['cde', 'x']], 'a row beside the image is written either side of it');
 }
 
 A.report('cli-dashboard.test');
