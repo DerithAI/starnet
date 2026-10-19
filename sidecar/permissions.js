@@ -101,6 +101,20 @@
     // PREFIX (not a fixed name) is what lets one grant cover every server the Commander has connected, while
     // still refusing every non-connector capability. Overridable for tests.
     const CONNECTOR_CAP_RE = opts.connectorCapRe || /^mcp:/;
+    // UNATTENDED IMAGES GRANT (2026-10-18): the Commander's recorded per-ROUTINE "may make images" approval. Same
+    // injection shape and same host-only sourcing as terminalGrant. Default: none.
+    const studioGrant = typeof opts.studioGrant === 'function' ? opts.studioGrant : null;
+    // the capability the images grant may unlock. 'studio' = image_generate. Overridable for tests.
+    const STUDIO_CAP = opts.studioCap || 'studio';
+    // what an autonomous run is told when an ungranted image_generate is refused: the host knows whether this is a
+    // routine (and why its grant is missing) — the broker does not. Returns a reason string or null (-> SILENCE).
+    const studioRefusal = typeof opts.studioRefusal === 'function' ? opts.studioRefusal : null;
+    function autonomousRefusal(call, tool) {
+      if (!studioRefusal || !tool || tool.capability !== STUDIO_CAP) return SILENCE;
+      let why = null;
+      try { why = studioRefusal(call, tool); } catch (_) { why = null; }
+      return typeof why === 'string' && why.trim() ? why : SILENCE;
+    }
     // the jail-scoped capabilities the workshop grant may unlock a WRITE for (never execute, never a non-jail tool).
     // The plan calls these "cabinet | notebook"; in the live tool registry the FILE capability is `cabinet`
     // (sidecar/tools/builtin/fs.js — fs.write/append/edit/patch, realpath-jailed to workspaces/<agentId>/) and the
@@ -171,6 +185,22 @@
       try { return connectorGrant(call, tool) === true; } catch (_) { return false; }
     }
 
+    /* UNATTENDED IMAGES GRANT — lets a granted routine run image_generate with nobody watching ("every morning,
+       make me a sunrise picture"). Narrowed like the two above:
+         • autonomous only (interactive keeps its live prompt, unchanged)
+         • the capability must be exactly STUDIO_CAP — no other family
+         • never scope 'execute': it sits BELOW the exec lockout, so it can never open shell even if a future
+           studio tool were declared execute
+         • the injected predicate must confirm THIS RUN carries the recorded per-routine grant
+       Spend is not decided here: the image's cost books against the run's caps like any media call. */
+    function studioAutonomy(call, tool) {
+      if (!studioGrant) return false;
+      if (surface !== 'autonomous') return false;
+      if (!tool || tool.capability !== STUDIO_CAP) return false;
+      if (scopeOf(tool) === 'execute') return false;
+      try { return studioGrant(call, tool) === true; } catch (_) { return false; }
+    }
+
     function sessionSet(create) {
       let s = grantsSession.get(sessionKey);
       if (!s && create) { s = new Set(); grantsSession.set(sessionKey, s); }
@@ -211,6 +241,7 @@
       // for exactly cabinet:write / notebook:write on a granted agent. No grant → the tiers below run unchanged.
       if (workshopWritable(call, tool)) return { allow: true, scope: scope, reason: 'workshop grant — build things while away' };
       if (credentialedAutonomy(call, tool)) return { allow: true, scope: scope, reason: 'unattended grant on this platform key' };
+      if (studioAutonomy(call, tool)) return { allow: true, scope: scope, reason: 'per-routine unattended images grant' };
       // 3. CACHE — a prior session/permanent grant for this danger class. Never for a FRESH-CONSENT tool (sweep 2026-10-03):
       // widening the station's own leash (station.power: Full Power, FULL agents, caps, trusted folders, hook code) is a
       // card the Commander answers per call when they are in ASK — one "always" used to approve every later escalation.
@@ -218,7 +249,7 @@
       if (!(tool && tool.freshConsent === true) && granted(dangerKey(tool))) return { allow: true, scope: scope, reason: 'previously granted' };
       // 4. RESOLVE.
       if (scope === 'read' && !networkOf(call, tool)) return { allow: true, scope: scope, reason: 'read-only, non-network' };
-      if (surface === 'autonomous') return { allow: false, scope: scope, reason: SILENCE };
+      if (surface === 'autonomous') return { allow: false, scope: scope, reason: autonomousRefusal(call, tool) };
       // INTERACTIVE: ask the human. dispatch awaits consent(), so returning this Promise PAUSES the run until a
       // decision arrives; the answer routes back through the SAME grant() ladder (once/always/full/deny). This is
       // the ONLY async branch — every tier above already returned a plain object.

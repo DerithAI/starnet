@@ -138,6 +138,13 @@
           '<span>Let this routine use your <b>connected tools</b> ' +
           '<span class="dim">— the MCP connectors you set up in ⇄ ABILITIES, called unattended on your behalf. Connectors you switched off stay off.</span></span>' +
         '</label>' +
+        // UNATTENDED IMAGES GRANT — its own tick: making a picture opens no shell and no outside account, but each
+        // one can cost money, so it is never bundled with the two above. Also default OFF.
+        '<label class="rt-term" for="rt-img" style="display:flex;gap:.5em;align-items:flex-start;cursor:pointer">' +
+          '<input type="checkbox" id="rt-img" style="margin-top:.25em">' +
+          '<span>Let this routine make <b>images</b> ' +
+          '<span class="dim">— generates pictures unattended, with nobody approving each one. Each picture can cost money and counts toward your spend caps.</span></span>' +
+        '</label>' +
         '</div>' +
         '</details>' +
         '<div id="rt-create-state" class="set-about" role="status">Checking scheduling status…</div><button class="bb sm" id="rt-add">▸ SAVE SCHEDULE</button>' +
@@ -296,7 +303,11 @@
         : '';
       const termBadge =
         grantBadge(grantsOf.indexOf('workbench') >= 0, '⌘ terminal', 'this routine may run shell commands unattended') +
-        grantBadge(grantsOf.indexOf('connectors') >= 0, '⧉ connected tools', 'this routine may call your MCP connectors unattended');
+        grantBadge(grantsOf.indexOf('connectors') >= 0, '⧉ connected tools', 'this routine may call your MCP connectors unattended') +
+        grantBadge(grantsOf.indexOf('studio') >= 0, '▣ images', 'this routine may make images unattended');
+      // a routine made from a chat (the agent's routine.create) carries no grant, and the create form is the only other
+      // place one is set — so images can be allowed on the row itself. A script-only routine never calls a model.
+      const canAllowImages = grantsOf.indexOf('studio') < 0 && !j.noAgent;
       const skillCount = Array.isArray(j.skills) ? j.skills.length : 0;
       const runtimeBadge =
         grantBadge(!!j.noAgent, '⚙ script only', 'this routine completes without calling a model') +
@@ -331,7 +342,8 @@
           (completedOnce ? '' : '<button class="bb xs" data-act="toggle">' + (on ? '⏸ DISABLE' : '▶ ENABLE') + '</button>') +
           // REVOKE — a standing unattended permission must be withdrawable without deleting the routine.
           // Only rendered when there is something to revoke, so an ordinary routine's action row is unchanged.
-          (grantsOf.length ? '<button class="bb xs" data-act="revoke" title="stop this routine using the terminal / your connected tools">⌫ REVOKE ACCESS</button>' : '') +
+          (canAllowImages ? '<button class="bb xs" data-act="allow-images" title="let this routine make images with nobody approving each one — each picture can cost money and counts toward your spend caps">▣ ALLOW IMAGES</button>' : '') +
+          (grantsOf.length ? '<button class="bb xs" data-act="revoke" title="stop this routine using the terminal / your connected tools / making images">⌫ REVOKE ACCESS</button>' : '') +
           '<button class="bb xs danger" data-act="remove">✕ DELETE</button>' +
         '</div></div>';
     }
@@ -735,6 +747,22 @@
         catch (_) { notify('could not reach the station — access was NOT revoked', 'warn'); }
         refresh(); return;
       }
+      if (act === 'allow-images') {
+        // GRANTING is the direction that needs a deliberate second click (the create form's is a tick + save):
+        // a standing permission must never come from one stray click on a crowded row.
+        if (!btn.dataset.armed) { btn.dataset.armed = '1'; btn.textContent = '▣ CONFIRM IMAGES'; sfx('click'); setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = '▣ ALLOW IMAGES'; } }, 5000); return; }
+        sfx('click');
+        // addGrants: the station adds 'studio' to the grants the routine holds NOW (read under its lock), never to this
+        // row's possibly stale copy. The claim is proven off the saved job the station hands back.
+        try {
+          const r = await post('/api/cron/update', { id, patch: {}, addGrants: ['studio'] });
+          const out = r.ok ? await r.json().catch(() => null) : null;
+          const job = out && out.job;
+          const saved = !!(job && Array.isArray(job.unattendedGrants) && job.unattendedGrants.indexOf('studio') >= 0);
+          notify(saved ? 'this routine may now make images' : 'could NOT allow images — the routine still cannot make them', saved ? 'good' : 'warn');
+        } catch (_) { notify('could not reach the station — images were NOT allowed', 'warn'); }
+        refresh(); return;
+      }
       if (act === 'toggle') {
         // A PAUSE/RESUME CLAIM MUST BE PROVEN (same law as delete/revoke above): fetch resolves on 4xx/5xx,
         // and the swallowed catch meant a failed DISABLE clicked, toasted nothing, and left the routine armed
@@ -821,6 +849,7 @@
         const grants = [];
         if ((body.querySelector('#rt-term') || {}).checked) grants.push('workbench');
         if ((body.querySelector('#rt-conn') || {}).checked) grants.push('connectors');
+        if ((body.querySelector('#rt-img') || {}).checked) grants.push('studio');
         const split = id => (body.querySelector(id).value || '').split(',').map(x => x.trim()).filter(Boolean);
         const script = (body.querySelector('#rt-script').value || '').trim();
         const toolsetText = (body.querySelector('#rt-toolsets').value || '').trim();
@@ -879,7 +908,7 @@
           sfx('click');
           ['#rt-name', '#rt-prompt'].forEach(s => { body.querySelector(s).value = ''; });
           delete body.querySelector('#rt-prompt').dataset.workflowTakeoverId;
-          ['#rt-term', '#rt-conn'].forEach(s => { const el = body.querySelector(s); if (el) el.checked = false; });   // a grant is never sticky across creates
+          ['#rt-term', '#rt-conn', '#rt-img'].forEach(s => { const el = body.querySelector(s); if (el) el.checked = false; });   // a grant is never sticky across creates
           // the WHEN selection SURVIVES a create (people add three morning routines in a row) — but a
           // sticky cadence with a cleared field would be a lie, so we re-emit it and let the preview
           // redraw from the server rather than blanking one half of the pair.
