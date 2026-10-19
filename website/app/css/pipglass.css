@@ -1527,3 +1527,11 @@ body.glass-demo:not(.hud-mode) #screen-game #crew .crew-dossier {
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-agent-filter { border-radius: 2px; border-color: rgba(var(--ph-rgb), .4); background: rgba(var(--ph-rgb), .1); }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-agent-filter:hover { border-color: rgba(var(--ph-rgb), .75); background: rgba(var(--ph-rgb), .16); }
+/* ============================================================
+   DASHBOARD LEFTOVERS (10-19 sweep of COMMS, the dock and the top bar for boxes rounder than the 2px terminal box, the
+   panels' curved shells excepted): the inline RATE thumbs (4px), the CTX gauge's housing (6px) and the widget strips'
+   drag outline (4px, shown only while a widget is dragged)
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) > .cmsg.work-rate.rate-inline .consent-btn.thumb { border-radius: 2px; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge { border-radius: 2px; }
+body.glass-demo:not(.hud-mode) #screen-game .widget-rail { border-radius: 2px; }
