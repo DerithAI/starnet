@@ -469,21 +469,33 @@
     // the fetch hanging FAR past that (no bytes ever arrive). Race the poll against a hard wall-clock =
     // pollTimeoutSec*1000 + 15s slack so a stall aborts in seconds, not the ~5min default socket timeout. The
     // disconnect abort (ac.signal) still wins — we compose both so either fires; a deadline-fire is NOT a disconnect
-    // (we distinguish by ac.signal.aborted below) so it just backs off and re-polls. Degrades gracefully on old
-    // platforms without AbortSignal.any/timeout (then only ac.signal governs, as before).
+    // (we distinguish by ac.signal.aborted below) so it just backs off and re-polls.
+    // ONE SHORT-LIVED CONTROLLER PER POLL, released when the poll settles. `AbortSignal.any([ac.signal, timeout])`
+    // per poll leaked: the connection-lifetime ac.signal keeps every composite it ever fed reachable (~1.8 KB per
+    // poll retained after GC on Node 22.23 — ~225 MB/day for a ~1.25/s Discord/Slack poll, freed only on reconnect).
     const POLL_DEADLINE_MS = pollTimeoutSec * 1000 + 15000;
-    function pollSignal() {
-      if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return ac.signal;
-      const deadline = AbortSignal.timeout(POLL_DEADLINE_MS);
-      return (typeof AbortSignal.any === 'function') ? AbortSignal.any([ac.signal, deadline]) : deadline;
+    function pollScope() {
+      const parent = ac && ac.signal;
+      if (typeof AbortController === 'undefined' || !parent || typeof parent.addEventListener !== 'function') return { signal: parent, done: function () {} };
+      const pc = new AbortController();
+      const timer = setTimeout(function () {
+        // the same reason AbortSignal.timeout gave, so transports keep classifying a deadline the way they did
+        pc.abort(typeof DOMException === 'function' ? new DOMException('The operation was aborted due to timeout', 'TimeoutError') : undefined);
+      }, POLL_DEADLINE_MS);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+      const forward = function () { pc.abort(parent.reason); };
+      if (parent.aborted) forward(); else parent.addEventListener('abort', forward, { once: true });
+      return { signal: pc.signal, done: function () { clearTimeout(timer); parent.removeEventListener('abort', forward); } };
     }
 
     async function loop() {
       let attempt = 0;
       while (!stopped) {
         let raw;
+        const poll = pollScope();
         try {
-          raw = await transport.getUpdates({ offset: offset, timeoutSec: pollTimeoutSec, signal: pollSignal() });
+          try { raw = await transport.getUpdates({ offset: offset, timeoutSec: pollTimeoutSec, signal: poll.signal }); }
+          finally { poll.done(); }
         } catch (e) {
           // Only a REAL disconnect (stopped / the disconnect signal aborted) exits the loop. A deadline-timeout
           // abort has stopped=false and ac.signal.aborted=false, so it falls through to backoff+retry (a stalled
