@@ -154,7 +154,7 @@ const now = 1_000_000;
     A.ok(/Automatic update checks are on by default/i.test(doc), label + ' discloses the default');
     A.ok(/On first run and at the configured interval/i.test(doc), label + ' discloses first-run timing');
     A.ok(/AUTO-CHECK FOR UPDATES/i.test(doc), label + ' names the opt-out control');
-    A.ok(/SYSTEM (?:>|&gt;) SETTINGS (?:>|&gt;) UPDATES/i.test(doc), label + ' names the opt-out location');
+    A.ok(/SYSTEM (?:>|&gt;) SETTINGS (?:>|&gt;) APP (?:&|&amp;) BACKUP/i.test(doc), label + ' names the opt-out location (the AUTO-CHECK toggle lives in SETTINGS › APP & BACKUP)');
     A.ok(!/no ["&quot;]*phone home["&quot;]* of any kind/i.test(doc), label + ' omits the retired absolute phone-home claim');
     A.ok(!/talks to the network[^\n<]*only[^\n<]*work you asked for/i.test(doc), label + ' does not hide the automatic update request');
     for (const provider of ['codex', 'grok', 'kimi']) {

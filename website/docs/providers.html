@@ -97,8 +97,8 @@ use any model you allow.</p>
 <h2 id="supported-providers">Supported providers</h2>
 <p>The provider picker is a first-class roster, not one generic endpoint wearing different labels:</p>
 <ul>
-<li><b>Account sign-in:</b> ChatGPT (Codex), Grok, and Kimi for Coding. These use the provider's
-sign-in flow instead of asking you to paste an API key.</li>
+<li><b>Account sign-in:</b> ChatGPT (Codex), Grok, Kimi for Coding, and Claude CLI. These use the provider's
+sign-in flow (for Claude CLI, your existing Claude Code sign-in) instead of asking you to paste an API key.</li>
 <li><b>Direct API keys:</b> OpenRouter, OpenAI, Anthropic, Google Gemini, xAI, Groq, Mistral,
 DeepSeek, Together AI, Fireworks AI, Perplexity, and Cerebras.</li>
 <li><b>Local and custom:</b> Ollama on your machine, or any custom endpoint that speaks the
@@ -126,11 +126,12 @@ and from installing app updates through <b>Update Center</b>.</p>
 files, never sent anywhere except the provider they belong to. Provider requests leave your
 machine only when an agent actually runs.</p>
 
-<h2 id="service-keys-the-keys-tab">Service keys (the KEYS tab)</h2>
+<h2 id="service-keys-the-keys-tab">Service keys (SAVED API CONNECTIONS)</h2>
 <p>Beyond model providers, agents sometimes need platform keys to do real work — a Stripe test
-key, a GitHub token, a search API key. The <b>KEYS</b> tab lets you paste any service key;
+key, a GitHub token, a search API key. <b>CONNECT &rsaquo; ABILITIES &rsaquo; SAVED API CONNECTIONS</b> lets you paste any service key;
 StarNet exposes it to agent runs as an environment variable and tells the agent only the
-<b>name</b> of what's available, never the value. The key itself never enters the model prompt.</p>
+<b>name</b> of what's available, never the value. The key itself never enters the model prompt. The key field also takes a 1Password reference
+(<code>op://vault/item/field</code>), read through the 1Password CLI and kept only in memory.</p>
 
 <h2 id="cost-honesty">Cost honesty</h2>
 <p>SETTINGS &rsaquo; SPENDING LIMITS shows what you have spent. Runs on StarNet credits and runs on your own provider key are billed separately. If a run stopped before StarNet recorded what it cost, it is listed there as <b>INTERRUPTED</b>. If StarNet also didn't record which account paid for it, the row says <b>BILLING SOURCE UNKNOWN</b>. StarNet never guesses the amount: enter the verified charge and press <b>SETTLE</b>. If you set a spending limit yourself, paid runs are refused until those runs are settled.</p>

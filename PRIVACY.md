@@ -38,7 +38,7 @@ StarNet makes outbound network requests in exactly these situations. Nothing els
 ### 1. Your chosen AI model provider (using your key)
 
 When an agent runs, StarNet calls the model provider **you** configured, authenticated with
-**your** API key (or your ChatGPT sign-in). Your prompts, conversation, and any content the
+**your** API key (or your ChatGPT, Grok or Kimi sign-in). Your prompts, conversation, and any content the
 agent works with are sent to that provider so it can generate a response — the same as any app
 that uses that provider. StarNet is a pass-through here; it does not sit in the middle.
 
@@ -49,6 +49,9 @@ Depending on what you set up, that provider is one of:
 - Anthropic (`api.anthropic.com`)
 - Google Gemini (`generativelanguage.googleapis.com`)
 - ChatGPT via sign-in (`chatgpt.com` / `auth.openai.com`)
+- Grok via sign-in (`api.x.ai` / `auth.x.ai`)
+- Kimi for Coding via sign-in (`api.kimi.com` / `auth.kimi.com`, or `api.kimi.ai` /
+  `auth.kimi.ai` for a Global account)
 - or another OpenAI-compatible provider you point it at (xAI, Groq, Mistral, DeepSeek,
   Together, Fireworks, Perplexity, Cerebras).
 
@@ -108,7 +111,7 @@ This is a plain `GET` for a static file. **No user data, no identifier, and no t
 sent** — it's the same request your browser would make to view that file. Each update's
 integrity is cryptographically verified against a key baked into the app before anything is
 installed. You can stop automatic checks by turning off **AUTO-CHECK FOR UPDATES** in
-**SYSTEM > SETTINGS > UPDATES**; the Update Center still lets you check manually.
+**SYSTEM > SETTINGS > APP & BACKUP**; the Update Center still lets you check manually.
 
 ### 7. The Skill Market — when you open it, and while you use its skills
 
@@ -120,6 +123,21 @@ market is on this station, the app also re-reads the small list of skills the ma
 (`https://starnetos.com/.well-known/starnet-skills-revoked.json`) shortly after it starts and every few minutes,
 so a skill found to be unsafe is switched off; with no market skills installed, nothing is fetched in the
 background. Every catalog and pulled list is checked against StarNet's signature before it is used.
+
+### 8. Remote — only if you switch it on
+
+If you switch on **SETTINGS > REMOTE** and pair a phone, the station opens an outgoing connection to
+StarNet's relay (`remote.starnetos.com`) so that phone can reach it from anywhere. The relay only passes sealed
+frames between your station and your paired phones. If a paired phone allows notifications, the station also sends
+encrypted push messages straight to that phone's own push service (Apple, Google, Mozilla or Microsoft); the push
+service carries them and cannot read them. With Remote off, none of this is contacted.
+
+### 9. Other services you connect
+
+If you connect a service under **CONNECT > ABILITIES** — a catalog connector, an MCP service you attach
+by URL, or an API key saved under **SAVED API CONNECTIONS** — StarNet calls that service's own address, with
+the credentials you gave it, when an agent uses it or when the app checks that it is connected. A service you have
+not connected is never contacted.
 
 ## What StarNet stores on your machine (and how)
 
