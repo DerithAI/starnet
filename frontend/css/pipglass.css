@@ -565,11 +565,11 @@ body.glass-demo:not(.hud-mode) #left .ws-needs {
    the panel and the count keep those edges whether or not the section scrolls (up to the margin's own width; 0 where
    scrollbars overlay the content). */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-head {
-  display: flex; align-items: center; gap: 10px; padding: 10px 21px 7px 19px; padding-right: max(0px, 21px - var(--ny-gutter, 0px));
-  font-size: 16px; letter-spacing: 2.4px; line-height: 1; text-transform: uppercase; color: var(--ph-bright);
+  display: flex; align-items: center; gap: 10px; padding: 8px 21px 6px 19px; padding-right: max(0px, 21px - var(--ny-gutter, 0px));
+  font-size: 18px; letter-spacing: 2.4px; line-height: 1; text-transform: uppercase; color: var(--ph-bright);
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-lamp { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-count { margin-left: auto; font-size: 16px; letter-spacing: .4px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--cg-mute); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-count { margin-left: auto; font-size: 18px; letter-spacing: .4px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--cg-mute); }
 /* (Andrew 10-19, his pick of three rendered at his settings: "B · ONE PANEL BY KIND" — "I like B when they are organized
    together perfectly … because its groups each agent by whether its an approval etc") the waits sit in ONE matte panel on
    the rail's 10px gutter, each kind under its own strip (the 10-17 alert card's strip - APPROVALS, QUESTIONS, … FAILED -
@@ -590,7 +590,7 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-sec.failed { --ny-k: var(--ba
 /* a kind's strip, edge to edge: what these waits are, and how many from two up */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-grp {
   display: flex; align-items: center; gap: 8px; padding: 5px 10px 4px;
-  font-size: 14px; line-height: 1.15; letter-spacing: 2.2px; text-transform: uppercase; color: rgb(var(--ny-k));
+  font-size: 16px; line-height: 1.15; letter-spacing: 1.6px; text-transform: uppercase; color: rgb(var(--ny-k));
   background: rgba(var(--ny-k), .14); border-bottom: 1px solid rgba(var(--ny-k), .3);
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-sec + .ny-sec > .ny-grp { border-top: 1px solid rgba(var(--ny-k), .3); }
@@ -601,8 +601,8 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-list {
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item {
   --ny-k: var(--gold-rgb);
-  position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr) 66px; column-gap: 10px; row-gap: 2px; align-items: center;
-  margin: 0; padding: 8px 10px; border: 0; border-radius: 0; box-shadow: none; cursor: pointer; background: transparent;
+  position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr) 68px; column-gap: 10px; row-gap: 3px; align-items: center;
+  margin: 0; padding: 6px 10px; border: 0; border-radius: 0; box-shadow: none; cursor: pointer; background: transparent;
   transition: background var(--t-fast, .12s) ease;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item + .ny-item { border-top: 1px solid rgba(var(--ph-rgb), .14); }
@@ -638,7 +638,7 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within
    · at the very narrowest the key leaves its column for the line under the lines, at the row's right edge, so the ask
      keeps the row's width (the caret, which only says the row opens, steps out with the column) */
 @container (max-width: 300px) {
-  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { grid-template-columns: minmax(0, 1fr) 66px; }
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { grid-template-columns: minmax(0, 1fr) 68px; }
   body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face { display: none; }
   body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :is(.ny-line, .ny-what) { grid-column: 1; }
   body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :is(.ny-keys, .ny-go) { grid-column: 2; }
@@ -658,14 +658,14 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within
    two-word name (MISS FORTUNE) or a group's names stay on one line beside a long place; a name wraps only where it and its
    time alone overflow the line, and the time is never pushed out of the row */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-line { display: flex; align-items: baseline; gap: 0 8px; min-width: 0; line-height: 1.15; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who { flex: 0 1 auto; font-size: 18px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ph); text-shadow: var(--pg-glow-soft); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who { flex: 0 1 auto; font-size: 19px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ph); text-shadow: var(--pg-glow-soft); }
 /* a group chat's headline is its members' names, the SESSIONS row's own line ("ULTRON, CYPHER +3"): it wraps at a space
    rather than end in "…", and its +N keeps its gap */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who > .ws-agent-names { white-space: normal; overflow: visible; text-overflow: clip; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who > .ws-agent-more { margin-left: .4em; }
 /* line 2: the ask first, then what it is about. A wait whose last words ARE the claim (a quest said done, loop results,
    STEP-IN, extensions, a group, a stored question) is shown whole */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-what { display: block; font-size: 16px; line-height: 1.25; letter-spacing: .4px; color: var(--text); overflow-wrap: anywhere; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-what { display: block; font-size: 17px; line-height: 1.25; letter-spacing: .4px; color: var(--text); overflow-wrap: anywhere; }
 /* an approval, a question, a build and a failure keep ONE line, so every such row is the same two lines (the ask leads, an
    agent's builds lead with their count, a failure with its claim: "failed: …", "stopped when …", "routine failed · <its
    name>"). A line too long for its room fades out at the row's edge rather than end in "…": VT323 draws its ellipsis as
@@ -677,17 +677,17 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.approval, .question,
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) .ny-what { color: var(--ph-bright); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-verb { color: var(--cg-mute, var(--text)); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-age { flex: none; margin-left: auto; font-size: 14px; letter-spacing: 1px; font-variant-numeric: tabular-nums; color: var(--cg-mute, var(--text)); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-age { flex: none; margin-left: auto; font-size: 16px; letter-spacing: 1px; font-variant-numeric: tabular-nums; color: var(--cg-mute, var(--text)); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where {
   flex: 1 1 0; min-width: 0; padding: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: clip; cursor: pointer;
   -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
-  font: 15px 'VT323', monospace; letter-spacing: .4px; color: var(--cg-mute, var(--text)); background: none; border: 0; box-shadow: none; text-shadow: none;
+  font: 16px 'VT323', monospace; letter-spacing: .4px; color: var(--cg-mute, var(--text)); background: none; border: 0; box-shadow: none; text-shadow: none;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where:is(:hover, :focus-visible) { color: var(--ph-bright); }
-/* a row's one key (Deny, Retry, Dismiss) is a terminal key: the 15px label, 9px sides, the glass key's 34px */
+/* a row's one key (Deny, Retry, Dismiss) is a terminal key: the 16px label (the type scale's floor), 7px sides, the glass key's 34px */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key {
-  flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 9px; font: 15px/1.1 'VT323', monospace; letter-spacing: .2px; text-transform: uppercase; cursor: pointer; white-space: nowrap;
+  flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 7px; font: 16px/1.1 'VT323', monospace; letter-spacing: .9px; text-transform: uppercase; cursor: pointer; white-space: nowrap;
   color: var(--ph); border: 1px solid rgba(var(--ph-rgb), .4); border-radius: 2px; text-shadow: none;
   background: rgba(0, 0, 0, .25); box-shadow: none;
 }
@@ -700,16 +700,16 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.quiet { color: var(--text
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:disabled { opacity: .55; cursor: default; }
 /* every key is the column's one width, so the keys stand in one column row to row (Andrew 10-15: "make sure buttons are
    aligned"), and never narrower than its label; the glass key's 34px */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys > .ny-key { flex: 0 0 auto; min-width: 66px; min-height: 34px; text-align: center; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys > .ny-key { flex: 0 0 auto; min-width: 68px; min-height: 34px; text-align: center; }
 /* a build's door is its own session, named for the build its line already names: the place leaves sight there (it stays the
    row's door for the keyboard and a screen reader, as on a narrow rail) */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item.ny-place-said .ny-where { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* "N more" / "Show fewer" is a key, the rail's own: full width under the panel, on its edges (its width takes back the
    scrollbar gutter the panel's right margin gives back, or it ended short of the rows), gold caps on no fill */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more {
-  display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 10px - max(0px, 10px - var(--ny-gutter, 0px))); min-height: 32px; margin: 3px 10px 6px;
+  display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 10px - max(0px, 10px - var(--ny-gutter, 0px))); min-height: 32px; margin: 2px 10px 5px;
   margin-right: max(0px, 10px - var(--ny-gutter, 0px)); padding: 4px 10px; cursor: pointer;
-  font: 15px/1.1 'VT323', monospace; letter-spacing: 1.6px; text-transform: uppercase; color: var(--gold);
+  font: 16px/1.1 'VT323', monospace; letter-spacing: 1.6px; text-transform: uppercase; color: var(--gold);
   border: 1px solid rgba(var(--gold-rgb), .45); border-radius: 2px; background: transparent; box-shadow: none; text-shadow: none;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more:is(:hover, :focus-visible) { border-color: var(--gold); background: rgba(var(--gold-rgb), .1); }
@@ -1624,3 +1624,54 @@ body.glass-demo:not(.hud-mode) #screen-game :is(#crew .crew-row, #left #workstre
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-group.has-active > .bb-grp { box-shadow: inset 0 -2px 0 var(--ph); }
 body.glass-demo:not(.hud-mode) #screen-game #topbar #status-pill::before { box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3); }
 body.glass-demo:not(.hud-mode) #screen-game #topbar #status-pill:is(.standby, .down)::before { box-shadow: 0 0 0 1px rgba(0, 0, 0, .55); }
+
+/* ============================================================
+   PIP-BOY TYPE SCALE (Andrew 10-19: "make sure the text isnt too small everywhere, and also that the spacing of text is
+   perfectly structured and organized everywhere"). Measured on the dashboard at his settings (TEXT SIZE 90), its text ran
+   from 11 to 21 screen px in eleven sizes, one agent name was two sizes (16.2 on its CREW card, 17.1 on its session row),
+   and its caps labels were tracked eleven ways (0.2 to 3px). One scale now. The rail and COMMS grow with TEXT SIZE:
+     · NAME  19px, tracked 1.2: every agent name (a CREW card, a NEEDS YOU row, a session row)
+     · BODY  18px: COMMS speech and its composer, the NEEDS YOU head
+     · LINE  17px: a row's second line (a session's title, a NEEDS YOU ask)
+     · LABEL 16px, caps tracked 1.6: THE FLOOR (status, level, ages, counts, a kind's strip, keys, timestamps, run tallies)
+   The counter-zoomed bars (the top bar, the dock, the panels' heads) keep their pixel sizes and meet the same floor at 15px,
+   the LABEL's screen size. NEEDS YOU's own rules carry the scale in place (test/needs-you-rail-fit.test.js lays them out).
+   ============================================================ */
+/* THE FLOOR, through the station's own reading tokens (readability.css sets every named label to var(--sn-type-meta) with
+   !important): on the dashboard the meta and compact roles are the LABEL size, 16px in the rail and COMMS, 15px in the
+   counter-zoomed bars (the top bar, the dock, the panels' heads), the LABEL's screen size. The windows keep the station's
+   14px floor (their own pass) */
+body.glass-demo:not(.hud-mode) #screen-game :is(#left, #chat-panel) { --sn-type-meta: 16px; --sn-type-compact: 16px; }
+body.glass-demo:not(.hud-mode) #screen-game :is(#topbar, #bottombar, #left > h3, #chat-panel > h3) { --sn-type-meta: 15px; --sn-type-compact: 15px; }
+/* NAME: a CREW card's name is the session row's size (readability gives it the 18px section role) */
+body.glass-demo:not(.hud-mode) #screen-game #crew { --sn-type-section: 19px; }
+body.glass-demo:not(.hud-mode) #screen-game #crew .crew-name .crew-nm { letter-spacing: 1.2px; }
+/* LABEL: a crew card's live step (no reading role of its own), its status and level tracked like every caps label */
+body.glass-demo:not(.hud-mode) #screen-game #crew .crew-step { font-size: 16px; }
+body.glass-demo:not(.hud-mode) #screen-game #crew :is(.crew-status, .crew-step) { letter-spacing: 1.6px; }
+body.glass-demo:not(.hud-mode) #screen-game #crew .crew-name .crew-room { letter-spacing: 1.6px; }
+/* LABEL: a session row's run tally */
+body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row > .ws-runs { font-size: 16px; letter-spacing: 1.6px; }
+/* LABEL: COMMS — who spoke and the day break, tracked like every caps label */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) .cmsg .who { letter-spacing: 1.6px; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) .cmsg-timebreak .tb-when { font-size: 16px; letter-spacing: 1.6px; }
+/* the dock's CTX gauge (no reading role) at the bars' floor; the top bar's labels tracked like every caps label */
+body.glass-demo:not(.hud-mode) #screen-game #bottombar #ctx-gauge :is(.ctx-lbl, .ctx-num, .ctx-cap) { font-size: 15px; letter-spacing: 1.6px; }
+body.glass-demo:not(.hud-mode) #screen-game #topbar :is(#tb-station .tb-lbl, #sig) { letter-spacing: 1.6px; }
+/* KEYS: every terminal key is tracked .9 (the COMMS keys' own), the choice keys included */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) .choice { letter-spacing: .9px; }
+/* A ROW'S TWO LINES sit 2px apart everywhere (a CREW card's status, a NEEDS YOU ask, a session's title), and a session's
+   title too long for its two lines fades out at its end rather than in VT323's flat "…" (read as a typo); an older run's
+   one-line title the same */
+body.glass-demo.rows-inbox:not(.hud-mode) #screen-game #left #workstreams .ws-title {
+  margin-top: 2px; display: block; -webkit-line-clamp: none; max-height: 2.4em; overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000, #000), linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  -webkit-mask-size: 100% calc(100% - 1.2em), 100% 1.2em; -webkit-mask-position: top, bottom; -webkit-mask-repeat: no-repeat;
+  mask-image: linear-gradient(#000, #000), linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  mask-size: 100% calc(100% - 1.2em), 100% 1.2em; mask-position: top, bottom; mask-repeat: no-repeat;
+}
+body.glass-demo.rows-inbox:not(.hud-mode) #screen-game #left #workstreams .ws-row[data-runs="older"] .ws-title {
+  max-height: none; white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); -webkit-mask-size: auto;
+  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-size: auto;
+}

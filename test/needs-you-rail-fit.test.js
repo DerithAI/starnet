@@ -297,15 +297,16 @@ A.ok(host.rows.every(r => !r.hidden) && host.secs.every(s => !s.hidden) && host.
   for (const rail of RAILS) for (const zoom of ZOOMS) {
     layout = { rail, zoom };
     if (faceIn()) faces.push(rail.name + '@' + zoom);
-    if (keyBeside()) { beside.push(rail.name + '@' + zoom); if (lineWidth() / perChar < 16) tight.push(rail.name + ' @' + zoom + '%: ' + Math.floor(lineWidth() / perChar) + ' characters beside the key'); }
+    // (the type scale 10-19: the ask is 17px now, so the narrowest rails keep 15 characters, faded where they run on)
+    if (keyBeside()) { beside.push(rail.name + '@' + zoom); if (lineWidth() / perChar < 15) tight.push(rail.name + ' @' + zoom + '%: ' + Math.floor(lineWidth() / perChar) + ' characters beside the key'); }
     else under.push(rail.name + '@' + zoom);
   }
   A.ok(beside.length > 0 && under.length > 0 && faces.length > 0, '(the layouts include rows with the key beside (' + beside.length + '), under (' + under.length + ') and with the portrait (' + faces.length + '))');
-  A.eq(tight, [], 'wherever the key stands beside the lines, the ask keeps at least 16 characters of its line');
+  A.eq(tight, [], 'wherever the key stands beside the lines, the ask keeps at least 15 characters of its line');
   layout = { rail: RAILS.find(r => r.px === dragMax), zoom: 90 };
   A.ok(faceIn() && keyBeside() && lineWidth() / perChar >= 30, 'Andrew\'s 400px rail at 90%: the portrait, the lines and the key in its column, the ask keeps ' + Math.floor(lineWidth() / perChar) + ' characters');
   layout = { rail: RAILS.find(r => r.px === desk), zoom: 100 };
-  A.ok(!faceIn() && keyBeside() && lineWidth() / perChar >= 16, 'the ' + desk + 'px default rail at 100%: the portrait steps out, the key stays beside the lines (two-line rows), the ask keeps ' + Math.floor(lineWidth() / perChar) + ' characters');
+  A.ok(!faceIn() && keyBeside() && lineWidth() / perChar >= 15, 'the ' + desk + 'px default rail at 100%: the portrait steps out, the key stays beside the lines (two-line rows), the ask keeps ' + Math.floor(lineWidth() / perChar) + ' characters');
   layout = { rail: RAILS.find(r => r.px === laptop), zoom: 100 };
   A.ok(!keyBeside(), 'the ' + laptop + 'px laptop rail: the key steps under the lines (the panel is ' + Math.round(panelW()) + 'px, the query ' + KEY_UNDER_AT + 'px)');
 }

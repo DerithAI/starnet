@@ -146,8 +146,8 @@ const WHOLE = { clientHeight: 19, scrollHeight: 19, clientWidth: 150, scrollWidt
   // the one key: a terminal key in the row's right-hand column, across its two lines, every key the column's one width
   A.ok(/\.ny-keys \{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; \}/.test(glassCss)
     && /\.ny-item > :is\(\.ny-keys, \.ny-go\) \{ grid-column: 3; grid-row: 1 \/ span 2; justify-self: end; \}/.test(glassCss)
-    && /\.ny-key \{\s*flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 9px; font: 15px\/1\.1 'VT323'/.test(glassCss)
-    && /\.ny-keys > \.ny-key \{ flex: 0 0 auto; min-width: 66px; min-height: 34px; text-align: center; \}/.test(glassCss),
+    && /\.ny-key \{\s*flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 7px; font: 16px\/1\.1 'VT323'/.test(glassCss)
+    && /\.ny-keys > \.ny-key \{ flex: 0 0 auto; min-width: 68px; min-height: 34px; text-align: center; \}/.test(glassCss),
     'a row\'s one key stands in its right-hand column across its two lines, every key the column\'s width and 34px tall (test/needs-you-rail-fit.test.js lays it out)');
   A.ok(/@container \(max-width: \d+px\) \{[^@]*\.ny-item > \.ny-keys \{ grid-column: 1; grid-row: 3;/.test(glassCss), 'on the narrowest panel the key steps under the lines, so the ask keeps the row\'s width');
   // (two reviews 10-16) "in <where>" was display:none on every default rail (a 250px container query): approval rows never
