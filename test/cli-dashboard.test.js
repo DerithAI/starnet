@@ -331,46 +331,52 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
 }
 
-// ---- the agent: the one in COMMS as a small full-body astronaut at the foot of CREW, its pose its state ---------------
+// ---- the agent: the one in COMMS as a small animated ASCII figure at the foot of CREW, doing what it is doing ---------
 {
-  const body = (st, t, still) => { const g = tui.makeGrid(13, 8); tui.drawAgent(g, 0, 0, st, true, t, still); return g.out(); };
-  const plain = segs => segs.map(tui.toPlain).join('\n');
-  const cellStyle = (segs, x, y) => { let c = 0; for (const [t, s] of segs[y]) for (const ch of t) { if (c === x) return s; c += tui.width(ch); } return ''; };
-  for (const [k, frames] of Object.entries(tui.AGENT)) A.ok(frames.every(f => f.length === 16 && f.every(r => r.length === 11)), k + ': every frame is 11 × 16 pixels (11 columns × 8 rows)');
-  const idle = body({ key: 'idle' }, T0, false);
-  A.ok(idle.length === 8 && idle.every(r => tui.width(tui.toPlain(r).replace(/\s+$/, '')) <= 11), 'the agent is small: 11 columns by 8 rows, head to boots');
-  A.ok(/[▀▄█]/.test(plain(idle)) && plain(idle).split('\n')[7].trim().length > 0, 'drawn in half-block pixels, standing on its boots');
-  const poses = ['idle', 'needs', 'done'].map(k => plain(body({ key: k }, T0, true)));
-  A.ok(new Set(poses).size === 3, 'its pose says its state: idle stands, needs you waves an arm, done throws both arms up');
-  const eyes = { idle: 'dim', working: 'hi', needs: 'am', done: 'ok', stopped: 'bad' };
-  for (const [k, c] of Object.entries(eyes)) A.ok(new RegExp('on-' + c + '\\b').test(cellStyle(body({ key: k, since: T0 }, T0, true), 4, 2)), k + ': its eyes are ' + c + ' behind the visor');
-  const moving = new Set(), stills = new Set(), idles = new Set(), waves = new Set();
-  for (let t = 0; t < 3000; t += 100) {
-    moving.add(plain(body({ key: 'working', since: T0 }, T0 + t, false)) + JSON.stringify(body({ key: 'working', since: T0 }, T0 + t, false)));
-    waves.add(plain(body({ key: 'needs' }, T0 + t, false)));
-    stills.add(JSON.stringify(body({ key: 'working', since: T0 }, T0 + t, true)));
-    idles.add(JSON.stringify(body({ key: 'idle' }, T0 + t, false)));
+  const art = require('../bin/lib/agent-art.js');
+  const plain = rows => rows.map(tui.toPlain).join('\n');
+  const KEYS = ['idle', 'working', 'needs', 'done', 'stopped'];
+  const frame = (k, t, still) => art.scene(k, T0 + t, still);
+  for (const k of KEYS) {
+    const f = frame(k, 0, false);
+    A.ok(f.length === art.H && f.every(r => tui.width(tui.toPlain(r)) === art.W), k + ': a ' + art.W + ' × ' + art.H + ' scene');
+    A.ok(f.every(r => /^[\x20-\x7e]*$/.test(tui.toPlain(r))), k + ': plain ASCII, nothing a terminal font could miss');
+    A.ok(f.flat().every(([t, s]) => !t.trim() || /^(dim|rule|ph|brand|logohi|hi|fg|am|ok|bad)( b)?$/.test(s)), k + ': the station palette only, no hue of its own');
+    A.eq(plain(frame(k, 1234, false)), plain(frame(k, 1234, false)), k + ': the same moment draws the same scene');
   }
-  A.ok(moving.size >= 3 && waves.size === 2, 'working glances and its pad flickers (' + moving.size + ' frames); needs you waves (' + waves.size + ' poses)');
-  A.ok(stills.size === 1 && idles.size === 1, 'only working and an ask move: a still screen and an idle agent hold one frame');
-  const w = body({ key: 'working', since: T0 }, T0, true);
-  A.ok(/^ph\b/.test(cellStyle(w, 5, 0)) && w.flat().every(([, s]) => !/\ba[0-5]\b/.test(s)), 'the antenna light glows the working red; one palette, no hue of its own');
-  A.ok(/\x1b\[38;2;28;11;16;48;2;127;102;107m▀/.test(tui.toAnsi(body({ key: 'idle' }, T0, true)[2], 3)), 'a pixel pair of two colours: the visor glass over the eye, the eye drawn behind it');
-  A.eq(tui.stateWords({ key: 'working', since: T0 - 65000 }, T0, true).slice(1), ['ph b', '1m05s'], 'beside it: working, and for how long');
+  A.ok(new Set(KEYS.map(k => plain(frame(k, 0, true)))).size === KEYS.length, 'each state is its own scene');
+  // every state is alive: frames change over a few seconds; a still screen holds one
+  for (const k of KEYS) {
+    const seen = new Set(), still = new Set();
+    for (let t = 0; t < 9000; t += 100) { seen.add(JSON.stringify(frame(k, t, false))); still.add(JSON.stringify(frame(k, t, true))); }
+    A.ok(seen.size >= 2 && still.size === 1, k + ': animated (' + seen.size + ' frames over 9 s), held still on a still screen');
+  }
+  // working: it faces its panel and the panel types — the strokes on it grow, line after line
+  const strokes = t => (plain(frame('working', t, false)).split('\n').map(l => l.slice(11)).join('').match(/[=>-]/g) || []).length;
+  const counts = [0, 140, 280, 420, 560].map(strokes);
+  A.ok(new Set(counts).size >= 3, 'working: the panel types as it works: ' + counts.join(' → '));
+  A.ok(/\( oo\)/.test(plain(frame('working', 0, true))) && /\.----------\./.test(plain(frame('working', 0, true))), 'working: eyes on its panel');
+  const eyeStyle = k => { const r = frame(k, 0, true)[2]; const hit = r.find(([t]) => /[ox^-]/.test(t) && /\(/.test(tui.toPlain(r))); return r.filter(([t]) => /^[ox^]+$/.test(t.trim()) && t.trim()).map(([, s]) => s)[0] || (hit && hit[1]); };
+  A.eq([eyeStyle('needs'), eyeStyle('done')], ['am b', 'ok b'], 'its eyes take the state colour: amber asking, green done');
+  A.ok(/\|\s*!\s*\|/.test(plain(frame('needs', 0, true))) && /\^ \^/.test(plain(frame('done', 0, true))) && /x x/.test(plain(frame('stopped', 0, true))), 'needs you shows a [!], done cheers ^ ^, stopped x x');
 
   const m = crew();
   m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
   const scr = screen(m, {}, 120, 34, T0 + 12000).map(tui.toPlain);
-  const div = scr.findIndex(l => /^├─+┤/.test(l));
+  const div = scr.findIndex(l => /^├─/.test(l));
   const crewTop = scr.findIndex(l => /^╭─ CREW /.test(l));
   const bot = scr.findIndex((l, i) => i > crewTop && /^╰─+╯/.test(l));
-  A.ok(div > crewTop && bot - div === 9, 'the agent stands at the foot of CREW, under a rule: rows ' + div + '..' + bot);
-  A.ok(/ASTRA/i.test(scr[div + 4].slice(14)) && /working/.test(scr[div + 5]) && /12s/.test(scr[div + 6]), 'beside it: the name, what it is doing, for how long: ' + scr.slice(div + 4, div + 7).map(l => l.slice(0, 28)).join(' / '));
-  A.ok((scr[crewTop].match(/╮/g) || []).length === 2, 'no panel of its own: CREW and COMMS only, COMMS keeps the width: ' + scr[crewTop]);
+  A.ok(div > crewTop && bot - div === art.H + 1, 'the agent stands at the foot of CREW under a rule: rows ' + div + '..' + bot);
+  A.ok(/^├─ ASTRA {2}⠋ working ─+┤/.test(scr[div]), 'the rule names it and says what it is doing: ' + scr[div]);
+  A.ok(scr.slice(div + 1, bot).some(l => /\( oo\)/.test(l)) && scr.slice(div + 1, bot).some(l => /\.----------\./.test(l)), 'under it, the figure at its panel');
+  A.ok((scr[crewTop].match(/╮/g) || []).length === 2, 'no panel of its own: CREW and COMMS only, COMMS keeps the width');
   const big = makeStation();
   big.setRoster({ agents: Array.from({ length: 24 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });
   const full = screen(big, { focus: 'a3' }, 120, 30, T0).map(tui.toPlain);
-  A.ok(!full.some(l => /^├─+┤/.test(l)), 'when the crew list needs the room, the agent steps out of it');
+  A.ok(!full.some(l => /^├─/.test(l)), 'when the crew list needs the room, the figure steps out of it');
+  const room = makeStation();
+  room.setRoster({ agents: Array.from({ length: 13 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });
+  A.ok(screen(room, { focus: 'a3' }, 120, 30, T0).map(tui.toPlain).some(l => /^├─/.test(l)), 'a crew of 13 in a 120×30 window still has it');
 }
 
 A.report('cli-dashboard.test');

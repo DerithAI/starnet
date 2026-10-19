@@ -55,7 +55,7 @@ const USAGE = [
   'Dashboard commands: /model [name] · /new · /resume · /stop · /flow · /flow run <name> <text> · /help',
   'Dashboard look: the StarNet logo as an image where the terminal draws Sixel (Windows Terminal, WezTerm, iTerm2), braille',
   '  dots elsewhere · STARNET_LOGO=dots|ascii|plain picks one · NO_COLOR=1 drops color · needs at least 46×16',
-  '  at the foot of CREW the agent you talk to is a small astronaut: it stands idle, works a glowing pad, waves when it needs you',
+  '  at the foot of CREW the agent you talk to, alive: it drifts idle, works its panel, waves when it needs you, cheers when done',
   '',
   'Run options:',
   '  --agent <id>       roster agent to run (default: "agent", else the first roster entry)',
