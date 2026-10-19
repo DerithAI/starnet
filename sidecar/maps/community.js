@@ -99,7 +99,21 @@ function makeCommunityMaps(deps) {
   }
   function mine() { return call('GET', '/v1/maps/mine', null, MINE_TIMEOUT_MS); }
 
-  return { catalog, file, share, mine, linked: () => !!linked() };
+  /* shareSkill({ title, description, category, license, credit, agree, skillText, refs }) — SHARE TO MARKET on a skill
+     card: the same linked-account door, starnet-cloud POST /v1/skills/submit (the upload form's rules, unchanged) */
+  async function shareSkill(b) {
+    const refs = Array.isArray(b && b.refs) ? b.refs.slice(0, 6).map(r => ({ name: String(r && r.name || ''), content: String(r && r.content || '') })) : [];
+    const body = {
+      title: String(b && b.title || ''), description: String(b && b.description || ''), category: String(b && b.category || ''),
+      license: String(b && b.license || ''), credit: String(b && b.credit || ''), agree: !!(b && b.agree === true),
+      skillText: String(b && b.skillText || ''), refs
+    };
+    const r = await call('POST', '/v1/skills/submit', body, SHARE_TIMEOUT_MS);
+    if (!r.ok && r.linked === false) r.error = 'Link this station to a StarNet account to share skills.';
+    return r;
+  }
+
+  return { catalog, file, share, mine, shareSkill, linked: () => !!linked() };
 }
 
 module.exports = { makeCommunityMaps };

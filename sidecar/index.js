@@ -11942,6 +11942,7 @@ const ROUTES = [
   { m: 'GET', qsplit: '/api/community-maps/file', h: serveCommunityMapFile },     // one map's build or picture, sha256-pinned
   { m: 'GET', exact: '/api/community-maps/mine', h: serveCommunityMapsMine },
   { m: 'POST', exact: '/api/community-maps/share', h: handleCommunityMapShare },
+  { m: 'POST', exact: '/api/skill-market/share', h: handleSkillMarketShare },          // SHARE TO MARKET: one of an agent's skills, for review
   { m: 'POST', exact: '/api/skill-exchange/inspect', h: handleSkillExchangeInspect },
   { m: 'POST', exact: '/api/skill-exchange/registry', h: handleSkillExchangeRegistry },
   { m: 'POST', exact: '/api/skill-exchange/discover', h: handleSkillExchangeDiscover },
@@ -18929,6 +18930,29 @@ async function handleCommunityMapShare(req, res) {
   if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
   const r = await communityMaps.share(body);
   respondJson(res, r.ok ? 202 : (r.status >= 400 && r.status < 600 ? r.status : 502), r);
+}
+/* POST /api/skill-market/share { agentId, id, title, description, category, license, credit, agree } — SHARE TO MARKET.
+   The skill goes exactly as this agent's library holds it (read here, never sent by the page), with its plain-text
+   reference files. A skill the skill guard holds back from the agent is not shared: the market reviewer would be the
+   second person to read what the guard already flagged. The answer is the cloud's, verbatim. */
+const MARKET_REF_EXT = /\.(?:md|txt|json|ya?ml|csv)$/i;
+async function handleSkillMarketShare(req, res) {
+  const body = await readJsonBody(req, readBody, 1 << 16, res);
+  if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
+  const agentId = String(body.agentId || 'agent');
+  if (!isAgentId(agentId)) return respondJson(res, 403, { ok: false, error: 'forbidden' });
+  const s = skillStore.view(agentId, String(body.id || ''), { includeArchived: true, bump: false });
+  if (!s) return respondJson(res, 404, { ok: false, error: 'That skill is not in this agent\'s library.' });
+  const gate = skillGate.annotate([s], { verify: true })[0] || {};
+  if (gate.withheld) return respondJson(res, 409, { ok: false, error: 'The skill guard is holding this skill back from the agent, so it can\'t be shared. Edit out what it flagged first.' });
+  const files = Array.isArray(s.files) ? s.files : Object.values(s.files || {});
+  const refs = files.filter(f => f && f.encoding !== 'base64' && MARKET_REF_EXT.test(String(f.path || '')))
+    .map(f => ({ name: String(f.path).split('/').pop(), content: String(f.content || '') }));
+  const r = await communityMaps.shareSkill({
+    title: body.title, description: body.description, category: body.category, license: body.license, credit: body.credit,
+    agree: body.agree === true, skillText: String(s.body || ''), refs
+  });
+  respondJson(res, r.ok ? 202 : (r.status >= 400 && r.status < 600 ? r.status : 502), Object.assign({ referencesSent: refs.length, referencesLeftOut: files.length - refs.length }, r));
 }
 // POST /api/skill-market/uninstall { slug } — remove a market install; a bundled original falls back to its bundled copy.
 async function handleSkillMarketUninstall(req, res) {

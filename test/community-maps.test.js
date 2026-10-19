@@ -174,6 +174,17 @@ function sub(over) {
   const down = await cm({ cloud: () => ({ url: 'https://account.example', token: 't' }), fetch: async () => { throw new Error('ECONNRESET'); } }).share({ title: 'x' });
   A.ok(!down.ok && /Nothing was shared/.test(down.error), 'an unreachable cloud says nothing was shared');
 
+  // ---- SHARE TO MARKET rides the same linked-account door ----
+  const skillCalls = [];
+  const skillCloud = cm({ cloud: () => ({ url: 'https://account.example', token: 'dev_tok_9' }), fetch: async (url, init) => { skillCalls.push({ url, init }); return { ok: true, status: 202, text: async () => JSON.stringify({ ok: true, submission: { id: 'sk_x', slug: 'meeting-recap', status: 'pending' } }) }; } });
+  const sk = await skillCloud.shareSkill({ title: 'Meeting Recap', description: 'd', category: 'Productivity', license: 'MIT', credit: 'Ada', agree: true, skillText: '# Recap\n1. Read it.', refs: [{ name: 'a.md', content: 'x', extra: 1 }], stray: 'dropped' });
+  A.eq([sk.ok, sk.submission.status], [true, 'pending'], 'a skill share comes back pending');
+  A.eq(skillCalls[0].url, 'https://account.example/v1/skills/submit', 'to the market\'s station door');
+  A.eq(Object.keys(JSON.parse(skillCalls[0].init.body)).sort(), ['agree', 'category', 'credit', 'description', 'license', 'refs', 'skillText', 'title'], 'carrying only the share fields');
+  A.eq(JSON.parse(skillCalls[0].init.body).refs, [{ name: 'a.md', content: 'x' }], 'references are names and text only');
+  const skUnlinked = await cm().shareSkill({ title: 'x' });
+  A.ok(!skUnlinked.ok && skUnlinked.linked === false && /share skills/.test(skUnlinked.error), 'an unlinked station is told to link, in a skill sentence');
+
   fs.rmSync(tmp, { recursive: true, force: true });
 
   // ---- the repo's own gallery is exactly what its sources build, and its signature verifies with the app's keys ----
