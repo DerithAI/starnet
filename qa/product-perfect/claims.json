@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "adcee4a3e91d62c4eb9304242192ed2e624ba04c",
+    "sourceCommit": "df083494cc49234fb7f2250230b8c4e621392160",
     "pathSetSha256": "1435ce0b82e8fc5a5fafbbb1647860315461effcfd4f7c5edf3f37fc9cd44ca8",
     "files": [
       {
@@ -333,13 +333,13 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 751317,
-        "sha256": "3346c878052affd3d2db112b204f1e7531c832b02fccbf245da1bb0361a4eecd"
+        "bytes": 754946,
+        "sha256": "10d53c8243bdaffda5d478e4a6b01595b8da4e6b9ebed59646667209486a373a"
       },
       {
         "path": "frontend/app/buildshare.js",
-        "bytes": 9912,
-        "sha256": "e61a06a0c7079736cb2fc1803bbfbf4e9b64e52afebf1857289046e8e7bbaa24"
+        "bytes": 9964,
+        "sha256": "58c0ea8f60c52791b52d0adc86139de67449dab1f4c2d05a9f18181eec177a39"
       },
       {
         "path": "frontend/app/channels.js",
@@ -383,8 +383,8 @@
       },
       {
         "path": "frontend/app/communitymaps.js",
-        "bytes": 5154,
-        "sha256": "512eb16d074e2490c1a31411138a8a7e80fe649ae77477ee8716caa4ae19b7d0"
+        "bytes": 8495,
+        "sha256": "49aef12d9f8fdd6d9e7a5cdd4be81ada6782aef36ca8cbbc9bf3668995d0a9bb"
       },
       {
         "path": "frontend/app/confbeats.js",
@@ -1193,8 +1193,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 934969,
-        "sha256": "622bde3e41ba451379c96641e969254aa2bbf6c29cab92d390c2e1f05a53f64a"
+        "bytes": 936540,
+        "sha256": "48e7489cb2b1bc72429e41e64977889effa6cd777de8e3390ddbecd21c98a539"
       },
       {
         "path": "frontend/app/stepin.js",
@@ -1458,8 +1458,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 890686,
-        "sha256": "a42bd9dfbc7d74a196fb736e43674952a6677d1f6f17031e02e338cbde9e6a6e"
+        "bytes": 890966,
+        "sha256": "c888392b3fe47c6ccafbf1b353d184532898b8d589671f121a8f757d82bc94b2"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1528,8 +1528,8 @@
       },
       {
         "path": "frontend/css/agent-dossier.css",
-        "bytes": 18288,
-        "sha256": "6e81f8e14a52c22fbf541680dd4248777f5c92d97d37013775c976647b84c835"
+        "bytes": 18415,
+        "sha256": "a09bb9ef96d23b74fdc50055cdbff275da573712f5e1348b96659e0f8ecdd0a5"
       },
       {
         "path": "frontend/css/app.css",
@@ -1688,8 +1688,8 @@
       },
       {
         "path": "frontend/css/refit-polish.css",
-        "bytes": 35089,
-        "sha256": "56247beb4852fd30e258376f9a1fb12ca02c057a389da2b9041c773f5bab6993"
+        "bytes": 35655,
+        "sha256": "4ba5a872204b25185361e47dc92f20ed2e326570494a4fe88e8532f88f378725"
       },
       {
         "path": "frontend/css/refit.css",
