@@ -15,6 +15,19 @@ const PRICING_LIVE = /var PRICING_LIVE = true;/.test(fs.readFileSync(path.join(r
 A.eq(fs.existsSync(path.join(staged, 'pricing.html')), PRICING_LIVE,
   PRICING_LIVE ? 'launched pricing page ships in the deploy artifact' : 'held-back pricing page is absent from deploy artifact');
 A.ok(fs.existsSync(path.join(staged, '404.html')), 'staged artifact carries a real not-found page');
+// Community sharing (maps + SUBMIT A SKILL) follows website/site.js COMMUNITY_LIVE the same way pricing does.
+const COMMUNITY_LIVE = /var COMMUNITY_LIVE = true;/.test(fs.readFileSync(path.join(root, 'website', 'site.js'), 'utf8'));
+A.eq(fs.existsSync(path.join(staged, 'maps.html')), COMMUNITY_LIVE,
+  COMMUNITY_LIVE ? 'launched community maps page ships' : 'held community maps page is absent from the deploy artifact');
+const stagedMarket = fs.readFileSync(path.join(staged, 'market.html'), 'utf8');
+A.eq(/<!--held:/.test(stagedMarket), false, 'no held block survives staging');
+A.eq(/account\.starnetos\.com\/account\/skills/.test(stagedMarket), COMMUNITY_LIVE, 'the skill-submit flow ships exactly when sharing is live');
+if (!COMMUNITY_LIVE) {
+  for (const page of ['index.html', 'market.html', '404.html', 'docs/help.html', 'docs/index.html', 'legal/privacy.html'])
+    A.eq(/maps\.html/.test(fs.readFileSync(path.join(staged, page), 'utf8')), false, 'held maps page is never linked from staged ' + page);
+  A.ok(/Not yet\. Today the market carries skills StarNet wrote/.test(stagedMarket), 'held market keeps its pre-launch publish answer');
+}
+
 A.eq(fs.existsSync(path.join(staged, 'app', 'assets', 'sprites', '_assembly')), false, 'sprite assembly sources are absent from deploy artifact');
 A.ok(fs.existsSync(path.join(staged, 'app', 'index.html')), 'staged artifact retains the embedded app');
 A.ok(fs.existsSync(path.join(staged, 'app/assets/industrial/calibration/crate.png')), 'required calibration texture ships so the remaster remains enabled');
