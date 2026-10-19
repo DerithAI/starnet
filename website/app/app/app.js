@@ -5910,7 +5910,8 @@ const App = (() => {
       SFX.click(); dataStatus('exporting…');
       const r = await Backup.exportAll();
       dataStatus(r && r.ok
-        ? 'saved ' + r.file + ' — secrets excluded; ' + r.records + ' records' + (r.notes ? ' + ' + r.notes + ' memories' : '')
+        // #134: the page only HANDS the file over (where it lands is never reported back) — name it, never claim "saved"
+        ? 'handed ' + r.file + ' to your downloads — secrets excluded; ' + r.records + ' records' + (r.notes ? ' + ' + r.notes + ' memories' : '')
         : 'export failed');
     };
     const fileImport = el('file-import');

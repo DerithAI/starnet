@@ -38,6 +38,7 @@
     <a href="index.html#station">Product</a>
     <a href="docs/index.html">Docs</a>
     <a href="market.html" class="on">Skills</a>
+    <a href="maps.html">Maps</a>
     <a href="pricing.html" data-pricing-link>Pricing</a>
     <a href="https://github.com/androoAGI/starnet" target="_blank" rel="noopener">GitHub<svg class="nav-external" aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="12" height="12"><path d="M3 13 13 3M4 3h9v9" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></a>
   </nav>
@@ -52,8 +53,8 @@
   <section class="page-hero">
     <h1 class="page-title">SKILL MARKET</h1>
     <p class="page-lede">Skills teach your crew how to do a job well. Install one and every agent with the right gear can use it.</p>
-    <p class="page-sub" id="mk-count">StarNet Originals, written for your station's gear, plus credited skills from the community.</p>
-    <div class="cta-row mk-hero-cta"><a class="btn btn-small" href="#share">[ SHARE YOUR SKILL ]</a></div>
+    <p class="page-sub" id="mk-count">StarNet Originals, written for your station's gear, plus credited <!--held:community-->skills from the community<!--held:else picks from the open-source community --><!--/held-->.</p>
+    <!--held:community--><div class="cta-row mk-hero-cta"><a class="btn btn-small" href="#share">[ SHARE YOUR SKILL ]</a></div><!--held:else--><!--/held-->
   </section>
 
   <!-- ========== 01 BROWSE ========== -->
@@ -100,7 +101,7 @@
     <div class="cta-row mk-cta"><a class="btn btn-primary" href="index.html#download">[ DOWNLOAD STARNET ]</a></div>
   </section>
 
-  <!-- ========== 03 SHARE ========== -->
+  <!--held:community--><!-- ========== 03 SHARE ========== -->
   <section class="section" id="share">
     <div class="section-head"><span class="section-no">03</span><h2>SHARE YOUR SKILL</h2></div>
     <p class="mk-share-lede">Wrote a skill your crew can't live without? Put it on the market. Every StarNet station can install it,
@@ -126,11 +127,11 @@
       </li>
     </ol>
     <div class="cta-row mk-cta"><a class="btn btn-primary" href="https://account.starnetos.com/account/skills">[ SUBMIT A SKILL ]</a></div>
-  </section>
+  </section><!--held:else--><!--/held-->
 
   <!-- ========== 04 SAFETY ========== -->
   <section class="section" id="safety">
-    <div class="section-head"><span class="section-no">04</span><h2>HOW WE KEEP IT SAFE</h2></div>
+    <div class="section-head"><span class="section-no"><!--held:community-->04<!--held:else 03 --><!--/held--></span><h2>HOW WE KEEP IT SAFE</h2></div>
     <ul class="contract">
       <li><b>Signed.</b> The catalog is signed with a key that never leaves StarNet's hands. Your station checks the
         signature against a key built into the app, and refuses a catalog that was changed, is unsigned, or is older
@@ -150,7 +151,7 @@
 
   <!-- ========== 05 FAQ ========== -->
   <section class="section faq" id="faq">
-    <div class="section-head"><span class="section-no">05</span><h2>STRAIGHT ANSWERS</h2></div>
+    <div class="section-head"><span class="section-no"><!--held:community-->05<!--held:else 04 --><!--/held--></span><h2>STRAIGHT ANSWERS</h2></div>
     <details>
       <summary>Do skills cost anything?</summary>
       <p>No. Every skill here is free. Running one uses your model like any other task, at your provider's price.</p>
@@ -160,12 +161,12 @@
       <p>A tool is something an agent can do, like read a web page or write a file. A skill is know-how: the steps,
         checks and output a good job needs. Skills never add new powers; they help agents use the tools they have.</p>
     </details>
-    <details>
+    <!--held:community--><details>
       <summary>Where do the community skills come from?</summary>
       <p>Two places. Some are open-source skills, adapted by StarNet to fit the station and credited on each card with
         a link to the original. Others were shared by StarNet users through <a href="#share">SHARE YOUR SKILL</a>; their
         cards say so and name the author. StarNet Originals are written by StarNet.</p>
-    </details>
+    </details><!--held:else--><!--/held-->
     <details>
       <summary>Can I use these skills outside StarNet?</summary>
       <p>Yes. <b>Download</b> on any card gives you the skill as a standard Agent Skills folder (its
@@ -174,9 +175,10 @@
     </details>
     <details>
       <summary>Can I publish my own skill?</summary>
-      <p>Yes. <a href="https://account.starnetos.com/account/skills">Submit it</a> from your StarNet account. A person reads it, and once it is approved it
+      <!--held:community--><p>Yes. <a href="https://account.starnetos.com/account/skills">Submit it</a> from your StarNet account. A person reads it, and once it is approved it
         goes live with the next catalog update. Skills you and your agents write in the app stay on your station
-        until you share them.</p>
+        until you share them.</p><!--held:else <p>Not yet. Today the market carries skills StarNet wrote or reviewed and adapted. Skills you and your agents
+        write stay on your station.</p> --><!--/held-->
     </details>
     <details>
       <summary>Who owns a skill I share?</summary>
@@ -196,6 +198,7 @@
     <a href="pricing.html" data-pricing-link>PRICING</a>
     <a href="docs/index.html">DOCS</a>
     <a href="market.html">SKILLS</a>
+    <a href="maps.html">MAPS</a>
     <a href="docs/help.html">HELP</a>
     <a href="https://github.com/androoAGI/starnet/issues" target="_blank" rel="noopener">COMMUNITY</a>
     <a href="legal/privacy.html">PRIVACY</a>

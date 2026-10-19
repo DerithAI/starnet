@@ -788,13 +788,22 @@
      that gets reviewed, a decision that wants two takes — and mapped to the ready-made line that has that shape. Pure and
      conservative: a goal naming ONE kind of work suggests nothing (a single agent already does that), and a schedule in the
      words only adds a pointer to the INBOX, never a guess at the time. */
+  /* "pressure-test" is a second opinion, not QA: a test word counts unless "pressure" (plus at most one character) sits right
+     before it. Read match by match, WITHOUT a regex lookbehind — the one lookbehind this rule used to carry was a SyntaxError
+     for this WHOLE file on a Mac WebKit older than 16.4 (Safari 16.4 / macOS 13.3), so WorkflowLine never existed there and
+     every workflow reading said "not loaded" (#136). test/webkit-floor-syntax.test.js keeps the page lookbehind-free. */
+  const TEST_WORD = /\b(tests?|testing|tested)\b/gi, PRESSURE_BEFORE = /pressure.?$/i, QA_WORD = /\b(qa|quality assurance)\b/i;
+  function hasTestWork(t) {
+    for (const m of t.matchAll(TEST_WORD)) if (!PRESSURE_BEFORE.test(t.slice(0, m.index))) return true;
+    return QA_WORD.test(t);
+  }
   const INTENT = {
     research: /\b(research|dig|look(ing)? (up|into)|gather|sources?|news|monitor|scan)\b/i,
     write: /\b(write|writ(es|ing)|draft|compose|blurb|post|article|newsletter|summar(y|ies|ise|ize)|report|email)\b/i,
     review: /\b(review(er|ers|s|ed|ing)?|proof ?read(s|ing)?|edit(or|ors|s|ed|ing)?|approv(e|es|al|ed)|fact.?check(s|ed|ing)?|sign.?off|before (i|we) (publish|post|send|ship))\b/i,
     code: /\b(code|coding|bugs?|pull requests?|refactor|repo|commits?)\b/i,
     compare: /\b(second opinion|two takes|compare|pressure.?test)\b/i,
-    test: /(?<!pressure.?)\b(tests?|testing|tested)\b|\b(qa|quality assurance)\b/i,   // "pressure-test" is a second opinion, not QA
+    test: { test: hasTestWork },   // "pressure-test" is a second opinion, not QA (see hasTestWork)
     schedule: /\b(every|each|daily|weekly|hourly|morning|evening|nightly|mondays?|weekdays?)\b/i
   };
   function suggestLineFor(text) {

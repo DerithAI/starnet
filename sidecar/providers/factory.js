@@ -191,6 +191,7 @@
         nativeOllamaBorrowed: wire !== profile && wire.nativeOllama === true,
         numCtx: resolveMaxOutputTokens(wire, 'numCtx'),
         maxCtx: resolveMaxOutputTokens(wire, 'maxCtx'),
+        waitNoteMs: resolveMaxOutputTokens(wire, 'waitNoteMs'),   // native Ollama: when an unanswered request names its placement (#99)
         defaultContext: opts.defaultContext,
         headers: mergedHeaders,
         // run attribution header (starnet only — the profile names it; see openai-compatible requestHeaders)

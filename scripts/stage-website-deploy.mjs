@@ -58,11 +58,27 @@ function pricingIsLive() {
 }
 const PRICING_LIVE = pricingIsLive();
 
+/* Is community sharing open (community maps + SUBMIT A SKILL)? Same single source of truth as pricing:
+   website/site.js COMMUNITY_LIVE. Both features need the cloud's share endpoints, and maps also need an app
+   release carrying SHARE TO COMMUNITY — until then the site must not tell visitors to use them (Andrew,
+   2026-10-19: hold them back). */
+function communityIsLive() {
+  const m = /\bCOMMUNITY_LIVE\s*=\s*(true|false)\b/.exec(readFileSync(join(SRC, 'site.js'), 'utf8'));
+  if (!m) {
+    console.error('website/site.js no longer declares COMMUNITY_LIVE — this script reads that flag to decide');
+    console.error('whether the community maps page and the skill-submit flow publish. Restore it on purpose.');
+    process.exit(1);
+  }
+  return m[1] === 'true';
+}
+const COMMUNITY_LIVE = communityIsLive();
+
 // Paths (relative to website/, POSIX separators) that exist in the repo but must NOT be published.
 // The no-credits legal variants are sources for SUBSTITUTIONS, never pages of their own, so they stay
 // held back in BOTH states — publishing them once pricing is live would just be two dead URLs.
 const HELD_BACK = new Set([
   ...(PRICING_LIVE ? [] : ['pricing.html']),
+  ...(COMMUNITY_LIVE ? [] : ['maps.html', 'maps.js', 'maps.css']),
   'legal/_terms.nocredits.html',
   'legal/_privacy.nocredits.html'
 ]);
@@ -175,6 +191,29 @@ for (const rel of Object.keys(SUBSTITUTIONS)) {
     process.exit(1);
   }
 }
+
+/* COMMUNITY HOLD. Pages carry <!--held:community-->LIVE<!--held:else FALLBACK --><!--/held--> blocks (the
+   fallback is today's pre-launch wording, kept inside a comment so the raw page renders normally). Staging keeps
+   one side; while sharing is held it also strips every generated Maps link. Then it proves, on the bytes that
+   will be uploaded, that no page still points at the held maps page or the skill-submit flow. */
+const HELD_BLOCK = /<!--held:community-->([\s\S]*?)<!--held:else(?: ([\s\S]*?) )?--><!--\/held-->/g;
+const MAPS_LINK = /[ \t]*<a href="[^"]*maps\.html"[^>]*>(?:Maps|MAPS)<\/a>\r?\n?/g;
+const stagedHtml = shipping.filter(rel => /\.html?$/.test(rel) && !rel.startsWith('app/'));
+for (const rel of stagedHtml) {
+  const file = join(OUT, rel.split('/').join(sep));
+  const before = readFileSync(file, 'utf8');
+  let after = before.replace(HELD_BLOCK, (_, live, fallback) => COMMUNITY_LIVE ? live : (fallback || ''));
+  if (!COMMUNITY_LIVE) after = after.replace(MAPS_LINK, '');
+  if (after !== before) writeFileSync(file, after);
+  const leak = after.includes('<!--held:') ? 'an unresolved held block'
+    : !COMMUNITY_LIVE && /maps\.html/.test(after) ? 'a link to the held maps page'
+    : !COMMUNITY_LIVE && /account\.starnetos\.com\/account\/skills/.test(after) ? 'the held skill-submit flow' : '';
+  if (leak) {
+    console.error('staged ' + rel + ' still carries ' + leak + ' — refusing to deploy (COMMUNITY_LIVE=' + COMMUNITY_LIVE + ').');
+    process.exit(1);
+  }
+}
+if (!COMMUNITY_LIVE) console.log('COMMUNITY_LIVE=false in website/site.js — holding the maps page, Maps links and skill submit back.');
 
 /* The sitemap is the one file that can leak a held-back page even though the page itself never
    ships: Cloudflare's catch-all answers 200 for /pricing.html with the homepage body, so a

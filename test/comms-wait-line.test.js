@@ -56,6 +56,16 @@ A.eq(waitNoteText(run([['agent.waiting', { phase: 'retry_backoff', sinceMs: 3000
 A.eq(waitNoteText(run([['agent.waiting', { phase: 'first_byte', sinceMs: 15000 }]])), 'waiting for 15s on the model', 'no model named -> "the model"');
 A.eq(waitNoteText(run([['agent.waiting', { phase: 'connect', sinceMs: 15000, model: 'm' }]])), 'connecting for 15s to m', 'connect phase');
 A.eq(waitNoteText(null), '', 'no note -> empty line (the slot hides)');
+/* #99: a local Ollama withholds its headers until the first token; the sidecar's beat names where /api/ps says the model
+   sits. The line shows exactly that note after the duration, the model still last; a later beat without one drops it. */
+{
+  const note = '~27k-token prompt · Ollama has it 45% on GPU, 55% on CPU at a 32k window';
+  let n = foldWaitNote(null, 'agent.waiting', { runId: 'r', phase: 'connect', sinceMs: 95000, model: 'aide-qwen3-8b:latest', note });
+  A.eq(waitNoteText(n), 'waiting for 1:35 · ' + note + ' — aide-qwen3-8b:latest', 'the note follows the duration; the model trails');
+  n = foldWaitNote(n, 'agent.waiting', { runId: 'r', phase: 'streaming', sinceMs: 110000, model: 'aide-qwen3-8b:latest' });
+  A.eq(waitNoteText(n), 'waiting for 1:50 (stream open) on aide-qwen3-8b:latest', 'a beat without a note shows none (never carried over)');
+  A.eq(foldWaitNote(null, 'agent.waiting', { phase: 'connect', sinceMs: 1, note: 'n'.repeat(500) }).note.length, 240, 'the note is bounded');
+}
 const longModel = 'x'.repeat(80);
 A.ok(waitNoteText(run([['agent.waiting', { phase: 'first_byte', sinceMs: 15000, model: longModel }]])).length < 80, 'a very long model id is clipped');
 /* FACTS FIRST (live browser proof 2026-09-24: the 520 px panel clipped every retry reason; 300 px showed only the model).

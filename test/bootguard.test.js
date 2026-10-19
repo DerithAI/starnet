@@ -232,6 +232,37 @@ function retryable(t, opts) {
   A.eq(t.guard._internals.reasonText('plain'), 'plain', 'reasonText passes strings through');
 }
 
+/* ---- 6b. the copied diagnostics NAME where an uncaught error happened (#136, 2026-10-18) ----
+   A pre-16.4 Mac WebKit hit a SyntaxError parsing app/workflowline.js; WorkflowLine never existed, no critical probe failed
+   (no banner), and the report a user can paste said only "page errors: 1 uncaught error(s)". The summary line now carries
+   file:line + the error's TYPE name — never the message, which can carry data. */
+{
+  const t = boot(allGlobals());
+  t.fire('error', { message: 'SyntaxError: Invalid regular expression: invalid group specifier name', filename: 'tauri://localhost/app/workflowline.js?v=1', lineno: 797, error: { name: 'SyntaxError' } });
+  t.ready();
+  A.eq(t.banner(), null, 'a non-critical module failing to parse is not the fatal banner');
+  A.eq(t.guard.summaryLine(), '1 uncaught error(s) at app/workflowline.js:797 (SyntaxError)', 'the summary names the file, line and error type: ' + t.guard.summaryLine());
+  const Diag = require('../frontend/app/diagnostics.js');
+  A.eq(Diag.withPageErrors('REPORT', t.guard), 'REPORT\npage errors:   1 uncaught error(s) at app/workflowline.js:797 (SyntaxError)', 'COPY DIAGNOSTICS carries the location');
+}
+{
+  const t = boot(allGlobals());
+  t.fire('error', { message: 'TypeError: bad token sk-live-SECRET in https://x/?key=SECRET', filename: 'http://127.0.0.1:8787/app/chat.js?ticket=SECRET', lineno: 5 });
+  t.fire('error', { message: 'Uncaught TypeError: x', filename: 'http://127.0.0.1:8787/app/chat.js', lineno: 5 });
+  t.fire('error', { message: 'Script error.', filename: '', lineno: 0 });
+  for (let i = 0; i < 6; i++) t.fire('error', { message: 'ReferenceError: y', filename: 'http://127.0.0.1:8787/app/m' + i + '.js', lineno: 1, error: { name: 'Error with spaces' } });
+  const line = t.guard.summaryLine();
+  A.ok(!/SECRET/.test(line), 'the summary never carries an error message, query or ticket: ' + line);
+  A.ok(line.startsWith('9 uncaught error(s) at app/chat.js:5 (TypeError), (inline), app/m0.js:1 (ReferenceError), app/m1.js:1 (ReferenceError) +4 more'), 'locations are de-duplicated, bounded, typed from the message when the error object is absent: ' + line);
+  A.eq(t.guard._internals.errorKind({ error: { name: 'x\nSyntaxError' }, message: '' }), '', 'a type name that is not a bare identifier is dropped');
+}
+{
+  const t = boot(allGlobals());
+  t.fire('error', { message: 'SyntaxError: bad', filename: 'http://127.0.0.1:8787/app/workflowline.js', lineno: 797 });
+  for (let i = 0; i < 60; i++) t.fire('error', { message: 'TypeError: loop', filename: 'http://127.0.0.1:8787/app/world.js', lineno: 9 });
+  A.eq(t.guard.summaryLine(), '61 uncaught error(s) at app/workflowline.js:797 (SyntaxError), app/world.js:9 (TypeError)', 'the first (boot-time) place is kept while a later error loops: ' + t.guard.summaryLine());
+}
+
 /* ---- 7. COPY DIAGNOSTICS rides Diag when present (page report + sidecar report), falls back to the clipboard ---- */
 (async () => {
   {

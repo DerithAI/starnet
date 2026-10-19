@@ -1053,6 +1053,7 @@
     // One refusal per resolver verdict, shared by ${KEY} headers and the auth descriptor.
     function keyRefusal(r, name) {
       if (r.reason === 'unattended') return 'this run is unattended and "' + r.name + '" is not approved for unattended use — approve it in TOOLSETS & CONNECTORS → KEYS, or run this while watching';
+      if (r.reason === 'unresolved') return '"' + r.name + '" is kept in 1Password and could not be read (' + String(r.detail || 'not read yet') + ') — ask the Commander to unlock 1Password, then try again. Do not ask for the key itself';
       // A MODEL-PROVIDER key is never handed to a tool and KEYS refuses to store one, so pointing at KEYS here sent
       // agents to ask the Commander for "access" nobody can grant (2026-09-28: OpenRouter was already connected;
       // the agent wanted the raw key to chase a transparent background image_generate could not make yet).
