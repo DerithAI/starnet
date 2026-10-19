@@ -105,4 +105,22 @@ A.ok(/hydrateRunTelemetry\(ws,\s*entry,\s*runId\)[\s\S]{0,300}if\s*\(!arts\.leng
     'hydration shows that honest time and names the approval wait apart — never the wall time as the run time');
 }
 
+// THE FOLD TELLS THE FOOTER'S TIME, BY NAME (Andrew 10-18, the step-rows pass): under "RUN COMPLETE · 907ms · 3.1s waiting
+// on you" the opened fold's lead line read the record's WALL time ("lead · agent · 4.0s") — and the hero's raw id for NOVA.
+{
+  A.ok(/const leadRow = honest > 0 \? Object\.assign\(\{\}, entry, \{ durationMs: honest, waitedMs: wall - honest > 1500 \? wall - honest : 0 \}\) : entry;\s*detail\.appendChild\(telemetryRun\(leadRow, 'lead', hasChips\)\);/.test(src),
+    'the fold\'s lead line tells the footer\'s machine time and names the wait on you apart');
+  A.ok(/const runWho = id => \(id && typeof App !== 'undefined' && App\.agentName && App\.agentName\(id\)\) \|\| id \|\| '';/.test(src) && /head\.textContent = \[role, runWho\(entry\.agentId\),/.test(src)
+    && /Number\(entry\.waitedMs\) > 0 \? fmtMs\(Number\(entry\.waitedMs\)\) \+ ' waiting on you' : ''/.test(src), 'and says who ran it by name, never the raw id');
+  // the glass layer's register for the steps and the footer (pipglass.css)
+  const pip = fs.readFileSync(path.join(__dirname, '../frontend/css/pipglass.css'), 'utf8');
+  const steps = pip.slice(pip.indexOf('PIP-BOY COMMS STEPS'));
+  A.ok(pip.indexOf('PIP-BOY COMMS STEPS') > 0 && /\.tool-chip \.tc-head \{[^}]*font-size: 15px;/.test(steps), 'a step row reads at 15px (its head was 12.5px, its time 11px)');
+  A.ok(/\.tool-chip \.tc-glyph \{[^}]*animation: none;/.test(steps), 'a running step\'s glyph is steady (the working line\'s meter says the run is live)');
+  A.ok(/\.tool-chip\.held :is\(\.tc-glyph, \.tc-stat\) \{ color: var\(--ph-dim\); \}/.test(steps), 'a held step stays plain dim phosphor over the brighter step text');
+  A.ok(/\.tool-chip \.tc-exp \{[^}]*font-size: 0;[^}]*border-right: 2px solid/.test(steps) && /\.comms-presence\.resolved \.cp-chev \{[^}]*font-size: 0;[^}]*border-right: 2px solid currentColor;/.test(steps),
+    '"open me" is a drawn caret on the step and on the footer, never the ▸ a running step starts with');
+  A.ok(/\.comms-presence\.resolved \{\s*font-size: 15px;[^}]*opacity: \.9;/.test(steps), 'RUN COMPLETE stays the quiet footer but legible (was 14px at half opacity)');
+}
+
 A.report('comms-presence.test');
