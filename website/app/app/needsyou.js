@@ -25,7 +25,9 @@
    (Andrew 10-19) IT IS AN INBOX: every row is the door to where its wait is answered — Open lands on the conversation (on
    the approval or question card itself, a worker's work unfolded on its card) or on the window that holds it — and the
    only keys are the safe one-tap actions: Deny refuses an approval through the card's own path (Chat.answerConsent),
-   Retry runs a failed routine again (POST /api/cron/run), Dismiss clears failed work you have seen. */
+   Retry runs a failed routine again (POST /api/cron/run), Dismiss clears failed work you have seen. It reads as ONE panel
+   by kind (Andrew 10-19, B): each kind of wait under its own strip, every row the agent's portrait, its two lines and one
+   right-hand column. */
 const NeedsYou = (() => {
   const DAY = 86400000;
   const KEEP_FAILED_MS = 3 * DAY;      // a failure older than this is history, not a to-do
@@ -299,22 +301,63 @@ const NeedsYou = (() => {
       what: plural(r.n, 'build', 'builds') + ' to keep or discard, the oldest first: "' + r.rail.text + '"' }) : r);
   }
   const waitsIn = rows => rows.reduce((s, r) => s + (r.n || 1), 0);
+  /* (Andrew 10-19, his pick of three rendered at his settings: "B · ONE PANEL BY KIND" — "I like B when they are organized
+     together perfectly … because its groups each agent by whether its an approval etc") ONE panel, each kind of wait under
+     its own strip: the 10-17 alert card's strip, said once for its kind rather than over every card (nine cards showed one
+     and "8 more"). Kinds keep one order, the most blocking first; inside a kind the rows keep the list's own order (asks
+     oldest first, failures newest first). A strip names its kind and, from two waits up, how many (an agent's builds count
+     every build, as the header does); what broke says truthfully whether it FAILED or was STOPPED (a restart, the liveness
+     check). */
+  const FAMILIES = [
+    { id: 'approvals', one: 'Approval', many: 'Approvals' },
+    { id: 'questions', one: 'Question', many: 'Questions' },
+    { id: 'stepin', one: 'Step-in', many: 'Step-in' },
+    { id: 'builds', one: 'Build to review', many: 'Builds to review' },
+    { id: 'quests', one: 'Quest to confirm', many: 'Quests to confirm' },
+    { id: 'loops', one: 'Goal loop', many: 'Goal loops' },
+    { id: 'extensions', one: 'Extensions', many: 'Extensions' },
+    { id: 'waiting', one: 'Waiting', many: 'Waiting' },
+    { id: 'failed' }
+  ];
+  const FAMILY_OF = { approval: 'approvals', question: 'questions', asked: 'questions', stepin: 'stepin', build: 'builds', attest: 'quests',
+    loop: 'loops', extension: 'extensions', failed: 'failed', routine: 'failed' };
+  // a group chat sits with what it waits on: an approval, else a question
+  const familyOf = i => i.kind === 'group' ? (/approval/.test(String(i.what)) ? 'approvals' : 'questions') : FAMILY_OF[i.kind] || 'waiting';
+  const failedOne = r => r.kind === 'routine' || /^failed\b/.test(String(r.what));
+  function byKind(rows) {
+    return FAMILIES.map(f => ({ f, rows: rows.filter(r => familyOf(r) === f.id) })).filter(g => g.rows.length).map(g => {
+      const waits = waitsIn(g.rows), failed = g.rows.some(failedOne), stopped = g.rows.some(r => !failedOne(r));
+      const label = g.f.id !== 'failed' ? (waits > 1 ? g.f.many : g.f.one) : failed && stopped ? 'Failed or stopped' : stopped ? 'Stopped' : 'Failed';
+      return Object.assign(g, { waits, label });
+    });
+  }
+  function rowHtml(i, now) {
+    const keys = keysFor(i), color = colorOf(i.aid), place = ' — in ' + i.where;
+    return '<li class="ny-item ' + i.kind + (placeSaid(i) ? ' ny-place-said' : '') + '" data-ny-key="' + esc(i.key) + '" data-ny-n="' + (i.n || 1) + '">'
+      // the agent's portrait, the figure its CREW card paints (paintFaces), when the wait names an agent
+      + (i.aid ? '<span class="ny-face" aria-hidden="true" data-ny-aid="' + esc(i.aid) + '"><img alt="" draggable="false" hidden></span>' : '')
+      // line 1: WHO (in the agent's colour) · in <where> ....... how long it has waited; "in <where>" is the row's door for
+      // the keyboard and a screen reader on every rail (pipglass.css only hides it from sight where the line has no room):
+      // its name says what the wait is, who, what, and where it lands
+      + '<div class="ny-line">' + (i.who ? '<span class="ny-who"' + (color ? ' style="color:' + esc(color) + '"' : '') + '>' + (i.whoHtml || esc(i.who)) + '</span>' : '')
+      + '<button type="button" class="ny-where" data-ny-act="open" data-ny-key="' + esc(i.key) + '" aria-label="' + esc(kindLabel(i) + ': ' + (i.who ? i.who + ' ' : '') + lineOf(i) + place) + '">in ' + esc(i.where) + '</button>'
+      + '<span class="ny-age">' + esc(age(i.since, now)) + '</span></div>'
+      // line 2: the ask first, then what it is about (the whole of it on hover; the row opens the card that holds it all)
+      + '<div class="ny-what" title="' + esc(i.what + (i.tip ? ' — ' + i.tip : '') + place) + '">' + lineHtml(i) + '</div>'
+      // its one right-hand column: a safe one-tap key (Deny, Retry, Dismiss), or a quiet caret where the row only opens
+      + (keys ? '<div class="ny-keys">' + keys + '</div>' : '<span class="ny-go" aria-hidden="true"></span>')
+      + '</li>';
+  }
   function html(list, now) {
     if (!list.length) return '';
-    const rows = railRows(list), shown = expanded ? rows : rows.slice(0, SHOW), folded = list.length - waitsIn(shown);
+    const groups = byKind(railRows(list)), rows = [].concat(...groups.map(g => g.rows));
+    const shown = expanded ? rows : rows.slice(0, SHOW), on = new Set(shown), folded = list.length - waitsIn(shown);
     return '<div class="ny-head"><span class="ny-lamp" aria-hidden="true"></span><span class="ny-title">Needs you</span><span class="ny-count">' + list.length + '</span></div>'
-      + '<ul class="ny-list">' + shown.map(i => { const keys = keysFor(i), color = colorOf(i.aid), place = ' — in ' + i.where; return '<li class="ny-item ' + i.kind + (placeSaid(i) ? ' ny-place-said' : '') + '" data-ny-key="' + esc(i.key) + '" data-ny-n="' + (i.n || 1) + '">'
-        // (Andrew 10-19, the inbox: compact rows) line 1: WHO (in the agent's colour) · in <where> ....... how long it has
-        // waited; "in <where>" is the row's door for the keyboard and a screen reader on every rail (pipglass.css only hides it
-        // from sight where the line has no room): its name says what the wait is, who, what, and where it lands
-        + '<div class="ny-line">' + (i.who ? '<span class="ny-who"' + (color ? ' style="color:' + esc(color) + '"' : '') + '>' + (i.whoHtml || esc(i.who)) + '</span>' : '')
-        + '<button type="button" class="ny-where" data-ny-act="open" data-ny-key="' + esc(i.key) + '" aria-label="' + esc(kindLabel(i) + ': ' + (i.who ? i.who + ' ' : '') + lineOf(i) + place) + '">in ' + esc(i.where) + '</button>'
-        + '<span class="ny-age">' + esc(age(i.since, now)) + '</span></div>'
-        // line 2: the ask first, then what it is about (the whole of it on hover; the row opens the card that holds it all)
-        + '<div class="ny-what" title="' + esc(i.what + (i.tip ? ' — ' + i.tip : '') + place) + '">' + lineHtml(i) + '</div>'
-        // its key, only for a safe one-tap action (Deny, Retry, Dismiss): at the row's right edge
-        + (keys ? '<div class="ny-keys">' + keys + '</div>' : '')
-        + '</li>'; }).join('') + '</ul>'
+      + '<div class="ny-panel">' + groups.filter(g => g.rows.some(r => on.has(r))).map(g =>
+        // the strip is the group's name for sight; a screen reader hears it once, as the group's own label
+        '<div class="ny-sec ' + g.f.id + '" role="group" aria-label="' + esc(g.label + (g.waits > 1 ? ', ' + g.waits : '')) + '">'
+        + '<div class="ny-grp" aria-hidden="true"><span class="ny-grp-t">' + esc(g.label) + '</span>' + (g.waits > 1 ? '<span class="ny-grp-n">' + g.waits + '</span>' : '') + '</div>'
+        + '<ul class="ny-list">' + g.rows.filter(r => on.has(r)).map(i => rowHtml(i, now)).join('') + '</ul></div>').join('') + '</div>'
       + (rows.length > 1 ? '<button type="button" class="ny-more" data-ny-act="more" data-ny-waits="' + list.length + '" aria-expanded="' + expanded + '"'
         + (folded > 0 || expanded ? '' : ' hidden') + '>' + (expanded ? 'Show fewer' : folded + ' more') + '</button>' : '');
   }
@@ -329,11 +372,16 @@ const NeedsYou = (() => {
     const lis = Array.from(host.querySelectorAll('li.ny-item[data-ny-key]'));
     const more = host.querySelector('.ny-more');
     if (!lis.length || !more) return;
+    // a kind's strip shows only over a row it holds: a kind whose rows all fold folds with them
+    const secs = Array.from(host.querySelectorAll('.ny-sec')).map(sec => ({ sec, rows: typeof sec.querySelectorAll === 'function' ? Array.from(sec.querySelectorAll('li.ny-item[data-ny-key]')) : [] }));
     lis.forEach(li => { li.hidden = false; });
     const waitsOf = li => Number(li.dataset && li.dataset.nyN) || 1;
     const total = Number(more.dataset && more.dataset.nyWaits) || 0;
     let shown = lis.length, shownWaits = lis.reduce((s, li) => s + waitsOf(li), 0);
-    const fold = () => { const n = Math.max(0, total - shownWaits); more.hidden = n <= 0; const t = n + ' more'; if (more.textContent !== t) more.textContent = t; };
+    const fold = () => {
+      secs.forEach(x => { const off = !x.rows.some(li => !li.hidden); if (x.sec.hidden !== off) x.sec.hidden = off; });
+      const n = Math.max(0, total - shownWaits); more.hidden = n <= 0; const t = n + ' more'; if (more.textContent !== t) more.textContent = t;
+    };
     fold();
     while (shown > 1 && host.scrollHeight > host.clientHeight + 1) { const li = lis[--shown]; li.hidden = true; shownWaits -= waitsOf(li); fold(); }
   }
@@ -349,6 +397,16 @@ const NeedsYou = (() => {
     if (host.style.getPropertyValue('--ny-gutter') !== g) host.style.setProperty('--ny-gutter', g);
   }
   const fit = host => { fitGutter(host); fitRows(host); fitGutter(host); };
+  // each row's portrait: the same figure the CREW card paints (AgentPortraits), from the agent the wait names
+  function paintFaces(host) {
+    if (typeof AgentPortraits === 'undefined' || !AgentPortraits.paint || !has(App, 'agents') || typeof host.querySelectorAll !== 'function') return;
+    let roster = [];
+    try { roster = App.agents() || []; } catch (_) { return; }
+    host.querySelectorAll('.ny-face[data-ny-aid]').forEach(face => {
+      const a = roster.find(x => x && x.id === face.dataset.nyAid);
+      if (a) AgentPortraits.paint(face.querySelector('img'), a);
+    });
+  }
   // what the list shows apart from its ages: the rail's 1s heartbeat rebuilds the list only when this moves
   const shapeOf = list => list.map(i => [i.key, i.who, i.what, i.tip || '', i.where, keysFor(i)].join('\u0001')).join('\u0002') + '#' + expanded;
 
@@ -383,6 +441,7 @@ const NeedsYou = (() => {
     if (f && parked && parked.key === fKey) { fAct = parked.act; fCls = parked.cls; }
     parked = null;
     host.innerHTML = html(list, now);
+    paintFaces(host);
     // open, the list takes the rail's room (pipglass.css .ny-open), the sessions waiting under it
     if (host.classList && typeof host.classList.toggle === 'function') host.classList.toggle('ny-open', expanded);
     fit(host);
@@ -457,7 +516,8 @@ const NeedsYou = (() => {
       render(); if (has(App, 'refreshRail')) App.refreshRail(); return;
     }
     if (kind === 'retry' && i.routineId) {
-      if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+      // (the label fits the key column whole, with no "…": VT323 draws it as one flat bar)
+      if (btn) { btn.disabled = true; btn.textContent = 'Running'; }
       try {
         const r = await fetch('/api/cron/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: i.routineId, detach: true }) });
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error((j && j.error) || ('HTTP ' + r.status)); }
@@ -510,6 +570,6 @@ const NeedsYou = (() => {
   }
   function canDismiss(i) { return !!i && (i.kind === 'failed' || (i.kind === 'asked' && !!i.noDoor)); }
   const listShape = list => (list || items()).map(i => i.key + '\u0001' + i.what + '\u0001' + i.where).join('\u0002');
-  return { items, render, openKey, dismissKey, canDismiss, lineOf, listShape, refreshFeeds, _internals: { html, age, keysFor, fitRows, railRows, dismissed, feeds: () => feeds } };
+  return { items, render, openKey, dismissKey, canDismiss, lineOf, listShape, refreshFeeds, _internals: { html, age, keysFor, fitRows, railRows, byKind, familyOf, dismissed, feeds: () => feeds } };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = NeedsYou;
