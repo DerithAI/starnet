@@ -78,7 +78,8 @@ const WHOLE = { clientHeight: 19, scrollHeight: 19, clientWidth: 150, scrollWidt
   const grpHtml = NY._internals.html([grp], NOW);
   A.ok(/<span class="ny-who"[^>]*><span class="ws-agent-names">NOVA, VEX<\/span><span class="ws-agent-more">\+1<\/span><\/span>/.test(grpHtml) && !/>GROUP</.test(grpHtml),
     '…drawn as that very line: ' + grpHtml.slice(0, 300));
-  A.ok(!/ny-face|ny-strip/.test(grpHtml), '(the inbox rows carry no portrait well and no header strip: two lines, its edge says what it is)');
+  A.ok(/<span class="ny-face" aria-hidden="true" data-ny-aid="agent">/.test(grpHtml) && !/ny-strip/.test(grpHtml) && /<div class="ny-sec approvals" role="group" aria-label="Approval">/.test(grpHtml),
+    '…its portrait the lead\'s, under the APPROVAL strip (a group sits with what it waits on), and no strip of its own');
   A.eq(NY.lineOf(grp), 'has an approval waiting', '(its line stays what the group waits on)');
   A.ok(!list.some(i => i.key === 'ask:p9'), 'an ask in a conversation this page does not hold is not listed');
   A.ok(!list.some(i => /wr2|wr5/.test(i.key)), 'finished work and work the Commander stopped never need you');
@@ -142,11 +143,13 @@ const WHOLE = { clientHeight: 19, scrollHeight: 19, clientWidth: 150, scrollWidt
   A.ok(!/>(Approve once|Review|Answer|Confirm|Not yet)</.test(NY._internals.html(asks.map(a => Object.assign(a, { who: 'NOVA', where: 'General', what: 'use fs read: notes.md', since: NOW - 60000 })), NOW)),
     'no row in the list carries an Approve once, Review, Answer, Confirm or Not yet key');
   const glassCss = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'css', 'pipglass.css'), 'utf8');
-  // the one key: a label-sized terminal key at the row's right edge, across its two lines
-  A.ok(/\.ny-keys \{ grid-column: 2; grid-row: 1 \/ span 2; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; \}/.test(glassCss) && /\.ny-key \{\s*flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 9px; font: 15px\/1\.1 'VT323'/.test(glassCss)
-    && /\.ny-keys > \.ny-key \{ flex: 0 0 auto; min-width: max-content; min-height: 34px; \}/.test(glassCss),
-    'a row\'s one key is label-sized, whole and 34px tall at the row\'s right edge (test/needs-you-rail-fit.test.js lays it out)');
-  A.ok(/@container \(max-width: \d+px\) \{[^@]*\.ny-item > \.ny-keys \{ grid-column: 1 \/ -1; grid-row: 3;/.test(glassCss), 'on a narrow row the key steps under the lines, so the ask keeps the row\'s width');
+  // the one key: a terminal key in the row's right-hand column, across its two lines, every key the column's one width
+  A.ok(/\.ny-keys \{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; \}/.test(glassCss)
+    && /\.ny-item > :is\(\.ny-keys, \.ny-go\) \{ grid-column: 3; grid-row: 1 \/ span 2; justify-self: end; \}/.test(glassCss)
+    && /\.ny-key \{\s*flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 9px; font: 15px\/1\.1 'VT323'/.test(glassCss)
+    && /\.ny-keys > \.ny-key \{ flex: 0 0 auto; min-width: 66px; min-height: 34px; text-align: center; \}/.test(glassCss),
+    'a row\'s one key stands in its right-hand column across its two lines, every key the column\'s width and 34px tall (test/needs-you-rail-fit.test.js lays it out)');
+  A.ok(/@container \(max-width: \d+px\) \{[^@]*\.ny-item > \.ny-keys \{ grid-column: 1; grid-row: 3;/.test(glassCss), 'on the narrowest panel the key steps under the lines, so the ask keeps the row\'s width');
   // (two reviews 10-16) "in <where>" was display:none on every default rail (a 250px container query): approval rows never
   // said which conversation asks, keyboard focus fell to the page while an answer was on its way (the focus assertions below
   // run on a host with no CSS, so they never saw it), and build / STEP-IN / extension / loop / group rows had nothing to focus
@@ -160,6 +163,46 @@ const WHOLE = { clientHeight: 19, scrollHeight: 19, clientWidth: 150, scrollWidt
   A.ok(/<button type="button" class="ny-where" data-ny-act="open" data-ny-key="ask:p33" aria-label="Approval: NOVA wants to use fs read: notes\.md — in Launch prep"/.test(doorRow), 'the door\'s name says what the wait is, who, what, and where it lands: ' + doorRow.slice(0, 600));
   A.ok(/<div class="ny-what" title="use fs read: notes\.md — in Launch prep">/.test(doorRow), 'the line\'s hover tip says the whole ask and where it waits (the place the narrow rail hides from the line)');
   A.ok(/<div class="ny-line">[\s\S]*?<span class="ny-age">1m<\/span><\/div>/.test(doorRow), 'how long it has waited ends its first line');
+}
+{
+  // (Andrew 10-19, B: "I like B when they are organized together perfectly … because its groups each agent by whether its an
+  // approval etc") ONE panel, each kind of wait under its own strip, in one order, the most blocking first
+  const mk = (key, kind, extra) => Object.assign({ key, kind, who: 'NOVA', aid: 'agent', what: 'x', where: 'General', since: NOW - 60000 }, extra);
+  const mixed = [
+    mk('worker:f1', 'failed', { what: 'failed: ran out of time', since: NOW - 1000 }),
+    mk('ask:q', 'question', { what: 'Which tier?', p: { promptId: 'q' } }),
+    mk('stepin:h', 'stepin', { what: 'needs you to sign in', where: 'STEP-IN' }),
+    mk('ask:a1', 'approval', { what: 'use fs read: a.md', p: { promptId: 'a1' } }),
+    mk('ask:a2', 'approval', { what: 'use fs read: b.md', p: { promptId: 'a2' } }),
+    mk('worker:f2', 'failed', { what: 'stopped when the station restarted', since: NOW - 2000 })
+  ];
+  const hm = NY._internals.html(mixed, NOW);
+  const secs = [...hm.matchAll(/<div class="ny-sec ([a-z]+)" role="group" aria-label="[^"]*"><div class="ny-grp" aria-hidden="true"><span class="ny-grp-t">([^<]*)<\/span>(?:<span class="ny-grp-n">(\d+)<\/span>)?<\/div><ul class="ny-list">([\s\S]*?)<\/ul><\/div>/g)]
+    .map(m => [m[1], m[2], m[3] || '', [...m[4].matchAll(/data-ny-key="([^"]+)" data-ny-n/g)].map(k => k[1]).join(' ')]);
+  A.eq(secs, [
+    ['approvals', 'Approvals', '2', 'ask:a1 ask:a2'],
+    ['questions', 'Question', '', 'ask:q'],
+    ['stepin', 'Step-in', '', 'stepin:h'],
+    ['failed', 'Failed or stopped', '2', 'worker:f1 worker:f2']
+  ], 'one panel by kind, the most blocking first: each strip names its kind and counts from two waits up, and a kind keeps the list\'s own order');
+  A.eq((hm.match(/<div class="ny-panel">/g) || []).length, 1, '…in ONE panel');
+  A.ok(/<div class="ny-sec approvals" role="group" aria-label="Approvals, 2"><div class="ny-grp" aria-hidden="true">/.test(hm), 'a screen reader hears each kind once, as its group\'s label (the strip is for sight)');
+  A.eq(NY._internals.byKind([mixed[0]]).map(g => g.label).join(), 'Failed', 'failed work alone says Failed');
+  A.eq(NY._internals.byKind([mixed[5]]).map(g => g.label).join(), 'Stopped', 'work a restart or the liveness check stopped says Stopped, never Failed');
+  A.eq(NY._internals.byKind([mk('routine:r', 'routine', { what: 'routine "x" failed' })]).map(g => g.label).join(), 'Failed', 'a failed routine run says Failed');
+  A.eq(['approval', 'question', 'asked', 'stepin', 'build', 'attest', 'loop', 'extension', 'failed', 'routine'].map(kind => NY._internals.familyOf({ kind })).join(' '),
+    'approvals questions questions stepin builds quests loops extensions failed failed', 'every kind of wait has its family');
+  A.eq([NY._internals.familyOf({ kind: 'group', what: 'has an approval waiting' }), NY._internals.familyOf({ kind: 'group', what: 'has a question waiting' })].join(' '), 'approvals questions', 'a group chat sits with what it waits on');
+  // every row: its portrait (when it names an agent), and ONE right-hand column: its key, or the caret where the row only opens
+  const rowsOf = h => [...h.matchAll(/<li class="ny-item [^"]*" data-ny-key="([^"]+)"[^>]*>([\s\S]*?)<\/li>/g)];
+  A.ok(rowsOf(hm).length === 6 && rowsOf(hm).every(m => /^<span class="ny-face" aria-hidden="true" data-ny-aid="agent"><img alt="" draggable="false" hidden><\/span>/.test(m[2])),
+    'every row that names an agent leads with its portrait well (painted by AgentPortraits after the build)');
+  A.ok(rowsOf(hm).every(m => /class="ny-keys"/.test(m[2]) !== /<span class="ny-go" aria-hidden="true"><\/span>/.test(m[2])), 'every row has ONE right-hand column: its key, or else the caret (never both, never neither)');
+  const station = NY._internals.html([mk('extensions', 'extension', { who: 'STATION', aid: undefined, what: 'has 2 extensions awaiting your approval', where: 'EXTENSIONS', since: 0 })], NOW);
+  A.ok(!/ny-face/.test(station) && /<span class="ny-grp-t">Extensions<\/span><\/div>/.test(station), 'a wait that names no agent (the STATION\'s extensions) has no empty portrait well');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'needsyou.js'), 'utf8');
+  A.ok(/host\.innerHTML = html\(list, now\);\s*\n\s*paintFaces\(host\);/.test(src) && /AgentPortraits\.paint\(face\.querySelector\('img'\), a\)/.test(src),
+    'every rebuild paints the portraits through AgentPortraits (the CREW card\'s own figure)');
 }
 {
   const app = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'app.js'), 'utf8');

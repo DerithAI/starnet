@@ -95,7 +95,8 @@ const NY = require('../frontend/app/needsyou.js');
   A.eq((twoBuilds.match(/class="ny-item /g) || []).length, 1, 'two builds from one agent are one card');
   A.ok(/<span class="ny-verb">2 builds to keep or discard<\/span> · Pricing page v2<\/div>/.test(twoBuilds) && /<span class="ny-count">2<\/span>/.test(twoBuilds) && /data-ny-n="2"/.test(twoBuilds),
     '…that leads with how many wait (where the two-line clamp cannot cut it), names the build its click opens (the oldest), and holds both waits');
-  A.ok(!/ny-face|ny-strip/.test(twoBuilds), 'an inbox row is two lines: no portrait well, no header strip (its edge and its line say what it is)');
+  A.ok(/<span class="ny-face" aria-hidden="true" data-ny-aid="writer">/.test(twoBuilds) && /<span class="ny-grp-t">Builds to review<\/span><span class="ny-grp-n">2<\/span>/.test(twoBuilds) && !/ny-strip/.test(twoBuilds),
+    '…with VEX\'s portrait, under the BUILDS TO REVIEW strip that counts both (Andrew 10-19, B: one panel by kind)');
 
   // the doors
   NY.openKey('stepin:h1'); A.eq(opened.pop(), ['stepin', 'h1'], 'STEP-IN opens its window on THAT handoff');

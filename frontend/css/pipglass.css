@@ -570,81 +570,122 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-head {
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-lamp { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-count { margin-left: auto; font-size: 16px; letter-spacing: .4px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--cg-mute); }
-/* (Andrew 10-19: "Go with the inbox: drop the REVIEW/ANSWER keys, keep only the safe one-tap actions, compact rows") each
-   wait is a compact row on the rail's 10px gutter - a 2px box edged in its colour, gold for a wait on you, the fault colour
-   for something that broke, its left edge the colour at full strength - with two lines: WHO . in <where> . how long, then
-   the ask (one line; the whole of it on hover, and the row opens the card that holds it all). Its one key, when it has a
-   safe one-tap action (Deny, Retry, Dismiss), stands at the row's right edge across both lines. (It replaced the 10-17
-   ALERT CARDS - a header strip and a portrait over every wait - once nine waits showed one card and "8 more".) */
+/* (Andrew 10-19, his pick of three rendered at his settings: "B · ONE PANEL BY KIND" — "I like B when they are organized
+   together perfectly … because its groups each agent by whether its an approval etc") the waits sit in ONE matte panel on
+   the rail's 10px gutter, each kind under its own strip (the 10-17 alert card's strip - APPROVALS, QUESTIONS, … FAILED -
+   said once for its kind, with its count from two waits up), its rows on hairlines under it. A row is the agent's portrait,
+   two lines (WHO . in <where> . how long, then the ask) and ONE right-hand column: its safe one-tap key (Deny, Retry,
+   Dismiss) at one width, or a quiet caret where the row only opens, so every age and every key lines up row to row. No gold
+   wash on a row: seven tinted boxes under the CREW cards read as one mustard wall ("this still has such a cheap feel to
+   it"); the colour is the strip, the frame and the key. It is the 10-19 INBOX (every row the door to where its wait is
+   answered, only the safe keys: "drop the REVIEW/ANSWER keys"), regrouped. */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-panel {
+  margin: 0 10px 6px; margin-right: max(0px, 10px - var(--ny-gutter, 0px)); padding: 0; container-type: inline-size;
+  border: 1px solid rgba(var(--gold-rgb), .4); border-radius: 2px; background: rgba(0, 0, 0, .35); box-shadow: none; overflow: hidden;
+}
+/* nothing but failures waiting: the panel's frame takes the fault colour */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-panel:not(:has(> .ny-sec:not(.failed, [hidden]))) { border-color: rgba(var(--bad-rgb), .45); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-sec { --ny-k: var(--gold-rgb); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-sec.failed { --ny-k: var(--bad-rgb); }
+/* a kind's strip, edge to edge: what these waits are, and how many from two up */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-grp {
+  display: flex; align-items: center; gap: 8px; padding: 5px 10px 4px;
+  font-size: 14px; line-height: 1.15; letter-spacing: 2.2px; text-transform: uppercase; color: rgb(var(--ny-k));
+  background: rgba(var(--ny-k), .14); border-bottom: 1px solid rgba(var(--ny-k), .3);
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-sec + .ny-sec > .ny-grp { border-top: 1px solid rgba(var(--ny-k), .3); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-grp-t { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-grp-n { flex: none; margin-left: auto; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-list {
-  display: flex; flex-direction: column; gap: 5px; margin: 0 10px 6px; margin-right: max(0px, 10px - var(--ny-gutter, 0px)); padding: 0; list-style: none;
-  border: 0; border-radius: 0; overflow: visible; background: none; box-shadow: none;
+  display: block; margin: 0; padding: 0; list-style: none; border: 0; border-radius: 0; overflow: visible; background: none; box-shadow: none;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item {
   --ny-k: var(--gold-rgb);
-  position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: center;
-  margin: 0; padding: 7px 9px 7px 10px; border: 1px solid rgba(var(--ny-k), .45); border-left: 3px solid rgba(var(--ny-k), .9); border-radius: 2px; box-shadow: none; cursor: pointer;
-  background: linear-gradient(180deg, rgba(var(--ny-k), .07), rgba(var(--ny-k), .015) 55%), rgba(0, 0, 0, .28);
-  transition: background var(--t-fast, .12s) ease, border-color var(--t-fast, .12s) ease;
+  position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr) 66px; column-gap: 10px; row-gap: 2px; align-items: center;
+  margin: 0; padding: 8px 10px; border: 0; border-radius: 0; box-shadow: none; cursor: pointer; background: transparent;
+  transition: background var(--t-fast, .12s) ease;
 }
-/* something broke (failed work, a failed routine): its row takes the fault colour */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item + .ny-item { border-top: 1px solid rgba(var(--ph-rgb), .14); }
+/* something broke (failed work, a failed routine): its portrait well and its hover take the fault colour */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.failed, .routine) { --ny-k: var(--bad-rgb); }
-#left .ws-needs .ny-item[hidden], #left .ws-needs .ny-more[hidden] { display: none !important; }
-/* the name line on a narrow rail or a large TEXT SIZE: "in <where>" steps out of sight rather than leave a two-letter stub
-   ("in DELIV…"); the name and the time always show. It is never display:none: it stays the row's door for the keyboard and
-   a screen reader (its name says who, what and where; focus lands on it while an answer is on its way), and the line's
-   hover tip ends "— in <where>". A keyboard focus on the door rings its row, so the focus is seen on every rail (live
-   10-16: put back into the line it was a 0-22px stub on the 200px rail) */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { container-type: inline-size; }
-@container (max-width: 250px) {
+#left .ws-needs .ny-item[hidden], #left .ws-needs .ny-sec[hidden], #left .ws-needs .ny-more[hidden] { display: none !important; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:has(> .ny-line > .ny-where:focus-visible) { outline: 2px solid var(--ph-bright); outline-offset: -2px; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) { background: rgba(var(--ny-k), .07); }
+/* the portrait well (the CREW card's, scaled to a row) with the figure the floor draws, edged in the row's colour */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face {
+  grid-column: 1; grid-row: 1 / span 2; align-self: center; position: relative; box-sizing: border-box; width: 34px; height: 40px;
+  display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
+  border-radius: 2px; border: 1px solid rgba(var(--ny-k), .32); background: rgba(0, 0, 0, .3); box-shadow: inset 0 2px 6px rgba(0, 0, 0, .45);
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face img { width: 30px; height: 36px; object-fit: contain; object-position: 50% 100%; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :is(.ny-line, .ny-what) { grid-column: 2; min-width: 0; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-line { grid-row: 1; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-what { grid-row: 2; }
+/* the right-hand column: the key, or the caret that says the row opens, centred on the two lines at the row's right edge */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :is(.ny-keys, .ny-go) { grid-column: 3; grid-row: 1 / span 2; justify-self: end; }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-go {
+  width: 8px; height: 8px; margin-right: 6px; border-right: 2px solid rgba(var(--ph-rgb), .55); border-top: 2px solid rgba(var(--ph-rgb), .55); transform: rotate(45deg);
+}
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) > .ny-go { border-color: var(--ph-bright); }
+/* THE NARROW RAILS (the 232px default, the 200px laptop rail, a large TEXT SIZE), read off the panel's width:
+   · the portrait steps out first and the lines take its room: the rows stay two lines with the key beside them (live on
+     the 232px rail, a portrait AND the key left the ask 12 characters, and the key under the lines made each row 89px:
+     one wait showed as it landed);
+   · "in <where>" steps out of sight rather than leave a two-letter stub ("in DELIV…"). It is never display:none: it stays
+     the row's door for the keyboard and a screen reader (its name says who, what and where; focus lands on it while an
+     answer is on its way), the line's tip ends "— in <where>", and a keyboard focus on it rings the row (live 10-16: put
+     back into the line it was a 0-22px stub on the 200px rail);
+   · at the very narrowest the key leaves its column for the line under the lines, at the row's right edge, so the ask
+     keeps the row's width (the caret, which only says the row opens, steps out with the column) */
+@container (max-width: 300px) {
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { grid-template-columns: minmax(0, 1fr) 66px; }
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-face { display: none; }
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :is(.ny-line, .ny-what) { grid-column: 1; }
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :is(.ny-keys, .ny-go) { grid-column: 2; }
+}
+@container (max-width: 270px) {
   body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where {
     position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
 }
-/* a row too narrow to keep its key beside the lines (the 200px laptop rail, a large TEXT SIZE) puts the key under them, at the
-   right edge, so the ask keeps the row's width */
-@container (max-width: 180px) {
-  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-keys { grid-column: 1 / -1; grid-row: 3; margin-top: 4px; }
+@container (max-width: 200px) {
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item { grid-template-columns: minmax(0, 1fr); }
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-keys { grid-column: 1; grid-row: 3; margin-top: 4px; }
+  body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-go { display: none; }
 }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:has(> .ny-line > .ny-where:focus-visible) { outline: 2px solid var(--ph-bright); outline-offset: -2px; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) { border-color: rgba(var(--ny-k), .8); background: rgba(var(--ny-k), .06); }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > :is(.ny-line, .ny-what) { grid-column: 1; min-width: 0; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-line { grid-row: 1; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item > .ny-what { grid-row: 2; }
 /* line 1: AGENT (the row's headline, in its colour) · in <where> ........ time. The place gives up its room first (review
-   10-16): it starts from nothing and takes only what the name and the time leave (flex-basis 0, then "…"), so a two-word
-   name (MISS FORTUNE) or a group's names stay on one line beside a long place; a name wraps only where it and its time
-   alone overflow the line, and the time is never pushed out of the row */
+   10-16): it starts from nothing and takes only what the name and the time leave (flex-basis 0, then it fades out), so a
+   two-word name (MISS FORTUNE) or a group's names stay on one line beside a long place; a name wraps only where it and its
+   time alone overflow the line, and the time is never pushed out of the row */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-line { display: flex; align-items: baseline; gap: 0 8px; min-width: 0; line-height: 1.15; }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who { flex: 0 1 auto; font-size: 17px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ph); text-shadow: var(--pg-glow-soft); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who { flex: 0 1 auto; font-size: 18px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ph); text-shadow: var(--pg-glow-soft); }
 /* a group chat's headline is its members' names, the SESSIONS row's own line ("ULTRON, CYPHER +3"): it wraps at a space
    rather than end in "…", and its +N keeps its gap */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who > .ws-agent-names { white-space: normal; overflow: visible; text-overflow: clip; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-who > .ws-agent-more { margin-left: .4em; }
-/* line 2: the ask first, then what it is about; one line (the whole sentence is its hover tip, and the row opens it) */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-what {
-  font-size: 15px; line-height: 1.25; letter-spacing: .4px; color: var(--text); overflow-wrap: anywhere; overflow: hidden;
-  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+/* line 2: the ask first, then what it is about. A wait whose last words ARE the claim (a quest said done, loop results,
+   STEP-IN, extensions, a group, a stored question) is shown whole */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-what { display: block; font-size: 16px; line-height: 1.25; letter-spacing: .4px; color: var(--text); overflow-wrap: anywhere; }
+/* an approval, a question, a build and a failure keep ONE line, so every such row is the same two lines (the ask leads, an
+   agent's builds lead with their count, a failure with its claim: "failed: …", "stopped when …", "routine failed · <its
+   name>"). A line too long for its room fades out at the row's edge rather than end in "…": VT323 draws its ellipsis as
+   one flat bar at this size, and "playable p_" read as a typo (a second line that wrapped at a word showed no cut at all).
+   Its whole sentence is the tip, and the row opens the card or the run that holds it all */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.approval, .question, .build, .failed, .routine) .ny-what {
+  white-space: nowrap; overflow: hidden; text-overflow: clip;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(:hover, :focus-within) .ny-what { color: var(--ph-bright); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-verb { color: var(--cg-mute, var(--text)); }
-/* a station wait whose last words ARE the claim (a quest said done, loop results, STEP-IN, a failure) is shown whole;
-   a build leads with its ask, and an agent's builds with their count ("23 builds to keep or discard · …"), so only the
-   title may clamp */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:not(.approval, .question, .build) .ny-what { display: block; -webkit-line-clamp: none; overflow: visible; }
-/* (the inbox) a failure's line leads with its claim ("failed: …", "stopped when …", "routine failed · <its name>"), so two
-   lines always hold it: a long routine name no longer stacks the row five lines deep on a narrow rail (its whole name is
-   the tip, and the row opens its run) */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item:is(.failed, .routine) .ny-what { display: -webkit-box; -webkit-line-clamp: 2; overflow: hidden; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-age { flex: none; margin-left: auto; font-size: 14px; letter-spacing: 1px; font-variant-numeric: tabular-nums; color: var(--cg-mute, var(--text)); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where {
-  flex: 1 1 0; min-width: 0; padding: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+  flex: 1 1 0; min-width: 0; padding: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: clip; cursor: pointer;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
   font: 15px 'VT323', monospace; letter-spacing: .4px; color: var(--cg-mute, var(--text)); background: none; border: 0; box-shadow: none; text-shadow: none;
 }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-where:is(:hover, :focus-visible) { color: var(--ph-bright); }
-/* a row's one key (Deny, Retry, Dismiss) is a terminal key sized to its label, at the row's right edge across both lines,
-   with 9px sides, the 15px label and the glass key's 34px; never narrower than its label */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys { grid-column: 2; grid-row: 1 / span 2; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; }
+/* a row's one key (Deny, Retry, Dismiss) is a terminal key: the 15px label, 9px sides, the glass key's 34px */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key {
   flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 5px 9px; font: 15px/1.1 'VT323', monospace; letter-spacing: .2px; text-transform: uppercase; cursor: pointer; white-space: nowrap;
   color: var(--ph); border: 1px solid rgba(var(--ph-rgb), .4); border-radius: 2px; text-shadow: none;
@@ -657,20 +698,21 @@ body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.primary:hover:not(:disabl
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.deny { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); background: color-mix(in srgb, var(--bad) 6%, transparent); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key.quiet { color: var(--text); background: transparent; }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-key:disabled { opacity: .55; cursor: default; }
-/* every key ends on the row's right edge, aligned row to row (Andrew 10-15: "make sure buttons are aligned"), its label's
-   width (never narrower), the glass key's 34px */
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys > .ny-key { flex: 0 0 auto; min-width: max-content; min-height: 34px; }
+/* every key is the column's one width, so the keys stand in one column row to row (Andrew 10-15: "make sure buttons are
+   aligned"), and never narrower than its label; the glass key's 34px */
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-keys > .ny-key { flex: 0 0 auto; min-width: 66px; min-height: 34px; text-align: center; }
 /* a build's door is its own session, named for the build its line already names: the place leaves sight there (it stays the
    row's door for the keyboard and a screen reader, as on a narrow rail) */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-item.ny-place-said .ny-where { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-/* "N more" / "Show fewer" is a key, the rail's own: full width under the rows, gold, caps (it was a small arrow and a word) */
+/* "N more" / "Show fewer" is a key, the rail's own: full width under the panel, on its edges (its width takes back the
+   scrollbar gutter the panel's right margin gives back, or it ended short of the rows), gold caps on no fill */
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more {
-  display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 20px); min-height: 32px; margin: 3px 10px 6px;
+  display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 10px - max(0px, 10px - var(--ny-gutter, 0px))); min-height: 32px; margin: 3px 10px 6px;
   margin-right: max(0px, 10px - var(--ny-gutter, 0px)); padding: 4px 10px; cursor: pointer;
   font: 15px/1.1 'VT323', monospace; letter-spacing: 1.6px; text-transform: uppercase; color: var(--gold);
-  border: 1px solid rgba(var(--gold-rgb), .45); border-radius: 2px; background: rgba(var(--gold-rgb), .06); box-shadow: none; text-shadow: none;
+  border: 1px solid rgba(var(--gold-rgb), .45); border-radius: 2px; background: transparent; box-shadow: none; text-shadow: none;
 }
-body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more:is(:hover, :focus-visible) { border-color: var(--gold); background: rgba(var(--gold-rgb), .14); }
+body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more:is(:hover, :focus-visible) { border-color: var(--gold); background: rgba(var(--gold-rgb), .1); }
 body.glass-demo:not(.hud-mode) #left .ws-needs .ny-more::after {
   content: ''; width: 7px; height: 7px; margin: 0 0 4px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg);
 }
