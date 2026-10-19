@@ -1576,3 +1576,51 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-agent-filter:hover { borde
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) > .cmsg.work-rate.rate-inline .consent-btn.thumb { border-radius: 2px; }
 body.glass-demo:not(.hud-mode) #screen-game #bottombar .ctx-gauge { border-radius: 2px; }
 body.glass-demo:not(.hud-mode) #screen-game .widget-rail { border-radius: 2px; }
+
+/* ============================================================
+   PIP-BOY MESH (Andrew 10-19: "fix the glow … a different type", then "can we try the mesh look that we had at one point
+   … it made it look way better", "it was just the mesh with no glow", and of the 10-01 mesh re-rendered beside a finer one,
+   "lets try finer"). The dashboard's lit material is the 10-01 PIP-GLASS ▒ mesh again — a checker of phosphor cells at its
+   10-01 strength (.30, gold .32), no gradient — and NOTHING glows: no glow or colour fringe on the type (it was one red 6px
+   haze on every heading and name, a blue name included, deaf to the GLOW slider), no halo on a waiting card, a selection,
+   a lamp or the dock's open tab. The mesh alone says lit: a waiting CREW card, the selected crew card and session row,
+   the open SESSIONS tab, the dock's open group, each NEEDS YOU kind's strip. The cells are two SCREEN pixels at every
+   TEXT SIZE and display scale (the 10-01 shots were taken at 150%, three pixels a cell: "finer" is two), so the checker
+   stays crisp and never beats against the zoom. The windows keep their own material (Andrew 10-18: "keep UI menus as is").
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #screen-game :is(#left, #chat-panel, #topbar, #bottombar) {
+  --mesh-cell: calc(2px * var(--sn-unzoom, 1));
+  --pg-dither: repeating-conic-gradient(rgba(var(--ph-rgb), .3) 0 25%, transparent 0 50%) 0 0 / var(--mesh-cell) var(--mesh-cell);
+  --pg-dither-gold: repeating-conic-gradient(rgba(var(--gold-rgb), .32) 0 25%, transparent 0 50%) 0 0 / var(--mesh-cell) var(--mesh-cell);
+  --pg-glow: none;
+  --pg-glow-soft: none;
+}
+@media (min-resolution: 1.5dppx) { body.glass-demo:not(.hud-mode) #screen-game :is(#left, #chat-panel, #topbar, #bottombar) { --mesh-cell: calc(1.3333px * var(--sn-unzoom, 1)); } }
+@media (min-resolution: 2dppx) { body.glass-demo:not(.hud-mode) #screen-game :is(#left, #chat-panel, #topbar, #bottombar) { --mesh-cell: calc(1px * var(--sn-unzoom, 1)); } }
+/* the head of the SESSIONS view is counter-zoomed (it keeps its size at every TEXT SIZE): its cells are plain pixels. The
+   mesh is re-declared there, since a custom property resolves its var() where it is declared (the rail's zoomed cell
+   would ride in) */
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head {
+  --mesh-cell: 2px;
+  --pg-dither: repeating-conic-gradient(rgba(var(--ph-rgb), .3) 0 25%, transparent 0 50%) 0 0 / var(--mesh-cell) var(--mesh-cell);
+}
+@media (min-resolution: 1.5dppx) { body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { --mesh-cell: 1.3333px; } }
+@media (min-resolution: 2dppx) { body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { --mesh-cell: 1px; } }
+/* the selection (fill only, Andrew 10-18) is the mesh; a wait's selection keeps its gold */
+body.glass-demo:not(.hud-mode) #screen-game :is(#crew .crew-row, #left #workstreams .ws-row) { --pip-fill: var(--pg-dither), rgba(var(--ph-rgb), .06); }
+body.glass-demo:not(.hud-mode) #screen-game #left #workstreams .ws-row:not(.attn) { --pip-fill: var(--pg-dither), rgba(var(--ph-rgb), .05); }
+body.glass-demo:not(.hud-mode) #screen-game :is(#crew .crew-row.asking, #left #workstreams .ws-row.attn) { --pip-fill: var(--pg-dither-gold), rgba(var(--gold-rgb), .06); }
+/* a card that waits on you: the gold mesh in its frame, no halo */
+body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.asking { background: var(--pg-dither-gold), rgba(var(--gold-rgb), .06); box-shadow: none; }
+/* the open tab */
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab.on { background: var(--pg-dither), rgba(var(--ph-rgb), .08); }
+/* NEEDS YOU: each kind's strip is a mesh band in its colour */
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-needs .ny-grp {
+  background: repeating-conic-gradient(rgba(var(--ny-k), .24) 0 25%, transparent 0 50%) 0 0 / var(--mesh-cell) var(--mesh-cell), rgba(var(--ny-k), .06);
+}
+/* no halo anywhere on the dashboard: a lit or selected row, the dock's open group (its open-window underline stays), the
+   first-run starter cards, the UPLINK lamp (a housed lamp, like the crew's) */
+body.glass-demo:not(.hud-mode) #screen-game :is(#crew .crew-row, #left #workstreams .ws-row, #bottombar .bb-group > .bb-grp, #chat-panel .cmsg-empty .cmsg-starter) { box-shadow: none; }
+body.glass-demo:not(.hud-mode) #screen-game #bottombar .bb-group.has-active > .bb-grp { box-shadow: inset 0 -2px 0 var(--ph); }
+body.glass-demo:not(.hud-mode) #screen-game #topbar #status-pill::before { box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .3); }
+body.glass-demo:not(.hud-mode) #screen-game #topbar #status-pill:is(.standby, .down)::before { box-shadow: 0 0 0 1px rgba(0, 0, 0, .55); }
