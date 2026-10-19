@@ -18,9 +18,8 @@
 <meta property="og:image:height" content="630">
 <link rel="canonical" href="https://starnetos.com/">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-<link rel="preload" href="app/assets/sprites/blank/rot_south.png" as="image" fetchpriority="high">
 <link rel="stylesheet" href="styles.css?v=20260924-home-rules">
-<link rel="stylesheet" href="home.css?v=20261019-short">
+<link rel="stylesheet" href="home.css?v=20261019-video">
 </head>
 <body class="home">
 
@@ -93,8 +92,8 @@
           <button class="ctab" role="tab" aria-selected="false" tabindex="-1" data-chapter="ledger"><span class="ct-n">05</span><span class="ct-t">Models &amp; budgets</span><span class="ct-bar" aria-hidden="true"></span></button>
         </div>
         <div class="demo-body">
-          <div class="stage-clip" style="background-image:url(assets/crew-station.webp)">
-            <iframe id="crew-app" data-src="app/embed.htm?v=20261014-crew2" scrolling="no" loading="lazy" tabindex="-1" title="StarNet station renderer playing a scripted replay"></iframe>
+          <div class="stage-clip">
+            <video id="crew-video" muted playsinline preload="auto" poster="assets/station/delegate.jpg?v=20261019" aria-label="StarNet station recorded from the real renderer, playing a scripted replay of harness events"></video>
           </div>
           <div class="trace" aria-live="off">
             <div class="trace-head">
@@ -105,7 +104,7 @@
             <a class="trace-link" data-ch-link href="docs/agents.html">How crews work &rarr;</a>
           </div>
         </div>
-        <figcaption><strong>YOUR CREW, AT WORK</strong><span>Actual StarNet renderer &middot; current source build<br>Scripted replay of harness events &mdash; no model is running on this page.</span></figcaption>
+        <figcaption><strong>YOUR CREW, AT WORK</strong><span>Recorded from the actual StarNet renderer &middot; current source build<br>Scripted replay of harness events &mdash; no model is running on this page.</span></figcaption>
       </figure>
     </div>
 
@@ -243,7 +242,8 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
 </footer>
 
 <script src="site.js?v=20260913-brand-nav"></script>
-<script src="station-demo.js?v=20261014-crew2"></script>
+<script src="station-chapters.js?v=20261019"></script>
+<script src="station-demo.js?v=20261019"></script>
 <script src="home.js?v=20261014-crew1"></script>
 </body>
 </html>

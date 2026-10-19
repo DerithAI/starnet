@@ -1,8 +1,10 @@
-/* The homepage "watch it work" console (2026-10-14) embeds the REAL frontend (website/app) booted from
-   the website-only crew save in demo-boot.js, and station-demo.js drives it ONLY by emitting harness
-   events onto the app's own bus through demo-boot's StarnetDemoBridge. These pins keep three promises:
-   the room is still the product's own starter (never a second handwritten station), the replay never
-   reaches into the app any other way (the /app/* CSP forbids eval), and the page says it is a replay. */
+/* The homepage "watch it work" console (2026-10-19) plays RECORDINGS of the real renderer. Each chapter in
+   website/station-chapters.js is played once through the real app (website/app booted from the crew save in
+   demo-boot.js) by scripts/record-station-demo.mjs, which emits the harness's own bus events through
+   demo-boot's StarnetDemoBridge and records the station canvas. The page plays the clip and prints the same
+   chapter's trace on the video clock. These pins keep four promises: the room is still the product's own
+   starter, every chapter has its clip, the recorder drives the app only through the bridge, and the page
+   says it is a replay. */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('fs');
@@ -12,34 +14,44 @@ const vm = require('vm');
 const ROOT = path.join(__dirname, '..');
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
 const js = read('website', 'station-demo.js');
+const chapters = read('website', 'station-chapters.js');
+const recorder = read('scripts', 'record-station-demo.mjs');
 const css = read('website', 'home.css');
 const html = read('website', 'index.html');
 const demo = read('website', 'app', 'demo-boot.js');
 
-// ---- the page: one embed, cache-busted, honestly captioned ----
-A.ok(/<iframe id="crew-app" data-src="app\/embed\.htm\?v=20261014-crew2"/.test(html),
-  'the homepage embeds the dashboard-upload-safe app document, cache-busted for the crew scene');
-A.ok(/station-demo\.js\?v=20261014-crew2/.test(html), 'the homepage loads the replay driver');
-A.ok(/class="stage-clip" style="background-image:url\(assets\/crew-station\.webp\)"/.test(html) && fs.existsSync(path.join(ROOT, 'website', 'assets', 'crew-station.webp')),
-  'a real frame of the crew room holds the window while the app boots');
-A.ok(/frame\.src = frame\.getAttribute\('data-src'\)/.test(js) && /max-width:760px/.test(js),
-  'desktops load the live app; phones keep the still frame instead of the full renderer');
-A.ok(/\.stage-clip iframe\{ opacity:0;/.test(css) && /\.stage-clip\.live iframe\{ opacity:1; \}/.test(css) && /classList\.add\('live'\)/.test(js),
-  'the live station fades in over the poster only once the crew is on the floor');
+// ---- the page: a recorded clip, never the whole app ----
+A.ok(/<video id="crew-video" muted playsinline preload="auto" poster="assets\/station\/delegate\.jpg/.test(html),
+  'the console is a muted inline video with the first chapter poster');
+A.eq(/<iframe[^>]*crew-app|app\/embed\.htm/.test(html), false, 'the homepage no longer boots the whole app in an iframe');
+A.ok(/station-chapters\.js\?v=\d+"><\/script>\s*<script src="station-demo\.js\?v=\d+">/.test(html), 'the chapter data loads before the player');
 A.eq(/live-preview\.js/.test(html), false, 'the retired starter-preview crop script is gone');
 A.eq(/sch-flow|cp-crew|data-term=/.test(html), false, 'the retired SVG capability schematics are gone (the replay chapters replace them)');
-A.ok(/scripted replay/.test(html) && /no model is running on this page/.test(html),
-  'the console says plainly that it is a scripted replay and no model runs');
+A.ok(/Recorded from the actual StarNet renderer/.test(html) && /scripted replay/i.test(html) && /no model is running on this page/.test(html),
+  'the console says plainly that it is a recording of a scripted replay and no model runs');
 A.ok(/id="station"/.test(html), 'the generator-owned PRODUCT nav link (#station) still lands on the console');
+A.ok(/\.stage-clip video\{/.test(css) && /aspect-ratio:890 \/ 702/.test(css), 'the clip fills the room window at the recorded aspect');
 
-// ---- the driver: bus events through the bridge, nothing else ----
-A.ok(/StarnetDemoBridge/.test(js), 'the replay reaches the app only through the embed bridge');
-A.eq(/\beval\(|new Function|contentWindow\.(World|U|App)\b/.test(js), false,
-  'the replay never evals or reaches app globals directly (the /app/* CSP forbids eval)');
+// ---- every chapter has its clip and poster ----
+const g = {}; vm.runInNewContext(chapters, { window: g });
+const C = g.StarnetChapters;
+A.eq(C.ORDER, ['delegate', 'flow', 'tools', 'away', 'ledger'], 'five chapters, in tab order');
+for (const key of C.ORDER) {
+  const mp4 = path.join(ROOT, 'website', 'assets', 'station', key + '.mp4');
+  A.ok(fs.existsSync(mp4) && fs.statSync(mp4).size < 4 * 1024 * 1024, key + ' has a recorded clip under 4 MB');
+  A.ok(fs.existsSync(path.join(ROOT, 'website', 'assets', 'station', key + '.jpg')), key + ' has a poster frame');
+  A.ok(fs.existsSync(path.join(ROOT, 'website', 'assets', 'station', key + '.webm')), key + ' has a VP9 twin for browsers without H.264');
+  A.ok(html.includes('data-chapter="' + key + '"'), key + ' has a tab');
+}
+
+// ---- the player follows the video clock; the recorder drives the app through the bridge only ----
+A.ok(/video\.currentTime \* 1000 - C\.LEAD_MS/.test(js), 'trace lines are printed on the video clock');
+A.ok(/IntersectionObserver/.test(js) && /visibilitychange/.test(js), 'the clip pauses off screen and in hidden tabs');
 for (const ev of ['workitem.placed', 'agent.run.start', 'agent.run.end', 'agent.tool_call', 'agent.tool_result', 'shell.exec', 'verify.result', 'agent.token'])
-  A.ok(js.includes("'" + ev + "'"), 'the replay drives the renderer with the real ' + ev + ' event');
-A.ok(/IntersectionObserver/.test(js) && /visibilitychange/.test(js), 'the replay pauses off screen and in hidden tabs');
-A.ok(/aspect-ratio:var\(--stage-aspect/.test(css) && /scale\(var\(--k/.test(css), 'the stage crop consumes the driver geometry');
+  A.ok(chapters.includes("'" + ev + "'"), 'a recording drives the renderer with the real ' + ev + ' event');
+A.ok(/StarnetDemoBridge\.emit\(n, p\)/.test(recorder) && /StarnetChapters\.perform\(/.test(recorder),
+  'the recorder plays the shared chapter script through the embed bridge');
+A.ok(/captureStream\(30\)/.test(recorder) && /crop=\$\{CROP\.w\}:\$\{CROP\.h\}/.test(recorder), 'the recorder captures the station canvas and crops it to the room');
 
 // ---- demo-boot: starter room + crew, bridge is emit-only ----
 A.ok(/function scopeTextures\(\)/.test(demo) && /ROOM_PROPS = \/\^\(desk\|war_intelcab\|gigs_servercart\|comms_dish\|workbench\|studio\|plant\|intake\|bay\|outbox\)/.test(demo),

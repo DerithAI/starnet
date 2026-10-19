@@ -226,13 +226,9 @@
 .crew-monitor .ctab[aria-selected="true"]{ border-bottom-color:var(--amber); background:linear-gradient(0deg, rgba(255,157,47,.12), transparent); }
 .crew-monitor .ct-bar{ left:18px; right:18px; bottom:3px; }
 .demo-body{ display:grid; grid-template-columns:minmax(0,1.62fr) minmax(280px,1fr); }
-.stage-clip{ position:relative; z-index:1; overflow:hidden; aspect-ratio:var(--stage-aspect,1.27); background:#040302 center/cover no-repeat; border-right:1px solid var(--line); }
-/* the poster (a real frame of this room from this renderer) holds the window until the live app is up */
-.stage-clip iframe{ opacity:0; transition:opacity .8s ease; }
-.stage-clip.live iframe{ opacity:1; }
-.stage-clip iframe{ position:absolute; left:0; top:0; border:0; display:block; pointer-events:none;
-  width:var(--fw,1300px); height:var(--fh,1066px); transform-origin:0 0;
-  transform:scale(var(--k,1)) translate(var(--fx,0px), var(--fy,0px)); }
+.stage-clip{ position:relative; z-index:1; overflow:hidden; aspect-ratio:890 / 702; background:#040302 center/cover no-repeat; border-right:1px solid var(--line); }
+/* the clip is a recording of the real renderer (scripts/record-station-demo.mjs), cropped to the room */
+.stage-clip video{ position:absolute; inset:0; width:100%; height:100%; display:block; object-fit:cover; background:#040302; }
 .trace{ position:relative; display:flex; flex-direction:column; min-height:0; padding:20px 22px 16px; background:#0c0a07; }
 .trace::after{ content:''; position:absolute; inset:0; pointer-events:none; background:repeating-linear-gradient(0deg, transparent 0 3px, rgba(0,0,0,.14) 3px 4px); }
 .trace-head{ padding-bottom:14px; border-bottom:1px solid var(--line); }
