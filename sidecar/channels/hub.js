@@ -1052,9 +1052,6 @@
       if (outboxTimer) { try { clearTimer(outboxTimer); } catch (_) {} outboxTimer = null; }
     }
 
-    // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
-    // live floor plan, which is content-per-message and not a stable "who am I talking to"). Used by /agents,
-    // /talk confirmations, and /model to name the target honestly.
     /* GROUP ADMISSION lives on the chat's own record, like /mention and /approvals: the adapter's allow-list reads
        this per message, so /allow and /deny take effect on the next one and survive a restart. The value is the
        CHANNEL id, not a bare flag, because the station bot and the Discord/Slack/Matrix/Signal hubs share one
@@ -1066,6 +1063,9 @@
       catch (_) { return false; }
     }
 
+    // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
+    // live floor plan, which is content-per-message and not a stable "who am I talking to"). Used by /agents,
+    // /talk confirmations, and /model to name the target honestly.
     function ownerOnlyReply(label) {
       return '⚠ ' + label + ' is owner-only on this station — only the paired owner can use it. You can still talk to the agent here.';
     }
