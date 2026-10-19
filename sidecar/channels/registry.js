@@ -98,7 +98,10 @@
     const adapterOpts = Object.assign({}, deps.adapter, {
       onInbound: (deps.adapter && deps.adapter.onInbound) || hub.onInbound,
       onCallback: (deps.adapter && deps.adapter.onCallback) || hub.onCallback,
-      onStatus: (deps.adapter && deps.adapter.onStatus) || hub.onStatus
+      onStatus: (deps.adapter && deps.adapter.onStatus) || hub.onStatus,
+      // the groups the paired owner admitted with /allow, read live off the hub's chat records (a caller's own
+      // list still wins). Absent, every group/guild/room message was dropped on every platform (2026-10-19).
+      allowedChats: (deps.adapter && deps.adapter.allowedChats) || (typeof hub.chatAdmitted === 'function' ? hub.chatAdmitted : undefined)
     });
     const adapter = descriptor.makeAdapter(adapterOpts);
     adapterRef = adapter;
