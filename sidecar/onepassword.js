@@ -72,7 +72,7 @@ function findOp({ env, platform, exists, join }) {
 
 const MSG = {
   'not-installed': 'the 1Password CLI (op) is not installed. Install it, then in the 1Password app turn on Settings → Developer → Integrate with 1Password CLI',
-  locked: '1Password did not answer: open and unlock the 1Password app, then approve StarNet when it asks (unattended runs need a 1Password service account: set OP_SERVICE_ACCOUNT_TOKEN before starting StarNet)',
+  locked: '1Password is locked or signed out: unlock the 1Password app and approve StarNet when it asks',
   timeout: '1Password did not answer in time: open and unlock the 1Password app, then approve StarNet when it asks',
   'bad-value': 'that 1Password field is not a single-line key (it is empty, has spaces or line breaks, or is too long). Point the reference at the field that holds the API key',
 };
