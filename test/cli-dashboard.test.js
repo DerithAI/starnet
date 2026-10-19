@@ -331,89 +331,43 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
 }
 
-// ---- the portrait: an agent's station sprite as ASCII art beside COMMS -------------------------------------------------
+// ---- the avatar: the agent in COMMS as a small space helmet at the foot of CREW, its face its state ------------------
 {
-  const zlib = require('node:zlib');
-  const png = require('../bin/lib/png.js');
-  const portrait = require('../bin/lib/portrait.js');
-  // a minimal PNG writer: every row filtered with `filter(y)`, so each of the five filters is read back
-  function encode(w, h, rgba, type, filter) {
-    const ch = { 0: 1, 2: 3, 4: 2, 6: 4 }[type], stride = w * ch;
-    const px = Buffer.alloc(stride * h);
-    for (let i = 0; i < w * h; i++) {
-      const s = i * 4, d = i * ch;
-      if (type === 6) rgba.copy(px, d, s, s + 4);
-      else if (type === 2) rgba.copy(px, d, s, s + 3);
-      else if (type === 0) px[d] = rgba[s];
-      else { px[d] = rgba[s]; px[d + 1] = rgba[s + 3]; }
-    }
-    const raw = Buffer.alloc((stride + 1) * h);
-    for (let y = 0; y < h; y++) {
-      const f = filter(y);
-      raw[y * (stride + 1)] = f;
-      for (let i = 0; i < stride; i++) {
-        const x = px[y * stride + i], a = i >= ch ? px[y * stride + i - ch] : 0, b = y ? px[(y - 1) * stride + i] : 0, c = y && i >= ch ? px[(y - 1) * stride + i - ch] : 0;
-        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-        const pred = [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f];
-        raw[y * (stride + 1) + 1 + i] = (x - pred) & 255;
-      }
-    }
-    const chunk = (kind, body) => { const len = Buffer.alloc(4); len.writeUInt32BE(body.length); return Buffer.concat([len, Buffer.from(kind, 'latin1'), body, Buffer.alloc(4)]); };
-    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = type;
-    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+  const helmet = (st, t, still) => { const g = tui.makeGrid(12, 5); tui.drawAvatar(g, 0, 0, st, true, t, still); return g.out().map(tui.toPlain); };
+  const eyesOf = rows => rows[3].slice(1, 8).trim();
+  const idle = helmet({ key: 'idle' }, T0, false);
+  A.ok(idle.length === 5 && idle.every(l => tui.width(l.replace(/\s+$/, '')) <= 9), 'the avatar is small: 9 columns by 5 rows');
+  A.eq(eyesOf(idle).replace(/\s+/g, ' '), '- -', 'idle: eyes shut');
+  A.eq(eyesOf(helmet({ key: 'needs' }, T0, false)).replace(/\s+/g, ' '), '! !', 'needs you: alarmed');
+  A.eq(eyesOf(helmet({ key: 'done' }, T0, false)).replace(/\s+/g, ' '), '^ ^', 'done: pleased');
+  A.eq(eyesOf(helmet({ key: 'stopped', text: 'stopped' }, T0, false)).replace(/\s+/g, ' '), 'x x', 'stopped: x');
+  const looks = new Set(), stills = new Set(), idles = new Set();
+  for (let t = 0; t < 3200; t += 100) {
+    looks.add(helmet({ key: 'working', since: T0 }, T0 + t, false).join('\n'));
+    stills.add(helmet({ key: 'working', since: T0 }, T0 + t, true).join('\n'));
+    idles.add(helmet({ key: 'idle' }, T0 + t, false).join('\n'));
   }
-  // a figure: 40×80, a 10 px clear margin, the body 20×60 getting brighter downward
-  const W = 40, H = 80, rgba = Buffer.alloc(W * H * 4);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const i = (y * W + x) * 4, inside = x >= 10 && x < 30 && y >= 10 && y < 70, v = inside ? Math.round(40 + (y - 10) * 3.5) : 0;
-    rgba[i] = v; rgba[i + 1] = v; rgba[i + 2] = v; rgba[i + 3] = inside ? 255 : 0;
-  }
-  const back = png.decode(encode(W, H, rgba, 6, y => y % 5));
-  A.ok(back.width === W && back.height === H && Buffer.from(back.data).equals(rgba), 'the PNG decoder reads RGBA back exactly through all five row filters');
-  const grey = png.decode(encode(W, H, rgba, 4, y => (y * 3) % 5));
-  A.ok(grey.data[(40 * W + 20) * 4] === rgba[(40 * W + 20) * 4] && grey.data[3] === 0 && grey.data[(40 * W + 20) * 4 + 3] === 255, 'grey + alpha reads back');
-  const rgb = png.decode(encode(W, H, rgba, 2, () => 4));
-  A.ok(rgb.data[3] === 255 && rgb.data[(40 * W + 20) * 4 + 1] === rgba[(40 * W + 20) * 4 + 1], 'RGB reads back opaque');
-  let bad = ''; try { png.decode(Buffer.from('not a png at all, really not one')); } catch (e) { bad = e.message; }
-  A.ok(/not a PNG/.test(bad), 'anything else throws (the caller draws no picture): ' + bad);
-  const sprite = png.decode(require('fs').readFileSync(require('path').join(__dirname, '..', 'frontend', 'assets', 'sprites', 'alien', 'rot_south.png')));
-  A.ok(sprite.width === 92 && sprite.height === 92 && sprite.data.some((v, i) => i % 4 === 3 && v === 255) && sprite.data.some((v, i) => i % 4 === 3 && v === 0), 'a real station sprite decodes: ' + sprite.width + '×' + sprite.height);
-
-  const art = portrait.art(back, { rows: 12, maxCols: 26 });
-  A.ok(art && art.rows === 12 && art.cols === 8, 'the figure is trimmed to its ink and drawn 12 rows tall, cells half as wide as tall: ' + (art && art.cols + '×' + art.rows));
-  A.ok(art.cells.every(l => l.length === 8 && l.every(c => c && portrait.RAMP.indexOf(c.ch) >= 0 && c.lv >= 0 && c.lv <= 6)), 'every inked cell is a ramp character on the red ramp');
-  A.ok(art.cells[0][3].lv < art.cells[11][3].lv && portrait.RAMP.indexOf(art.cells[0][3].ch) < portrait.RAMP.indexOf(art.cells[11][3].ch), 'brighter pixels draw denser, hotter characters');
-  A.eq(portrait.art({ width: 4, height: 4, data: new Uint8Array(64) }), null, 'a blank image has no portrait');
-  A.ok(portrait.art(back, { rows: 40, maxCols: 6 }).cols <= 6, 'a figure that would come out too wide is drawn shorter instead');
-  const skins = portrait.parseSkins("DATA.SKINS = {\n  blank: {\"name\":\"Cadet\",\"set\":\"approved_android\"},\n  ultron: {\"name\":\"U\",\"set\":\"approved_ultron\"},\n  alien: {\"name\":\"Alien\",\"set\":\"alien\"},\n  junk: {not json},\n  evil: {\"set\":\"../../etc\"},\n};\nDATA.DEFAULT_SKIN = 'blank';");
-  A.eq([skins.alien, skins.junk, skins.evil, skins['']], ['alien', undefined, undefined, 'approved_android'], "the app's skin table is read off data-shim.js; a bad line or a path-like set is skipped");
-  A.eq([portrait.setFor('researcher', 'alien', skins), portrait.setFor('kaze', '', skins), portrait.setFor('ULTRON', 'alien', skins)], ['alien', 'approved_android', 'approved_ultron'], "the app's own rule: the skin's set, the default skin when it wears none, ULTRON its own");
+  A.ok(looks.size >= 3 && [...looks].every(f => /o {3}o/.test(f.split('\n')[3])), 'working: eyes open and glancing side to side (' + looks.size + ' frames)');
+  A.ok(stills.size === 1 && idles.size === 1, 'only working moves: a still screen and an idle agent hold one frame');
+  const g = tui.makeGrid(12, 5);
+  tui.drawAvatar(g, 0, 0, { key: 'working', since: T0 }, true, T0, true);
+  A.ok(g.out()[0].some(([t, s]) => t.trim() === '•' && /ph/.test(s)) && g.out().flat().every(([, s]) => !/\ba[0-5]\b/.test(s)), 'the antenna light glows the working red; one palette, no hue of its own');
+  A.eq(tui.stateWords({ key: 'working', since: T0 - 65000 }, T0, true).slice(1), ['ph b', '1m05s'], 'beside it: working, and for how long');
 
   const m = crew();
   m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
-  const withPic = screen(m, { sprites: { astra: back } }, 140, 40, T0 + 1000);
-  const plain = withPic.map(tui.toPlain);
-  const commsTop = plain.findIndex(l => /╭─ COMMS/.test(l));
-  A.ok((plain[commsTop].match(/╮/g) || []).length === 3, 'the portrait has its own frame beside COMMS (CREW, COMMS, portrait): ' + plain[commsTop]);
-  const picCells = withPic.flatMap((r, y) => { let x = 0; const out = []; for (const [t, s] of r) for (const ch of t) { if (/^r[0-6]$/.test(s)) out.push({ x, y }); x += tui.width(ch); } return out; });
-  const commsRight = plain[commsTop].indexOf('╮');
-  A.ok(picCells.length >= 8 * 12 && picCells.every(c => c.x > commsRight), 'the figure is drawn on the red ramp, right of COMMS: ' + picCells.length + ' cells');
-  A.ok(plain.every(l => tui.width(l) <= 140), 'it still fits the terminal');
-  const noPic = screen(m, { sprites: { astra: back }, portraits: false }, 140, 40, T0 + 1000);
-  A.ok(!noPic.flat().some(([, s]) => /^r[0-6]$/.test(s)), 'STARNET_PORTRAIT=0 (portraits off) draws none');
-  const tight = screen(m, { sprites: { astra: back } }, 95, 40, T0 + 1000);
-  A.ok(!tight.flat().some(([, s]) => /^r[0-6]$/.test(s)), 'where COMMS would keep under 64 columns, there is no portrait');
-  const none = screen(m, { sprites: { cypher: back } }, 140, 40, T0 + 1000);
-  A.ok(!none.flat().some(([, s]) => /^r[0-6]$/.test(s)), 'an agent without a sprite has no portrait, and COMMS keeps the room');
-  // working: a bright line sweeps down the figure; a still screen holds none
-  const styles = (still, t) => screen(m, { sprites: { astra: back }, still }, 140, 40, t).flat().filter(([, s]) => /^r[0-6]$/.test(s)).map(([t2, s]) => t2 + s).join('|');
-  const frames = new Set(), stills = new Set();
-  for (let t = 0; t < 30 * 70; t += 70) { frames.add(styles(false, T0 + t)); stills.add(styles(true, T0 + t)); }
-  A.ok(frames.size > 5 && stills.size === 1, 'while its agent works, a bright line sweeps the portrait (' + frames.size + ' frames); a still screen holds one');
-  m.apply('agent.run.end', { runId: 'r1', agentId: 'astra', reason: 'done' }, T0 + 2000);
-  const idle = new Set();
-  for (let t = 0; t < 30 * 70; t += 70) idle.add(styles(false, T0 + 3000 + t));
-  A.eq(idle.size, 1, 'an agent not working holds still (motion means working)');
+  const scr = screen(m, {}, 120, 34, T0 + 12000).map(tui.toPlain);
+  const div = scr.findIndex(l => /^├─+┤/.test(l));
+  const crewTop = scr.findIndex(l => /^╭─ CREW /.test(l));
+  const bot = scr.findIndex((l, i) => i > crewTop && /^╰─+╯/.test(l));
+  A.ok(div > crewTop && bot - div === 6, 'the avatar card sits at the foot of CREW, under a rule: rows ' + div + '..' + bot);
+  A.ok(/^│ +[▄█▀ ]+ +ASTRA/i.test(scr[div + 3]) && /working/.test(scr[div + 4]) && /12s/.test(scr[div + 5]), 'beside the helmet: the name, what it is doing, for how long: ' + scr.slice(div + 3, div + 6).map(l => l.slice(0, 26)).join(' / '));
+  A.ok((scr[crewTop].match(/╮/g) || []).length === 2, 'no panel of its own: CREW and COMMS only, COMMS keeps the width: ' + scr[crewTop]);
+  // a crew too long for the card keeps its list; no avatar
+  const big = makeStation();
+  big.setRoster({ agents: Array.from({ length: 24 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });
+  const full = screen(big, { focus: 'a3' }, 120, 30, T0).map(tui.toPlain);
+  A.ok(!full.some(l => /^├─+┤/.test(l)), 'when the crew list needs the room, there is no avatar');
 }
 
 A.report('cli-dashboard.test');

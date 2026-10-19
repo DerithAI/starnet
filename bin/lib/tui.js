@@ -15,7 +15,6 @@ const { fmtDur, fmtShort, costText, askInspect } = require('./station-model.js')
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
 const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
-const portraitLib = require('./portrait.js');   // an agent's station sprite as ASCII art
 
 const BARS = '▁▂▃▄▅▆▇█';
 
@@ -236,11 +235,14 @@ function render(model, ui, size, now) {
   }
   const promptY = H - 2, hintY = H - 1, bot = promptY - 1;
 
-  // ---- CREW: a framed list down the left — lamp, name, and a word for what it is doing — the one in COMMS marked ----
+  // ---- CREW: a framed list down the left — lamp, name, and a word for what it is doing — the one in COMMS marked; at its
+  // foot, when the list leaves room, the agent in COMMS as a small space helmet whose face says what it is doing ----------
   const side = W >= 90 && rows.length > 0;
-  const sw = side ? Math.min(30, Math.max(22, Math.max(...rows.map(r => width(r.name))) + 14)) : 0;
+  const sw = side ? Math.min(30, Math.max(26, Math.max(...rows.map(r => width(r.name))) + 14)) : 0;
   if (side) {
-    const inner = bot - top - 1;
+    const card = focusRow && rows.length <= bot - top - 1 - AVATAR_ROWS;
+    const listBot = card ? bot - AVATAR_ROWS : bot;
+    const inner = listBot - top - 1;
     const fi = Math.max(0, rows.indexOf(focusRow));
     const start = rows.length > inner ? Math.min(Math.max(0, fi - Math.floor(inner / 2)), rows.length - inner) : 0;
     const shown = rows.slice(start, start + inner);
@@ -257,29 +259,19 @@ function render(model, ui, size, now) {
       if (tag) g.putR(sw - 2, yy, tag[0], tag[1]);
       if (foc) { g.put(1, yy, '▌', 'ph b'); g.hl(yy, 1, sw - 1, 'sel'); }
     });
-  }
-
-  // ---- PORTRAIT: the agent in COMMS as ASCII art — the figure it is in the app — framed beside COMMS, only where COMMS
-  // keeps 64 columns to talk in. While the agent works, a bright line sweeps down the figure (a still screen holds none).
-  const sprite = side && ui.portraits !== false && focusRow && ui.sprites ? ui.sprites[focusRow.id] : null;
-  const picRows = Math.min(26, bot - top - 3);
-  let pic = sprite && picRows >= 10 ? artFor(sprite, picRows, 26) : null;
-  const pw = pic && W - sw - (pic.cols + 4) >= 66 ? pic.cols + 4 : 0;
-  if (!pw) pic = null;
-  if (pic) {
-    const px0 = W - pw;
-    frame(g, px0, top, W - 1, bot, 'rule');
-    const y0 = top + 1 + Math.max(0, Math.floor((bot - top - 1 - pic.rows) / 2));
-    const band = focusRow.status.key === 'working' && !ui.still ? Math.floor(now / 70) % (pic.rows + 6) - 3 : -99;
-    pic.cells.forEach((line, r) => line.forEach((c, i) => {
-      if (!c) return;
-      const d = Math.abs(r - band);
-      g.put(px0 + 2 + i, y0 + r, c.ch, 'r' + Math.min(6, c.lv + (d === 0 ? 3 : d === 1 ? 1 : 0)));
-    }));
+    if (card) {
+      g.put(0, listBot, '├' + '─'.repeat(sw - 2) + '┤', 'rule');
+      drawAvatar(g, 2, listBot + 1, focusRow.status, blink, now, ui.still);
+      const tw = sw - 2 - 13;
+      const [word, wc, more] = stateWords(focusRow.status, now, ui.still);
+      g.put(13, listBot + 3, trunc(focusRow.name, tw), 'hi b');
+      g.put(13, listBot + 4, trunc(word, tw), wc);
+      if (more) g.put(13, listBot + 5, trunc(more, tw), 'dim');
+    }
   }
 
   // ---- COMMS: the focused agent's conversation, framed; the open ask's card sits at its foot ------------------------------
-  const cx0 = sw, cx1 = W - 1 - pw;
+  const cx0 = sw, cx1 = W - 1;
   frame(g, cx0, top, cx1, bot, 'rule');
   edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
   const right = [];
@@ -319,14 +311,31 @@ function render(model, ui, size, now) {
   return g.out();
 }
 
-// a portrait is drawn once per sprite and size (the screen repaints ten times a second)
-const artCache = new WeakMap();
-function artFor(img, rows, maxCols) {
-  let m = artCache.get(img);
-  if (!m) { m = new Map(); artCache.set(img, m); }
-  const k = rows + '|' + maxCols;
-  if (!m.has(k)) m.set(k, portraitLib.art(img, { rows, maxCols }));
-  return m.get(k);
+/* THE AVATAR: a space helmet, 9 columns by 5 rows (the antenna light, then the helmet), its face the agent's state:
+   idle eyes shut (-), working eyes open and glancing side to side with the antenna light blinking (o), needs you amber (!),
+   done green (^), stopped (x). Only working and an ask move, as everywhere on this screen; a still screen holds frame one. */
+const AVATAR_ROWS = 6;   // the rule above it + its 5 rows
+const FACE = { idle: ['-', 'dim'], working: ['o', 'hi b'], needs: ['!', 'am b'], done: ['^', 'ok b'], stopped: ['x', 'bad b'] };
+function drawAvatar(g, x, y, status, blink, now, still) {
+  const key = FACE[status.key] ? status.key : 'idle';
+  const [eye, ec] = FACE[key];
+  const moving = key === 'working' && !still;
+  const look = moving ? [0, 0, 1, 1, 0, 0, -1, -1][Math.floor(now / 400) % 8] : 0;
+  const light = key === 'working' ? (moving && Math.floor(now / 500) % 2 ? 'rule' : 'ph b') : key === 'needs' ? (blink ? 'am b' : 'am faint') : key === 'done' ? 'ok' : key === 'stopped' ? 'bad' : 'dim';
+  g.put(x + 4, y, '•', light);
+  g.put(x + 1, y + 1, '▄', 'rule'); g.put(x + 2, y + 1, '▄', 'logohi'); g.put(x + 3, y + 1, '███▄', 'brand'); g.put(x + 7, y + 1, '▄', 'rule');   // a glint on the dome
+  g.put(x, y + 2, '██▀▀▀▀▀██', 'brand');
+  g.put(x, y + 3, '█', 'brand'); g.put(x + 8, y + 3, '█', 'brand');
+  g.put(x + 2 + look, y + 3, eye, ec); g.put(x + 6 + look, y + 3, eye, ec);
+  g.put(x, y + 4, '▀█▄', 'brand'); g.put(x + 3, y + 4, '▄▄▄', 'rule'); g.put(x + 6, y + 4, '▄█▀', 'brand');
+}
+// what the avatar's agent is doing, in words beside it: [word, style, a second line]
+function stateWords(s, now, still) {
+  if (s.key === 'working') return [spin(now, still) + ' working', 'ph b', fmtDur(now - (s.since || now))];
+  if (s.key === 'needs') return ['▲ needs you', 'am b', ''];
+  if (s.key === 'done') return ['✓ done', 'ok', ''];
+  if (s.key === 'stopped') return ['■ stopped', 'bad', String(s.text || '') === 'stopped' ? '' : String(s.text || '')];
+  return ['○ idle', 'dim', ''];
 }
 
 // the word beside a name in the CREW list: what its lamp means, in a word
@@ -570,9 +579,7 @@ function drawCard(g, lines, y0, x0, cw, blink) {
 const PALETTE = {
   fg: ['#d9d2d4', 252], hi: ['#ffffff', 231], dim: ['#7f666b', 95], rule: ['#7a1c28', 88], lbl: ['#ff4757', 203],
   ph: ['#ff3b4e', 203], am: ['#ffb43a', 214], ok: ['#5dffa8', 85], bad: ['#ff6b3d', 202],
-  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196],   // the wordmark's neon red, and the prompt's ▸
-  // the portrait's red ramp, deep to hot (the one accent: a figure is drawn in shades of the station's red, never its own hue)
-  r0: ['#5a0a14', 52], r1: ['#8c101e', 88], r2: ['#be1828', 124], r3: ['#eb2636', 160], r4: ['#ff4654', 203], r5: ['#ff808c', 210], r6: ['#ffc4ca', 224]
+  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
 };
 // (256-color: the card sits on a near-black — the nearest palette brown, 58, is a loud olive)
 const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 234], inv: ['#ff3b4e', 203] };
@@ -628,4 +635,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, pickerView };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, pickerView, drawAvatar, stateWords };
