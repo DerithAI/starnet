@@ -116,8 +116,12 @@ const HELP = [
 function putLogo(g, word) {
   word.forEach((l, r) => { let x = 0; for (const ch of l) { if (ch !== ' ') g.put(x, r, ch, ch === '✦' ? 'logohi b' : 'logo b'); x++; } });
 }
-function lampOf(s, pulse, blink) {
-  if (s.key === 'working') return ['●', pulse ? 'ph b' : 'ph faint'];
+// WORKING SPINS: an agent with a live run, the working count and a running flow turn this wheel (a still screen holds its
+// first frame). Every other state keeps its lamp — ▲ asks, ✓ done, ■ stopped, ○ idle — so motion means one thing.
+const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+function spin(now, still) { return SPIN[still ? 0 : Math.floor(now / 100) % SPIN.length]; }
+function lampOf(s, blink, now, still) {
+  if (s.key === 'working') return [spin(now, still), 'ph b'];
   if (s.key === 'needs') return ['▲', blink ? 'am b' : 'am faint'];
   if (s.key === 'done') return ['✓', 'ok b'];
   if (s.key === 'stopped') return ['■', 'bad'];
@@ -142,7 +146,6 @@ function render(model, ui, size, now) {
     return g.out();
   }
   const blink = ui.still || Math.floor(now / 530) % 2 === 0;
-  const pulse = ui.still || Math.floor(now / 850) % 2 === 0;
   const head = model.header(now);
   const rows = model.rows(now);
   const flows = model.flows(now);
@@ -151,7 +154,7 @@ function render(model, ui, size, now) {
   const focusRow = rows.find(r => r.id === ui.focus) || rows[0];
 
   // the counts, longest form that fits: feed state + working + needs + spend → working + needs → needs alone
-  const working = [(head.working ? '● ' : '○ ') + head.working + ' working', head.working ? 'ph b' : 'dim'];
+  const working = [(head.working ? spin(now, ui.still) + ' ' : '○ ') + head.working + ' working', head.working ? 'ph b' : 'dim'];
   const needs = [(head.needs ? '▲ ' : '△ ') + head.needs + ' needs you', head.needs ? 'am b' : 'dim'];
   const sep = ['   ', ''];
   const feed = head.feed !== 'live' ? [[feedWord(head.feed), 'am'], sep] : [];
@@ -184,14 +187,14 @@ function render(model, ui, size, now) {
     let x = g.put(x0, y, 'FLOWS  ', 'lbl b');
     flows.forEach((f, i) => {
       const run = f.state === 'running';
-      const lamp = run ? '●' : f.state === 'done' ? '✓' : f.state === 'failed' || f.state === 'interrupted' ? '✗' : '○';
+      const lamp = run ? spin(now, ui.still) : f.state === 'done' ? '✓' : f.state === 'failed' || f.state === 'interrupted' ? '✗' : '○';
       const tailText = run ? (f.agents.length ? ' › ' + f.agents[0] + ' ' : ' ') + f.text.replace(/^[A-Z0-9 ]+ · /, '') : ' ' + f.text.replace(/^(done|delivered) · /, '') + (f.shipped ? ' · ' + f.shipped + ' shipped' : '');
       const name = trunc(f.name, 26), tl = trunc(tailText, 30);
       // a flow is said whole or not at all (the first one shortens to fit): never cut off at the screen's edge
       const room = W - x;
       if (i && width(lamp + ' ' + name + tl) > room) { if (x < W) { const more = '+' + (flows.length - i); if (room >= width(more)) g.put(x, y, more, 'dim'); } x = W; return; }
       if (x >= W - 8) return;
-      x = g.put(x, y, lamp + ' ', run ? (pulse ? 'ph b' : 'ph faint') : f.state === 'done' ? 'ok' : lamp === '✗' ? 'bad' : 'dim');
+      x = g.put(x, y, lamp + ' ', run ? 'ph b' : f.state === 'done' ? 'ok' : lamp === '✗' ? 'bad' : 'dim');
       x = g.put(x, y, trunc(name, Math.max(4, W - x)), run ? 'hi b' : 'fg');
       x = g.put(x, y, trunc(tl, Math.max(0, W - x)), run ? 'ph' : 'dim');
       x = g.put(x, y, '     ', '');
@@ -242,7 +245,7 @@ function render(model, ui, size, now) {
     if (start + shown.length < rows.length) edgeR(g, sw - 2, bot, [['↓ ' + (rows.length - start - shown.length), 'dim']]);
     shown.forEach((r, i) => {
       const yy = top + 1 + i, foc = r === focusRow;
-      const [lamp, lc] = lampOf(r.status, pulse, blink);
+      const [lamp, lc] = lampOf(r.status, blink, now, ui.still);
       const tag = tagOf(r.status, now);
       g.put(3, yy, lamp, lc);
       g.put(5, yy, trunc(r.name, sw - 7 - (tag ? width(tag[0]) + 1 : 0)), foc || r.status.key !== 'idle' ? 'hi b' : 'fg');
@@ -254,7 +257,7 @@ function render(model, ui, size, now) {
   // ---- COMMS: the focused agent's conversation, framed; the open ask's card sits at its foot ------------------------------
   const cx0 = sw, cx1 = W - 1;
   frame(g, cx0, top, cx1, bot, 'rule');
-  edgeL(g, cx0 + 2, top, [['COMMS', 'ph b'], [' ▸ ', 'rule'], focusRow ? [focusRow.name, 'hi b'] : ['—', 'dim']]);
+  edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
   const right = [];
   if (focusRow && focusRow.model && W - cx0 > 60) right.push([focusRow.model, 'dim']);
   if (ui.scroll > 0) right.push([(right.length ? '  ' : '') + '↑ ' + ui.scroll, 'am']);
@@ -266,6 +269,7 @@ function render(model, ui, size, now) {
   const cardTop = iy1 - card.length + 1;
   const paneBot = card.length ? cardTop - 1 : iy1 + 1;
   if (ui.overlay) drawOverlay(g, ui.overlay, iy0, paneBot, ix0, ix1);
+  else if (!focusRow) g.put(ix0, iy0, trunc(head.feed === 'connecting' ? 'connecting to the station…' : 'no agents on this station yet', ix1 - ix0 + 1), 'dim');
   else drawPane(g, focusRow ? model.logOf(focusRow.id) : [], focusRow, iy0, paneBot, ix0, ix1, ui, now);
   if (card.length) drawCard(g, card, cardTop, ix0, cw, blink);
 
@@ -338,7 +342,7 @@ function paneRows(log, focusRow, tw, now) {
 function drawPane(g, log, focusRow, top, bot, x0, x1, ui, now) {
   const H = bot - top;
   if (H <= 0) return;
-  const L = 8;
+  const L = Math.max(8, Math.min(14, (focusRow ? width(focusRow.name) : 0) + 2));
   const all = paneRows(log, focusRow, x1 - x0 + 1 - L, now);
   if (!all.length) { g.put(x0 + L, top, trunc(focusRow ? 'nothing yet · type a message for ' + focusRow.name + ' and press enter' : '', x1 - x0 - L), 'dim'); return; }
   const maxScroll = Math.max(0, all.length - H);

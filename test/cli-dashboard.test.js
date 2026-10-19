@@ -205,7 +205,10 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
     const t2 = screen(m2, {}, 110, 34, T0 + 3000).map(tui.toPlain);
     const nowRow = t2.findIndex(l => /NOW {4}CYPHER › shell\.exec npm test/.test(l));
     A.ok(nowRow === 1 && t2[nowRow].indexOf('NOW') > 56 && !/ASTRA/.test(t2[nowRow]), 'a NOW line beside the logo says what the other busy ones are doing: ' + t2[nowRow]);
-    A.ok(t2.some(l => /│  ● CYPHER +\d+s │/.test(l)), 'a working agent in the crew list shows how long its run has gone');
+    A.ok(t2.some(l => /│  ⠋ CYPHER +\d+s │/.test(l)), 'a working agent in the crew list spins, and shows how long its run has gone');
+    A.ok(/⠋ 2 working/.test(t2[0]), 'the working count spins too');
+    const spun = tui.render(m2, { focus: 'astra', input: '', scroll: 0, still: false, stationLabel: '' }, { cols: 110, rows: 34 }, T0 + 3150).map(tui.toPlain);
+    A.ok(spun.some(l => /│  ⠙ CYPHER/.test(l)), 'a moving screen turns the wheel (frame 2 at +150 ms)');
   }
   const commsRow = text.findIndex(l => /╭─ COMMS ▸ ASTRA /.test(l));
   A.ok(commsRow === crewTop && text[commsRow].indexOf('COMMS') > 20, 'COMMS is framed beside the crew, from right under the header, so it gets most of the screen');
@@ -228,6 +231,21 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
       { id: 'j2', line: 'L2', name: 'RIFT / 98 Evolution', status: 'delivered', endedAt: T0 - 4 * 86400000, steps: 6 }]);
     const fl = screen(m3, {}, 119, 30, T0).map(tui.toPlain).find(l => /FLOWS/.test(l));
     A.ok(/Venture Crucible 5d ago +\+1\s*$/.test(fl) && !/RIFT/.test(fl), 'a flow that does not fit is counted, never cut off mid-word: ' + fl.slice(56));
+  }
+  {
+    // the edges a long-lived station reaches: a long name, an hour-long run, a web request, a roster not loaded yet
+    const m4 = crew();
+    m4.setRoster({ agents: [{ agentId: 'comms-lead', name: 'Communications Lead', model: 'm' }] });
+    m4.apply('agent.run.start', { runId: 'r9', agentId: 'comms-lead', trigger: 'schedule', surface: 'autonomous', prompt: 'nightly digest' }, T0 - 3725000);
+    const t4 = screen(m4, { focus: 'comms-lead' }, 119, 30, T0).map(tui.toPlain);
+    A.ok(t4.some(l => /│▌ ⠋ COMMUNICATIONS L… 1h02m │/.test(l)), 'a long name keeps its words and shortens with …; an hour-long run reads 1h02m');
+    A.ok(t4.some(l => /╭─ COMMS ▸ COMMUNICATIONS LEAD /.test(l)) && t4.some(l => /│ ROUTINE +nightly digest/.test(l)), 'COMMS names it whole, and its speaker column fits the name');
+    const { askGlance, fmtDur } = require('../bin/lib/station-model.js');
+    A.eq([fmtDur(65000), fmtDur(3725000)], ['1m05s', '1h02m'], 'durations: minutes and seconds, then hours and minutes');
+    A.eq(askGlance('web.request', JSON.stringify({ method: 'post', url: 'https://hooks.example.com/deploy' })), 'POST https://hooks.example.com/deploy', 'a web request asks with its method');
+    const m5 = makeStation();
+    const t5 = screen(m5, { focus: '' }, 110, 30, T0).map(tui.toPlain);
+    A.ok(t5.some(l => /^╭─ COMMS ─/.test(l)) && t5.some(l => /connecting to the station…/.test(l)), 'before the roster loads, COMMS says it is connecting (never an empty frame titled —)');
   }
   A.ok(/needs at least/.test(tui.toPlain(screen(m, {}, 40, 10, T0)[0])), 'a terminal too small says so');
   const help = screen(m, { overlay: { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' } }, 110, 34, T0).map(tui.toPlain);

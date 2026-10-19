@@ -78,6 +78,7 @@ function askGlance(tool, raw, nameOf) {
     return o.path + (n && /write|append/.test(t) ? ' (' + n + ' line' + (n === 1 ? '' : 's') + ')' : '');
   }
   if (/^(?:shell|terminal)[._]/.test(t) && o) { const c = [o.cmd, o.command, o.input, o.data].find(v => typeof v === 'string' && v); if (c) return oneLine(c, 300); }
+  if (/^web[._]?request$/.test(t) && o && typeof o.url === 'string') return (typeof o.method === 'string' && o.method ? o.method.toUpperCase() + ' ' : '') + oneLine(o.url, 280);
   if (/^routine[._](?:create|manage)$/.test(t) && o) return [o.action, o.name || o.id, o.schedule].filter(v => typeof v === 'string' && v).join(' · ') || 'a routine';
   if (/^(?:station[._]|path\.trust$|browser\.login)/.test(t)) return oneLine(s.split('\n')[0], 300);
   if (o && !/^team[._]/.test(t)) {
@@ -102,7 +103,7 @@ function askInspect(tool, raw) {
 
 function makeAgent(id, name) {
   return {
-    id, name: String(name || id).toUpperCase().slice(0, 12), model: '', provider: '', inRoster: false,
+    id, name: String(name || id).toUpperCase().slice(0, 24), model: '', provider: '', inRoster: false,
     runs: new Set(), last: null, now: '', act: new Array(SLOTS).fill(0), bucket: 0, log: [], seq: 0
   };
 }
@@ -137,7 +138,7 @@ function makeStation() {
     for (const r of sorted) {
       if (!r || !r.agentId) continue;
       const a = agent(r.agentId);
-      a.name = String(r.name || r.agentId).toUpperCase().slice(0, 12);
+      a.name = String(r.name || r.agentId).toUpperCase().slice(0, 24);   // whole up to 24; each screen shortens it with …
       a.model = String(r.model || ''); a.provider = String(r.provider || ''); a.inRoster = true;
     }
     // the hero is always aboard, even on a station whose roster file is empty (a bare `npm start` / headless station)
@@ -448,7 +449,7 @@ function makeStation() {
   };
 }
 
-function fmtDur(ms) { const s = Math.max(0, Math.floor(ms / 1000)); const m = Math.floor(s / 60), r = s % 60; return m ? m + 'm' + String(r).padStart(2, '0') + 's' : r + 's'; }
+function fmtDur(ms) { const s = Math.max(0, Math.floor(ms / 1000)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, r = s % 60; return h ? h + 'h' + String(m).padStart(2, '0') + 'm' : s >= 60 ? Math.floor(s / 60) + 'm' + String(r).padStart(2, '0') + 's' : r + 's'; }
 function fmtShort(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return s >= 172800 ? Math.floor(s / 86400) + 'd' : s >= 3600 ? Math.floor(s / 3600) + 'h' : s >= 60 ? Math.floor(s / 60) + 'm' : s + 's'; }
 function ago(ms) { return fmtShort(ms) + ' ago'; }
 function shortLine(id) { return 'line ' + String(id || '').slice(0, 8); }

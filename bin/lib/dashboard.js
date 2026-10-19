@@ -383,7 +383,7 @@ function runDashboard(station, opts) {
     every(10000, loadBudget);
     every(6000, () => loadLines().catch(() => {}));
     every(20000, loadRoster);
-    timers.push(setInterval(paint, 250));
+    timers.push(setInterval(paint, 100));   // the working spinner turns at 10 frames a second (paint writes only rows that changed)
   })().catch(e => { stop(0); process.stderr.write('starnet: ' + ((e && e.message) || e) + '\n'); });
   return exited;
 }
