@@ -22584,10 +22584,10 @@ async function runOnceCore(o) {
   // rule verbatim and only a table of contents for its reference sections (~6.3K instead of ~9.3K); without it the
   // whole manual stays inline. Both forms are constants, so the cached prefix is as stable as before.
   // An owner-trusted chat-app turn (the Commander on their phone) gets only a pointer to manual.read — never the 6K index.
-  // A terminal (CLI) turn gets the terminal pointer: the desktop manual's "open X / place Y" has no meaning there.
-  const manualBlock = (isTask && o.viewer === 'terminal') ? starnetManualTerminal()
-    : (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
+  const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
     : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';
+  // A terminal (CLI) task turn gets the terminal pointer instead: the desktop manual's "open X / place Y" has no meaning there.
+  const operatorManual = (isTask && o.viewer === 'terminal') ? starnetManualTerminal() : manualBlock;
   const runtimeVersion = computeVersionSurface();
   const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now(), shell: shellRuntime });
   // RUNTIME SKILL LIBRARY (skill-builder-gap): index the agent's own authored skills + preload any it invokes,
@@ -22752,7 +22752,7 @@ async function runOnceCore(o) {
   // Cache only the reusable prefix across runs. All task-specific context still follows verbatim;
   // the explicit Claude boundary precedes changing context, while runtime identity remains last
   // for generic providers that automatically reuse matching prefixes.
-  const cacheSystemPrefix = (system || '') + toolNote + teamNote + manualBlock
+  const cacheSystemPrefix = (system || '') + toolNote + teamNote + operatorManual
     // A tool deferred as CERTAINLY unavailable (resolved.unavailable: no image connection, no Spotify token, no PTY...)
     // is not a power this run has, even though it stays searchable. The ground-truth block must not claim it while the
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
