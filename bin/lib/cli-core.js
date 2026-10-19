@@ -52,6 +52,8 @@ const USAGE = [
   '  starnet flow                         list workflows; flow run <name> "<text>" sends one job and waits',
   '',
   'Dashboard keys: tab/↑↓ switch agent · @name message · y/n/v answer an ask · /stop · /flow · /help · ctrl+c quit',
+  'Dashboard look: the StarNet logo as an image where the terminal draws Sixel (Windows Terminal, WezTerm, iTerm2), braille',
+  '  dots elsewhere · STARNET_LOGO=dots|ascii|plain picks one · NO_COLOR=1 drops color · needs at least 46×16',
   '',
   'Run options:',
   '  --agent <id>       roster agent to run (default: "agent", else the first roster entry)',
