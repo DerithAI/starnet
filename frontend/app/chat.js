@@ -9067,7 +9067,7 @@ const Chat = (() => {
   // Budget-stop legibility (2026-07-23): a 'budget' stop names WHICH spend cap fired and how big it is, in money
   // words — the old "reached this run's limit" read as a runtime setting and sent users hunting in the wrong
   // panel. Scope/cap ride the additive agent.run.end fields; an old sidecar omits them and gets the generic line.
-  // Issue #135: the unpriced ceiling's own lever is its Runtime limits row, read at start (a saved change needs a restart).
+  // Issue #135: the unpriced ceiling's own lever is its Runtime limits row; a save applies from the next run.
   function budgetStopLine(scope, capUsd, atBalance, unpriced, subscription) {
     /* THE UNPRICED-MODEL TOKEN CEILING IS NOT A $ CAP (2026-10-11). A model with no known price is bounded per run in
        TOKENS (loop.js maxUnpricedTokens, 2,000,000 by default); the $ settings never read it, so "hit the per-run spend
@@ -9075,7 +9075,7 @@ const Chat = (() => {
        agent.run.end fields. Name the real limit and the real ways out. */
     if (unpriced && unpriced.model) {
       const n = Number(unpriced.capTokens) > 0 ? Number(unpriced.capTokens).toLocaleString('en-US') + '-token' : 'token';
-      return 'hit the ' + n + ' safety ceiling for ' + unpriced.model + ', a model StarNet has no price for — raising the $ spending limit does not change this; raise UNPRICED MODEL TOKEN CEILING in SETTINGS › APP & BACKUP › Runtime limits (0 = no ceiling; restart StarNet after saving), or pick a priced model to keep going';
+      return 'hit the ' + n + ' safety ceiling for ' + unpriced.model + ', a model StarNet has no price for — raising the $ spending limit does not change this; raise UNPRICED MODEL TOKEN CEILING in SETTINGS › APP & BACKUP › Runtime limits (0 = no ceiling), or pick a priced model to keep going';
     }
     // nor is the SUBSCRIPTION-token ceiling (loop.js maxSubscriptionTokens): a Claude Code sign-in books $0 per turn
     if (subscription && subscription.model) {

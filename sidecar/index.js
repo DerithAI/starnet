@@ -769,8 +769,9 @@ const livePrices = (function () {
    MAX_CONCURRENT_AGENTS, the consent timeout, the cron tick) are now editable + PERSISTED so a beginner who can't
    set env vars can still tune them. PRECEDENCE is strict and disclosed in the UI: an explicit ENVIRONMENT VARIABLE
    ALWAYS WINS (a locked-down deploy stays in control), else a value SAVED here, else the built-in default. Read at
-   BOOT (these feed const CAPS / gates), so a change applies on the next restart — the UI says so. Stored in a
-   PROTECTED sibling of the fs jail (runtime.knobs.json). Loaded with a tiny self-contained reader (this runs before
+   BOOT (these feed const CAPS / gates), so a change applies on the next restart — the UI says so — EXCEPT the two
+   per-run TOKEN ceilings (RUNTIME_KNOB_DEFS live:true), which every run reads off CAPS, so a save re-resolves them for
+   the next run (issue #135). Stored in a PROTECTED sibling of the fs jail (runtime.knobs.json). Loaded with a tiny self-contained reader (this runs before
    loadResilient/num are defined); a torn/absent file → no overrides (fail-soft to env/default). */
 const RUNTIME_KNOBS_FILE = path.join(WORKSPACES, 'runtime.knobs.json');
 
@@ -829,7 +830,8 @@ function knobEnvLocked(envSuffix) { const e = envSuffix ? ENV(envSuffix) : null;
 // absolutely (deterministic tests + locked-down deploys).
 // maxUnpricedTokens: per-run TOKEN ceiling for turns no catalog/table could price on a METERED provider (the $ cap
 // is blind to them). STARNET_MAX_UNPRICED_TOKENS or SETTINGS › APP & BACKUP (UNPRICED MODEL TOKEN CEILING, issue #135)
-// overrides; 0 disables. OAuth/unmetered providers are exempt.
+// overrides; 0 disables. OAuth/unmetered providers are exempt. Both token ceilings re-resolve on a SETTINGS save
+// (handleRuntimeKnobsSet), so the next run uses the new value without a restart.
 // maxSubscriptionTokens: per-run TOKEN ceiling for $0 subscription turns (a Claude Code sign-in); cache re-reads count
 // 1/10 (loop.js SUBSCRIPTION SEATBELT). STARNET_MAX_SUBSCRIPTION_TOKENS or SETTINGS › APP & BACKUP overrides; 0 disables.
 const CAPS = { maxIters: resolveKnob('MAX_ITERS', 'maxIters', 0), maxCostUsd: 1.00, maxRepeat: 3, toolTimeoutMs: 30000, maxToolBytes: resolveKnob('MAX_TOOL_BYTES', 'maxToolBytes', 120000), maxUnpricedTokens: resolveKnob('MAX_UNPRICED_TOKENS', 'maxUnpricedTokens', 2000000), maxSubscriptionTokens: resolveKnob('MAX_SUBSCRIPTION_TOKENS', 'maxSubscriptionTokens', 2000000) };
@@ -14480,14 +14482,15 @@ async function handleConfigReset(req, res) {
 
 /* ---- P1-9 ADVANCED runtime knobs API. GET reports each knob's effective/default/saved value + whether an env
    var locks it (so the UI can gray it out honestly). POST persists overrides (env-locked knobs ignore the write).
-   Saved values apply at NEXT BOOT (they feed the boot-frozen constants) — the UI discloses this. ---- */
+   Saved values apply at NEXT BOOT (they feed the boot-frozen constants) — the UI discloses this. live:true = a per-run
+   value runOnceCore reads off CAPS each run: a save re-resolves it into CAPS (env still wins), so the next run uses it. ---- */
 const RUNTIME_KNOB_DEFS = [
   { key: 'maxIters', env: 'MAX_ITERS', def: 0, min: 0, max: 200 },
   { key: 'maxConcurrentAgents', env: 'MAX_CONCURRENT_AGENTS', def: 0, min: 0, max: 32 },
   { key: 'consentTimeoutMs', env: 'CONSENT_TIMEOUT_MS', def: 120000, min: 5000, max: 600000 },
   { key: 'cronTickMs', env: 'CRON_TICK_MS', def: 60000, min: 5000, max: 600000 },
-  { key: 'maxSubscriptionTokens', env: 'MAX_SUBSCRIPTION_TOKENS', def: 2000000, min: 0, max: 100000000 },
-  { key: 'maxUnpricedTokens', env: 'MAX_UNPRICED_TOKENS', def: 2000000, min: 0, max: 100000000 }
+  { key: 'maxSubscriptionTokens', env: 'MAX_SUBSCRIPTION_TOKENS', def: 2000000, min: 0, max: 100000000, live: true },
+  { key: 'maxUnpricedTokens', env: 'MAX_UNPRICED_TOKENS', def: 2000000, min: 0, max: 100000000, live: true }
 ];
 function saveRuntimeKnobs() {
   try { saveResilient(RUNTIME_KNOBS_FILE, { version: 1, knobs: runtimeKnobs }); }
@@ -14571,6 +14574,9 @@ async function handleRuntimeKnobsSet(req, res) {
   }
   runtimeKnobs = next;
   saveRuntimeKnobs();
+  // the per-run token ceilings take effect for the NEXT run (runOnceCore reads CAPS per run). resolveKnob keeps the
+  // precedence: an env-locked knob re-resolves to its env value, so a save never pretends to move it.
+  for (const d of RUNTIME_KNOB_DEFS) if (d.live) CAPS[d.key] = resolveKnob(d.env, d.key, d.def);
   return json(200, runtimeKnobsStatus());
 }
 
