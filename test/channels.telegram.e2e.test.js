@@ -475,10 +475,14 @@ async function waitUntil(fn, ms, label) {
     await sse.waitFor(events => events.some(e => e.name === 'agent.run.end' && e.payload && e.payload.agentId === 'tg_4242'), 5000, 'SSE run end');
     await sse.waitFor(events => events.some(e => e.name === 'channel.delivery' && e.payload && e.payload.channel === 'telegram' && e.payload.chatId === '4242' && e.payload.ok === true), 5000, 'channel delivery');
 
-    const tr = await (await fetch(B + '/api/transcript?stream=global&agent=tg_4242&limit=20', { headers: { 'X-StarNet-Token': token, Origin: B } })).json();
+    // the chat's FIRST exchange is filed under the chat's own stream (it used to land in the global catch-all, COMMS
+    // General: a new chat had no record yet, and hub.js resolvedStreamId's guard read the missing record as a stream id)
+    const tr = await (await fetch(B + '/api/transcript?stream=channel_telegram_4242&agent=tg_4242&limit=20', { headers: { 'X-StarNet-Token': token, Origin: B } })).json();
     const turns = (tr && tr.turns) || [];
     A.ok(turns.some(t => t.role === 'user' && String(t.content || '').indexOf('research AI trend now') >= 0), 'transcript captured Telegram user turn');
     A.ok(turns.some(t => t.role === 'assistant' && String(t.content || '').indexOf('Telegram answer') >= 0), 'transcript captured Telegram assistant reply');
+    const gl = await (await fetch(B + '/api/transcript?stream=global&agent=tg_4242&limit=200', { headers: { 'X-StarNet-Token': token, Origin: B } })).json();
+    A.ok(!((gl && gl.turns) || []).some(t => String(t.content || '').indexOf('research AI trend now') >= 0), 'and NOT under the global catch-all stream');
 
     // ---- authenticated owner DM: real agent shell execution + defined command execution ------------------
     const shellChat = 4244;
