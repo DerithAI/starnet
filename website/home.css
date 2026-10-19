@@ -297,3 +297,23 @@
   .home .big-lead{ font-size:23px; }
   .home .truths p, .home .mf-proofs li, .home .faq details p, .home .trace-head p{ font-size:18px; }
 }
+
+/* ---------- shorter page (2026-10-19): one-line manifesto, comparison, models line ---------- */
+.home .manifesto-short{ padding:clamp(70px,11vh,120px) clamp(20px,5vw,56px) clamp(10px,3vh,30px); }
+.home .manifesto-short .mf-line{ font-size:clamp(36px,5.4vw,76px); }
+.cmp-wrap{ max-width:1060px; margin:0 auto; }
+.cmp{ width:100%; border-collapse:collapse; border:1px solid var(--line); background:rgba(8,6,4,.7); box-shadow:0 30px 90px rgba(0,0,0,.45); }
+.cmp th, .cmp td{ padding:13px 18px; border-bottom:1px solid var(--line); text-align:center; font:400 19px 'VT323',monospace; letter-spacing:1px; color:rgba(236,224,207,.7); }
+.cmp thead th{ font-size:17px; letter-spacing:2.5px; color:var(--amber-d); background:#0c0a07; }
+.cmp tbody th{ text-align:left; color:#e2d9c9; letter-spacing:.5px; }
+.cmp .cmp-us{ color:#ffe2b0; background:rgba(255,157,47,.07); text-shadow:0 0 10px rgba(255,157,47,.45); }
+.cmp thead .cmp-us{ color:var(--amber); }
+.cmp td:not(.cmp-us){ color:rgba(236,224,207,.55); }
+.cmp .cmp-edge th{ color:var(--amber-b); }
+.cmp tr:last-child th, .cmp tr:last-child td{ border-bottom:0; }
+.cmp-note{ margin:12px 2px 0; font:400 15px/1.4 'VT323',monospace; letter-spacing:.6px; color:rgba(236,224,207,.42); }
+.home .dl-models{ margin:-6px 0 22px; font:400 18px/1.4 'VT323',monospace; letter-spacing:.5px; color:rgba(236,224,207,.6); }
+@media (max-width:620px){
+  .cmp th, .cmp td{ padding:10px 8px; font-size:16px; letter-spacing:.3px; }
+  .cmp thead th{ font-size:13px; letter-spacing:1px; }
+}

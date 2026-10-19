@@ -20,7 +20,7 @@
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preload" href="app/assets/sprites/blank/rot_south.png" as="image" fetchpriority="high">
 <link rel="stylesheet" href="styles.css?v=20260924-home-rules">
-<link rel="stylesheet" href="home.css?v=20261014-crew3">
+<link rel="stylesheet" href="home.css?v=20261019-short">
 </head>
 <body class="home">
 
@@ -63,7 +63,7 @@
       <div class="hero-eyebrow"><span class="pip" aria-hidden="true"></span>LOCAL-FIRST AI AGENT HARNESS</div>
       <img class="hero-logo" src="assets/starnet-logo-glow.png" alt="StarNet" width="1200" height="240">
       <h1 class="tagline">The agent harness you can watch work.<span class="cursor" aria-hidden="true"></span></h1>
-      <p class="subline">StarNet runs your AI agents on your own machine &mdash; real tools, multi-agent workflows, schedules, budgets and memory &mdash; and gives every agent a body in a living pixel-art station, so you can see exactly what each agent is doing.</p>
+      <p class="subline">A crew of AI agents on your own machine that research, write, code and run your routines &mdash; from the desktop or from Telegram, Discord and Slack. Every agent works in a living pixel station, so you can see exactly what each one is doing.</p>
       <div class="cta-row">
         <a id="cta-download" class="btn btn-primary btn-hot" href="#download">[ DOWNLOAD ]</a>
         <a class="btn" href="docs/getting-started.html">[ GET STARTED ]</a>
@@ -80,8 +80,6 @@
       <h2 data-scramble>WATCH IT WORK</h2>
       <span class="section-tag">// every sprite is a real run</span>
     </div>
-    <p class="big-lead" data-reveal>StarNet is the harness: it runs the model loop, the tools, the routing and the schedules on your machine. The station is how you watch it &mdash; an agent at a lit desk is a live run, a crate on a belt is a job moving between agents.</p>
-
     <div class="monitor-stage">
       <figure class="bezel live monitor crew-monitor" data-demo>
         <span class="mon-corner c1" aria-hidden="true"></span><span class="mon-corner c2" aria-hidden="true"></span>
@@ -119,33 +117,39 @@
   </section>
 
   <!-- ===== manifesto ===== -->
-  <section id="honest" class="manifesto" aria-label="Truthful telemetry">
+  <section id="honest" class="manifesto manifesto-short" aria-label="Truthful telemetry">
     <p class="mf-kicker">// TRUTHFUL TELEMETRY</p>
     <p class="mf-line" data-scrub>If it looks like an agent is working, it is.</p>
-    <ul class="mf-proofs" data-reveal="stagger">
-      <li><b>01</b> Every run is a real model call with real tools.</li>
-      <li><b>02</b> Every cent lands in a ledger you can read.</li>
-      <li><b>03</b> The station never shows state the harness can't prove.</li>
-    </ul>
   </section>
 
-  <!-- ===== provider marquee ===== -->
-  <div class="marquee" aria-label="Supported model providers">
-    <div class="mq-label">BRING YOUR OWN MODEL</div>
-    <div class="mq-track">
-      <div class="mq-row">
-        <span>OpenRouter</span><span>Anthropic</span><span>OpenAI</span><span>ChatGPT sign-in</span><span>Gemini</span><span>Grok</span><span>xAI</span><span>Kimi</span><span>Groq</span><span>Mistral</span><span>DeepSeek</span><span>Together</span><span>Fireworks</span><span>Perplexity</span><span>Cerebras</span><span>Ollama &middot; local</span><span>Any OpenAI-compatible endpoint</span>
-      </div>
-      <div class="mq-row" aria-hidden="true">
-        <span>OpenRouter</span><span>Anthropic</span><span>OpenAI</span><span>ChatGPT sign-in</span><span>Gemini</span><span>Grok</span><span>xAI</span><span>Kimi</span><span>Groq</span><span>Mistral</span><span>DeepSeek</span><span>Together</span><span>Fireworks</span><span>Perplexity</span><span>Cerebras</span><span>Ollama &middot; local</span><span>Any OpenAI-compatible endpoint</span>
-      </div>
+  <!-- ===== how it compares (Hermes / OpenClaw columns = what each project's own homepage states) ===== -->
+  <section id="compare" class="section">
+    <div class="section-head">
+      <span class="section-no">02</span>
+      <h2 data-scramble>HOW IT COMPARES</h2>
+      <span class="section-tag">// same core, plus a station</span>
     </div>
-  </div>
+    <div class="cmp-wrap" data-reveal>
+      <table class="cmp">
+        <thead><tr><th scope="col"></th><th scope="col" class="cmp-us">STARNET</th><th scope="col">HERMES AGENT</th><th scope="col">OPENCLAW</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Runs on your own machine</th><td class="cmp-us">YES</td><td>YES</td><td>YES</td></tr>
+          <tr><th scope="row">Chat from Telegram, Discord, Slack, Signal</th><td class="cmp-us">YES</td><td>YES</td><td>YES</td></tr>
+          <tr><th scope="row">Persistent memory</th><td class="cmp-us">YES</td><td>YES</td><td>YES</td></tr>
+          <tr><th scope="row">Browses the web, runs commands</th><td class="cmp-us">YES</td><td>YES</td><td>YES</td></tr>
+          <tr class="cmp-edge"><th scope="row">Watch every agent work, live</th><td class="cmp-us">YES</td><td>&mdash;</td><td>&mdash;</td></tr>
+          <tr class="cmp-edge"><th scope="row">Visual workflows between agents</th><td class="cmp-us">YES</td><td>&mdash;</td><td>&mdash;</td></tr>
+          <tr class="cmp-edge"><th scope="row">Per-job budgets and a cost ledger</th><td class="cmp-us">YES</td><td>&mdash;</td><td>&mdash;</td></tr>
+        </tbody>
+      </table>
+      <p class="cmp-note">Hermes Agent and OpenClaw columns show what each project&rsquo;s own homepage describes (October 2026); &mdash; means it isn&rsquo;t described there.</p>
+    </div>
+  </section>
 
   <!-- ===== download ===== -->
   <section id="download" class="section">
     <div class="section-head">
-      <span class="section-no">02</span>
+      <span class="section-no">03</span>
       <h2 data-scramble>BOOT YOUR STATION</h2>
       <span class="section-tag">// three steps, about five minutes</span>
     </div>
@@ -155,6 +159,7 @@
       <li><span>03</span>Send your first task</li>
     </ol>
     <p class="dl-sub" data-reveal>Choose the installer for your computer. Current stable version: <span class="ver">v0.13.1</span>. See what changed in the <a id="rel-page" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">release notes</a>. The station replay and docs follow current source, which may include features coming in the next release.</p>
+    <p class="dl-models" data-reveal>Bring your own model: OpenRouter, Anthropic, OpenAI, a ChatGPT sign-in, Gemini, Grok, Kimi, Mistral, DeepSeek, Groq &mdash; or Ollama, fully local.</p>
     <div class="dl-grid" data-reveal="stagger">
       <article class="dl-card" data-os="windows">
         <div class="dl-os">WINDOWS</div>
@@ -185,19 +190,6 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
     <p class="dl-honesty">Need help installing? Follow the <a href="docs/getting-started.html">quickstart</a> or open <a href="docs/troubleshooting.html">troubleshooting</a>. Public installers support Windows and macOS; Linux is not currently a supported public target.</p>
   </section>
 
-  <!-- ===== docs ===== -->
-  <section id="docs" class="section">
-    <div class="section-head">
-      <span class="section-no">03</span>
-      <h2 data-scramble>DOCS &amp; HELP</h2>
-    </div>
-    <div class="site-doc-paths" data-reveal="stagger">
-    <a href="docs/getting-started.html"><span class="eyebrow">FIRST VISIT</span><h3>Get up and running</h3><p>Install StarNet, connect a model, and send your first task.</p><span>Start here &rarr;</span></a>
-    <a href="docs/index.html"><span class="eyebrow">THE HANDBOOK</span><h3>Find your next step</h3><p>Guides and reference organized around what you want to do.</p><span>Browse documentation &rarr;</span></a>
-    <a href="docs/help.html"><span class="eyebrow">NEED A HAND?</span><h3>Get unstuck</h3><p>Find an answer, troubleshoot a problem, or contact support.</p><span>Open the help center &rarr;</span></a>
-  </div>
-  </section>
-
   <!-- ===== FAQ ===== -->
   <section id="faq" class="section">
     <div class="section-head">
@@ -214,20 +206,8 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
         <p>The software is MIT-licensed open source and free to run. Model usage costs whatever your provider charges &mdash; you bring your own API key (or OAuth account), and StarNet shows you real cost per run. No markup, no subscription required to use your own keys.<span data-pricing-link hidden> If you'd rather not manage keys at all, <a href="pricing.html">StarNet Credits</a> are an optional managed plan &mdash; never required.</span></p>
       </details>
       <details>
-        <summary>Is the work actually real?</summary>
-        <p>Yes &mdash; that's the whole point. Every agent run is a real model call with real tools; files get written, browsers get driven, and the ledger records real cost. The station never renders state the harness can't prove. If it looks like an agent is working, it is.</p>
-      </details>
-      <details>
-        <summary>Do I have to build conveyor belts to use it?</summary>
-        <p>No. Chatting with an agent from COMMS needs no belts at all. Belts are for real jobs &mdash; work with several parts, or work that should flow through several agents on its own, especially while you're away. The <a href="docs/guides/conveyors.html">conveyor guide</a> shows the whole idea in five minutes, and the <a href="docs/guides/first-line.html">LINES tool</a> drops a finished line in one click.</p>
-      </details>
-      <details>
         <summary>Where does my data live?</summary>
         <p>On your machine. Station state, transcripts, memory, and ledgers live in your local StarNet workspace. Requests go to your model provider only when an agent runs, and to the wider network only when you explicitly grant a network tool or connector.</p>
-      </details>
-      <details>
-        <summary>What do I need to start?</summary>
-        <p>A Windows or macOS machine and one model provider: an OpenRouter API key works everywhere, a ChatGPT, Grok, or Kimi sign-in needs no key at all, and Ollama runs free and fully local. That's it &mdash; full power from minute one, nothing gated behind progression.</p>
       </details>
       <details>
         <summary>Can it spend money without me noticing?</summary>
@@ -237,19 +217,6 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
         <summary>Why does my OS warn me during install?</summary>
         <p>SmartScreen can still warn while an Authenticode certificate builds reputation; inspect the publisher before proceeding. A public Mac DMG is required to pass Apple notarization, so a Gatekeeper trust failure should be reported rather than bypassed. Release checks do not prove that an installer works on your computer. The <a href="docs/troubleshooting.html">troubleshooting guide</a> explains both cases.</p>
       </details>
-    </div>
-  </section>
-
-  <!-- ===== final call ===== -->
-  <section class="finale" aria-label="Get StarNet">
-    <div class="grid-floor" aria-hidden="true"><div></div></div>
-    <div class="finale-inner" data-reveal>
-      <p class="mf-kicker">// YOUR CREW IS WAITING</p>
-      <h2 class="finale-title">Boot the station.</h2>
-      <div class="cta-row">
-        <a class="btn btn-primary btn-hot" href="#download">[ DOWNLOAD ]</a>
-        <a class="btn" href="docs/index.html">[ READ THE DOCS ]</a>
-      </div>
     </div>
   </section>
 
