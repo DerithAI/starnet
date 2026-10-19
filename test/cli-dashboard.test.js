@@ -331,27 +331,31 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
 }
 
-// ---- the avatar: the agent in COMMS as a small space helmet at the foot of CREW, its face its state ------------------
+// ---- the agent: the one in COMMS as a small full-body astronaut at the foot of CREW, its pose its state ---------------
 {
-  const helmet = (st, t, still) => { const g = tui.makeGrid(12, 5); tui.drawAvatar(g, 0, 0, st, true, t, still); return g.out().map(tui.toPlain); };
-  const eyesOf = rows => rows[3].slice(1, 8).trim();
-  const idle = helmet({ key: 'idle' }, T0, false);
-  A.ok(idle.length === 5 && idle.every(l => tui.width(l.replace(/\s+$/, '')) <= 9), 'the avatar is small: 9 columns by 5 rows');
-  A.eq(eyesOf(idle).replace(/\s+/g, ' '), '- -', 'idle: eyes shut');
-  A.eq(eyesOf(helmet({ key: 'needs' }, T0, false)).replace(/\s+/g, ' '), '! !', 'needs you: alarmed');
-  A.eq(eyesOf(helmet({ key: 'done' }, T0, false)).replace(/\s+/g, ' '), '^ ^', 'done: pleased');
-  A.eq(eyesOf(helmet({ key: 'stopped', text: 'stopped' }, T0, false)).replace(/\s+/g, ' '), 'x x', 'stopped: x');
-  const looks = new Set(), stills = new Set(), idles = new Set();
-  for (let t = 0; t < 3200; t += 100) {
-    looks.add(helmet({ key: 'working', since: T0 }, T0 + t, false).join('\n'));
-    stills.add(helmet({ key: 'working', since: T0 }, T0 + t, true).join('\n'));
-    idles.add(helmet({ key: 'idle' }, T0 + t, false).join('\n'));
+  const body = (st, t, still) => { const g = tui.makeGrid(13, 8); tui.drawAgent(g, 0, 0, st, true, t, still); return g.out(); };
+  const plain = segs => segs.map(tui.toPlain).join('\n');
+  const cellStyle = (segs, x, y) => { let c = 0; for (const [t, s] of segs[y]) for (const ch of t) { if (c === x) return s; c += tui.width(ch); } return ''; };
+  for (const [k, frames] of Object.entries(tui.AGENT)) A.ok(frames.every(f => f.length === 16 && f.every(r => r.length === 11)), k + ': every frame is 11 × 16 pixels (11 columns × 8 rows)');
+  const idle = body({ key: 'idle' }, T0, false);
+  A.ok(idle.length === 8 && idle.every(r => tui.width(tui.toPlain(r).replace(/\s+$/, '')) <= 11), 'the agent is small: 11 columns by 8 rows, head to boots');
+  A.ok(/[▀▄█]/.test(plain(idle)) && plain(idle).split('\n')[7].trim().length > 0, 'drawn in half-block pixels, standing on its boots');
+  const poses = ['idle', 'needs', 'done'].map(k => plain(body({ key: k }, T0, true)));
+  A.ok(new Set(poses).size === 3, 'its pose says its state: idle stands, needs you waves an arm, done throws both arms up');
+  const eyes = { idle: 'dim', working: 'hi', needs: 'am', done: 'ok', stopped: 'bad' };
+  for (const [k, c] of Object.entries(eyes)) A.ok(new RegExp('on-' + c + '\\b').test(cellStyle(body({ key: k, since: T0 }, T0, true), 4, 2)), k + ': its eyes are ' + c + ' behind the visor');
+  const moving = new Set(), stills = new Set(), idles = new Set(), waves = new Set();
+  for (let t = 0; t < 3000; t += 100) {
+    moving.add(plain(body({ key: 'working', since: T0 }, T0 + t, false)) + JSON.stringify(body({ key: 'working', since: T0 }, T0 + t, false)));
+    waves.add(plain(body({ key: 'needs' }, T0 + t, false)));
+    stills.add(JSON.stringify(body({ key: 'working', since: T0 }, T0 + t, true)));
+    idles.add(JSON.stringify(body({ key: 'idle' }, T0 + t, false)));
   }
-  A.ok(looks.size >= 3 && [...looks].every(f => /o {3}o/.test(f.split('\n')[3])), 'working: eyes open and glancing side to side (' + looks.size + ' frames)');
-  A.ok(stills.size === 1 && idles.size === 1, 'only working moves: a still screen and an idle agent hold one frame');
-  const g = tui.makeGrid(12, 5);
-  tui.drawAvatar(g, 0, 0, { key: 'working', since: T0 }, true, T0, true);
-  A.ok(g.out()[0].some(([t, s]) => t.trim() === '•' && /ph/.test(s)) && g.out().flat().every(([, s]) => !/\ba[0-5]\b/.test(s)), 'the antenna light glows the working red; one palette, no hue of its own');
+  A.ok(moving.size >= 3 && waves.size === 2, 'working glances and its pad flickers (' + moving.size + ' frames); needs you waves (' + waves.size + ' poses)');
+  A.ok(stills.size === 1 && idles.size === 1, 'only working and an ask move: a still screen and an idle agent hold one frame');
+  const w = body({ key: 'working', since: T0 }, T0, true);
+  A.ok(/^ph\b/.test(cellStyle(w, 5, 0)) && w.flat().every(([, s]) => !/\ba[0-5]\b/.test(s)), 'the antenna light glows the working red; one palette, no hue of its own');
+  A.ok(/\x1b\[38;2;28;11;16;48;2;127;102;107m▀/.test(tui.toAnsi(body({ key: 'idle' }, T0, true)[2], 3)), 'a pixel pair of two colours: the visor glass over the eye, the eye drawn behind it');
   A.eq(tui.stateWords({ key: 'working', since: T0 - 65000 }, T0, true).slice(1), ['ph b', '1m05s'], 'beside it: working, and for how long');
 
   const m = crew();
@@ -360,14 +364,13 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const div = scr.findIndex(l => /^├─+┤/.test(l));
   const crewTop = scr.findIndex(l => /^╭─ CREW /.test(l));
   const bot = scr.findIndex((l, i) => i > crewTop && /^╰─+╯/.test(l));
-  A.ok(div > crewTop && bot - div === 6, 'the avatar card sits at the foot of CREW, under a rule: rows ' + div + '..' + bot);
-  A.ok(/^│ +[▄█▀ ]+ +ASTRA/i.test(scr[div + 3]) && /working/.test(scr[div + 4]) && /12s/.test(scr[div + 5]), 'beside the helmet: the name, what it is doing, for how long: ' + scr.slice(div + 3, div + 6).map(l => l.slice(0, 26)).join(' / '));
+  A.ok(div > crewTop && bot - div === 9, 'the agent stands at the foot of CREW, under a rule: rows ' + div + '..' + bot);
+  A.ok(/ASTRA/i.test(scr[div + 4].slice(14)) && /working/.test(scr[div + 5]) && /12s/.test(scr[div + 6]), 'beside it: the name, what it is doing, for how long: ' + scr.slice(div + 4, div + 7).map(l => l.slice(0, 28)).join(' / '));
   A.ok((scr[crewTop].match(/╮/g) || []).length === 2, 'no panel of its own: CREW and COMMS only, COMMS keeps the width: ' + scr[crewTop]);
-  // a crew too long for the card keeps its list; no avatar
   const big = makeStation();
   big.setRoster({ agents: Array.from({ length: 24 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });
   const full = screen(big, { focus: 'a3' }, 120, 30, T0).map(tui.toPlain);
-  A.ok(!full.some(l => /^├─+┤/.test(l)), 'when the crew list needs the room, there is no avatar');
+  A.ok(!full.some(l => /^├─+┤/.test(l)), 'when the crew list needs the room, the agent steps out of it');
 }
 
 A.report('cli-dashboard.test');

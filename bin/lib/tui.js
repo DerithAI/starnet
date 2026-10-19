@@ -236,12 +236,12 @@ function render(model, ui, size, now) {
   const promptY = H - 2, hintY = H - 1, bot = promptY - 1;
 
   // ---- CREW: a framed list down the left — lamp, name, and a word for what it is doing — the one in COMMS marked; at its
-  // foot, when the list leaves room, the agent in COMMS as a small space helmet whose face says what it is doing ----------
+  // foot, when the list leaves room, the agent in COMMS as a small astronaut whose pose says what it is doing -----------
   const side = W >= 90 && rows.length > 0;
-  const sw = side ? Math.min(30, Math.max(26, Math.max(...rows.map(r => width(r.name))) + 14)) : 0;
+  const sw = side ? Math.min(30, Math.max(28, Math.max(...rows.map(r => width(r.name))) + 14)) : 0;
   if (side) {
-    const card = focusRow && rows.length <= bot - top - 1 - AVATAR_ROWS;
-    const listBot = card ? bot - AVATAR_ROWS : bot;
+    const card = focusRow && rows.length <= bot - top - 1 - AGENT_ROWS;
+    const listBot = card ? bot - AGENT_ROWS : bot;
     const inner = listBot - top - 1;
     const fi = Math.max(0, rows.indexOf(focusRow));
     const start = rows.length > inner ? Math.min(Math.max(0, fi - Math.floor(inner / 2)), rows.length - inner) : 0;
@@ -261,12 +261,12 @@ function render(model, ui, size, now) {
     });
     if (card) {
       g.put(0, listBot, '├' + '─'.repeat(sw - 2) + '┤', 'rule');
-      drawAvatar(g, 2, listBot + 1, focusRow.status, blink, now, ui.still);
-      const tw = sw - 2 - 13;
+      drawAgent(g, 2, listBot + 1, focusRow.status, blink, now, ui.still);
+      const tw = sw - 2 - 15;
       const [word, wc, more] = stateWords(focusRow.status, now, ui.still);
-      g.put(13, listBot + 3, trunc(focusRow.name, tw), 'hi b');
-      g.put(13, listBot + 4, trunc(word, tw), wc);
-      if (more) g.put(13, listBot + 5, trunc(more, tw), 'dim');
+      g.put(15, listBot + 4, trunc(focusRow.name, tw), 'hi b');
+      g.put(15, listBot + 5, trunc(word, tw), wc);
+      if (more) g.put(15, listBot + 6, trunc(more, tw), 'dim');
     }
   }
 
@@ -311,23 +311,44 @@ function render(model, ui, size, now) {
   return g.out();
 }
 
-/* THE AVATAR: a space helmet, 9 columns by 5 rows (the antenna light, then the helmet), its face the agent's state:
-   idle eyes shut (-), working eyes open and glancing side to side with the antenna light blinking (o), needs you amber (!),
-   done green (^), stopped (x). Only working and an ask move, as everywhere on this screen; a still screen holds frame one. */
-const AVATAR_ROWS = 6;   // the rule above it + its 5 rows
-const FACE = { idle: ['-', 'dim'], working: ['o', 'hi b'], needs: ['!', 'am b'], done: ['^', 'ok b'], stopped: ['x', 'bad b'] };
-function drawAvatar(g, x, y, status, blink, now, still) {
-  const key = FACE[status.key] ? status.key : 'idle';
-  const [eye, ec] = FACE[key];
-  const moving = key === 'working' && !still;
-  const look = moving ? [0, 0, 1, 1, 0, 0, -1, -1][Math.floor(now / 400) % 8] : 0;
-  const light = key === 'working' ? (moving && Math.floor(now / 500) % 2 ? 'rule' : 'ph b') : key === 'needs' ? (blink ? 'am b' : 'am faint') : key === 'done' ? 'ok' : key === 'stopped' ? 'bad' : 'dim';
-  g.put(x + 4, y, '•', light);
-  g.put(x + 1, y + 1, '▄', 'rule'); g.put(x + 2, y + 1, '▄', 'logohi'); g.put(x + 3, y + 1, '███▄', 'brand'); g.put(x + 7, y + 1, '▄', 'rule');   // a glint on the dome
-  g.put(x, y + 2, '██▀▀▀▀▀██', 'brand');
-  g.put(x, y + 3, '█', 'brand'); g.put(x + 8, y + 3, '█', 'brand');
-  g.put(x + 2 + look, y + 3, eye, ec); g.put(x + 6 + look, y + 3, eye, ec);
-  g.put(x, y + 4, '▀█▄', 'brand'); g.put(x + 3, y + 4, '▄▄▄', 'rule'); g.put(x + 6, y + 4, '▄█▀', 'brand');
+/* THE AGENT: the one in COMMS as a small astronaut, head to boots — 11 columns by 8 rows of half-block pixels (two pixels a
+   cell, so each frame is 16 rows of 11). Its pose is its state: idle stands easy, eyes low · working holds a glowing pad, eyes
+   glancing, the antenna light blinking · needs you waves an arm, eyes amber · done throws both arms up, eyes green · stopped
+   stands dark, eyes orange. Only working and an ask move, as everywhere on this screen; a still screen holds frame one.
+   Pixels: . clear · L antenna light · D antenna · W suit · H glint · G gloves, belt · R red trim · V visor · E eyes · P pad */
+const AGENT_ROWS = 9;   // the rule above it + its 8 rows
+const HEAD = ['.....L.....', '.....D.....', '...WWWWW...', '..WHWWWWW..', '..WVVVVVW..', '..WVEVEVW..', '..WVVVVVW..', '...WWWWW...'];
+const LEGS = ['...WW.WW...', '...WW.WW...', '...WW.WW...', '..RRR.RRR..'];
+const AGENT = {
+  idle: [HEAD.concat(['.RRWWWWWRR.', '.W.WRRRW.W.', '.W.WWWWW.W.', '.G.WGGGW.G.'], LEGS)],
+  working: [
+    HEAD.concat(['.RRWWWWWRR.', '.W.WRRRW.W.', '..WWWWWWW..', '...GPPPG...'], LEGS),
+    HEAD.slice(0, 5).concat(['..WVVEVEW..'], HEAD.slice(6), ['.RRWWWWWRR.', '.W.WRRRW.W.', '..WWWWWWW..', '...GPPPG...'], LEGS)
+  ],
+  needs: [
+    HEAD.slice(0, 4).concat(['..WVVVVVW.G', '..WVEVEVW.W', '..WVVVVVW.W', '...WWWWW.W.', '.RRWWWWWRR.', '.W.WRRRW...', '.W.WWWWW...', '.G.WGGGW...'], LEGS),
+    HEAD.slice(0, 3).concat(['..WHWWWWW.G', '..WVVVVVW.W', '..WVEVEVW.W', '..WVVVVVW.W', '...WWWWW.W.', '.RRWWWWWRR.', '.W.WRRRW...', '.W.WWWWW...', '.G.WGGGW...'], LEGS)
+  ],
+  done: [HEAD.slice(0, 3).concat(['G.WHWWWWW.G', 'W.WVVVVVW.W', 'W.WVEVEVW.W', '.WWVVVVVWW.', '.W.WWWWW.W.', '.RRWWWWWRR.', '...WRRRW...', '...WWWWW...', '...WGGGW...'], LEGS)],
+  stopped: [HEAD.concat(['.RRWWWWWRR.', '.W.WRRRW.W.', '.W.WWWWW.W.', '.G.WGGGW.G.'], LEGS)]
+};
+const EYES = { idle: 'dim', working: 'hi', needs: 'am', done: 'ok', stopped: 'bad' };
+function drawAgent(g, x, y, status, blink, now, still) {
+  const key = AGENT[status.key] ? status.key : 'idle';
+  const moving = !still && (key === 'working' || key === 'needs');
+  const frames = AGENT[key];
+  const f = frames[moving ? Math.floor(now / (key === 'working' ? 600 : 450)) % frames.length : 0];
+  const light = key === 'working' ? (moving && Math.floor(now / 500) % 2 ? 'rule' : 'ph') : key === 'needs' ? (blink ? 'am' : 'rule') : key === 'done' ? 'ok' : key === 'stopped' ? 'rule' : 'dim';
+  const pad = moving && Math.floor(now / 300) % 2 ? 'logohi' : 'ph';
+  const C = { L: light, D: 'rule', W: 'fg', H: 'hi', G: 'dim', R: 'brand', V: 'visor', E: EYES[key], P: pad };
+  for (let r = 0; r + 1 < f.length; r += 2) {
+    for (let c = 0; c < f[r].length; c++) {
+      const top = C[f[r][c]], low = C[f[r + 1][c]];
+      if (top && low) g.put(x + c, y + r / 2, top === low ? '█' : '▀', top === low ? top : top + ' on-' + low);
+      else if (top) g.put(x + c, y + r / 2, '▀', top);
+      else if (low) g.put(x + c, y + r / 2, '▄', low);
+    }
+  }
 }
 // what the avatar's agent is doing, in words beside it: [word, style, a second line]
 function stateWords(s, now, still) {
@@ -579,7 +600,8 @@ function drawCard(g, lines, y0, x0, cw, blink) {
 const PALETTE = {
   fg: ['#d9d2d4', 252], hi: ['#ffffff', 231], dim: ['#7f666b', 95], rule: ['#7a1c28', 88], lbl: ['#ff4757', 203],
   ph: ['#ff3b4e', 203], am: ['#ffb43a', 214], ok: ['#5dffa8', 85], bad: ['#ff6b3d', 202],
-  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
+  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196],   // the wordmark's neon red, and the prompt's ▸
+  visor: ['#1c0b10', 234]   // the astronaut's visor glass
 };
 // (256-color: the card sits on a near-black — the nearest palette brown, 58, is a loud olive)
 const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 234], inv: ['#ff3b4e', 203] };
@@ -595,6 +617,7 @@ function sgr(style, level) {
   }
   const fgKey = parts.find(p => PALETTE[p]);
   const bgKey = parts.find(p => BG[p]);
+  const onKey = parts.find(p => p.indexOf('on-') === 0 && PALETTE[p.slice(3)]);   // a pixel pair: the lower pixel's colour
   if (parts.indexOf('inv') >= 0) {
     codes.push(level === 3 ? '38;2;6;11;19' : '38;5;16');
     codes.push('1');
@@ -602,8 +625,8 @@ function sgr(style, level) {
     const [hex, c256] = PALETTE[fgKey];
     codes.push(level === 3 ? '38;2;' + hexRgb(hex).join(';') : '38;5;' + c256);
   }
-  if (bgKey) {
-    const [hex, c256] = BG[bgKey];
+  if (bgKey || onKey) {
+    const [hex, c256] = bgKey ? BG[bgKey] : PALETTE[onKey.slice(3)];
     codes.push(level === 3 ? '48;2;' + hexRgb(hex).join(';') : '48;5;' + c256);
   }
   return codes.length ? '\x1b[' + codes.join(';') + 'm' : '';
@@ -635,4 +658,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, pickerView, drawAvatar, stateWords };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, pickerView, drawAgent, stateWords, AGENT };
