@@ -132,6 +132,50 @@ const Backup = (() => {
     return { ok, file, records, keys: records, secretsIncluded: false, notes: bundle.notebook ? bundle.notebook.length : 0 };
   }
 
+  /* #134 EXPORT STATION (Settings › STATION BACKUP) — the line says where the file went only as far as the app KNOWS.
+     A page that hands a blob to `<a download>` is never told where it landed (the macOS app's WebView drops it into
+     Downloads silently; a browser may rename or ask), so "✓ exported" was a delivery nobody could see.
+       desktop: POST /api/config/export/save — the sidecar (same machine) writes the file, reads it back, and
+                returns its real path; the line names that path and nothing is handed to the WebView.
+       browser: POST /api/config/export, hand the envelope to the browser as starnet-station-<day>.json, and say
+                exactly that: the file name, and that it went to the browser's downloads.
+     A desktop save the sidecar could not make (folder permission denied, an older sidecar) falls back to the browser
+     hand-off and says why. `post` is Harness.api.post ({ ok, status, j }); `download` defaults to triggerDownload. */
+  const SECRETS_NOTE = 'secrets excluded, re-enter keys after importing';
+  function stationFileName(now) {
+    return 'starnet-station-' + new Date(now == null ? Date.now() : Number(now)).toISOString().slice(0, 10) + '.json';
+  }
+  async function exportStation(opts) {
+    const o = opts || {};
+    const post = o.post;
+    const download = typeof o.download === 'function' ? o.download : triggerDownload;
+    const body = { sections: o.sections || {} };
+    let refused = '';
+    if (o.desktop) {
+      let r = null;
+      try { r = await post('/api/config/export/save', body); } catch (e) { r = null; refused = 'the station did not answer'; }
+      const j = r && r.j;
+      if (r && r.ok && j && j.ok && j.path) {
+        return { ok: true, where: 'disk', path: String(j.path), file: String(j.file || ''), line: '✓ saved to ' + j.path + ' — ' + SECRETS_NOTE };
+      }
+      if (j && j.error && r.status !== 404) refused = String(j.error);
+      else if (!refused) refused = 'this station cannot save files yet';
+    }
+    let r;
+    try { r = await post('/api/config/export', body); }
+    catch (e) { return { ok: false, line: 'export failed — the station did not answer' }; }
+    if (!r || !r.ok || !r.j || typeof r.j !== 'object') {   // never download an error body as a "backup"
+      const why = (r && r.j && r.j.error) ? String(r.j.error) : ('http ' + (r ? r.status : '?'));
+      return { ok: false, line: 'export failed — ' + why };
+    }
+    const file = stationFileName(o.now);
+    if (!download(file, JSON.stringify(r.j, null, 2))) return { ok: false, line: 'export failed — the file could not be handed to the browser' };
+    const handed = refused
+      ? 'could not save it (' + refused + ') — handed to the app\'s downloads as ' + file + ' instead (usually your Downloads folder)'
+      : 'sent to your browser\'s downloads as ' + file;
+    return { ok: true, where: 'browser', file, line: handed + ' — ' + SECRETS_NOTE };
+  }
+
   // validate a parsed bundle WITHOUT mutating anything — callers decide whether to apply.
   function validate(doc) {
     if (!doc || typeof doc !== 'object') return 'not a JSON object';
@@ -224,6 +268,6 @@ const Backup = (() => {
     return res;
   }
 
-  return { exportAll, importFile, applyBundle, validate, collectStore, build, isCredentialKey, SCHEMA, VERSION, SECRET_POLICY };
+  return { exportAll, exportStation, stationFileName, importFile, applyBundle, validate, collectStore, build, isCredentialKey, SCHEMA, VERSION, SECRET_POLICY };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Backup;

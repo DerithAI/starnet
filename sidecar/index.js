@@ -329,6 +329,7 @@ const SharedSpecialties = require('../shared/specialties.js');           // SCOU
 const RecipeCatalogAll = require('../frontend/app/recipe-catalog/index.js'); // SCOUT: builtin recipe catalog (draft dedup + context)
 const { makeAutoNotifier } = require('./autonotify.js');   // B4: ping a connected channel when a cron run produces work
 const configExport = require('./configexport.js');   // P1-7: station backup — export/import/reset (pure shape+redaction; index wires the live stores)
+const backupFile = require('./backupfile.js');       // #134: the desktop station backup lands in a folder the line can name
 const harnessImport = require('./harness-import.js'); // IMPORT-AN-AGENT: read-only OpenClaw/Hermes home -> normalized preview (pure; index does the fs)
 const { writeFileDurable: writeFileDurableRaw } = require('./durable-write.js'); // G4.2: crash-safe atomic+durable single-file replace (fsync-before-rename)
 const stationRecovery = require('./station-recovery.js');
@@ -11848,6 +11849,7 @@ const ROUTES = [
   { m: 'GET', exact: '/api/voice/chat-model', h: handleVoiceChatStatus },   // SETTINGS→Models: the model a spoken turn runs on
   { m: 'POST', exact: '/api/voice/chat-model', h: handleVoiceChatSet },
   { m: 'POST', exact: '/api/config/export', h: handleConfigExport },   // P1-7 station backup
+  { m: 'POST', exact: '/api/config/export/save', h: handleConfigExportSave },   // #134 desktop: the sidecar writes it + names the path
   { m: 'POST', exact: '/api/config/import', h: handleConfigImport },
   { m: 'POST', exact: '/api/config/reset', h: handleConfigReset },
   { m: 'GET', exact: '/api/runtime/agent', h: handleRuntimeAgent },   // what a LOCAL headless caller needs to drive /api/run (no secrets)
@@ -14254,6 +14256,22 @@ async function handleConfigExport(req, res) {
   try { env = configExport.buildExport(snap, { now: Date.now(), app: 'StarNet', only: Array.isArray(body.only) ? body.only : null }); }
   catch (e) { return json(409, { ok: false, error: (e && e.message) || 'configuration cannot be exported safely' }); }
   return json(200, env);
+}
+
+/* POST /api/config/export/save { sections? } -> { ok, path, file, dir } (#134). The DESKTOP app's EXPORT STATION: the
+   same envelope as /api/config/export, but written by the sidecar into the Commander's Downloads folder (home when
+   there is none) and read back, so the settings line can name the exact file instead of claiming a WebView download
+   it never sees. The caller never supplies a path; a same-day backup is never overwritten (backupfile.js). */
+async function handleConfigExportSave(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  let body; try { body = JSON.parse(await readBody(req, 1 << 20)) || {}; } catch (e) { return json(400, { ok: false, error: 'bad json' }); }
+  const now = Date.now();
+  let env;
+  try { env = configExport.buildExport(collectExportSnapshot(body.sections), { now, app: 'StarNet' }); }
+  catch (e) { return json(409, { ok: false, error: (e && e.message) || 'configuration cannot be exported safely' }); }
+  const saved = backupFile.saveStationExport(JSON.stringify(env, null, 2), { home: os.homedir(), now });
+  if (!saved.ok) console.warn('[config-export] could not save the station backup: ' + saved.error);
+  return json(saved.ok ? 200 : 500, saved);
 }
 
 function connectorFieldSet(c) {

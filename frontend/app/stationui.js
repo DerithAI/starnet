@@ -7594,20 +7594,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       try { if (typeof AutonomyStore !== 'undefined' && AutonomyStore.exportState) out.autonomy = AutonomyStore.exportState(); } catch (_) {}
       return out;
     };
+    // #134: the line names WHERE the file went, as far as the app can know it — the desktop sidecar writes it and
+    // returns the real path; a browser is only handed it (Backup.exportStation owns both + the honest fallback).
     if (exportBtn) exportBtn.addEventListener('click', () => {
       setMsg('building export…');
-      Harness.api.post('/api/config/export', { sections: browserSections() })
-        .then(({ ok, status, j: env }) => {   // never download an error body as a "backup"
-          if (!ok) throw new Error('http ' + status);
-          const blob = new Blob([JSON.stringify(env, null, 2)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          const stamp = new Date().toISOString().slice(0, 10);
-          a.href = url; a.download = 'starnet-station-' + stamp + '.json';
-          document.body.appendChild(a); a.click(); a.remove();
-          setTimeout(() => URL.revokeObjectURL(url), 2000);
-          setMsg('✓ exported (secrets excluded — re-enter keys after importing)', true); sfx('sale');
-        }).catch(() => { setMsg('export failed'); sfx('bad'); });
+      Backup.exportStation({ sections: browserSections(), post: Harness.api.post, desktop: !!tauriInvoke() })
+        .then(r => { setMsg(r.line, r.ok); sfx(r.ok ? 'sale' : 'bad'); })
+        .catch(() => { setMsg('export failed'); sfx('bad'); });
     });
     if (importBtn && fileIn) {
       importBtn.addEventListener('click', () => fileIn.click());
