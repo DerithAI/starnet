@@ -244,7 +244,7 @@ const { makeTelegramTransport } = require('./channels/telegram.transport.js');  
 const { makeEnvironmentProxyFetch } = require('./channels/proxy-fetch.js');
 const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
-const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
+const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
 const { hostPowerWithheldFor, entryUntrusted, standingWorkEscalates } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
@@ -411,7 +411,7 @@ const skillMarketSigning = require('./skills/market-signing.js');   // the Skill
 const { makeVerdictReview, reviewPassFinished } = require('./verdictreview.js');   // consistency loop: a rated ok/miss run earns a skill review
 const skillCurator = require('./skillcurator.js');          // skill lifecycle/consolidation maintenance
 const slash = require('./slash.js');                       // slash-command catalog + dispatch descriptors
-const { makeUserCommands } = require('./usercommands.js');  // Commander-defined slash commands (alias/exec)
+const { makeUserCommands, menuEntries: userMenuEntries, execRefusal: userExecRefusal } = require('./usercommands.js');  // Commander-defined slash commands (alias/exec)
 const slashActionsMod = require('./slash-actions.js');     // server-side execution for dispatch:'server' commands
 const Recipes = require('../frontend/app/recipes.js');     // built-in mission recipes, also exposed as slash commands
 const { makeCheckpointStore } = require('./checkpoint-store.js');   // the shadow-git rollback net (ambient edge)
@@ -10367,6 +10367,19 @@ function startTelegram(token, key, model, agentCfg) {
   return { secretsPersisted };
 }
 
+/* The published menu = the hub's table, then the Commander's own commands (2026-10-18: a group's "/" menu listed
+   none of them, so they could only be run by someone who already knew the name). Every name a built-in owns is
+   reserved — the hub's table AND the slash registry's builtins/aliases — because a built-in always wins its name.
+   Read at connect, like the rest of the menu: an edit to usercommands.json runs at once but lists on the next
+   connect. Bot API cap: 100 rows. */
+function channelMenuCommands() {
+  const base = menuCommands();
+  const reserved = HUB_COMMANDS.map(c => c.command);
+  for (const c of slash.BUILTIN_COMMANDS) { reserved.push(c.name); for (const a of (c.aliases || [])) reserved.push(a); }
+  let mine = [];
+  try { mine = userMenuEntries(userCommandStore.load(), reserved); } catch (_) { mine = []; }
+  return base.concat(mine).slice(0, 100);
+}
 // Publish the bot's "/" menu from the hub's OWN command table, so Telegram can never offer a command the hub
 // doesn't implement (or hide one it does). Fire-and-forget and non-blocking: an empty menu is cosmetic, and a
 // slow setMyCommands must never delay or fail a connect (a lesson the reference harness learned the hard way —
@@ -10376,9 +10389,10 @@ function publishCommandMenu(adapter, label) {
   // Telegram resolves its most-specific command scope first. Publish the same table for default + all groups so
   // a forum topic never loses the command menu to an older/narrower BotFather scope. Other adapters ignore the
   // optional scope argument and keep their original single publish.
+  const list = channelMenuCommands();
   Promise.all([
-    Promise.resolve(adapter.setCommands(menuCommands())),
-    Promise.resolve(adapter.setCommands(menuCommands(), { scope: { type: 'all_group_chats' } }))
+    Promise.resolve(adapter.setCommands(list)),
+    Promise.resolve(adapter.setCommands(list, { scope: { type: 'all_group_chats' } }))
   ])
     .then((results) => { for (const r of results) if (r && r.ok === false) console.warn('[' + label + '] command menu not published: ' + (r.error || 'unknown')); })
     .catch(swallow('channels.menu'));
@@ -10622,7 +10636,12 @@ function startDiscord(token, key, model, agentCfg) {
       // modelCatalog are the SAME app roster + boot-warmed catalog; NO per-channel routing logic here).
       roster: () => [...agentRoster].map(([agentId, a]) => ({ agentId, name: a.name, model: a.model, provider: a.provider })),
       setModel: (agentId, model) => setAgentModelFromChannel(agentId, model),
-      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; }   // re-warm on demand if a boot-time /models failure left it empty
+      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; },   // re-warm on demand if a boot-time /models failure left it empty
+      // the shared slash registry + the Commander's own commands — the SAME wiring the Telegram hubs carry. Without
+      // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
+      // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
+      runSlash: (input, sctx) => runSlashForChannel(input, sctx),
+      userCommandNames: () => userCommandEntries().map(c => c.name)
     },
     adapter: {
       fetch: globalThis.fetch, token: token, clock: { now: () => Date.now() },
@@ -10909,7 +10928,12 @@ function startGenericChannel(id, token, key, model, agentCfg) {
       // In-messenger control surface — identical across channels because it lives in the shared hub.
       roster: () => [...agentRoster].map(([agentId, a]) => ({ agentId, name: a.name, model: a.model, provider: a.provider })),
       setModel: (agentId, model) => setAgentModelFromChannel(agentId, model),
-      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; }
+      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; },
+      // the shared slash registry + the Commander's own commands — the SAME wiring the Telegram hubs carry. Without
+      // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
+      // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
+      runSlash: (input, sctx) => runSlashForChannel(input, sctx),
+      userCommandNames: () => userCommandEntries().map(c => c.name)
     },
     adapter: adapterOpts
   });
@@ -18788,7 +18812,7 @@ async function runSlashForChannel(input, ctx) {
   // caller, but an authenticated owner Telegram DM is the Commander's remote control surface and executes the
   // exact same snippet path as the desktop palette.
   if (out.directive.type === 'exec') {
-    if (!ctx.ownerTrusted) return { ok: false, text: 'That is one of your shell commands — for safety those only run in the StarNet desktop app, not over messaging.' };
+    if (!ctx.ownerTrusted) return { ok: false, text: userExecRefusal(out.directive.name, { chatType: ctx.chatType, ownerDmExec: !!ctx.ownerDmExec }) };
     return runUserExec(out.directive);
   }
   // Only dispatch:'server' commands can answer off-browser. A client command would need the DOM, so say that

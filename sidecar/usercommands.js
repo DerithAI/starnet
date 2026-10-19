@@ -86,4 +86,47 @@ function makeUserCommands(deps) {
   return { load: load, normalize: normalize, catalogEntries: catalogEntries, NAME_RE: NAME_RE, MAX_COMMANDS: MAX_COMMANDS };
 }
 
-module.exports = { makeUserCommands, NAME_RE, MAX_COMMANDS, MAX_CMD_LEN };
+/* menuEntries(list, reserved) — the Commander's commands as Telegram "/" menu rows ({ command, description }), so
+   a group can tap them instead of having to know them (2026-10-18: the menu listed 0 of them).
+     · Telegram's grammar is a-z0-9_ (1-32): '-' becomes '_' (the hub reads "/disk_usage" back as /disk-usage), and
+       a name over 32 characters stays typeable but is not listed.
+     · `reserved` = every name a built-in owns (the hub's table + the slash registry's builtins and aliases). A
+       built-in always wins that name, so listing a user command under it would advertise something that never runs.
+     · A dashed name whose '_' form is ANOTHER command's exact name is not listed: the hub runs the exact name, so
+       the row would carry one command's description and run the other.
+     · An exec row never shows its snippet — the menu is visible to every member of a group. */
+const MENU_NAME_RE = /^[a-z0-9_]{1,32}$/;
+function menuEntries(list, reserved) {
+  const items = (Array.isArray(list) ? list : []).filter(c => c && c.name);
+  const taken = new Set((Array.isArray(reserved) ? reserved : []).map(n => String(n).toLowerCase()));
+  const exact = new Set(items.map(c => String(c.name).toLowerCase()));
+  const out = [];
+  for (const c of items) {
+    const name = String(c.name).toLowerCase();
+    const command = name.replace(/-/g, '_');
+    if (!MENU_NAME_RE.test(command) || taken.has(command) || taken.has(name)) continue;
+    if (command !== name && exact.has(command)) continue;
+    taken.add(command);
+    const description = String(c.desc || '').trim()
+      || (c.type === 'alias' ? ('Runs ' + c.target) : 'Your shell command (runs in your DM with me)');
+    out.push({ command: command, description: description.slice(0, 256) });
+  }
+  return out;
+}
+
+/* execRefusal(name, ctx) — why a shell command did not run over messaging, worded for the chat it was typed in.
+   It must be TRUE for that chat: the old line said these "only run in the StarNet desktop app", while the owner's
+   Telegram DM had been running them all along. ctx = { chatType: 'group'|'dm', ownerDmExec } — ownerDmExec says
+   this channel has an owner DM where one does run. A group never runs one: the output would post to the room. */
+function execRefusal(name, ctx) {
+  const c = ctx || {};
+  const cmd = '/' + String(name || 'command');
+  if (c.chatType === 'group') {
+    return cmd + ' is one of your shell commands, and those never run in a group: the output would be posted to everyone here. '
+      + (c.ownerDmExec ? 'Send it to me in our DM instead.' : 'Run it from the StarNet desktop app instead.');
+  }
+  if (c.ownerDmExec) return cmd + ' is one of your shell commands and could not run here. Run it from the StarNet desktop app.';
+  return cmd + ' is one of your shell commands. Over messaging those only run in your DM with the station\'s Telegram bot; here, run it from the StarNet desktop app.';
+}
+
+module.exports = { makeUserCommands, menuEntries, execRefusal, NAME_RE, MAX_COMMANDS, MAX_CMD_LEN };
