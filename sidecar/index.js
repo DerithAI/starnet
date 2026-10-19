@@ -10307,6 +10307,9 @@ function startTelegram(token, key, model, agentCfg) {
       try { const r = channelStore.getChatRecord(String(chatId)); return !(r && r.requireMention === false); }
       catch (_) { return true; }
     },
+    // A GROUP is closed until the paired owner sends /allow in it; the hub writes that onto the chat's record and
+    // this reads it per message. Never passed before 2026-10-19, which silently dropped every group message.
+    allowedChats: (chatId) => hub.chatAdmitted(chatId),
     // Being called by NAME is being addressed. Read lazily: the name arrives with getMe, after this is built.
     mentionPatterns: () => [stationBotName],
     // /mention observe — follow the room without answering it. Off unless the chat asked for it.
@@ -10587,6 +10590,8 @@ function startTelegramBot(botId) {
     // agent's. recOf() re-reads the live record, so a rename in BotFather or in the roster takes effect without
     // a restart. Anything under three characters is refused inside the adapter.
     mentionPatterns: () => { const r = recOf() || {}; return [r.botName, r.name]; },
+    // groups this bot's owner admitted with /allow — read live from this bot's own scoped store, like the gate above
+    allowedChats: (chatId) => hub.chatAdmitted(chatId),
     observeUnmentioned: (chatId) => {
       try { const r = botStore.getChatRecord(String(chatId)); return !!(r && r.observeUnmentioned); }
       catch (_) { return false; }

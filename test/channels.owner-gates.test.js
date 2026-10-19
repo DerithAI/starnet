@@ -28,7 +28,8 @@ const { admitRelayMessage } = require('../sidecar/channels/relay-admission.js');
 const POLICY = {
   status: 'open', agents: 'open', whoami: 'open', tools: 'open', help: 'open', start: 'open',
   model: 'write', approvals: 'write', mention: 'write',
-  stop: 'always', new: 'always', talk: 'always', usage: 'always', routine: 'always', away: 'always'
+  stop: 'always', new: 'always', talk: 'always', usage: 'always', routine: 'always', away: 'always',
+  allow: 'always', deny: 'always'   // only the paired owner opens or closes a group (2026-10-19)
 };
 
 function fakeStore() {
@@ -91,7 +92,7 @@ const msg = (userId, text, chatType, chatId) => ({ channel: 'telegram', chatId: 
   {
     const t = build();
     const tries = ['/model model-b', '/talk codex', '/routine add every day 9am | wipe the disk', '/away on', '/away build me a thing',
-      '/usage', '/stop', '/new', '/approvals on', '/mention off', '/standup', '/talk@mybot codex'];
+      '/usage', '/stop', '/new', '/approvals on', '/mention off', '/standup', '/talk@mybot codex', '/deny', '/allow@mybot'];
     for (const text of tries) await t.hub.onInbound(msg('stranger', text, 'group'));
     A.eq(t.sends.length, tries.length, 'every refused command got exactly one reply');
     A.ok(t.sends.every(s => /owner-only/.test(s)), 'every reply names the owner-only policy');
@@ -102,6 +103,7 @@ const msg = (userId, text, chatType, chatId) => ({ channel: 'telegram', chatId: 
     const rec = t.store.recs.get('-100') || {};
     A.ok(rec.agentId === undefined, '/talk did not rebind the chat');
     A.ok(rec.approvals === undefined && rec.requireMention === undefined, '/approvals and /mention were not written');
+    A.ok(rec.admittedOn === undefined, '/allow and /deny were not written');
   }
   // an allowed non-owner in a DM is refused too (the owner gate is about WHO, not the chat type)
   {

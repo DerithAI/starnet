@@ -110,6 +110,16 @@ function startMockTelegramMulti(bots) {
         st.queued.push({ update_id: ++updateId, message: { message_id: ++messageId, date: Math.floor(Date.now() / 1000), chat: { id: chatId, type: 'private' }, from: { id: userId, username: 'commander' }, text } });
         flush(st);
       },
+      // a GROUP message: a leading /command or an @mention carries the entity Telegram would attach
+      pushGroup(token, chatId, userId, text) {
+        const st = perToken[token];
+        const msg = { message_id: ++messageId, date: Math.floor(Date.now() / 1000), chat: { id: chatId, type: 'supergroup', title: 'Crew' }, from: { id: userId, is_bot: false, username: 'u' + userId }, text };
+        const at = text.indexOf('@');
+        if (text[0] === '/') msg.entities = [{ type: 'bot_command', offset: 0, length: text.split(/\s/)[0].length }];
+        else if (at >= 0) msg.entities = [{ type: 'mention', offset: at, length: text.slice(at).split(/\s/)[0].length }];
+        st.queued.push({ update_id: ++updateId, message: msg });
+        flush(st);
+      },
       close(done) {
         for (const t of Object.keys(perToken)) while (perToken[t].waiters.length) respond(perToken[t].waiters.shift().res, { ok: true, result: [] });
         server.close(done || (() => {}));
@@ -289,6 +299,29 @@ const STATION = 'STATIONTOKEN', TOK_A = 'TOKAAA', TOK_B = 'TOKBBB';
     // ...while the owner still works
     tg.pushText(TOK_A, 900, 77, 'owner again');
     await waitUntil(() => tg.perToken[TOK_A].sends.length > aSendsBefore, 8000, 'owner still gets replies after the stranger');
+
+    // ---- 6b. GROUPS: bot A's own owner admits a group with /allow; admission is per BOT (2026-10-19) ----
+    const GRP = -100900;
+    const inGroup = (tok, from) => tg.perToken[tok].sends.slice(from).filter(s => String(s.chat_id) === String(GRP));
+    let gA = tg.perToken[TOK_A].sends.length;
+    tg.pushGroup(TOK_A, GRP, 77, '@NovaBot are you here?');
+    await sleep(1200);
+    A.eq(inGroup(TOK_A, gA).length, 0, 'bot A is silent in a group its owner never admitted');
+    gA = tg.perToken[TOK_A].sends.length;
+    tg.pushGroup(TOK_A, GRP, 77, '/allow@NovaBot');
+    await waitUntil(() => inGroup(TOK_A, gA).some(s => /admitted/i.test(String(s.text || ''))), 8000, 'bot A confirms /allow in the group');
+    const scoped = JSON.parse(fs.readFileSync(path.join(ws, 'channels', 'chatmap.json'), 'utf8')).chats || {};
+    A.eq((scoped['111|' + GRP] || {}).admittedOn, 'telegram:111', 'the admission is stored in bot A\'s OWN scoped chat record, under its own channel');
+    A.ok(!(scoped[String(GRP)] || {}).admittedOn, 'the station bot\'s record for the same chat id is untouched');
+    gA = tg.perToken[TOK_A].sends.length;
+    const gStation = tg.perToken[STATION].sends.length;
+    tg.pushGroup(TOK_A, GRP, 88, '@NovaBot what do you think?');
+    await waitUntil(() => inGroup(TOK_A, gA).some(s => String(s.text || '').indexOf('Bound answer') >= 0), 15000, 'bot A answers an @mention in the admitted group');
+    A.eq(tg.perToken[STATION].sends.length, gStation, 'the station bot said nothing for bot A\'s group');
+    const gB = tg.perToken[TOK_B].sends.length;
+    tg.pushGroup(TOK_B, GRP, 77, '@ScoutBot and you?');
+    await sleep(1200);
+    A.eq(inGroup(TOK_B, gB).length, 0, 'bot B stays silent in the same group: bot A\'s /allow admitted only bot A');
 
     // ---- 7. malformed disconnect is inert; then a valid disconnect stops exactly bot A ----
     const botsBeforeMalformed = fs.readFileSync(path.join(ws, 'channels', 'secrets.json'), 'utf8');
