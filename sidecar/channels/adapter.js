@@ -297,11 +297,11 @@
       const route = {};
       if (m.threadId != null && m.threadId !== '') route.threadId = String(m.threadId);
       if (m.messageId != null && m.messageId !== '') route.replyTo = String(m.messageId);
-      try { console.log('[' + name + '] refused /allow or /deny from a non-owner in chat ' + id); } catch (_) {}
+      console.log('[' + name + '] refused /allow or /deny from a non-owner in chat ' + id);
       Promise.resolve()
         .then(() => transport.send(id, ADMISSION_REFUSAL, route))
         .then(r => { if (r && r.ok) rememberSent(id, r.messageId); })
-        .catch(e => { try { console.error('[' + name + '] admission refusal failed for chat ' + id + ':', (e && e.message) || e); } catch (_) {} });
+        .catch(e => console.error('[' + name + '] admission refusal failed for chat ' + id + ':', (e && e.message) || e));
     }
 
     /* FOUR verdicts. 'drop' is silence, 'run' is a real turn, and 'observe' is the middle ground the mention
