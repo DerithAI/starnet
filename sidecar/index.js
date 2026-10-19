@@ -1956,6 +1956,17 @@ const skillMarket = makeSkillMarket({
   floorSerial: (() => { try { return Number(require('./skills/market-floor.json').serial) || 0; } catch (e) { failNote('skill-market.floor', e); return 0; } })(),
   loadJson: (file) => loadResilient(file, 'skill market'), saveJson: (file, value) => saveResilient(file, value)
 });
+// THE COMMUNITY MAPS GALLERY (sidecar/maps/community.js): station layouts players shared, reviewed by a person, signed
+// with the Skill Market's keys on the publisher's PC. Read through the same guarded fetcher; shared through the linked
+// account. STARNET_MAPS_URL=off switches the gallery off; any other value points it at another signed gallery.
+const COMMUNITY_MAPS_DEFAULT_URL = 'https://starnetos.com/.well-known/starnet-maps.json';
+const communityMaps = require('./maps/community.js').makeCommunityMaps({
+  fetchDocument: fetchSkillDocument, signing: skillMarketSigning,
+  trustedKeys: skillMarketSigning.TRUSTED_KEYS.concat(skillMarketSigning.keysFromEnv(process.env.STARNET_SKILL_MARKET_KEYS)),
+  catalogUrl: () => { const v = process.env.STARNET_MAPS_URL; return v == null ? COMMUNITY_MAPS_DEFAULT_URL : (String(v).trim().toLowerCase() === 'off' ? '' : String(v).trim()); },
+  cloud: () => { const c = resolveCreditsConfig(); return { url: c.url, token: c.apiKey }; },
+  fetch: (...a) => globalThis.fetch(...a), now: () => Date.now()
+});
 // THE MARKET'S KILL SWITCH: while at least one market skill is installed, re-read the small signed pulled-skills list
 // shortly after boot and every few minutes, and switch off anything the market has pulled. A station with no market
 // skills installed never makes this request. SKYNET_SKILL_MARKET_PULL_MS tunes the interval (0 turns the check off).
@@ -11927,6 +11938,10 @@ const ROUTES = [
   { m: 'GET', qsplit: '/api/skill-market', h: serveSkillMarket },                // the Skill Market: catalog + this station's install state
   { m: 'POST', exact: '/api/skill-market/install', h: handleSkillMarketInstall },
   { m: 'POST', exact: '/api/skill-market/uninstall', h: handleSkillMarketUninstall },
+  { m: 'GET', qsplit: '/api/community-maps', h: serveCommunityMaps },             // the community maps gallery (signed index)
+  { m: 'GET', qsplit: '/api/community-maps/file', h: serveCommunityMapFile },     // one map's build or picture, sha256-pinned
+  { m: 'GET', exact: '/api/community-maps/mine', h: serveCommunityMapsMine },
+  { m: 'POST', exact: '/api/community-maps/share', h: handleCommunityMapShare },
   { m: 'POST', exact: '/api/skill-exchange/inspect', h: handleSkillExchangeInspect },
   { m: 'POST', exact: '/api/skill-exchange/registry', h: handleSkillExchangeRegistry },
   { m: 'POST', exact: '/api/skill-exchange/discover', h: handleSkillExchangeDiscover },
@@ -18885,6 +18900,35 @@ async function handleSkillMarketInstall(req, res) {
     const on = keep ? { ok: true, enabled: skillPrefs.get(r.slug) !== false } : skillPrefs.set(r.slug, true);
     json(200, Object.assign({}, r, { enabled: !!(on && on.ok && on.enabled) }));
   } catch (e) { json(400, { ok: false, error: (e && e.message) || 'could not install that skill' }); }
+}
+// GET /api/community-maps[?refresh=1] — the community gallery as the signed index lists it (offline is a state, not a crash)
+async function serveCommunityMaps(req, res) {
+  try {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    const c = await communityMaps.catalog({ refresh: u.searchParams.get('refresh') === '1' });
+    respondJson(res, 200, c.ok ? { ok: true, serial: c.serial, maps: c.maps, linked: communityMaps.linked() } : Object.assign({ linked: communityMaps.linked() }, c));
+  } catch (e) { respondJson(res, 200, { ok: false, linked: communityMaps.linked(), error: (e && e.message) || 'could not reach the community gallery' }); }
+}
+// GET /api/community-maps/file?slug=&v=&which=build|still — only bytes that hash to what the signed index pins
+async function serveCommunityMapFile(req, res) {
+  const q = new URL(req.url, 'http://127.0.0.1').searchParams;
+  try {
+    const f = await communityMaps.file(q.get('slug') || '', Number(q.get('v')), q.get('which') === 'still' ? 'still' : 'build');
+    res.writeHead(200, { 'Content-Type': f.type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': f.bytes.length });
+    return res.end(f.bytes);
+  } catch (e) { return respondJson(res, 404, { ok: false, error: (e && e.message) || 'that map is not available' }); }
+}
+// GET /api/community-maps/mine — this account's shared maps and their review status, as the cloud reports them
+async function serveCommunityMapsMine(req, res) {
+  const r = await communityMaps.mine();
+  respondJson(res, 200, r);
+}
+// POST /api/community-maps/share { title, description, credit, agree, build, still } — ask for review; the cloud's answer verbatim
+async function handleCommunityMapShare(req, res) {
+  const body = await readJsonBody(req, readBody, 7 * 1024 * 1024, res);
+  if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
+  const r = await communityMaps.share(body);
+  respondJson(res, r.ok ? 202 : (r.status >= 400 && r.status < 600 ? r.status : 502), r);
 }
 // POST /api/skill-market/uninstall { slug } — remove a market install; a bundled original falls back to its bundled copy.
 async function handleSkillMarketUninstall(req, res) {
