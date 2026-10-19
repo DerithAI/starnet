@@ -3638,7 +3638,10 @@ const Chat = (() => {
       r.body.appendChild(more);
     }
     const foot = document.createElement('div'); foot.className = 'recap-line recap-foot';
-    foot.textContent = [fmtRecapCost(entry), durMs > 0 ? fmtMs(durMs) : '', (entry.model && entry.model !== '(unknown)') ? entry.model : ''].filter(Boolean).join(' · ');
+    // SAY IT ONCE (10-19): the RUN COMPLETE footer right above already tells this run's honest time and its model (its
+    // telemetry hydrates before this card): the foot keeps what the footer does not say, the cost ("907ms" over "922ms")
+    const said = !!(log && Array.from(log.querySelectorAll('.comms-presence.resolved[data-run-id]')).some(c => c.dataset.runId === runId && c.dataset.telemetry === '1'));
+    foot.textContent = [fmtRecapCost(entry), !said && durMs > 0 ? fmtMs(durMs) : '', !said && entry.model && entry.model !== '(unknown)' ? entry.model : ''].filter(Boolean).join(' · ');
     if (foot.textContent) r.body.appendChild(foot);
     autoscroll();
   }

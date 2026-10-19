@@ -1496,3 +1496,23 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel .run-telemetry .rt-tool 
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .run-telemetry .rt-tool.err { color: var(--bad); }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .run-telemetry .rt-tool.held { color: var(--ph-dim); }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .run-telemetry .rt-run + .rt-run { border-top-color: rgba(var(--ph-rgb), .14); }
+
+/* ============================================================
+   PIP-BOY COMMS DELIVERED (10-19, Andrew: "lets finish and polish everything"). What a run hands over, in the steps'
+   register: COPY PATH / FOLDER is a terminal key (it was an 11px chip, the shrunken-chip law); the file's name keeps its
+   gold with a quiet underline set off the letters. The recap foot no longer repeats the time and model the RUN COMPLETE footer
+   above it already tells (chat.js recapCard: one run, one duration).
+   ============================================================ */
+/* (the saved line and the recap keep the transcript's 18px reading floor, readability.css) the recap's foot, now only its
+   cost, reads at the steps' size in the muted text */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) > .cmsg.recap .recap-foot { font-size: 14px; color: var(--cg-mute, var(--text)); opacity: 1; }
+/* the file's name: gold, a quiet 1px underline set off the letters */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .deliverable-link { text-decoration-thickness: 1px; text-underline-offset: 3px; }
+/* COPY PATH / FOLDER: a terminal key (it was an 11px chip) */
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .deliverable-folder {
+  display: inline-flex; align-items: center; gap: 5px; vertical-align: middle; min-height: 26px; margin-left: 10px; padding: 2px 9px;
+  font-size: 14px; line-height: 1; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ph-bright); opacity: 1;
+  border: 1px solid rgba(var(--ph-rgb), .4); border-radius: 2px; background: rgba(0, 0, 0, .25);
+}
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .deliverable-folder:is(:hover, :focus-visible) { color: var(--ph-bright); border-color: rgba(var(--ph-rgb), .75); background: rgba(var(--ph-rgb), .1); }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel .deliverable-folder .fb-label { margin-left: 0; }
