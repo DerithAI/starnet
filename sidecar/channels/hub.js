@@ -244,6 +244,10 @@
     { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always' },
     { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]', owner: 'write' },
     { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]', owner: 'write' },
+    // A group is closed until the paired owner sends /allow IN it (2026-10-19). The adapter lets exactly these two
+    // through from a group it does not answer in yet, so the owner can open it from the inside.
+    { command: 'allow', description: 'In a group: let me answer here', owner: 'always' },
+    { command: 'deny', description: 'In a group: stop me answering here', owner: 'always' },
     { command: 'whoami', description: 'Show which agent this chat is talking to' },
     { command: 'help', description: 'List these commands', menu: false },
     // Telegram sends this when a fresh chat's START button is pressed. menu:false — the client offers it on an
@@ -1051,6 +1055,17 @@
     // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
     // live floor plan, which is content-per-message and not a stable "who am I talking to"). Used by /agents,
     // /talk confirmations, and /model to name the target honestly.
+    /* GROUP ADMISSION lives on the chat's own record, like /mention and /approvals: the adapter's allow-list reads
+       this per message, so /allow and /deny take effect on the next one and survive a restart. The value is the
+       CHANNEL id, not a bare flag, because the station bot and the Discord/Slack/Matrix/Signal hubs share one
+       chat map keyed by chat id alone — admitting a chat on one platform must never admit a chat that happens to
+       carry the same id on another. (An agent-bound bot's store is already namespaced per bot.) */
+    function chatAdmitted(chatId) {
+      if (typeof store.getChatRecord !== 'function') return false;
+      try { const r = store.getChatRecord(String(chatId)); return !!(r && r.admittedOn === channel); }
+      catch (_) { return false; }
+    }
+
     function ownerOnlyReply(label) {
       return '⚠ ' + label + ' is owner-only on this station — only the paired owner can use it. You can still talk to the agent here.';
     }
@@ -1257,6 +1272,44 @@
         // The caveat rides the two states that actually depend on hearing unaddressed messages. "on" is exactly
         // what privacy mode already enforces, so warning about it there would be noise.
         await deliver(chatId, confirm[want] + ((want === 'observe' || want === 'off') ? blind : ''), '', 'command');
+        return;
+      }
+
+      /* /allow and /deny — the owner opens or closes a GROUP from inside it (owner:'always', so the gate above has
+         already refused anyone else). The confirmation says who can talk now and what it costs, because admitting
+         a room hands every member a way to start real runs on the owner's station. A direct chat is always open
+         to the owner and closed to everyone else, so the command says that instead of storing a setting that can
+         never apply. Only claimed once the durable write returned (truthful telemetry). */
+      if (cmd === 'allow' || cmd === 'deny') {
+        if (String(chatType || '') !== 'group') {
+          await deliver(chatId, '/allow and /deny are for groups — a direct chat with you is always open, and closed to everyone else.', '', 'command');
+          return;
+        }
+        const was = chatAdmitted(chatId);
+        const want = cmd === 'allow';
+        if (was === want) {
+          await deliver(chatId, want
+            ? 'This group is already admitted — I answer here when someone addresses me. Send /deny to remove me.'
+            : 'I am not answering in this group. Send /allow here to admit it.', '', 'command');
+          return;
+        }
+        let saved = false;
+        try { if (typeof store.saveChatRecord === 'function') { store.saveChatRecord(chatId, { admittedOn: want ? channel : '' }); saved = chatAdmitted(chatId) === want; } } catch (_) { saved = false; }
+        if (!saved) {
+          await deliver(chatId, '⚠ Could not save that — this group is still ' + (was ? 'admitted' : 'not admitted') + '.', '', 'command');
+          return;
+        }
+        if (!want) {
+          await deliver(chatId, 'Removed. I will not answer anything in this group until you send /allow here again.', '', 'command');
+          return;
+        }
+        const seesAll = privacyOk();
+        const byName = seesAll === false
+          ? ''   // privacy mode ON: a name is not an @mention, so it never reaches us — never promise it
+          : ', call me by name';
+        await deliver(chatId,
+          'This group is admitted. Anyone here can now talk to me — @-mention me, reply to me' + byName + ', or use a command — '
+          + 'and every answer is a real run on your station. Send /deny to remove me.', '', 'command');
         return;
       }
 
@@ -1467,7 +1520,10 @@
     function textBatchable(msg) {
       if (!msg || msg.edited || (Array.isArray(msg.media) && msg.media.length)) return false;
       const text = String(msg.text || '').trim();
-      return !!text && !/^\/[A-Za-z0-9_-]+(?:\s|$)/.test(text);
+      // '/allow@thebot' is a command too — it is the form Telegram's "/" menu sends in a group. Without the
+      // @suffix here it was batched as chat, and the same member's next bubble inside the window was glued on as
+      // the command's ARGUMENT: "@bot are you there?" vanished into a /deny@bot (2026-10-19).
+      return !!text && !/^\/[A-Za-z0-9_-]+(?:@[A-Za-z0-9_]+)?(?:\s|$)/.test(text);
     }
 
     async function textInbound(msg, intake) {
@@ -1525,6 +1581,13 @@
         noteRoute(msg);
         await deliver(directChatId, String(msg.directReply), '', 'admission');
         return;
+      }
+      // ADMISSION-ONLY (adapter.js): the owner's /allow or /deny from a group that is not admitted yet. It got past
+      // the allow-list only because of what it says, so it may do exactly that and nothing else — never a run,
+      // never another command, never a forwarded copy (a third party's words are never a command).
+      if (msg && msg.admissionOnly) {
+        const p = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+        if (!p || (p.cmd !== 'allow' && p.cmd !== 'deny')) return;
       }
       const hasMedia = !!(msg && Array.isArray(msg.media) && msg.media.length);
       if (!msg || (!msg.text && !hasMedia)) return;   // empty update; media-only messages ARE admitted
@@ -2352,7 +2415,7 @@
     }
 
     return {
-      onInbound, onCallback, onStatus, onMembership, close,
+      onInbound, onCallback, onStatus, onMembership, close, chatAdmitted,
       _internals: { agentIdFor, chunkText, endNote, deliver, inflight, handleCommand, currentBoundAgent, isSupersedeRaceRefusal, flushOutbox, scheduleOutboxRetry, recoverInbox, activeInbox, inboxId, OUTBOX_ESCALATE_TRIES, TASK_SUFFIX, DEFAULT_PERSONA, keyboardFor, btnLabel, sendConsentPrompt, buttonsOk, replyPreamble, MAX_REPLY_MEDIA, noteRoute, routeOpts, routes, MAX_ROUTES, editIsCurrent, startAck, ACK_EMOJI, observeTurn, startStream, streamOk, notModified }
     };
   }
