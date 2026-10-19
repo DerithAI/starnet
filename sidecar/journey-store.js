@@ -111,8 +111,13 @@ function normAchievement(a) {
 function progressionFor(rec) {
   const points = rec.commanderPoints;
   const level = Math.floor(points / 100) + 1;
+  // `activity` + `startedAt` are ADDITIVE (2026-10-19, the quest-log battle pass): every retained achievement's
+  // timestamp/kind/points (bounded by OUTCOME_CAP), so the pass can compute a daily streak + this week's challenges
+  // from the same verified awards that make the points — never from runs, spend, or anything it would have to guess.
   return { level, points, levelStartsAt: (level - 1) * 100, nextLevelAt: level * 100,
-    pointsToNextLevel: level * 100 - points, achievements: rec.achievements.slice(-30) };
+    pointsToNextLevel: level * 100 - points, achievements: rec.achievements.slice(-30),
+    activity: rec.achievements.map(a => ({ at: a.at, kind: a.kind, points: a.points, goalId: a.goalId, step: /^milestone:/.test(a.key) })),
+    startedAt: rec.startedAt || null };
 }
 
 function award(rec, input, now) {

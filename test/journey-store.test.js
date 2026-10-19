@@ -189,6 +189,8 @@ const fresh = fs => makeJourneyStore({ fs: fs || memFs(), path, workspaces: '/ws
     attest: { confirmed: true, evidence: 'I attended my first piano lesson' } };
   await realWorld.recordQuest(realQuest, null, 2);
   A.eq(realWorld.snapshot().progression.points, 10, 'a goal-linked Commander-confirmed quest advances Commander progression');
+  A.eq(JSON.stringify(realWorld.snapshot().progression.activity), JSON.stringify([{ at: 2, kind: 'quest', points: 10, goalId: 'practice', step: true }]),
+    'the battle pass reads each award as {at, kind, points, goalId, step} — a step finished through its quest is flagged');
   A.eq(realWorld.snapshot().mastery, [], 'a self-reported quest without an agent never awards agent mastery');
   await realWorld.recordQuest(Object.assign({}, realQuest, { id: 'assigned-user-action', agentId: 'builder', attest: { source: 'commander', confirmed: true, evidence: 'I attended the lesson myself' } }), null, 2);
   A.eq(realWorld.snapshot().mastery, [], 'a direct user report never credits the assigned agent with doing the action');
