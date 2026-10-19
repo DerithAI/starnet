@@ -103,7 +103,9 @@ function summarizeCapabilities(resolved, opts) {
       // Commander into Build mode — the builder's own approval card is the Commander's yes, and the power arrives on
       // the next run (the floor decides each run's grants)
       note += 'If the Commander asks for something you lack, do NOT claim, promise, or pretend to do it. Say plainly you can\'t yet, ' +
-        (capIds.has('orchestrator') ? 'and offer to place it yourself (station builder add; they approve; works from their next message): ' : 'and name the object to place to grant it: ') +
+        // the terminal CLI has no station floor on screen: name the object, placed in the desktop app (never "I'll place it")
+        (opts.viewer === 'terminal' ? 'and name the object to place in the StarNet desktop app to grant it: '
+          : capIds.has('orchestrator') ? 'and offer to place it yourself (station builder add; they approve; works from their next message): ' : 'and name the object to place to grant it: ') +
         lackCore.map((c) => c.have + ' -> place ' + c.object).join('; ') + '. ' +
         'You can always think and reply; that needs nothing.\n';
     } else if (delegatedBy) {

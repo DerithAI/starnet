@@ -127,7 +127,7 @@ const { toolsetRows, toggleableCaps } = require('./capability/toolsets.js');   /
 const { makeCapCtx } = require('./capability/capGate.js');
 const { composeOffice, stationWithObject, stationWithConnectors } = require('./capability/office.js');   // THE MOAT: interactive office = compute freebie + placed caps
 const { summarizeCapabilities } = require('./capability/capsummary.js');   // truthful "what you can/can't do" so the agent stops over-promising
-const { starnetManual, starnetManualIndex, starnetManualPointer } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
+const { starnetManual, starnetManualIndex, starnetManualPointer, starnetManualTerminal } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
 const FinishLine = require('./finish-line.js');     // immutable "crawl to the finish line" task doctrine at the final prompt seam
 const { makeHarnessSnapshot } = require('./harness-snapshot.js');   // bounded secret-free build/scheduler/connectors/diagnostics truth for station.inspect
 const { makeOpenRouterProvider } = require('./providers/openrouter.js');
@@ -11292,6 +11292,19 @@ async function handleGroups(req, res) {
    ==================================================================================================================== */
 const REMOTE_NOTE = '\n\n[REMOTE] The Commander sent this from their phone through StarNet Remote. Work exactly as you normally '
   + 'would. They will read your reply on a small screen, so lead with the result.';
+/* THE TERMINAL (2026-10-18, Andrew: "the agent thinks its in starnet so it will tell u to interact with buttons that ltrly dont
+   exist"). The `starnet` CLI runs the agent on its roster persona — the DESKTOP's, which speaks of the COMMS panel, approve/deny
+   buttons and one-tap FORK rows — so handleRun appends this after it (client:'terminal'). It names the terminal's real
+   commands (bin/lib/tui.js HELP), so "how do I…" gets an answer the Commander can type. A constant: it rides the cached prefix. */
+const TERMINAL_NOTE = '\n\n[TERMINAL] The Commander is talking to you from the StarNet terminal CLI (`starnet`), not the desktop '
+  + 'app. There is no station on their screen: no COMMS panel, no buttons, cards, windows, dock or one-tap rows — anything earlier '
+  + 'in these instructions about clicking, tapping, approve/deny buttons, FORK rows or placing props does not apply here. In their '
+  + 'terminal: an approval shows as a card they answer with y (allow once), n (deny) or v (read the full request first); a '
+  + 'question you ask with brief.ask is answered by number or by typing; /model shows and switches your model; /new starts a fresh '
+  + 'conversation and /resume reopens an earlier one; /stop stops your run; /flow lists workflows and /flow run <name> <text> sends '
+  + 'one job; @name talks to another agent; /help lists everything. Never write a FORK: line — ask in plain words. When something '
+  + 'can only be done in the StarNet desktop app (placing props, building the station, connecting accounts or keys), say so '
+  + 'plainly. Write for a terminal: plain text and simple markdown (short paragraphs, lists, code blocks), no wide tables.';
 const remoteCrypto = require('./remote/crypto.js');
 const remoteDevices = require('./remote/devices.js').makeDevices({
   fs, path, crypto: remoteCrypto, file: path.join(WORKSPACES, '.secrets', 'remote.json'),
@@ -19265,6 +19278,10 @@ async function handleRun(req, res) {
     const rec = agentRoster.get(String(body.agentId || 'agent'));
     if (rec && rec.system) body.system = rec.system;
   }
+  // …and says WHERE the Commander is: the roster persona is the desktop's (COMMS panel, Approve/Deny buttons, one-tap FORK
+  // rows), so a terminal run is told the truth after it, the REMOTE_NOTE pattern. Exact match, opt-in.
+  const terminalClient = !!(body && typeof body === 'object' && body.client === 'terminal');
+  if (terminalClient) body.system = String(body.system || '') + TERMINAL_NOTE;
   const { model, system, messages = [], agentId = 'agent', isTask = false, provider, fallbackModels, fallbackProviders } = body || {};
   const recurring = !!(body && body.recurring);   // the browser's mint detector saw this task SHAPE before → salience boost for reflection
   // REASON-ONLY SELF-TALK (retitle / goal-judge / pitch / autopilot): the caller composed a complete strict-format
@@ -19615,7 +19632,9 @@ async function handleRun(req, res) {
       surface: 'interactive', prompt: promptConsent, pathPrompt: promptPathTrust, summon: summonRequest,   // team.summon → live summonAgent() round-trip; pathPrompt → NS-5 "work in <root>?" bless
       loginPrompt: askHuman,   // attended browser login: browser.login's two consent asks ride the same fail-closed permission.prompt channel
       // the Commander is AT the station (COMMS): this run may drive the shared, signed-in station browser
+      // (the terminal CLI is on that same computer, token-authenticated, so its runs may too)
       stationBrowser: true,
+      viewer: terminalClient ? 'terminal' : '',   // the terminal CLI: no GUI — the manual and capability notes say so
       idempotencyScope: connectorContinuationScope,
       parentRunId: connectorContinuationScope ? body.connectorContinuationOf : undefined,
       askCommander,            // in-turn clarify: brief.ask blocks + resumes the SAME turn on this watched surface
@@ -22533,7 +22552,9 @@ async function runOnceCore(o) {
   // rule verbatim and only a table of contents for its reference sections (~6.3K instead of ~9.3K); without it the
   // whole manual stays inline. Both forms are constants, so the cached prefix is as stable as before.
   // An owner-trusted chat-app turn (the Commander on their phone) gets only a pointer to manual.read — never the 6K index.
-  const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
+  // A terminal (CLI) turn gets the terminal pointer: the desktop manual's "open X / place Y" has no meaning there.
+  const manualBlock = (isTask && o.viewer === 'terminal') ? starnetManualTerminal()
+    : (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
     : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';
   const runtimeVersion = computeVersionSurface();
   const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now(), shell: shellRuntime });
@@ -22705,7 +22726,7 @@ async function runOnceCore(o) {
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
-        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask }) + skillBlock;
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask, viewer: o.viewer || '' }) + skillBlock;
   /* CACHE-STABLE PREFIX (lean-prompt, 2026-10-12). Everything below that changes per MESSAGE — the run's skill index
      (ranked by this message), a /skill preload, the Task Brief (its id is the run's), the away briefing, a one-host
      check, the crew call, [RUNTIME] (run id, today) and the open quests — used to close the system prompt, so the

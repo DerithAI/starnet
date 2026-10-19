@@ -196,6 +196,21 @@ async function until(fn, ms, label) {
       await run(fixture, { model: 'test/model', provider: 'openrouter', agentId: 'rook', messages: [{ role: 'user', content: 'say hello' }] });
       A.ok(!seenSystems.some(s => s.indexOf('ROOK-OBSERVE-PERSONA') >= 0), 'without the flag nothing changes (no persona injected)');
     }
+
+    /* ---- 5. a TERMINAL run is told it is in the terminal, not shown the desktop manual ------------------------ */
+    {
+      const DESKTOP = 'shown as a living pixel-art floor';   // the desktop manual's ABOUT (both its inline and index forms)
+      seenSystems.length = 0;
+      await run(fixture, Object.assign({}, base, { agentId: 'rook', rosterSystem: true, client: 'terminal', isTask: true, messages: [{ role: 'user', content: 'how do I make this run every morning?' }] }));
+      const sys = seenSystems.find(s => s.indexOf('ROOK-OBSERVE-PERSONA') >= 0) || '';
+      A.ok(sys.indexOf('ROOK-OBSERVE-PERSONA') >= 0 && sys.indexOf('[TERMINAL]') > sys.indexOf('ROOK-OBSERVE-PERSONA'), 'the terminal note follows the persona, so it has the last word over its COMMS/button wording');
+      A.ok(/\/model shows and switches your model/.test(sys) && /y \(allow once\), n \(deny\)/.test(sys), 'it names the terminal\'s real keys and commands');
+      A.ok(sys.indexOf('TERMINAL CLI') >= 0 && sys.indexOf(DESKTOP) < 0, 'a terminal task run gets the terminal manual pointer, never the desktop manual');
+      seenSystems.length = 0;
+      await run(fixture, Object.assign({}, base, { agentId: 'rook', rosterSystem: true, isTask: true, messages: [{ role: 'user', content: 'how do I make this run every morning?' }] }));
+      const desk = seenSystems.find(s => s.indexOf('ROOK-OBSERVE-PERSONA') >= 0) || '';
+      A.ok(desk.indexOf('[TERMINAL]') < 0 && desk.indexOf(DESKTOP) >= 0, 'the same task run from the page keeps the desktop manual and no terminal note');
+    }
   } catch (e) {
     A.ok(false, 'observer e2e threw: ' + ((e && e.stack) || e));
   } finally {

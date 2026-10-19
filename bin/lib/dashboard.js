@@ -125,7 +125,7 @@ function runDashboard(station, opts) {
     ui.scroll = 0;
     // tools only for a task, decided the way the page decides it (the agent's last reply lets a bare "yes" to its offer count)
     const prior = [...model.logOf(agentId)].reverse().find(e => e.k === 'agent');
-    const body = { model: a.model, provider: a.provider || undefined, agentId, streamId, rosterSystem: true, isTask: core.isTaskText(text, prior && prior.text), messages: [{ role: 'user', content: text }] };
+    const body = { model: a.model, provider: a.provider || undefined, agentId, streamId, rosterSystem: true, client: 'terminal', isTask: core.isTaskText(text, prior && prior.text), messages: [{ role: 'user', content: text }] };
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
     const id = 'run' + Math.random().toString(36).slice(2);
     let req;
@@ -332,11 +332,11 @@ function runDashboard(station, opts) {
       try { out.write('\x1b[16t\x1b[14t\x1b[c'); } catch (e) { finish(); }
     });
   }
-  // the image fits four rows of this terminal's cells and leaves the crew bar at least 44 columns beside it
+  // the image fits three rows of this terminal's cells and leaves the crew bar at least 44 columns beside it
   function buildImage() {
     image = null; ui.logoImage = null;
     if (!term.sixel || !term.cellW || !term.cellH || ui.logo !== 'full') return;
-    const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 4, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
+    const r = sixel.logoSixel({ cellW: term.cellW, cellH: term.cellH, rows: 3, maxCols: Math.max(0, (out.columns || 80) - 1 - 47) });
     if (r) { image = r; ui.logoImage = { cols: r.cols, rows: r.rows }; }
   }
   function leaveScreen() {

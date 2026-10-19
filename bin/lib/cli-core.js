@@ -271,6 +271,9 @@ function buildRunBody(sel, prompt, opts) {
     provider: sel.provider,
     agentId: sel.agentId,
     messages: [{ role: 'user', content: text }],
+    // the agent as its roster defines it, told it is in the terminal (no GUI to point at): handleRun TERMINAL_NOTE
+    rosterSystem: true,
+    client: 'terminal',
     isTask: isTaskText(text),
     placed: HEADLESS_PLACED.map(p => Object.assign({}, p))
   };
