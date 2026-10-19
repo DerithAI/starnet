@@ -1,3 +1,6 @@
 # Skill Market publish files are signed / sha256-pinned byte for byte: never let git rewrite their line endings.
 website/.well-known/** -text
 website/skills/** -text
+# Community maps: the gallery pins each build and picture by sha256, and the build re-checks the sources byte for byte.
+website/maps/** -text
+maps-catalog/** -text

@@ -4652,6 +4652,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
               heldBtn +
               packageButtons +
               '<button class="consent-btn" data-ag-act="edit">Edit</button>' +
+              (held || s.createdBy === 'community' || s.sourceUrl || s.sourceAuthor ? '' : '<button class="consent-btn" data-ag-act="market">Share to market</button>') +
               '<button class="consent-btn" data-ag-act="sharing">Change sharing</button>' +
               '<button class="consent-btn" data-ag-act="archive">' + (s.state === 'archived' ? 'Restore' : 'Archive') + '</button>' +
             '</div>' +
@@ -4667,6 +4668,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         const opened = card.classList.toggle('open'); btn.textContent = opened ? 'v' : '>'; sfx('click'); return;
       }
       if (act === 'edit') { editAgentSkill(card, skill, agentId); return; }
+      if (act === 'market') { shareSkillToMarket(card, skill, agentId); return; }
       if (act === 'sharing') { toggleSkillSharing(card, skill, agentId); return; }
       if (act === 'check') {
         btn.classList.add('busy');
@@ -4761,6 +4763,74 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     }
   }
 
+  /* SHARE TO MARKET (2026-10-18): one of this agent's skills, offered to the Skill Market for review. Opens IN the
+     card (like Edit): the market name, the line on its card, a shelf, a license, the credit and the agreement. The
+     sidecar sends the skill exactly as the library holds it; the line it prints is what the market answered. */
+  const MARKET_SHELVES = ['Communication', 'Creative', 'Engineering', 'Marketing', 'Planning', 'Productivity', 'Research', 'Writing'];
+  const SHARE_CREDIT_KEY = 'starnet.communityMapCredit';   // one credit name for everything this Commander shares
+  function shareSkillToMarket(card, skill, agentId) {
+    const body = card.querySelector('.sk-body'); if (!body || body.dataset.sharing === '1' || body.dataset.editing === '1') return;
+    body.dataset.sharing = '1';
+    if (!card.classList.contains('open')) card.classList.add('open');
+    const actions = body.querySelector('.consent-btns'); if (!actions) return;
+    const opener = actions.querySelector('[data-ag-act="market"]');
+    const title = String(skill.name || '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).slice(0, 60);
+    const shelf0 = MARKET_SHELVES.find(c => c.toLowerCase() === String(skill.category || '').toLowerCase()) || '';
+    let credit = ''; try { credit = localStorage.getItem(SHARE_CREDIT_KEY) || ''; } catch (_) {}
+    // ids unique to THIS card: two cards sharing at once never point their labels at each other's fields
+    const uid = 'skm-' + String(skill.id || 'skill').replace(/[^A-Za-z0-9_-]/g, '_') + '-' + Date.now().toString(36);
+    const form = mkEl('div', 'sk-share');
+    form.innerHTML =
+      '<label for="' + uid + '-title">NAME ON THE MARKET</label><input id="' + uid + '-title" class="key-input" maxlength="60" autocomplete="off">' +
+      '<label for="' + uid + '-desc">WHAT IT DOES AND WHEN TO USE IT</label><textarea id="' + uid + '-desc" class="cf-ta skm-desc" maxlength="280"></textarea>' +
+      '<span class="skm-label" id="' + uid + '-shelf-l">SHELF</span><div class="skm-chips" role="group" aria-labelledby="' + uid + '-shelf-l" data-skm="shelf">' + MARKET_SHELVES.map(c => '<button type="button" class="consent-btn" aria-pressed="' + (c === shelf0) + '" data-v="' + esc(c) + '">' + esc(c) + '</button>').join('') + '</div>' +
+      '<span class="skm-label" id="' + uid + '-license-l">LICENSE</span><div class="skm-chips" role="group" aria-labelledby="' + uid + '-license-l" data-skm="license"><button type="button" class="consent-btn" aria-pressed="true" data-v="MIT">MIT</button><button type="button" class="consent-btn" aria-pressed="false" data-v="CC-BY-4.0">CC BY 4.0</button></div>' +
+      '<label for="' + uid + '-credit">CREDIT ME AS</label><input id="' + uid + '-credit" class="key-input" maxlength="60" autocomplete="off" placeholder="your name or handle">' +
+      '<label class="skm-agree"><input type="checkbox" id="' + uid + '-agree"> <span>I wrote this skill (or may share it) and publish it under the license above. Anyone may use and adapt it, with credit to me.</span></label>' +
+      '<div class="sk-attr">A person reads every line before it goes on the market. This station must be linked to your StarNet account.</div>' +
+      '<div class="sk-attr skm-result" role="status"></div>';
+    const $f = (k) => form.querySelector('#' + uid + '-' + k);
+    $f('title').value = title;
+    $f('desc').value = String(skill.summary || '').slice(0, 280);
+    $f('credit').value = credit;
+    for (const group of form.querySelectorAll('.skm-chips')) group.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      for (const x of group.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+    });
+    actions.before(form);
+    actions.innerHTML = '';
+    const send = mkEl('button', 'consent-btn'); send.textContent = 'Send for review'; actions.appendChild(send);
+    const cancel = mkEl('button', 'consent-btn'); cancel.textContent = 'Cancel'; actions.appendChild(cancel);
+    const result = form.querySelector('.skm-result');
+    const picked = (k) => { const b = form.querySelector('[data-skm="' + k + '"] [aria-pressed="true"]'); return b ? b.dataset.v : ''; };
+    // back to the card as it was, with the keyboard on the key that opened the form
+    const done = () => { loadAgentSkills(agentId); requestAnimationFrame(() => { const again = document.querySelector('[data-agent-skill="' + CSS.escape(String(skill.id)) + '"] [data-ag-act="market"]'); if (again) again.focus(); else if (opener && opener.isConnected) opener.focus(); }); };
+    cancel.onclick = done;
+    send.onclick = async () => {
+      const fields = { agentId, id: skill.id, title: $f('title').value.trim(), description: $f('desc').value.trim(),
+        category: picked('shelf'), license: picked('license'), credit: $f('credit').value.trim(), agree: $f('agree').checked };
+      if (!fields.title) { result.textContent = 'Give it a name on the market.'; $f('title').focus(); return; }
+      if (!fields.category) { result.textContent = 'Pick the shelf it belongs on.'; return; }
+      if (!fields.credit) { result.textContent = 'Add the name you want credited on the market.'; $f('credit').focus(); return; }
+      if (!fields.agree) { result.textContent = 'Turn on the agreement to share it: it is the license others use it under.'; $f('agree').focus(); return; }
+      send.disabled = true; send.textContent = 'Sending…'; result.textContent = '';
+      try { localStorage.setItem(SHARE_CREDIT_KEY, fields.credit); } catch (_) {}
+      let r = null;
+      try { r = await (await Harness.apiFetch('/api/skill-market/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields) })).json(); } catch (_) { r = null; }
+      send.disabled = false; send.textContent = 'Send for review';
+      if (r && r.ok && r.submission) {
+        result.textContent = 'Sent for review as "' + (r.submission.title || fields.title) + '". A person reads it next; your Skills tab on account.starnetos.com shows where it stands.'
+          + (r.referencesLeftOut ? ' ' + r.referencesLeftOut + (r.referencesLeftOut === 1 ? ' support file was' : ' support files were') + ' left out: the market takes up to five plain-text references.' : '');
+        send.remove(); cancel.textContent = 'Done'; cancel.focus(); sfx('click');
+        return;
+      }
+      if (!r) { result.textContent = 'The station is not answering right now. This station cannot tell whether the skill arrived. Check your Skills tab on account.starnetos.com before you send it again.'; return; }
+      if (r.outcome === 'unknown') { result.textContent = (r.error ? r.error + ' ' : '') + 'This station cannot tell whether the skill arrived. Check your Skills tab on account.starnetos.com before you send it again.'; return; }
+      if (r.linked === false) { result.textContent = 'Link this station to your StarNet account first (STORE › LINK STATION). A free account works. Nothing was shared.'; return; }
+      result.textContent = r.code === 'token_rejected' ? r.error : (r.error || 'The market refused it.') + ' Nothing was shared.';
+    };
+    $f('title').focus();
+  }
   function editAgentSkill(card, skill, agentId) {
     const body = card.querySelector('.sk-body'); if (!body || body.dataset.editing === '1') return;
     body.dataset.editing = '1';

@@ -1085,6 +1085,8 @@ test/projection-load-geometry.test.js
 dev/industrial-textures/prop-catalog-review.test.cjs
 test/projection-depth-rendering.test.js
 test/station-templates.test.js
+test/build-share.test.js
+test/community-maps.test.js
 test/remaster-physical-fit.test.js
 test/arrival.test.js
 test/genesis-wake-credential.test.js
