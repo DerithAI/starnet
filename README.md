@@ -131,7 +131,10 @@ station cannot prove.
 | **Windows** | `%LOCALAPPDATA%\StarNet\bin\starnet.cmd` |
 | **macOS** | `/Applications/StarNet.app/Contents/Resources/bin/starnet` |
 
-Add that folder to your `PATH` to type `starnet` anywhere. Other commands: `starnet ls` (every agent
+So you can just type `starnet` in a new terminal: the Windows installer puts that folder on your user
+`PATH` (the uninstaller takes it off), and on macOS StarNet links the command into `~/.local/bin` the
+first time it starts, adding that folder to `~/.zprofile` if no shell profile has it yet
+(`STARNET_NO_CLI_LINK=1` turns that off). Other commands: `starnet ls` (every agent
 and its open asks), `starnet approve` / `starnet deny`, `starnet watch` (the live event stream, one line
 each), `starnet flow` (workflows) and `starnet -p "<task>"` (one run, answer on stdout).
 `starnet --help` lists them all. From a checkout, use `node bin/starnet.js`.

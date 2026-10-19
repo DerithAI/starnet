@@ -12264,6 +12264,10 @@ server.listen(PORT, '127.0.0.1', () => {
   // Install the Commander's shell hooks onto the station-wide spine. Awaited-but-guarded: a hooks file that
   // is broken must delay nothing and break nothing at boot.
   installShellHooks().catch(swallow('shellhooks.install'));
+  // TERMINAL MODE on macOS: a dragged-in StarNet.app has no installer to put `starnet` on PATH, so the packaged app links
+  // it into ~/.local/bin (sidecar/cli-link.js: idempotent, never replaces a file it did not make, a no-op off macOS and
+  // outside an app bundle). Windows: the installer's hooks own PATH.
+  try { const cl = require('./cli-link.js').ensureCliLink(); if (cl && cl.said) console.log('  · ' + cl.said); } catch (e) { console.warn('[cli-link] ' + ((e && e.message) || e)); }
   // auto-start a previously-connected Telegram bot (saved config), else an env-provided one (headless deploys).
   try {
     const t = (channelSecrets && channelSecrets.telegram) || {};
