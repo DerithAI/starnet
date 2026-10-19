@@ -1,4 +1,4 @@
-    botUsername: () => String((rec && rec.username) || ''),/* sidecar/index.js — the Node host. The ONLY module with ambient I/O (http / fs / fetch /
+/* sidecar/index.js — the Node host. The ONLY module with ambient I/O (http / fs / fetch /
    process.env). It (1) serves the static frontend/ and (2) exposes POST /api/run, which
    assembles the EXISTING proven seams — registry + web/fs/notebook tools + capability gate +
    cost engine + the real OpenRouter provider — runs the unchanged agentic loop, and streams the
@@ -23130,6 +23130,8 @@ async function runOnceCore(o) {
   // call. Never throws; a failure retries at the first loop boundary, ahead of any assistant row.
   if (execution.journalStarted()) { transcriptLiveRuns.add(runId); runTranscript.start(msgs); }
   let bufferedTaskEnd = null;
+  // Per-run. It was once an undeclared (implicit global) assignment, so overlapping runs shared one verdict.
+  let finalCompletionEvidence = null;
   // Hold a successful user-facing Task Brief end until the final text is known; a question maps to the
   // contract's additive `clarifying` terminal (neither product nor slag — every success path keys on 'done').
   const loopEmit = (name, payload) => {
@@ -23441,6 +23443,8 @@ async function runOnceCore(o) {
       bufferedTaskEnd = null;
     }
   } finally {
+    // A throw before the postconditions pass leaves this unset: settle on THIS run's own observed evidence.
+    if (!finalCompletionEvidence) finalCompletionEvidence = execution.completionEvidence();
     if (bufferedTaskEnd) {
       emit('agent.run.end', Object.assign({}, bufferedTaskEnd, {
         reason: taskQuestionAsked ? 'clarifying' : ((result && result.reason) || bufferedTaskEnd.reason),
