@@ -172,18 +172,18 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(text.every(l => tui.width(l) <= 110), 'nothing is wider than the terminal');
   const logo = require('../bin/lib/logo.js');
   const dots = require('../bin/lib/sixel.js').brailleLogo();
-  A.ok(dots.length === 4 && dots.every((l, i) => l.trim() && text[i].indexOf(l.trim()) === text[i].indexOf(l.trim()[0]) && text[i].indexOf(l.trim()) >= 0), 'without an image the screen opens on the REAL logo drawn in braille dots, four rows');
-  A.ok(/[⠁-⣿]/.test(dots.join('')) && Math.max(...dots.map(l => l.length)) <= 56, 'the dot logo keeps the four-row size (56 columns)');
+  A.ok(dots.length === 3 && dots.every((l, i) => l.trim() && text[i].indexOf(l.trim()) === text[i].indexOf(l.trim()[0]) && text[i].indexOf(l.trim()) >= 0), 'without an image the screen opens on the REAL logo drawn in braille dots, three rows');
+  A.ok(/[⠁-⣿]/.test(dots.join('')) && Math.max(...dots.map(l => l.length)) <= 45, 'the dot logo is the three-row size (45 columns)');
   {
-    // the logo back as a dot grid: dot[y][x], 16 rows
+    // the logo back as a dot grid: dot[y][x], 12 rows
     const BIT = [[1, 8], [2, 16], [4, 32], [64, 128]];
-    const dot = Array.from({ length: 16 }, (_, y) => Array.from({ length: 112 }, (_, x) => { const ch = dots[y >> 2][x >> 1]; const b = ch ? ch.codePointAt(0) - 0x2800 : 0; return b > 0 && (b & BIT[y & 3][x & 1]) ? 1 : 0; }));
+    const dot = Array.from({ length: 12 }, (_, y) => Array.from({ length: 90 }, (_, x) => { const ch = dots[y >> 2][x >> 1]; const b = ch ? ch.codePointAt(0) - 0x2800 : 0; return b > 0 && (b & BIT[y & 3][x & 1]) ? 1 : 0; }));
     const lit = y => dot[y].reduce((a, b) => a + b, 0);
-    A.ok(lit(0) > 60 && lit(0) >= 3 * lit(1), 'the top edge is ONE dot thick, as in the logo (a sampled cut lit two rows for it): ' + lit(0) + ' vs ' + lit(1));
-    const STAR = ['...X...', '...X...', '..X.X..', '.XX.XX.', 'X.....X', '.XX.XX.', '..X.X..', '...X...'];
-    A.ok(STAR.every((l, dy) => [...l].every((c, dx) => (c === 'X') === (dot[5 + dy][34 + dx] === 1))), 'the A carries a drawn four-point star, hollow at its heart, nothing else in its box — never a sampled blob');
+    A.ok(lit(0) > 45 && lit(0) >= 3 * lit(1), 'the top edge is ONE dot thick, as in the logo (a sampled cut lit two rows for it): ' + lit(0) + ' vs ' + lit(1));
+    const STAR = ['..X..', '..X..', '.X.X.', 'X...X', '.X.X.', '..X..', '..X..'];
+    A.ok(STAR.every((l, dy) => [...l].every((c, dx) => (c === 'X') === (dot[4 + dy][26 + dx] === 1))), 'the A carries a drawn four-point star, hollow at its heart, nothing else in its box — never a sampled blob');
     // the T's stems lean exactly as the wordmark does: one dot right for every two rows up, the pairs on the braille cells
-    A.ok([18, 22].every(base => [5, 6, 7, 8, 9, 10, 11, 12, 13, 14].every(y => dot[y][base + ((15 - y) >> 1)] === 1 && dot[y][base + ((15 - y) >> 1) - 1] === 0)), 'every upright leans one dot per two rows, so each braille row repeats the same pattern');
+    A.ok([13, 16].every(base => [4, 5, 6, 7, 8, 9, 10].every(y => dot[y][base + ((11 - y) >> 1)] === 1 && dot[y][base + ((11 - y) >> 1) - 1] === 0)), 'every upright leans one dot per two rows, so each braille row repeats the same pattern');
   }
   A.ok(text.slice(0, 1).some(l => /1 needs you/.test(l)), 'the counts sit on the top row');
   const ascii = screen(m, { logo: 'ascii' }, 110, 34, T0 + 3000);
@@ -191,7 +191,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(logo.word.every((l, i) => tui.toPlain(ascii[i]).indexOf(l.trim()) >= 0) && starCell && /logohi/.test(starCell[1]), 'STARNET_LOGO=ascii draws the drawn-letter version, the star in its A glinting');
   const crewTop = text.findIndex(l => /^╭─ CREW 3 /.test(l));
   const astraRow = text.findIndex(l => /^│▌ ▲ ASTRA +asks │/.test(l));
-  A.ok(crewTop === 5 && astraRow === crewTop + 2 && text.some(l => /^│  ○ NOVA +│/.test(l)), 'the crew is a framed list down the left under the header, the agent in COMMS marked, its ask said in a word: ' + text[astraRow]);
+  A.ok(crewTop === 4 && astraRow === crewTop + 2 && text.some(l => /^│  ○ NOVA +│/.test(l)), 'the crew is a framed list down the left under the header, the agent in COMMS marked, its ask said in a word: ' + text[astraRow]);
   const sel = rows[astraRow].find(([t]) => /ASTRA/.test(t));
   A.ok(sel && /sel/.test(sel[1]) && /hi b/.test(sel[1]), 'the agent in COMMS sits on the highlight bar, in white: ' + (sel && sel[1]));
   A.ok(!rows.flat().some(([, st]) => /a[0-5]/.test(st)), 'one palette: no agent has a hue of its own');
@@ -204,7 +204,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
     m2.apply('agent.tool_call', { runId: 'r2', agentId: 'cypher', callId: 'c1', name: 'shell_exec', argsSummary: '{"command":"npm test"}' }, T0 + 5);
     const t2 = screen(m2, {}, 110, 34, T0 + 3000).map(tui.toPlain);
     const nowRow = t2.findIndex(l => /NOW {4}CYPHER › shell\.exec npm test/.test(l));
-    A.ok(nowRow === 1 && t2[nowRow].indexOf('NOW') > 56 && !/ASTRA/.test(t2[nowRow]), 'a NOW line beside the logo says what the other busy ones are doing: ' + t2[nowRow]);
+    A.ok(nowRow === 1 && t2[nowRow].indexOf('NOW') > 45 && !/ASTRA/.test(t2[nowRow]), 'a NOW line beside the logo says what the other busy ones are doing: ' + t2[nowRow]);
     A.ok(t2.some(l => /│  ⠋ CYPHER +\d+s │/.test(l)), 'a working agent in the crew list spins, and shows how long its run has gone');
     A.ok(/⠋ 2 working/.test(t2[0]), 'the working count spins too');
     const spun = tui.render(m2, { focus: 'astra', input: '', scroll: 0, still: false, stationLabel: '' }, { cols: 110, rows: 34 }, T0 + 3150).map(tui.toPlain);
@@ -329,6 +329,91 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(img.slice(0, 4).every(l => l.slice(0, 58).trim() === ''), "the image's cells stay blank (the image is painted there, never written over)");
   A.ok(/0 working/.test(img[0].slice(61)) && /^╭─ CREW /.test(img[5]), 'the counts sit beside the image, the crew list under it: ' + img[0].slice(55, 120));
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
+}
+
+// ---- the portrait: an agent's station sprite as ASCII art beside COMMS -------------------------------------------------
+{
+  const zlib = require('node:zlib');
+  const png = require('../bin/lib/png.js');
+  const portrait = require('../bin/lib/portrait.js');
+  // a minimal PNG writer: every row filtered with `filter(y)`, so each of the five filters is read back
+  function encode(w, h, rgba, type, filter) {
+    const ch = { 0: 1, 2: 3, 4: 2, 6: 4 }[type], stride = w * ch;
+    const px = Buffer.alloc(stride * h);
+    for (let i = 0; i < w * h; i++) {
+      const s = i * 4, d = i * ch;
+      if (type === 6) rgba.copy(px, d, s, s + 4);
+      else if (type === 2) rgba.copy(px, d, s, s + 3);
+      else if (type === 0) px[d] = rgba[s];
+      else { px[d] = rgba[s]; px[d + 1] = rgba[s + 3]; }
+    }
+    const raw = Buffer.alloc((stride + 1) * h);
+    for (let y = 0; y < h; y++) {
+      const f = filter(y);
+      raw[y * (stride + 1)] = f;
+      for (let i = 0; i < stride; i++) {
+        const x = px[y * stride + i], a = i >= ch ? px[y * stride + i - ch] : 0, b = y ? px[(y - 1) * stride + i] : 0, c = y && i >= ch ? px[(y - 1) * stride + i - ch] : 0;
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        const pred = [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f];
+        raw[y * (stride + 1) + 1 + i] = (x - pred) & 255;
+      }
+    }
+    const chunk = (kind, body) => { const len = Buffer.alloc(4); len.writeUInt32BE(body.length); return Buffer.concat([len, Buffer.from(kind, 'latin1'), body, Buffer.alloc(4)]); };
+    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = type;
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+  }
+  // a figure: 40×80, a 10 px clear margin, the body 20×60 getting brighter downward
+  const W = 40, H = 80, rgba = Buffer.alloc(W * H * 4);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4, inside = x >= 10 && x < 30 && y >= 10 && y < 70, v = inside ? Math.round(40 + (y - 10) * 3.5) : 0;
+    rgba[i] = v; rgba[i + 1] = v; rgba[i + 2] = v; rgba[i + 3] = inside ? 255 : 0;
+  }
+  const back = png.decode(encode(W, H, rgba, 6, y => y % 5));
+  A.ok(back.width === W && back.height === H && Buffer.from(back.data).equals(rgba), 'the PNG decoder reads RGBA back exactly through all five row filters');
+  const grey = png.decode(encode(W, H, rgba, 4, y => (y * 3) % 5));
+  A.ok(grey.data[(40 * W + 20) * 4] === rgba[(40 * W + 20) * 4] && grey.data[3] === 0 && grey.data[(40 * W + 20) * 4 + 3] === 255, 'grey + alpha reads back');
+  const rgb = png.decode(encode(W, H, rgba, 2, () => 4));
+  A.ok(rgb.data[3] === 255 && rgb.data[(40 * W + 20) * 4 + 1] === rgba[(40 * W + 20) * 4 + 1], 'RGB reads back opaque');
+  let bad = ''; try { png.decode(Buffer.from('not a png at all, really not one')); } catch (e) { bad = e.message; }
+  A.ok(/not a PNG/.test(bad), 'anything else throws (the caller draws no picture): ' + bad);
+  const sprite = png.decode(require('fs').readFileSync(require('path').join(__dirname, '..', 'frontend', 'assets', 'sprites', 'alien', 'rot_south.png')));
+  A.ok(sprite.width === 92 && sprite.height === 92 && sprite.data.some((v, i) => i % 4 === 3 && v === 255) && sprite.data.some((v, i) => i % 4 === 3 && v === 0), 'a real station sprite decodes: ' + sprite.width + '×' + sprite.height);
+
+  const art = portrait.art(back, { rows: 12, maxCols: 26 });
+  A.ok(art && art.rows === 12 && art.cols === 8, 'the figure is trimmed to its ink and drawn 12 rows tall, cells half as wide as tall: ' + (art && art.cols + '×' + art.rows));
+  A.ok(art.cells.every(l => l.length === 8 && l.every(c => c && portrait.RAMP.indexOf(c.ch) >= 0 && c.lv >= 0 && c.lv <= 6)), 'every inked cell is a ramp character on the red ramp');
+  A.ok(art.cells[0][3].lv < art.cells[11][3].lv && portrait.RAMP.indexOf(art.cells[0][3].ch) < portrait.RAMP.indexOf(art.cells[11][3].ch), 'brighter pixels draw denser, hotter characters');
+  A.eq(portrait.art({ width: 4, height: 4, data: new Uint8Array(64) }), null, 'a blank image has no portrait');
+  A.ok(portrait.art(back, { rows: 40, maxCols: 6 }).cols <= 6, 'a figure that would come out too wide is drawn shorter instead');
+  const skins = portrait.parseSkins("DATA.SKINS = {\n  blank: {\"name\":\"Cadet\",\"set\":\"approved_android\"},\n  ultron: {\"name\":\"U\",\"set\":\"approved_ultron\"},\n  alien: {\"name\":\"Alien\",\"set\":\"alien\"},\n  junk: {not json},\n  evil: {\"set\":\"../../etc\"},\n};\nDATA.DEFAULT_SKIN = 'blank';");
+  A.eq([skins.alien, skins.junk, skins.evil, skins['']], ['alien', undefined, undefined, 'approved_android'], "the app's skin table is read off data-shim.js; a bad line or a path-like set is skipped");
+  A.eq([portrait.setFor('researcher', 'alien', skins), portrait.setFor('kaze', '', skins), portrait.setFor('ULTRON', 'alien', skins)], ['alien', 'approved_android', 'approved_ultron'], "the app's own rule: the skin's set, the default skin when it wears none, ULTRON its own");
+
+  const m = crew();
+  m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
+  const withPic = screen(m, { sprites: { astra: back } }, 140, 40, T0 + 1000);
+  const plain = withPic.map(tui.toPlain);
+  const commsTop = plain.findIndex(l => /╭─ COMMS/.test(l));
+  A.ok((plain[commsTop].match(/╮/g) || []).length === 3, 'the portrait has its own frame beside COMMS (CREW, COMMS, portrait): ' + plain[commsTop]);
+  const picCells = withPic.flatMap((r, y) => { let x = 0; const out = []; for (const [t, s] of r) for (const ch of t) { if (/^r[0-6]$/.test(s)) out.push({ x, y }); x += tui.width(ch); } return out; });
+  const commsRight = plain[commsTop].indexOf('╮');
+  A.ok(picCells.length >= 8 * 12 && picCells.every(c => c.x > commsRight), 'the figure is drawn on the red ramp, right of COMMS: ' + picCells.length + ' cells');
+  A.ok(plain.every(l => tui.width(l) <= 140), 'it still fits the terminal');
+  const noPic = screen(m, { sprites: { astra: back }, portraits: false }, 140, 40, T0 + 1000);
+  A.ok(!noPic.flat().some(([, s]) => /^r[0-6]$/.test(s)), 'STARNET_PORTRAIT=0 (portraits off) draws none');
+  const tight = screen(m, { sprites: { astra: back } }, 95, 40, T0 + 1000);
+  A.ok(!tight.flat().some(([, s]) => /^r[0-6]$/.test(s)), 'where COMMS would keep under 64 columns, there is no portrait');
+  const none = screen(m, { sprites: { cypher: back } }, 140, 40, T0 + 1000);
+  A.ok(!none.flat().some(([, s]) => /^r[0-6]$/.test(s)), 'an agent without a sprite has no portrait, and COMMS keeps the room');
+  // working: a bright line sweeps down the figure; a still screen holds none
+  const styles = (still, t) => screen(m, { sprites: { astra: back }, still }, 140, 40, t).flat().filter(([, s]) => /^r[0-6]$/.test(s)).map(([t2, s]) => t2 + s).join('|');
+  const frames = new Set(), stills = new Set();
+  for (let t = 0; t < 30 * 70; t += 70) { frames.add(styles(false, T0 + t)); stills.add(styles(true, T0 + t)); }
+  A.ok(frames.size > 5 && stills.size === 1, 'while its agent works, a bright line sweeps the portrait (' + frames.size + ' frames); a still screen holds one');
+  m.apply('agent.run.end', { runId: 'r1', agentId: 'astra', reason: 'done' }, T0 + 2000);
+  const idle = new Set();
+  for (let t = 0; t < 30 * 70; t += 70) idle.add(styles(false, T0 + 3000 + t));
+  A.eq(idle.size, 1, 'an agent not working holds still (motion means working)');
 }
 
 A.report('cli-dashboard.test');

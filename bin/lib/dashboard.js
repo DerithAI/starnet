@@ -21,6 +21,8 @@ const core = require('./cli-core.js');
 const { makeStation } = require('./station-model.js');
 const tui = require('./tui.js');
 const sixel = require('./sixel.js');
+const png = require('./png.js');
+const portrait = require('./portrait.js');
 
 function runDashboard(station, opts) {
   const o = opts || {};
@@ -40,7 +42,9 @@ function runDashboard(station, opts) {
     // the REAL logo: an image where the terminal draws Sixel, else the same logo as braille dots. STARNET_LOGO=dots skips
     // the image, =ascii draws the drawn-letter version, =plain keeps to the one-line mark
     logo: ['plain', 'ascii', 'dots'].indexOf(env.STARNET_LOGO) >= 0 ? env.STARNET_LOGO : 'full',
-    logoImage: null
+    logoImage: null,
+    // each agent's station sprite (decoded), drawn as ASCII art beside COMMS; STARNET_PORTRAIT=0 leaves it out
+    sprites: {}, portraits: env.STARNET_PORTRAIT !== '0' && env.STARNET_LOGO !== 'plain'
   };
   const mine = new Map();       // requests this terminal holds open: id -> { req, agentId, kind }
   let feedReq = null, cursor = '', feedRetry = null, stopped = false;
@@ -97,6 +101,35 @@ function runDashboard(station, opts) {
     await loadConversations().catch(() => false);
     for (const [id, list] of convs) if (list.length && !ui.streams[id]) ui.streams[id] = list[0].streamId;   // each agent's newest
     await Promise.all(model.state.order.slice(0, 16).map(id => loadStream(id, streamOf(id))));
+  }
+  /* PORTRAITS: the figure each agent is in the app — the same sprite and rule the app's own portraits use (rot_south.png of
+     the set its skin names; ULTRON's own set; the default skin when it wears none). The skin table is the app's
+     (/app/data-shim.js), the skin each agent wears is in the saved station (GET /api/save). Any of it missing and that agent
+     simply has no portrait. Read at launch, and again when the roster gains an agent. */
+  const spriteOf = new Map();   // set -> decoded image | null
+  let skinTable = null;
+  async function loadPortraits() {
+    if (!ui.portraits) return;
+    if (!skinTable) {
+      const r = await get('/app/data-shim.js');
+      if (!(r.ok && r.status === 200)) return;
+      skinTable = portrait.parseSkins(r.text);
+    }
+    const s = await get('/api/save', 30000);
+    const doc = s.ok && s.status === 200 && s.json ? (s.json.save || s.json.doc || s.json) : null;
+    const wearing = {};
+    for (const a of (doc && Array.isArray(doc.agents) ? doc.agents : [])) if (a && a.id) wearing[a.id] = String(a.skin || '');
+    for (const id of model.state.order) {
+      const set = portrait.setFor(id, wearing[id], skinTable);
+      if (!set) { ui.sprites[id] = null; continue; }
+      if (!spriteOf.has(set)) {
+        const r = await client.request('GET', '/assets/sprites/' + set + '/rot_south.png', null, { raw: true, timeoutMs: 8000 });
+        let img = null;
+        if (r.ok && r.status === 200 && r.buf) { try { img = png.decode(r.buf); } catch (_) { img = null; } }
+        spriteOf.set(set, img);
+      }
+      ui.sprites[id] = spriteOf.get(set);
+    }
   }
   function newConversation() {
     const a = model.state.agents.get(ui.focus);
@@ -536,11 +569,12 @@ function runDashboard(station, opts) {
     ui.focus = pickFocus() || ui.focus;
     connectFeed();
     paint();
+    loadPortraits().then(paint, () => {});
     const every = (ms, fn) => { const t = setInterval(() => { Promise.resolve().then(fn).then(paint, () => {}); }, ms); timers.push(t); };
     every(3000, loadSnapshot);
     every(10000, loadBudget);
     every(6000, () => loadLines().catch(() => {}));
-    every(20000, loadRoster);
+    every(20000, () => loadRoster().then(() => { if (ui.portraits && model.state.order.some(id => !(id in ui.sprites))) return loadPortraits(); }));
     timers.push(setInterval(paint, 100));   // the working spinner turns at 10 frames a second (paint writes only rows that changed)
   })().catch(e => { stop(0); process.stderr.write('starnet: ' + ((e && e.message) || e) + '\n'); });
   return exited;

@@ -15,6 +15,7 @@ const { fmtDur, fmtShort, costText, askInspect } = require('./station-model.js')
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
 const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
+const portraitLib = require('./portrait.js');   // an agent's station sprite as ASCII art
 
 const BARS = '▁▂▃▄▅▆▇█';
 
@@ -258,12 +259,31 @@ function render(model, ui, size, now) {
     });
   }
 
+  // ---- PORTRAIT: the agent in COMMS as ASCII art — the figure it is in the app — framed beside COMMS, only where COMMS
+  // keeps 64 columns to talk in. While the agent works, a bright line sweeps down the figure (a still screen holds none).
+  const sprite = side && ui.portraits !== false && focusRow && ui.sprites ? ui.sprites[focusRow.id] : null;
+  const picRows = Math.min(26, bot - top - 3);
+  let pic = sprite && picRows >= 10 ? artFor(sprite, picRows, 26) : null;
+  const pw = pic && W - sw - (pic.cols + 4) >= 66 ? pic.cols + 4 : 0;
+  if (!pw) pic = null;
+  if (pic) {
+    const px0 = W - pw;
+    frame(g, px0, top, W - 1, bot, 'rule');
+    const y0 = top + 1 + Math.max(0, Math.floor((bot - top - 1 - pic.rows) / 2));
+    const band = focusRow.status.key === 'working' && !ui.still ? Math.floor(now / 70) % (pic.rows + 6) - 3 : -99;
+    pic.cells.forEach((line, r) => line.forEach((c, i) => {
+      if (!c) return;
+      const d = Math.abs(r - band);
+      g.put(px0 + 2 + i, y0 + r, c.ch, 'r' + Math.min(6, c.lv + (d === 0 ? 3 : d === 1 ? 1 : 0)));
+    }));
+  }
+
   // ---- COMMS: the focused agent's conversation, framed; the open ask's card sits at its foot ------------------------------
-  const cx0 = sw, cx1 = W - 1;
+  const cx0 = sw, cx1 = W - 1 - pw;
   frame(g, cx0, top, cx1, bot, 'rule');
   edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
   const right = [];
-  if (focusRow && focusRow.model && W - cx0 > 60) right.push([focusRow.model, 'dim']);
+  if (focusRow && focusRow.model && cx1 - cx0 > 60) right.push([focusRow.model, 'dim']);
   if (ui.scroll > 0) right.push([(right.length ? '  ' : '') + '↑ ' + ui.scroll, 'am']);
   if (!side && focusRow) right.push([(right.length ? '  ' : '') + (rows.indexOf(focusRow) + 1) + '/' + rows.length, 'dim']);
   if (right.length) edgeR(g, cx1 - 1, top, right);
@@ -297,6 +317,16 @@ function render(model, ui, size, now) {
     g.put(0, hintY, trunc(t, W), 'dim');
   }
   return g.out();
+}
+
+// a portrait is drawn once per sprite and size (the screen repaints ten times a second)
+const artCache = new WeakMap();
+function artFor(img, rows, maxCols) {
+  let m = artCache.get(img);
+  if (!m) { m = new Map(); artCache.set(img, m); }
+  const k = rows + '|' + maxCols;
+  if (!m.has(k)) m.set(k, portraitLib.art(img, { rows, maxCols }));
+  return m.get(k);
 }
 
 // the word beside a name in the CREW list: what its lamp means, in a word
@@ -540,7 +570,9 @@ function drawCard(g, lines, y0, x0, cw, blink) {
 const PALETTE = {
   fg: ['#d9d2d4', 252], hi: ['#ffffff', 231], dim: ['#7f666b', 95], rule: ['#7a1c28', 88], lbl: ['#ff4757', 203],
   ph: ['#ff3b4e', 203], am: ['#ffb43a', 214], ok: ['#5dffa8', 85], bad: ['#ff6b3d', 202],
-  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
+  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196],   // the wordmark's neon red, and the prompt's ▸
+  // the portrait's red ramp, deep to hot (the one accent: a figure is drawn in shades of the station's red, never its own hue)
+  r0: ['#5a0a14', 52], r1: ['#8c101e', 88], r2: ['#be1828', 124], r3: ['#eb2636', 160], r4: ['#ff4654', 203], r5: ['#ff808c', 210], r6: ['#ffc4ca', 224]
 };
 // (256-color: the card sits on a near-black — the nearest palette brown, 58, is a loud olive)
 const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 234], inv: ['#ff3b4e', 203] };
