@@ -445,8 +445,11 @@ const GroupChat = (() => {
      while a turn is live or a draft streams, every 3 s while the group is idle, every 30 s while the Commander is away
      (PollGate), and at once on their return. A read sends the stamp of the group on screen (since): an unchanged group
      answers { unchanged: true } and nothing is parsed, painted or adopted. A group set from a POST answer carries no stamp,
-     so the next read is a full one; an older sidecar sends no stamp at all and every read is full, as before. */
+     so the next read is a full one; an older sidecar sends no stamp at all and every read is full, as before.
+     When a read is due is measured on the monotonic clock (performance.now when present): on Date.now a backward wall-clock
+     step (a w32time correction after resume) skipped every read, a live turn's too, until the wall clock caught up. */
   const POLL_BEAT_MS = 900, POLL_IDLE_MS = 3000;
+  const monoNow = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? () => performance.now() : () => Date.now();
   let polled = { gen: -1, at: 0 }, pollingGen = -1, goneGen = -1;
   function pollDue() {
     if (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away()) return PollGate.AWAY_MS || 30000;
@@ -455,11 +458,11 @@ const GroupChat = (() => {
   }
   async function poll(gen) {
     if (gen !== generation || pollingGen === gen) return;
-    if (polled.gen === gen && Date.now() - polled.at < pollDue()) {   // not due: keep the beat, skip the read
+    if (polled.gen === gen && monoNow() - polled.at < pollDue()) {   // not due: keep the beat, skip the read
       if (active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), POLL_BEAT_MS);
       return;
     }
-    pollingGen = gen; polled = { gen, at: Date.now() };
+    pollingGen = gen; polled = { gen, at: monoNow() };
     try {
       const id = active.id, since = group && group.id === id && typeof group.stamp === 'string' ? group.stamp : '';
       const result = await api(null, '?id=' + encodeURIComponent(id) + (since ? '&since=' + encodeURIComponent(since) : ''));

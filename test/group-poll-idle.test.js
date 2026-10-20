@@ -39,7 +39,7 @@ const all = e => [e, ...e.children.flatMap(all)];
 
 /* one station: a group whose stamp moves like group-sessions.js's (revision + draft writes); `stamps:false` = an old sidecar */
 function harness({ stamps = true } = {}) {
-  let clock = 1e9, seq = 0, persists = 0, groupStringifies = 0, away = false, draftSeq = 0;
+  let clock = 1e9, wallStep = 0, seq = 0, persists = 0, groupStringifies = 0, away = false, draftSeq = 0;
   const timers = new Map(), reads = [], wakers = [];
   const server = { id: 'g1', title: 'Launch', members: ['agent', 'copy'], leadId: 'agent', revision: 3, paused: false, artifacts: [], questions: [],
     messages: [{ id: 'm1', seq: 1, author: 'user', content: 'hello', at: 1 }, { id: 'm2', seq: 2, author: 'agent', content: 'hi there', at: 2, turnId: 't1' }],
@@ -52,7 +52,8 @@ function harness({ stamps = true } = {}) {
   const ctx = vm.createContext({
     document: { body, head, hidden: false, addEventListener() {}, createElement: tg => new El(tg), createTextNode: tx => Object.assign(new El('#text'), { textContent: tx }), getElementById: id => all(body).find(e => e.id === id) },
     console, crypto: { randomUUID: () => 'u' }, queueMicrotask,
-    Date: class extends Date { static now() { return clock; } },
+    Date: class extends Date { static now() { return clock + wallStep; } },   // the wall clock (can be stepped)
+    performance: { now: () => clock },                                         // the monotonic clock (never steps)
     JSON: { stringify: (v, ...r) => { if (isGroup(v)) groupStringifies++; return JSON.stringify(v, ...r); }, parse: JSON.parse },
     setTimeout: (fn, ms) => { const id = ++seq; timers.set(id, { fn, at: clock + (ms || 0) }); return id; },
     clearTimeout: id => { timers.delete(id); },
@@ -84,7 +85,7 @@ function harness({ stamps = true } = {}) {
     clock = until;
   }
   return { ctx, ws, server, reads, wakers, advance, settle, log: () => ctx.document.getElementById('gc-log'),
-    persists: () => persists, groupStringifies: () => groupStringifies, setAway: v => { away = v; }, draft: () => { draftSeq++; }, now: () => clock };
+    persists: () => persists, groupStringifies: () => groupStringifies, setAway: v => { away = v; }, draft: () => { draftSeq++; }, now: () => clock, stepWall: ms => { wallStep += ms; } };
 }
 
 (async () => {
@@ -153,6 +154,17 @@ function harness({ stamps = true } = {}) {
     h.server.messages.push({ id: 'm3', seq: 3, author: 'agent', content: 'new', at: 3 }); h.server.revision++;
     await h.advance(4000);
     A.ok(h.ws.history.some(m => m.content === 'new'), 'a real change from an older sidecar still lands');
+  }
+
+  /* (f) fix round (2026-10-20): a backward wall-clock step never stalls the open group's poll. Its due check ran on
+     Date.now, so a w32time correction after resume skipped every read until the wall clock caught up — even a live turn's. */
+  {
+    const h = harness();
+    h.ctx.GroupChat.bind(h.ws); await h.settle();
+    A.eq(h.reads.length, 1, 'fixture: bound and read once');
+    h.stepWall(-5 * 60000);
+    await h.advance(9000);
+    A.ok(h.reads.length >= 3 && h.reads.length <= 4, 'the wall clock stepped back 5 min: the idle group is still read every 3 s (' + (h.reads.length - 1) + ' more reads in 9 s)');
   }
 
   A.report('group-poll-idle.test');
