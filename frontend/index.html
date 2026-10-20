@@ -823,6 +823,7 @@
 <script src="app/legacymigrate.js"></script>
 <script src="app/glass-boot.js"></script><!-- FIRST store-touching script: migrate starnet.* localStorage keys -> starnet.* before any store reads -->
 <script src="js/util.js"></script>
+<script src="app/pollgate.js"></script><!-- IDLE COST: the ONE owner of "is anyone looking?" for background polls (visible cadence unchanged, a 30 s floor while away, never a stop); MUST load before its consumers (queryspine, overseer, group-chat, stationui, world, widgets, loops) -->
 <script src="app/asciifx.js"></script><!-- ASCII-motion kit (AsciiFX): decode/dissolve/typewriter primitives; must load before its consumers (chat.js, stationui.js) -->
 <script src="js/audio.js"></script>
 <script src="js/arcade.js"></script>
