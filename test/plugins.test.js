@@ -321,7 +321,7 @@ async function writePlugin(id, source, manifest) {
       await fsp.mkdir(path.join(base, 'lib'), { recursive: true });
       const helper = path.join(base, 'lib', 'helper.js');
       await fsp.writeFile(helper, "module.exports = () => 'aaaa';", 'utf8');
-      let t = 1e12, reads = 0, hashes = 0, scans = 0;
+      let t = Date.now() + 60000, reads = 0, hashes = 0, scans = 0;   // real time + 1 min: the files are past the racy window
       const countingFsp = Object.assign({}, fsp, { readFile: (...a) => { reads++; return fsp.readFile(...a); } });
       const loader = mk({ fsp: countingFsp, clock: { now: () => t }, hash: (s) => { hashes++; return sha(s); },
         guard: { scanText: () => { scans++; return []; } } });
@@ -365,6 +365,19 @@ async function writePlugin(id, source, manifest) {
       t += 3000; hashes = 0;
       A.ok((await loader.approvedRecord('jobber')) !== null, 'full: still approved');
       A.ok(hashes > 0, 'full: a non-quick caller past the 2 s window always re-hashes');
+
+      // RACY-CLEAN: a folder touched within 2 s of its hash is never stamp-trusted (a coarse filesystem could hide a
+      // same-size rewrite in that tick), so the next quick check re-hashes
+      {
+        let t2 = 0, h2 = 0;
+        const racy = mk({ clock: { now: () => t2 }, hash: (s) => { h2++; return sha(s); } });
+        await fsp.writeFile(helper, "module.exports = () => 'aaaa';", 'utf8');   // the approved bytes, a fresh mtime
+        t2 = Date.now();
+        A.ok((await racy.approvedRecord('jobber', { quick: true })) !== null, 'racy: approved');
+        t2 += 10000; h2 = 0;
+        A.ok((await racy.approvedRecord('jobber', { quick: true })) !== null, 'racy: still approved on the next tick');
+        A.ok(h2 > 0, 'racy: a folder touched within 2 s of its hash is re-hashed on the next quick tick, not stamp-trusted');
+      }
 
       // no clock → no quick path (never fails open for want of a clock)
       const clockless = mk({ clock: undefined, hash: (s) => { hashes++; return sha(s); } });

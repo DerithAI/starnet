@@ -40,6 +40,7 @@
   const MAX_TREE_DEPTH = 12;
   const RECHECK_MS = 2000;             // exec-time re-verification is re-hashed at most this often per plugin
   const STAMP_TRUST_MS = 5 * 60 * 1000; // a QUICK re-verify may trust an unchanged stat stamp this long, then re-hashes
+  const RACY_MS = 2000;                 // a file touched this close to the hash may hide a same-size rewrite from its stamp
   const CODE_EXT = /\.(?:c|m)?js$/i;
 
   const idOk = (s) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(s || ''));
@@ -144,12 +145,14 @@
        (same order, same refusals) but no reads and no hashing. Every file contributes its path, size, mtime, ctime
        and inode, so an edit, an add, a delete or a rename anywhere in the folder moves the stamp. It proves only
        "nothing on disk was touched since the stamp", never that the bytes are approved — that is still the digest's
-       job, which is why approvedRecord takes the stamp BEFORE it hashes (a write racing the hash moves the stamp). */
+       job, which is why approvedRecord takes the stamp BEFORE it hashes (a write racing the hash moves the stamp).
+       `newest` is the latest mtime/ctime in the folder: approvedRecord's racy-clean rule (git's) reads it. */
     async function treeStamp(base) {
       let st;
       try { st = await fsp.lstat(base); } catch (e) { return { error: 'cannot read the plugin folder' }; }
       if (st.isSymbolicLink() || !st.isDirectory()) return { error: 'the plugin folder is a link, not a real folder' };
       const rows = [];
+      let newest = 0;
       async function walk(dirAbs, rel, depth) {
         if (depth > MAX_TREE_DEPTH) throw new Error('the plugin folder nests too deep to gate safely');
         const names = (await fsp.readdir(dirAbs)).sort();
@@ -161,12 +164,13 @@
           if (l.isDirectory()) { await walk(abs, r, depth + 1); continue; }
           if (!l.isFile()) throw new Error('contains a non-file entry (' + r + ')');
           if (rows.length >= MAX_TREE_FILES) throw new Error('has too many files to gate safely');
+          newest = Math.max(newest, l.mtimeMs, l.ctimeMs);
           rows.push(r + '\0' + l.size + '\0' + l.mtimeMs + '\0' + l.ctimeMs + '\0' + l.ino);
         }
       }
       try { await walk(base, '', 0); }
       catch (e) { return { error: (e && e.message) || String(e) }; }
-      return { stamp: rows.join('\n') };
+      return { stamp: rows.join('\n'), newest };
     }
 
     /* discover() -> { plugins, errors }
@@ -253,7 +257,11 @@
        too coarse to see a same-size rewrite). Any touched, added, removed or renamed file moves the stamp, so an edit
        is still caught on the NEXT tick and the plugin still stops; the allowlist is still re-read every call, so a
        revoke still wins at once. Every other caller (tool/window calls, restarts, the serving gate) never passes
-       quick and keeps the exact old rule. No clock → no quick path: it never fails open for want of a clock. */
+       quick and keeps the exact old rule. No clock → no quick path: it never fails open for want of a clock.
+       RACY-CLEAN (git's rule): a timestamp is only as fine as its filesystem (2 s FAT, 1 s HFS+, a jiffy on older Linux),
+       so a same-size rewrite in the same tick as an approved write leaves every stat field equal. A stamp whose newest
+       file time is within RACY_MS of the hash is therefore never stored: the next quick check re-hashes instead. Only
+       quick callers take the stamp at all — a full check would otherwise walk the folder twice for nothing. */
     const serveCache = new Map();
     async function approvedRecord(id, opts) {
       const pid = String(id || '');
@@ -270,10 +278,10 @@
         }
       }
       const hashedAt = now ? now() : 0;
-      const before = now ? await treeStamp(P.join(dir, pid)) : null;   // BEFORE the hash: a racing write moves it
+      const before = (now && opts && opts.quick) ? await treeStamp(P.join(dir, pid)) : null;   // BEFORE the hash: a racing write moves it
       const r = await inspect(pid);
       if (r.error || r.plugin.digest !== a.digest) { serveCache.delete(pid); return null; }
-      serveCache.set(pid, { rec: r.plugin, at: now ? now() : 0, hashedAt: hashedAt, stamp: (before && !before.error) ? before.stamp : null });
+      serveCache.set(pid, { rec: r.plugin, at: now ? now() : 0, hashedAt: hashedAt, stamp: (before && !before.error && before.newest < hashedAt - RACY_MS) ? before.stamp : null });
       return r.plugin;
     }
 
