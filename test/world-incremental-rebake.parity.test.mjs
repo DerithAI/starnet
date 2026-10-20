@@ -65,17 +65,19 @@ const stop = async child => {
   await waitForExit();
 };
 
-// runs in the page: a station of three rooms, the edits a live floor takes outside BUILD MODE, and the exact comparison
-function probe(liftedSrc) {
+// runs in the page: a station of three rooms, the edits a live floor takes outside BUILD MODE, and the exact comparison.
+// 'apart' = three free-standing rooms (room edits); 'joined' = abutting rooms with doorways (an airlock sealing one off)
+function probe(liftedSrc, layout) {
   const SB = StationBake, IT = IndustrialTextures, rows = [];
   const W = new Function('let geo = null, cache = null;\n' + liftedSrc + '\nreturn { set(g, c) { geo = g; cache = c; }, bakeKnobs, bakeEditedChunks };')();
   const doc = WorldModel.defaultDoc(1); doc.rooms = {}; doc.order = []; doc.props = []; doc.belts = {}; doc.edges = [];
   doc.meta.spawnRoomId = null; doc.meta.trunkRoomId = null;
   const room = (id, kind, rects, extra) => { doc.order.push(id); doc.rooms[id] = { id, name: '', kind, rects, floorStyle: 'hull', floorMat: 'alloy',
     wallStyle: 'hull', wallMat: 'ribbed', hullStyle: null, hullMat: null, floorPaint: {}, ...extra }; };
+  const joined = layout === 'joined';
   room('a', 'hab', [{ x1: 0, y1: 0, x2: 24, y2: 12 }]);
-  room('b', 'hab', [{ x1: 30, y1: 0, x2: 58, y2: 16 }], { hullMat: 'brick' });
-  room('c', 'hab', [{ x1: 4, y1: 18, x2: 26, y2: 30 }], { hullMat: 'timber' });
+  room('b', 'hab', [{ x1: joined ? 25 : 30, y1: 0, x2: 58, y2: 16 }], { hullMat: 'brick' });
+  room('c', 'hab', joined ? [{ x1: 4, y1: 13, x2: 24, y2: 30 }] : [{ x1: 4, y1: 18, x2: 26, y2: 30 }], { hullMat: 'timber' });
   const st = WorldModel.create(doc);
   // every comparison reads a FRESH probe canvas the layer is drawn into — never the bake's own canvas, never a stage
   const probePx = cv => {
@@ -112,11 +114,23 @@ function probe(liftedSrc) {
     const incMs = performance.now() - t0, t1 = performance.now();
     const fresh = SB.bake(geo);
     const wholeMs = performance.now() - t1;
-    rows.push({ label, ok: !!(r && r.ok), bakeEdit: !!(p && !p.staticBakeUnchanged), sameFrame, took: !!inc, incMs, wholeMs, rects: p ? p.dirtyRects.length : 0,
+    rows.push({ label: layout + ': ' + label, doors: (geo.doorDefs || []).length, ok: !!(r && r.ok), bakeEdit: !!(p && !p.staticBakeUnchanged), sameFrame, took: !!inc, incMs, wholeMs, rects: p ? p.dirtyRects.length : 0,
       chunksBaked: inc ? (SB.dirtyChunks(geo, p.dirtyRects) || []).length : 0, ...(inc ? compare(inc, fresh) : {}) });
     cache = inc || fresh; W.set(geo, cache); knobs = W.bakeKnobs();
   };
   const other = (table, cur) => Object.keys(table).find(k => k !== cur);
+  if (joined) {
+    // a SEALING airlock drops every doorway of its room (a, the trunk, never seals): b's seam with a opens and closes
+    let lock = null;
+    step('seal a room with an airlock', () => (lock = st.addProp({ t: 'airlock', door: 'closed', x: 40, y: 5, w: 1, h: 1 })));
+    step('open the airlock', () => st.setDoorState(lock.id, 'open'));
+    step('jam it', () => st.setDoorState(lock.id, 'jammed'));
+    step('move the jammed airlock', () => st.moveProp(lock.id, 1, 0));
+    step('remove it', () => st.removeProp(lock.id));
+    step('seal the other room', () => (lock = st.addProp({ t: 'airlock', door: 'closed', x: 10, y: 20, w: 1, h: 1 })));
+    step('open it again', () => st.setDoorState(lock.id, 'open'));
+    return { textures: IT.status(), whole: !!SB.bake(st.projectGeometry()).stitched, rows };
+  }
   step('rename a room', () => st.renameRoom('a', 'PARITY'));
   step('repaint a room\'s floor', () => st.setFloor('b', other(st.FLOOR_STYLES, 'hull')));
   step('a room\'s deck material', () => st.setMaterial('c', other(st.FLOOR_MATERIALS, 'alloy')));
@@ -148,10 +162,16 @@ try {
   }
   assert.ok(ready, 'the parity page loaded the bake');
   await evalJS(cdp, 'IndustrialTextures.ready.then(() => 1)');
-  const result = await evalJS(cdp, '(' + probe.toString() + ')(' + JSON.stringify(lifted.join('\n')) + ')');
-  assert.ok(result.textures.loaded, 'the industrial textures loaded, so every bake paints a dense plate');
-  assert.ok(result.whole, 'the station is wider than one chunk, so the world bake is stitched');
-  for (const r of result.rows) console.log(`  ${r.label}: ${r.took ? `chunks ${r.chunksBaked} in ${r.incMs.toFixed(0)} ms vs whole ${r.wholeMs.toFixed(0)} ms · base ${r.base} plate ${r.plate} light ${r.light} interior ${r.interior} occluders ${r.occluders} lists ${r.lists ? 'same' : 'DIFFER'}` : 'whole bake'}`);
+  const run = layout => evalJS(cdp, '(' + probe.toString() + ')(' + JSON.stringify(lifted.join('\n')) + ', ' + JSON.stringify(layout) + ')');
+  const apart = await run('apart'), joined = await run('joined');
+  const result = { rows: apart.rows.concat(joined.rows) };
+  for (const r of [apart, joined]) {
+    assert.ok(r.textures.loaded, 'the industrial textures loaded, so every bake paints a dense plate');
+    assert.ok(r.whole, 'the station is wider than one chunk, so the world bake is stitched');
+  }
+  const doors = joined.rows.map(r => r.doors);
+  assert.ok(Math.min(...doors) < Math.max(...doors), 'the airlock really sealed and reopened doorways (' + doors.join(',') + ')');
+  for (const r of result.rows) console.log(`  ${r.label} [doors ${r.doors}]: ${r.took ? `chunks ${r.chunksBaked} in ${r.incMs.toFixed(0)} ms vs whole ${r.wholeMs.toFixed(0)} ms · base ${r.base} plate ${r.plate} light ${r.light} interior ${r.interior} occluders ${r.occluders} lists ${r.lists ? 'same' : 'DIFFER'}` : 'whole bake'}`);
   for (const r of result.rows) {
     assert.ok(r.ok && r.bakeEdit && r.sameFrame, r.label + ': the edit applied, is a bake edit, and kept the frame');
     assert.ok(r.took, r.label + ': the world re-baked only its chunks (the path under test was taken)');
