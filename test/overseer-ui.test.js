@@ -47,5 +47,35 @@ const path = require('node:path');
   try { assert.equal(sync.fresh(),false,'a poll hung past three beats: the ledger is no longer current'); }
   finally { Date.now=realNow; }
   timeout();await stuck;hang=false;
+
+  /* IDLE CPU PIECE 3 (2026-10-20): the beat runs through PollGate — 2.5 s on screen, a 30 s floor while the Commander is
+     away, a catch-up read the moment they are back. Freshness is measured against the cadence that produced the answer and
+     a hang is counted from THIS ask, so the catch-up read on return is never called "station unreachable" just because the
+     last answer is 40 s old (trunk: busy && now - okAt > 7.5 s said unreachable at once). */
+  let cadence=2500,ready=null,offset=0;const clockNow=Date.now;
+  const gated=Object.assign({},context,{
+    module:{exports:{}},Date:{now:()=>clockNow()+offset},setInterval:()=>0,
+    document:{addEventListener(k,fn){if(k==='DOMContentLoaded')ready=fn;},createElement(){throw new Error('No additional UI permitted');}},
+    PollGate:{every(fn,o){assert.equal(o.ms,2500,'the overseer keeps its 2.5 s visible beat');return {interval:()=>cadence,cadence:()=>cadence,stop(){},runNow(){}};}}
+  });
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),gated);
+  const g=gated.module.exports;ready();for(let n=0;n<20;n++)await Promise.resolve();
+  await g.refresh();assert.equal(g.fresh(),true,'gated: a ledger just answered is fresh');
+  // the Commander comes back after 40 s away: the catch-up read is on its way
+  offset+=40000;hang=true;const catchUp=g.refresh();
+  assert.equal(g.unreachable(),false,'the catch-up read on return is not "station unreachable" while it is on its way');
+  assert.equal(g.fresh(),true,'…and the last answer stays current until that read hangs');
+  offset+=4000;assert.equal(g.unreachable(),false,'four seconds into the ask: still not hung');
+  offset+=1500;assert.equal(g.unreachable(),true,'past two beats of THIS ask: hung, so unreachable');
+  assert.equal(g.fresh(),false,'…and no longer fresh');
+  timeout();await catchUp;hang=false;
+  // an answer asked for while away (the 30 s floor) stays current for three of those beats
+  cadence=30000;await g.refresh();
+  offset+=40000;assert.equal(g.fresh(),true,'an answer from a 30 s away beat is still current 40 s later');
+  offset+=60000;assert.equal(g.fresh(),false,'…but not past three of its beats');
+  // back on screen at 2.5 s: an answer older than three beats with no ask out is no longer vouched for
+  cadence=2500;await g.refresh();
+  offset+=4000;assert.equal(g.fresh(),true,'visible: an answer 4 s old is current');
+  offset+=60000;assert.equal(g.fresh(),false,'visible: an answer a minute old with nothing asked since is not');
   console.log('overseer sync: existing sessions, no added UI/focus changes, recovery and timeout PASS');
 })().catch(e=>{console.error(e);process.exitCode=1;});

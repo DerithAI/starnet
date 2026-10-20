@@ -9,15 +9,25 @@ const Overseer = (() => {
   // (delegated.js) both do, so neither ticks a running row through an outage (review app-shell-ui-05)
   const BEAT = 2500;
   let okAt = 0, failing = false, askedAt = 0;
-  const fresh = () => !!last && !failing && !(busy && Date.now() - okAt > 3 * BEAT);
-  // the station is not answering the ledger read: the latest poll failed, or one hangs past three beats (counted from the
-  // last answer, or from the first ask while none has landed). Readable BEFORE the first answer, when snapshot() is still
-  // null: the delegation card says "checking…" while that first read is on its way and "station unreachable" once it has
-  // failed — never a worker state the ledger has not given (delegated.js ledgerRead)
-  const unreachable = () => failing || (busy && Date.now() - (okAt || askedAt) > 3 * BEAT);
+  /* THE BEAT RUNS THROUGH POLLGATE (idle CPU piece 3, 2026-10-20): 2.5 s while the station can be seen, a 30 s floor while
+     the Commander is away, and a catch-up read the moment they are back. Freshness is therefore measured against the
+     cadence that actually produced the answer, never a fixed 7.5 s from the last answer — or the catch-up read on return
+     would be called unreachable just because the last answer is 30 s old:
+       · hung: THIS ask has been out for two beats (three for the very first read, exactly as before);
+       · fresh: not failing, not hung, and the answer is no older than three of the cadences in force (the one that asked
+         for it, or the one in force now) — an ask on its way is fresh until it hangs.
+     While visible both reduce to the old reading: a 2.5 s beat, a hang after ~5 s of the ask (7.5 s from the answer). */
+  let loop = null, okCadence = BEAT, askCadence = BEAT;
+  const gateCadence = () => { try { return loop ? loop.interval() : BEAT; } catch (_) { return BEAT; } };
+  const hung = () => busy && Date.now() - askedAt > (okAt ? 2 : 3) * BEAT;
+  const fresh = () => !!last && !failing && !hung() && (busy || Date.now() - okAt <= 3 * Math.max(BEAT, okCadence, gateCadence()));
+  // the station is not answering the ledger read: the latest poll failed, or this one hangs (above). Readable BEFORE the
+  // first answer, when snapshot() is still null: the delegation card says "checking…" while that first read is on its way
+  // and "station unreachable" once it has failed — never a worker state the ledger has not given (delegated.js ledgerRead)
+  const unreachable = () => failing || hung();
   async function refresh() {
     if (busy || typeof Workstreams === 'undefined' || !Workstreams.generalId()) return;
-    busy = true; askedAt = Date.now();
+    busy = true; askedAt = Date.now(); askCadence = gateCadence();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
     try {
@@ -34,7 +44,7 @@ const Overseer = (() => {
         const adoptedRow = Workstreams.adopt(row);
         if (adoptedRow && (!before || before[0] !== adoptedRow.parentStreamId || before[1] !== adoptedRow.worker || before[2] !== adoptedRow.projectRoot)) adopted = true;
       }
-      last = data; okAt = Date.now(); failing = false;
+      last = data; okAt = Date.now(); okCadence = askCadence; failing = false;
       if (adopted) { App.persist(); App.refreshRail(); }
       if (typeof Delegated !== 'undefined' && Delegated.repaint) Delegated.repaint();   // the parent's DELEGATED card follows the ledger
       const deliveries = JSON.stringify([(data.workers || []).map(w => [w.runId, w.status]),
@@ -50,7 +60,10 @@ const Overseer = (() => {
       console.debug('[overseer sync]', error.message);
     } finally { clearTimeout(timeout); busy = false; }
   }
-  if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => { refresh(); setInterval(refresh, BEAT); });
+  if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => {
+    if (typeof PollGate !== 'undefined' && PollGate.every) loop = PollGate.every(refresh, { ms: BEAT });
+    else { refresh(); setInterval(refresh, BEAT); }
+  });
   return { refresh, snapshot: () => last, fresh, unreachable };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Overseer;
