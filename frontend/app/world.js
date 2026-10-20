@@ -8451,7 +8451,10 @@ const World = (() => {
   }
   function pollFeedState() {
     if (typeof fetch === 'undefined') return;
-    const get = u => { try { return fetch(apiUrl(u)).then(r => (r.ok ? r.json() : null)).catch(() => null); } catch (_) { return Promise.resolve(null); } };
+    // each read has a 15 s deadline like every other bounded poll: one the sidecar accepts and never answers must not hold
+    // this beat (PollGate awaits it) or a connection slot to the sidecar for good; a timed-out read is "no answer"
+    const deadline = () => ((typeof U !== 'undefined' && U.timeoutSignal) ? U.timeoutSignal(15000) : undefined);
+    const get = u => { try { return fetch(apiUrl(u), { signal: deadline() }).then(r => (r.ok ? r.json() : null)).catch(() => null); } catch (_) { return Promise.resolve(null); } };
     return Promise.all([get('/api/channels/status'), get('/api/cron'), get('/api/routing/triggers')]).then(([chans, cron, trg]) => {
       if (!chans && !cron && !trg) return;   // nothing answered — keep the last known truth
       const chan = !!(chans && typeof chans === 'object' && Object.keys(chans).some(id => chans[id] && chans[id].configured));

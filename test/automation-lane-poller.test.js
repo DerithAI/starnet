@@ -82,6 +82,25 @@ mine[1].fn();
 A.eq(lanePollers().length, 1, 'a body that left the DOM ends its poller on the next beat');
 A.ok(!body.__lpPoll, 'and forgets it');
 
+/* design 3.1a's minimized skip (fix round, 2026-10-20). StationUI minimizes a window to the strip with its element kept
+   alive and connected (display:none, stationui.js), so isConnected alone kept a minimized AUTOMATION window reading
+   /api/loops and rebuilding its cards every 4 s while the station was on screen. A body with no client rects skips the
+   beat and keeps its poller; the first beat after a restore reads again. */
+let rects = [{}];
+const mBody = el({ getClientRects: () => rects });
+lanes[0](mBody).wire();
+await settle();
+const mPoll = lanePollers().find(([id]) => id === mBody.__lpPoll);
+A.ok(mPoll, 'fixture: the window has its 4 s poller');
+rects = [];
+const atMin = getCalls;
+mPoll[1].fn(); await settle();
+A.eq(getCalls, atMin, 'a minimized AUTOMATION window does not read /api/loops on its beat (it read every 4 s)');
+A.ok(lanePollers().some(([id]) => id === mBody.__lpPoll), '…and keeps its poller for when it is restored');
+rects = [{}];
+mPoll[1].fn(); await settle();
+A.ok(getCalls > atMin, 'restored: the next beat reads again');
+
 // in the app the poller runs through PollGate (idle CPU piece 3): still exactly one loop per body, at the 4 s cadence
 const gateLoops = new Set();
 const gatedLanes = [];

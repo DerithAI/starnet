@@ -725,11 +725,14 @@
        again on the SAME connected body (AWAY WORK's openAway, a roster change, "AUTOMATION › section" while it is open),
        and every wire() armed one more 4 s poller here. The old one only died once the body left the DOM, so each
        re-render added a permanent /api/loops poller that also held the previous render's closures alive. Re-arming now
-       replaces the body's one poller (windows/messaging.js's idiom), so this render's refresh is the only one. */
+       replaces the body's one poller (windows/messaging.js's idiom), so this render's refresh is the only one.
+       A MINIMIZED window skips its beat (design 3.1a): StationUI keeps a window minimized to the strip connected and
+       display:none, so only its client rects say nobody can see it; the first beat after a restore reads again. */
     if (body.__lpPoll) pollStop(body.__lpPoll);
     const poll = body.__lpPoll = pollEvery(() => {
-      if (body.isConnected) return refresh();
-      pollStop(poll); if (body.__lpPoll === poll) body.__lpPoll = 0;
+      if (!body.isConnected) { pollStop(poll); if (body.__lpPoll === poll) body.__lpPoll = 0; return undefined; }
+      if (!body.getClientRects().length) return undefined;   // minimized: skip; the next beat after restore reads
+      return refresh();
     }, 4000);
     }
 
@@ -794,7 +797,10 @@
   async function watch() {
     let j;
     try {
-      const r = await fetch('/api/loops', { headers: { 'X-StarNet-Token': window.__STARNET_API_TOKEN__ || '' } });
+      // a 15 s deadline like every other bounded poll: a read the sidecar accepts and never answers must not hold this
+      // beat (PollGate awaits it) or a connection slot to the sidecar for good
+      const signal = (typeof U !== 'undefined' && U.timeoutSignal) ? U.timeoutSignal(15000) : undefined;
+      const r = await fetch('/api/loops', { headers: { 'X-StarNet-Token': window.__STARNET_API_TOKEN__ || '' }, signal });
       if (!r.ok) return;                        // an errored read must not clear the waiting badge
       j = await r.json();
     }
