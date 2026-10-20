@@ -495,6 +495,9 @@ async function runOnce(k) {
           }));
         }
         res.ab = { caps, rounds, sliceS, rows, byCap, verdicts };
+        // the draw-rate price, medians over the valid slices (verdicts need --rounds >= 3 and an uncontended box)
+        for (const cap of caps) console.log('  AB ' + (cap ? Math.round(1000 / cap) + '/s' : 'pace').padEnd(5) + names.map(n => ' ' + n + ' ' + byCap[cap][n].median).join(''));
+        for (const [pair, vs] of Object.entries(verdicts)) console.log('  AB ' + pair + ': ' + names.map(n => n + ' ' + vs[n].verdict).join(', '));
         continue;
       }
       const saveCam = name === 'P6' ? await evalJS(page, 'World.cameraState()') : null;
