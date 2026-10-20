@@ -557,6 +557,7 @@ test/projects-store.test.js
 test/projectbless.test.js
 test/folderpick.test.js
 test/pathtrust.test.js
+test/protected-floor-ntfs.test.js
 test/workspace-reserved.test.js
 test/nightfocus.test.js
 test/nightfocus-workflow.test.js
@@ -569,6 +570,7 @@ test/project-discovery.test.js
 test/permpanel.test.js
 test/permissionsstore.test.js
 test/permissions-ui.test.js
+test/approval-posture-recorded.test.js
 test/theme-custom-phosphor.test.js
 test/panel-brightness.test.js
 test/simulation-lighting.test.js

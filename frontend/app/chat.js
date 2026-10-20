@@ -4251,7 +4251,7 @@ const Chat = (() => {
     if (decision === 'full') {
       const saved = !!(answer && answer.ok && answer.approvalMode === 'full');
       const adopted = saved && typeof App !== 'undefined' && App.setApproval
-        ? App.setApproval((answer && answer.agentId) || p.agentId || (ws && ws.agentId), 'full')
+        ? App.setApproval((answer && answer.agentId) || p.agentId || (ws && ws.agentId), 'full', { recorded: true })
         : false;
       fullSaved = saved && adopted;
     }
