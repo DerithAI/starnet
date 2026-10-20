@@ -243,16 +243,21 @@
     }
     // A USAGE ROW (markUsed) carries only the counters, keyed by `skillName` — never `name`, so an older StarNet
     // that does not know the row reads it as a nameless record and skips it instead of replacing the skill.
+    // A use always leaves the skill ACTIVE (markUsed never touches an archived one, and the run's view() has already
+    // flipped a stale one in RAM), so the row restores that unconditionally; a later curate/archive record, which comes
+    // after it in file order, still wins.
     function applyUsage(r) {
       const e = latest.get(keyOf(str(r.agentId), str(r.skillName)));
       if (!e) return;
       e.useCount = Math.max(num(e.useCount), num(r.useCount));
+      e.viewCount = Math.max(num(e.viewCount), num(r.viewCount));
       if (r.lastUsedAt != null) e.lastUsedAt = Math.max(num(e.lastUsedAt), num(r.lastUsedAt));
-      if (r.activated && e.state === 'stale') e.state = 'active';
+      if (e.state === 'stale') e.state = 'active';
     }
-    // The library may only be rewritten (compact) from a COMPLETE load: a failed or partial read rewritten as the
-    // whole library is exactly how skills get deleted.
-    let loaded = false;
+    // The library may only be WRITTEN (persist, markUsed, compact) after a COMPLETE load: a failed or partial read
+    // leaves skills that exist on disk missing from RAM, and a write over one of them (or a compaction of the
+    // partial view) is exactly how skills get replaced or deleted.
+    let loaded = false, loadError = null;
     try {
       const raw = io.readAll();
       if (Array.isArray(raw)) for (const r of raw) {
@@ -267,8 +272,11 @@
         if (n) latest.set(keyOf(n.agentId, n.name), n);
       }
       loaded = true;
-    } catch (e) { /* corrupt log -> empty library (fail-open) */ }
-    function canCompact() { return loaded && !(io && typeof io.loadComplete === 'function' && io.loadComplete() === false); }
+    } catch (e) { loadError = e; failNote('skillstore.load', e); }   // the library reads empty, and refuses writes (canWrite)
+    function canWrite() { return loaded && !(io && typeof io.loadComplete === 'function' && io.loadComplete() === false); }
+    function cannotWrite() {
+      return new Error('the skill library did not load completely (' + ((loadError && loadError.message) || 'a partial read') + '), so nothing is written over it until it loads');
+    }
     // Compaction instead of rotation: once the io says the file has grown (or a legacy rotated archive is still on
     // disk), rewrite it to one line per skill. Runs only after a write was published to RAM, so the rewrite holds it.
     function maybeCompact() {
@@ -284,15 +292,15 @@
     }
     // RAM-only bump: update the in-memory `latest` copy WITHOUT appending a JSONL line. view() is called on
     // every skill.view / skill load, many times per run — appending each one is what grows skills.jsonl without
-    // bound. The bumped counters (viewCount/useCount/lastUsedAt/state) instead ride along the NEXT real mutation
-    // (write/edit/patch/markUsed/curate all persist the skill, and makeEntry carries viewCount/useCount forward),
-    // or a low-frequency compaction flush. Returns the projected skill (same shape view() returned before).
+    // bound. The bumped counters (viewCount/useCount/lastUsedAt/state) instead ride along the NEXT durable write:
+    // markUsed's usage row at the end of the run that loaded it, a real mutation (write/edit/patch/curate persist the
+    // skill and makeEntry carries the counters forward), or a compaction. Returns the projected skill.
     function bumpView(entry) {
       latest.set(keyOf(entry.agentId, entry.name), clone(entry));
       return entry;
     }
-    function persist(entry, promotion) {
-      const projected = projectSkill(entry, true);
+    // The guard's verdict for these bytes under the CURRENT rules, stamped onto `entry` (scan + guardAction).
+    function scanInto(entry, projected) {
       try {
         if (guard && typeof guard.scanSkillRecord === 'function') {
           // 'user' (the Commander's own typing) is its own trust tier — see the TRUST table in
@@ -322,6 +330,12 @@
           if (reviewWritten(entry) && entry.guardAction !== 'block') entry.guardAction = 'ask';
         }
       } catch (e) { failNote('skillstore.guard.scan', e); }
+      return entry;
+    }
+    function persist(entry, promotion) {
+      if (!canWrite()) throw cannotWrite();
+      const projected = projectSkill(entry, true);
+      scanInto(entry, projected);
       // Stamp the digest of the content that was JUST scanned, so the verdict and the digest can
       // never disagree about which bytes they describe.
       try { if (digest) entry.contentDigest = str(digest(projected)); } catch (_) {}
@@ -903,10 +917,14 @@
     /* A USE IS TELEMETRY, NOT A NEW VERSION. markUsed runs at the end of every run for every skill the run loaded.
        It used to persist() the WHOLE record each time (body, support files, base64 package, a guard re-scan and a
        package rewrite), which grew skills.jsonl by megabytes a day; the log's size rotation then deleted the only
-       durable copy of every skill not used recently. Now each use appends a ~150-byte usage row (applied on load,
+       durable copy of every skill not used recently. Now each use appends a ~200-byte usage row (applied on load,
        folded into the record by the next compaction) and updates RAM. A failed append keeps the RAM bump, which
-       the next compaction flushes. */
+       the next compaction flushes.
+       THE GUARD STILL SEES EVERY USE. The re-scan on use was how a new guard rule reached a skill nobody edits, so a
+       use still scans the bytes under the current rules (CPU, no disk); only when the verdict or action would change,
+       or a legacy record lacks a verdict/digest, is the whole record persisted (rare: once per rule change). */
     function markUsed(agentId, idOrNames) {
+      if (!canWrite()) return { ok: false, count: 0, error: cannotWrite().message };
       const ids = Array.isArray(idOrNames) ? idOrNames : [idOrNames];
       let count = 0;
       for (const id of ids) {
@@ -915,10 +933,16 @@
         const entry = clone(s);
         entry.useCount = (entry.useCount || 0) + 1;
         entry.lastUsedAt = now();
-        const activated = entry.state === 'stale';
-        if (activated) entry.state = 'active';
-        const row = { recordType: 'skill-usage', agentId: entry.agentId, skillName: entry.name, useCount: entry.useCount, lastUsedAt: entry.lastUsedAt };
-        if (activated) row.activated = true;
+        if (entry.state === 'stale') entry.state = 'active';
+        if (guard && typeof guard.scanSkillRecord === 'function') {
+          const probe = scanInto(clone(entry), projectSkill(entry, true));
+          const verdictOf = (x) => str(x && x.scan && x.scan.verdict);
+          if (str(probe.guardAction) !== str(entry.guardAction) || verdictOf(probe) !== verdictOf(entry) || (digest && !entry.contentDigest)) {
+            persist(entry); count++;
+            continue;
+          }
+        }
+        const row = { recordType: 'skill-usage', agentId: entry.agentId, skillName: entry.name, useCount: entry.useCount, viewCount: num(entry.viewCount), lastUsedAt: entry.lastUsedAt };
         try { io.append(row); } catch (e) { failNote('skillstore.usage.append', e); }
         latest.set(keyOf(entry.agentId, entry.name), entry);
         count++;
@@ -937,7 +961,7 @@
     function compact() {
       const entries = Array.from(latest.values()).concat(Array.from(candidateRows.values())).map(e => clone(e));
       if (!io || typeof io.rewrite !== 'function') return { ok: false, reason: 'io has no rewrite', kept: entries.length };
-      if (!canCompact()) return { ok: false, reason: 'the library did not load completely, so it is never rewritten from RAM', kept: entries.length };
+      if (!canWrite()) return { ok: false, reason: cannotWrite().message, kept: entries.length };
       try { io.rewrite(entries); return { ok: true, kept: entries.length }; }
       catch (e) { return { ok: false, reason: (e && e.message) || 'rewrite failed', kept: entries.length }; }
     }
@@ -979,6 +1003,8 @@
 
     return {
       write, manage, list, view, markUsed, curate, compact,
+      // broken is not empty: a library that failed to load says so instead of listing nothing
+      loadState() { return canWrite() ? { ok: true, error: null } : { ok: false, error: cannotWrite().message }; },
       candidates, candidate, pendingView, promotionBlocker, approveCandidate, rejectCandidate, veto, share, listAccessible, viewAccessible,
       all() { return Array.from(latest.values()).map(s => projectSkill(s, true)); },
       count() { return latest.size; },

@@ -54,21 +54,49 @@ function makeSkillsIo(deps) {
       throw e;
     }
   }
-  // A torn row (a crash mid-append) is skipped, as the bounded loader did; the skip is counted, never silent.
+  /* TORN / GLUED ROWS. A crash mid-append leaves a fragment; an older StarNet then glued the next WHOLE record onto it
+     (logbound.js, before its torn-tail fix). A whole record glued to the end of a fragment is peeled back out (accepted
+     only when it re-serializes to exactly those bytes, like the ledger's gluedSpendRows). Anything still unparsable is
+     kept in `damaged`, and rewrite() saves those raw lines to <file>.damaged BEFORE it replaces the file: a compaction
+     never destroys bytes it could not read. */
+  const GLUED_MAX_TRIES = 64;
+  let damaged = [];
+  function peel(line) {
+    const rows = [];
+    let rest = line;
+    for (let round = 0; round < 8 && rest; round++) {
+      let found = -1;
+      for (let i = rest.indexOf('{"', 1), tries = 0; i > 0 && tries < GLUED_MAX_TRIES; i = rest.indexOf('{"', i + 1), tries++) {
+        const tail = rest.slice(i).trimEnd();
+        let cand = null;
+        try { cand = JSON.parse(tail); } catch (e) { continue; }   // a fragment's own text from here: try the next start
+        if (cand && typeof cand === 'object' && JSON.stringify(cand) === tail) { rows.unshift(cand); found = i; break; }
+      }
+      if (found < 0) break;
+      rest = rest.slice(0, found);
+    }
+    return { rows, fragment: rest.trim() ? rest : '' };
+  }
   function parse(lines, f) {
     const out = [];
-    let torn = 0, firstError = null;
+    let torn = 0, peeled = 0;
     for (const l of lines) {
-      try { out.push(JSON.parse(l)); }
-      catch (e) { torn++; if (!firstError) firstError = e; }
+      let row = null, ok = false;
+      try { row = JSON.parse(l); ok = true; } catch (e) { ok = false; }
+      if (ok) { out.push(row); continue; }
+      const p = peel(l);
+      peeled += p.rows.length;
+      for (const r of p.rows) out.push(r);
+      if (p.fragment) { torn++; damaged.push(l); }
     }
-    if (torn) note('skills.io.torn-row', new Error(torn + ' unparsable row(s) skipped in ' + f + ': ' + ((firstError && firstError.message) || '')));
+    if (torn || peeled) note('skills.io.torn-row', new Error(torn + ' unparsable row(s) in ' + f + ' kept aside for <file>.damaged; ' + peeled + ' whole record(s) recovered from glued rows'));
     return out;
   }
 
   return {
     readAll() {
       complete = true;
+      damaged = [];
       return parse(linesOf(archive), archive).concat(parse(linesOf(file), file));
     },
     loadComplete() { return complete; },
@@ -81,6 +109,12 @@ function makeSkillsIo(deps) {
     rewrite(entries) {
       const list = Array.isArray(entries) ? entries : [];
       const body = list.map(e => JSON.stringify(e)).join('\n') + (list.length ? '\n' : '');
+      // unreadable rows are saved aside first; if that fails, nothing is replaced
+      if (damaged.length) {
+        const fd = fs.openSync(file + '.damaged', 'a');
+        try { fs.writeSync(fd, damaged.join('\n') + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        damaged = [];
+      }
       deps.writeDurable(file, body);
       compactedSize = Buffer.byteLength(body, 'utf8');
       try { fs.unlinkSync(archive); } catch (e) { if (!e || e.code !== 'ENOENT') note('skills.io.archive-unlink', e); }

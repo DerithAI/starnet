@@ -19283,6 +19283,9 @@ function serveSkillGoldens(req, res) {
 }
 function serveAgentSkills(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  // broken is not empty: a skill library that failed to load is a failure, never "no skills yet"
+  const libState = typeof skillStore.loadState === 'function' ? skillStore.loadState() : { ok: true };
+  if (!libState.ok) return json(500, { error: 'skill library failed to load', code: 'SKILLS_LOAD_FAILED', detail: libState.error });
   try {
     const u = new URL(req.url, 'http://127.0.0.1');
     const agentId = u.searchParams.get('agent') || 'agent';
