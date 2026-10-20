@@ -349,6 +349,8 @@ function makeStation() {
     if (i >= 0) st.sent.splice(i, 1);
     log(agent(agentId), { k: 'bad', text: 'not sent: ' + String(message || 'the station refused the message'), at: now });
   }
+  // the agent's own words that did not come from a run (its closing line from the awakening), in its pane
+  function noteAgentLine(agentId, text, now) { log(agent(agentId), { k: 'agent', text: String(text || ''), at: now }); }
   // a station command's answer (/usage, /tools, /routine …): what the station said, under the command that asked
   function noteSaid(agentId, cmd, title, lines, ok, now) {
     log(agent(agentId), { k: 'say', cmd: String(cmd || ''), title: String(title || ''), lines: (lines || []).map(String), ok: ok !== false, at: now });
@@ -460,7 +462,7 @@ function makeStation() {
   }
 
   return {
-    state: st, agent, setRoster, apply, applySnapshot, describePrompt, applyBudget, applyLines, noteSeen, noteSent, noteSaid, sendFailed, seedHistory, resetLog, tick,
+    state: st, agent, setRoster, apply, applySnapshot, describePrompt, applyBudget, applyLines, noteSeen, noteSent, noteSaid, noteAgentLine, sendFailed, seedHistory, resetLog, tick,
     rows, header, flows, findAgent, findLine, statusOf, front: () => st.prompts[0] || null, logOf: (id) => (st.agents.get(String(id)) || { log: [] }).log
   };
 }

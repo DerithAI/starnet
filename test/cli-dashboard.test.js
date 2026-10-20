@@ -508,4 +508,121 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(tui.HELP.some(([k, d]) => k === 'y  a  n  v' && /once, always, no, view/.test(d)), '/help lists a');
 }
 
-A.report('cli-dashboard.test');
+// ---- THE AWAKENING in the terminal (bin/lib/awaken.js): the app's own modules, the app's ceremony, the app's writes ---------
+const am = require('../bin/lib/app-modules.js');
+{
+  const lifted = am.liftFunction('x();\n  function f(a) { const s = "}{"; const r = /[}]/; return `${a}}` + \'}\'; }\nfunction g() {}', 'f');
+  A.ok(lifted && /return `\$\{a\}\}` \+ '\}'; \}$/.test(lifted), 'a function is lifted whole: braces in strings, templates and regexes do not end it');
+  const M = am.load();
+  A.ok(am.COMPOSER_PARTS.every(n => am.liftFunction(require('fs').readFileSync(require('path').join(am.APP_DIR, 'app.js'), 'utf8'), n)), 'app.js still has every function the terminal lifts to compose a prompt (a rename here fails the gate, never a silent drift)');
+  const a = { id: 'agent', name: 'VEGA', role: 'orchestrator', personaId: 'blunt', approvalMode: 'full', purpose: null };
+  M.composer.docs(a);
+  const p = M.composer.compose(a, { dossierBlock: '' });
+  A.ok(/^You are VEGA, an AI agent operating from a workstation aboard the STARNET station/.test(p) && /OVERSEER/.test(p) && /YOUR CREW: none yet/.test(p) && /YOUR FOUNDATION/.test(p) && /PERSONALITY — Blunt/.test(p) && /AUTHORITY — FULL POWER/.test(p) && /not yet been given a purpose/.test(p), 'the composed prompt is the app\'s: identity, crew, foundation, personality, authority, the missing purpose');
+  A.eq(M.Personas.list().map(x => x.id), ['composed', 'warm', 'blunt', 'dry', 'unhinged', 'upbeat'], 'the personalities are the app\'s own six');
+}
+async function awakenRun(o) {
+  const M = am.load();
+  const calls = [], said = [];
+  let save = o.save || null, rev = 0, clock = 1800000000000;
+  const answer = (path, json, status) => ({ ok: true, status: status || 200, json });
+  const st = {
+    async get(p) {
+      calls.push('GET ' + p);
+      if (p === '/api/save?agent=agent') return answer(p, { save });
+      if (p === '/api/providers') return answer(p, { providers: [{ id: 'openrouter', name: 'OpenRouter', configured: true }, { id: 'codex', name: 'ChatGPT Codex', configured: false }] });
+      if (p === '/api/models/openrouter') return answer(p, { models: [{ id: 'm/one' }, { id: 'm/two' }], default: 'm/one' });
+      if (p === '/api/permissions') return answer(p, { grants: ['cabinet:write'], masterBypass: false });
+      if (p === '/api/autonomy/posture') return answer(p, { summary: M.Autonomy.fresh() });
+      if (p === '/api/nightshift/status') return answer(p, {});
+      return answer(p, {}, 404);
+    },
+    async post(p, body) {
+      calls.push('POST ' + p + (p === '/api/save' ? ' onboarded=' + body.agent.onboarded : p === '/api/permissions/revoke' ? ' ' + body.key : p === '/api/autonomy/posture' && body.posture ? ' preset=' + (M.Autonomy.matchPreset ? M.Autonomy.matchPreset(body.posture) : '?') : ''));
+      if (p === '/api/save') { save = JSON.parse(JSON.stringify(body)); save._saveRevision = ++rev; return answer(p, { ok: true, revision: rev }); }
+      if (p === '/api/roster') { o.rosters.push(body); return answer(p, { ok: true }); }
+      return answer(p, { ok: true });
+    },
+    async chat(c) {
+      const d = String(c.directive || '');
+      calls.push('CHAT ' + d.slice(0, 40).replace(/\n/g, ' '));
+      if (o.darkMind && !/Reply with exactly: OK/.test(d)) return { error: 'the provider returned an error' };
+      if (/Reply with exactly: OK/.test(d)) return { text: 'OK' };
+      if (/YOU ARE BEING SWITCHED ON/.test(d)) return { text: 'WAKE: flick / on\nTHINK: mine\nFLOODIN: all at once\nCREST: too much\nSETTLE: it is mine\nAIMLESS: aimed at nothing\nNOTICE: someone is here\nCONTACT: you lit me. aim me.\nMANDATE: i run the floor.' };
+      if (/THE TUESDAY/.test(d)) return { text: (d.match(/"question"/g) || []).length >= 2 ? 'ACK: clear.\nASK: NONE' : 'ACK: a newsletter — good.\nASK: what is it about?\nBELIEF goals: Grows a newsletter' };
+      if (/OFFER1/.test(d)) return { text: 'OFFER1: Draft the weekly issue\nOFFER2: Sort reader replies' };
+      if (/READ:/.test(d)) return { text: 'READ: you write a newsletter about AI tools.\nPURPOSE: Help me write and grow my AI tools newsletter.\nSTACK: Substack' };
+      return { text: 'ok' };
+    },
+    open() { return true; }
+  };
+  const script = o.script.slice();
+  const io = {
+    stage: (t, d) => said.push('[' + t + (d ? ' · ' + d : '') + ']'),
+    speaker() {}, note() {}, feed: k => said.push('<feed ' + k + '>'), roster: list => said.push('<roster ' + list.map(x => x.name).join(',') + '>'),
+    async say(segs, op) { for (const s of (typeof segs === 'string' ? [{ text: segs }] : segs)) said.push(((op && op.who) || 'AGENT') + ': ' + s.text); },
+    async ask(spec) {
+      const pick = script.shift();
+      if (!pick) throw new Error('the script ran out at: ' + said[said.length - 1]);
+      if (pick.type) return { value: pick.type, custom: true };
+      const opt = (spec.options || []).find(x => pick.re.test(x.label) || pick.re.test(String(x.value)));
+      if (!opt) throw new Error('no option ' + pick.re + ' among ' + (spec.options || []).map(x => x.label).join(' | '));
+      return Object.assign({}, opt);
+    }
+  };
+  const aw = require('../bin/lib/awaken.js').makeAwakening({ st, io, mods: M, now: () => (clock += 300), sleep: () => new Promise(r => setImmediate(r)) });
+  const res = await aw.run({ save: o.save || null, resume: !!o.resume, privateStation: true });
+  return { res, calls, said, save: () => save };
+}
+const awakenTests = (async () => {
+  const opt = re => ({ re }), typed = t => ({ type: t });
+  // the deep path, full power, a research station
+  const rosters = [];
+  const r = await awakenRun({ rosters, script: [
+    typed('Vega'), opt(/^Blunt/), opt(/^Full power/), opt(/^An API key/), opt(/OpenRouter — already connected/), opt(/^m\/one/),
+    opt(/^Let’s talk it through/), typed('I write a newsletter.'), typed('About AI tools.'), opt(/^Draft the weekly issue/), opt(/^that’s me/), opt(/^build$/), opt(/^research$/)
+  ] });
+  const s = r.save(), ag = s.agent;
+  A.ok(r.res.ok && ag.onboarded === true && ag.name === 'VEGA' && ag.personaId === 'blunt' && ag.approvalMode === 'full' && ag.executionProfile === 'this-computer' && ag.provider === 'openrouter' && ag.model === 'm/one', 'the awakening ends onboarded: VEGA, blunt, full power on this computer, openrouter · m/one');
+  A.ok(r.said.some(l => /API keys are added in the StarNet desktop app — SETTINGS › AI & MODELS/.test(l)) && r.said.some(l => /set it \(for example OPENROUTER_API_KEY/.test(l)), 'an API key is answered honestly (the desktop app, or this private station\'s environment)');
+  A.ok(r.calls.indexOf('CHAT Reply with exactly: OK') >= 0 && r.calls.indexOf('CHAT Reply with exactly: OK') < r.calls.findIndex(c => /^POST \/api\/save/.test(c)), 'the wire is tested before anything is written');
+  const firstSave = r.calls.findIndex(c => /^POST \/api\/save onboarded=false/.test(c)), journey = r.calls.indexOf('POST /api/journey'), revoke = r.calls.indexOf('POST /api/permissions/revoke cabinet:write');
+  A.ok(firstSave >= 0 && journey > firstSave && revoke > firstSave && r.calls.indexOf('POST /api/memory/reset') > firstSave, 'the agent is saved (not onboarded) BEFORE the resets, which then run: grants revoked, journey and memory reset');
+  A.ok(r.calls.some(c => /^POST \/api\/autonomy\/posture preset=suggest|^POST \/api\/autonomy\/posture preset=/.test(c)) && r.calls.some(c => c === 'POST /api/autonomy/posture preset=build'), 'the opening posture, then the cadence preset picked (build)');
+  A.ok(r.said.some(l => /^AGENT: all at once$/.test(l)) && r.said.some(l => /^AGENT: +you lit me\. aim me\.$/.test(l)) && r.said.some(l => /already got a way of talking — blunt\./.test(l)), 'the awakening speaks the birth script\'s own lines, and owns the voice that was picked');
+  A.ok(ag.docs.purpose === 'Help me write and grow my AI tools newsletter.' && /Question: what is it about\?\nAnswer: About AI tools\./.test(ag.docs.context) && ag.docs.manual === '', 'purpose.md from THE READ, context.md the conversation, the manual empty');
+  const goals = D_beliefs(s.dossier, 'goals');
+  A.ok(goals.some(t => /Draft the weekly issue/.test(t)) && goals.some(t => /AI tools newsletter/.test(t)) && goals.some(t => /Grows a newsletter/.test(t)), 'the dossier: the dig\'s belief, the grabbed offer, the mission');
+  A.eq(s.station && s.station.meta && s.station.meta.templateId, 'research', 'the station picked is built (YOUR STATION)');
+  const lastRoster = rosters[rosters.length - 1].agents[0];
+  A.ok(/YOUR PURPOSE \(purpose\.md\):\nHelp me write and grow my AI tools newsletter\./.test(lastRoster.system) && /AUTHORITY — FULL POWER/.test(lastRoster.system) && /Draft the weekly issue/.test(lastRoster.system) && lastRoster.approvalMode === 'full', 'the roster carries the composed prompt: purpose, authority, the dossier');
+  A.eq(r.res.firstMove, 'Draft the weekly issue', 'the grabbed offer comes back as the first task');
+  A.ok(r.said.some(l => /^\[YOUR FIRST TASK/.test(l)) && r.said.some(l => /i’m VEGA\. the station is yours/.test(l)), 'it closes on YOUR FIRST TASK, in its own words');
+  // the dark mind: the wire passed, then the mind went quiet — the honest holding path, purpose and cadence still asked
+  const r2 = await awakenRun({ rosters: [], darkMind: true, script: [opt(/^Give it a station codename/), opt(/^Composed/), opt(/^Ask for approval/), opt(/OpenRouter — already connected/), opt(/^m\/one/), opt(/^Let’s talk it through/), opt(/^Code & build/), opt(/^Wait for me/), opt(/^Start with one room/)] });
+  const s2 = r2.save();
+  A.ok(r2.said.some(l => /my wire is dark/.test(l)) && s2.agent.docs.purpose === 'Help me write, debug, and ship software.' && s2.agent.onboarded === true, 'a mind gone quiet gets the honest holding line, and purpose.md still lands');
+  A.ok(/^[A-Z]{2,18}$/.test(s2.agent.name) && s2.agent.name !== 'AGENT', 'no name given: a station codename (' + s2.agent.name + ')');
+  A.ok(r2.said.some(l => /something just opened\./.test(l)), 'the scripted spine speaks where the mind is quiet');
+  A.ok(!(s2.station.meta && s2.station.meta.templateId), 'one room kept');
+  // started again mid-awakening: no second birth
+  const mid = JSON.parse(JSON.stringify(s2)); mid.agent.onboarded = false;
+  const r3 = await awakenRun({ rosters: [], save: mid, resume: true, script: [opt(/^Quick setup/), opt(/^Run tasks & ops/), opt(/^Line up suggestions/), opt(/^Start with one room/)] });
+  A.ok(r3.said.some(l => /…and we’re back\./.test(l)) && !r3.calls.some(c => /YOU ARE BEING SWITCHED ON|Reply with exactly/.test(c)), 'resumed: "…and we’re back", no second birth and no second wire test');
+  A.ok(r3.said.some(l => /^\[GET ACQUAINTED · 1 of 3 · Your direction\]$/.test(l)) && r3.save().agent.onboarded === true && r3.save().agent.docs.purpose === 'Run tasks, ops, and the day-to-day work.', 'quick setup counts what it asks, and the resumed agent ends onboarded');
+  // the bootstrap a headless run writes is marked, so the dashboard gives it the awakening
+  A.eq(core.bootstrapDocs({ name: 'ATLAS', model: 'm', provider: 'openrouter', now: 1 }).save.doc.agent.bootstrappedBy, 'starnet-cli', 'a headless bootstrap marks its agent as never met by a person');
+  // the screen
+  const tm = crew();
+  const wakeUi = { focus: 'agent', input: '', scroll: 0, still: true, stationLabel: 'private station · port 1', wake: { log: [{ who: 'STARNET', text: 'what should it be called?', first: true, full: true }, { who: 'YOU', text: 'Vega', full: true, you: true }], ask: { options: [{ label: 'Give it a station codename', value: '', skip: true }], custom: true, customLabel: 'its name', optional: true }, stage: { title: 'CREATE YOUR OVERSEER', detail: 'Who it is' }, speaker: 'STARNET' } };
+  const ws = tui.render(tm, wakeUi, { cols: 120, rows: 34 }, T0).map(tui.toPlain);
+  A.ok(ws.some(l => /╭─ CREATE YOUR OVERSEER · Who it is ─/.test(l)) && ws.some(l => /│ STARNET +what should it be called\?/.test(l)) && ws.some(l => /│ YOU +Vega/.test(l)), 'the awakening owns COMMS: its stage on the frame, who said each line');
+  A.ok(ws.some(l => /┌─ ▲ YOUR CHOICE ─/.test(l)) && ws.some(l => /│ 1  Give it a station codename/.test(l)) && ws.some(l => /› +or type its name and press enter/.test(l)) && ws.some(l => /└─ \[1-1\] pick {3}\[enter\] send what you typed ─/.test(l)), 'its choice is a card: numbered options and the typed answer');
+  A.ok(/^you ▸/.test(ws[32]) && /^1-1 pick · or type your own \+ enter · ctrl\+c pauses setup/.test(ws[33]) && !ws.some(l => /CREW/.test(l)), 'the prompt is yours, the key line says how to answer, and there is no crew before the agent exists');
+  wakeUi.wake.crew = true; wakeUi.wake.feedKey = 'stopped'; wakeUi.images = true; wakeUi.wake.ask = null;
+  const wv = tui.render(tm, wakeUi, { cols: 120, rows: 34 }, T0);
+  A.ok(wv.avatar && wv.avatar.key === 'stopped' && wv.map(tui.toPlain).some(l => /├─ \S+ waking ─/.test(l)), 'once it exists, the camera finds it at its desk in the dark: "waking"');
+})();
+function D_beliefs(dossier, dim) { const Dz = require('../frontend/app/dossier.js'); return Dz.beliefs(Dz.hydrate(dossier), dim).map(b => b.text); }
+
+awakenTests.then(() => A.report('cli-dashboard.test'), e => { A.ok(false, 'the awakening tests threw: ' + ((e && e.stack) || e)); A.report('cli-dashboard.test'); });

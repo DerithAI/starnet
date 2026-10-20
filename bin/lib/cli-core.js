@@ -39,13 +39,16 @@ const USAGE = [
   'starnet — run StarNet agents from a terminal (no station UI required)',
   '',
   'Usage:',
-  '  starnet                              the live crew dashboard (needs a terminal; keys below)',
+  '  starnet                              the live crew dashboard (needs a terminal; keys below). On a station with no agent',
+  '                                       yet it sets one up first: your Overseer, a brain to think with (ChatGPT, Claude,',
+  '                                       Grok, Kimi, StarNet credits or Ollama), the awakening and its interview',
   '  starnet -p "<prompt>"                run one task and stream the answer to stdout',
   '  starnet run "<prompt>"               same as -p',
   '  starnet -p -                         read the prompt from stdin',
   '  starnet status                       is a station reachable? version, workspace, providers (names only)',
   '  starnet doctor                       the station\'s static diagnostics report (no live probes)',
-  '  starnet init                         create the default workspace + one full-power agent (no run)',
+  '  starnet init                         create the default workspace + one full-power agent for headless runs (no run;',
+  '                                       `starnet` then gives it the awakening the first time you open it)',
   '  starnet ls                           every agent: status, what it is doing now, open asks',
   '  starnet approve [agent] [--session]  allow the oldest open ask (of that agent); deny [agent] refuses it',
   '  starnet watch                        print the live events of the station, one line each (--json: one object each)',
@@ -425,6 +428,8 @@ function bootstrapDocs(input) {
       schema: 'starnet.save', version: 5, updatedAt: now,
       agent: {
         id: agentId, name, color: '#5ad0ff', model, personaId: 'worker-homie', purpose, specialtyId: null, createdAt: now,
+        // a station set up for a headless run, never met by a person: the dashboard runs the awakening over it (dashboard.js)
+        bootstrappedBy: 'starnet-cli',
         docs: {
           identity, purpose,
           manual: 'Keep replies brief. Use your real tools when a task needs them and report what they actually returned. Say plainly when something is broken or out of reach.',

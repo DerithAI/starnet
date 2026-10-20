@@ -246,7 +246,7 @@ function render(model, ui, size, now) {
 
   // ---- CREW: a framed list down the left — lamp, name, and a word for what it is doing — the one in COMMS marked; at its
   // foot, where the terminal draws images and the list leaves room, the station camera locked on the agent in COMMS -
-  const side = W >= 90 && rows.length > 0;
+  const side = W >= 90 && rows.length > 0 && !(ui.wake && !ui.wake.crew);   // the awakening shows the crew once its agent exists
   const sw = side ? 30 : 0;   // room for a name and its tag, and for the camera feed at its foot
   if (side) {
     const card = ui.images && focusRow && rows.length <= bot - top - 1 - AGENT_ROWS;
@@ -272,44 +272,49 @@ function render(model, ui, size, now) {
       // the rule carries its name and what it is doing, the camera's REC light at its end; under it, the feed
       g.put(0, listBot, '├' + '─'.repeat(sw - 2) + '┤', 'rule');
       edgeR(g, sw - 2, listBot, [['●', ui.still || Math.floor(now / 600) % 2 === 0 ? 'ph b' : 'rule'], [' REC', 'dim']]);
-      const [said0, wc, said] = stateWords(focusRow.status, now, ui.still);
+      const waking = !!(ui.wake && ui.wake.feedKey);   // the awakening: the newborn at its desk in the dark
+      const [said0, wc0, said1] = stateWords(focusRow.status, now, ui.still);
+      const wc = waking ? 'dim' : wc0, said = waking ? '' : said1;
       // the crew list's own word for an ask; a name too long for the word keeps the state's lamp alone (⠋ ▲ ✓ ■ ○)
-      let word = focusRow.status.key === 'needs' ? '▲ asks' : said0;
+      let word = waking ? 'waking' : focusRow.status.key === 'needs' ? '▲ asks' : said0;
       if (width(focusRow.name) > sw - 14 - width(word)) word = [...word][0];
-      const more = focusRow.status.key === 'working' ? '' : said;   // how long it has worked is on its row in the list
+      const more = focusRow.status.key === 'working' || waking ? '' : said;   // how long it has worked is on its row in the list
       const title = trunc(focusRow.name, Math.max(4, sw - 14 - width(word) - (more ? width(more) + 1 : 0)));
       edgeL(g, 2, listBot, [[title, 'hi b'], [' ', ''], [word, wc]].concat(more ? [[' ' + more, 'dim']] : []));
       // the feed is an image the dashboard paints into these cells; the screen only says where, of whom, doing what
-      avatar = { x: 2, y: listBot + 1, cols: sw - 4, rows: AGENT_ROWS - 1, id: focusRow.id, key: focusRow.status.key };
+      avatar = { x: 2, y: listBot + 1, cols: sw - 4, rows: AGENT_ROWS - 1, id: focusRow.id, key: waking ? ui.wake.feedKey : focusRow.status.key };
     }
   }
 
   // ---- COMMS: the focused agent's conversation, framed; the open ask's card sits at its foot ------------------------------
   const cx0 = sw, cx1 = W - 1;
   frame(g, cx0, top, cx1, bot, 'rule');
-  edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
+  const wk = ui.wake || null;   // the awakening (a station with no agent yet): its stage names the frame
+  if (wk) edgeL(g, cx0 + 2, top, [[wk.stage.title || 'THE AWAKENING', 'ph b']].concat(wk.stage.detail ? [[' · ' + wk.stage.detail, 'dim']] : []));
+  else edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
   const right = [];
   if (focusRow && focusRow.model && cx1 - cx0 > 60) right.push([focusRow.model, 'dim']);
   if (ui.scroll > 0) right.push([(right.length ? '  ' : '') + '↑ ' + ui.scroll, 'am']);
-  if (!side && focusRow) right.push([(right.length ? '  ' : '') + (rows.indexOf(focusRow) + 1) + '/' + rows.length, 'dim']);
+  if (!side && focusRow && !ui.wake) right.push([(right.length ? '  ' : '') + (rows.indexOf(focusRow) + 1) + '/' + rows.length, 'dim']);
   if (right.length) edgeR(g, cx1 - 1, top, right);
   // the trusted project every message from here works in, on the frame's foot (said whatever the width)
   if (ui.project && ui.project.label) edgeL(g, cx0 + 2, bot, [[trunc(ui.project.label, Math.max(8, cx1 - cx0 - 8)), 'dim']]);
   const ix0 = cx0 + 2, ix1 = cx1 - 2, iy0 = top + 1, iy1 = bot - 1;
   const cw = Math.min(ix1 - ix0 + 1, 96);
   // an agent's ask first (a run is waiting on it); else the folder card, when the folder `starnet` started in is not trusted
-  const card = front ? cardLines(front, model, cw, H) : ui.trust ? trustLines(ui.trust, cw) : [];
+  const card = wk ? (wk.ask ? wakeCardLines(wk.ask, cw, now, ui.still) : []) : front ? cardLines(front, model, cw, H) : ui.trust ? trustLines(ui.trust, cw) : [];
   const cardTop = iy1 - card.length + 1;
   const paneBot = card.length ? cardTop - 1 : iy1 + 1;
   if (ui.picker) drawPicker(g, ui.picker, iy0, paneBot, ix0, ix1, blink);
   else if (ui.overlay) drawOverlay(g, ui.overlay, iy0, paneBot, ix0, ix1);
+  else if (wk) drawWake(g, wk, iy0, paneBot, ix0, ix1, ui, now);
   else if (!focusRow) g.put(ix0, iy0, trunc(head.feed === 'connecting' ? 'connecting to the station…' : 'no agents on this station yet', ix1 - ix0 + 1), 'dim');
   else drawPane(g, focusRow ? model.logOf(focusRow.id) : [], focusRow, iy0, paneBot, ix0, ix1, ui, now);
   if (card.length) drawCard(g, card, cardTop, ix0, cw, blink);
 
   // ---- prompt + keys ------------------------------------------------------------------------------------------------
   const flashKey = ui.keyFlash && ui.keyFlash.until > now;
-  let px = g.put(0, promptY, (focusRow ? focusRow.name.toLowerCase() : 'starnet') + ' ', 'dim');
+  let px = g.put(0, promptY, (ui.wake ? 'you' : focusRow ? focusRow.name.toLowerCase() : 'starnet') + ' ', 'dim');   // the awakening: your answers
   px = g.put(px, promptY, '▸ ', 'brand b');
   const room = W - px - 2 - (flashKey ? 8 : 0);
   const typed = String(ui.input || '').replace(/\n/g, ' ⏎ ');   // a pasted multi-line message shows its breaks as ⏎
@@ -320,7 +325,10 @@ function render(model, ui, size, now) {
   if (ui.flash && ui.flash.until > now) g.put(0, hintY, trunc(ui.flash.text, W), ui.flash.style || 'am');
   else if (ui.quitArmed && ui.quitArmed > now) g.put(0, hintY, trunc('ctrl+c again to quit — ' + ui.quitNote, W), 'am b');
   else {
-    const t = front
+    const t = wk
+      ? (wk.ask ? ((wk.ask.options || []).length ? '1-' + wk.ask.options.length + ' pick · ' : '') + (wk.ask.custom ? 'or type your own + enter · ' : '') + 'ctrl+c pauses setup'
+        : wk.typing ? 'any key shows the rest' : 'ctrl+c pauses setup')
+      : front
       ? (front.question ? (front.question.options.length ? '1-' + front.question.options.length + ' pick · ' : '') + 'type an answer + enter · esc clears' : 'y allow once · ' + (canAlways(front) ? 'a always · ' : '') + 'n deny · v ' + (front.view ? 'hide' : 'view') + ' · ' + (narrow ? 'tab agent' : 'tab next agent'))
       : ui.trust ? 'y trust this folder · n not now · or just type to talk'
         : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  ctrl+c quit';
@@ -568,6 +576,51 @@ function trustLines(t, cw) {
   lines.push({ kind: 'bottom', keys: [['[y] trust', 'am b'], ['[n] not now', 'fg']] });
   return lines;
 }
+/* THE AWAKENING in COMMS (bin/lib/awaken.js): who said each line (STARNET before the agent exists, then the agent; YOU
+   for your answers), each line typed out at its own pace (e.born + e.cps; e.full once it is all shown), a note under them
+   while the station works (the wire test). Newest at the bottom; scrolls by ui.scroll. */
+function drawWake(g, w, top, bot, x0, x1, ui, now) {
+  const H = bot - top;
+  if (H <= 0) return;
+  const L = Math.max(8, Math.min(14, Math.max(...w.log.map(e => width(e.who || '')), 0) + 2));
+  const tw = Math.max(10, x1 - x0 + 1 - L);
+  const rows = [];
+  w.log.forEach((e, i) => {
+    const prev = w.log[i - 1];
+    const newBlock = !prev || prev.who !== e.who || e.first;
+    if (i && newBlock) rows.push(null);
+    const all = [...String(e.text)];
+    const n = e.full ? all.length : Math.min(all.length, Math.floor(Math.max(0, now - e.born) * (e.cps || 44) / 1000));
+    const shown = all.slice(0, n).join('') + (n < all.length ? '▍' : '');
+    const tc = e.bad ? 'bad' : e.you ? (e.skip ? 'dim' : 'hi') : e.who === 'STARNET' ? 'fg' : 'hi';
+    const lc = e.you ? 'hi b' : e.who === 'STARNET' ? 'dim b' : 'ph b';
+    wrap(shown || ' ', tw).forEach((ln, j) => rows.push({ label: newBlock && !j ? e.who : '', lc, segs: [[ln, tc]] }));
+  });
+  if (w.note) rows.push({ label: '', segs: [[spin(now, ui.still) + ' ' + w.note, w.noteStyle || 'dim']] });
+  const maxScroll = Math.max(0, rows.length - H);
+  ui.scroll = Math.min(Math.max(0, ui.scroll | 0), maxScroll);
+  const end = rows.length - ui.scroll;
+  rows.slice(Math.max(0, end - H), end).forEach((r, i) => {
+    if (!r) return;
+    const yy = top + i;
+    if (r.label) g.put(x0, yy, trunc(r.label, L - 1), r.lc);
+    let x = x0 + L;
+    for (const [t, s] of r.segs) { const room = x1 + 1 - x; if (room <= 0) break; x = g.put(x, yy, trunc(t, room), s); }
+  });
+}
+// the awakening's choice as a card: numbered options, the typed answer when one is welcome, a wait while a sign-in lands
+function wakeCardLines(ask, cw, now, still) {
+  const opts = ask.options || [];
+  const lines = [{ kind: 'top', title: ask.waiting ? 'SIGN IN' : opts.length ? 'YOUR CHOICE' : 'YOUR ANSWER' }];
+  if (ask.waiting) lines.push({ kind: 'body', segs: [[spin(now, still) + ' ' + ask.waiting, 'am']] });
+  opts.forEach((o, i) => lines.push({ kind: 'body', segs: [[(i + 1) + '  ', 'am b'], [String(o.label || ''), o.skip ? 'dim' : 'fg']] }));
+  if (ask.custom) lines.push({ kind: 'body', segs: [['›  ', 'am'], ['or type ' + (ask.customLabel || 'your own answer') + ' and press enter' + (ask.optional && !opts.some(o => o.skip) ? ' (enter alone skips)' : ''), 'dim']] });
+  const keys = [];
+  if (opts.length) keys.push(['[1-' + opts.length + '] pick', 'am b']);
+  if (ask.custom) keys.push(['[enter] send what you typed', 'fg']);
+  lines.push({ kind: 'bottom', keys });
+  return lines;
+}
 function drawCard(g, lines, y0, x0, cw, blink) {
   const xr = x0 + cw - 1;
   lines.forEach((l, i) => {
@@ -664,4 +717,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, trustLines, pickerView, stateWords };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, trustLines, wakeCardLines, pickerView, stateWords };

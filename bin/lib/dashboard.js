@@ -563,6 +563,109 @@ function runDashboard(station, opts) {
     p.loading = false;
     paint();
   }
+  // ---- THE AWAKENING: a station with no agent is onboarded here, the desktop app's own ceremony (bin/lib/awaken.js) -----
+  // ui.wake = { log: [{ who, text, born, cps, full, you }], ask, stage: { title, detail }, speaker, feedKey, note, typing, ff }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  async function waitOrSkip(ms) { const end = now() + ms; while (now() < end && ui.wake && !ui.wake.ff) await sleep(40); }
+  const wakeIO = {
+    stage: (title, detail) => { if (ui.wake) { ui.wake.stage = { title: String(title || ''), detail: String(detail || '') }; paint(); } },
+    speaker: name => { if (ui.wake) ui.wake.speaker = String(name || 'STARNET'); },
+    note: (text, style) => { if (ui.wake) { ui.wake.note = String(text || ''); ui.wake.noteStyle = style || 'dim'; paint(); } },
+    feed: key => { if (ui.wake) { ui.wake.feedKey = key || null; paint(); } },
+    roster: list => { model.setRoster({ agents: list }); ui.focus = 'agent'; if (ui.wake) ui.wake.crew = true; loadSkins().then(paint, () => {}); paint(); },
+    // typed lines: each one appears at its pace (any key shows the rest of this beat at once)
+    async say(segs, o) {
+      const w = ui.wake; if (!w) return;
+      const list = typeof segs === 'string' ? [{ text: segs, cps: 46, hold: 0 }] : (segs || []);
+      const who = (o && o.who) || w.speaker;
+      w.ff = false;
+      for (let i = 0; i < list.length; i++) {
+        if (!ui.wake) return;
+        const s = list[i];
+        const e = { who, text: String(s.text).replace(/^\s+/, ''), first: i === 0, born: now(), cps: s.cps || 44, full: false };
+        w.log.push(e); w.typing = true; ui.scroll = 0;
+        await waitOrSkip(Math.min(9000, e.text.length / e.cps * 1000));
+        e.full = true;
+        if (s.hold) await waitOrSkip(Math.min(900, s.hold));
+      }
+      if (ui.wake) ui.wake.typing = false;
+      paint();
+    },
+    ask(spec) { return new Promise(resolve => { if (!ui.wake) return resolve({ value: '', skip: true }); ui.wake.ask = Object.assign({}, spec, { resolve }); ui.input = ''; paint(); }); },
+    cancelAsk(ans) { const a = ui.wake && ui.wake.ask; if (!a) return; ui.wake.ask = null; a.resolve(ans); paint(); }
+  };
+  function wakeAnswer(ans) {
+    const w = ui.wake, a = w && w.ask;
+    if (!a) return;
+    w.ask = null;
+    w.log.push({ who: 'YOU', text: ans.custom ? String(ans.value) : String(ans.label || ''), full: true, you: true, skip: !!ans.skip });
+    a.resolve(ans);
+    paint();
+  }
+  // a key while the awakening runs; false = the ordinary prompt handles it (typing an answer, backspace, esc)
+  function wakeKey(str, k) {
+    const w = ui.wake;
+    if (w.typing && !w.ask) { w.ff = true; return true; }
+    if (!w.ask) return k.name === 'return' || k.name === 'enter' || k.name === 'tab';
+    if (k.name === 'return' || k.name === 'enter') {
+      const t = ui.input.trim();
+      if (t) {
+        if (w.ask.custom) { ui.input = ''; wakeAnswer({ value: t, custom: true }); }
+        else flash('pick a number — 1 to ' + w.ask.options.length);
+        return true;
+      }
+      if (w.ask.optional) { const sk = (w.ask.options || []).find(o => o.skip); wakeAnswer(sk ? Object.assign({}, sk) : { value: '', label: 'skip', skip: true }); }
+      return true;
+    }
+    if (k.name === 'tab' || k.name === 'up' || k.name === 'down') return true;
+    const ch = typeof str === 'string' ? str : '';
+    if (!ui.input && /^[1-9]$/.test(ch) && w.ask.options[Number(ch) - 1]) { wakeAnswer(Object.assign({}, w.ask.options[Number(ch) - 1])); return true; }
+    if (!ui.input && !w.ask.custom && ch && !/^[\x00-\x1f]$/.test(ch) && k.name !== 'backspace' && k.name !== 'escape' && k.name !== 'pageup' && k.name !== 'pagedown') { flash('pick a number — 1 to ' + w.ask.options.length); return true; }
+    return false;
+  }
+  async function checkOnboarding() {
+    const r = await get('/api/save?agent=agent', 15000);
+    if (!(r.ok && r.status === 200 && r.json)) return false;
+    const save = r.json.save || null;
+    // an agent a headless run set up (`starnet -p` on an empty station) was never met by a person: it gets the full awakening
+    const boot = !!(save && save.agent && save.agent.bootstrappedBy === 'starnet-cli' && save.agent.onboarded !== true);
+    const a = boot ? null : save && save.agent;
+    if (a && !((a.onboarded === undefined) ? !a.purpose : !a.onboarded)) return false;   // the app's own needsAwakening
+    ui.wake = { log: [], ask: null, stage: { title: 'THE AWAKENING', detail: '' }, speaker: 'STARNET', feedKey: null, note: '', typing: false, ff: false };
+    paint();
+    // one setup at a time: the app open on this station is mid-setup itself, and a prior install's station is the app's to recover
+    if (station.mode === 'attached' && station.workspace) {
+      await wakeIO.say([{ text: 'the StarNet app is open on this station and its setup isn’t finished. finish creating your Overseer in the StarNet window — or quit the app and run starnet again to do it here.', cps: 60 }], { who: 'STARNET' });
+      return true;
+    }
+    if (!a && !boot && r.json.lineage && r.json.lineage.priorInstallEvidence) {
+      await wakeIO.say([{ text: 'this computer has a station from an earlier StarNet install. open the StarNet app to recover it before setting up a new one.', cps: 60 }], { who: 'STARNET' });
+      return true;
+    }
+    let aw;
+    try {
+      aw = require('./awaken.js').makeAwakening({ st: require('./station-io.js').makeStationIO(client), io: wakeIO, mods: require('./app-modules.js').load(), env });
+    } catch (e) {
+      await wakeIO.say([{ text: 'the setup could not load the StarNet app’s files (' + ((e && e.message) || e) + '). open the StarNet app to set up this station.', cps: 80 }], { who: 'STARNET' });
+      return true;
+    }
+    aw.run({ save, resume: !!a, privateStation: station.mode === 'spawned' }).then(async res => {
+      const last = ui.wake && [...ui.wake.log].reverse().find(e => e.who !== 'YOU' && e.who !== 'STARNET');
+      ui.wake = null;
+      await loadRoster().catch(() => {});
+      ui.focus = 'agent';
+      if (last) model.noteAgentLine('agent', last.text, now());
+      if (res && res.firstMove) ui.input = String(res.firstMove);
+      loadSkins().then(paint, () => {});
+      flash(((res && res.agent && res.agent.name) || 'your agent') + ' is awake — and it knows why.', 'ok', 7000);
+    }, e => {
+      if (!ui.wake) return;
+      ui.wake.ask = null; ui.wake.typing = false;
+      ui.wake.log.push({ who: 'STARNET', text: 'setup stopped: ' + ((e && e.message) || e) + '. press ctrl+c, then run starnet again to pick up from here.', full: true, bad: true });
+      paint();
+    });
+    return true;
+  }
   function focusStep(d) {
     const ids = model.state.order;
     if (!ids.length) return;
@@ -595,6 +698,7 @@ function runDashboard(station, opts) {
       if (typeof str === 'string' && str) { const ch = str.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, ''); if (ch && ui.input.length < 20000) ui.input += ch; }
       return schedulePaint();
     }
+    if (ui.wake && wakeKey(str, k)) return paint();
     // tab / shift+tab: the agent shown in COMMS · ↑ ↓: your earlier messages (and back to what you were typing)
     if (k.name === 'tab') { focusStep(k.shift ? -1 : 1); return paint(); }
     if (k.name === 'up') { historyStep(-1); return paint(); }
@@ -611,7 +715,7 @@ function runDashboard(station, opts) {
     const q = model.front();
     if (!ui.input && q && !q.question && /^[ynv]$/i.test(ch)) { answer(ch.toLowerCase()); return; }
     if (!ui.input && q && !q.question && /^a$/i.test(ch) && ONCE_ONLY_TOOLS.indexOf(q.tool) < 0) { answer('a'); return; }
-    if (!ui.input && !q && ui.trust && /^[yn]$/i.test(ch)) { answerTrust(ch.toLowerCase()); return; }
+    if (!ui.input && !q && ui.trust && !ui.wake && /^[yn]$/i.test(ch)) { answerTrust(ch.toLowerCase()); return; }
     if (!ui.input && q && q.question && /^[1-6]$/.test(ch) && q.question.options[Number(ch) - 1]) { answerQuestion(q.question.options[Number(ch) - 1]); return; }
     if (ui.input.length < 4000) ui.input += ch;
     paint();
@@ -740,6 +844,7 @@ function runDashboard(station, opts) {
     every(6000, () => loadLines().catch(() => {}));
     every(20000, () => loadRoster().then(() => { if (ui.images && model.state.order.some(id => !feed.hasSkin(id))) return loadSkins(); }));
     timers.push(setInterval(paint, 100));   // the working spinner turns at 10 frames a second (paint writes only rows that changed)
+    checkOnboarding().catch(() => {});   // a station with no agent yet: the awakening, here
   })().catch(e => { stop(0); process.stderr.write('starnet: ' + ((e && e.message) || e) + '\n'); });
   return exited;
 }

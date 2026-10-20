@@ -473,7 +473,8 @@ async function resolveStation(opts, env) {
   // spawn
   const ws = defaultWorkspace(opts);
   if (path.resolve(ws) === path.resolve(desktopWs) && desktop.ownerAlive) throw stationError('the desktop app owns ' + ws + ' (pid ' + desktop.ownerPid + '); refusing to boot a second station on it');
-  const boot = bootstrapWorkspace(ws, opts, env);
+  // the dashboard sets a new station up itself (the awakening); a headless run gets the one-agent station it needs
+  const boot = opts.cmd === 'dash' ? { wrote: false } : bootstrapWorkspace(ws, opts, env);
   if (boot.wrote) log('· bootstrapped ' + ws + ' — agent ' + opts.name + ' (full power)' + (boot.provider ? ' · provider ' + boot.provider + ' from ' + boot.providerSource : ' · no provider credential found in the environment') + (boot.model ? ' · model ' + boot.model : ' · no model (pass --model or set STARNET_DEFAULT_MODEL)'));
   log('· booting a station on ' + ws);
   const sp = await spawnSidecar(ws, env, null);
