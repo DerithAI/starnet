@@ -406,7 +406,9 @@ const GroupChat = (() => {
       } catch (_) { /* the open group's own poll reports errors; the watch stays quiet and retries */ }
       if (!gate) { clearTimeout(watchTimer); watchTimer = setTimeout(tick, 4000); }
     };
-    const loop = gate ? PollGate.every(tick, { ms: 4000, immediate: false }) : null;
+    // gap (fix round 5): the watch was a chain — setTimeout(tick, 4000) re-armed after the read — so a read that takes 4 s
+    // or more is still followed by 4 s of rest; on the bare grid a slow sidecar was asked again the moment it answered
+    const loop = gate ? PollGate.every(tick, { ms: 4000, immediate: false, gap: true }) : null;
     if (!loop) watchTimer = setTimeout(tick, 4000);
     // back from a minimize: look now, not up to 4 s later
     if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (loop) loop.runNow(); else { clearTimeout(watchTimer); tick(); } } });

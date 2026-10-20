@@ -40,9 +40,11 @@ const all = e => [e, ...e.children.flatMap(all)];
 /* one station: a group whose stamp moves like group-sessions.js's (revision + draft writes); `stamps:false` = an old sidecar */
 /* realU: the REAL frontend/js/util.js loaded into the page first, so U.timeoutSignal is the app's own (its AbortController
    fallback, on this fake timer queue). hanging: the sidecar accepts every ?id= read and never answers it */
-function harness({ stamps = true, realU = false } = {}) {
+/* realGate: the REAL frontend/app/pollgate.js drives the page's loops on the same fake clock + timers (no stub); listMs: the
+   station-wide /api/groups list read answers after that long (listReads records each one's start and end) */
+function harness({ stamps = true, realU = false, realGate = false, listMs = 0 } = {}) {
   let clock = 1e9, wallStep = 0, seq = 0, persists = 0, groupStringifies = 0, away = false, draftSeq = 0, hanging = false;
-  const timers = new Map(), reads = [], wakers = [];
+  const timers = new Map(), reads = [], wakers = [], listReads = [];
   const server = { id: 'g1', title: 'Launch', members: ['agent', 'copy'], leadId: 'agent', revision: 3, paused: false, artifacts: [], questions: [],
     messages: [{ id: 'm1', seq: 1, author: 'user', content: 'hello', at: 1 }, { id: 'm2', seq: 2, author: 'agent', content: 'hi there', at: 2, turnId: 't1' }],
     turns: [{ id: 't1', origin: 'm1', agentId: 'agent', state: 'completed', endedAt: 2 }] };
@@ -61,7 +63,12 @@ function harness({ stamps = true, realU = false } = {}) {
     clearTimeout: id => { timers.delete(id); },
     fetch: async (url, init) => {
       url = String(url);
-      if (!/\?id=/.test(url)) return { status: 200, ok: true, json: async () => ({ ok: true, result: { roster: [{ id: 'agent', name: 'NOVA' }, { id: 'copy', name: 'COPY' }], groups: [] } }) };
+      if (!/\?id=/.test(url)) {
+        const list = { status: 200, ok: true, json: async () => ({ ok: true, result: { roster: [{ id: 'agent', name: 'NOVA' }, { id: 'copy', name: 'COPY' }], groups: [] } }) };
+        const rec = { at: clock, end: null }; listReads.push(rec);
+        if (!listMs) { rec.end = clock; return list; }
+        return new Promise(res => { const id = ++seq; timers.set(id, { fn: () => { rec.end = clock; res(list); }, at: clock + listMs }); });
+      }
       reads.push(url);
       if (hanging) return new Promise((_res, rej) => { const sig = init && init.signal; if (sig) sig.addEventListener('abort', () => rej(sig.reason || new Error('aborted'))); });
       const since = (url.match(/[?&]since=([^&]*)/) || [])[1];
@@ -75,6 +82,7 @@ function harness({ stamps = true, realU = false } = {}) {
     StationUI: { notify() {}, toggleTerm() {}, closeTerm() {} },
     Workstreams: { get: id => (id === 'g1' ? ws : null), list: () => [ws], activeId: () => 'g1', adopt: o => Object.assign(ws, o), generalId: () => 'home' }
   });
+  if (realGate) { delete ctx.PollGate; vm.runInContext(read('frontend/app/pollgate.js'), ctx); }
   if (realU) { ctx.AbortController = AbortController; ctx.DOMException = DOMException; vm.runInContext(read('frontend/js/util.js'), ctx); }
   vm.runInContext(read('frontend/app/group-chat.js') + '\nglobalThis.GroupChat = GroupChat;', ctx);
   const settle = async () => { for (let n = 0; n < 60; n++) await Promise.resolve(); };
@@ -88,7 +96,7 @@ function harness({ stamps = true, realU = false } = {}) {
     }
     clock = until;
   }
-  return { ctx, ws, server, reads, wakers, advance, settle, log: () => ctx.document.getElementById('gc-log'),
+  return { ctx, ws, server, reads, wakers, listReads, advance, settle, log: () => ctx.document.getElementById('gc-log'),
     persists: () => persists, groupStringifies: () => groupStringifies, setAway: v => { away = v; }, hang: v => { hanging = v; }, draft: () => { draftSeq++; }, now: () => clock, stepWall: ms => { wallStep += ms; } };
 }
 
@@ -196,6 +204,21 @@ function harness({ stamps = true, realU = false } = {}) {
     await h.advance(16000);
     A.ok(h.reads.length > atWake, 'the station answering again is read');
     A.ok(h.ws.history.some(m => m.content === 'after the hang'), '…and the open group repaints with what changed meanwhile (it stayed frozen)');
+  }
+
+  /* (h) fix round 5 (2026-10-20): THE STATION-WIDE WATCH KEEPS ITS REST. In trunk it was a chain: the next tick was armed
+     4 s after the read finished (setTimeout(tick, 4000) after the await). On PollGate's bare grid a list read that took
+     4 s or more was asked again the moment it settled (its slot had passed), so under a loaded sidecar /api/groups was
+     read back to back with no gap, exactly when the sidecar was struggling. The REAL pollgate.js drives the REAL watch. */
+  {
+    const h = harness({ realGate: true, listMs: 5000 });
+    h.ctx.GroupChat.bind(h.ws); await h.settle();
+    await h.advance(60000);
+    const watchReads = h.listReads.slice(1).filter(r => r.end != null);   // [0] is discover()'s one-off read at bind
+    A.ok(watchReads.length >= 4, 'fixture: the watch read the list several times in 60 s (' + watchReads.length + ')');
+    const rests = watchReads.slice(1).map((r, i) => r.at - watchReads[i].end);
+    A.ok(rests.length >= 3 && rests.every(ms => ms >= 4000), 'a 5 s list read is followed by the chain\'s 4 s of rest before the next one: ' + JSON.stringify(rests) + ' ms (it was 0: back to back)');
+    A.ok(watchReads.length <= 7, '…so a 5 s read is asked about every 9 s, as the chain did (' + watchReads.length + ' reads in 60 s)');
   }
 
   A.report('group-poll-idle.test');
