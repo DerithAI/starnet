@@ -18,8 +18,8 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "005fd26cf0b123be1a64a000c16444c77a3bd088",
-    "pathSetSha256": "213a4211bc1a66001a9f827b197c1b7aff1194373527f28d43c7ea6f2ebd706c",
+    "sourceCommit": "b5188e61a88eb94c628cbf0291edb7db58f77796",
+    "pathSetSha256": "977cb6e7a6c2fefcbe01097ab7c9c2befa08c45c866b457b0aaeb9b3dcbb20b6",
     "files": [
       {
         "path": "INSTALL.md",
@@ -1277,6 +1277,11 @@
         "sha256": "c084649fa54f86fad241fe4897e96a3514bd0c5c93f41749614ecc56fbe35583"
       },
       {
+        "path": "frontend/app/typefloor.js",
+        "bytes": 7158,
+        "sha256": "628468a5ce2db52010b73616e8f625e35352c185ccba51db40aa6be9b7d1effe"
+      },
+      {
         "path": "frontend/app/understanding.js",
         "bytes": 12512,
         "sha256": "c7c44f63caad0dc318d3e7181da36f514f77d689379fd7f40cffef3a1f5c8cf3"
@@ -1643,8 +1648,8 @@
       },
       {
         "path": "frontend/css/pipglass.css",
-        "bytes": 149401,
-        "sha256": "8afd441081b7f5a8a964e70d759cc9c9f2c302c1f29757a3758d0e52e9097ac7"
+        "bytes": 150816,
+        "sha256": "c1a8a8bf674bc3aeaf36501b11c7251827f7ad03679ca7f81b219679174b197d"
       },
       {
         "path": "frontend/css/plugins.css",
@@ -1808,8 +1813,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 98798,
-        "sha256": "e989adbfd63a711fd5b1cb7396e7aff2f232cb1d56c8e2fe80d28932b96143be"
+        "bytes": 98963,
+        "sha256": "0199a82166159d8a03a1b39ee4b5c8f3651fdc47370659540a166f0dd57cbf7f"
       },
       {
         "path": "frontend/js/arcade.js",
