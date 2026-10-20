@@ -1691,3 +1691,60 @@ body.glass-demo:not(.hud-mode) #terms [data-sn-floor] { font-size: var(--sn-type
    them; a bigger caps title keeps its own wide tracking) */
 body.glass-demo:not(.hud-mode) #terms [data-sn-caps="label"] { letter-spacing: 1.6px !important; }
 body.glass-demo:not(.hud-mode) #terms [data-sn-caps="key"] { letter-spacing: .9px !important; }
+
+/* ============================================================
+   WINDOW RHYTHM (Andrew 10-19: "measure and even out the windows' line and section gaps"). Measured in all 41 window
+   views: sections already sat 16px apart and a console section's heading 7px over its text; the rest drifted. An item's
+   title sat 3, 4, 5 or 6px over its own subtitle depending on the component, a heading 0 (two lines touching in
+   COMMANDER › SOURCES) to 20px over its text, and wrapped text ran at eight line heights from 1.22 to 1.6. One rhythm
+   (screen px at his TEXT SIZE 90; the rules below are in CSS px):
+     · an item's title to its subtitle, and a kicker to its title, 4px
+     · a heading to its first text 7px (the console sections' own)
+     · a paragraph to the next 22px, a sub-section's heading 18px under what precedes it
+     · wrapped prose at 1.5 (the most common), a caption under an item at 1.35
+   ============================================================ */
+/* LINES */
+body.glass-demo:not(.hud-mode) #terms :is(p, li, .mc-hint, .mc-note, .set-about, .con-sec-desc, .fm-note, .fm-lead, .fm-entry-b, .sk-note, .cf-grp-note,
+  .cd-body, .cd-privacy, .nf-txt, .prov-ep, .sn-menu-nav-note, .dlv-lead, .wfw-lead, .ext-empty, .ch-sum-help, .q-mission-title,
+  .settings-toggle-copy) { line-height: 1.5; }
+body.glass-demo:not(.hud-mode) #terms :is(div.sub, div.dim, small, .fb-empty, .gx-tro .nm) { line-height: 1.35; }
+/* AN ITEM'S TITLE TO ITS SUBTITLE, AND A KICKER TO ITS TITLE: 4px */
+body.glass-demo:not(.hud-mode) #terms :is(.ab-route-main, .ab-router .ab-router-q, .pp-card) { gap: 4px; }
+body.glass-demo:not(.hud-mode) #terms :is(.set-sub, .ch-sum-copy) { row-gap: 4px; }
+body.glass-demo:not(.hud-mode) #terms .gx-tro .sub { margin-top: 4px; }
+body.glass-demo:not(.hud-mode) #terms .sn-menu-nav-note { margin-top: 4px; }
+body.glass-demo:not(.hud-mode) #terms .nf-meta { margin-bottom: 4px; }
+body.glass-demo:not(.hud-mode) #terms .fm-chapter .fm-eyebrow { margin-bottom: 4px; }
+body.glass-demo:not(.hud-mode) #terms .fm-chapter h2 { margin-top: 0; }
+/* the quest card's kicker row: its 32px dismiss key hangs into the card's padding instead of setting the row's height */
+body.glass-demo:not(.hud-mode) #terms .q-card-meta { margin-bottom: 0; }
+body.glass-demo:not(.hud-mode) #terms .q-card-meta .q-dismiss { margin-block: -7px; }
+/* A HEADING TO ITS FIRST TEXT: 7px */
+body.glass-demo:not(.hud-mode) #terms .con-sec-head + .con-sec-body { margin-top: -4px; }   /* a section with no description starts its body where the description would */
+body.glass-demo:not(.hud-mode) #terms :is(.sec, .gx-sec):not(.con-sec-head) { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms :is(.sec, .gx-sec):not(.con-sec-head) + * { margin-top: 0; }
+body.glass-demo:not(.hud-mode) #terms :is(.ms-h, .cd-sech) { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms .cf-group-summary { margin-top: 2px; }
+body.glass-demo:not(.hud-mode) #terms .wh-content > h4 { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms .wh-source-settings > .wh { margin-top: 8px; }
+body.glass-demo:not(.hud-mode) #terms .utility-head > h2 { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms .fm-cover > h2 { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms .fm-chapter { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms .q-return-card > p { margin-top: 8px; }
+body.glass-demo:not(.hud-mode) #terms .fm-entry > .fm-entry-h { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms .q-card .q-hd h3.nm { margin-bottom: 0; }
+body.glass-demo:not(.hud-mode) #terms .q-card > .sub { margin-top: 4px; }
+/* A BREAK BEFORE A SUB-SECTION: 18px (the agent RECORD's own, between its RUNS, RUN ISSUES and INSIGHTS blocks) */
+body.glass-demo:not(.hud-mode) #terms .sec:not(.con-sec-head):not(:first-child) { margin-top: 20px; }
+body.glass-demo:not(.hud-mode) #terms .cf-nav { margin-bottom: 20px; }
+body.glass-demo:not(.hud-mode) #terms .set-reset-browser { margin-top: 20px; }
+body.glass-demo:not(.hud-mode) #terms .wh-content > * + h4 { margin-top: 20px; }
+body.glass-demo:not(.hud-mode) #terms #sk-lib .sk-lib-sum { margin-bottom: 20px; }
+/* A PARAGRAPH TO THE NEXT: one blank line, 22px (a section description's gap in most windows; agents, commander and
+   settings had drifted to 16 and 18; a new routine's form keeps its own tighter start) */
+body.glass-demo:not(.hud-mode) #terms .con-sec:not([data-section="routines-create"]) > .con-sec-desc { margin-bottom: 24px; }
+body.glass-demo:not(.hud-mode) #terms .wh-content > p + p { margin-top: 24px; }
+/* SPENDING LIMITS › an interrupted run's line was one 169px line cut at an ellipsis (435px of text: "INTERRUPTED — Write
+   the la…", a VT323 ellipsis a flat bar), so which run it was could not be read: the whole line, wrapped, over its
+   charge field and SETTLE key */
+body.glass-demo:not(.hud-mode) #terms #budget-unsettled .bg-un-what { flex: 1 1 100%; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
