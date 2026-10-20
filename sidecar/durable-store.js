@@ -189,8 +189,10 @@ function makeDurableJsonStore(deps) {
   /* signature(key) — ADDITIVE + OPT-IN (2026-10-19, idle-CPU pass): a cheap token that changes whenever this key's
      committed main file may have changed, so a caller can keep its last parsed read and skip the read+parse+normalize
      while the token holds. It is the bigint stat of the main file (dev, ino, size, mtimeNs, ctimeNs — a tmp+rename
-     write changes the ino, an in-place same-size rewrite changes mtimeNs/ctimeNs) plus an in-process write
-     generation bumped by every set(), so a write this process made can never hide inside one timestamp tick.
+     write changes the ino, an in-place same-size rewrite changes mtimeNs/ctimeNs only ACROSS a filesystem timestamp
+     tick: ~1 ms on NTFS, 2 s on FAT) plus an in-process write generation bumped by every set(), so a write this
+     process made can never hide inside one tick. An outside writer rewriting in place twice within one tick could
+     (racy-clean); the single-writer contract above forbids that writer, so no racy guard is kept here.
      bigint is required: inodes on this class of box exceed 2^53, where a plain number collides.
      null means "do not cache": no statSync (the in-memory test fakes), a stat without bigint fields, a missing main
      (absent/recovered states keep their uncached, loud path), or any stat error (noted, never silent).
