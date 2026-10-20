@@ -262,6 +262,7 @@ test/workshop-resolution.test.js
 test/workshop-toggle-ui.test.js
 test/quest-store.test.js
 test/journey-store.test.js
+test/journey-read-cache.test.js
 test/journey.test.js
 test/journeystore.test.js
 test/journey-wiring.test.js

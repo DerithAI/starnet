@@ -9874,12 +9874,16 @@ function advanceGoalFromQuests() {
 // A quest completion is durable before its journey fold. Recover a crash/write failure by replaying every done
 // quest; journey-store's lifetime source-key ledger makes this idempotent, and its reset epoch skips prior-Commander
 // completions. GET /api/journey awaits the same pass so the UI never outruns recoverable evidence.
+// IDLE CPU (2026-10-19): replay only the quests recordQuest would still WRITE (journeyStore.pendingQuestFolds —
+// recordQuest's own gate, epoch and source-key tests over one cached read). Replaying every done quest re-read and
+// re-normalized the whole journey once per quest to find it already folded: ~200 ms of unbroken event-loop block
+// on every 4 s journey poll at the caps. A fold that failed or was lost to a crash is still pending, so it is
+// still replayed on the next GET.
 let journeyQuestReconcile = null;
 function reconcileCompletedJourneyQuests() {
   if (journeyQuestReconcile) return journeyQuestReconcile;
   const task = (async () => {
-    for (const q of questStore.list()) {
-      if (!q || q.status !== 'done') continue;
+    for (const q of journeyStore.pendingQuestFolds(questStore.list())) {
       await journeyStore.recordQuest(q, commanderGoals.get(), q.completedAt || Date.now());
     }
   })();
