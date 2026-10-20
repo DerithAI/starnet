@@ -267,6 +267,50 @@ async function advance(ms) {
   G._resetForTest();
   A.eq(G.lastAwayAt(), -Infinity, '_resetForTest forgets it');
 
+  /* ---- THE VISIBLE CADENCE NEVER DRIFTS (fix round 4, 2026-10-20) ----
+     Every real timer fires a little late (setTimeout leeway, 1-8 ms). Each beat was timed from when it RAN, so that
+     lateness added up beat after beat, and the 1 s rail ticker and station tick (which run the live elapsed clocks) slid
+     through the second boundaries of a run's clock: '41s' then '43s' every few minutes. The setInterval they replaced
+     never drifted (Blink's repeating timer counts from when it was DUE). Timers here fire LATE ms late on purpose. */
+  const exactTimers = () => G._setTimersForTest((fn, ms) => { const id = ++seq; timers.set(id, { fn, at: clock + Math.max(0, ms) }); return id; }, id => { timers.delete(id); });
+  G._setFrameForTest(null); doc.hidden = false;
+  for (const LATE of [1, 4, 8]) {
+    G._resetForTest(); timers.clear();
+    G._setTimersForTest((fn, ms) => { const id = ++seq; timers.set(id, { fn, at: clock + Math.max(0, ms) + LATE }); return id; }, id => { timers.delete(id); });
+    const armedAt = clock, starts = [];
+    G.every(() => { starts.push(clock); }, { ms: 1000, immediate: false });
+    await advance(30 * 60000 + LATE);
+    A.eq(starts.length, 1800, 'timers ' + LATE + ' ms late: 1800 beats in 30 min, as setInterval (it lost ' + (1800 - starts.length) + ')');
+    A.eq(starts.filter((t, i) => t !== armedAt + (i + 1) * 1000 + LATE).length, 0, 'timers ' + LATE + ' ms late: every beat starts on the loop\'s own 1 s grid (the lateness never adds up)');
+    const runStart = armedAt + 300;   // a run that started 300 ms into the loop's phase, its clock drawn on each beat
+    let skipped = 0;
+    for (let i = 1; i < starts.length; i++) if (Math.floor((starts[i] - runStart) / 1000) - Math.floor((starts[i - 1] - runStart) / 1000) !== 1) skipped++;
+    A.eq(skipped, 0, 'timers ' + LATE + ' ms late: a live elapsed clock drawn on the beat never jumps two seconds in one tick');
+  }
+  exactTimers();
+  /* a stall (a long task) runs the overdue beat once when it ends; the next keeps the grid, as setInterval did */
+  G._resetForTest(); timers.clear();
+  {
+    const armedAt = clock, starts = [];
+    G.every(() => { starts.push(clock - armedAt); }, { ms: 1000, immediate: false });
+    await advance(3000);
+    clock += 2300;   // the page's event loop busy: no timer runs
+    await advance(2000);
+    A.eq(starts, [1000, 2000, 3000, 5300, 6000, 7000], 'a 2.3 s stall: the overdue beat runs once at its end, and the next is back on the 1 s grid');
+  }
+  /* an awaited beat that runs long is never overlapped, and the chain stays on its grid after it */
+  G._resetForTest(); timers.clear();
+  {
+    const armedAt = clock, starts = [];
+    let hold = null;
+    G.every(() => { starts.push(clock - armedAt); if (starts.length === 2) return new Promise(r => { hold = r; }); return undefined; }, { ms: 2500, immediate: false });
+    await advance(5000);
+    await advance(3000);   // the 5 s beat is still out at 8 s
+    hold(); for (let n = 0; n < 10; n++) await Promise.resolve();
+    await advance(5000);
+    A.eq(starts, [2500, 5000, 8000, 10000, 12500], 'a beat that ran 3 s: the overdue one runs when it settles (never overlapping it), and the chain keeps its 2.5 s grid');
+  }
+
   G._resetForTest();
   A.report('pollgate.test');
 })().catch(e => { console.error(e); process.exit(1); });

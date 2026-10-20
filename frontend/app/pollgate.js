@@ -24,6 +24,14 @@
        still drawing answers within a frame and keeps its visible cadence; a frame drawn after being away is a return.
      Where requestAnimationFrame does not exist (node tests) the frame proof is skipped.
 
+   THE VISIBLE CADENCE KEEPS ITS GRID, AS setInterval DID (fix round 4). Every real timer fires a little late (1-8 ms of
+   leeway). A beat timed from when it RAN added that lateness to the next one, so a 1 s loop slid ~5 beats a minute behind
+   its own phase and the live elapsed clocks it draws (the rail ticker, the station tick) jumped two seconds in one tick
+   every few minutes. A beat due on schedule now starts the next interval from the time it was DUE (Blink's repeating
+   timer does the same); one run late by more than a whole interval (a stall, an awaited beat that ran long) runs once and
+   then takes the grid's next point, as setInterval would. A run that starts a new phase (the first, a catch-up on return,
+   runNow) anchors the grid where it ran.
+
    THE CLOCK IS MONOTONIC (performance.now when present). Intervals measured on Date.now stalled every loop for as long as a
    backward wall-clock step (a w32time correction after resume, a manual fix) — setInterval, which these loops replaced,
    never did. Nothing here displays a time.
@@ -110,8 +118,9 @@ const PollGate = (() => {
     const liveMs = () => { let v = 0; try { v = Number(msOf()); } catch (_) { v = 0; } return Math.max(MIN_MS, Number.isFinite(v) ? v : 0); };
     const interval = () => { const ms = liveMs(); return away() ? Math.max(ms, awayMs) : ms; };
     const deadlineOf = iv => Math.max(2 * iv, DEADLINE_MIN_MS);
-    // running: the token of the beat in flight (0 = none); guard: its deadline timer, due at guardAt
-    const l = { stopped: false, running: 0, seq: 0, timer: 0, guard: 0, guardAt: 0, lastRunAt: now(), cadence: 0 };
+    // running: the token of the beat in flight (0 = none); guard: its deadline timer, due at guardAt. lastRunAt: the last
+    // beat's slot on the loop's grid (what the next is due from); startedAt: when it actually started (its deadline's base)
+    const l = { stopped: false, running: 0, seq: 0, timer: 0, guard: 0, guardAt: 0, lastRunAt: now(), startedAt: 0, cadence: 0 };
     function schedule() {
       if (l.stopped || l.running) return;
       if (l.timer) clearT(l.timer);
@@ -121,8 +130,9 @@ const PollGate = (() => {
       l.timer = 0;
       if (l.stopped || l.running) return;
       const iv = interval();
-      if (now() - l.lastRunAt < iv) { schedule(); return; }
-      run(iv);
+      const at = l.lastRunAt + iv, t = now();   // the slot this beat was due in
+      if (t < at) { schedule(); return; }
+      run(iv, at + Math.floor((t - at) / iv) * iv);   // keep the grid: the latest slot at or before now, never "now"
     }
     function release() { l.running = 0; if (l.guard) { clearT(l.guard); l.guard = 0; } }
     // beat `token` is over (settled, or abandoned at its deadline). A token that is no longer the beat in flight is a late
@@ -133,15 +143,16 @@ const PollGate = (() => {
       l.guardAt = at;
       l.guard = setT(() => { l.guard = 0; settle(token); }, Math.max(0, at - now()));
     }
-    function run(iv) {
+    // slot: the grid point a scheduled beat runs in (due); absent, the run anchors a new phase where it starts
+    function run(iv, slot) {
       if (l.stopped || l.running) return;
       if (l.timer) { clearT(l.timer); l.timer = 0; }
       const token = ++l.seq;
-      l.running = token; l.lastRunAt = now(); l.cadence = iv;
+      l.running = token; l.startedAt = now(); l.lastRunAt = typeof slot === 'number' ? slot : l.startedAt; l.cadence = iv;
       let p = null;
       try { p = fn(); } catch (e) { p = null; raise(e); }   // one failed beat never ends the chain
       if (p && typeof p.then === 'function') {
-        if (l.running === token) armGuard(token, l.lastRunAt + deadlineOf(iv));
+        if (l.running === token) armGuard(token, l.startedAt + deadlineOf(iv));
         p.then(() => settle(token), e => { settle(token); raiseRejection(e); });
       } else settle(token);
     }
@@ -149,7 +160,7 @@ const PollGate = (() => {
     // hung, so it is abandoned (→ true: free to run); inside it, it is awaited with that nearer deadline (→ false)
     function unstick() {
       if (!l.running) return true;
-      const at = l.lastRunAt + deadlineOf(liveMs());
+      const at = l.startedAt + deadlineOf(liveMs());
       if (now() >= at) { release(); return true; }
       if (at < l.guardAt) armGuard(l.running, at);
       return false;
