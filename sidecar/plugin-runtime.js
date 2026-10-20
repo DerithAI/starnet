@@ -45,7 +45,7 @@ function makePluginRuntime(deps) {
   // The process's working directory is NEUTRAL (never the plugin's own folder): on Windows a folder that is some
   // process's cwd cannot be deleted (EBUSY), which broke DELETE and a replacing plugin.submit while it ran.
   const workerCwd = deps.cwd || undefined;
-  /* verify(id, digest) -> bool: does the approval still cover exactly the code this process was started from?
+  /* verify(id, digest, opts?) -> bool: does the approval still cover exactly the code this process was started from?
      Asked before every tool/window call, before any restart, and on a timer for plugins with background jobs — an
      edit must never keep running (or be restarted from disk) without the Commander approving it again. */
   const verify = typeof deps.verify === 'function' ? deps.verify : null;
@@ -274,12 +274,15 @@ function makePluginRuntime(deps) {
   function stopAll() { return Promise.all(Array.from(procs.keys()).map((id) => stop(id))); }
 
   // Plugins with background jobs are re-verified on a timer: nothing else would ever notice an edit to them.
+  // { quick: true } (2026-10-19): the host may answer from a stat stamp of the approved folder and re-hash only when
+  // something on disk moved (or its safety interval lapsed) — see plugins.js approvedRecord. Every other verify call
+  // (tool/window calls, restarts) stays a full check.
   let jobCheck = null;
   if (verify) {
     jobCheck = setInterval(() => {
       for (const [id, rec] of procs) {
         if (rec.state !== 'running' || !rec.surface || !rec.surface.jobs) continue;
-        Promise.resolve(verify(id, rec.plugin.digest)).then((ok) => {
+        Promise.resolve(verify(id, rec.plugin.digest, { quick: true })).then((ok) => {
           if (!ok && procs.get(id) === rec) { onLog(id, '[runtime] its files changed since approval — stopped until approved again'); stop(id); }
         }, (e) => note('plugins.runtime.job-verify', e));
       }

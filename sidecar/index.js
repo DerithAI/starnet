@@ -4226,7 +4226,7 @@ const pluginRuntime = makePluginRuntime({
   fork: stationChildProcess.fork, workerPath: path.join(__dirname, 'plugin-worker.js'), store: pluginStore,
   now: () => Date.now(), cwd: WORKSPACES,
   // the approval must still cover the exact code a process runs (before tool/window calls, restarts, and jobs)
-  verify: async (id, digest) => { const r = await pluginLoader.approvedRecord(id); return !!r && r.digest === digest; },
+  verify: async (id, digest, opts) => { const r = await pluginLoader.approvedRecord(id, opts && opts.quick ? { quick: true } : undefined); return !!r && r.digest === digest; },
   onLog: (id, line) => { for (const l of String(line || '').split(/\r?\n/)) if (l) console.log('[plugin:' + id + '] ' + l); }
 });
 /* A RE-APPROVAL MUST RUN THE NEW CODE. Node caches every require()d module forever, so after an edit + re-approve
