@@ -1675,3 +1675,19 @@ body.glass-demo.rows-inbox:not(.hud-mode) #screen-game #left #workstreams .ws-ro
   -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); -webkit-mask-size: auto;
   mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-size: auto;
 }
+
+/* ============================================================
+   WINDOW TYPE FLOOR (Andrew 10-19, after the dashboard's: "Yes, give the windows the same text floor and spacing too").
+   Measured across every station window and each of its rail sections at his settings (41 views), 3,179 pieces of text
+   sat under the floor, down to 9 screen px, in 223 styles. The windows take the dashboard's scale: the station's reading
+   tokens raised on the windows' container (readability.css keeps its own bounded defaults), then every hard-set size under
+   the floor lifted to it below.
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #terms { --sn-type-meta: 16px; --sn-type-compact: 16px; }
+/* every piece of window text the floor measured under it (typefloor.js marks it; nothing at or over the floor is marked,
+   so nothing is made smaller, and an icon glyph keeps its own size) */
+body.glass-demo:not(.hud-mode) #terms [data-sn-floor] { font-size: var(--sn-type-meta) !important; }
+/* the dashboard's spacing in every window: a caps label at the floor's size tracked 1.6, a caps key .9 (typefloor.js marks
+   them; a bigger caps title keeps its own wide tracking) */
+body.glass-demo:not(.hud-mode) #terms [data-sn-caps="label"] { letter-spacing: 1.6px !important; }
+body.glass-demo:not(.hud-mode) #terms [data-sn-caps="key"] { letter-spacing: .9px !important; }
