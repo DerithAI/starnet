@@ -1279,3 +1279,5 @@ test/index-strict-mode.test.js
 test/output-capture.test.js
 test/channels.poll-signal.test.js
 test/ssh-bg-read-remote.test.js
+test/overseer-idle-cost.test.js
+test/overseer-busy-lock.test.js

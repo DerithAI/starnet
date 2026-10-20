@@ -8,6 +8,8 @@
 
      makeSaveStore({ fs, pathMod, root, clock }) -> {
        load(agentId)        -> doc | undefined        // the stored save envelope; undefined if none/corrupt
+       stamp(agentId)       -> string                 // one stat: moves on every save/outside edit; '' = unknown
+       loadStamped(agentId) -> { doc, stamp }         // load()'s doc + the pre-read stamp ('' unless a clean read)
        save(agentId, doc, {compareRevision?}) -> { ok, conflict?, revision?, updatedAt }
      }
 
@@ -47,6 +49,7 @@
     if (!clock || typeof clock.now !== 'function') throw new Error('makeSaveStore: an injected clock is required');
 
     let tmpSeq = 0;   // deterministic process-unique tmp suffix (a single host; no pid/rng needed)
+    let writes = 0;   // main-file saves made by this process: part of stamp(), so an in-process save always moves it
     const recoveredMissing = new Set();
 
     /* Rejected-save snapshots are recoveries, not history: every stale client (a reopened tab, a flaky beacon)
@@ -77,6 +80,16 @@
     function saveFile(agentId) {
       if (!AID_RE.test(String(agentId))) throw new Error('bad save agentId: ' + agentId);
       return pathMod.join(rootDir, agentId + '.save.json');
+    }
+    // see stamp() in the API below
+    function stamp(agentId) {
+      const file = saveFile(agentId);
+      if (typeof fs.statSync !== 'function') return '';
+      try {
+        const s = fs.statSync(file, { bigint: true });
+        if (!s || s.mtimeNs == null || s.size == null) return '';
+        return writes + ':' + s.mtimeNs + ':' + s.size + ':' + s.ino;
+      } catch (_) { return ''; }
     }
     // reads + parses a save file path, returning a TAGGED result so callers can tell a genuinely-absent file
     // from one that EXISTS but couldn't be READ (locked/EBUSY/EACCES on Windows) versus one that read but has
@@ -226,6 +239,23 @@
         return (w && typeof w === 'object' && w.doc && typeof w.doc === 'object') ? w.doc : undefined;
       },
 
+      /* A SAVE STAMP, so a reader can tell "the save has not changed since I projected it" without parsing it again
+         (idle-cpu piece 2, 2026-10-19: GET /api/overseer re-parsed the whole 3.8 MB save on every 2.5 s poll per page).
+         stamp() = this process's save count + the file's mtime (ns) + size + file id, from one stat (~0.2 ms). Every save
+         here is a temp+rename, so it moves the file id and mtime; an outside edit moves mtime (and on NTFS the id). '' when
+         there is no file or no stat: '' never matches, so a caller then reads afresh, exactly as without a stamp.
+         loadStamped() = load()'s exact doc plus the stamp taken BEFORE the read, and only for a clean ('ok') read: an
+         absent, locked, corrupt or .bak-recovered read stamps '' and is never memoized by anyone. The parsed doc itself is
+         never cached here: it is ~4x the file in heap and ~15 load() callers would share one mutable object. */
+      stamp,
+      loadStamped(agentId) {
+        const file = saveFile(agentId);
+        const before = stamp(agentId);
+        const r = readTagged(file);
+        const w = (r.status === 'ok' || r.status === 'recovered') ? r.wrapper : undefined;
+        return { doc: (w && typeof w === 'object' && w.doc && typeof w.doc === 'object') ? w.doc : undefined, stamp: r.status === 'ok' ? before : '' };
+      },
+
       // persist the save envelope durably. Wrapped with the server receive time + the doc's own updatedAt so
       // a later read can compare freshness without parsing the frontend schema. ANTI-CLOBBER: if the incoming
       // doc is OLDER than what's on disk (updatedAt regressed), the write is refused — a stale background tab
@@ -272,6 +302,7 @@
 
         if (!options.compareRevision && prev && incomingUpdated < prevUpdated) return { ok: false, stale: true, updatedAt: prevUpdated };
         writeAtomic(file, { version: 1, agentId: String(agentId), updatedAt: incomingUpdated, savedAt: clock.now(), ...(options.compareRevision ? { requestUpdatedAt } : {}), doc: doc });
+        writes++;
         return { ok: true, updatedAt: incomingUpdated, ...(options.compareRevision ? { revision: doc._saveRevision } : {}) };
       },
 
