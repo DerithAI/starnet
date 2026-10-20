@@ -253,7 +253,7 @@ const path = require('node:path');
     assert.deepEqual(r.read(),{fresh:false,unreachable:false},'IN FLIGHT, OLD LEDGER: two beats into an ask the station sits on, the ledger no longer vouches, and nothing claims unreachable yet (it did at 5 s)');
     await r.advance(3000);
     assert.deepEqual(r.read(),{fresh:false,unreachable:true},'REAL FAILURE: past the 8 s deadline the page lived through: unreachable');
-    // the overdue beat right after the abort asked again (still hanging); once that one is aborted too, a beat answers
+    // the station answers again: the next beat on the 2.5 s grid after the abort (never one at once: pollgate fix round 5) answers
     r.mode='answer';await r.advance(9000);
     assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the next beat that answers recovers');
     r.done();
