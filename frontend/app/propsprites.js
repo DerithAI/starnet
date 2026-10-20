@@ -11490,120 +11490,29 @@ const PropSprites = (() => {
   const LIGHT_RESPONSE_TYPES = new Set(('desk desk2 console consoleL pixelrig bench crate boxes goldcrate safe vault rack rackV shelf ' +
     'war_intelcab quarters_lockerbank quarters_minifridge bookshelf stool chair couch booth recliner recliner_r ' +
     'sidetable lowtable glasstable dinertable loungetable longtable bridge_tacticaltable dinerchair podchair plant bookstack toolbox').split(' '));
-  /* THE LRU CLIFF (2026-10-20, "eats my PC's resources"). Every frame each on-screen rigid prop looks up one overlay, so
-     the working set is a frame's visible props — and an LRU smaller than a cyclic working set misses EVERY lookup.
-     Andrew's 73 light-response props filled 97% of the old 96-entry / 256 Ki px budget; three more chairs on screen and
-     all 76 rebuilt every frame (a GPU readback, a JS pass over every pixel, a new canvas each). Three changes:
-       · a 4x budget (384 entries / 1 Mi px, 4 MiB of overlays at most);
-       · each mask's opaque-pixel map is read back ONCE (maskAlphas), so a new light on a known mask costs no readback;
-       · entries carry the drawing frame that last used them, and past the budget eviction never drops one that may
-         still be on screen (below).
-     PAST THE BUDGET (2026-10-20, review round 3). "Not drawn yet THIS frame" is not "off screen": world.js draws y-sorted,
-     so a pan brings a newcomer in AHEAD of props that stay on screen, and evicting the LRU head (the first prop drawn
-     last frame) started a cascade — that prop missed and evicted the next, and so on: the whole cache rebuilt on every
-     pan frame. An entry used this drawing frame or the one before is treated as on screen and never evicted for
-     another prop. Past the budget a newcomer then goes without its overlay (`skipped`) until something it can replace
-     has been off screen for a whole frame. A prop already lit whose light key changes (a screen's flicker can flip a
-     quantized term frame to frame) keeps a lit overlay:
-       · its last-frame overlay was its alone → that one makes way for the new key (one build, as before);
-       · another prop drew it too → evicting it would darken that prop, so within one quantum on every term (a light
-         on a quantization edge) it keeps drawing the overlay it already shows (`held`); a bigger change skips.
-     So builds per frame are bounded by what the camera newly reveals plus props whose own light changed, never by the
-     cache size; a still view under steady light builds nothing. A drawing frame = a distinct module clock (`now`) seen
-     here: other setNow callers (build.js thumbnails at 0) never age the world's entries.
-     REVIEW ROUND 4 (2026-10-20):
-       · WHICH PROP drew an overlay is a STABLE identity (its id, else type + tile), never the object: world.js hands a
-         table-top or stacked prop over as a fresh copy every frame (it carries that frame's mount), and builds the
-         auto-desk and its chair per frame. Keyed by the object, those props had no last-frame overlay, so past the
-         budget a flicker on a quantization edge made them skip every other frame (lit, dark, lit…).
-       · A STILL (World.renderStill: the phone's picture, a builder's LOOK) is not a live frame. It draws at its own clock
-         and frames other props, so counted as one it aged everything the stage drew: the next live frame took the
-         stage's props for off screen and rebuilt them (19 builds and evictions in the test). Inside setStillPass(true)
-         no drawing frame, use order, owner or live entry changes: a hit draws, a miss gets an overlay built for the
-         still (which may join the cache behind everything when the still ends, below). The picture shows every
-         overlay, past the budget too.
-     REVIEW ROUND 5 (2026-10-20): A PROP LIT LAST FRAME STAYS LIT. Round 4 let a prop whose shared overlay's light really
-     changed show the old one for ONE frame and then skip, so past the budget a change reaching a group's members on
-     different frames (a glow ramping up, props at different distances) blinked the early movers dark for frames at a
-     time, a light flipping between two far values on a shared key went dark every third frame, and a lasting change
-     left the prop dark for good (lighting a lamp next to it took its light response away). Now:
-       · only a draw of the prop's OWN light counts as wanting an overlay (`users`). A held or stale draw stamps it on
-         screen and nothing more, so once every prop that wanted an overlay has moved on, the first of them to ask
-         replaces it and the rest hit the new one (round 4 counted holders as wanting it: a group that moved one quantum
-         kept its old light for good, and a ramp's early mover could never take the overlay over from its laggards);
-       · within one quantum of the overlay it shows, a prop holds that overlay (`held`, a light on a quantization edge)
-         for at most RESPONSE_HOLD drawing frames running; a light that stays moved is a real change;
-       · a prop lit last frame whose light really changed, and whose overlay others still want, gets its new light built
-         PAST the budget (`overBudget`), up to a hard ceiling of RESPONSE_CEIL entries / RESPONSE_CEIL_PIXELS. The
-         overflow is what the screen shows: the next miss first evicts whatever has been off screen a whole frame. Only
-         a NEWCOMER past the budget waits for room (`skipped`). An overlay other props still show is replaced only
-         while the ceiling has room to give each of them its own light. (At the ceiling round 5 had a lit prop keep the
-         overlay it showed, the OLD light, for as long as the ceiling stayed full: round 6 below.)
-     And a still's own overlays: while the live cache has room (under its budget), they join it at the FRONT of the use
-     order, stamped two drawing frames old, so the next still reuses them and any live miss evicts them first, ahead of
-     everything the stage drew. Past the budget they live for the still alone, at most RESPONSE_PIXELS of them at once
-     (one already drawn makes way). A still never drops a live entry: a stale one is the live frames' to replace.
-     REVIEW ROUND 6 (2026-10-20):
-       · the room an overlay's holders need when it is replaced is KEPT for them (`responseRoom`): round 5 checked it
-         and kept none, so another prop's build past the budget in the same frame could take it, and the holder found
-         its overlay gone and the ceiling full, went dark, and the next frame, a newcomer, stayed dark. Every other
-         build past the budget leaves the room kept; each holder takes its share back when it next draws (at the
-         latest the drawing frame after the drop, when what is left lapses). Its holders are the other props that drew
-         it LAST frame (a draw of it this frame is a hold by one of those, never counted twice);
-       · AT THE CEILING a lit prop whose light really changed gets its own light built for that draw alone (`transient`,
-         as a still does): never in the cache, shared by the props drawing that light in the frame, at most
-         RESPONSE_PIXELS of them at once, gone when the frame ends. Nothing shows an old light past a hold; the cache
-         stays under the ceiling; once room frees the light joins the cache like any other;
-       · an overlay the prop alone drew holds through a flicker on a quantization edge too (round 5 held only a shared
-         one): within one quantum, for at most RESPONSE_HOLD drawing frames running, it is drawn instead of evicted
-         and rebuilt, so a still camera past the budget builds nothing. A light that stays moved is a real change. */
+  /* 4x the old 96 entries / 256 Ki px (2026-10-20, "eats my PC's resources"). Each on-screen rigid prop looks up one
+     overlay per frame, so a frame's visible props are a cyclic working set, and an LRU smaller than that misses on
+     EVERY lookup: once a view needed more overlays than the old budget held, every one was rebuilt every frame (a mask
+     readback, a pass over every pixel, a new canvas each). Past this budget it is the same plain LRU as before: what is
+     drawn never changes, only what it costs. At most 4 MiB of RGBA overlays; the pixel bound binds first (the smallest
+     overlay, a 1x1 footprint's, is 44 x 68 px: at most 350 of them). */
   const RESPONSE_LIMIT = 384, RESPONSE_PIXELS = 1048576, RESPONSE_SINGLE = 65536;
-  const RESPONSE_CEIL = 480, RESPONSE_CEIL_PIXELS = 1310720, RESPONSE_HOLD = 4;   // 1.25x the budget; drawing frames
   const RESPONSE_SHADE = [8,10,18];
-  // key -> { cv, mask, pixels, light, frame, users, prev, seen, seenPrev }, in use order (least recent first). frame:
-  // the drawing frame that last drew it (on screen); users: the props that wanted it (drew it as their own light) in
-  // that frame, prev: in the drawing frame before it (0 unless that one drew it too); seen/seenPrev: every draw of it
-  // there, holds included.
   const lightResponses = new Map();
-  const maskAlphas = new WeakMap();   // shadow mask canvas -> { opaque: Uint8Array (1 where alpha >= 250), minX, minY, maxX, maxY }
-  // prop identity -> the key of the overlay it drew, in this drawing frame (ownNow) and the one before (ownPrev);
-  // heldNow/heldPrev: prop identity -> the drawing frame since which it has shown an overlay that is not its own light
-  // (a hold; absent = its own). Swapped per drawing frame: two frames' worth.
-  let ownNow = new Map(), ownPrev = new Map(), heldNow = new Map(), heldPrev = new Map();
-  const stillBuilt = new Map();   // key -> entry built for the still being drawn, not (yet) in the live cache
-  // key of an overlay dropped while other props held it -> { slots, pixels, until }: room under the ceiling kept for
-  // those props' own lights until each draws again (at the latest the drawing frame after the drop). roomEntries /
-  // roomPixels: the total kept.
-  const responseRoom = new Map();
-  // key -> entry built in this drawing frame for a draw at the ceiling (`transient`): never in the cache, shared by the
-  // props drawing that light in the frame, at most RESPONSE_PIXELS at once (one already drawn makes way).
-  const passing = new Map();
-  let responsePixels = 0, drawFrame = 0, drawNow, stillDepth = 0, stillPixels = 0, roomEntries = 0, roomPixels = 0, passingPixels = 0;
-  const responseMetrics = { builds: 0, hits: 0, evictions: 0, failures: 0, draws: 0, skipped: 0, held: 0, overBudget: 0, stillBuilds: 0,
-    transient: 0, transientBuilds: 0 };
+  // shadow mask canvas -> Uint8Array, 1 where its alpha >= 250: read back ONCE per mask. shadowMask never repaints a
+  // mask (a lost one is replaced by a new canvas), so a new light on a known mask costs no readback.
+  const maskOpaque = new WeakMap();
+  let responsePixels = 0;
+  const responseMetrics = { builds: 0, hits: 0, evictions: 0, failures: 0, draws: 0 };
   const responseClamp = (v,a,b) => Math.max(a,Math.min(b,v));
   function dropResponse(key) {
     const old=lightResponses.get(key);if(!old)return;
     responsePixels-=old.pixels;lightResponses.delete(key);
   }
-  function keepRoom(key,slots,pixels) {
-    const r=responseRoom.get(key);
-    if(r) {r.slots+=slots;r.until=drawFrame+1;} else responseRoom.set(key,{slots,pixels,until:drawFrame+1});
-    roomEntries+=slots;roomPixels+=slots*pixels;
-  }
-  function freeRoom(key,slots) {
-    const r=responseRoom.get(key);if(!r)return;
-    slots=Math.min(slots,r.slots);r.slots-=slots;roomEntries-=slots;roomPixels-=slots*r.pixels;
-    if(r.slots<=0)responseRoom.delete(key);
-  }
-  function invalidateLightResponse() {
-    lightResponses.clear();responsePixels=0;stillBuilt.clear();stillPixels=0;
-    responseRoom.clear();roomEntries=0;roomPixels=0;passing.clear();passingPixels=0;
-  }
+  function invalidateLightResponse() { lightResponses.clear();responsePixels=0; }
   function lightResponseStats() {
     return Object.assign({},responseMetrics,{entries:lightResponses.size,pixels:responsePixels,bytes:responsePixels*4,maxEntries:RESPONSE_LIMIT,
-      maxPixels:RESPONSE_PIXELS,maxBytes:RESPONSE_PIXELS*4,ceilEntries:RESPONSE_CEIL,ceilPixels:RESPONSE_CEIL_PIXELS,holdFrames:RESPONSE_HOLD,
-      roomEntries,roomPixels,transientPixels:passingPixels,stillPixels,maxSinglePixels:RESPONSE_SINGLE,supportedTypes:LIGHT_RESPONSE_TYPES.size});
+      maxPixels:RESPONSE_PIXELS,maxBytes:RESPONSE_PIXELS*4,maxSinglePixels:RESPONSE_SINGLE,supportedTypes:LIGHT_RESPONSE_TYPES.size});
   }
   function responseSample(light) {
     if(!light||!Array.isArray(light.color)||light.color.length!==3||!light.color.every(Number.isFinite)||
@@ -11615,154 +11524,35 @@ const PropSprites = (() => {
     const angle=direction*Math.PI/4;
     return{color,strength,direction,dx:direction<0?0:Math.cos(angle),dy:direction<0?0:Math.sin(angle)};
   }
-  // One mask's opaque pixels and their bounds, read back once: a mask canvas is never repainted (a lost or
-  // rebuilt mask is a new canvas), so every light on it shares this map instead of its own readback.
-  function maskAlpha(mask) {
-    let read=maskAlphas.get(mask);if(read)return read;
-    const w=mask.width,h=mask.height,pixels=w*h;
-    const alpha=mask.getContext('2d').getImageData(0,0,w,h).data;
-    if(alpha.length!==pixels*4)return null;
-    const opaque=new Uint8Array(pixels);
-    let minX=w,minY=h,maxX=-1,maxY=-1;
-    // Ignore the translucent spill already carried by old art. A physical rim
-    // belongs to its opaque casing, not to a halo or a contact shadow on the deck.
-    for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(alpha[(y*w+x)*4+3]>=250) {
-      opaque[y*w+x]=1;minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
-    }
-    read={opaque,minX,minY,maxX,maxY};maskAlphas.set(mask,read);return read;
-  }
-  // A drawn entry moves to the end of the use order, stamped with this drawing frame; a draw of the prop's own light
-  // (`since` undefined) counts as wanting it. A held draw (`since`: the frame its hold began) is on screen but does not
-  // want it. The prop remembers the overlay it shows now.
-  function useResponse(id,key,e,since) {
-    lightResponses.delete(key);lightResponses.set(key,e);
-    if(e.frame!==drawFrame) {
-      const on=e.frame===drawFrame-1;e.prev=on?e.users:0;e.seenPrev=on?e.seen:0;e.frame=drawFrame;e.users=0;e.seen=0;
-    }
-    e.seen++;
-    if(since===undefined) {e.users++;if(heldNow.size)heldNow.delete(id);} else heldNow.set(id,since);
-    ownNow.set(id,key);
-    return e.cv;
-  }
-  // The props that wanted an entry (drew it as their own light) in the last drawing frame plus the ones that have so
-  // far in this one.
-  function responseWanted(e) { return e.frame===drawFrame?e.prev+e.users:e.frame===drawFrame-1?e.users:0; }
-  // The prop, whatever object it arrives as this frame. A placed prop has an id (used as it is: no string per lookup);
-  // the auto-desk and a desk's chair do not, and are one per tile (NUL-led, so never equal to an id).
-  function responseId(f) {
-    const id=f.id;
-    return (typeof id==='string'&&id)||typeof id==='number'?id:'\u0000'+f.t+'@'+f.x+','+f.y;
-  }
-  function responseFrame() {
-    if(Object.is(now,drawNow))return;
-    drawNow=now;drawFrame++;
-    const own=ownPrev,held=heldPrev;ownPrev=ownNow;heldPrev=heldNow;own.clear();held.clear();ownNow=own;heldNow=held;
-    if(passing.size) {passing.clear();passingPixels=0;}
-    if(responseRoom.size)for(const [key,r] of responseRoom)if(r.until<drawFrame)freeRoom(key,r.slots);
-  }
-  // world.js's renderStill draws its picture inside setStillPass(true) … setStillPass(false). When the last one ends,
-  // what it built joins the live cache at the front of the use order (evicted first, ahead of anything the stage drew)
-  // while the cache is under its budget, so the next still reuses it; the rest is dropped.
-  function setStillPass(on) {
-    if(on) {stillDepth++;return;}
-    stillDepth=Math.max(0,stillDepth-1);if(stillDepth||!stillBuilt.size)return;
-    const join=[];
-    for(const [key,e] of stillBuilt) {
-      if(lightResponses.has(key)||lightResponses.size+join.length>=RESPONSE_LIMIT||responsePixels+e.pixels>RESPONSE_PIXELS||
-        !responseLive(e,e.mask))continue;
-      e.frame=drawFrame-2;responsePixels+=e.pixels;join.push([key,e]);
-    }
-    stillBuilt.clear();stillPixels=0;
-    if(!join.length)return;
-    const live=[...lightResponses];lightResponses.clear();
-    for(const [key,e] of join)lightResponses.set(key,e);
-    for(const [key,e] of live)lightResponses.set(key,e);
-  }
-  function responseLive(e,mask) { const g=e.cv.getContext('2d');return e.mask===mask&&!!g&&!(g.isContextLost&&g.isContextLost()); }
-  // Two quantized samples within one quantum on every term: the same light sitting on a quantization edge.
-  function responseNear(a,b) {
-    const turn=((a.direction-b.direction)%8+8)%8;
-    if(a.direction!==b.direction&&(a.direction<0||b.direction<0||(turn>1&&turn<7)))return false;
-    if(Math.abs(a.strength-b.strength)>.13)return false;
-    for(let c=0;c<3;c++)if(Math.abs(a.color[c]-b.color[c])>16)return false;
-    return true;
-  }
   function responseOverlay(f,light) {
-    const still=stillDepth>0;
-    if(!still)responseFrame();
     const mask=shadowMask(f);if(!mask)return null;
     const key=[f.t,f.w||1,f.h||1,f.r||0,f.m||0,light.direction,light.strength,...light.color].join('|');
-    const hit=lightResponses.get(key);
+    let hit=lightResponses.get(key);
     if(hit) {
-      if(responseLive(hit,mask)) {
-        responseMetrics.hits++;if(still)return hit.cv;
-        const id=responseId(f);
-        if(responseRoom.size) {const last=ownPrev.get(id);if(last!==undefined)freeRoom(last,1);}   // room kept for it, not needed
-        return useResponse(id,key,hit);
+      const g=hit.cv.getContext('2d');
+      if(hit.mask===mask&&g&&!(g.isContextLost&&g.isContextLost())) {
+        lightResponses.delete(key);lightResponses.set(key,hit);responseMetrics.hits++;return hit.cv;
       }
-      if(!still)dropResponse(key);   // a still leaves a stale live entry for the live frames to replace
-    }
-    const made=still&&stillBuilt.get(key);
-    if(made) {
-      if(responseLive(made,mask)) {stillBuilt.delete(key);stillBuilt.set(key,made);responseMetrics.hits++;return made.cv;}
-      stillBuilt.delete(key);stillPixels-=made.pixels;
+      dropResponse(key);
     }
     const w=mask.width,h=mask.height,pixels=w*h;
     if(pixels>RESPONSE_SINGLE)return null;
-    const read=maskAlpha(mask);if(!read||read.maxX<0)return null;
-    const id=still?null:responseId(f);
-    let transient=false;
-    // Room first, before paying for any pixels. A still's own overlays: one it already drew makes way.
-    if(still) {
-      while(stillBuilt.size&&stillPixels+pixels>RESPONSE_PIXELS) {
-        const old=stillBuilt.keys().next().value;stillPixels-=stillBuilt.get(old).pixels;stillBuilt.delete(old);
-      }
-    } else {
-      // Live: the LRU head goes only once it has missed a whole drawing frame (the map is in use order, so then every
-      // older entry has too). Otherwise every entry may still be on screen, and only this prop's own last-frame overlay
-      // (for its previous light key) may make way, if no other prop wanted it last frame or has this frame, and every
-      // other prop that only shows it (a hold) can still be given its own light under the ceiling: that room is kept
-      // for them (responseRoom) until each draws again. Within one quantum of that overlay, a prop that alone drew it
-      // holds it instead (a flicker on a quantization edge builds nothing).
-      const last=ownPrev.get(id), lit=last!==undefined, since=heldPrev.get(id), from=since===undefined?drawFrame:since;
-      if(lit&&responseRoom.size)freeRoom(last,1);   // the room kept for it when the overlay it showed was dropped is its own
-      let mine=lit&&last!==key?lightResponses.get(last):undefined;
-      const near=!!mine&&drawFrame-from<RESPONSE_HOLD&&responseLive(mine,mask)&&responseNear(mine.light,light);
-      const full=(n,px)=>lightResponses.size>=n||responsePixels+pixels>px;
-      while(full(RESPONSE_LIMIT,RESPONSE_PIXELS)) {
-        const lru=lightResponses.keys().next().value;
-        if(lru!==undefined&&lightResponses.get(lru).frame<drawFrame-1) {dropResponse(lru);responseMetrics.evictions++;continue;}
-        // (this prop drew it last frame, and wanted it unless it only held it)
-        if(mine&&responseWanted(mine)-(since===undefined?1:0)<=0) {
-          // the other props that drew it last frame (a draw of it this frame is a hold, by one of those)
-          const holders=(mine.frame===drawFrame?mine.seenPrev:mine.seen)-1;
-          if(holders<=0&&near)break;
-          if(holders<=0||(lightResponses.size+roomEntries+holders<=RESPONSE_CEIL&&
-            responsePixels+roomPixels+holders*mine.pixels<=RESPONSE_CEIL_PIXELS)) {
-            dropResponse(last);if(holders>0)keepRoom(last,holders,mine.pixels);
-            mine=undefined;responseMetrics.evictions++;continue;
-          }
-        }
-        break;
-      }
-      if(full(RESPONSE_LIMIT,RESPONSE_PIXELS)) {
-        if(!lit) {responseMetrics.skipped++;return null;}   // a newcomer waits for room
-        if(mine&&near) {responseMetrics.held++;return useResponse(id,last,mine,from);}
-        // lit last frame, its light really changed: built past the budget, up to the ceiling less the room kept for
-        // other props; at the ceiling, for this draw alone
-        if(full(RESPONSE_CEIL-roomEntries,RESPONSE_CEIL_PIXELS-roomPixels)) {
-          transient=true;
-          const made=passing.get(key);
-          if(made&&responseLive(made,mask)) {responseMetrics.transient++;return passResponse(id,key,made);}
-          if(made) {passing.delete(key);passingPixels-=made.pixels;}
-          while(passing.size&&passingPixels+pixels>RESPONSE_PIXELS) {
-            const old=passing.keys().next().value;passingPixels-=passing.get(old).pixels;passing.delete(old);
-          }
-        } else responseMetrics.overBudget++;
-      }
+    let opaque=maskOpaque.get(mask);
+    if(!opaque||opaque.length!==pixels) {
+      const alpha=mask.getContext('2d').getImageData(0,0,w,h).data;
+      if(alpha.length!==pixels*4)return null;
+      // Ignore the translucent spill already carried by old art. A physical rim
+      // belongs to its opaque casing, not to a halo or a contact shadow on the deck.
+      opaque=new Uint8Array(pixels);
+      for(let i=0;i<pixels;i++)if(alpha[i*4+3]>=250)opaque[i]=1;
+      maskOpaque.set(mask,opaque);
     }
-    const {opaque,minX,minY,maxX,maxY}=read;
+    let minX=w,minY=h,maxX=-1,maxY=-1;
     const solid=(x,y)=>x>=0&&y>=0&&x<w&&y<h&&opaque[y*w+x]===1;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(solid(x,y)) {
+      minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+    }
+    if(maxX<0)return null;
     const cv=document.createElement('canvas');cv.width=w;cv.height=h;
     const g=cv.getContext('2d');if(!g||!g.createImageData||!g.putImageData)return null;
     const image=g.createImageData(w,h),out=image.data;
@@ -11782,18 +11572,12 @@ const PropSprites = (() => {
       out[i+3]=Math.round(a*255);
     }
     g.putImageData(image,0,0);
-    const e={cv,mask,pixels,light,frame:-Infinity,users:0,prev:0,seen:0,seenPrev:0};
-    if(cv.addEventListener)cv.addEventListener('contextlost',()=>{if(lightResponses.get(key)===e)dropResponse(key);},{once:true});
-    if(still) {stillBuilt.set(key,e);stillPixels+=pixels;responseMetrics.stillBuilds++;return cv;}
-    if(transient) {passing.set(key,e);passingPixels+=pixels;responseMetrics.transientBuilds++;responseMetrics.transient++;return passResponse(id,key,e);}
-    responsePixels+=pixels;responseMetrics.builds++;
-    return useResponse(id,key,e);
-  }
-  // A draw at the ceiling of the prop's own light, outside the cache: lit this frame, with its own light, so the next
-  // frame it is a lit prop asking for that light again (in the cache once there is room).
-  function passResponse(id,key,e) {
-    ownNow.set(id,key);if(heldNow.size)heldNow.delete(id);
-    return e.cv;
+    while(lightResponses.size>=RESPONSE_LIMIT||responsePixels+pixels>RESPONSE_PIXELS) {
+      dropResponse(lightResponses.keys().next().value);responseMetrics.evictions++;
+    }
+    hit={cv,mask,pixels};lightResponses.set(key,hit);responsePixels+=pixels;responseMetrics.builds++;
+    if(cv.addEventListener)cv.addEventListener('contextlost',()=>{if(lightResponses.get(key)===hit)dropResponse(key);},{once:true});
+    return cv;
   }
   function canLightResponse(f) {
     if(!f||!LIGHT_RESPONSE_TYPES.has(f.t)||!has(f.t)||(spec(f.t)||{}).flat||
@@ -12201,7 +11985,7 @@ const PropSprites = (() => {
     // After player-made art decodes: drop the caches that were built while those props were placeholders.
     userArtChanged() { shadowMasks.clear(); invalidateLightResponse(); _ink.clear(); if (typeof World !== 'undefined') { if (typeof World.invalidatePropShadows === 'function') World.invalidatePropShadows(); else if (typeof World.rebake === 'function') World.rebake(); } },
     draw, drawBayNames, drawOver, hasOver, drawSeatFront, get CATALOG(){return projectionCatalog()?CATALOG.map(c=>spec(c.id)):CATALOG;}, CATS, spec, has, TILE,
-    drawShadow, lightOf, EMIT, canLightResponse, drawLightResponse, lightResponseStats, invalidateLightResponse, setStillPass,
+    drawShadow, lightOf, EMIT, canLightResponse, drawLightResponse, lightResponseStats, invalidateLightResponse,
     // ORIENTATION: what each prop's art can honestly do, and the box it covers once turned. The
     // builder asks BEFORE offering an R/M affordance — never an input that produces broken art.
     facings, canRotate, canMirror, nextFacing, footprintAt, viewAt, hasView, NO_MIRROR, PLAN_FOOTPRINT,
