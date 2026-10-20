@@ -79,6 +79,8 @@ test/routine-keys.e2e.test.js
 test/cancel-host-run.e2e.test.js
 test/cron.station-default.e2e.test.js
 test/cron.degraded.e2e.test.js
+test/cron.interrupted-settlement.http.test.js
+test/cron-lock-recycled-pid.http.test.js
 test/routing.chain-seam.e2e.test.js
 test/routine-manage.e2e.test.js
 test/comms-send.e2e.test.js
@@ -87,9 +89,11 @@ test/autonomy-ledger.e2e.test.js
 test/loops.e2e.test.js
 test/loops-check.e2e.test.js
 test/loops-git.e2e.test.js
+test/loops-fifo-verdict.e2e.test.js
 test/loops-endurance.e2e.test.js
 test/loops-stall.e2e.test.js
 test/workshop.e2e.test.js
+test/workshop-next-shift-truth.http.test.js
 test/workspace-view.e2e.test.js
 test/nightshift-act.e2e.test.js
 test/nightshift-grant.e2e.test.js
@@ -97,6 +101,8 @@ test/nightshift-contextpack.e2e.test.js
 test/nightshift-focus.e2e.test.js
 test/nightshift-halt.e2e.test.js
 test/nightshift-beat-halt.e2e.test.js
+test/nightshift-revoke-midbeat.e2e.test.js
+test/nightshift-halt-no-fake-draft.e2e.test.js
 test/nightshift-budget.e2e.test.js
 test/nightshift-presence.e2e.test.js
 test/nightshift-floor-visibility.e2e.test.js
@@ -234,3 +240,4 @@ test/host-notes.strict-template.e2e.test.js
 test/cross-run-cache.e2e.test.js
 test/cron.channel-media.e2e.test.js
 test/cron.images-grant.e2e.test.js
+test/unpriced-run-label.e2e.test.js

@@ -559,12 +559,24 @@ const App = (() => {
   // the only post-create path was the /yolo slash command; a creation-time control with no live equivalent is
   // the same escape class as the genesis-only codex sign-in). No dedicated endpoint exists or is needed:
   // approvalMode rides pushRoster (the sidecar roster persists it and runOnce reads it per run) + persist.
-  function setAgentApproval(agentId, mode) {
+  function setAgentApproval(agentId, mode, opts) {
     const a = agents.get(String(agentId || '')) || (agent && agent.id === agentId ? agent : null);
     if (!a) return false;
-    a.approvalMode = mode === 'full' ? 'full' : 'ask';
-    pushRoster();
+    const before = a.approvalMode === 'full' ? 'full' : 'ask', next = mode === 'full' ? 'full' : 'ask';
+    a.approvalMode = next;
+    const pushed = pushRoster();
     persist();
+    /* THE POSTURE ON SCREEN IS THE ONE THE STATION RECORDED (sweep/safecell 2026-10-20). A refused roster push (the
+       sidecar unreachable, or its durable write failing) left this row saying "asks first" while the roster the runs
+       read still said full — and the next run went ahead unasked. Put back what the station still enforces, repaint,
+       and say so. `recorded`: the station already persisted this posture itself (the permission card's FULL ACCESS). */
+    if (!(opts && opts.recorded) && before !== next) Promise.resolve(pushed).then(ok => {
+      if (ok || a.approvalMode !== next) return;
+      a.approvalMode = before; persist();
+      if (typeof StationUI === 'undefined') return;
+      if (StationUI.setRoster) StationUI.setRoster(liveAgents());
+      if (StationUI.notify) StationUI.notify('The station did not record that change — ' + (a.name || a.id) + (before === 'full' ? ' still has FULL POWER' : ' still asks first') + '. Try again once the station is reachable.', 'bad');
+    });
     return true;
   }
 

@@ -4251,7 +4251,7 @@ const Chat = (() => {
     if (decision === 'full') {
       const saved = !!(answer && answer.ok && answer.approvalMode === 'full');
       const adopted = saved && typeof App !== 'undefined' && App.setApproval
-        ? App.setApproval((answer && answer.agentId) || p.agentId || (ws && ws.agentId), 'full')
+        ? App.setApproval((answer && answer.agentId) || p.agentId || (ws && ws.agentId), 'full', { recorded: true })
         : false;
       fullSaved = saved && adopted;
     }
@@ -8915,7 +8915,10 @@ const Chat = (() => {
   // thread showed a cut-off reply with no reason. renderHistory replays it as the same ⏹ line. Metadata only — the
   // model's wire carries role/content, never this field.
   function stoppedByLine(by) { return by === 'esc' ? 'stopped by you (Esc)' : by ? 'stopped by you' : ''; }
-  function noteStopReason(ws, note) {
+  // The run id settles the STREAM's outcome too: a stopped run is neither FINISHED nor FAILED (task-board truth — with
+  // nothing recorded the board read it as done). A deliberate Stop is 'stopped'; an in-band stop keeps its own reason.
+  function noteStopReason(ws, note, runId, reason) {
+    if (runId && ws && typeof Workstreams !== 'undefined' && Workstreams.noteRunEnd) Workstreams.noteRunEnd(ws.id, runId, null, reason && reason !== 'cancelled' ? reason : 'stopped');
     const n = String(note || '').trim();
     if (!n || !ws || !Array.isArray(ws.history)) return;
     const last = ws.history[ws.history.length - 1];
@@ -9813,10 +9816,11 @@ const Chat = (() => {
       const r = await fetch('/api/insights?agent=' + encodeURIComponent(agentId), { cache: 'no-store' });
       const j = r.ok ? await r.json() : null;
       if (j && (j.totalRuns != null)) {
-        const models = Array.isArray(j.byModel) ? j.byModel.slice(0, 3).map(m => (m.model || '?') + ' (' + U.usd(m.usd || 0) + ')') : [];
+        // a subscription or unpriced model has no proven $: its fold label, never a bare "$0.00" (sweep/providers 2026-10-20)
+        const models = Array.isArray(j.byModel) ? j.byModel.slice(0, 3).map(m => (m.model || '?') + ' (' + (m.spendLabel && !(m.usd > 0) ? m.spendLabel : U.usd(m.usd || 0) + (m.spendLabel ? ', ' + m.spendLabel : '')) + ')') : [];
         const succ = (j.successPct == null) ? '' : ', ' + j.successPct + '% completed';
         return localLine('Insights (lifetime run history for ' + agentId + '): ' + (j.totalRuns || 0) + ' run' + (j.totalRuns === 1 ? '' : 's')
-          + ', ' + U.usd(j.totalUsd || 0) + ', ' + (j.totalTokens || 0) + ' tokens'
+          + ', ' + U.usd(j.totalUsd || 0) + (j.unpricedRuns ? ' (+ ' + j.unpricedRuns + ' run' + (j.unpricedRuns === 1 ? '' : 's') + ' with no published price)' : '') + ', ' + (j.totalTokens || 0) + ' tokens'
           + (j.avgUsdPerRun ? ', ' + U.usd(j.avgUsdPerRun) + '/run' : '') + succ
           + (models.length ? '. Top models: ' + models.join(', ') : '') + '.');
       }
@@ -11172,7 +11176,7 @@ const Chat = (() => {
           // the card already says STOPPED BY YOU — the work log only repeats a reason the card can't carry
           if (isActiveWs(ws)) { breakLive(); if (stopLine && !stoppedBy) toolLine('⏹ ' + stopLine); }
           markStoppedTurn(ws, replyText);
-          noteStopReason(ws, stopLine);
+          noteStopReason(ws, stopLine, thisRunId, endReason);
           if (stoppedBy) presenceStoppedBy = stoppedBy;
           // GOAL LOOP: a stopped step is not judgeable — the loop pauses and SAYS why (judgeGoalTurn), never stalls silently
           goalStall = stopLine || ('the step stopped (' + endReason + ')');
@@ -11305,7 +11309,7 @@ const Chat = (() => {
         const by = stopSource.get(ws.id);
         if (isActiveWs(ws)) { if (activeLiveRow) activeLiveRow.done(); resolvePresence(ws, { stopped: true, steps: runToolsOk, stoppedBy: by }); }
         markStoppedTurn(ws, acc);
-        noteStopReason(ws, stoppedByLine(by));
+        noteStopReason(ws, stoppedByLine(by), thisRunId);
         if (isActiveWs(ws)) offerTryAgain();
         if (!isTask && isActiveWs(ws) && acc.trim()) World.say(acc);
       } else {

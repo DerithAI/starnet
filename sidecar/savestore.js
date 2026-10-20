@@ -117,10 +117,17 @@
     // quarantine a corrupt main aside (rename to <file>.corrupt-<seq>) so it's preserved for forensics but no
     // longer blocks the store, then recover from <file>.bak if it holds a clean prior save. Best-effort + loud.
     // Returns the quarantine destination path (null if the move failed) so the recovery marker can disclose it.
+    // A quarantined copy may be the ONLY remaining bytes of a lost save, and the recovery notice names it. tmpSeq
+    // restarts in every process, so `.corrupt-<seq>` repeats across restarts: never replace an existing copy (the old
+    // unlink-then-rename destroyed the first incident's bytes on the second) — step to the first free name instead.
+    function taken(p) {
+      if (typeof fs.existsSync === 'function') return fs.existsSync(p);
+      try { fs.readFileSync(p); return true; } catch (e) { return !(e && e.code === 'ENOENT'); }
+    }
     function quarantine(file, why) {
       try {
-        const dead = file + '.corrupt-' + (++tmpSeq);
-        try { if (typeof fs.unlinkSync === 'function') fs.unlinkSync(dead); } catch (_) {}   // clear any stale target (Windows rename-onto fails)
+        let dead = file + '.corrupt-' + (++tmpSeq);
+        while (taken(dead)) dead = file + '.corrupt-' + (++tmpSeq);
         fs.renameSync(file, dead);
         try { console.warn('[savestore] quarantined corrupt save ' + file + ' -> ' + dead + ' (' + why + ')'); } catch (_) {}
         return dead;

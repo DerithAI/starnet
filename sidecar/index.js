@@ -244,7 +244,7 @@ const { makeTelegramTransport } = require('./channels/telegram.transport.js');  
 const { makeEnvironmentProxyFetch } = require('./channels/proxy-fetch.js');
 const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
-const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS } = require('./channels/hub.js');
+const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS, chunkText: hubChunkText } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
 const { hostPowerWithheldFor, entryUntrusted, standingWorkEscalates } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
@@ -4109,7 +4109,7 @@ function channelAskConsent(o) {
     scope: (o.tool && o.tool.scope) || 'write',
     argsSummary: consentSummary(o.call)
   };
-  let untrack = null;
+  let untrack = null, askedId = '';
   return makeConsentWait({
     pending: pend, signal: o.signal, timeoutMs: CONSENT_TIMEOUT_MS, extendMs: CONSENT_ACK_EXTEND_MS,
     uuid: () => crypto.randomUUID(),
@@ -4121,11 +4121,13 @@ function channelAskConsent(o) {
     // already armed, so a throw from the renderer must never escape into the waiter (it would leave the run
     // paused with no timer owner) — hence the guard.
     emitPrompt: (promptId) => {
+      askedId = String(promptId || '');
       try { untrack = remoteApprovals.add(Object.assign({ runId, promptId, agentId: o.agentId, surface: o.surface === 'remote' ? 'remote' : 'channel', finish: pend.get(promptId) }, fields)); } catch (e) { failNote('remote.index.trackChannelPrompt', e); }
       try { if (typeof o.onPrompt === 'function') o.onPrompt(promptId, fields); } catch (e) { failNote('channels.consent.onPrompt', e); }
     }
   }).ask().then((decision) => {
     if (untrack) untrack();
+    if (askedId) noteChannelConsentSettled(askedId, decision);
     // makeConsentWait removes its own promptId; drop the run's bucket once the last prompt settles so a long
     // -lived channel can't accumulate one empty Map per run forever.
     if (pend.size === 0) channelPendingByRun.delete(runId);
@@ -4135,6 +4137,16 @@ function channelAskConsent(o) {
 // Resolve one prompt BY ITS OWN ID. (The reference harness resolves the session's queue head instead, so with
 // two concurrent prompts a tap on the second answers the first — keying by promptId makes that unrepresentable.)
 // Returns false when the host already settled it: timed out, aborted by a superseding message, or E-STOPped.
+/* HOW EACH SETTLED CHANNEL ASK ENDED (bounded, in-memory). STARNET REMOTE answers a channel prompt through the same
+   finisher, so a later tap on the still-live Telegram keyboard loses the race to an ALLOW — and was stamped "expired —
+   DENIED" on an action that ran (2026-10-20). The hub reads this (consentOutcome) to report what really happened. */
+const channelConsentSettled = new Map();
+function noteChannelConsentSettled(promptId, decision) {
+  channelConsentSettled.delete(promptId);
+  channelConsentSettled.set(promptId, String(decision || ''));
+  while (channelConsentSettled.size > 200) channelConsentSettled.delete(channelConsentSettled.keys().next().value);
+}
+function channelConsentOutcome(runId, promptId) { return channelConsentSettled.get(String(promptId == null ? '' : promptId)) || ''; }
 function channelResolveConsent(runId, promptId, decision) {
   const d = (decision === 'once' || decision === 'session' || decision === 'always' || decision === 'full') ? decision : 'deny';
   const pend = channelPendingByRun.get(String(runId == null ? '' : runId));
@@ -4154,7 +4166,8 @@ const revokedByTaint = { ok: taintPolicy.allowedWhenTainted, isSource: taintPoli
 
 function hardlineFloor(call) {
   const p = call && call.args && call.args.path;
-  if (typeof p === 'string' && (/(^|[\\/])\.env(\.|$)/i.test(p) || /(^|[\\/])\.git([\\/]|$)/i.test(p)))
+  // `:` too — Windows opens `.env::$DATA` as `.env` and `.git::$INDEX_ALLOCATION\hooks` as `.git\hooks` (NTFS stream syntax)
+  if (typeof p === 'string' && (/(^|[\\/])\.env(\.|:|$)/i.test(p) || /(^|[\\/])\.git([\\/:]|$)/i.test(p)))
     return 'writing ' + p + ' is blocked by the protected-file floor';
   return null;
 }
@@ -6506,7 +6519,10 @@ let cronArmed = CRON_ENABLED || loadCronArmed();
    no-ops). It is re-entrant within this process, so applyTick(lock) -> setJobs -> saveCronJobs(lock) nests
    safely. now() uses the same Date.now the driver does (the staleness comparison is the only clock read). ---- */
 const CRON_LOCK_FILE = path.join(WORKSPACES, 'cron.lock');
-const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS });
+// The same dead-holder proofs the workspace-owner lock carries (sweep/autonomy 2026-10-20): a force-killed holder's PID
+// recycled to an unrelated process, or a lockfile older than this OS boot, is reclaimed now — not obeyed for maxRunMs.
+const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS,
+  bootedAt: makeBootedAt(() => Date.now()), processIdentity: processIdentity });
 
 const _sleep = (ms) => new Promise(r => { const t = setTimeout(r, ms); if (t && t.unref) t.unref(); });
 // CRON_WRITE_RETRIES × CRON_WRITE_RETRY_MS bounds the async wait for a live cross-process lock holder (was a
@@ -6824,8 +6840,15 @@ async function deliverCronResult(job, result) {
     if (!(live && live.adapter)) { failed++; firstError = firstError || channel + ' is not connected'; continue; }
     const chatId = String(rec.chatId || target), route = rec.threadId ? { threadId: rec.threadId } : undefined;
     try {
-      const sent = await live.adapter.send(chatId, redact(chatText), route);
-      if (sent && sent.ok === false) throw new Error(sent.error || 'send failed');
+      // A routine's reply is as long as the model made it, and the adapter sends ONE message (the hub chunks chat
+      // replies before calling it). Sent whole, a digest past Telegram's 4096 was refused "message is too long" on the
+      // fire and on every retry — the chat never saw it (2026-10-20). Split it under the platform's ceiling, in order.
+      const desc = channelRegistry.get(channel.split(':')[0]);
+      const parts = hubChunkText(redact(chatText), Number(desc && desc.maxMessageLength) > 200 ? Number(desc.maxMessageLength) : 1900);
+      for (let i = 0; i < parts.length; i++) {
+        const sent = await live.adapter.send(chatId, parts[i], route);
+        if (sent && sent.ok === false) throw new Error((sent.error || 'send failed') + (i ? ' (after ' + i + ' of ' + parts.length + ' parts)' : ''));
+      }
       deliveredTargets.add(target);
       if (job.attachToSession) {
         channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
@@ -7367,12 +7390,13 @@ async function nightshiftChat(o) {
   const model = cronModelFor({ agentId: agentId });
   if (!model || !cronHasCredential(provider, key)) return { error: 'no-capability' };
   const runId = crypto.randomUUID();
-  const state = { buf: '', err: null };
+  const state = { buf: '', err: null, reason: null };
   const sink = (name, payload) => {
     const p = payload || {};
     if (name === 'agent.token') { state.buf += (p.delta || ''); return; }
     if (name === 'agent.tool_call') state.buf = '';
     if (name === 'agent.run.error') state.err = p.message || 'run error';
+    if (name === 'agent.run.end') state.reason = p.reason;
   };
   // VISIBLE WHILE THINKING (2026-07-18): the beat's broadcast opt-in (driver + force route both pass it) used to
   // reach only the ACT path — these reason-only runs ran with a local sink and NO SSE tee, so the station floor sat
@@ -7390,6 +7414,9 @@ async function nightshiftChat(o) {
   } catch (e) { return { error: (e && e.message) || 'run failed' }; }
   finally { runsMeta.delete(runId); }
   if (state.err) return { error: state.err };
+  // ONLY A FINISHED RUN IS A REPLY (sweep/autonomy 2026-10-20): an E-STOP/budget/limit end carries no error event, and
+  // its partial stream used to become the beat's "delivered" draft. Anything but 'done' stands the beat down.
+  if (state.reason !== 'done') return { error: 'run ended without completion (' + (state.reason || 'no terminal outcome') + ')' };
   return { text: state.buf };
 }
 
@@ -9529,6 +9556,8 @@ async function modelRemoveLoop(id) {
   return true;
 }
 
+// the OLDEST unreviewed candidate below #n (the one a FIFO approval must wait for), or 0 when #n is the oldest
+function loopOlderPending(loop, n) { return loopjob.pendingReviews(loop).filter(it => it.n < n).reduce((m, it) => (m && m < it.n ? m : it.n), 0); }
 async function modelVerdictLoop(id, n, verdict, note) {
   beginLoopReview(id);
   try {
@@ -9536,6 +9565,7 @@ async function modelVerdictLoop(id, n, verdict, note) {
   if (!loop) throw new Error('no such loop');
   const target = (loop.iterations || []).find(it => it && it.n === n);
   if (!target || target.outcome !== 'candidate' || target.verdict) throw new Error('iteration #' + n + ' is not pending review');
+  { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) throw new Error('review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is'); }
   if (verdict === 'rejected') {
     const undone = await loopUndoWork(loop, n);
     if (!undone.ok) throw new Error(undone.error || 'the iteration could not be undone, so no rejection was recorded');
@@ -9639,6 +9669,7 @@ function handleLoopsVerdict(req, res) {
     if (!target) return json(404, { error: 'no iteration #' + body.n + ' on this loop' });
     if (target.outcome !== 'candidate') return json(409, { error: 'iteration #' + n + ' produced nothing to review (' + target.outcome + ')' });
     if (target.verdict) return json(409, { error: 'iteration #' + n + ' was already ' + target.verdict });
+    { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) return json(409, { error: 'review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is' }); }
 
     const willCascade = verdict === 'rejected' ? loopjob.stackedAbove(loop, n).map(it => it.n) : [];
 
@@ -10326,7 +10357,7 @@ function startTelegram(token, key, model, agentCfg) {
     // assembled answer. The hub's final delivery/outbox path remains durable and retryable.
     streamReplies: false,
     canReadAllGroupMessages: () => stationBotSeesAll,
-    askConsent: channelAskConsent, resolveConsent: channelResolveConsent,
+    askConsent: channelAskConsent, resolveConsent: channelResolveConsent, consentOutcome: channelConsentOutcome,
     secrets: () => {
       const t = (channelSecrets && channelSecrets.telegram) || {};
       const provider = normalizeProvider(t.provider);
@@ -10642,7 +10673,7 @@ function startTelegramBot(botId) {
     // raw token deltas never become user-visible, so a tool call cannot rewrite half-formed prose underneath them.
     streamReplies: false,
     canReadAllGroupMessages: () => { const v = (recOf() || {}).seesAllGroupMessages; return (typeof v === 'boolean') ? v : null; },
-    askConsent: channelAskConsent, resolveConsent: channelResolveConsent
+    askConsent: channelAskConsent, resolveConsent: channelResolveConsent, consentOutcome: channelConsentOutcome
   });
   const adapter = makeTelegramAdapter({
     fetch: telegramTransportFetch(), token: token, apiBase: TELEGRAM_API_BASE, clock: { now: () => Date.now() },
@@ -15629,10 +15660,14 @@ function parseCronScheduleOr400(str, now, tz) {
   if (!sched) {
     const why = (opts && opts.tz != null && !cron.isValidTz(opts.tz))
       ? ('unknown timezone "' + opts.tz + '" — use an IANA zone like America/New_York')
-      : /every other|bi-?weekly|fortnight|every (?:2|two|3|three|4|four) weeks|twice a month/i.test(String(str || ''))
+      : /\bevery other\b|\bbi-?weekly\b|\bfortnight|\bevery (?:2|two|3|three|4|four) weeks\b|\btwice a month\b/i.test(String(str || ''))
       ? 'every other week cannot be scheduled — use one weekday ("mondays at 10am") or two dates a month ("the 1st and 15th of every month at 10am"), and tell the Commander which you chose'
       : "couldn't read that schedule — try \"every day at 9am\", \"weekdays at 8:30am\", \"mondays at 6pm\", \"tomorrow at 9am\", \"every 30m\", \"in 2h\" or a cron like \"0 9 * * *\"";
     const e = new Error(why); e.code = 400; throw e;
+  }
+  // a one-shot in the PAST is not a schedule: stored, it fires on the very next tick (sweep/autonomy 2026-10-20)
+  if (sched.kind === 'once' && Number(sched.runAt) < Number(now) - 60000) {
+    const e = new Error('that time already passed (' + new Date(sched.runAt).toISOString() + ') — a one-shot in the past would run the moment it is saved; give a future time, e.g. "tomorrow at 9am" or "in 2h"'); e.code = 400; throw e;
   }
   return sched;
 }
@@ -16052,7 +16087,7 @@ function handleCronHistory(req, res) {
       if (!r || !(r.cronJobId === id || (job.lastRunId && r.runId === job.lastRunId))) continue;
       if (out.some(x => x.runId === r.runId)) continue;
       out.push({ runId: r.runId, at: r.endedAt || r.ts || 0, startedAt: r.startedAt || 0, durationMs: r.durationMs || 0,
-        reason: r.reason, usd: r.usd || 0, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
+        reason: r.reason, usd: r.usd || 0, spendUnknown: !!r.spendUnknown, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
         error: r.error || '', artifacts: (r.artifacts || []).length });
     }
     return json(200, { ok: true, id, runs: out });
@@ -17624,10 +17659,13 @@ async function handleWorkshopBacklog(req, res) {
     attempts: Number(b.attempts) || 0
   }));
   const routine = findWorkshopRoutine(agentId);
+  // a shift fires only through the scheduler: OFF or E-STOPped, the routine's nextRunAt is a time that will not
+  // arrive — withhold the clock and say why (the same live state GET /api/cron reports; sweep/autonomy 2026-10-20)
+  const shiftsPaused = cronHalted ? 'halted' : (!cronArmed ? 'scheduler-off' : null);
   json(200, {
     ok: true, agentId: agentId, granted: rec.grant, backlog: rec.backlog,
-    items: items,
-    nextShiftAt: (routine && routine.enabled && routine.nextRunAt) || null,
+    items: items, shiftsPaused: shiftsPaused,
+    nextShiftAt: (!shiftsPaused && routine && routine.enabled && routine.nextRunAt) || null,
     shiftEvery: WORKSHOP_SHIFT_SCHEDULE,
     lastShift: rec.lastShift || null
   });
@@ -18828,6 +18866,8 @@ const slashActions = slashActionsMod.makeSlashActions({
         lifetime: ledger.totalUsd(),
         runs: ledger.count(),
         tokens: ledger.all().reduce((s, r) => s + (Number(r && r.tokens) || 0), 0),
+        unpricedRuns: ledger.all().filter(r => r && r.unpriced === true && !r.unmetered).length,
+        unmeteredRuns: ledger.all().filter(r => r && r.unmetered === true).length,
         agentUsd: ledger.usdForAgent(agentId),
         caps: { perRun: effectiveCaps.perRun, perAgent: effectiveCaps.perAgent, perDay: effectiveCaps.perDay, global: effectiveCaps.global }
       };
@@ -19227,7 +19267,7 @@ async function handleSkillExchangeRollback(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);
   const body = await readJsonBody(req, readBody, 1 << 16, res); if (body === null) return json(400, { ok: false, error: 'bad json' });
   const agentId = String(body.agentId || 'agent'); if (!isAgentId(agentId)) return json(403, { ok: false, error: 'forbidden' });
-  try { const result = skillExchange.rollback({ agentId, id: body.id, digest: body.digest }); skillMetrics.record('rollback', 'success', {}); return json(200, result); }
+  try { const result = skillExchange.rollback({ agentId, id: body.id, digest: body.digest, force: body.force === true }); skillMetrics.record('rollback', 'success', {}); return json(200, result); }
   catch (e) { skillMetrics.record('rollback', 'failed', { error: e && e.message }); return json(400, { ok: false, error: (e && e.message) || 'could not roll back that skill' }); }
 }
 
@@ -20744,8 +20784,9 @@ async function runOnceCore(o) {
      team.dispatch hands a later worker its earlier siblings' files (o.handoffReads), and grants the lead its workers'
      saved files once they return (grantReads below). Read-only, exact real paths, gone when the run ends. */
   const runReadGrants = new Set((Array.isArray(o.handoffReads) ? o.handoffReads : []).map(String).filter(Boolean).slice(0, 64));
+  const runSessionRoots = new Set();   // folders a "session" answer approved for THIS run only (pathtrust.js 1b)
   const runPathTrust = (abs, o2) => pathTrustCore.guard(abs, {
-    scope: (o2 && o2.scope) || 'read', surface: surface, prompt: pathPrompt || null,
+    scope: (o2 && o2.scope) || 'read', surface: surface, prompt: pathPrompt || null, sessionRoots: runSessionRoots,
     agentId: (o2 && o2.agentId) || agentId,
     readGrants: Array.from(runReadGrants),
     // who CAUSED this I/O (recency metadata only): a watched run, or the Commander's owner-trusted channel DM.
@@ -23531,7 +23572,12 @@ async function runOnceCore(o) {
     const finalTurns = (result && result.turns) || 0;
     const finalTokens = (result && result.tokens) || 0;
     const finalCachedTokens = (result && result.cachedTokens) || 0;   // the cache-served part of finalTokens' input (additive on both rows)
-    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0 }); } catch (_) {}
+    // UNPRICED (sweep/providers 2026-10-20): tokens no provider cost or catalog rate could price that the backfill above
+    // could not price either. Both rows say so, so no reader folds the run as a proven $0 metered run.
+    const backfilled = Math.max(0, ((result && result.usd) || 0) - (mediaUsd || 0)) === 0 && finalUsd > (mediaUsd || 0);
+    const runUnpriced = !runUnmetered && !backfilled && Array.isArray(result && result.unpricedUsage)
+      && result.unpricedUsage.some(u => ((Number(u && u.tokensIn) || 0) + (Number(u && u.tokensOut) || 0)) > 0);
+    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced }); } catch (_) {}
     // managed-credit SETTLE: reconcile the reservation to the real spend — refund the unused headroom to the
     // account (billing.js caps finalUsd at the reservation). Inert/no-op unless this run actually reserved credit.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: finalUsd, tokens: finalTokens, turns: finalTurns, reason: (result && result.reason) || 'done' }); } catch (_) {} }
@@ -23549,7 +23595,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -24301,6 +24347,13 @@ async function handleAutonomyPosture(req, res) {
   // below acting, we LEAVE the timer armed — its own gate returns binding:'posture' and no beat fires, which is
   // cheaper + simpler than tearing the timer down and matches how the driver already no-ops when not permitted.
   try { if (nightshiftShouldArm() && !nightshiftTimer) armNightshift(); } catch (_) {}
+  // THE DIAL IS THE CONSENT, MID-BEAT TOO (sweep/autonomy 2026-10-20): a write that no longer permits acting
+  // unattended stops the beat already in flight — otherwise it kept its stream and bought its remaining calls.
+  try {
+    if (postureWritten && !(commanderPosture.summary() || {}).actsUnattended && nightshiftDriver.runInFlight() && nightshiftDriver.abortBeat()) {
+      recordAutonomy({ source: 'nightshift', kind: 'note', agentId: NIGHTSHIFT_AGENT, reason: 'posture-revoked', detail: { phase: 'beat', note: 'the dial was lowered below acting on its own — the in-flight beat was stopped' } });
+    }
+  } catch (e) { failNote('nightshift.revoke.abort', e); }
   // THE DIAL IS THE UNATTENDED-BUILD CONSENT. buildsUnattended (initiative≥leash AND reach≥sandbox) records the
   // night-shift agent's away-workshop grant through the SAME store authority as POST /api/workshop/grant — without
   // it every beat silently degraded to a reason-only draft (the "dial at max, station never builds" trap,
@@ -27179,8 +27232,18 @@ function syncInterruptedRunHistory(r) {
     && String(existing.continuedReason || '') === continuedReason && !settled) return null;
   const startedAt = Number(meta.startedAt || r.firstTs || 0) || 0;
   const endedAt = Math.max(startedAt, Number(r.lastTs || 0) || 0);   // the last durable journal record = last proof of life
+  // A ROUTINE RUN THAT DIED BETWEEN FIRE AND SETTLEMENT (sweep/autonomy 2026-10-20): the row carries the journal's
+  // cronJobId so the routine's own history lists it, and the routine record stops reporting the previous run's ok.
+  const cronJobId = String(meta.trigger === 'schedule' && meta.cronJobId || '').slice(0, 100);
+  if (cronJobId) {
+    const j = cronStore.getJob(cronJobs, cronJobId);
+    if (j && cronStore.markInterrupted([j], cronJobId, { runId: r.runId, startedAt })[0] !== j) {
+      withCronWrite(jobs => cronStore.markInterrupted(jobs, cronJobId, { runId: r.runId, startedAt, error: INTERRUPTED_HISTORY_LINES[next.status] }))
+        .catch(e => failNote('cron.interrupted.mark', e));
+    }
+  }
   return runStore.record({
-    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''),
+    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''), cronJobId,
     reason: 'interrupted', turns: Number((r.checkpoint && r.checkpoint.turn) || 0) || 0, tokens: 0,
     usd: settled ? settled.usd : 0, spendUnknown: !settled, spendSettled: settled ? settled.attestedAs : '',
     title: String(meta.userTitle || ''), streamId: String(meta.streamId || ''), model: String(meta.model || ''),
