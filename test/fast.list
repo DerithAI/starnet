@@ -476,6 +476,7 @@ test/trust.test.js
 test/truststore.test.js
 test/goalloop.test.js
 test/interview.test.js
+test/intake-plain-questions.test.js
 test/onboarding.test.js
 test/onboard-fresh-launcher.test.js
 test/codex-configured.test.js

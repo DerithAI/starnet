@@ -54,7 +54,7 @@ const Intake = (() => {
     // lead segment (high cps → types near-instantly) so it reads as a quiet HUD marker before the real ask.
     // (typeLine styles the whole line uniformly, so this is a plain inline prefix, not a styled sub-span.)
     if (questions.length > 1) segs.push({ text: '[' + (idx + 1) + '/' + questions.length + '] ', cps: 120, holdAfter: 0 });
-    if (q.pre) segs.push({ text: q.pre, cps: 47, holdAfter: 300 });
+    if (q.pre) segs.push({ text: q.pre + ' ', cps: 47, holdAfter: 300 });   // the lead-in and the ask are typed back to back: keep a space between them
     segs.push({ text: q.ask, cps: 47 });
     type(segs, () => {
       if (!running) return;
