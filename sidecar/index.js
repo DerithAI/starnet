@@ -15558,7 +15558,7 @@ function parseCronScheduleOr400(str, now, tz) {
   if (!sched) {
     const why = (opts && opts.tz != null && !cron.isValidTz(opts.tz))
       ? ('unknown timezone "' + opts.tz + '" — use an IANA zone like America/New_York')
-      : /every other|bi-?weekly|fortnight|every (?:2|two|3|three|4|four) weeks|twice a month/i.test(String(str || ''))
+      : /\bevery other\b|\bbi-?weekly\b|\bfortnight|\bevery (?:2|two|3|three|4|four) weeks\b|\btwice a month\b/i.test(String(str || ''))
       ? 'every other week cannot be scheduled — use one weekday ("mondays at 10am") or two dates a month ("the 1st and 15th of every month at 10am"), and tell the Commander which you chose'
       : "couldn't read that schedule — try \"every day at 9am\", \"weekdays at 8:30am\", \"mondays at 6pm\", \"tomorrow at 9am\", \"every 30m\", \"in 2h\" or a cron like \"0 9 * * *\"";
     const e = new Error(why); e.code = 400; throw e;

@@ -404,7 +404,7 @@
      PER-MINUTE limit is not, and Gemini phrases one as "Quota exceeded for quota metric", which a bare
      /quota/ test swallowed. OpenAI's `insufficient_quota` is an empty wallet and stays billing. */
   const QUOTA_EXHAUSTED_RE = /usage[_ ]?limit(?:[_ ]?(?:has|is)(?:[_ ]?been)?)?[_ ]?reached|hit (?:your|the) (?:usage|weekly|monthly|plan|daily) limit|(?:weekly|monthly|daily) (?:quota|limit)|resets? in \s*\d+\s*(?:day|hour|week)|resets? (?:on|at) \d|quota (?:will )?reset(?:s)? (?:in|on|at)/;
-  const SHORT_WINDOW_RE = /per[- ]?(?:minute|second)|quota metric|rpm|tpm|requests per/;
+  const SHORT_WINDOW_RE = /per[- ]?(?:minute|second)|quota metric|\brpm\b|\btpm\b|requests per/;
   const TERMINAL_BILLING_RE = /insufficient[_ ]?quota|exceeded your current quota|out of credit|add credits|payment required/;
   /* Mirrored from sidecar/providers/errorClass.js (REJECTED_KEY_RE / NO_CREDIT_RE) — keep the two in step. xAI
      answers a bad key with HTTP 400 "Incorrect API key provided", and a team with no prepaid credits with 403
