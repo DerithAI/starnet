@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**19** open (open+claimed) of 296 total — 0 P0 · 0 P1 · 19 P2
+**23** open (open+claimed) of 307 total — 0 P0 · 2 P1 · 21 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -137,6 +137,8 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P0 | fixed | safecell | [The Permissions panel's normalizeGrants regex drops every path: and mcp: standing grant — the ledger prints "No standing approvals yet" while the backend holds](bugs/7274ff21-the-permissions-panel-s-normalizegrants-regex-dr.md) | sweep/safecell | 6afeb9ee |
 | P0 | fixed | sessions | [An attachment-bearing user turn is dropped from the durable transcript and the PREVIOUS turn is written in its place — the string-only scan at index.js:11299 fa](bugs/e7dcb889-an-attachment-bearing-user-turn-is-dropped-from.md) | sweep/sessions | 6afeb9ee |
 | P0 | fixed | skills | [skill.view's hydrate-then-bump stores the RENDERED SKILL.md as the skill's body, so every view→persist cycle re-appends '## Setup' and '## Support Files' — unbo](bugs/c70f8965-skill-view-s-hydrate-then-bump-stores-the-render.md) | sweep/skills | 598ab4a4 |
+| P1 | open | autonomy | [Chosen away autonomy waits for runs or dossier areas before acting (usage unlock on the onboarding path)](bugs/41b2d015-chosen-away-autonomy-waits-for-runs-or-dossier-a.md) | sweep/onboarding | — |
+| P1 | open | sessions | [An empty station file never re-seeds from the browser save and the banner blames another window](bugs/5c019483-an-empty-station-file-never-re-seeds-from-the-br.md) | sweep/onboarding | — |
 | P1 | fixed | autonomy | [Agent loop pause leaves cancelled iteration running and lease held](bugs/c66e8c39-agent-loop-pause-leaves-cancelled-iteration-runn.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P1 | fixed | autonomy | [Ambiguous permission and routine acknowledgements report unproven changes](bugs/95d13aaf-ambiguous-permission-and-routine-acknowledgement.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
 | P1 | fixed | autonomy | [Autonomy controls claim unconfirmed settings and overwrite server state on reload](bugs/b0349a7c-autonomy-controls-claim-unconfirmed-settings-and.md) | agent/system-polish-0920 | 4a2028759 |
@@ -291,6 +293,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | autonomy | [Customer cannot explain idle behavior and unexpectedly high usage](bugs/acb47320-idle-usage-customer-unexplained.md) | reliability-followup | — |
 | P2 | open | autonomy | [Repeated project verification reportedly consumes overnight budget](bugs/f8d479d9-repeated-project-verification-reportedly-consume.md) | agent/reliability-audit-0919 | — |
 | P2 | open | channels | [Zoho Mail bootstrap tool reportedly requires undiscoverable account](bugs/54564ff9-zoho-mail-bootstrap-tool-reportedly-requires-und.md) | agent/reliability-audit-0919 | — |
+| P2 | open | onboarding | [A first task that fails at the provider consumes the hand-off with no retry](bugs/159d44fc-a-first-task-that-fails-at-the-provider-consumes.md) | sweep/onboarding | — |
 | P2 | open | onboarding | [Google Drive authorization is hard blocked for a fresh personal account](bugs/f2ac6356-google-drive-authorization-is-hard-blocked-for-a.md) | release-0135-prep | — |
 | P2 | open | onboarding | [Customer reports unusable visibility without build or platform details](bugs/6bb9d2a1-visibility-failure-without-diagnostics.md) | release-0120-prep-0915 | — |
 | P2 | open | providers | [Connector sign-in is lost after credential-store recovery](bugs/e7b2ffcd-connector-sign-in-is-lost-after-credential-store.md) | release-0135-prep | — |
@@ -298,6 +301,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | providers | [Managed Sonnet request still returns an uncorrelated HTTP 400](bugs/fd9c4b4d-managed-sonnet-400-unresolved.md) | reliability-followup | — |
 | P2 | open | providers | [Ollama run times out with no chat POST observed by reporter](bugs/5274c7b7-ollama-chat-request-not-observed.md) | release-0120-prep-0915 | — |
 | P2 | open | providers | [Reported macOS web fetch TLS decode and socket failures](bugs/1d3ac09a-reported-macos-web-fetch-tls-decode-and-socket-f.md) | release-0135-prep | — |
+| P2 | open | providers | [Retry status labels a refused or unresolvable provider connection as a timeout](bugs/8873fd77-retry-status-labels-a-refused-or-unresolvable-pr.md) | sweep/onboarding | — |
 | P2 | open | release | [Mac installer reports application unsupported on the computer](bugs/ff3fb4cb-mac-unsupported-installation-uncorrelated.md) | release-0120-prep-0915 | — |
 | P2 | open | release | [Windows 0.13.2 startup fails loading a packaged backend module](bugs/85f602c4-windows-0132-packaged-backend-startup.md) | release-0135-prep | — |
 | P2 | open | release | [Windows Node 24 HTTP test exits with a native libuv assertion after passing](bugs/6e29727c-windows-node-24-http-test-exits-with-a-native-li.md) | reliability-audit-0919 | — |
@@ -320,8 +324,15 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | channels | [Dense service cards squeeze technical prose into tiny columns](bugs/734b469e-dense-service-cards-squeeze-technical-prose-into.md) | agent/ui-density-audit | 221775a85 |
 | P2 | fixed | channels | [E-STOP silences the channel reply path via the supersede flag, so a deliberately stopped run is indistinguishable from a crashed bot on the phone](bugs/600f4982-e-stop-silences-the-channel-reply-path-via-the-s.md) | sweep/channels | 96fe108d |
 | P2 | fixed | channels | [Station button redesign escaped the bottom navigation](bugs/d28ba8f4-station-button-redesign-escaped-the-bottom-navig.md) | agent/comms-controls-0906 | e4e4512b198279e35cdd9f2cc2be9d786b02e87f |
+| P2 | fixed | onboarding | [A grabbed awakening offer becomes the Commander's first task in the agent's own voice](bugs/90efe1f0-a-grabbed-awakening-offer-becomes-the-commander.md) | sweep/onboarding | 22b3454a9 |
+| P2 | fixed | onboarding | [A wall-of-text onboarding answer rides every system prompt uncapped](bugs/8faefe89-a-wall-of-text-onboarding-answer-rides-every-sys.md) | sweep/onboarding | 773e82859 |
+| P2 | fixed | onboarding | [An emoji-only or punctuation-only answer is saved as the Commander's stated belief](bugs/289ed1ab-an-emoji-only-or-punctuation-only-answer-is-save.md) | sweep/onboarding | 8130d66ee |
 | P2 | fixed | onboarding | [First-path offer silently vanishes for a long or repeated mission](bugs/2ea198d9-first-path-offer-silently-vanishes-for-a-long-or.md) | sweep/onboarding | 6d86bbfe2 |
+| P2 | fixed | onboarding | [FOR YOU shelf disappears after declining every recipe](bugs/fa296d45-for-you-shelf-disappears-after-declining-every-r.md) | sweep/onboarding | ce7698b0d |
+| P2 | fixed | onboarding | [Intake interview asks scene-register questions and glues each lead-in to its question](bugs/77350944-intake-interview-asks-scene-register-questions-a.md) | sweep/onboarding | 8130d66ee |
 | P2 | fixed | onboarding | [Onboarding sign-in codes have dark text on dark backgrounds](bugs/c9929ae3-onboarding-sign-in-codes-have-dark-text-on-dark.md) | agent/onboarding-test-0919 | 51dcb517d2ed6935bca7ed924d8ca6c095a17913 |
+| P2 | fixed | onboarding | [Text typed at an awakening read gate or mid-question is silently discarded](bugs/bc709e71-text-typed-at-an-awakening-read-gate-or-mid-ques.md) | sweep/onboarding | 773e82859 |
+| P2 | fixed | onboarding | [WAKE key-check failure claims a previous key on a fresh install and shows raw outage jargon](bugs/5d19823c-wake-key-check-failure-claims-a-previous-key-on.md) | sweep/onboarding | 2ad0d1c9a |
 | P2 | fixed | providers | [BYOK image recovery omits the supported OpenRouter key option](bugs/3a2837bd-byok-image-recovery-only-offers-paid-link.md) | audit-0112-0910 | d503f00c5 |
 | P2 | fixed | providers | [credPool.penalize() on the run's PRIMARY key is inert — the sole credPool.order() call site (index.js:10580) receives a pool with runKey filtered out](bugs/8d7b0b52-credpool-penalize.md) | sweep/providers | fdbb12a2 |
 | P2 | fixed | providers | [Ollama task runs finish without reported filesystem tool calls](bugs/678ac951-ollama-task-runs-finish-without-reported-filesys.md) | agent/reliability-audit-0919 | 0e25b955f |
@@ -432,12 +443,12 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | Surface | Open |
 | --- | --- |
 | channels | 1 |
-| autonomy | 3 |
-| providers | 5 |
+| autonomy | 4 |
+| providers | 6 |
 | safecell | 3 |
-| sessions | 1 |
+| sessions | 2 |
 | skills | 0 |
-| onboarding | 2 |
+| onboarding | 3 |
 | world | 1 |
 | voice | 0 |
 | release | 3 |
