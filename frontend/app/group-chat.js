@@ -464,7 +464,7 @@ const GroupChat = (() => {
       const id = active.id, since = group && group.id === id && typeof group.stamp === 'string' ? group.stamp : '';
       const result = await api(null, '?id=' + encodeURIComponent(id) + (since ? '&since=' + encodeURIComponent(since) : ''));
       if (gen !== generation) return;
-      if (!(since && result && result.unchanged === true && result.stamp === since)) { group = result; paint(); }
+      if (!(result && result.unchanged === true)) { group = result; paint(); }   // unchanged: the group on screen is current
     } catch (e) {
       if (gen === generation) showError(/not found/i.test(e.message || '') ? new Error('This group no longer exists on this station. Delete it from the session list.') : e);
       if (/not found/i.test(e.message || '')) { goneGen = gen; return; }   // never poll a gone group every 900 ms forever
