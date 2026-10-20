@@ -236,5 +236,76 @@ A.eq([...gateLoops].filter(l => msOf(l) === 4000).length, 0, 'through PollGate: 
   G._resetForTest();
 }
 
+/* fix round 5 (2026-10-20): RESTORED = NOTHING STALE DRAWN. The restore's read starts as the body is shown, but its answer
+   is a round trip away, and nothing marked the cards on screen as unconfirmed: the first frames of the CRT power-on drew
+   the pre-minimize states (here the E-STOP banner of a halt lifted while the window sat in the strip) until the answer
+   landed. GENUINE (executed): the REAL pollgate.js + the REAL windows/loops.js with the stand-in ResizeObserver; the
+   /api/loops reads stay pending until the test answers them, and the gate line and card list are real nodes we read. */
+{
+  const G = require('../frontend/app/pollgate.js');
+  let clock = 4e6, tseq = 0;
+  const timers = new Map();
+  const setT = (fn, ms) => { const id = ++tseq; timers.set(id, { fn, at: clock + Math.max(0, ms || 0) }); return id; };
+  G._resetForTest(); G._setClockForTest(() => clock); G._setTimersForTest(setT, id => { timers.delete(id); }); G._setFrameForTest(null);
+  G._setDocForTest({ hidden: false, addEventListener() {}, removeEventListener() {} }, null);
+  const advance = async ms => {
+    const until = clock + ms;
+    for (;;) {
+      let nx = null; for (const [id, t] of timers) if (t.at <= until && (!nx || t.at < nx[1].at)) nx = [id, t];
+      if (!nx) break; timers.delete(nx[0]); clock = nx[1].at; nx[1].fn(); await settle();
+    }
+    clock = until; await settle();
+  };
+  const observers = [];
+  class FakeResizeObserver {
+    constructor(cb) { this.cb = cb; this.targets = []; this.live = true; observers.push(this); }
+    observe(t) { this.targets.push(t); }
+    disconnect() { this.live = false; this.targets = []; }
+  }
+  const resized = target => { for (const o of observers) if (o.live && o.targets.includes(target)) o.cb([{ target }], o); };
+  const gets = [];   // each /api/loops read, answered (or failed) by the test
+  const holdLanes = [];
+  const hctx = vm.createContext(Object.assign({}, ctx, {
+    AutomationWindow: { registerLane: fn => holdLanes.push(fn) }, PollGate: G, ResizeObserver: FakeResizeObserver,
+    Harness: { api: { get: () => new Promise((res, rej) => gets.push({ res, rej })) } }
+  }));
+  vm.runInContext(src, hctx, { filename: 'windows/loops.js' });
+  const gate = el({ querySelector: () => null }), list = el();
+  let shown = [{}];
+  const body = el({ getClientRects: () => shown, querySelector: sel => (sel === '#lp-gate' ? gate : sel === '#lp-list' ? list : el()) });
+  const drawn = () => gate.style.visibility !== 'hidden' && list.style.visibility !== 'hidden';
+  const estop = () => /LOOPS ARE STOPPED/.test(gate.innerHTML || '');
+  holdLanes[0](body).wire(); await settle();
+  gets.shift().res({ halted: true, loops: [] }); await settle();
+  A.ok(estop() && drawn(), 'fixture: the open window shows the station\'s E-STOP banner');
+  // minimized to the strip for 10 s (its beats skip); the halt is lifted meanwhile
+  shown = []; resized(body);
+  await advance(10000);
+  A.eq(gets.length, 0, 'fixture: a minimized window reads nothing');
+  shown = [{}]; resized(body); await settle();   // restored: the box comes back in the frame it is shown
+  A.eq(gets.length, 1, 'restored: its read is out at once');
+  A.ok(!drawn(), 'RESTORED, ANSWER NOT IN: the pre-minimize gate line and cards are not drawn (the power-on showed the lifted E-STOP as current)');
+  gets.shift().res({ halted: false, loops: [] }); await settle();
+  A.ok(drawn() && !estop(), '…the answer lands: drawn, and only what the station says now');
+  // a restore inside one beat (nothing skipped: the cards are as fresh as the cadence keeps them) shows them at once
+  await advance(4000);
+  gets.shift().res({ halted: true, loops: [] }); await settle();
+  shown = []; resized(body);
+  await advance(1000);
+  shown = [{}]; resized(body); await settle();
+  A.ok(drawn() && estop(), 'restored inside one beat: the cards show at once, as before');
+  gets.shift().res({ halted: true, loops: [] }); await settle();
+  // a restore read that fails paints the cards under the "may be out of date" line
+  shown = []; resized(body);
+  await advance(10000);
+  shown = [{}]; resized(body); await settle();
+  A.ok(!drawn(), 'fixture: restored after skipped beats, held');
+  gets.shift().rej(new Error('The station took too long to respond. Please retry.')); await settle();
+  A.ok(drawn() && /may be out of date/.test(gate.textContent || ''), 'a restore read that fails: the cards are drawn under the line that says they may be out of date');
+  body.isConnected = false;
+  await advance(5000);
+  G._resetForTest();
+}
+
 A.report('automation-lane-poller.test');
 })().catch(e => { console.error(e); process.exit(1); });

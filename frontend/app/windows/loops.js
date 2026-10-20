@@ -282,6 +282,10 @@
     }
 
     let refreshGeneration = 0;
+    // held: a restore found the cards older than a beat, and they stay unpainted until its read settles (the poller below)
+    let held = false;
+    const hold = () => { held = true; gateEl.style.visibility = 'hidden'; listEl.style.visibility = 'hidden'; };
+    const unhold = () => { if (!held) return; held = false; gateEl.style.visibility = ''; listEl.style.visibility = ''; };
     let refreshing = false, refreshAgain = false;
     const pendingControls = new Set();
     const pendingVerdicts = new Set();
@@ -374,6 +378,7 @@
       } finally {
         refreshing = false;
         if (refreshAgain && body.isConnected) { refreshAgain = false; refresh(); }
+        else unhold();   // the read a restore waited on has painted its answer (or the "may be out of date" line)
       }
     }
 
@@ -734,7 +739,13 @@
        ResizeObserver on the body sees it come back — its box goes from none to a size in the very frame it is shown,
        before that frame is painted — and the beat runs then (PollGate runNow: never a second read beside one in
        flight; the next beat comes a full 4 s later). The same holds for any way the body is shown again. Where there is
-       no ResizeObserver (node tests), a skipping beat comes every 1 s instead, so a restore reads within ~1 s. */
+       no ResizeObserver (node tests), a skipping beat comes every 1 s instead, so a restore reads within ~1 s.
+       RESTORED = NOTHING STALE DRAWN (fix round 5). That read is a round trip away (hundreds of ms on a loaded sidecar),
+       and the first frames of the power-on drew the pre-minimize states meanwhile — a "running" loop long finished. When
+       a beat was skipped while minimized (the cards are older than one beat, which trunk's ungated poller never let
+       them be), the gate line and the cards stay unpainted (visibility: nothing moves) until that read settles: its
+       answer paints them, or its failure paints them under the "may be out of date" line. A window restored inside one
+       beat shows its cards at once, as before. */
     if (body.__lpPoll) pollStop(body.__lpPoll);
     const unobserve = () => { const ro = body.__lpShown; body.__lpShown = null; if (ro && typeof ro.disconnect === 'function') ro.disconnect(); };
     unobserve();
@@ -753,6 +764,7 @@
       const shown = body.__lpShown = new ResizeObserver(() => {
         const nowHidden = !body.getClientRects().length;
         if (hidden && !nowHidden && body.__lpPoll === poll) {
+          if (body.__lpSkipped === true) hold();   // before this frame is painted; the read below lets it go
           if (poll && typeof poll.runNow === 'function') poll.runNow(); else refresh();
         }
         hidden = nowHidden;
