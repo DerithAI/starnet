@@ -9462,6 +9462,8 @@ async function modelRemoveLoop(id) {
   return true;
 }
 
+// the OLDEST unreviewed candidate below #n (the one a FIFO approval must wait for), or 0 when #n is the oldest
+function loopOlderPending(loop, n) { return loopjob.pendingReviews(loop).filter(it => it.n < n).reduce((m, it) => (m && m < it.n ? m : it.n), 0); }
 async function modelVerdictLoop(id, n, verdict, note) {
   beginLoopReview(id);
   try {
@@ -9469,6 +9471,7 @@ async function modelVerdictLoop(id, n, verdict, note) {
   if (!loop) throw new Error('no such loop');
   const target = (loop.iterations || []).find(it => it && it.n === n);
   if (!target || target.outcome !== 'candidate' || target.verdict) throw new Error('iteration #' + n + ' is not pending review');
+  { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) throw new Error('review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is'); }
   if (verdict === 'rejected') {
     const undone = await loopUndoWork(loop, n);
     if (!undone.ok) throw new Error(undone.error || 'the iteration could not be undone, so no rejection was recorded');
@@ -9572,6 +9575,7 @@ function handleLoopsVerdict(req, res) {
     if (!target) return json(404, { error: 'no iteration #' + body.n + ' on this loop' });
     if (target.outcome !== 'candidate') return json(409, { error: 'iteration #' + n + ' produced nothing to review (' + target.outcome + ')' });
     if (target.verdict) return json(409, { error: 'iteration #' + n + ' was already ' + target.verdict });
+    { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) return json(409, { error: 'review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is' }); }
 
     const willCascade = verdict === 'rejected' ? loopjob.stackedAbove(loop, n).map(it => it.n) : [];
 

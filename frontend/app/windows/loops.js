@@ -178,7 +178,9 @@
             (p.files.length > 6 ? ' <span class="dim">+' + (p.files.length - 6) + ' more</span>' : '') + '</div>'
           : '') +
         '<div class="mc-acts">' +
-          '<button class="bb xs" data-vact="approve" data-n="' + p.n + '">✓ APPROVE</button>' +
+          // FIFO: a pass built on an unreviewed older one is kept only after that one is (the station refuses otherwise)
+          (idx > 0 ? '<button class="bb xs" disabled title="review #' + pending[0].n + ' first — this pass was built on top of it">✓ APPROVE</button>'
+            : '<button class="bb xs" data-vact="approve" data-n="' + p.n + '">✓ APPROVE</button>') +
           '<button class="bb xs danger" data-vact="reject" data-n="' + p.n + '" data-stacked="' + stacked + '">' + rejectLabel + '</button>' +
         '</div>' +
         /* THE REJECTION REASON, inline. This was a window.prompt() — a native modal, wrong for the station's
