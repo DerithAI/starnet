@@ -158,9 +158,13 @@ const Onboarding = (() => {
     // your agent…", so text typed there MUST land on the question on screen. Dialogue.answer() resolves the
     // pending free-text node with the Commander's words (same path as the inline ✎ input) — before this, the
     // handler was a no-op and every composer-typed answer was silently dropped (empty dossier, no digs, thin
-    // synthesis). Between questions (monologue/patter, option-only picks) it returns false and the stray text
-    // is swallowed exactly as before — nothing leaks to the model.
-    Chat.beginInterview(text => { if (typeof Dialogue !== 'undefined' && Dialogue.answer) Dialogue.answer(text); });
+    // synthesis). Between questions (monologue/patter, a read gate, option-only picks) it returns false: that text
+    // used to be SWALLOWED — box cleared, words gone (sweep/onboarding 2026-10-20) — so it goes back into the
+    // composer for the next question instead. It still never reaches the model.
+    Chat.beginInterview(text => {
+      if (typeof Dialogue !== 'undefined' && Dialogue.answer && Dialogue.answer(text)) return;
+      if (String(text == null ? '' : text).trim() && Chat.prefill) Chat.prefill(text);
+    });
     if (opts.wake && World.playArrival) {
       setTimeout(() => { if (running) ignite(true); }, 700);
     } else if (opts.wake && World.armKindle) {
@@ -400,6 +404,10 @@ const Onboarding = (() => {
   // runtime. Each presented generated follow-up spends one; a NONE spends nothing. The scripted spine
   // (tuesday/pain/stack/bench/lost/year themselves) is never budget-gated — only the digs on top.
   const FOLLOWUP_BUDGET = 3;
+  // ONE answer's ceiling. Answers land in context.md, which rides EVERY system prompt, and are quoted into each meeting
+  // directive — a pasted 42k-char wall made every later call ~93 KB (sweep/onboarding 2026-10-20). Keep the start.
+  const ANSWER_CHARS = 2000;
+  const clipAnswer = t => (t.length > ANSWER_CHARS ? t.slice(0, ANSWER_CHARS - 1).replace(/\s+\S*$/, '') + '…' : t);
   // reason-only + internal — no tools reachable (placed:[]), no run.start/end on the bus (the awakening
   // thinking about you is not a shipped task; XP/telemetry stay honest), cost still counted.
   function llmCall(directive) {
@@ -537,7 +545,7 @@ const Onboarding = (() => {
         if (!running) return { text: '' };
         continue;
       }
-      const text = isSkip ? '' : String(res.value).trim();
+      const text = isSkip ? '' : clipAnswer(String(res.value).trim());
       if (!isSkip && commit) { const patch = s.build(text); if (patch) commit(patch); }
       if (!isSkip && s.field === 'purpose') purposeSaid = text;   // the station pick reads what they said they want help with
       // a beat that targets a dossier dimension (not a config .md) writes its answer STRAIGHT to the station-wide

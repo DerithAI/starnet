@@ -33,7 +33,8 @@ const Intake = (() => {
     onDone = opts.onDone || null;
     onLeave = opts.onLeave || null;
     idx = 0; accepting = false; running = true;
-    Chat.beginInterview(text => answer(text, text, false), { placeholder: 'tell the station about yourself… (or “skip”)', status: 'getting to know you…' });
+    // typed while a question is still being typed out: hand it back to the composer, never into the void
+    Chat.beginInterview(text => { if (!accepting && String(text == null ? '' : text).trim() && Chat.prefill) { Chat.prefill(text); return; } answer(text, text, false); }, { placeholder: 'tell the station about yourself… (or “skip”)', status: 'getting to know you…' });
     // ESCAPE HATCH (Andrew ask): the interview hijacks COMMS, so the Commander must be able to walk away from the
     // WHOLE thing — not just skip one question at a time. Esc leaves; a "✕ leave interview" chip sits on every
     // question (see ask()). Capture-phase so it wins over any other Esc listener while the interview owns the moment.
