@@ -5417,6 +5417,19 @@ function overseerStation(parentStreamId, parentRunId) {
 }
 
 let overseerTickRunning = false;
+/* A BUSY CONVERSATION NO LONGER HOLDS UP EVERY REPORT (idle-cpu piece 2, 2026-10-19). runOnce holds a conversation's
+   overseer lock for its whole turn (tool loops, consent waits up to 900 s), and the tick used to AWAIT that lock and then
+   the review run itself: one busy conversation froze every other conversation's report, collect() and the settling of
+   orphaned 'reviewing' rows, station-wide. Now each report is its own task, queued on its own conversation's lock (it
+   keeps its place in that conversation's line, so a turn sent later still sees it) and never awaited by the tick.
+   reviewTasks = review id -> { running }: a report queued on its conversation or running now. The tick never touches a
+   row that has a task (it would call a live report interrupted). At most REVIEW_RUNS_AT_ONCE reports RUN at once (one,
+   as before: never parallel paid review runs); a queued report whose turn comes while another runs stays pending and a
+   later tick queues it again. After a restart the map is empty, so a 'reviewing' row a dead process left still settles
+   by its proof. */
+const reviewTasks = new Map();
+const REVIEW_RUNS_AT_ONCE = 1;
+function runningReviews() { let n = 0; for (const t of reviewTasks.values()) if (t.running === true) n++; return n; }
 /* NOVA's ONE report on a hand-off (version B): the overall outcome, then one line per worker by name, then only what is
    still open. The workers' full answers are not pasted back — the Commander opens each on the delegation card. The
    opening words, the per-worker "status" and "commanderDirections" are what the overseer tests and providers key on. */
@@ -5447,6 +5460,8 @@ async function tickOverseer() {
   try {
     overseer.collect(subagents.list());
     for (let review of overseer.reviews()) {
+      // a report queued on its conversation or running now belongs to its task: never settle its row here
+      if (reviewTasks.has(review.id)) continue;
       if (review.agentId !== 'agent') {
         if (review.status === 'pending' || review.status === 'reviewing') overseer.patchReview(review.id, {
           status: 'cancelled', error: 'Automatic coordination belongs to the station orchestrator.' });
@@ -5459,6 +5474,7 @@ async function tickOverseer() {
         continue;
       }
       if (review.status !== 'pending') continue;
+      if (runningReviews() >= REVIEW_RUNS_AT_ONCE) continue;
       let parent;
       // existence + project only: the listed rows, re-read only when the save changed (a review waiting for a provider
       // credential re-ran this every tick, one full save parse per pending review per 2 s). The lock re-resolves afresh.
@@ -5481,9 +5497,15 @@ async function tickOverseer() {
       if (!members.length) {
         overseer.patchReview(review.id, { status: 'superseded', error: 'Every worker in this request has a newer attempt.' }); continue;
       }
+      const reviewId = review.id, task = { running: false };
+      reviewTasks.set(reviewId, task);
+      // launched, never awaited: the tick goes on to every other conversation while this one waits for its turn
+      (async () => {
       await overseer.withThread(parent.id, async () => {
         const row = overseer.review(review.id);
         if (updateHolding() || overseer.paused() || !row || row.status !== 'pending') return;
+        // another report is running (this one's turn came while it ran): stay pending, a later tick queues it again
+        if (runningReviews() >= REVIEW_RUNS_AT_ONCE) return;
         try { parent = overseer.resolve(review.parentStreamId); }
         catch (_) { overseer.patchReview(review.id, { status: 'cancelled', error: 'Parent conversation is no longer available.' }); return; }
         review = overseer.refreshReview(review.id, subagents.list()) || review;
@@ -5496,6 +5518,7 @@ async function tickOverseer() {
         }
         const runId = crypto.randomUUID();
         const reviewAbort = new AbortController();
+        task.running = true;
         overseer.patchReview(review.id, { status: 'reviewing', reviewRunId: runId, error: '' });
         const settleReview = fields => {
           const current = overseer.review(review.id);
@@ -5521,8 +5544,9 @@ async function tickOverseer() {
           settleReview({ status: proof && proof.reason === 'done' ? 'done' : 'interrupted',
             error: proof && proof.reason === 'done' ? '' : 'Review did not finish; inspect the saved run.' });
         } catch (e) { settleReview({ status: 'interrupted', error: String(e.message).slice(0, 300) }); }
-        finally { runs.delete(runId); runsMeta.delete(runId); grantsSession.delete(runId); }
+        finally { runs.delete(runId); runsMeta.delete(runId); grantsSession.delete(runId); task.running = false; }
       });
+      })().catch(e => console.warn('[overseer]', e.message)).finally(() => { if (reviewTasks.get(reviewId) === task) reviewTasks.delete(reviewId); });
     }
   } catch (e) { console.warn('[overseer]', e.message); }
   finally { overseerTickRunning = false; }
