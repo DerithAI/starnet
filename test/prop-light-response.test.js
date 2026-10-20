@@ -309,12 +309,117 @@ test('a light key that flips frame to frame keeps its prop lit past the budget, 
       assert.ok(r.builds <= 1, name + ' (frame ' + k + '): ' + r.builds + ' builds');
     }
   }
-  // Holding the overlay a prop already shows is for a light on a quantization edge only: a shared light that really
-  // changes is never painted with the old colour; the prop goes without until there is room.
+  // Holding the overlay a prop already shows indefinitely is for a light on a quantization edge only. A shared light
+  // that really changes shows its old colour for one frame at most (round 4: the frame it cannot yet tell whether the
+  // props it shares with changed too), then the prop goes without until there is room.
   const { frame, light } = setup(), red = { ...east, color: [240,0,0] };
   frame(0, [[0, light(0)], [1, light(0)]]); frame(1, [[0, light(0)], [1, light(0)]]);
-  const changed = frame(2, [[0, red], [1, light(0)]]);
-  assert.deepEqual([changed.lit.slice(0, 2), changed.held], [[false, true], 0], 'the changed prop skips; the steady one keeps its overlay');
+  const changed = frame(2, [[0, red], [1, light(0)]]), after = [3, 4, 5].map(k => frame(k, [[0, red], [1, light(0)]]));
+  assert.deepEqual([changed.lit.slice(0, 2), changed.held], [[true, true], 0], 'the changed prop keeps its old overlay one frame');
+  for (const r of after) assert.deepEqual([r.lit.slice(0, 2), r.held], [[false, true], 0], 'then it skips; the steady one keeps its overlay');
+});
+
+/* WORLD.JS'S OWN CALL PATH (2026-10-20, review round 4). world.js's drawLitProp, renderStill and renderStillOfTiles run
+   here as written, around a stand-in for drawScene that does what drawScene does for a prop: setNow(now), then
+   drawLitProp of the copy world.js makes for a table-top or stacked prop (`Object.assign({}, p, { mount })`, a new
+   object every frame). Only the prop's own art draw is stubbed (the light response does not read it). */
+const { fnBody } = require('./_assert');
+function worldHarness() {
+  const h = harness(), world = fs.readFileSync(path.join(__dirname, '../frontend/app/world.js'), 'utf8');
+  let W = null;
+  class StillCanvas extends Canvas { reset() { super.reset(); this.ctx.drawImage = image => { W.shown = image; }; } }
+  h.target.ctx.drawImage = image => { W.shown = image; };
+  W = vm.createContext({
+    PropSprites: Object.assign({}, h.props, { draw() {} }), T: 12, console,
+    sceneRenderer: { sampleLight: () => W.light },
+    document: { createElement: tag => { assert.equal(tag, 'canvas'); return new StillCanvas(h.env); } },
+    performance: { now: () => W.clock },
+    scene: [], out: [], shown: null, light: null, clock: 90000,
+    // renderStill's world: a station that has drawn, nothing playing over it
+    station: {}, geo: { origin: { tx: 0, ty: 0 } }, geoDirty: false, bakeDirty: false, cache: { baseCv: { width: 300, height: 200 } },
+    cv: h.target, ctx: h.target.ctx, scale: 2, panX: 0, panY: 0, overlaysOn: true, camAnim: null, kindleArmed: false,
+    arrivalScene: null, wakeDark: 0, agent: null, crew: [], StationBake: { WALL: { up: 24 } },
+    buildHoldsFloor: () => false, rederive() {}, rebake() {}, bodyPosX: () => 0, bodyPosY: () => 0,
+  });
+  const fns = ['drawLitProp', 'renderStill', 'renderStillOfTiles'].map(n => fnBody(world, 'function ' + n + '('));
+  for (const body of fns) assert.ok(body.length > 40 && body.length < 9000, '(world.js function found)');
+  vm.runInContext('var stillPass = null;\n' + fns.join('\n') + `
+    function drawScene(now) {
+      PropSprites.setCtx(ctx); PropSprites.setNow(now); out = [];
+      for (const [p, l] of scene) { light = l; shown = null; drawLitProp(p.mount ? Object.assign({}, p, { mount: p.mount }) : p, false); out.push(shown); }
+    }`, W);
+  // one live frame of the stage: the frame loop's drawScene(now) on the live canvas; returns the overlay each prop showed
+  const live = (now, scene) => { W.scene = scene; W.ctx = h.target.ctx; W.drawScene(now); return W.out; };
+  return Object.assign(h, { W, live });
+}
+const surface = (id, extra) => ({ t: 'crate', x: 5, y: 7, w: 30, h: 3, id, mount: 'surface', ...extra });
+
+test('table-top props handed over as a fresh object every frame never flicker past the budget, over 60 frames', () => {
+  const { props, live } = worldHarness();
+  const edge = (k, color) => ({ ...east, color, strength: k % 2 ? .625 : .75 });   // a screen's flicker on a quantization edge
+  const L = { ...east, color: [240,0,0] }, M = { ...east, color: [0,0,240] };   // a shared light that really changes
+  const filler = i => ({ ...east, color: [(i%16)*16,128,Math.floor(i/16)*16] });
+  const scene = k => [
+    [surface('solo'), edge(k, [0,64,0])],                                   // its own key, flipping every frame
+    [surface('pairA'), edge(k, [0,64,64])], [surface('pairB'), edge(k, [0,64,64])],   // two flipping together
+    [surface('steady'), edge(0, [64,0,64])], [surface('rider'), edge(k, [64,0,64])],   // flips on a key a steady prop shares
+    ...['g0', 'g1', 'g2'].map(id => [surface(id), k < 30 ? L : M]),         // three sharing one overlay; its light changes at 30
+    ...Array.from({ length: 36 }, (_, i) => [surface('fill' + i), filler(i)]),   // a working set past the budget
+  ];
+  const ids = scene(0).map(([p]) => p.id), shows = ids.map(() => []);
+  let builds = [];
+  for (let k = 0; k < 60; k++) {
+    const b0 = props.lightResponseStats().builds;
+    live(10000 + k * 16.7, scene(k)).forEach((image, i) => shows[i].push(image));
+    builds.push(props.lightResponseStats().builds - b0);
+  }
+  const stats = props.lightResponseStats(), at = id => shows[ids.indexOf(id)];
+  assert.ok(stats.skipped > 0 && 44 * stats.pixels / stats.entries > stats.maxPixels, '(setup: past the budget)');
+  for (const id of ['solo', 'pairA', 'pairB', 'steady', 'rider', 'g0', 'g1', 'g2'])
+    at(id).forEach((image, k) => assert.ok(image, id + ' (frame ' + k + '): an overlay every frame'));
+  for (const id of ['steady', 'pairA', 'pairB', 'rider'])
+    assert.ok(at(id).every(image => image === at(id)[0]), id + ': the identical overlay every frame (a quantum edge holds)');
+  for (const id of ['g0', 'g1', 'g2']) {
+    const g = at(id);
+    assert.ok(g.slice(0, 31).every(image => image === g[0]), id + ': the old overlay until the change, and for one frame after it');
+    assert.ok(g[31] !== g[0] && g.slice(31).every(image => image === g[31]), id + ': the new light from the next frame on, steady');
+  }
+  assert.ok(at('g0')[31] === at('g1')[31] && at('g1')[31] === at('g2')[31], 'the group shares the one new overlay');
+  for (let i = 0; i < 36; i++) {
+    const s = at('fill' + i).slice(1);
+    assert.ok(s.every(image => image === s[0]), 'fill' + i + ': the same overlay (or none) on every frame after the cold one');
+  }
+  assert.ok(builds.slice(1).every((n, k) => n <= (k + 1 === 31 ? 2 : 1)), 'builds per frame: ' + builds.join(','));
+});
+
+test('a still drawn between live frames (renderStill, renderStillOfTiles) never ages the live cache', () => {
+  for (const which of ['renderStill', 'renderStillOfTiles']) {
+    const { props, W, live, target } = worldHarness();
+    const solo = k => ({ ...east, color: [0,64,0], strength: k % 2 ? .625 : .75 }), light = i => ({ ...east, color: [(i%16)*16,64,Math.floor(i/16)*16] });
+    const stage = (k, extra) => [...(extra || []), [surface('solo'), solo(k)], ...Array.from({ length: 40 }, (_, i) => [surface('big' + i), light(i)])];
+    let last = null;
+    for (let k = 0; k < 4; k++) last = live(20000 + k * 16.7, stage(k));
+    const before = props.lightResponseStats();
+    // the phone's picture (or a builder's LOOK at one room): its own clock, its own canvas, a part of the station
+    W.clock = 20100; W.scene = stage(4).slice(20);
+    const still = which === 'renderStill' ? W.renderStill(320) : W.renderStillOfTiles({ x1: 2, y1: 2, x2: 8, y2: 6 }, 320);
+    assert.ok(still && still.canvas, which + ': a still was drawn');
+    assert.ok(W.out.length === 21 && W.out.every(Boolean), which + ': a still shows every overlay, past the budget too');
+    const after = props.lightResponseStats();
+    assert.deepEqual([after.entries, after.pixels, after.evictions, after.skipped, after.builds], [before.entries, before.pixels, before.evictions, before.skipped, before.builds],
+      which + ': the still leaves the live cache as it was');
+    assert.ok(after.stillBuilds - before.stillBuilds > 0 && after.stillBuilds - before.stillBuilds <= 21, which + ': what the cache lacks is built for the still alone');
+    assert.equal(W.ctx, target.ctx, '(renderStill restored the stage canvas)');
+    // the next live frames: a newcomer drawn first, then the stage as it was; the solo prop's light keeps flipping
+    for (let k = 4; k < 8; k++) {
+      const s0 = props.lightResponseStats(), shown = live(20000 + k * 16.7, stage(k, [[surface('newcomer'), { ...east, color: [240,240,240] }]]));
+      const s1 = props.lightResponseStats();
+      assert.ok(shown[1], which + ' frame ' + k + ': the flipping prop stays lit after the still');
+      assert.ok(s1.builds - s0.builds <= 1 && s1.evictions - s0.evictions <= 1, which + ' frame ' + k + ': only the flipping prop rebuilds (' +
+        (s1.builds - s0.builds) + ' builds, ' + (s1.evictions - s0.evictions) + ' evictions)');
+      shown.slice(2).forEach((image, i) => assert.equal(image, last[i + 1], which + ' frame ' + k + ': big' + i + ' keeps the overlay it had (or none)'));
+    }
+  }
 });
 
 test('lost overlay and native mask contexts are rebuilt, and lost main context skips safely', () => {

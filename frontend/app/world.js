@@ -7116,9 +7116,13 @@ const World = (() => {
     stillPass = { fill: landed ? Terrain.baseColor() : '#040302', noBodies: !!(opts && opts.noBodies), layoutOnly: !!(opts && opts.layoutOnly) };
     // the wall clock, never the last frame's time: a hidden or minimized window stops its frames, and a stale
     // clock froze every timed effect (a failed run's red desk flash stayed lit in every still)
-    try { drawScene(performance.now(), 0); drawn = true; }
+    // …and the props' light-response cache is told this is a still, not a live frame: its own clock must not age what
+    // the stage drew last frame, and its picture must not spend the stage's overlay budget
+    const stillLight = typeof PropSprites !== 'undefined' && typeof PropSprites.setStillPass === 'function';
+    try { if (stillLight) PropSprites.setStillPass(true); drawScene(performance.now(), 0); drawn = true; }
     catch (e) { try { console.error('[world] station still failed:', e); } catch (_) {} }
     finally {
+      if (stillLight) PropSprites.setStillPass(false);
       stillPass = null;
       cv = keep.cv; ctx = keep.ctx; scale = keep.scale; panX = keep.panX; panY = keep.panY; overlaysOn = keep.overlaysOn;
       if (typeof PropSprites !== 'undefined') PropSprites.setCtx(ctx);
