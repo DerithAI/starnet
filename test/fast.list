@@ -849,6 +849,7 @@ test/propanchor.test.js
 test/prop-mount.test.js
 test/prop-flat-decal.test.js
 test/bed-sleep.test.js
+test/scene-index.test.js
 test/prop-render-smoke.test.js
 test/proprotate.test.js
 test/recliner-side-seat.test.js

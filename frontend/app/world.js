@@ -5929,8 +5929,36 @@ const World = (() => {
      so a bed reclaimed mid-nap can never leave a body posed on a mattress that is no longer there. */
   function lyingBed(b) {
     if (!b || !b.lying || b.goal !== 'sleep' || !b.usingProp || !geo || !geo.props) return null;
-    const p = geo.props.find(q => q.id === b.usingProp);
+    const p = propById(b.usingProp);
     return (p && (propUse(p) || {}).kind === 'bed') ? p : null;
+  }
+  /* ONE WALK, NOT ONE PER PROP (perf, 2026-10-20). The prop pass asked, for EVERY prop, which body sleeps in it and which
+     sits on it — a crew.find per prop, each lyingBed a geo.props.find — O(props² × bodies) per frame: ~1.5 ms on a
+     furnished 300-prop station with sleepers, 12 ms at 600. propById reads the floor's props through an id index (the
+     FIRST prop with an id, as props.find answered), rebuilt whenever the projected prop list is replaced or resized —
+     rederive hands over a fresh array on every edit and nothing mutates it in place. bodyPropIndex() walks [agent,
+     ...crew] once per frame and keeps the FIRST body per bed and per seat: the hero, then the crew in order — exactly
+     what `(agent && … === p) ? agent : crew.find(…)` picked. */
+  let propIndexOf = null, propIndexLen = -1, propIndex = null;
+  function propById(id) {
+    const props = geo && geo.props;
+    if (!props) return undefined;
+    if (props !== propIndexOf || props.length !== propIndexLen) {
+      propIndex = new Map();
+      for (const q of props) if (!propIndex.has(q.id)) propIndex.set(q.id, q);
+      propIndexOf = props; propIndexLen = props.length;
+    }
+    return propIndex.get(id);
+  }
+  function bodyPropIndex() {
+    const sleeper = new Map(), sitter = new Map();   // bed prop -> the body dormant in it · prop id -> the body seated on it
+    for (const b of [agent, ...crew]) {
+      if (!b) continue;
+      const bed = lyingBed(b);
+      if (bed && !sleeper.has(bed)) sleeper.set(bed, b);
+      if (b.seated && !b.lying && !sitter.has(b.usingProp)) sitter.set(b.usingProp, b);
+    }
+    return { sleeper, sitter };
   }
   function planBedSleep(now, reviewBedId = null, reviewZone = null) {
     if (!geo || !geo.props || !geo.props.length) return false;
@@ -6830,6 +6858,7 @@ const World = (() => {
         PropSprites.setJourneyStage(journeyStage);   // one proven goal = one physical beacon on the TROPHY CASE crown
       }
       const outboxLit = now - lastOutboxFlash < 600;   // the OUTBOX flares for 600ms after a reply dispatches
+      const occupants = bodyPropIndex();   // who lies in / sits on each prop, one walk for the whole pass (ONE WALK, NOT ONE PER PROP)
       for (const p of geo.props) {
         // FLOOR DECALS never enter the y-sort: they are paint on the deck, so they go in the floor pass
         // and everything else — props, crates, bodies — is drawn ON them. Decals carry no seat/mount/live
@@ -6848,12 +6877,11 @@ const World = (() => {
         // occludes the sitter's lower body. Beds/beanbags never set `seated` and never enter this branch.
         // A BODY IS IN THIS BED (lyingBed): the bed paints in TWO passes around it — frame + pillow under
         // the sleeper, quilt over it — so the head shows on the pillow and the rest is under the covers.
-        const sleeper = ((agent && lyingBed(agent) === p) ? agent : crew.find(b => lyingBed(b) === p)) || null;
+        const sleeper = occupants.sleeper.get(p) || null;
         // a sleeper is `seated` (it holds a mattress claim with a render anchor) but it is NOT a sitter:
         // the sitter branch pulls the prop's sort key onto the body, which is right for a stool and wrong
         // for a bed, whose frame must keep its own footprint key with the body sorted INSIDE it.
-        const sitter = (agent && agent.seated && !agent.lying && agent.usingProp === p.id) ? agent
-          : crew.find(b => b.seated && !b.lying && b.usingProp === p.id);
+        const sitter = occupants.sitter.get(p.id);
         const sitterUse = sitter ? propUse(p) : null;
         // a SIDE SEAT sorts BEHIND its sitter like a stool, not in front like a sofa: its near arm
         // comes back over the body as the seat-front overlay below, so the sitter shows through the
