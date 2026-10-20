@@ -205,6 +205,7 @@ const Voice = (() => {
   let replyTried = false;  // has the reply currently speaking already ATTEMPTED a synth? Only then may it
                            // outrank the cold-off — a BRAND-NEW reply still honors it in full (no hammering).
   const MID_REPLY_GIVEUP = 2;
+  const RETRY_GAP_MS = [400, 1200];   // wait before retry 1 / retry 2: a blip must outlive ~1.6 s to cost a sentence
   let fbStreak = 0;        // consecutive neural failures (reset by the next neural success)
   let fbNotified = '';     // reason class already surfaced this outage — notify once, not once per sentence
   /* A reason is a semicolon-joined LADDER of everything the sidecar tried, not one verdict:
@@ -930,18 +931,23 @@ const Voice = (() => {
     if ((replyTried && replyFails >= MID_REPLY_GIVEUP) || (!replyTried && neuralColdTerminal && Date.now() < neuralColdUntil)) { job.result = Promise.resolve({ kind: 'fail', reason: 'cooldown' }); return; }
     replyTried = true;
     const seq = job.seq;
+    // Two retries for a TRANSIENT failure (429 / network / 5xx) — a single provider blip must cost a
+    // beat of latency, not a whole sentence of the reply. A missing credential and an empty wallet are NOT
+    // transient: don't burn a second call on them. Ask retryableFallback, not the message class: a keyless
+    // station's reason ALWAYS carried the structural 'no key', which made this branch dead code there.
+    // Two bounded retries retain this exact chunk; later audio stays ordered.
+    // A torn-down job (barge-in bumped speakSeq) is never retried. The retries are SPACED (RETRY_GAP_MS): fired
+    // instantly, all three attempts of every chunk in flight landed inside the same blip, so a 300 ms 429 window
+    // failed the two prefetched opening chunks and MID_REPLY_GIVEUP silenced the whole reply (sweep 2026-10-20).
+    const retry = gap => res => (res.kind === 'fail' && retryableFallback(res.reason) && seq === speakSeq)
+      ? (job.recovering = true, new Promise(r => setTimeout(r, gap)).then(() => (seq === speakSeq ? synthOnce(job) : { kind: 'skip' }))) : res;
     job.result = synthOnce(job)
-      // Two retries for a TRANSIENT failure (429 / network / 5xx) — a single provider blip must cost a
-      // beat of latency, not a whole sentence of the reply. A missing credential and an empty wallet are NOT
-      // transient: don't burn a second call on them. Ask retryableFallback, not the message class: a keyless
-      // station's reason ALWAYS carried the structural 'no key', which made this branch dead code there.
-      // Two bounded retries retain this exact chunk; later audio stays ordered.
-      // A torn-down job (barge-in bumped speakSeq) is never retried.
-      .then(res => (res.kind === 'fail' && retryableFallback(res.reason) && seq === speakSeq) ? synthOnce(job) : res)
-      .then(res => (res.kind === 'fail' && retryableFallback(res.reason) && seq === speakSeq) ? synthOnce(job) : res)
+      .then(retry(RETRY_GAP_MS[0]))
+      .then(retry(RETRY_GAP_MS[1]))
       .then(res => {
+        job.recovering = false;
         if (seq !== speakSeq) return { kind: 'skip' };
-        if (res.kind === 'neural') { noteNeuralOk(); return res; }
+        if (res.kind === 'neural') { noteNeuralOk(); pumpSynth(); return res; }
         if (res.kind === 'skip') return res;   // intentional barge-in/teardown cancel — not a failure
         replyFails++;
         // cool the neural path off briefly (noteFallback lengthens this for 'no key'/'credits'); never latch.
@@ -952,6 +958,10 @@ const Voice = (() => {
       });
   }
   function pumpSynth() {
+    // No new prefetch while a chunk of this reply waits on a spaced retry: a dead provider must still cost two
+    // sentences of attempts, not a third one started before the second's exhaustion lands (the play head itself
+    // still starts the chunk it reaches; a recovered chunk resumes the prefetch above).
+    for (let i = playIdx; i < synthIdx; i++) if (jobs[i] && jobs[i].recovering) return;
     const next = jobs[synthIdx];
     const limit = next && next.voice.local && !next.voice.engine ? 1 : MAX_INFLIGHT;
     while (synthIdx < jobs.length && (synthIdx - playIdx) < limit) startSynth(jobs[synthIdx++]);
