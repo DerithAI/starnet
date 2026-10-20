@@ -61,8 +61,9 @@ const path = require('node:path');
     const clearT=id=>{timers.delete(id);};
     const drain=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
     const advance=async ms=>{const end=T+ms;for(;;){let best=null;for(const [id,t] of timers) if(t.at<=end&&(!best||t.at<best[1].at||(t.at===best[1].at&&id<best[0])))best=[id,t];if(!best)break;timers.delete(best[0]);T=Math.max(T,best[1].at);best[1].fn();await drain();if(s.afterTask)s.afterTask();}T=Math.max(T,end);await drain();};
-    const s={mode:'answer',rtt,reconcileMs:0,bodyTask:false,afterTask:null,deliver:null};
+    const s={mode:'answer',rtt,reconcileMs:0,reconcileHang:false,reconciles:0,asks:0,badBody:false,bodyTask:false,afterTask:null,deliver:null};
     const ledger={threads:[],workers:[{runId:'w1',status:'running',parentStreamId:'planning'}],reviews:[]};
+    s.ledger=ledger;
     let ready=null;const listeners={};
     const doc={hidden:false,visibilityState:'visible',hasFocus:()=>!doc.hidden,addEventListener(k,fn){(listeners[k]=listeners[k]||[]).push(fn);},removeEventListener(){}};
     if(gate==='real'){PollGate._resetForTest();PollGate._setClockForTest(()=>T);PollGate._setTimersForTest(setT,clearT);PollGate._setFrameForTest(cb=>{if(!doc.hidden)setT(()=>cb(T),16);});PollGate._setDocForTest(doc,{addEventListener(){},removeEventListener(){}});}
@@ -70,13 +71,16 @@ const path = require('node:path');
       setTimeout:setT,clearTimeout:clearT,setInterval:()=>0,
       document:{addEventListener(k,fn){if(k==='DOMContentLoaded')ready=fn;}},
       Workstreams:{generalId:()=>'general',get:()=>null,adopt:r=>r},App:{persist(){},refreshRail(){}},
-      StationCommands:{reconcile:()=>new Promise(res=>setT(res,s.reconcileMs))},
+      // reconcileHang: its /api/runs read the sidecar accepted and never answered
+      StationCommands:{reconcile:()=>{s.reconciles++;return s.reconcileHang?new Promise(()=>{}):new Promise(res=>setT(res,s.reconcileMs));}},
       fetch:(_u,o)=>new Promise((res,rej)=>{
+        s.asks++;
         o.signal.addEventListener('abort',()=>rej(new Error('aborted')));
         if(s.mode==='hang')return;
         if(s.mode==='fail'){setT(()=>rej(new Error('offline')),s.rtt);return;}
         // bodyTask: the body is read on a task of its own, posted when json() is called, and an abort errors it
-        const answer={ok:true,json:()=>s.bodyTask?new Promise((r2,j2)=>{if(o.signal.aborted)return j2(new Error('aborted'));setT(()=>r2(ledger),0);o.signal.addEventListener('abort',()=>j2(new Error('aborted')));}):Promise.resolve(ledger)};
+        const body=()=>(s.badBody?null:ledger);
+        const answer={ok:true,json:()=>s.bodyTask?new Promise((r2,j2)=>{if(o.signal.aborted)return j2(new Error('aborted'));setT(()=>r2(body()),0);o.signal.addEventListener('abort',()=>j2(new Error('aborted')));}):Promise.resolve(body())};
         if(s.mode==='held'){s.deliver=()=>res(answer);return;}   // the answer sits in the page's queue until deliver()
         setT(()=>res(answer),s.rtt);
       })};
@@ -84,7 +88,7 @@ const path = require('node:path');
     if(navigator)c.navigator=navigator;
     vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),c);
     const o=c.module.exports;
-    return Object.assign(s,{o,advance,stall:ms=>{T+=ms;},stepWall:ms=>{wall+=ms;},
+    return Object.assign(s,{o,ctx:c,advance,stall:ms=>{T+=ms;},stepWall:ms=>{wall+=ms;},
       start:async()=>{ready();await drain();},
       ask:async()=>{const p=o.refresh();await advance(s.rtt+1);await p;},   // one read, answered (or refused)
       read:()=>({fresh:o.fresh(),unreachable:o.unreachable()}),
@@ -282,6 +286,54 @@ const path = require('node:path');
     r.done();
   }
 
+
+  /* fix round 4 (2026-10-20): THE STATION'S ANSWER IS ALL THE LEDGER BEAT WAITS ON. The beat awaited
+     StationCommands.reconcile() — a /api/runs read with no deadline — while it held `busy`: one the sidecar accepted and
+     never answered held every later beat off for good (each returned on busy), /api/overseer was never asked again, and
+     the rail said "checking the station" forever with nothing being checked. */
+  {
+    const r=rig({gate:'real'});r.reconcileHang=true;
+    await r.start();await r.advance(100);
+    assert.equal(r.reconciles,1,'fixture: the first answer reconciles its deliveries, and that read hangs');
+    await r.advance(60000);
+    assert.ok(r.asks>=24,'A RECONCILE THAT NEVER ANSWERS: the ledger is still asked every 2.5 s ('+r.asks+' asks in 60 s; it was 1)');
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…so the ledger stays current (it read "checking the station" for good after 22.5 s)');
+    r.ledger.workers[0].status='done';await r.advance(2500);
+    assert.equal(r.reconciles,1,'one reconcile at a time: a newer ledger never stacks another on the hung one');
+    r.done();
+  }
+  {
+    // a newer ledger that wanted a reconcile while one was running asks again once it is over
+    const r=rig({gate:'real'});r.reconcileMs=4000;
+    await r.start();await r.advance(100);
+    assert.equal(r.reconciles,1,'fixture: the first answer reconciles');
+    r.ledger.workers[0].status='done';
+    await r.advance(2600);
+    assert.equal(r.reconciles,1,'a newer ledger while that reconcile runs: none stacked on it');
+    await r.advance(5000);
+    assert.equal(r.reconciles,2,'…and it is reconciled on the first beat after the running one is over');
+    await r.advance(5000);
+    assert.equal(r.reconciles,2,'…once: an unchanged ledger after that reconciles nothing');
+    r.done();
+  }
+  /* AN ANSWER THE PAGE FAILS TO APPLY IS STILL THE STATION'S ANSWER (fix round 4). The read's catch also covered the page's
+     own work after the answer was adopted (saving, repainting, the reconcile): a throw there set failing, and the rail
+     said "station unreachable" though /api/overseer had answered. */
+  {
+    const r=rig();
+    r.ctx.Delegated={repaint(){throw new Error('a render bug');}};
+    await r.ask();
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'a DELEGATED repaint that throws after the answer is not "station unreachable" (it set failing)');
+    r.ctx.Delegated=undefined;r.ctx.StationCommands={reconcile(){throw new Error('a reconcile bug');}};r.ledger.workers[0].status='done';
+    let rejected=null;const p=r.o.refresh().catch(e=>{rejected=e;});await r.advance(41);await p;
+    assert.equal(rejected,null,'the beat itself never rejects for it');
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'a reconcile that throws after the answer is not "station unreachable" either');
+    // …while a read that fails, or answers no ledger at all, still is
+    r.badBody=true;await r.ask();
+    assert.deepEqual(r.read(),{fresh:false,unreachable:true},'an answer with no ledger in it: the read failed, unreachable');
+    r.badBody=false;r.mode='fail';await r.ask();
+    assert.deepEqual(r.read(),{fresh:false,unreachable:true},'a refused read: unreachable');
+  }
 
   /* fix round 2 (2026-10-20): AN AWAY STRETCH IS NOT STALENESS. GENUINE (executed): the REAL pollgate.js (fake monotonic
      clock + timers through its seams, a rAF probe that answers only while visible) and the REAL overseer.js, whose fetch

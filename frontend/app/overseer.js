@@ -85,11 +85,27 @@ const Overseer = (() => {
     };
     const endSlow = verdict(2 * BEAT, () => { slow = true; });
     const endDeadline = verdict(ASK_MS, () => { expired = true; controller.abort(); });
+    let data = null;
     try {
       const response = await fetch('/api/overseer', { signal: controller.signal });
       responded = true;
       if (!response.ok) throw new Error('Delegation synchronization unavailable');
-      const data = await response.json();
+      data = await response.json();
+      if (!data || typeof data !== 'object') throw new Error('Delegation synchronization answered no ledger');
+    } catch (error) {
+      // Existing connection UI owns outages. Retry reconciliation after recovery.
+      lastDeliveries = ''; reconcileAgain = true;
+      failing = true;
+      if (typeof Delegated !== 'undefined' && Delegated.repaint) Delegated.repaint();   // at once, so a row that reads fresh() drops its live claim
+      console.debug('[overseer sync]', error.message);
+      return;
+    } finally { endSlow(); endDeadline(); busy = false; asking = false; }
+    /* THE STATION ANSWERED (fix round 4). Only the read above — a failed fetch, a refused or empty answer — says it is
+       not answering. What follows is the page's own work on the answer: adopting thread metadata, saving, repainting,
+       starting a delivery reconcile. It sat inside the read's try, so a throw there set failing and the rail said
+       "station unreachable" though /api/overseer had answered; now it is logged as before and the ledger stays current. */
+    last = data; okAt = mono(); okAtWall = Date.now(); okCadence = askCadence; failing = false;
+    try {
       let adopted = false;
       for (const row of data.threads || []) {
         if (!row.parentStreamId || !Workstreams.get(row.parentStreamId)) continue;
@@ -100,21 +116,30 @@ const Overseer = (() => {
         const adoptedRow = Workstreams.adopt(row);
         if (adoptedRow && (!before || before[0] !== adoptedRow.parentStreamId || before[1] !== adoptedRow.worker || before[2] !== adoptedRow.projectRoot)) adopted = true;
       }
-      last = data; okAt = mono(); okAtWall = Date.now(); okCadence = askCadence; failing = false; asking = false;
       if (adopted) { App.persist(); App.refreshRail(); }
       if (typeof Delegated !== 'undefined' && Delegated.repaint) Delegated.repaint();   // the parent's DELEGATED card follows the ledger
       const deliveries = JSON.stringify([(data.workers || []).map(w => [w.runId, w.status]),
         (data.reviews || []).map(r => [r.reviewRunId, r.status])]);
-      if ((adopted || deliveries !== lastDeliveries) && typeof StationCommands !== 'undefined') {
-        await StationCommands.reconcile(); lastDeliveries = deliveries;
-      }
+      if ((adopted || deliveries !== lastDeliveries) && typeof StationCommands !== 'undefined') reconcileDeliveries(deliveries, adopted);
     } catch (error) {
-      // Existing connection UI owns outages. Retry reconciliation after recovery.
-      lastDeliveries = '';
-      failing = true;
-      if (typeof Delegated !== 'undefined' && Delegated.repaint) Delegated.repaint();   // at once, so a row that reads fresh() drops its live claim
-      console.debug('[overseer sync]', error.message);
-    } finally { endSlow(); endDeadline(); busy = false; asking = false; }
+      lastDeliveries = '';   // retry the reconcile on the next answer, as before
+      console.debug('[overseer sync] applying the answer', error.message);
+    }
+  }
+  /* A DELIVERY RECONCILE NEVER HOLDS THE LEDGER BEAT (fix round 4). The beat awaited StationCommands.reconcile() — a
+     /api/runs read of its own — while it held `busy`: one the sidecar accepted and never answered held every later beat
+     off (each returned on busy), /api/overseer was never asked again, and the rail said "checking the station" for good
+     with nothing being checked. It runs beside the beat now, one at a time. Once it is over, lastDeliveries is the ledger
+     it ran for, so the next answer compares against that, as when the beat waited for it; an adoption or a failed read
+     while it ran (reconnect reconciles) forces another on the next answer. */
+  let reconcileOut = false, reconcileAgain = false;
+  function reconcileDeliveries(deliveries, adopted) {
+    if (reconcileOut) { if (adopted) reconcileAgain = true; return; }
+    reconcileOut = true; reconcileAgain = false;
+    let pass;
+    try { pass = Promise.resolve(StationCommands.reconcile()); } catch (error) { pass = Promise.reject(error); }
+    pass.then(() => true, error => { console.debug('[overseer reconcile]', error && error.message); return false; })
+      .then(done => { reconcileOut = false; lastDeliveries = done && !reconcileAgain ? deliveries : ''; });
   }
   if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => {
     if (typeof PollGate !== 'undefined' && PollGate.every) loop = PollGate.every(refresh, { ms: BEAT });
