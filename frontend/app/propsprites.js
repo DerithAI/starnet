@@ -11496,15 +11496,28 @@ const PropSprites = (() => {
      all 76 rebuilt every frame (a GPU readback, a JS pass over every pixel, a new canvas each). Three changes:
        · a 4x budget (384 entries / 1 Mi px, 4 MiB of overlays at most);
        · each mask's opaque-pixel map is read back ONCE (maskAlphas), so a new light on a known mask costs no readback;
-       · entries carry the frame that last drew them (setNow advances responseFrame). Eviction never drops an entry this
-         frame already drew: past the budget the newcomer goes without its overlay instead (`skipped`) — the same props
-         every frame, so nothing flickers, and nothing thrashes. */
+       · entries carry the drawing frame that last used them, and past the budget eviction never drops one that may
+         still be on screen (below).
+     PAST THE BUDGET (2026-10-20, review round 3). "Not drawn yet THIS frame" is not "off screen": world.js draws y-sorted,
+     so a pan brings a newcomer in AHEAD of props that stay on screen, and evicting the LRU head (the first prop drawn
+     last frame) started a cascade — that prop missed and evicted the next, and so on: the whole cache rebuilt on every
+     pan frame. An entry used this drawing frame or the one before is treated as on screen and never evicted for
+     another prop. Past the budget a newcomer then goes without its overlay (`skipped`) until something it can replace
+     has been off screen for a whole frame. A prop already lit whose light key changes (a screen's flicker can flip a
+     quantized term frame to frame) keeps a lit overlay:
+       · its last-frame overlay was its alone → that one makes way for the new key (one build, as before);
+       · another prop drew it too → evicting it would darken that prop, so within one quantum on every term (a light
+         on a quantization edge) it keeps drawing the overlay it already shows (`held`); a bigger change skips.
+     So builds per frame are bounded by what the camera newly reveals plus props whose own light changed, never by the
+     cache size; a still view under steady light builds nothing. A drawing frame = a distinct module clock (`now`) seen
+     here: other setNow callers (build.js thumbnails at 0) never age the world's entries. */
   const RESPONSE_LIMIT = 384, RESPONSE_PIXELS = 1048576, RESPONSE_SINGLE = 65536;
   const RESPONSE_SHADE = [8,10,18];
-  const lightResponses = new Map();
+  const lightResponses = new Map();   // key -> { cv, mask, pixels, light, frame, users }, in use order (least recent first)
   const maskAlphas = new WeakMap();   // shadow mask canvas -> { opaque: Uint8Array (1 where alpha >= 250), minX, minY, maxX, maxY }
-  let responsePixels = 0, responseFrame = 0, responseNow = NaN;
-  const responseMetrics = { builds: 0, hits: 0, evictions: 0, failures: 0, draws: 0, skipped: 0 };
+  const responseOwner = new WeakMap();   // prop object -> { key, frame }: the overlay it last drew, and in which drawing frame
+  let responsePixels = 0, drawFrame = 0, drawNow;
+  const responseMetrics = { builds: 0, hits: 0, evictions: 0, failures: 0, draws: 0, skipped: 0, held: 0 };
   const responseClamp = (v,a,b) => Math.max(a,Math.min(b,v));
   function dropResponse(key) {
     const old=lightResponses.get(key);if(!old)return;
@@ -11541,26 +11554,47 @@ const PropSprites = (() => {
     }
     read={opaque,minX,minY,maxX,maxY};maskAlphas.set(mask,read);return read;
   }
+  // A drawn entry moves to the end of the use order, stamped with this drawing frame and counted as one more draw in
+  // it; the prop remembers it as the overlay it shows now.
+  function useResponse(f,key,e) {
+    lightResponses.delete(key);lightResponses.set(key,e);
+    if(e.frame===drawFrame)e.users++; else {e.frame=drawFrame;e.users=1;}
+    const own=responseOwner.get(f);
+    if(own) {own.key=key;own.frame=drawFrame;} else responseOwner.set(f,{key,frame:drawFrame});
+    return e.cv;
+  }
+  function responseLive(e,mask) { const g=e.cv.getContext('2d');return e.mask===mask&&!!g&&!(g.isContextLost&&g.isContextLost()); }
+  // Two quantized samples within one quantum on every term: the same light sitting on a quantization edge.
+  function responseNear(a,b) {
+    const turn=((a.direction-b.direction)%8+8)%8;
+    if(a.direction!==b.direction&&(a.direction<0||b.direction<0||(turn>1&&turn<7)))return false;
+    if(Math.abs(a.strength-b.strength)>.13)return false;
+    for(let c=0;c<3;c++)if(Math.abs(a.color[c]-b.color[c])>16)return false;
+    return true;
+  }
   function responseOverlay(f,light) {
+    if(!Object.is(now,drawNow)) {drawNow=now;drawFrame++;}
     const mask=shadowMask(f);if(!mask)return null;
     const key=[f.t,f.w||1,f.h||1,f.r||0,f.m||0,light.direction,light.strength,...light.color].join('|');
-    let hit=lightResponses.get(key);
+    const hit=lightResponses.get(key);
     if(hit) {
-      const g=hit.cv.getContext('2d');
-      if(hit.mask===mask&&g&&!(g.isContextLost&&g.isContextLost())) {
-        lightResponses.delete(key);lightResponses.set(key,hit);hit.frame=responseFrame;responseMetrics.hits++;return hit.cv;
-      }
+      if(responseLive(hit,mask)) {responseMetrics.hits++;return useResponse(f,key,hit);}
       dropResponse(key);
     }
     const w=mask.width,h=mask.height,pixels=w*h;
     if(pixels>RESPONSE_SINGLE)return null;
     const read=maskAlpha(mask);if(!read||read.maxX<0)return null;
-    // Room first, before paying for any pixels. The least-recent entry goes unless this frame already drew it; then
-    // every entry is this frame's, and the newcomer skips its overlay rather than evict one the next frame rebuilds.
+    // Room first, before paying for any pixels. The LRU head goes only once it has missed a whole drawing frame (the map
+    // is in use order, so then every older entry has too). Otherwise every entry may still be on screen, and only this
+    // prop's own last-frame overlay (for its previous light key) may make way, if no other prop drew it.
+    const own=responseOwner.get(f), last=own&&own.frame===drawFrame-1&&own.key!==key?own.key:null;
     while(lightResponses.size>=RESPONSE_LIMIT||responsePixels+pixels>RESPONSE_PIXELS) {
       const lru=lightResponses.keys().next().value;
-      if(lru===undefined||lightResponses.get(lru).frame===responseFrame) {responseMetrics.skipped++;return null;}
-      dropResponse(lru);responseMetrics.evictions++;
+      if(lru!==undefined&&lightResponses.get(lru).frame<drawFrame-1) {dropResponse(lru);responseMetrics.evictions++;continue;}
+      const mine=last&&lightResponses.get(last);
+      if(mine&&mine.frame===drawFrame-1&&mine.users===1) {dropResponse(last);responseMetrics.evictions++;continue;}
+      if(mine&&responseLive(mine,mask)&&responseNear(mine.light,light)) {responseMetrics.held++;return useResponse(f,last,mine);}
+      responseMetrics.skipped++;return null;
     }
     const {opaque,minX,minY,maxX,maxY}=read;
     const solid=(x,y)=>x>=0&&y>=0&&x<w&&y<h&&opaque[y*w+x]===1;
@@ -11583,9 +11617,9 @@ const PropSprites = (() => {
       out[i+3]=Math.round(a*255);
     }
     g.putImageData(image,0,0);
-    hit={cv,mask,pixels,frame:responseFrame};lightResponses.set(key,hit);responsePixels+=pixels;responseMetrics.builds++;
-    if(cv.addEventListener)cv.addEventListener('contextlost',()=>{if(lightResponses.get(key)===hit)dropResponse(key);},{once:true});
-    return cv;
+    const e={cv,mask,pixels,light,frame:0,users:0};responsePixels+=pixels;responseMetrics.builds++;
+    if(cv.addEventListener)cv.addEventListener('contextlost',()=>{if(lightResponses.get(key)===e)dropResponse(key);},{once:true});
+    return useResponse(f,key,e);
   }
   function canLightResponse(f) {
     if(!f||!LIGHT_RESPONSE_TYPES.has(f.t)||!has(f.t)||(spec(f.t)||{}).flat||
@@ -11984,7 +12018,7 @@ const PropSprites = (() => {
     setSurfaceLayout, hitTest, selectionBounds,
     surfacePlacement,
     setCtx(c) { ctx = c; },
-    setNow(t) { now = t; if (t !== responseNow) { responseNow = t; responseFrame++; } },   // a new clock = a new frame for the light-response cache
+    setNow(t) { now = t; },
     // v13 LOCAL COLOUR knob (see CHROMA above) — live-tunable like the CRT LAB's own dials, so the
     // value is DIALLED on a real deck and copied back into the constant, never guessed.
     setChroma(k) { CHROMA = (k == null ? 1 : +k) || 1; _cboost.clear(); },

@@ -191,11 +191,12 @@ test('a frame working set past the old budget is built once, then reused every f
 
 test('a working set past the budget skips the same overlays every frame instead of thrashing', () => {
   const { props, target, env } = harness(); target.ctx.drawImage = () => {};
-  const big = f({ w: 30, h: 3 }), light = i => ({ ...east, color: [(i%16)*16,64,Math.floor(i/16)*16] });
+  const bigs = [], big = i => bigs[i] || (bigs[i] = f({ w: 30, h: 3, id: 'big' + i }));   // one object per prop, as world.js draws
+  const light = i => ({ ...east, color: [(i%16)*16,64,Math.floor(i/16)*16] });
   const frame = (fr, from, n) => {
     props.setNow(2000 + fr * 16.7);
     const s0 = props.lightResponseStats(), lit = [];
-    for (let i = from; i < from + n; i++) lit.push(props.drawLightResponse(big, light(i)) ? 1 : 0);
+    for (let i = from; i < from + n; i++) lit.push(props.drawLightResponse(big(i), light(i)) ? 1 : 0);
     const s1 = props.lightResponseStats();
     return { builds: s1.builds - s0.builds, skipped: s1.skipped - s0.skipped, evictions: s1.evictions - s0.evictions, lit: lit.join('') };
   };
@@ -209,9 +210,111 @@ test('a working set past the budget skips the same overlays every frame instead 
     assert.equal(later.lit, frames[0].lit, 'the same props skip on every frame: nothing flickers');
   }
   assert.ok(stats.pixels <= stats.maxPixels); assert.equal(env.reads, 1, 'one readback for the shared mask, ever');
-  const moved = frame(4, 100, 20);   // the view moved: twenty new responses, none of the old ones on screen
+  // The view jumped: twenty new responses, none of the old ones on screen. The old ones were drawn LAST frame, so this
+  // frame cannot tell them from props still on screen and drawn later: the newcomers wait one frame, then replace them.
+  const jumped = frame(4, 100, 20), moved = frame(5, 100, 20);
+  assert.deepEqual([jumped.builds, jumped.evictions, jumped.skipped], [0, 0, 20], 'a frame never evicts what the frame before drew');
   assert.deepEqual([moved.builds, moved.skipped, moved.lit], [20, 0, '1'.repeat(20)], 'what left the screen is evicted for what arrived');
   stats = props.lightResponseStats(); assert.ok(stats.pixels <= stats.maxPixels);
+});
+
+// THE PAN CASCADE (2026-10-20, review round 3). world.js draws y-sorted, so a pan brings newcomers in AHEAD of props that
+// stay on screen. Evicting "not drawn yet this frame" then evicted a prop still on screen, which missed and evicted the
+// next: every pan frame rebuilt the whole cache (275 overlays of these crates), and lit props went dark and back.
+// Builds per frame must be bounded by what the camera reveals; a prop lit on screen stays lit.
+test('a camera moving over a working set past the budget builds only what it reveals, and nothing on screen goes dark', () => {
+  const { props, target, env } = harness(); target.ctx.drawImage = () => {};
+  const N = 48, COLS = 20, ROWS = 15, crates = [];   // 20 x 15 = 300 visible 2x1 crates, each its own light; 275 fit
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) crates.push({ prop: f({ x: 1 + c * 3, y: 1 + r * 2, id: 'g' + r + '_' + c }), c, r,
+    light: { ...east, color: [(c % 16) * 16, (r % 16) * 16, ((c >> 4) * 3 + (r >> 4)) * 16] } });
+  const view = (cx, cy) => crates.filter(p => p.c + 1 > cx && p.c < cx + COLS && p.r + 1 > cy && p.r < cy + ROWS)
+    .sort((a, b) => a.prop.y - b.prop.y || a.prop.x - b.prop.x);   // world.js order: y ascending
+  const path = [], hold = (n, x, y) => { for (let k = 0; k < n; k++) path.push(['still', x, y]); };
+  hold(4, 10, 20);
+  for (let k = 1; k <= 24; k++) path.push(['pan up (newcomers drawn first)', 10, 20 - k * .5]);
+  for (let k = 1; k <= 20; k++) path.push(['pan left', 10 - k * .4, 8]);
+  for (let k = 1; k <= 24; k++) path.push(['pan down-right', 2 + k * .5, 8 + k * .5]);
+  for (let k = 1; k <= 40; k++) path.push(['cinecam circle', 9 + 5 * Math.cos(k / 6), 20 + 5 * Math.sin(k / 6)]);
+  hold(4, 9 + 5 * Math.cos(40 / 6), 20 + 5 * Math.sin(40 / 6));
+  let t = 3000, older = new Set(), last = new Set(), lit = new Map();
+  const left = (a, b) => [...a].filter(p => !b.has(p)).length;
+  path.forEach(([name, cx, cy], k) => {
+    props.setNow(t += 16.7);
+    const s0 = props.lightResponseStats(), reads = env.reads, shown = view(cx, cy), now = new Set(shown), nowLit = new Map();
+    for (const p of shown) nowLit.set(p, props.drawLightResponse(p.prop, p.light));
+    const builds = props.lightResponseStats().builds - s0.builds;
+    const churn = left(now, last) + left(last, now) + left(last, older) + left(older, last);   // entered or left, in two frames
+    if (k) {   // (the cold frame fills the budget)
+      assert.ok(builds <= churn, name + ' (frame ' + k + '): ' + builds + ' builds while ' + churn + ' crates entered or left the view in two frames');
+      assert.equal(env.reads, reads, name + ': no readback once the mask is known');
+      for (const p of shown) assert.ok(!(lit.get(p) && !nowLit.get(p)), name + ' (frame ' + k + '): a lit crate still on screen went dark');
+    }
+    older = last; last = now; lit = nowLit;
+  });
+  const stats = props.lightResponseStats();
+  assert.ok(stats.skipped > 0 && stats.evictions > 0, '(setup: the view is past the budget, and the moves evict)');
+  assert.ok(stats.pixels <= stats.maxPixels && stats.entries <= stats.maxEntries);
+});
+
+test('a newcomer drawn ahead of cached responses past the budget evicts nothing still on screen', () => {
+  for (const thumbnails of [false, true]) {   // build.js thumbnails call setNow(0) between (and inside) world frames
+    const { props, target } = harness(); target.ctx.drawImage = () => {};
+    const bigs = [], big = i => bigs[i] || (bigs[i] = f({ w: 30, h: 3, id: 'big' + i })), light = i => ({ ...east, color: [(i%16)*16,64,Math.floor(i/16)*16] });
+    const frame = (fr, order) => {
+      if (thumbnails) props.setNow(0);
+      props.setNow(5000 + fr * 16.7);
+      const s0 = props.lightResponseStats(), lit = [];
+      order.forEach((i, n) => {
+        if (thumbnails && n === 20) { props.setNow(0); props.setNow(5000 + fr * 16.7); }
+        lit.push(props.drawLightResponse(big(i), light(i)) ? 1 : 0);
+      });
+      const s1 = props.lightResponseStats();
+      return { builds: s1.builds - s0.builds, evictions: s1.evictions - s0.evictions, lit: lit.join('') };
+    };
+    const base = Array.from({ length: 40 }, (_, i) => i), first = frame(0, base), steady = frame(1, base);
+    assert.equal(steady.builds, 0);
+    for (let fr = 2; fr < 7; fr++) {
+      const r = frame(fr, [100, ...base]);   // one new response, drawn before the forty that stay on screen
+      assert.deepEqual([r.builds, r.evictions], [0, 0], 'thumbnails ' + thumbnails + ' frame ' + fr + ': nothing on screen is evicted or rebuilt');
+      assert.equal(r.lit.slice(1), first.lit, 'the forty keep exactly the overlays they had');
+    }
+  }
+});
+
+test('a light key that flips frame to frame keeps its prop lit past the budget, for at most one build a frame', () => {
+  const setup = () => {
+    const { props, target } = harness(); target.ctx.drawImage = () => {};
+    const bigs = [], big = i => bigs[i] || (bigs[i] = f({ w: 30, h: 3, id: 'big' + i }));   // one object per prop
+    const light = i => ({ ...east, color: [(i%16)*16,128,Math.floor(i/16)*16] });
+    // two props of interest first (in the given order), then 38 others: 40 distinct responses, 29 fit
+    const frame = (k, first) => { props.setNow(7000 + k * 16.7); const s0 = props.lightResponseStats();
+      const lit = [...first, ...Array.from({ length: 38 }, (_, i) => [i + 10, light(i + 10)])].map(([i, l]) => props.drawLightResponse(big(i), l));
+      const s1 = props.lightResponseStats(); return { lit, builds: s1.builds - s0.builds, skipped: s1.skipped - s0.skipped, held: s1.held - s0.held }; };
+    return { frame, light };
+  };
+  const edge = k => ({ ...east, color: [0,64,0], strength: k % 2 ? .625 : .75 });   // a screen's flicker on a quantization edge
+  const scenarios = {
+    'its own key': (k, light) => [[0, edge(k)], [1, light(1)]],
+    'key shared with a steady prop drawn after it': k => [[0, edge(k)], [1, edge(0)]],
+    'key shared with a steady prop drawn before it': k => [[1, edge(0)], [0, edge(k)]],
+    'two props flipping together': k => [[0, edge(k)], [1, edge(k)]],
+  };
+  for (const [name, first] of Object.entries(scenarios)) {
+    const { frame, light } = setup();
+    for (let k = 0; k < 12; k++) {
+      const r = frame(k, first(k, light));
+      if (!k) continue;   // (the cold frame fills the budget)
+      assert.ok(r.skipped > 0, '(setup: past the budget)');
+      assert.deepEqual(r.lit.slice(0, 2), [true, true], name + ' (frame ' + k + '): both props stay lit');
+      assert.ok(r.builds <= 1, name + ' (frame ' + k + '): ' + r.builds + ' builds');
+    }
+  }
+  // Holding the overlay a prop already shows is for a light on a quantization edge only: a shared light that really
+  // changes is never painted with the old colour; the prop goes without until there is room.
+  const { frame, light } = setup(), red = { ...east, color: [240,0,0] };
+  frame(0, [[0, light(0)], [1, light(0)]]); frame(1, [[0, light(0)], [1, light(0)]]);
+  const changed = frame(2, [[0, red], [1, light(0)]]);
+  assert.deepEqual([changed.lit.slice(0, 2), changed.held], [[false, true], 0], 'the changed prop skips; the steady one keeps its overlay');
 });
 
 test('lost overlay and native mask contexts are rebuilt, and lost main context skips safely', () => {
