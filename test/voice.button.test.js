@@ -1026,6 +1026,36 @@ async function opensWithin(t, ms) {
     A.ok(/out of credits/.test(String(t.nodes['voice-toggle'].title || '')), 'insufficient_quota IS the billing class, 429 or not');
   }
 
+  // sweep/voice 2026-10-20: the two questions were asked of the WHOLE ladder string, so (a) the HTTP 429 OpenAI
+  // sends with insufficient_quota bought two retries and only the 4s cold-off for an empty wallet, and (b) Gemini's
+  // standard per-minute 429 text ("...check your plan and billing details... Please retry in 23s") read 'billing'
+  // and pinned "voice provider out of credits" on a rate limit. Each ';'-joined leg is judged on its own now.
+  {
+    const state = { tts: 0 };
+    const t = boot({ ttsKey: true, fetch: countingFetch(state, 'openai 429 — {"error":{"message":"You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}') });
+    t.Voice.setSpeakReplies(true);
+    t.Voice.speak('a line with an empty openai wallet', 'agent'); await until(() => !t.Voice.isReplyPending(), 5000);
+    A.eq(state.tts, 1, 'insufficient_quota at HTTP 429 is NOT retried — an empty wallet will not refill in 1.6s');
+    A.ok(/out of credits/.test(String(t.nodes['voice-toggle'].title || '')), 'and it still reads out of credits');
+    t.Voice.speak('the next reply while the wallet is empty', 'agent'); await tick(40);
+    A.eq(state.tts, 1, 'insufficient_quota arms the long cold-off — the next reply does not re-ask');
+  }
+  {
+    const state = { tts: 0 };
+    const t = boot({ ttsKey: true, fetch: countingFetch(state, 'gemini 429 — {"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 10 Please retry in 23s.","status":"RESOURCE_EXHAUSTED"}}; edge: edge timeout') });
+    t.Voice.setSpeakReplies(true);
+    t.Voice.speak('a line during a gemini rate limit', 'agent'); await until(() => state.tts >= 3 && !t.Voice.isReplyPending(), 5000);
+    A.eq(state.tts, 3, 'a Gemini per-minute 429 is retried (it clears in seconds)');
+    A.ok(!/out of credits/.test(String(t.nodes['voice-toggle'].title || '')), 'a rate-limit body that merely MENTIONS billing is not "out of credits"');
+  }
+  {
+    const state = { tts: 0 };
+    const t = boot({ ttsKey: true, fetch: countingFetch(state, 'openai 400 — {"error":{"message":"Billing hard limit has been reached","code":"billing_hard_limit_reached"}}') });
+    t.Voice.setSpeakReplies(true);
+    t.Voice.speak('a line past the billing hard limit', 'agent'); await until(() => !t.Voice.isReplyPending(), 5000);
+    A.eq(state.tts, 1, 'a billing leg with no rate-limit signal stays terminal (not retried)');
+  }
+
   // --- the pinned degrade reason survives Voice.init (agent focus / persona / dossier apply) -----
   // init() calls reflectToggle() without clearing fbNotified, and reflectToggle wrote the plain on/off copy
   // over the pinned reason. noteFallback then early-returns for the rest of the outage class, so the station

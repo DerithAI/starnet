@@ -223,18 +223,25 @@ const Voice = (() => {
   // /quota/ test conflated the two and bought 60s of silence for something that clears in seconds.
   const TERMINAL_BILLING = /\b402\b|insufficient[ _-]?credit|insufficient[ _-]?quota|payment required|billing|out of credit/i;
   const TRANSIENT_LEG = /\b429\b|\b5\d\d\b|rate[ _-]?limit|quota exceeded|too many requests|timeout|timed out|temporarily|unavailable|unreachable|network|socket|ECONN|ETIMEDOUT|EAI_AGAIN|empty audio|aborted/i;
+  // Judge each ';'-joined LEG on its own (sweep 2026-10-20). Whole-string tests let OpenAI's insufficient_quota —
+  // sent as HTTP 429 — buy two retries and the 4s cold-off, and let the bare word 'billing' in Gemini's standard
+  // per-minute 429 text ("check your plan and billing details … retry in 23s") pin "out of credits" on a rate limit.
+  // A named empty wallet wins over its leg's status code; a rate-limited leg that merely mentions billing is a rate limit.
+  const legsOf = reason => String(reason == null ? '' : reason).split(/;\s+/);
+  const billingLeg = l => /\b402\b|insufficient[ _-]?(?:credit|quota|funds)|payment required|out of credit/i.test(l) || (TERMINAL_BILLING.test(l) && !TRANSIENT_LEG.test(l));
+  const transientLeg = l => TRANSIENT_LEG.test(l) && !billingLeg(l);
   function classifyFallback(reason) {
     const r = String(reason == null ? '' : reason);
-    if (TERMINAL_BILLING.test(r)) return 'credits';
+    if (legsOf(r).some(billingLeg)) return 'credits';
     // 'no key' is structural. With a transient leg in the ladder the station does NOT need a credential —
     // the free floor does have voice and simply blipped, so sending the user to buy a key would be a lie.
-    if (/no key/i.test(r)) return TRANSIENT_LEG.test(r) ? 'error' : 'nokey';
+    if (/no key/i.test(r)) return legsOf(r).some(transientLeg) ? 'error' : 'nokey';
     return 'error';
   }
   function retryableFallback(reason) {
     const r = String(reason == null ? '' : reason);
-    if (TRANSIENT_LEG.test(r)) return true;                        // something in the ladder may well work now
-    if (TERMINAL_BILLING.test(r) || /no key/i.test(r)) return false;
+    if (legsOf(r).some(transientLeg)) return true;                  // something in the ladder may well work now
+    if (legsOf(r).some(billingLeg) || /no key/i.test(r)) return false;
     return true;                                                   // an unclassified error is treated as transient
   }
   // TRUTHFUL TELEMETRY, off the header. The voice swap must never be silent, but the COMMS status bar
