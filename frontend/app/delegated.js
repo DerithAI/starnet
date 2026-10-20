@@ -141,13 +141,8 @@ const Delegated = (() => {
     if (pend) return { cls: 'waiting', live: pend.tool === 'brief.ask' ? 'asking you a question' : 'needs you', t: '', pend };
     if (w && w.status === 'running') {
       // the station stopped answering (Overseer.fresh): the last ledger can no longer vouch for this worker, so the row
-      // claims neither working nor stopped — no live clock, no Stop key (a failed poll repaints at once). It says
-      // "unreachable" only when the harness proved it (Overseer.unreachable); a ledger only waiting on its next answer is
-      // being checked
-      if (typeof Overseer !== 'undefined' && Overseer.fresh && !Overseer.fresh()) {
-        const down = typeof Overseer.unreachable !== 'function' || Overseer.unreachable();
-        return { cls: 'unknown', live: 'status unknown — ' + (down ? 'station unreachable' : 'checking the station'), t: '' };
-      }
+      // claims neither working nor stopped — no live clock, no Stop key (a failed poll repaints at once)
+      if (typeof Overseer !== 'undefined' && Overseer.fresh && !Overseer.fresh()) return { cls: 'unknown', live: 'status unknown — station unreachable', t: '' };
       // the worker's OWN run as CREW clocks it (every wait on the Commander excluded — rc walk #21: this branch still read the
       // ledger's wall clock, so a worker that waited on an approval read a minute ahead of CREW and the world tag); the
       // ledger's start only when this page never saw that run begin

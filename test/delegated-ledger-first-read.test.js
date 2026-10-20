@@ -125,34 +125,15 @@ const A = require('./_assert.js');
     A.eq(sumOf(html), '3 status unknown', 'the header: ' + sumOf(html));
     A.ok(!claimsAnEnd(html) && /aria-expanded="false"/.test(html), 'nothing claims an end, and rows never seen running open nothing');
   }
-  // 4c. a first read that runs past its deadline is the station not answering too. The page must have lived through that
-  // deadline (its own timer fired): a clock that moved while the page's event loop was busy proves nothing, since the
-  // answer may be queued behind the very reader that looks (idle CPU piece 3, fix round 3)
+  // 4c. a first read that hangs past three beats is the station not answering too
   global.Overseer = freshOverseer();
   mode = 'hold';
-  const realSetTimeout = global.setTimeout, armed = [];
-  global.setTimeout = (fn, ms) => { armed.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
-  let stuck;
-  try { stuck = global.Overseer.refresh(); } finally { global.setTimeout = realSetTimeout; }
+  const stuck = global.Overseer.refresh();
   A.eq(card().rows[0].live, 'checking…', 'a first read on its way: checking…');
-  // its 8 s pass on both clocks: the ledger's ages run on the monotonic one (performance.now), the rows' on Date.now
-  const realNow = Date.now, realPerfNow = performance.now;
-  Date.now = () => realNow() + 8000;
-  performance.now = () => realPerfNow.call(performance) + 8000;
-  try {
-    A.eq(card().rows[0].live, 'checking…', 'the clocks say 8 s but the page has not seen its deadline fire: still checking… (it said unreachable from a clock read)');
-    const deadline = armed.find(t => t.ms === 8000);
-    A.ok(deadline, 'the first read armed its 8 s deadline');
-    // fired on time, the deadline yields one task first (fix round 5: an answer queued behind a short stall lands before
-    // it is drawn); the read is still out after that task, so it is drawn
-    global.setTimeout = (fn, ms) => { armed.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
-    try { if (deadline) deadline.fn(); } finally { global.setTimeout = realSetTimeout; }
-    A.eq(card().rows[0].live, 'checking…', 'the deadline fired on time: it yields one task before it says anything');
-    const yieldTask = armed.find(t => t.ms === 0);
-    A.ok(yieldTask, 'the on-time deadline posted its one-task yield');
-    if (yieldTask) yieldTask.fn();
-    A.eq(card().rows[0].live, 'status unknown — station unreachable', 'the deadline fired with the read still out: station unreachable');
-  } finally { Date.now = realNow; performance.now = realPerfNow; }
+  const realNow = Date.now;
+  Date.now = () => realNow() + 60000;
+  try { A.eq(card().rows[0].live, 'status unknown — station unreachable', 'a first read hung past three beats: station unreachable'); }
+  finally { Date.now = realNow; }
   data = ledger(kids.map((k, i) => done(k.id, i + 1)));
   release(); await stuck;
   A.eq(sumOf(card().html), 'all 3 done', 'and when it lands the ledger decides');

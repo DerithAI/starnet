@@ -4192,13 +4192,8 @@ const App = (() => {
     // are not in SESSIONS, so the asking conversation's lamp carries it — from the durable ledger, never a guess.
     const ov = typeof Overseer !== 'undefined' && Overseer.snapshot ? Overseer.snapshot() : null;
     const crew = ((ov && ov.workers) || []).filter(x => x && x.status === 'running' && x.parentStreamId === w.id).length;
-    // …a ledger the station has stopped answering for cannot vouch that they still run: say unknown, never "working". The
-    // tip says "unreachable" only when the harness proved it (a failed read, an ask past its deadline: Overseer.unreachable);
-    // a ledger that is only waiting on its next answer (a slow ask, a ledger a sleep left old) is being checked
-    if (crew && Overseer.fresh && !Overseer.fresh()) {
-      const down = typeof Overseer.unreachable !== 'function' || Overseer.unreachable();
-      return { dot: 'ws-dot', meta: 'crew · unknown', busy: false, attn: false, status: (down ? 'station unreachable' : 'checking the station') + ' — crew state unknown' };
-    }
+    // …a ledger the station has stopped answering for cannot vouch that they still run: say unknown, never "working"
+    if (crew && Overseer.fresh && !Overseer.fresh()) return { dot: 'ws-dot', meta: 'crew · unknown', busy: false, attn: false, status: 'station unreachable — crew state unknown' };
     if (crew) return { dot: 'ws-dot working', meta: crew + ' working', busy: true, attn: false, status: crew + ' of the crew working on what you delegated' };
     // A settled failure uses the crossed lamp; only a live approval/question earns the action row.
     if (w.lastRunOk === false) return { dot: 'ws-dot failed', meta: railRelTime(w.lastActiveAt), busy: false, attn: false, status: 'last run failed — open to inspect' };

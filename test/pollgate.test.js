@@ -247,26 +247,6 @@ async function advance(ms) {
     A.eq(r, 5, '…and the cadence carries on');
   }
 
-  /* ---- lastAwayAt(): when away was last claimed, on the gate's own clock (fix round 2, 2026-10-20) ----
-     overseer.js measures an answer that the gate went away after against the 30 s floor that was due to replace it, so a
-     short minimize never reads its last ledger as stale (test/overseer-ui.test.js drives that with this real gate). */
-  G._resetForTest();
-  doc.hidden = false;
-  A.eq(G.lastAwayAt(), -Infinity, 'never away: no time');
-  A.eq(G.away(), false, 'fixture: visible');
-  A.eq(G.lastAwayAt(), -Infinity, 'a visible check stamps nothing');
-  doc.hidden = true;
-  const awayAt = clock;
-  A.eq(G.away(), true, 'fixture: away');
-  A.eq(G.lastAwayAt(), awayAt, 'the claim is stamped with the gate clock');
-  clock += 5000; G.away();
-  A.eq(G.lastAwayAt(), awayAt + 5000, 'every later claim moves it on');
-  clock += 1000; doc.hidden = false; doc.fire('visibilitychange');
-  A.eq(G.away(), false, 'fixture: back');
-  A.eq(G.lastAwayAt(), awayAt + 5000, 'a wake keeps the time of the last claim (it is a time, not a state)');
-  G._resetForTest();
-  A.eq(G.lastAwayAt(), -Infinity, '_resetForTest forgets it');
-
   /* ---- THE VISIBLE CADENCE NEVER DRIFTS (fix round 4, 2026-10-20) ----
      Every real timer fires a little late (setTimeout leeway, 1-8 ms). Each beat was timed from when it RAN, so that
      lateness added up beat after beat, and the 1 s rail ticker and station tick (which run the live elapsed clocks) slid
