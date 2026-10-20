@@ -604,8 +604,10 @@
     if (!store || typeof store.loadHistory !== 'function') throw new Error('makeChannelHub: a channel store is required');
     if (typeof send !== 'function') throw new Error('makeChannelHub: a send(chatId,text) is required');
 
+    // The fallback factory is INVOKED: un-invoked, personaFor returned the inner arrow and every run without a configured
+    // system prompt reached the provider opening with the literal text "() => p" (2026-06-14 .. 2026-10-20).
     const personaFor = typeof o.persona === 'function' ? o.persona
-      : (() => { const p = (typeof o.persona === 'string' && o.persona) || DEFAULT_PERSONA; return () => p; });
+      : (() => { const p = (typeof o.persona === 'string' && o.persona) || DEFAULT_PERSONA; return () => p; })();
 
     const AID_RE = /^[A-Za-z0-9_-]{1,40}$/;   // notebook/fs-jail agentId grammar (a configured agentId must match)
     // chatId -> { runId, abort, superseded, agentId, startedAt } (one run per CONVERSATION, not per agent). The
