@@ -143,7 +143,14 @@ const A = require('./_assert.js');
     A.eq(card().rows[0].live, 'checking…', 'the clocks say 8 s but the page has not seen its deadline fire: still checking… (it said unreachable from a clock read)');
     const deadline = armed.find(t => t.ms === 8000);
     A.ok(deadline, 'the first read armed its 8 s deadline');
-    if (deadline) deadline.fn();
+    // fired on time, the deadline yields one task first (fix round 5: an answer queued behind a short stall lands before
+    // it is drawn); the read is still out after that task, so it is drawn
+    global.setTimeout = (fn, ms) => { armed.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
+    try { if (deadline) deadline.fn(); } finally { global.setTimeout = realSetTimeout; }
+    A.eq(card().rows[0].live, 'checking…', 'the deadline fired on time: it yields one task before it says anything');
+    const yieldTask = armed.find(t => t.ms === 0);
+    A.ok(yieldTask, 'the on-time deadline posted its one-task yield');
+    if (yieldTask) yieldTask.fn();
     A.eq(card().rows[0].live, 'status unknown — station unreachable', 'the deadline fired with the read still out: station unreachable');
   } finally { Date.now = realNow; performance.now = realPerfNow; }
   data = ledger(kids.map((k, i) => done(k.id, i + 1)));

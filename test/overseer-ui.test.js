@@ -5,11 +5,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 (async () => {
   const rows = new Map([['planning', {id:'planning'}]]);
-  let reconciled = 0, persisted = 0, timeout, fail = false, hang = false;
+  let reconciled = 0, persisted = 0, fail = false, hang = false;
+  // the page's timers, kept by the delay they were armed with: fire(ms) runs the one armed for ms (the 5 s slow mark, the
+  // 8 s deadline) on time, then the one-task yield (0 ms) a verdict posts before it is drawn
+  const pend = new Map(); let tid = 0;
+  const fire = ms => {
+    for (const [id, t] of pend) if (t.ms === ms) { pend.delete(id); t.fn(); break; }
+    for (const [id, t] of pend) if (t.ms === 0) { pend.delete(id); t.fn(); break; }
+  };
   const data = {threads:[{id:'research',parentStreamId:'planning',agentId:'custom_researcher'}],workers:[{runId:'w1',status:'done'}],reviews:[{reviewRunId:'r1',status:'done'}]};
   const context = {
     module:{exports:{}}, console:{debug(){}}, AbortController,
-    setTimeout(fn){timeout=fn;return 1;}, clearTimeout(){},
+    setTimeout(fn,ms){const id=++tid;pend.set(id,{fn,ms:ms||0});return id;}, clearTimeout(id){pend.delete(id);},
     document:{addEventListener(){}, createElement(){throw new Error('No additional UI permitted');}},
     Workstreams:{generalId:()=> 'general',get:id=>rows.get(id),adopt:row=>{if(!rows.has(row.id)) rows.set(row.id,row);return rows.get(row.id);}},
     App:{persist(){persisted++;},refreshRail(){},openWorkstream(){throw new Error('Must not move focus');}},
@@ -28,7 +35,7 @@ const path = require('node:path');
   await sync.refresh();assert.equal(reconciled,1,'unchanged polling does not rebuild the transcript');assert.equal(persisted,1,'unchanged polling does not persist again');
   fail=true;await sync.refresh();fail=false;await sync.refresh();
   assert.equal(reconciled,2,'reconnect reconciles even if worker state did not change');
-  hang=true;const pending=sync.refresh();timeout();await pending;hang=false;await sync.refresh();
+  hang=true;const pending=sync.refresh();fire(8000);await pending;hang=false;await sync.refresh();
   assert.equal(reconciled,3,'a hung request times out and does not permanently block synchronization');
   // review app-shell-ui-05: a failed poll leaves the last ledger readable (finished/failed rows) but no longer FRESH, so
   // nothing reads its running workers as still working through an outage; the delegation card repaints at once
@@ -42,11 +49,15 @@ const path = require('node:path');
   assert.ok(repaints>before,'the delegation card repaints when the ledger goes stale');
   fail=false;await sync.refresh();
   assert.equal(sync.fresh(),true,'recovery makes the ledger current again');
+  // a poll the station sits on: its REAL slow timer (two beats, fired on time with no answer in) is what says it — the
+  // ledger is seconds old, so no age bound plays any part (this read a +60 s Date.now step: the age said it, not the ask)
   hang=true;const stuck=sync.refresh();
-  const realNow=Date.now;context.Date=Date;Date.now=()=>realNow()+60000;
-  try { assert.equal(sync.fresh(),false,'a poll hung past three beats: the ledger is no longer current'); }
-  finally { Date.now=realNow; }
-  timeout();await stuck;hang=false;
+  assert.equal(sync.fresh(),true,'fixture: an ask just out, the ledger seconds old: current');
+  fire(5000);
+  assert.equal(sync.fresh(),false,'a poll the station has sat on for two beats (its slow timer, on time): the ledger is no longer current');
+  assert.equal(sync.unreachable(),false,'…but nothing says unreachable before the deadline');
+  fire(8000);await stuck;hang=false;
+  assert.equal(sync.unreachable(),true,'…which, lived through with no answer, does');
 
   /* RIG: the REAL overseer.js on one fake monotonic clock (performance.now) + wall clock (Date.now) + timer queue, and an
      /api/overseer that answers after a round trip, hangs (honouring the abort) or fails on cue. `gate`: 'real' = the REAL
@@ -107,7 +118,7 @@ const path = require('node:path');
     await r.ask();assert.equal(g.fresh(),true,'gated: a ledger just answered is fresh');
     // the Commander comes back 40 s later with nothing asked meanwhile; the catch-up read goes out and the station sits on it
     r.stall(40000);r.mode='hang';let p=g.refresh();
-    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'IN FLIGHT, OLD LEDGER: a 40 s old visible-beat ledger is not vouched for while the catch-up read is out, and that read is not "station unreachable"');
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'AGE BOUND: a 40 s old visible-beat ledger (past 3 beats + LATE_GRACE = 22.5 s) is not vouched for while the catch-up read is out (that ask is not yet slow: the age alone says it), and that read is not "station unreachable"');
     await r.advance(4000);assert.equal(g.unreachable(),false,'four seconds into the ask: not unreachable');
     await r.advance(4100);assert.deepEqual(r.read(),{fresh:false,unreachable:true},'REAL FAILURE: the ask ran past its 8 s deadline on the page own timer: unreachable');
     await p;r.mode='answer';
@@ -126,7 +137,7 @@ const path = require('node:path');
     await r.advance(100);await p;
     // an hour-old ledger (a sleep, a frozen page) with the catch-up read in flight
     r.stall(3600000);p=g.refresh();
-    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'IN FLIGHT, OLD LEDGER: an hour-old ledger is never fresh because an ask is out, and the ask on its way is not "station unreachable"');
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'AGE BOUND: an hour-old ledger is never fresh because an ask is out (that ask is not yet slow: the age alone says it), and the ask on its way is not "station unreachable"');
     await r.advance(100);await p;
     assert.equal(g.fresh(),true,'…until the catch-up read answers');
     // a refused read is the station not answering, at once; the next answer recovers
@@ -134,6 +145,24 @@ const path = require('node:path');
     assert.deepEqual(r.read(),{fresh:false,unreachable:true},'REAL FAILURE: a refused read: unreachable, not fresh');
     r.mode='answer';await r.ask();
     assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the next answer makes the ledger current again');
+  }
+
+  /* WHERE THE AGE BOUND SITS (fix round 5, 2026-10-20). An ask in flight takes the ledger's vouching away only once it is
+     slow (two beats out on the page's own timer) or past its deadline; until then the age bound alone decides — three of
+     the cadence that produced the ledger plus LATE_GRACE, 22.5 s on screen. So a catch-up ask that goes out after a page
+     freeze of up to 22.5 s still vouches for the ledger while it is out: that is the late-beat grace by design (the station
+     answered every ask it was given). Past the bound it never does, an ask in flight or not. */
+  for(const [ageMs,want,why] of [
+    [15000,true,'BY DESIGN (LATE_GRACE): a ledger a 15 s page freeze left old, its catch-up ask just out, still vouches'],
+    [22500,true,'BY DESIGN: at the bound itself (3 x 2.5 s + 15 s = 22.5 s), with the catch-up ask just out, it still vouches'],
+    [23000,false,'PAST THE BOUND: a 23 s old ledger with an ask in flight is never vouched for'],
+    [23000,false,'PAST THE BOUND, NOTHING ASKED: the same 23 s old ledger with no ask out is not either: the age decides, not the ask']]){
+    const r=rig();
+    await r.ask();   // answered 1 ms before ask() returns
+    r.stall(ageMs-1);
+    let p=null;if(!/NOTHING ASKED/.test(why)){r.mode='hang';p=r.o.refresh();}
+    assert.deepEqual(r.read(),{fresh:want,unreachable:false},why);
+    if(p){await r.advance(8100);await p;}
   }
 
   /* the ledger's ages are monotonic AND wall: the longer of the two (performance.now when present). A backward wall-clock
@@ -273,6 +302,49 @@ const path = require('node:path');
     r.stall(650);
     await r.advance(0);
     assert.deepEqual(r.read(),{fresh:true,unreachable:false},'ANSWER IN AT THE DEADLINE: a body still being read when a late deadline fires is taken, never thrown away as "station unreachable"');
+    r.done();
+  }
+  /* fix round 5 (2026-10-20): A VERDICT ON TIME YIELDS ONE TASK FIRST. Each verdict was graced only when its timer fired
+     more than LATE_FIRE_MS (1 s) late, or once the headers were in. A stall shorter than that, ending past the mark, ran
+     the timer as "on time" ahead of an answer that came in before it and sat queued behind that stall: the deadline
+     aborted the read and the rail said "station unreachable" for a whole beat; the slow mark said "checking the station"
+     for an answer that came in before 5 s. The answer's task (posted when it arrived) is queued here right after the
+     stall, behind the overdue verdict timer, as the page's queue held them. */
+  {
+    // the station answers at 7.6 s; the page is busy 7.5 → 8.6 s, so the 8 s deadline fires 0.6 s late, ahead of the answer
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.mode='held';await r.advance(2400 + 7500);   // 7.5 s into the 22.5 s beat's ask, every timer on time (slow at 5 s: no answer then)
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'fixture: an ask out 7.5 s with no answer is slow, not unreachable');
+    r.stall(1100);
+    r.ctx.setTimeout(()=>r.deliver(),0);          // the answer that came in at 7.6 s, queued behind the overdue deadline
+    const seen=[];r.afterTask=()=>seen.push(r.read());
+    await r.advance(0);r.afterTask=null;
+    assert.ok(seen.length>=2&&seen.every(x=>!x.unreachable),'DEADLINE 0.6 s LATE, ANSWER QUEUED: no reader calls the station unreachable (the deadline aborted the read): '+JSON.stringify(seen));
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…the queued answer lands and the ledger is current');
+    await r.advance(2500);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and stays so on the next beat');
+    r.done();
+  }
+  {
+    // the same at the slow mark: the answer in at 4.6 s, the page busy 4.5 → 5.3 s, the 5 s timer 0.3 s late
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.mode='held';await r.advance(2400 + 4500);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'fixture: 4.5 s into an on-time ask, current');
+    r.stall(800);
+    r.ctx.setTimeout(()=>r.deliver(),0);          // the answer that came in at 4.6 s, queued behind the overdue slow timer
+    const seen=[];r.afterTask=()=>seen.push(r.read());
+    await r.advance(0);r.afterTask=null;
+    assert.ok(seen.length>=2&&seen.every(x=>x.fresh&&!x.unreachable),'SLOW MARK 0.3 s LATE, ANSWER QUEUED: every reader says current (one said "checking the station"): '+JSON.stringify(seen));
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the answer lands');
+    r.done();
+  }
+  {
+    // …while an ask the station really sits on, with the page watching on time, is still slow at 5 s and aborted at 8 s
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.mode='hang';await r.advance(2400 + 5000);
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'on time, no answer: slow at 5 s, after the one-task yield');
+    await r.advance(3000);
+    assert.deepEqual(r.read(),{fresh:false,unreachable:true},'on time, no answer: past the 8 s deadline, unreachable');
     r.done();
   }
   {

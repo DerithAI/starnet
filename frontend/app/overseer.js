@@ -25,6 +25,10 @@ const Overseer = (() => {
          page stalled past the 5 s mark ran the slow timer ahead of an answer queued behind that stall, and a reader in
          between said "checking the station"; a late deadline that found the body still being read aborted it, and the rail
          said "station unreachable" for an answer the station had given in time.
+       · A VERDICT ON TIME YIELDS ONE TASK FIRST (fix round 5): a stall under LATE_FIRE_MS that ended past the mark (the
+         answer in at 7.6 s, the page busy 7.5 → 8.6 s) ran the deadline as "on time" ahead of the queued answer, and it
+         aborted the read. The answer's task was posted before the verdict's yield, so it lands first; only an ask still
+         unanswered after it is slow, or past its deadline.
        · fresh(): the last ledger can still vouch for a worker at work. Not when unreachable; not once THIS ask has been
          out two beats by the page's own timer (slow: the station is sitting on it — 7.5 s from an on-time answer, as
          before); and not when the ledger is older than three of the cadence that produced it plus LATE_GRACE. The grace
@@ -69,15 +73,23 @@ const Overseer = (() => {
     const controller = new AbortController();
     let responded = false;   // the station's answer is in (its headers): any wait from here on is the page's own
     // a verdict against the station, drawn only by a timer the page lived through on time with no answer in; seen late
-    // (more than LATE_FIRE_MS past due) or with the answer in, it gives the ask one more beat — once
+    // (more than LATE_FIRE_MS past due) or with the answer in, it gives the ask one more beat — once. On time, it first
+    // yields one task (fix round 5): a stall shorter than LATE_FIRE_MS that ends past the mark runs the overdue timer
+    // ahead of an answer that came in before it and sat queued behind that stall. The answer's task was posted first, so
+    // it runs before the yield, and the verdict is drawn only if the answer is still not in.
     const verdict = (ms, act) => {
       let graced = false, id = 0;
+      const grace = () => { graced = true; arm(BEAT); };
       const arm = wait => {
         const due = mono() + wait;
         id = setTimeout(() => {
           if (!asking) return;
-          if (!graced && (responded || mono() - due > LATE_FIRE_MS)) { graced = true; arm(BEAT); return; }
-          act();
+          if (!graced && (responded || mono() - due > LATE_FIRE_MS)) { grace(); return; }
+          id = setTimeout(() => {
+            if (!asking) return;
+            if (!graced && responded) { grace(); return; }
+            act();
+          }, 0);
         }, wait);
       };
       arm(ms);
