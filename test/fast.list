@@ -970,6 +970,7 @@ test/terminal-resize.test.js
 test/glass-interactions.test.js
 test/backdrop-preview.test.js
 test/backdrop-bake.test.js
+test/spacebg-void-strings.test.js
 test/glass-comms.test.cjs
 test/comms-popup-fit.test.cjs
 test/glass-approval.test.cjs

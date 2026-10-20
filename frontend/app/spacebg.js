@@ -437,7 +437,27 @@ const SpaceBG = (() => {
       const spark = [];
       for (let i = 0, n = Math.min(400, Math.round(area / 6000)); i < n; i++) spark.push({ x: rnd(), y: rnd(), ph: rnd() * 10, rate: 500 + rnd() * 1200, c: pickTint(rnd()) });
 
-      return { nebCv, nebPlates, nebJobs, dustCv, mid, near, spark };
+      const built = { nebCv, nebPlates, nebJobs, dustCv, mid, near, spark };
+      VOID_BG.levels(built);
+      return built;
+    },
+
+    /* LEVEL STRINGS (2026-10-20, "eats my PC's resources"). Every twinkling star steps between the same three levels,
+       yet draw() built its rgba() string afresh per star per frame: ~470 throwaway strings a frame at 1920x1080, from
+       only 34 distinct values. Each star now carries its three strings (s.f, and s.g for a glint), made here from the
+       SAME arithmetic the loops used, so every fillRect paints with the identical fillStyle (law 1 holds, byte for
+       byte: test/spacebg-void-strings.test.js). Draws no random number, so the seeded build is untouched. A state built
+       without them (an older bake) gets them on its first draw. */
+    LEVELS: [0.15, 0.55, 1],
+    levels(st) {
+      const L = VOID_BG.LEVELS;
+      for (const s of st.spark) s.f = L.map(lv => s.c + (lv * 0.6).toFixed(3) + ')');
+      for (const s of st.mid) s.f = L.map(lv => s.c + (lv * VOID_BG.DIM_MID).toFixed(3) + ')');
+      for (const s of st.near) {
+        s.f = L.map(lv => s.c + (lv * VOID_BG.DIM_NEAR).toFixed(3) + ')');
+        if (s.glint) s.g = L.map(lv => s.c + (lv * VOID_BG.DIM_NEAR * 0.30).toFixed(3) + ')');
+      }
+      st.levels = true;
     },
 
     draw(ctx, w, h, now, cam, st) {
@@ -477,25 +497,29 @@ const SpaceBG = (() => {
       /* TWINKLE (2026-09-05, Andrew: "have the stars twinkle"): the old smooth 0.35-1 sine read as
          steady after the CRT pass. Stars now STEP between three levels and go much darker at the
          bottom, so each one visibly blinks; the sparkle set does the same in the far field. */
-      const step = ph => ph > 0.45 ? 1 : ph > -0.35 ? 0.55 : 0.15;
+      // step() is the level's INDEX into VOID_BG.LEVELS (0.15 / 0.55 / 1); each star's strings come from levels().
+      // fillStyle is assigned only when the string changes — the same style is in force at every fillRect.
+      const step = ph => ph > 0.45 ? 2 : ph > -0.35 ? 1 : 0;
+      if (!st.levels) VOID_BG.levels(st);
+      let fill = null;
       for (const s of st.spark) {
-        const lv = step(Math.sin(now / s.rate + s.ph));
-        if (lv < 0.2) continue;
-        ctx.fillStyle = s.c + (lv * 0.6).toFixed(3) + ')';
+        const i = step(Math.sin(now / s.rate + s.ph));
+        if (!i) continue;                              // the bottom step (0.15) is off for the sparkle set
+        if (s.f[i] !== fill) ctx.fillStyle = fill = s.f[i];
         ctx.fillRect((s.x * w + now / 1000 * S.dust) % w, s.y * h, 1, 1);
       }
       for (const s of st.mid) {
-        const tw = step(Math.sin(now / (900 + s.ph * 300) + s.ph)) * VOID_BG.DIM_MID;
-        ctx.fillStyle = s.c + tw.toFixed(3) + ')';
+        const f = s.f[step(Math.sin(now / (900 + s.ph * 300) + s.ph))];
+        if (f !== fill) ctx.fillStyle = fill = f;
         ctx.fillRect((s.x * w + now / 1000 * S.mid) % w, s.y * h, s.r, s.r);
       }
       for (const s of st.near) {
-        const tw = step(Math.sin(now / (900 + s.ph * 300) + s.ph)) * VOID_BG.DIM_NEAR;
+        const i = step(Math.sin(now / (900 + s.ph * 300) + s.ph));
         const x = (s.x * w + now / 1000 * S.near) % w, y = s.y * h;
-        ctx.fillStyle = s.c + tw.toFixed(3) + ')';
+        if (s.f[i] !== fill) ctx.fillStyle = fill = s.f[i];
         ctx.fillRect(x, y, s.r, s.r);
-        if (s.glint && tw > 0.9) {                     // the brightest few flare into a 4-point glint at twinkle peak
-          ctx.fillStyle = s.c + (tw * 0.30).toFixed(3) + ')';
+        if (s.glint && VOID_BG.LEVELS[i] * VOID_BG.DIM_NEAR > 0.9) {   // the brightest few flare into a 4-point glint at twinkle peak
+          if (s.g[i] !== fill) ctx.fillStyle = fill = s.g[i];
           ctx.fillRect(x - s.r * 2, y + (s.r >> 1), s.r * 5, 1);
           ctx.fillRect(x + (s.r >> 1), y - s.r * 2, 1, s.r * 5);
         }
