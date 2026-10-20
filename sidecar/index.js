@@ -15981,7 +15981,7 @@ function handleCronHistory(req, res) {
       if (!r || !(r.cronJobId === id || (job.lastRunId && r.runId === job.lastRunId))) continue;
       if (out.some(x => x.runId === r.runId)) continue;
       out.push({ runId: r.runId, at: r.endedAt || r.ts || 0, startedAt: r.startedAt || 0, durationMs: r.durationMs || 0,
-        reason: r.reason, usd: r.usd || 0, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
+        reason: r.reason, usd: r.usd || 0, spendUnknown: !!r.spendUnknown, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
         error: r.error || '', artifacts: (r.artifacts || []).length });
     }
     return json(200, { ok: true, id, runs: out });
@@ -27108,8 +27108,18 @@ function syncInterruptedRunHistory(r) {
     && String(existing.continuedReason || '') === continuedReason && !settled) return null;
   const startedAt = Number(meta.startedAt || r.firstTs || 0) || 0;
   const endedAt = Math.max(startedAt, Number(r.lastTs || 0) || 0);   // the last durable journal record = last proof of life
+  // A ROUTINE RUN THAT DIED BETWEEN FIRE AND SETTLEMENT (sweep/autonomy 2026-10-20): the row carries the journal's
+  // cronJobId so the routine's own history lists it, and the routine record stops reporting the previous run's ok.
+  const cronJobId = String(meta.trigger === 'schedule' && meta.cronJobId || '').slice(0, 100);
+  if (cronJobId) {
+    const j = cronStore.getJob(cronJobs, cronJobId);
+    if (j && cronStore.markInterrupted([j], cronJobId, { runId: r.runId, startedAt })[0] !== j) {
+      withCronWrite(jobs => cronStore.markInterrupted(jobs, cronJobId, { runId: r.runId, startedAt, error: INTERRUPTED_HISTORY_LINES[next.status] }))
+        .catch(e => failNote('cron.interrupted.mark', e));
+    }
+  }
   return runStore.record({
-    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''),
+    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''), cronJobId,
     reason: 'interrupted', turns: Number((r.checkpoint && r.checkpoint.turn) || 0) || 0, tokens: 0,
     usd: settled ? settled.usd : 0, spendUnknown: !settled, spendSettled: settled ? settled.attestedAs : '',
     title: String(meta.userTitle || ''), streamId: String(meta.streamId || ''), model: String(meta.model || ''),
