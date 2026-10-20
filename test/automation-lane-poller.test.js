@@ -111,11 +111,62 @@ const gated = vm.createContext(Object.assign({}, ctx, {
 vm.runInContext(src, gated, { filename: 'windows/loops.js' });
 const gBody = el();
 for (let i = 0; i < 3; i++) gatedLanes[0](gBody).wire();
-const gLane = [...gateLoops].filter(l => l.ms === 4000);
+const msOf = l => (typeof l.ms === 'function' ? l.ms() : l.ms);
+const gLane = [...gateLoops].filter(l => msOf(l) === 4000);
 A.eq(gLane.length, 1, 'through PollGate: three renders of one body keep ONE 4 s loop');
 A.eq(gLane[0].immediate, false, '…armed like the interval it replaces (first beat after 4 s)');
 gBody.isConnected = false; gLane[0].fn();
-A.eq([...gateLoops].filter(l => l.ms === 4000).length, 0, 'through PollGate: a body that left the DOM stops its loop');
+A.eq([...gateLoops].filter(l => msOf(l) === 4000).length, 0, 'through PollGate: a body that left the DOM stops its loop');
+
+/* fix round 2 (2026-10-20): a restored window reads within ~1 s, not up to 4 s. StationUI's restore repaints only the
+   dossier, so an AUTOMATION window minimized for an hour showed hour-old loop states (a "running" loop long finished)
+   until its next 4 s beat. While the poller is skipping, its beat comes every 1 s (a client-rects check, never a read).
+   GENUINE (executed): the REAL pollgate.js on a fake monotonic clock + timers drives the REAL windows/loops.js poller. */
+{
+  const G = require('../frontend/app/pollgate.js');
+  let clock = 2e6, tseq = 0;
+  const timers = new Map();
+  const setT = (fn, ms) => { const id = ++tseq; timers.set(id, { fn, at: clock + Math.max(0, ms || 0) }); return id; };
+  G._resetForTest(); G._setClockForTest(() => clock); G._setTimersForTest(setT, id => { timers.delete(id); }); G._setFrameForTest(null);
+  G._setDocForTest({ hidden: false, addEventListener() {}, removeEventListener() {} }, null);
+  const advance = async ms => {
+    const until = clock + ms;
+    for (;;) {
+      let nx = null; for (const [id, t] of timers) if (t.at <= until && (!nx || t.at < nx[1].at)) nx = [id, t];
+      if (!nx) break; timers.delete(nx[0]); clock = nx[1].at; nx[1].fn(); await settle();
+    }
+    clock = until; await settle();
+  };
+  const realLanes = [];
+  let reads = 0;
+  const real = vm.createContext(Object.assign({}, ctx, {
+    AutomationWindow: { registerLane: fn => realLanes.push(fn) }, PollGate: G,
+    Harness: { api: { get: async () => { reads++; return { loops: [] }; } } }
+  }));
+  vm.runInContext(src, real, { filename: 'windows/loops.js' });
+  let shown = [{}];
+  const rBody = el({ getClientRects: () => shown });
+  realLanes[0](rBody).wire();
+  await settle();
+  reads = 0;
+  await advance(4000);
+  A.eq(reads, 1, 'real gate: an open window reads every 4 s');
+  shown = [];   // minimized to the strip
+  await advance(60000);
+  A.eq(reads, 1, 'real gate: a minimized window never reads (a minute of skipped beats)');
+  await advance(300);
+  shown = [{}];   // restored
+  await advance(1000);
+  A.eq(reads, 2, 'real gate: restored, the window reads within ~1 s (it showed its pre-minimize cards up to 4 s)');
+  await advance(3500);
+  A.eq(reads, 2, 'real gate: …then the 4 s cadence is back (no 1 s reads while it can be seen)');
+  await advance(600);
+  A.eq(reads, 3, 'real gate: …and the next read comes 4 s after the last');
+  rBody.isConnected = false;
+  await advance(5000);
+  A.eq(G._debug().loops, 0, 'real gate: a closed window ends its loop');
+  G._resetForTest();
+}
 
 A.report('automation-lane-poller.test');
 })().catch(e => { console.error(e); process.exit(1); });
