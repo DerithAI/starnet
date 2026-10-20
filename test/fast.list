@@ -694,6 +694,7 @@ test/loop-review-needs-you.test.js
 test/automation-lane-poller.test.js
 test/browser-chip-wait.test.js
 test/pollgate.test.js
+test/ctx-gauge-memo.test.js
 test/routine-origin-race.test.js
 test/returnstore-rate-sync.test.js
 test/returnstore-recovery.test.js

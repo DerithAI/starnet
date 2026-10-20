@@ -2383,9 +2383,33 @@ const Chat = (() => {
      raw ws.history) so the gauge estimates the same bytes the send path actually puts on the wire:
      local markers the model never sees must not inflate the reading. Returns null with no active
      stream, which the gauge reads as "nothing to measure yet". */
+  /* THE GAUGE READS A MEMO (idle CPU piece 3, 2026-10-20). The 1 s station tick asks for this every second, and
+     historyWindow re-serialized the whole conversation three or four times per call (JSON.stringify + TextEncoder per
+     message for the byte cap, again per message for the token fit, and again for the calibrated refit) — on a long chat,
+     every second, with nothing changed. Its answer can only move when one of these does: the conversation and its agent,
+     the history array (replaced, appended, popped or spliced — chat.js never edits a kept message's content in place, and a
+     streaming reply's growing content is in the key), the selected model or its catalog limit, or a context reading
+     (Harness.contextRevision, bumped on every write to the readings). A 15 s ceiling re-derives it anyway, so an edit none
+     of these can see is never stale for long. Without contextRevision (an older harness) nothing is memoized. */
+  const CTX_MEMO_TTL_MS = 15000;
+  let ctxMemo = null;
   function contextRef() {
     if (!activeWs) return null;
-    return { agentId: activeWs.agentId || 'agent', streamId: activeWs.id, messages: historyWindow(activeWs) };
+    let key = null;
+    try {
+      if (typeof Harness !== 'undefined' && Harness.contextRevision) {
+        const h = Array.isArray(activeWs.history) ? activeWs.history : null;
+        const last = h && h.length ? h[h.length - 1] : null;
+        const model = Harness.getModel ? (Harness.getModel() || '') : '';
+        key = [activeWs.id, activeWs.agentId, h, h ? h.length : -1, last, last ? String(last.content == null ? '' : last.content).length : -1,
+          model, Harness.contextLimitOf ? Harness.contextLimitOf(model) : 0, Harness.contextRevision()];
+      }
+    } catch (_) { key = null; }
+    const now = Date.now();
+    if (key && ctxMemo && now - ctxMemo.at < CTX_MEMO_TTL_MS && ctxMemo.key.every((v, i) => v === key[i])) return ctxMemo.ref;
+    const ref = { agentId: activeWs.agentId || 'agent', streamId: activeWs.id, messages: historyWindow(activeWs) };
+    ctxMemo = key ? { key, at: now, ref } : null;
+    return ref;
   }
   // A streamed fragment is real assistant output even when the transport dies before a clean result envelope.
   // Persist it as its own turn before the failure marker so switch/reload cannot erase what was already visible.
