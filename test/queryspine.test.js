@@ -154,5 +154,18 @@ async function rejects(p, label) {
   A.eq(awayReads, 4, 'a fresh value is not re-read on wake');
   offAway(); clock += 60000; Q._wakeForTest(); await drain();
   A.eq(awayReads, 4, 'a resource nobody watches is never re-read on wake');
+  /* fix round (2026-10-20): a backward wall-clock step never parks an away poll or skips a wake. The age of a value read
+     before the step is negative — unknown, never "fresh" — so the beat reads (it skipped until the clock caught up). */
+  clock = 1760000000000;   // a real wall-clock reading (the fixture clock started at 1000)
+  const offStep = Q.subscribe('away-poll', () => {}, { refresh: false });
+  await Q.refresh('away-poll');
+  const stepAt = awayReads;
+  awayNow = true; clock -= 300000; awayTick(); await drain();
+  A.eq(awayReads, stepAt + 1, 'away, the wall clock stepped back 5 min: the next beat reads (a negative age is unknown)');
+  clock += 4000; awayTick(); await drain();
+  A.eq(awayReads, stepAt + 1, '…and the 30 s away floor holds again from that read');
+  clock -= 300000; awayNow = false; Q._wakeForTest(); await drain();
+  A.eq(awayReads, stepAt + 2, 'a wake after a backward step re-reads too');
+  offStep();
   A.report('queryspine.test');
 })().catch(err => { console.error(err && err.stack ? err.stack : err); process.exit(1); });

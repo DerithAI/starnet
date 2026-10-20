@@ -2405,8 +2405,8 @@ const Chat = (() => {
           model, Harness.contextLimitOf ? Harness.contextLimitOf(model) : 0, Harness.contextRevision()];
       }
     } catch (_) { key = null; }
-    const now = Date.now();
-    if (key && ctxMemo && now - ctxMemo.at < CTX_MEMO_TTL_MS && ctxMemo.key.every((v, i) => v === key[i])) return ctxMemo.ref;
+    const now = Date.now(), age = ctxMemo ? now - ctxMemo.at : -1;   // a negative age (the wall clock stepped back) cannot be measured: re-derive
+    if (key && ctxMemo && age >= 0 && age < CTX_MEMO_TTL_MS && ctxMemo.key.every((v, i) => v === key[i])) return ctxMemo.ref;
     const ref = { agentId: activeWs.agentId || 'agent', streamId: activeWs.id, messages: historyWindow(activeWs) };
     ctxMemo = key ? { key, at: now, ref } : null;
     return ref;

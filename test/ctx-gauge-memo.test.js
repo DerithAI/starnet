@@ -75,6 +75,8 @@ A.ok(switched.messages.length < first.messages.length, 'the 32K model fits fewer
 forces('the catalog limit moving', () => { limits['model-b'] = 64000; });
 forces('another agent on the conversation', () => { ws.agentId = 'copy'; });
 forces('the 15 s ceiling', () => { clock += 16000; });
+// fix round (2026-10-20): a backward wall-clock step leaves the ceiling unmeasurable, so it re-derives (it held the memo until the clock caught up)
+forces('a backward wall-clock step', () => { clock -= 300000; });
 const other = { id: 'ws2', agentId: 'agent', history: [msg(1), msg(2)] };
 ctx.activeWs = other;
 stringifies = 0;

@@ -24,6 +24,9 @@ const QuerySpine = (() => {
   const AWAY_MS = (typeof PollGate !== 'undefined' && PollGate.AWAY_MS) || 30000;
   let isAway = () => !!(typeof PollGate !== 'undefined' && PollGate.away && PollGate.away());
   const touchedAt = r => Math.max(r.updatedAt || 0, r.errorAt || 0);
+  // how long ago the wire last answered. The stamps are wall-clock (snapshots show them), so a backward step makes the age
+  // negative: that is unknown, never "fresh" — the beat reads rather than waiting for the wall clock to catch up
+  const ageOf = r => { const a = now() - touchedAt(r); return a >= 0 ? a : Infinity; };
 
   function positiveMs(v) { return Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0; }
   function define(key, spec) {
@@ -171,7 +174,7 @@ const QuerySpine = (() => {
     if (!r.pollMs || !r.listeners.size || r.timer != null) return;
     r.timer = armInterval(() => {
       if (!r.listeners.size) return;
-      if (isAway() && now() - touchedAt(r) < AWAY_MS) return;   // away: one read per AWAY_MS, never none
+      if (isAway() && ageOf(r) < AWAY_MS) return;   // away: one read per AWAY_MS, never none
       refresh(r.key).catch(() => {}); // subscribers receive the error-bearing snapshot
     }, r.pollMs);
   }
@@ -179,7 +182,7 @@ const QuerySpine = (() => {
   function wake() {
     for (const r of resources.values()) {
       if (!r.pollMs || !r.listeners.size) continue;
-      if (now() - touchedAt(r) >= r.pollMs) refresh(r.key).catch(() => {});
+      if (ageOf(r) >= r.pollMs) refresh(r.key).catch(() => {});
     }
   }
   if (typeof PollGate !== 'undefined' && PollGate.onWake) PollGate.onWake(wake);
