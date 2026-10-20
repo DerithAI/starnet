@@ -20673,8 +20673,9 @@ async function runOnceCore(o) {
      team.dispatch hands a later worker its earlier siblings' files (o.handoffReads), and grants the lead its workers'
      saved files once they return (grantReads below). Read-only, exact real paths, gone when the run ends. */
   const runReadGrants = new Set((Array.isArray(o.handoffReads) ? o.handoffReads : []).map(String).filter(Boolean).slice(0, 64));
+  const runSessionRoots = new Set();   // folders a "session" answer approved for THIS run only (pathtrust.js 1b)
   const runPathTrust = (abs, o2) => pathTrustCore.guard(abs, {
-    scope: (o2 && o2.scope) || 'read', surface: surface, prompt: pathPrompt || null,
+    scope: (o2 && o2.scope) || 'read', surface: surface, prompt: pathPrompt || null, sessionRoots: runSessionRoots,
     agentId: (o2 && o2.agentId) || agentId,
     readGrants: Array.from(runReadGrants),
     // who CAUSED this I/O (recency metadata only): a watched run, or the Commander's owner-trusted channel DM.

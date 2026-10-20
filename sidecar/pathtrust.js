@@ -222,6 +222,10 @@
         if (!R) continue;
         if (pathInside(real, R)) { touch(R, norm, { user: userTouch }); return { base: R, abs: norm }; }
       }
+      // 1b. …or under a root the Commander approved "for this session" earlier in THIS run (o.sessionRoots: a Set the
+      // caller owns per run, so it dies with the run and is never a standing grant)
+      const sessionRoots = (o.sessionRoots && typeof o.sessionRoots.add === 'function') ? o.sessionRoots : null;
+      if (sessionRoots) for (const R of sessionRoots) if (R && pathInside(real, R)) return { base: R, abs: norm };
 
       // 2. not blessed. In ASK mode only a watched, prompt-wired run may approve a new root. Full Access is
       // already the operator's authority for every non-hardline path, so it must never manufacture a prompt.
@@ -270,6 +274,10 @@
       }
       // "once": allow THIS access only, without persisting a root — the next access asks again, as promised.
       if (decision === 'once') return { base: proposedReal, abs: norm };
+      /* "session" (ACP's "Allow for the rest of this session", a paired phone's "for this session") is a legal consent
+         word: it used to fall through to the deny below while the answering surface was told it was applied. It approves
+         this access and the rest of THIS run under the same root — never a standing grant. No session store wired = once. */
+      if (decision === 'session') { if (sessionRoots) sessionRoots.add(proposedReal); return { base: proposedReal, abs: norm }; }
       throw new Error('access to ' + norm + ' was denied');
     }
 
