@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**22** open (open+claimed) of 305 total — 0 P0 · 1 P1 · 21 P2
+**23** open (open+claimed) of 307 total — 0 P0 · 1 P1 · 22 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -165,6 +165,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | autonomy | [Stale routine recovery drops its fence before failure persistence](bugs/50741e0d-stale-routine-recovery-drops-its-fence-before-fa.md) | agent/cron-reliability-0921 | 0f881f44afde73e79de13f0117cf0dd9f2771ff9 |
 | P1 | fixed | autonomy | [Windows computer movement resolves to filesystem Move-Item](bugs/758185bc-windows-computer-movement-resolves-to-filesystem.md) | computer-move-proof-0911 | dd85573b9 |
 | P1 | fixed | channels | [A lost-race consent tap stamps "▸ ✅ Allow once" onto the message before resolveConsent is asked, so a DENIED request keeps a permanent "approved" record](bugs/64563ad9-a-lost-race-consent-tap-stamps-allow-once-onto-t.md) | sweep/channels | 96fe108d |
+| P1 | fixed | channels | [A routine's reply longer than Telegram's 4096 characters is sent as one message, refused 'message is too long' on every retry, and never reaches the chat](bugs/3a9d5e4a-a-routine-s-reply-longer-than-telegram-s-4096-ch.md) | sweep/channels | 4c5cb6e2e |
 | P1 | fixed | channels | [A Telegram consent ask allowed from STARNET REMOTE is stamped 'expired — DENIED' by a late tap on the still-live keyboard](bugs/9e60dd9f-a-telegram-consent-ask-allowed-from-starnet-remo.md) | sweep/channels | f1002804b |
 | P1 | fixed | channels | [`channel.targets` derives "reachable now" from the adapter handle's existence, so an errored (or still-connecting) channel is reported connected while telegramS](bugs/a199ee3c-channel-targets-derives-reachable-now-from-the-a.md) | sweep/channels | 96fe108d |
 | P1 | fixed | channels | [Chat replies cut off without confirmed completion](bugs/812c3bfb-chat-replies-cut-off-without-confirmed-completio.md) | agent/chat-cutoff-0919 | 93a4ee64c |
@@ -296,6 +297,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | autonomy | [Repeated project verification reportedly consumes overnight budget](bugs/f8d479d9-repeated-project-verification-reportedly-consume.md) | agent/reliability-audit-0919 | — |
 | P2 | open | channels | [A steered Telegram reply arrives with the raw '[steering] <note>' echo and both the pre- and post-steer answers glued into one message](bugs/e903a199-a-steered-telegram-reply-arrives-with-the-raw-st.md) | sweep/channels | — |
 | P2 | open | channels | [Desktop slash aliases and client-only commands typed on Telegram (/routines, /reset, /version, /q) fall through to a paid model run](bugs/6cd531b1-desktop-slash-aliases-and-client-only-commands-t.md) | sweep/channels | — |
+| P2 | open | channels | [/routine add typed on Telegram creates a station-only routine: its results never come back to the chat that created it](bugs/3b958e41-routine-add-typed-on-telegram-creates-a-station.md) | sweep/channels | — |
 | P2 | open | channels | [Zoho Mail bootstrap tool reportedly requires undiscoverable account](bugs/54564ff9-zoho-mail-bootstrap-tool-reportedly-requires-und.md) | agent/reliability-audit-0919 | — |
 | P2 | open | onboarding | [Google Drive authorization is hard blocked for a fresh personal account](bugs/f2ac6356-google-drive-authorization-is-hard-blocked-for-a.md) | release-0135-prep | — |
 | P2 | open | onboarding | [Customer reports unusable visibility without build or platform details](bugs/6bb9d2a1-visibility-failure-without-diagnostics.md) | release-0120-prep-0915 | — |
@@ -440,7 +442,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 
 | Surface | Open |
 | --- | --- |
-| channels | 4 |
+| channels | 5 |
 | autonomy | 3 |
 | providers | 5 |
 | safecell | 3 |
