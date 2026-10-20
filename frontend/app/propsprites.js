@@ -11490,11 +11490,21 @@ const PropSprites = (() => {
   const LIGHT_RESPONSE_TYPES = new Set(('desk desk2 console consoleL pixelrig bench crate boxes goldcrate safe vault rack rackV shelf ' +
     'war_intelcab quarters_lockerbank quarters_minifridge bookshelf stool chair couch booth recliner recliner_r ' +
     'sidetable lowtable glasstable dinertable loungetable longtable bridge_tacticaltable dinerchair podchair plant bookstack toolbox').split(' '));
-  const RESPONSE_LIMIT = 96, RESPONSE_PIXELS = 262144, RESPONSE_SINGLE = 65536;
+  /* THE LRU CLIFF (2026-10-20, "eats my PC's resources"). Every frame each on-screen rigid prop looks up one overlay, so
+     the working set is a frame's visible props — and an LRU smaller than a cyclic working set misses EVERY lookup.
+     Andrew's 73 light-response props filled 97% of the old 96-entry / 256 Ki px budget; three more chairs on screen and
+     all 76 rebuilt every frame (a GPU readback, a JS pass over every pixel, a new canvas each). Three changes:
+       · a 4x budget (384 entries / 1 Mi px, 4 MiB of overlays at most);
+       · each mask's opaque-pixel map is read back ONCE (maskAlphas), so a new light on a known mask costs no readback;
+       · entries carry the frame that last drew them (setNow advances responseFrame). Eviction never drops an entry this
+         frame already drew: past the budget the newcomer goes without its overlay instead (`skipped`) — the same props
+         every frame, so nothing flickers, and nothing thrashes. */
+  const RESPONSE_LIMIT = 384, RESPONSE_PIXELS = 1048576, RESPONSE_SINGLE = 65536;
   const RESPONSE_SHADE = [8,10,18];
   const lightResponses = new Map();
-  let responsePixels = 0;
-  const responseMetrics = { builds: 0, hits: 0, evictions: 0, failures: 0, draws: 0 };
+  const maskAlphas = new WeakMap();   // shadow mask canvas -> { opaque: Uint8Array (1 where alpha >= 250), minX, minY, maxX, maxY }
+  let responsePixels = 0, responseFrame = 0, responseNow = NaN;
+  const responseMetrics = { builds: 0, hits: 0, evictions: 0, failures: 0, draws: 0, skipped: 0 };
   const responseClamp = (v,a,b) => Math.max(a,Math.min(b,v));
   function dropResponse(key) {
     const old=lightResponses.get(key);if(!old)return;
@@ -11515,6 +11525,22 @@ const PropSprites = (() => {
     const angle=direction*Math.PI/4;
     return{color,strength,direction,dx:direction<0?0:Math.cos(angle),dy:direction<0?0:Math.sin(angle)};
   }
+  // One mask's opaque pixels and their bounds, read back once: a mask canvas is never repainted (a lost or
+  // rebuilt mask is a new canvas), so every light on it shares this map instead of its own readback.
+  function maskAlpha(mask) {
+    let read=maskAlphas.get(mask);if(read)return read;
+    const w=mask.width,h=mask.height,pixels=w*h;
+    const alpha=mask.getContext('2d').getImageData(0,0,w,h).data;
+    if(alpha.length!==pixels*4)return null;
+    const opaque=new Uint8Array(pixels);
+    let minX=w,minY=h,maxX=-1,maxY=-1;
+    // Ignore the translucent spill already carried by old art. A physical rim
+    // belongs to its opaque casing, not to a halo or a contact shadow on the deck.
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(alpha[(y*w+x)*4+3]>=250) {
+      opaque[y*w+x]=1;minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+    }
+    read={opaque,minX,minY,maxX,maxY};maskAlphas.set(mask,read);return read;
+  }
   function responseOverlay(f,light) {
     const mask=shadowMask(f);if(!mask)return null;
     const key=[f.t,f.w||1,f.h||1,f.r||0,f.m||0,light.direction,light.strength,...light.color].join('|');
@@ -11522,22 +11548,22 @@ const PropSprites = (() => {
     if(hit) {
       const g=hit.cv.getContext('2d');
       if(hit.mask===mask&&g&&!(g.isContextLost&&g.isContextLost())) {
-        lightResponses.delete(key);lightResponses.set(key,hit);responseMetrics.hits++;return hit.cv;
+        lightResponses.delete(key);lightResponses.set(key,hit);hit.frame=responseFrame;responseMetrics.hits++;return hit.cv;
       }
       dropResponse(key);
     }
     const w=mask.width,h=mask.height,pixels=w*h;
     if(pixels>RESPONSE_SINGLE)return null;
-    const alpha=mask.getContext('2d').getImageData(0,0,w,h).data;
-    if(alpha.length!==pixels*4)return null;
-    let minX=w,minY=h,maxX=-1,maxY=-1;
-    // Ignore the translucent spill already carried by old art. A physical rim
-    // belongs to its opaque casing, not to a halo or a contact shadow on the deck.
-    const solid=(x,y)=>x>=0&&y>=0&&x<w&&y<h&&alpha[(y*w+x)*4+3]>=250;
-    for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(solid(x,y)) {
-      minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+    const read=maskAlpha(mask);if(!read||read.maxX<0)return null;
+    // Room first, before paying for any pixels. The least-recent entry goes unless this frame already drew it; then
+    // every entry is this frame's, and the newcomer skips its overlay rather than evict one the next frame rebuilds.
+    while(lightResponses.size>=RESPONSE_LIMIT||responsePixels+pixels>RESPONSE_PIXELS) {
+      const lru=lightResponses.keys().next().value;
+      if(lru===undefined||lightResponses.get(lru).frame===responseFrame) {responseMetrics.skipped++;return null;}
+      dropResponse(lru);responseMetrics.evictions++;
     }
-    if(maxX<0)return null;
+    const {opaque,minX,minY,maxX,maxY}=read;
+    const solid=(x,y)=>x>=0&&y>=0&&x<w&&y<h&&opaque[y*w+x]===1;
     const cv=document.createElement('canvas');cv.width=w;cv.height=h;
     const g=cv.getContext('2d');if(!g||!g.createImageData||!g.putImageData)return null;
     const image=g.createImageData(w,h),out=image.data;
@@ -11557,10 +11583,7 @@ const PropSprites = (() => {
       out[i+3]=Math.round(a*255);
     }
     g.putImageData(image,0,0);
-    while(lightResponses.size>=RESPONSE_LIMIT||responsePixels+pixels>RESPONSE_PIXELS) {
-      dropResponse(lightResponses.keys().next().value);responseMetrics.evictions++;
-    }
-    hit={cv,mask,pixels};lightResponses.set(key,hit);responsePixels+=pixels;responseMetrics.builds++;
+    hit={cv,mask,pixels,frame:responseFrame};lightResponses.set(key,hit);responsePixels+=pixels;responseMetrics.builds++;
     if(cv.addEventListener)cv.addEventListener('contextlost',()=>{if(lightResponses.get(key)===hit)dropResponse(key);},{once:true});
     return cv;
   }
@@ -11961,7 +11984,7 @@ const PropSprites = (() => {
     setSurfaceLayout, hitTest, selectionBounds,
     surfacePlacement,
     setCtx(c) { ctx = c; },
-    setNow(t) { now = t; },
+    setNow(t) { now = t; if (t !== responseNow) { responseNow = t; responseFrame++; } },   // a new clock = a new frame for the light-response cache
     // v13 LOCAL COLOUR knob (see CHROMA above) — live-tunable like the CRT LAB's own dials, so the
     // value is DIALLED on a real deck and copied back into the constant, never guessed.
     setChroma(k) { CHROMA = (k == null ? 1 : +k) || 1; _cboost.clear(); },

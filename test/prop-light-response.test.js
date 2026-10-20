@@ -155,16 +155,63 @@ test('decals, dynamic silhouettes, missing samples and oversized footprints have
   assert.equal(env.canvases.length, 0); assert.equal(target.ctx.draws.length, 0); assert.equal(props.lightResponseStats().bytes, 0);
 });
 
+// Budget-agnostic (2026-10-20): one response per frame, past whatever maxEntries/maxPixels currently are. A frame never
+// evicts what it already drew, so the old "130 draws in one frame" form stopped evicting once the budget grew.
 test('entry and pixel budgets evict old responses while steady repeats remain cached', () => {
   const { props } = harness();
-  for (let i=0;i<130;i++) props.drawLightResponse(f(), { ...east, color: [(i%16)*16,Math.floor(i/16)*16,128] });
+  const cap = props.lightResponseStats().maxEntries;
+  for (let i=0;i<cap+34;i++) { props.setNow(1400+i); props.drawLightResponse(f(), { ...east, color: [(i%16)*16,(Math.floor(i/16)%16)*16,Math.floor(i/256)*16] }); }
   let stats = props.lightResponseStats(); assert.ok(stats.evictions > 0); assert.ok(stats.entries <= stats.maxEntries); assert.ok(stats.pixels <= stats.maxPixels);
   assert.equal(stats.bytes, stats.pixels*4); assert.ok(stats.bytes <= stats.maxBytes);
-  for (let i=0;i<12;i++) props.drawLightResponse(f({ w: 30, h: 3 }), { ...east, color: [i*16,64,128] });
+  for (let i=0;i<40;i++) { props.setNow(9000+i); props.drawLightResponse(f({ w: 30, h: 3 }), { ...east, color: [(i%16)*16,64,Math.floor(i/16)*16] }); }
   stats = props.lightResponseStats(); assert.ok(stats.pixels <= stats.maxPixels, 'large authored footprints obey the pixel budget too');
-  const builds = stats.builds; props.drawLightResponse(f({ w: 30, h: 3 }), { ...east, color: [11*16,64,128] });
+  const builds = stats.builds; props.drawLightResponse(f({ w: 30, h: 3 }), { ...east, color: [(39%16)*16,64,Math.floor(39/16)*16] });
   assert.equal(props.lightResponseStats().builds, builds);
   props.invalidateLightResponse(); stats = props.lightResponseStats(); assert.equal(stats.entries, 0); assert.equal(stats.bytes, 0);
+});
+
+// THE LRU CLIFF (2026-10-20): a frame's on-screen props are a cyclic working set. Past the old 96-entry / 256 Ki px LRU
+// every lookup missed, every frame: 80 distinct responses cost 80 overlay builds AND 80 mask readbacks per frame.
+test('a frame working set past the old budget is built once, then reused every frame with one mask readback', () => {
+  const { props, target, env } = harness(); target.ctx.drawImage = () => {};   // the blit itself is covered above
+  const N = 80, crates = Array.from({ length: N }, (_, i) => f({ x: 1 + (i % 10) * 3, y: 1 + Math.floor(i / 10) * 2, id: 'c' + i }));
+  const light = i => ({ ...east, color: [(i%16)*16,(Math.floor(i/16)%16)*16,128] });
+  const perFrame = [];
+  for (let fr = 0; fr < 6; fr++) {
+    props.setNow(1000 + fr * 16.7);
+    const builds = props.lightResponseStats().builds, reads = env.reads;
+    for (let i = 0; i < N; i++) assert.equal(props.drawLightResponse(crates[i], light(i)), true);
+    perFrame.push([props.lightResponseStats().builds - builds, env.reads - reads]);
+  }
+  assert.ok(props.lightResponseStats().pixels > 262144, '(setup: this working set is past the old 256 Ki px budget)');
+  assert.deepEqual(perFrame[0], [N, 1], 'a cold frame builds each response, reading the shared mask back once');
+  assert.deepEqual(perFrame.slice(1), Array(5).fill([0, 0]), 'every later frame rebuilds nothing and reads nothing back');
+  assert.equal(props.lightResponseStats().skipped, 0);
+});
+
+test('a working set past the budget skips the same overlays every frame instead of thrashing', () => {
+  const { props, target, env } = harness(); target.ctx.drawImage = () => {};
+  const big = f({ w: 30, h: 3 }), light = i => ({ ...east, color: [(i%16)*16,64,Math.floor(i/16)*16] });
+  const frame = (fr, from, n) => {
+    props.setNow(2000 + fr * 16.7);
+    const s0 = props.lightResponseStats(), lit = [];
+    for (let i = from; i < from + n; i++) lit.push(props.drawLightResponse(big, light(i)) ? 1 : 0);
+    const s1 = props.lightResponseStats();
+    return { builds: s1.builds - s0.builds, skipped: s1.skipped - s0.skipped, evictions: s1.evictions - s0.evictions, lit: lit.join('') };
+  };
+  const frames = [0, 1, 2, 3].map(fr => frame(fr, 0, 40));
+  let stats = props.lightResponseStats();
+  assert.ok(40 * stats.pixels / stats.entries > stats.maxPixels, '(setup: 40 of these overlays exceed the pixel budget)');
+  assert.ok(frames[0].skipped > 0 && frames[0].builds === stats.entries, 'past the budget the newcomers go without an overlay');
+  for (const later of frames.slice(1)) {
+    assert.equal(later.builds, 0, 'a steady frame rebuilds nothing');
+    assert.equal(later.evictions, 0, 'and evicts nothing it drew');
+    assert.equal(later.lit, frames[0].lit, 'the same props skip on every frame: nothing flickers');
+  }
+  assert.ok(stats.pixels <= stats.maxPixels); assert.equal(env.reads, 1, 'one readback for the shared mask, ever');
+  const moved = frame(4, 100, 20);   // the view moved: twenty new responses, none of the old ones on screen
+  assert.deepEqual([moved.builds, moved.skipped, moved.lit], [20, 0, '1'.repeat(20)], 'what left the screen is evicted for what arrived');
+  stats = props.lightResponseStats(); assert.ok(stats.pixels <= stats.maxPixels);
 });
 
 test('lost overlay and native mask contexts are rebuilt, and lost main context skips safely', () => {
