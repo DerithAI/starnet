@@ -591,6 +591,7 @@ test/capprop-map.contract.test.js
 test/dock-terms-open.test.js
 test/settings-p1-ui.test.js
 test/dossier-persona-ui.test.js
+test/dossier-persona-toggle-skin.test.js
 test/settings-codex-row.test.js
 test/settings-oauth-rows.test.js
 test/genesis-oauth-providers.test.js
