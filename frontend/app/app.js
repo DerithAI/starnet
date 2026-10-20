@@ -1630,7 +1630,10 @@ const App = (() => {
     // froze BOTH copies at the first failure, so every restart reverted the station.
     const envelope = Save.envelope ? Save.envelope(saveState) : saveState;
     const doc = Save.write(envelope);
-    if (typeof CloudSave !== 'undefined') CloudSave.push(doc || envelope, { cacheFailed: !doc, cacheError: doc ? null : (Save.writeError ? Save.writeError() : null) });   // durable write-through to the sidecar (debounced, best-effort)
+    // raw: the exact string Save.write just produced for this envelope, so CloudSave clones it with one parse instead of a
+    // second whole-save stringify (idle CPU piece 3, 2026-10-20)
+    const raw = Save.takeWriteRaw ? Save.takeWriteRaw() : null;
+    if (typeof CloudSave !== 'undefined') CloudSave.push(doc || envelope, { cacheFailed: !doc, cacheError: doc ? null : (Save.writeError ? Save.writeError() : null), raw });   // durable write-through to the sidecar (debounced, best-effort)
     if (rosterPushFailed) pushRoster();   // a prior roster POST failed — retry it opportunistically on this persist
     if (!doc) {
       // #121: the cache refused this save (the browser's per-site cap). It was queued for the station file above; the save

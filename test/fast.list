@@ -11,6 +11,7 @@ test/group-sessions.repair.test.js
 test/group-sessions.memory.test.js
 test/group-sessions.since.test.js
 test/group-poll-idle.test.js
+test/save-serialize-once.test.js
 test/contract.test.js
 test/events-contract.test.js
 test/clock-rng.test.js

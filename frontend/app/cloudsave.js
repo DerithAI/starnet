@@ -173,12 +173,22 @@ const CloudSave = (() => {
             revision = body.revision;
             if (pending) pending._saveRevision = revision;
             try {
-              const cached = JSON.parse(localStorage.getItem('starnet.save'));
+              const cachedRaw = localStorage.getItem('starnet.save'), sentRaw = rawOf.get(doc);
+              /* SERIALIZE ONCE (idle CPU piece 3, 2026-10-20). The cache still holds the very string this doc was cloned
+                 from (push's raw): it is this doc, so mark it clean without re-parsing it and stringifying both sides
+                 to compare. The bytes written are exactly what the compare path below writes: the same keys in the same
+                 order, _saveRevision = the ACK's revision, _saveDirty false, the ACK's updatedAt when it sent one. Any
+                 other cache content takes the compare path, unchanged. */
+              const same = !pending && !!sentRaw && cachedRaw === sentRaw;
+              const cached = same ? null : JSON.parse(cachedRaw);
               // A preceding ACK advances the queued document's revision before it is sent. Its localStorage
               // twin still has the older revision. Compare the actual document, not that transport metadata,
               // or the final successful save stays dirty and creates a false conflict on the next restart.
               const payload = d => JSON.stringify({ ...d, _saveClient: undefined, _saveRevision: undefined });
-              if (!pending && cached && payload(cached) === payload(doc)) {
+              if (same) {
+                localStorage.setItem('starnet.save', JSON.stringify({ ...doc, _saveClient: undefined, _saveRevision: revision, _saveDirty: false,
+                  ...(Number.isFinite(body.updatedAt) ? { updatedAt: body.updatedAt } : {}) }));
+              } else if (!pending && cached && payload(cached) === payload(doc)) {
                 cached._saveRevision = revision; cached._saveDirty = false;
                 if (Number.isFinite(body.updatedAt)) cached.updatedAt = body.updatedAt;
                 localStorage.setItem('starnet.save', JSON.stringify(cached));
@@ -247,9 +257,14 @@ const CloudSave = (() => {
   //   opts.cacheFailed (#121): the browser cache could not hold this doc. It is queued all the same (the station file is
   //   the store of record) and held in memory until a later doc lands in the cache again. opts.cacheError: the
   //   browser's error name, so the UI says "full" only when the browser reported its quota.
+  //   opts.raw (idle CPU piece 3, 2026-10-20): the exact string Save.write produced for this doc. The clone is then one parse
+  //   of it instead of a stringify + parse, and the ACK can tell the cache still holds this doc by comparing strings.
+  const rawOf = new WeakMap();   // pushed doc -> the raw string it was cloned from (and the cache was given)
   function push(doc, opts) {
     if (!isSave(doc)) return;
-    doc = JSON.parse(JSON.stringify(doc));
+    const raw = opts && typeof opts.raw === 'string' ? opts.raw : null;
+    doc = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(doc));
+    if (raw) rawOf.set(doc, raw);
     doc._saveRevision = revision;
     doc._saveClient = clientId;
     latestLocal = doc;
