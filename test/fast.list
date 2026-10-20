@@ -1281,3 +1281,8 @@ test/index-strict-mode.test.js
 test/output-capture.test.js
 test/channels.poll-signal.test.js
 test/ssh-bg-read-remote.test.js
+test/source-collapsed-escapes.test.js
+test/openrouter-free-daily-cap.test.js
+test/openrouter-inband-error.test.js
+test/provider-403-truth.test.js
+test/oauth-refresh-throttle-copy.test.js

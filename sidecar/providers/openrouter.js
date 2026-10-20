@@ -40,6 +40,16 @@
     return provider.runtime.isAbort(e, signal);
   }
 
+  /* OpenRouter wraps an upstream refusal as "Provider returned error" and puts the upstream's OWN words in
+     error.metadata.raw. Keep them (bounded): they are what tells a region refusal or an upstream rate limit apart
+     from a rejected key. The message head stays error.message, so existing routing keeps matching. */
+  function errorDetail(e, fallback) {
+    const msg = String((e && e.message) || fallback || '');
+    const raw = e && e.metadata && e.metadata.raw;
+    const rawText = raw == null ? '' : (typeof raw === 'string' ? raw : JSON.stringify(raw));
+    return rawText && msg.indexOf(rawText) < 0 ? msg + ' — ' + rawText.slice(0, 400) : msg;
+  }
+
   const RETRY_DELAYS = [400, 1200];   // up to 2 retries (no jitter -> determinism); retryability comes from classifyApiError
   const OPENROUTER_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const REASONING_EFFORT_ORDER = OPENROUTER_REASONING_EFFORTS;
@@ -300,7 +310,14 @@
       // one decoded chunk -> 0..n normalized HarnessEvents (shared by the loop + end-of-stream flush)
       function* emitFrom(j) {
         if (j.error) {
-          const err = new Error((j.error && j.error.message) || 'openrouter stream error');
+          /* IN-BAND ERROR. OpenRouter has already answered 200 (its keep-alives precede the upstream), so a numeric
+             error.code here IS the HTTP-equivalent status: say so in the adapter's own sentence, which classifyApiError
+             and the browser's friendlyerror both route on. Without it an in-band 401 read `unknown` and was retried for
+             ~100 s (sweep/providers 2026-10-20). A string code ('server_error') invents no status. */
+          const code = Number(j.error.code);
+          const http = Number.isInteger(code) && code >= 400 && code < 600;
+          const err = new Error((http ? 'openrouter http ' + code + ' (in-stream) — ' : '') + errorDetail(j.error, 'openrouter stream error'));
+          if (http) err.status = code;
           err.body = j;   // the structured error (code, metadata) — errorClass reads it
           err.ownMessage = true;
           throw err;
@@ -440,7 +457,7 @@
         }
         if (res.ok && res.body) return res;
         let detail = res.statusText || '', errBody = null;
-        try { const j = await res.json(); errBody = j; detail = (j && j.error && j.error.message) || JSON.stringify(j); }
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && errorDetail(j.error, '')) || JSON.stringify(j); }
         catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         // EFFORT SELF-HEAL (400): the model refused the reasoning rung we sent (effortRefusal). Learn what it takes and
         // resend at the nearest rung it keeps — before any token streams, so nothing is billed twice. Does not consume

@@ -15578,7 +15578,7 @@ function parseCronScheduleOr400(str, now, tz) {
   if (!sched) {
     const why = (opts && opts.tz != null && !cron.isValidTz(opts.tz))
       ? ('unknown timezone "' + opts.tz + '" — use an IANA zone like America/New_York')
-      : /every other|bi-?weekly|fortnight|every (?:2|two|3|three|4|four) weeks|twice a month/i.test(String(str || ''))
+      : /\bevery other\b|\bbi-?weekly\b|\bfortnight|\bevery (?:2|two|3|three|4|four) weeks\b|\btwice a month\b/i.test(String(str || ''))
       ? 'every other week cannot be scheduled — use one weekday ("mondays at 10am") or two dates a month ("the 1st and 15th of every month at 10am"), and tell the Commander which you chose'
       : "couldn't read that schedule — try \"every day at 9am\", \"weekdays at 8:30am\", \"mondays at 6pm\", \"tomorrow at 9am\", \"every 30m\", \"in 2h\" or a cron like \"0 9 * * *\"";
     const e = new Error(why); e.code = 400; throw e;
@@ -18777,6 +18777,8 @@ const slashActions = slashActionsMod.makeSlashActions({
         lifetime: ledger.totalUsd(),
         runs: ledger.count(),
         tokens: ledger.all().reduce((s, r) => s + (Number(r && r.tokens) || 0), 0),
+        unpricedRuns: ledger.all().filter(r => r && r.unpriced === true && !r.unmetered).length,
+        unmeteredRuns: ledger.all().filter(r => r && r.unmetered === true).length,
         agentUsd: ledger.usdForAgent(agentId),
         caps: { perRun: effectiveCaps.perRun, perAgent: effectiveCaps.perAgent, perDay: effectiveCaps.perDay, global: effectiveCaps.global }
       };
@@ -23481,7 +23483,12 @@ async function runOnceCore(o) {
     const finalTurns = (result && result.turns) || 0;
     const finalTokens = (result && result.tokens) || 0;
     const finalCachedTokens = (result && result.cachedTokens) || 0;   // the cache-served part of finalTokens' input (additive on both rows)
-    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0 }); } catch (_) {}
+    // UNPRICED (sweep/providers 2026-10-20): tokens no provider cost or catalog rate could price that the backfill above
+    // could not price either. Both rows say so, so no reader folds the run as a proven $0 metered run.
+    const backfilled = Math.max(0, ((result && result.usd) || 0) - (mediaUsd || 0)) === 0 && finalUsd > (mediaUsd || 0);
+    const runUnpriced = !runUnmetered && !backfilled && Array.isArray(result && result.unpricedUsage)
+      && result.unpricedUsage.some(u => ((Number(u && u.tokensIn) || 0) + (Number(u && u.tokensOut) || 0)) > 0);
+    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced }); } catch (_) {}
     // managed-credit SETTLE: reconcile the reservation to the real spend — refund the unused headroom to the
     // account (billing.js caps finalUsd at the reservation). Inert/no-op unless this run actually reserved credit.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: finalUsd, tokens: finalTokens, turns: finalTurns, reason: (result && result.reason) || 'done' }); } catch (_) {} }
@@ -23499,7 +23506,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new

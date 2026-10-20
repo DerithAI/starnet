@@ -346,6 +346,11 @@ function makeSlashActions(deps) {
     if (Number(caps.perDay) > 0) capBits.push('per day ' + usd(caps.perDay));
     if (Number(caps.global) > 0) capBits.push('total ' + usd(caps.global));
     lines.push(capBits.length ? ('Caps: ' + capBits.join(' · ') + '.') : 'No spend caps are set — SETTINGS › SPENDING LIMITS.');
+    // runs counted above whose dollars nobody can prove: an unpriced model's (no published rate) and a subscription's
+    const unpriced = Number(s.unpricedRuns) || 0, unmetered = Number(s.unmeteredRuns) || 0;
+    const plural = n => n + ' run' + (n === 1 ? '' : 's');
+    const outside = [unpriced ? plural(unpriced) + ' on models with no published price' : '', unmetered ? plural(unmetered) + ' on a subscription' : ''].filter(Boolean);
+    if (outside.length) lines.push(outside.join(' and ') + ' — their cost is not in these dollars.');
     // The point of moving this server-side: say WHOSE numbers these are, so the figure is not read as
     // "what I watched happen in this window".
     lines.push('From the station ledger — includes routines, away shifts and messaging runs, not just this window.');

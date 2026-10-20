@@ -9813,10 +9813,11 @@ const Chat = (() => {
       const r = await fetch('/api/insights?agent=' + encodeURIComponent(agentId), { cache: 'no-store' });
       const j = r.ok ? await r.json() : null;
       if (j && (j.totalRuns != null)) {
-        const models = Array.isArray(j.byModel) ? j.byModel.slice(0, 3).map(m => (m.model || '?') + ' (' + U.usd(m.usd || 0) + ')') : [];
+        // a subscription or unpriced model has no proven $: its fold label, never a bare "$0.00" (sweep/providers 2026-10-20)
+        const models = Array.isArray(j.byModel) ? j.byModel.slice(0, 3).map(m => (m.model || '?') + ' (' + (m.spendLabel && !(m.usd > 0) ? m.spendLabel : U.usd(m.usd || 0) + (m.spendLabel ? ', ' + m.spendLabel : '')) + ')') : [];
         const succ = (j.successPct == null) ? '' : ', ' + j.successPct + '% completed';
         return localLine('Insights (lifetime run history for ' + agentId + '): ' + (j.totalRuns || 0) + ' run' + (j.totalRuns === 1 ? '' : 's')
-          + ', ' + U.usd(j.totalUsd || 0) + ', ' + (j.totalTokens || 0) + ' tokens'
+          + ', ' + U.usd(j.totalUsd || 0) + (j.unpricedRuns ? ' (+ ' + j.unpricedRuns + ' run' + (j.unpricedRuns === 1 ? '' : 's') + ' with no published price)' : '') + ', ' + (j.totalTokens || 0) + ' tokens'
           + (j.avgUsdPerRun ? ', ' + U.usd(j.avgUsdPerRun) + '/run' : '') + succ
           + (models.length ? '. Top models: ' + models.join(', ') : '') + '.');
       }
