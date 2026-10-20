@@ -7339,12 +7339,13 @@ async function nightshiftChat(o) {
   const model = cronModelFor({ agentId: agentId });
   if (!model || !cronHasCredential(provider, key)) return { error: 'no-capability' };
   const runId = crypto.randomUUID();
-  const state = { buf: '', err: null };
+  const state = { buf: '', err: null, reason: null };
   const sink = (name, payload) => {
     const p = payload || {};
     if (name === 'agent.token') { state.buf += (p.delta || ''); return; }
     if (name === 'agent.tool_call') state.buf = '';
     if (name === 'agent.run.error') state.err = p.message || 'run error';
+    if (name === 'agent.run.end') state.reason = p.reason;
   };
   // VISIBLE WHILE THINKING (2026-07-18): the beat's broadcast opt-in (driver + force route both pass it) used to
   // reach only the ACT path — these reason-only runs ran with a local sink and NO SSE tee, so the station floor sat
@@ -7362,6 +7363,9 @@ async function nightshiftChat(o) {
   } catch (e) { return { error: (e && e.message) || 'run failed' }; }
   finally { runsMeta.delete(runId); }
   if (state.err) return { error: state.err };
+  // ONLY A FINISHED RUN IS A REPLY (sweep/autonomy 2026-10-20): an E-STOP/budget/limit end carries no error event, and
+  // its partial stream used to become the beat's "delivered" draft. Anything but 'done' stands the beat down.
+  if (state.reason !== 'done') return { error: 'run ended without completion (' + (state.reason || 'no terminal outcome') + ')' };
   return { text: state.buf };
 }
 
