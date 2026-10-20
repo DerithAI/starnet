@@ -442,12 +442,10 @@ function makeMediaService(options) {
     };
     let body;
     try { body = JSON.parse(await readBody(req, 1 << 16)); } catch (_) { return fallback('bad json'); }
-    let text = String((body && body.text) || '').replace(/\s+/g, ' ').trim();
-    if (text.length > 1200) {
-      const head = text.slice(0, 1200);
-      const sentence = head.match(/[\s\S]*[.!?]["')\]]?(?=\s|$)/);
-      text = (sentence && sentence[0].length > 600 ? sentence[0] : head).trim();
-    }
+    const text = String((body && body.text) || '').replace(/\s+/g, ' ').trim();
+    // Over the cap is REFUSED, never truncated: speaking only the first ~1200 characters and answering 200 audio
+    // told the caller the whole script was said (voice_generate refuses the same way; the desk splits at 1000).
+    if (text.length > 1200) return fallback('text is ' + text.length + ' characters; the per-request cap is 1200 — split it into sentences');
     const model = String((body && body.model) || TTS_DEFAULT_MODEL).trim();
     const voice = String((body && body.voice) || 'Umbriel').trim();
     const style = String((body && body.style) || '').replace(/\s+/g, ' ').trim().slice(0, 500);

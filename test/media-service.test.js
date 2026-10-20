@@ -326,7 +326,24 @@ async function invokeTts(overrides, body) {
     assert.equal(fetches + edgeCalls, 0, 'without paying another provider or switching to Edge');
   }
 
-  console.log('media-service: OK (36 assertions)');
+  // Over the cap is REFUSED, never truncated (sweep/voice 2026-10-20): /api/tts spoke the first ~1200 characters of a
+  // longer script and answered 200 audio, so the caller had no way to know the rest was never said.
+  {
+    const said = [];
+    const edgeOn = { enabled: () => true, resolveVoice: () => 'en-US-ChristopherNeural', synth: async (t) => { said.push(t); return Buffer.from('edge-mp3'); } };
+    const long = 'A sentence that pads the script out. '.repeat(40).trim();
+    const over = await invokeTts({ edgetts: edgeOn }, { text: long });
+    let j = {}; try { j = JSON.parse(over.body.toString()); } catch (_) { j = { servedAudioBytes: over.body.length }; }
+    assert.equal(over.status, 200, 'the 200-always contract holds for a refusal');
+    assert.equal(j.fallback, true, 'a ' + long.length + '-character script is refused, not served');
+    assert.match(String(j.reason), /cap/, 'the refusal names the cap: ' + j.reason);
+    assert.equal(said.length, 0, 'no engine was asked to speak a truncated head of the script');
+    const atCap = await invokeTts({ edgetts: edgeOn }, { text: 'x'.repeat(1199) + '.' });
+    assert.match(String(atCap.headers['Content-Type']), /audio/, 'a script exactly at the cap is still spoken');
+    assert.equal(said[0].length, 1200, 'and spoken whole');
+  }
+
+  console.log('media-service: OK (42 assertions)');
 })().finally(async () => {
   for (const root of roots) await fsp.rm(root, { recursive: true, force: true });
 }).catch(error => {
