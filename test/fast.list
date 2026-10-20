@@ -202,6 +202,7 @@ test/cloudsave-unload.test.js
 test/fullscreen.test.js
 test/titlebar.test.js
 test/hudmode.test.js
+test/camera-settle.test.js
 test/logo-occlusion.test.js
 test/keepawake.test.js
 test/grace.test.js

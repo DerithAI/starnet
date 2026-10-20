@@ -122,6 +122,7 @@ const World = (() => {
   let camLock = null;                  // {id, sc, source:'session'|'cine'} — the followed body + its target zoom
   let camUserAt = 0;                   // last USER camera act (performance.now clock) — the cinecam idle clock
   const CINE_IDLE_MS = 120000;         // hands-off threshold before the auto-director may take the camera (2 min)
+  const CAM_SETTLE_PX = 0.25;          // a follow-lock axis this close to its target (device px) lands ON it — see CAMERA SETTLE in frameBody
   let cineIdleMs = CINE_IDLE_MS;       // live threshold (setCinecamIdle lets DEV/verify shrink it — never shipped-UI-tunable)
   let cineHoldUntil = 0;               // director: when the current shot may be re-cast
   let cineWalkAt = 0;                  // last time the director's subject was actually WALKING (movement grace before a cut)
@@ -6724,6 +6725,17 @@ const World = (() => {
         const ts = camLock.sc, lx = cv.width / 2 - bodyPosX(lb) * ts, ly = cv.height * fy - bodyPosY(lb) * ts;
         const k = easeK(0.08, dt);   // softer than the one-shot focus ease (0.16): a trailing, cinematic follow of a moving body
         scale += (ts - scale) * k; panX += (lx - panX) * k; panY += (ly - panY) * k;
+        /* CAMERA SETTLE (perf, 2026-10-20 — "it eats my PC's resources"). A geometric ease never reaches its target: in
+           float64 each cine shot's zoom crept for ~400 frames (6.6 s; a pan near 0 for 150 s), and every cache keyed on the
+           camera — the belt atlas, the prop shadow layer — was dropped and rebuilt on each of them, all day while idle.
+           Each axis lands on its own once its remaining motion is under CAM_SETTLE_PX device px — the zoom measured at
+           the on-screen pixel it would move farthest, (sx - panX) * Δscale / scale at a screen edge: a walking subject
+           keeps panning, but its zoom still lands. Not camLerp's joint rule — that waits for scale AND pan, which never
+           happens on a walking body, and its 1px/0.01 snap can pop ~4px at the edge. */
+        const reach = Math.max(Math.abs(panX), Math.abs(cv.width - panX), Math.abs(panY), Math.abs(cv.height - panY));
+        if (Math.abs(ts - scale) / scale * reach < CAM_SETTLE_PX) scale = ts;
+        if (Math.abs(lx - panX) < CAM_SETTLE_PX) panX = lx;
+        if (Math.abs(ly - panY) < CAM_SETTLE_PX) panY = ly;
       }
     }
     if (camLerp && !camAnim && !camLock) {   // gently ease toward a conversation framing (set by focusAgent); the awakening camera + a follow-lock win
