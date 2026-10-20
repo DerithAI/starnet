@@ -251,6 +251,44 @@ async function plugin(id, source) {
       await rt6.stopAll();
     }
 
+    // ---- 5a''. the background JOB re-verify asks for the QUICK check; a tool call still asks for the full one ----
+    // (2026-10-19, idle-CPU piece 2) the 10 s job timer used to re-hash the whole approved folder on every tick; it
+    // now passes { quick: true } so the host may answer from a stat stamp. A drift it reports still stops the plugin.
+    {
+      const { EventEmitter } = require('events');
+      const fakeFork = () => {
+        const c = new EventEmitter();
+        c.send = (m) => {
+          if (m.t === 'init') setImmediate(() => c.emit('message', { t: 'ready', ok: true, subs: [], tools: [{ name: 't' }], handlers: [], jobs: 1 }));
+          if (m.t === 'tool') setImmediate(() => c.emit('message', { t: 'res', id: m.id, ok: true, v: 'ran' }));
+        };
+        c.kill = () => setImmediate(() => c.emit('exit', null, 'SIGTERM'));
+        return c;
+      };
+      const realSetInterval = global.setInterval;
+      let jobTick = null;
+      global.setInterval = (fn, ms) => { if (ms === 10000) jobTick = fn; return { unref() {} }; };
+      const asked = [];
+      let approved = true;
+      let rt7;
+      try {
+        rt7 = makePluginRuntime({ fork: fakeFork, workerPath: 'x', now: () => Date.now(), onLog: () => {},
+          verify: async (id, digest, opts) => { asked.push(opts === undefined ? 'full' : opts); return approved; } });
+      } finally { global.setInterval = realSetInterval; }
+      A.ok(typeof jobTick === 'function', 'a runtime with verify arms the 10 s job re-verify timer');
+      await rt7.start({ id: 'jobber', name: 'jobber', main: 'x', digest: 'd' });
+      jobTick();
+      await new Promise(r => setImmediate(r));
+      A.eq(asked, [{ quick: true }], 'the job timer asks for the QUICK re-verify');
+      A.eq(await rt7.callTool('jobber', 't', {}, {}), 'ran', 'a tool call still runs');
+      A.eq(asked[1], 'full', '…after a FULL re-verify (only the background timer may take the quick path)');
+      approved = false;
+      jobTick();
+      await new Promise(r => setImmediate(r));
+      A.eq(rt7.status('jobber').state, 'stopped', 'a quick re-verify that reports a drift still stops the plugin');
+      await rt7.stopAll();
+    }
+
     // ---- 5b. two callers hitting a CRASHED plugin restart it ONCE (sweep 2026-10-01) ----
     // They used to both respawn: the first child was orphaned (stop() never killed it, its jobs ran doubled) and the
     // first caller's ready promise never settled.
