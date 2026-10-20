@@ -30,6 +30,7 @@ const readline = require('node:readline');
 const nodeCrypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const core = require('./lib/cli-core.js');
+const folderLib = require('./lib/folder.js');
 
 const REPO = path.resolve(__dirname, '..');
 const SIDECAR = path.join(REPO, 'sidecar', 'index.js');
@@ -328,11 +329,20 @@ async function runCommand(opts, station) {
   if (!rt.ok || rt.status !== 200 || !rt.json) throw stationError('could not read the station roster (' + (rt.error || 'HTTP ' + rt.status) + ')');
   const sel = core.pickAgent(rt.json, { agent: opts.agent, model: opts.model, provider: opts.provider });
   if (!sel.ok) throw stationError(sel.error);
-  const cwd = opts.cwd ? path.resolve(opts.cwd) : '';
+  // the folder the run works in: the trusted project this folder (or --cwd) sits in; a named --cwd that is not trusted
+  // still goes (the station says it is not trusted and asks before the agent works in it)
+  let cwd = opts.cwd ? path.resolve(opts.cwd) : '';
+  let untrusted = null;
+  if (folderLib.isLocalHost(client.host)) {
+    const f = folderLib.locate({ cwd: cwd || process.cwd(), projects: await folderLib.trustedProjects(client).catch(() => []), stationDirs: stationDirs(station) });
+    if (f.trusted) cwd = f.trusted;
+    else if (!cwd && !f.skip) untrusted = f.root;
+  }
   const body = core.buildRunBody(sel, opts.prompt, { cwd });
   const tracker = core.makeRunTracker();
   const startedAt = Date.now();
-  if (!opts.json) log('▸ ' + sel.name + ' (' + sel.agentId + ') · ' + sel.provider + '/' + sel.model + ' · ' + mode + ' ' + client.base);
+  if (!opts.json) log('▸ ' + sel.name + ' (' + sel.agentId + ') · ' + sel.provider + '/' + sel.model + ' · ' + mode + ' ' + client.base + (cwd ? ' · in ' + cwd : ''));
+  if (untrusted) log('· ' + untrusted + ' is not a trusted project, so ' + sel.name + ' works in its own workspace — run `starnet` there once and press y to trust it, or pass --cwd');
 
   let abortSocket = null, cancelSent = false, graceTimer = null, timeoutTimer = null;
   async function cancel(why) {
@@ -428,6 +438,8 @@ async function doctorCommand(opts, station) {
 
 // ---- station resolution ------------------------------------------------------------------------
 function stationError(msg) { const e = new Error(msg); e.exitCode = core.EXIT.STATION; return e; }
+// StarNet's own workspaces: never offered as a project folder
+function stationDirs(station) { return [station && station.workspace, desktopWorkspaces(process.env)].filter(Boolean); }
 
 async function resolveStation(opts, env) {
   const host = opts.host || '127.0.0.1';
@@ -503,7 +515,7 @@ async function main() {
     station = await resolveStation(opts, process.env);
     if (opts.cmd === 'status') return await statusCommand(opts, station);
     if (opts.cmd === 'doctor') return await doctorCommand(opts, station);
-    if (opts.cmd === 'dash') return await require('./lib/dashboard.js').runDashboard(station, {});
+    if (opts.cmd === 'dash') return await require('./lib/dashboard.js').runDashboard(station, { cwd: opts.cwd ? path.resolve(opts.cwd) : '', stationDirs: stationDirs(station) });
     const sc = require('./lib/station-commands.js');
     if (opts.cmd === 'ls') return await sc.lsCommand(opts, station, io);
     if (opts.cmd === 'approve' || opts.cmd === 'deny') return await sc.answerCommand(opts, station, io);

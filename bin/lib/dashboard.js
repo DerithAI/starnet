@@ -6,8 +6,11 @@
      GET /api/state/snapshot   every 3 s — which runs and asks are live (the truth after any gap)
      GET /api/runtime/agent    the roster · GET /api/budget/status spend · GET /api/routing/lines/stats + /api/line-jobs flows
      GET /api/transcript       this terminal's earlier conversation with each agent
+     GET /api/projects         is the folder `starnet` was started in a trusted project (bin/lib/folder.js)
    What it does (only when the person at the keyboard says so):
-     POST /api/run             a message, on the agent's own terminal conversation (cli-<agentId>), as its roster defines it
+     POST /api/run             a message, on the agent's own terminal conversation (cli-<agentId>), as its roster defines it,
+                               working in that trusted project when there is one
+     POST /api/projects/bless  y on the TRUST THIS FOLDER? card: the same grant as the app's PROJECTS rail
      POST /api/consent(/answer) an answer to an ask, marked via:'terminal' so the desk card lets go
      POST /api/cancel          /stop · POST /api/routing/sample  /flow run
 
@@ -22,6 +25,7 @@ const { makeStation } = require('./station-model.js');
 const tui = require('./tui.js');
 const sixel = require('./sixel.js');
 const camfeed = require('./camfeed.js');
+const folderLib = require('./folder.js');
 
 function runDashboard(station, opts) {
   const o = opts || {};
@@ -41,7 +45,10 @@ function runDashboard(station, opts) {
     // the REAL logo: an image where the terminal draws Sixel, else the same logo as braille dots. STARNET_LOGO=dots skips
     // the image, =ascii draws the drawn-letter version, =plain keeps to the one-line mark
     logo: ['plain', 'ascii', 'dots'].indexOf(env.STARNET_LOGO) >= 0 ? env.STARNET_LOGO : 'full',
-    logoImage: null
+    logoImage: null,
+    // the folder this terminal works in: project = the trusted project every message works in; trust = the card asking
+    // to trust the folder it was started in
+    project: null, trust: null
   };
   const mine = new Map();       // requests this terminal holds open: id -> { req, agentId, kind }
   let feedReq = null, cursor = '', feedRetry = null, stopped = false;
@@ -223,6 +230,7 @@ function runDashboard(station, opts) {
     // tools only for a task, decided the way the page decides it (the agent's last reply lets a bare "yes" to its offer count)
     const prior = [...model.logOf(agentId)].reverse().find(e => e.k === 'agent');
     const body = { model: a.model, provider: a.provider || undefined, agentId, streamId, rosterSystem: true, client: 'terminal', isTask: core.isTaskText(text, prior && prior.text), messages: [{ role: 'user', content: text }] };
+    if (ui.project) body.projectRoot = ui.project.root;   // the trusted project this terminal was started in
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
     const id = 'run' + Math.random().toString(36).slice(2);
     let req;
@@ -272,6 +280,31 @@ function runDashboard(station, opts) {
     else if (r.ok && r.json && r.json.gone) { model.apply('permission.response', { promptId: q.promptId, decision: 'deny', stopped: true }, now()); flash('that ask is no longer waiting — it was answered elsewhere or its run ended'); }
     else flash('the station did not take that answer' + (r.error ? ' (' + r.error + ')' : r.status ? ' (HTTP ' + r.status + ')' : ''));
     paint();
+  }
+  // ---- the folder: work in the trusted project `starnet` was started in, or ask to trust it -------------------------
+  function setProject(root) { ui.project = root ? { root, label: folderLib.shortPath(root, 60) } : null; }
+  async function locateFolder() {
+    // a folder here only means that folder to a station on this machine
+    if (!folderLib.isLocalHost(client.host)) return;
+    const projects = await folderLib.trustedProjects(client).catch(() => []);
+    const f = folderLib.locate({ cwd: o.cwd || process.cwd(), projects, stationDirs: o.stationDirs || [] });
+    if (f.trusted) return setProject(f.trusted);
+    // a shell opens in your home folder (and the like): no card there, unless you named the folder with --cwd
+    if (f.skip && !o.cwd) return;
+    ui.trust = { root: f.root, folder: f.folder };
+  }
+  async function answerTrust(key) {
+    const t = ui.trust;
+    if (!t) return;
+    ui.trust = null;
+    ui.keyFlash = { k: key, until: now() + 700 };
+    if (key !== 'y') return flash('not trusted · the crew works in its own workspace', 'dim', 5000);
+    paint();
+    const r = await client.request('POST', '/api/projects/bless', { path: t.root }, { timeoutMs: 10000 });
+    if (r.ok && r.status === 200 && r.json && r.json.ok && r.json.root) {
+      setProject(String(r.json.root));
+      flash('trusted · the crew works in ' + folderLib.shortPath(r.json.root, 60) + ' (it is under PROJECTS in the app too)', 'ok', 6000);
+    } else flash('the folder was not trusted: ' + ((r.json && r.json.reason) || r.error || 'HTTP ' + r.status), 'bad', 9000);
   }
   async function answerQuestion(text) {
     const q = model.front();
@@ -467,6 +500,7 @@ function runDashboard(station, opts) {
     ui.overlay = null;
     const q = model.front();
     if (!ui.input && q && !q.question && /^[ynv]$/i.test(ch)) { answer(ch.toLowerCase()); return; }
+    if (!ui.input && !q && ui.trust && /^[yn]$/i.test(ch)) { answerTrust(ch.toLowerCase()); return; }
     if (!ui.input && q && q.question && /^[1-6]$/.test(ch) && q.question.options[Number(ch) - 1]) { answerQuestion(q.question.options[Number(ch) - 1]); return; }
     if (ui.input.length < 4000) ui.input += ch;
     paint();
@@ -583,7 +617,7 @@ function runDashboard(station, opts) {
       process.stderr.write('starnet: could not read the station roster (' + (rt.error || 'HTTP ' + rt.status) + ')\n');
       return;
     }
-    await Promise.all([loadSnapshot(), loadBudget(), loadLines().catch(() => {})]);
+    await Promise.all([loadSnapshot(), loadBudget(), loadLines().catch(() => {}), locateFolder().catch(() => {})]);
     await loadHistory().catch(() => {});
     loadSkins().then(paint, () => {});
     ui.focus = pickFocus() || ui.focus;

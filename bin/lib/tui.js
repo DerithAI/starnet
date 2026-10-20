@@ -285,9 +285,12 @@ function render(model, ui, size, now) {
   if (ui.scroll > 0) right.push([(right.length ? '  ' : '') + '↑ ' + ui.scroll, 'am']);
   if (!side && focusRow) right.push([(right.length ? '  ' : '') + (rows.indexOf(focusRow) + 1) + '/' + rows.length, 'dim']);
   if (right.length) edgeR(g, cx1 - 1, top, right);
+  // the trusted project every message from here works in, on the frame's foot (said whatever the width)
+  if (ui.project && ui.project.label) edgeL(g, cx0 + 2, bot, [[trunc(ui.project.label, Math.max(8, cx1 - cx0 - 8)), 'dim']]);
   const ix0 = cx0 + 2, ix1 = cx1 - 2, iy0 = top + 1, iy1 = bot - 1;
   const cw = Math.min(ix1 - ix0 + 1, 96);
-  const card = front ? cardLines(front, model, cw, H) : [];
+  // an agent's ask first (a run is waiting on it); else the folder card, when the folder `starnet` started in is not trusted
+  const card = front ? cardLines(front, model, cw, H) : ui.trust ? trustLines(ui.trust, cw) : [];
   const cardTop = iy1 - card.length + 1;
   const paneBot = card.length ? cardTop - 1 : iy1 + 1;
   if (ui.picker) drawPicker(g, ui.picker, iy0, paneBot, ix0, ix1, blink);
@@ -311,7 +314,8 @@ function render(model, ui, size, now) {
   else {
     const t = front
       ? (front.question ? (front.question.options.length ? '1-' + front.question.options.length + ' pick · ' : '') + 'type an answer + enter · esc clears' : 'y allow once · n deny · v ' + (front.view ? 'hide' : 'view') + ' · ' + (narrow ? 'tab agent' : 'tab next agent'))
-      : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  ctrl+c quit';
+      : ui.trust ? 'y trust this folder · n not now · or just type to talk'
+        : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  ctrl+c quit';
     g.put(0, hintY, trunc(t, W), 'dim');
   }
   const out = g.out();
@@ -532,6 +536,18 @@ function cardLines(q, model, cw, H) {
   lines.push({ kind: 'bottom', question: !!q.question, view: q.view, more: model.state.prompts.length - 1 });
   return lines;
 }
+// the card that asks to trust the folder `starnet` was started in: the project root the station would trust, and what that
+// means. Answered with y / n like an ask.
+function trustLines(t, cw) {
+  const lines = [{ kind: 'top', title: 'TRUST THIS FOLDER?' }];
+  lines.push({ kind: 'body', segs: [[String(t.root), 'hi b']] });
+  // started in a folder inside a project: the whole project is what gets trusted
+  if (t.folder && t.folder !== t.root) lines.push({ kind: 'body', segs: [['you are in ' + t.folder.slice(String(t.root).replace(/[\\/]+$/, '').length + 1) + ' · the whole project is trusted', 'dim']] });
+  wrap('the crew can read and change files here · it joins PROJECTS in the app', cw - 4).forEach(s => lines.push({ kind: 'body', segs: [[s, 'fg']] }));
+  wrap('not now: each agent works in its own workspace', cw - 4).forEach(s => lines.push({ kind: 'body', segs: [[s, 'dim']] }));
+  lines.push({ kind: 'bottom', keys: [['[y] trust', 'am b'], ['[n] not now', 'fg']] });
+  return lines;
+}
 function drawCard(g, lines, y0, x0, cw, blink) {
   const xr = x0 + cw - 1;
   lines.forEach((l, i) => {
@@ -539,8 +555,8 @@ function drawCard(g, lines, y0, x0, cw, blink) {
     if (l.kind === 'top') {
       let x = g.put(x0, y, '┌─ ', 'am');
       x = g.put(x, y, '▲ ', blink ? 'am b' : 'am faint');
-      x = g.put(x, y, l.name, 'hi b');
-      x = g.put(x, y, ' asks ', 'am');
+      if (l.title) x = g.put(x, y, l.title + ' ', 'hi b');
+      else { x = g.put(x, y, l.name, 'hi b'); x = g.put(x, y, ' asks ', 'am'); }
       while (x < xr) x = g.put(x, y, '─', 'am');
       g.put(xr, y, '┐', 'am');
     } else if (l.kind === 'body') {
@@ -549,7 +565,8 @@ function drawCard(g, lines, y0, x0, cw, blink) {
       for (const [t, s] of l.segs) { const room = xr - 1 - x; if (room <= 0) break; x = g.put(x, y, trunc(t, room), s); }
     } else {
       let x = g.put(x0, y, '└─ ', 'am');
-      if (l.question) x = g.put(x, y, 'pick a number or type an answer', 'am b');
+      if (l.keys) l.keys.forEach(([t, s], j) => { if (j) x = g.put(x, y, '   ', 'am'); x = g.put(x, y, t, s); });
+      else if (l.question) x = g.put(x, y, 'pick a number or type an answer', 'am b');
       else {
         x = g.put(x, y, '[y] allow once', 'am b'); x = g.put(x, y, '   ', 'am');
         x = g.put(x, y, '[n] deny', 'fg'); x = g.put(x, y, '   ', 'am');
@@ -626,4 +643,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, pickerView, stateWords };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, trustLines, pickerView, stateWords };

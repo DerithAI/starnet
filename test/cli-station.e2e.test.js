@@ -8,7 +8,9 @@
         answered; a second `approve` / `deny` with nothing waiting exits 6;
      3. `watch --json` streams the run's events (start with its prompt, the tool call, the end);
      4. `-p` marks a task (the model is offered tools) and talk as talk (none) — without isTask no tool was ever offered;
-     5. `flow` on a station with no lines says so, exit 0; a bare `starnet` in a pipe prints usage, never a screen.
+     5. `flow` on a station with no lines says so, exit 0; a bare `starnet` in a pipe prints usage, never a screen;
+     6. `-p` started inside a project works in it once the station trusts it (the agent is told the folder and a
+        relative write lands there), and before that says the folder is not trusted and works in its own workspace.
    Part of test:http. */
 'use strict';
 
@@ -16,6 +18,7 @@ const A = require('./_assert.js');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 
@@ -37,7 +40,8 @@ function startMock(seen) {
         const msgs = p.messages || [];
         const last = [...msgs].reverse().find(m => m && m.role === 'user');
         const text = String((last && last.content) || '');
-        seen.push({ text: text.slice(-120), tools: (p.tools || []).length });
+        const sys = msgs.filter(m => m && m.role === 'system').map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ');
+        seen.push({ text: text.slice(-120), tools: (p.tools || []).length, sys });
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         const tool = (name, args) => {
           res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c' + Date.now(), type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }) + '\n\n');
@@ -51,6 +55,7 @@ function startMock(seen) {
         };
         if (msgs.some(m => m && m.role === 'tool')) return say('done');
         if (/write the station notes/i.test(text)) return tool('fs.write', { path: 'station-notes.md', content: 'approved from starnet approve' });
+        if (/write the project note/i.test(text)) return tool('fs.write', { path: 'project-note.md', content: 'written from the folder starnet was started in' });
         return say('Hello from the station.');
       });
     });
@@ -58,14 +63,23 @@ function startMock(seen) {
   });
 }
 
-function cli(args, env, ms) {
+function cli(args, env, ms, cwd) {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [BIN].concat(args), { env: Object.assign({}, process.env, env), stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [BIN].concat(args), { cwd: cwd || process.cwd(), env: Object.assign({}, process.env, env), stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { err += d; });
     const timer = setTimeout(() => { try { child.kill(); } catch (_) {} }, ms || 60000);
     child.on('exit', code => { clearTimeout(timer); resolve({ code, out, err }); });
+  });
+}
+function post(fixture, p, body) {
+  return new Promise(resolve => {
+    const payload = Buffer.from(JSON.stringify(body));
+    const req = http.request({ host: HOST, port: fixture.port, path: p, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': payload.length, 'X-StarNet-Token': fixture.token, Origin: fixture.baseUrl } }, res => {
+      let b = ''; res.setEncoding('utf8'); res.on('data', d => { b += d; }); res.on('end', () => { let j = null; try { j = JSON.parse(b); } catch (_) {} resolve({ status: res.statusCode, json: j }); });
+    });
+    req.on('error', e => resolve({ status: 0, json: null, error: e.message })); req.end(payload);
   });
 }
 function hermetic(profile) {
@@ -158,6 +172,28 @@ function hermetic(profile) {
     A.eq(fj.flows, [], 'flow --json: an empty list');
     const bare = await cli([], env);
     A.ok(bare.code === 0 && /starnet — run StarNet agents/.test(bare.out), 'a bare starnet without a terminal prints the usage');
+
+    /* ---- 6. the folder it was started in --------------------------------------------------------- */
+    const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-cli-proj-'));
+    fs.mkdirSync(path.join(proj, '.git')); fs.mkdirSync(path.join(proj, 'src'));
+    const projReal = fs.realpathSync.native(proj);
+    try {
+      seen.length = 0;
+      const before = await cli(['-p', 'write the project note', '--port', port, '--yes'], env, 60000, path.join(proj, 'src'));
+      A.ok(before.err.indexOf('· ' + projReal + ' is not a trusted project, so ') >= 0 && /works in its own workspace/.test(before.err), 'started in a project the station does not trust: -p says so, naming the project: ' + before.err.slice(0, 400));
+      A.ok(seen.length > 0 && !seen.some(s => /PROJECT FOLDER/.test(s.sys)), 'and the agent is told of no project folder');
+      A.ok(!fs.existsSync(path.join(proj, 'project-note.md')) && fs.existsSync(path.join(fixture.workspace, 'agent', 'project-note.md')), 'its write landed in its own workspace, not the folder');
+      // trusted the way the dashboard's y (and the app's PROJECTS rail) does it
+      const b = await post(fixture, '/api/projects/bless', { path: projReal });
+      A.ok(b.status === 200 && b.json && b.json.ok && b.json.root, 'the station trusts the project: ' + JSON.stringify(b.json));
+      const root = b.json && b.json.root;
+      seen.length = 0;
+      const after = await cli(['-p', 'write the project note', '--port', port, '--yes'], env, 60000, path.join(proj, 'src'));
+      A.eq(after.code, 0, 'the run in the trusted project exits 0: ' + after.err.slice(-300));
+      A.ok(after.err.indexOf(' · in ' + root) >= 0 && !/is not a trusted project/.test(after.err), '-p says the folder it works in: ' + after.err.slice(0, 300));
+      A.ok(seen.some(s => s.sys.indexOf('anchored to the trusted project folder ' + root) >= 0), 'the agent is told it works in that project');
+      A.ok(fs.existsSync(path.join(proj, 'project-note.md')) && /started in/.test(fs.readFileSync(path.join(proj, 'project-note.md'), 'utf8')), 'and its write (a relative path) landed in the project');
+    } finally { fs.rmSync(proj, { recursive: true, force: true }); }
   } catch (e) {
     A.ok(false, 'cli-station e2e threw: ' + ((e && e.stack) || e));
   } finally {

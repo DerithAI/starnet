@@ -404,4 +404,62 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.eq(tui.sliceSegs([['abcdef', 'x'], ['gh', 'y']], 2, 5), [['cde', 'x']], 'a row beside the image is written either side of it');
 }
 
+// ---- the folder: the trusted project `starnet` was started in, or the card asking to trust it ------------------------
+{
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const folder = require('../bin/lib/folder.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-folder-'));
+  const proj = path.join(tmp, 'proj'), deep = path.join(proj, 'src', 'lib'), loose = path.join(tmp, 'notes'), wt = path.join(tmp, 'tree');
+  fs.mkdirSync(path.join(proj, '.git'), { recursive: true }); fs.mkdirSync(deep, { recursive: true }); fs.mkdirSync(loose); fs.mkdirSync(wt);
+  fs.writeFileSync(path.join(wt, '.git'), 'gitdir: elsewhere');
+  A.eq(folder.projectRoot(deep), proj, 'a folder inside a git project is that project');
+  A.eq(folder.projectRoot(wt), wt, 'a worktree (.git is a file) is a project too');
+  A.eq(folder.projectRoot(loose), loose, 'a folder in no git project is itself');
+
+  const W = { platform: 'win32', path: path.win32, env: { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' }, home: 'C:\\Users\\you' };
+  A.eq(folder.skipReason('C:\\Users\\you', W), 'home', 'your home folder (where a shell opens) is never offered');
+  A.eq(folder.skipReason('c:\\users\\YOU', W), 'home', '…in any case');
+  A.eq(folder.skipReason('C:\\', W), 'root', 'nor a drive root');
+  A.eq(folder.skipReason('C:\\Windows\\System32', W), 'system', 'nor the OS (an admin shell opens in System32)');
+  A.eq(folder.skipReason('C:\\Users\\you\\AppData\\Roaming\\ai.skynet.harness\\workspaces\\agent', Object.assign({ stationDirs: ['C:\\Users\\you\\AppData\\Roaming\\ai.skynet.harness\\workspaces'] }, W)), 'station', "nor StarNet's own workspaces");
+  A.eq(folder.skipReason('C:\\Users\\you\\Desktop\\gen', W), '', 'a project in your home is');
+  A.eq(folder.skipReason('/', { platform: 'linux', path: path.posix, env: {}, home: '/home/you' }), 'root', 'the filesystem root');
+  A.eq(folder.skipReason('/home/you/code/app', { platform: 'linux', path: path.posix, env: {}, home: '/home/you' }), '', 'a linux project is offered');
+
+  const projects = [{ root: 'C:\\Code\\App', blessed: true }, { root: 'C:\\Code', blessed: true }, { root: 'C:\\Code\\App\\pkg', blessed: false }];
+  A.eq(folder.trustedRoot('c:\\code\\app\\pkg\\src', projects, W), 'C:\\Code\\App', 'the deepest TRUSTED project holding the folder, spelled as the station spells it (an untrusted one is no grant)');
+  A.eq(folder.trustedRoot('C:\\Codex', projects, W), '', 'a folder that only starts with a trusted name is not inside it');
+  A.eq(folder.trustedRoot('C:\\Code', [{ root: 'C:\\Code', blessed: false }], W), '', 'a project whose trust was removed is not trusted');
+
+  const real = p => fs.realpathSync.native(p);
+  const t1 = folder.locate({ cwd: deep, projects: [] }, { home: tmp });
+  A.eq([t1.folder, t1.root, t1.trusted, t1.skip], [real(deep), real(proj), '', ''], 'not trusted yet: the project to ask about, from the folder you are in');
+  const t2 = folder.locate({ cwd: deep, projects: [{ root: real(proj), blessed: true }] }, { home: tmp });
+  A.eq(t2.trusted, real(proj), 'trusted: every message works there, no card');
+  A.eq(folder.locate({ cwd: tmp, projects: [] }, { home: tmp }).skip, 'home', 'started in your home folder: nothing to ask');
+  A.eq(folder.shortPath('C:\\Users\\you\\Desktop\\gen', 40, W), '~\\Desktop\\gen', 'a folder in your home is said from ~');
+  A.ok(/^…/.test(folder.shortPath('D:\\' + 'x'.repeat(60) + '\\app', 20, W)) && [...folder.shortPath('D:\\' + 'x'.repeat(60) + '\\app', 20, W)].length === 20, 'a long one keeps its far end');
+  A.ok(folder.isLocalHost('127.0.0.1') && folder.isLocalHost('localhost') && !folder.isLocalHost('10.0.0.5'), 'only a station on this machine shares its folders');
+  fs.rmSync(tmp, { recursive: true, force: true });
+
+  // the card
+  const m = crew();
+  const trust = { root: 'C:\\Code\\App', folder: 'C:\\Code\\App\\src' };
+  const s1 = screen(m, { trust }, 110, 34, T0).map(tui.toPlain);
+  const top = s1.findIndex(l => /┌─ ▲ TRUST THIS FOLDER\? ─/.test(l));
+  A.ok(top > 0 && /│ C:\\Code\\App +│/.test(s1[top + 1]) && /you are in src · the whole project is trusted/.test(s1[top + 2]), 'started in a folder not trusted yet: COMMS asks to trust its project, naming it: ' + s1.slice(top, top + 3).join(' / '));
+  A.ok(s1.some(l => /the crew can read and change files here · it joins PROJECTS in the app/.test(l)) && s1.some(l => /not now: each agent works in its own workspace/.test(l)) && s1.some(l => /└─ \[y\] trust {3}\[n\] not now ─/.test(l)), 'says what trusting means, what not trusting means, and its keys');
+  A.ok(/^y trust this folder · n not now/.test(s1[33]), 'the key line says them too');
+  m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
+  m.apply('permission.prompt', { runId: 'r1', agentId: 'astra', promptId: 'p1', tool: 'fs.write', argsSummary: 'auth.js (+2 −1)' }, T0 + 2);
+  const s2 = screen(m, { trust }, 110, 34, T0 + 10).map(tui.toPlain);
+  A.ok(s2.some(l => /ASTRA asks/.test(l)) && !s2.some(l => /TRUST THIS FOLDER/.test(l)), 'an agent waiting on an ask comes first: the folder card waits behind it');
+  A.ok(!tui.trustLines({ root: '/home/you/app', folder: '/home/you/app' }, 60).some(l => l.segs && /you are in/.test(l.segs[0][0])), 'started at the project root: no "you are in" line');
+  for (const [c, r] of [[110, 34], [70, 20]]) {
+    const s3 = screen(crew(), { project: { root: 'C:\\Code\\App', label: '~\\Code\\App' } }, c, r, T0).map(tui.toPlain);
+    A.ok(/^.*╰─ ~\\Code\\App ─+╯$/.test(s3[r - 3].trimEnd()), 'working in a trusted project: the foot of COMMS says which (' + c + ' columns): ' + s3[r - 3]);
+  }
+  A.ok(!screen(crew(), {}, 110, 34, T0).map(tui.toPlain).some(l => /╰─ \S/.test(l)), 'in no project: the foot says nothing');
+}
+
 A.report('cli-dashboard.test');
