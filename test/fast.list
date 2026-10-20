@@ -676,6 +676,7 @@ test/cron.hardening.test.js
 test/cron.reliability-ramp.test.js
 test/cron.english.test.js
 test/cron.dst.test.js
+test/cron.clock-rewind.test.js
 test/cron.durability.test.js
 test/cron.lock.test.js
 test/cron-session-hydration.test.js

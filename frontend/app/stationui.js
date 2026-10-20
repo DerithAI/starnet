@@ -3270,7 +3270,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // nextRunAt arrives as an ISO string from the cron store — parse, never subtract a string (NaN → "in now")
       const nextAt = j.nextShiftAt ? (Date.parse(j.nextShiftAt) || Number(j.nextShiftAt) || 0) : 0;
       const due = nextAt ? (nextAt - Date.now()) : 0;
-      const next = (j.granted && nextAt)
+      // the station withholds the clock while scheduling is OFF or E-STOPped (shiftsPaused) — say that, never a countdown
+      const next = (j.granted && j.shiftsPaused === 'halted') ? 'shifts paused — the E-STOP is engaged (resume automation to lift it)'
+        : (j.granted && j.shiftsPaused) ? 'shifts paused — scheduling is OFF (AUTOMATE › SCHEDULES › TURN SCHEDULING ON)'
+        : (j.granted && nextAt)
         ? (due <= 60000 ? 'next shift: due now' : 'next shift in ' + rel(due))
         : (j.granted ? 'shift not scheduled yet' : 'shifts are off (grant above)');
       h += '<div class="ws-bl-foot">' +

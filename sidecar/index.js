@@ -6488,7 +6488,10 @@ let cronArmed = CRON_ENABLED || loadCronArmed();
    no-ops). It is re-entrant within this process, so applyTick(lock) -> setJobs -> saveCronJobs(lock) nests
    safely. now() uses the same Date.now the driver does (the staleness comparison is the only clock read). ---- */
 const CRON_LOCK_FILE = path.join(WORKSPACES, 'cron.lock');
-const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS });
+// The same dead-holder proofs the workspace-owner lock carries (sweep/autonomy 2026-10-20): a force-killed holder's PID
+// recycled to an unrelated process, or a lockfile older than this OS boot, is reclaimed now — not obeyed for maxRunMs.
+const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS,
+  bootedAt: makeBootedAt(() => Date.now()), processIdentity: processIdentity });
 
 const _sleep = (ms) => new Promise(r => { const t = setTimeout(r, ms); if (t && t.unref) t.unref(); });
 // CRON_WRITE_RETRIES × CRON_WRITE_RETRY_MS bounds the async wait for a live cross-process lock holder (was a
@@ -7356,12 +7359,13 @@ async function nightshiftChat(o) {
   const model = cronModelFor({ agentId: agentId });
   if (!model || !cronHasCredential(provider, key)) return { error: 'no-capability' };
   const runId = crypto.randomUUID();
-  const state = { buf: '', err: null };
+  const state = { buf: '', err: null, reason: null };
   const sink = (name, payload) => {
     const p = payload || {};
     if (name === 'agent.token') { state.buf += (p.delta || ''); return; }
     if (name === 'agent.tool_call') state.buf = '';
     if (name === 'agent.run.error') state.err = p.message || 'run error';
+    if (name === 'agent.run.end') state.reason = p.reason;
   };
   // VISIBLE WHILE THINKING (2026-07-18): the beat's broadcast opt-in (driver + force route both pass it) used to
   // reach only the ACT path — these reason-only runs ran with a local sink and NO SSE tee, so the station floor sat
@@ -7379,6 +7383,9 @@ async function nightshiftChat(o) {
   } catch (e) { return { error: (e && e.message) || 'run failed' }; }
   finally { runsMeta.delete(runId); }
   if (state.err) return { error: state.err };
+  // ONLY A FINISHED RUN IS A REPLY (sweep/autonomy 2026-10-20): an E-STOP/budget/limit end carries no error event, and
+  // its partial stream used to become the beat's "delivered" draft. Anything but 'done' stands the beat down.
+  if (state.reason !== 'done') return { error: 'run ended without completion (' + (state.reason || 'no terminal outcome') + ')' };
   return { text: state.buf };
 }
 
@@ -9482,6 +9489,8 @@ async function modelRemoveLoop(id) {
   return true;
 }
 
+// the OLDEST unreviewed candidate below #n (the one a FIFO approval must wait for), or 0 when #n is the oldest
+function loopOlderPending(loop, n) { return loopjob.pendingReviews(loop).filter(it => it.n < n).reduce((m, it) => (m && m < it.n ? m : it.n), 0); }
 async function modelVerdictLoop(id, n, verdict, note) {
   beginLoopReview(id);
   try {
@@ -9489,6 +9498,7 @@ async function modelVerdictLoop(id, n, verdict, note) {
   if (!loop) throw new Error('no such loop');
   const target = (loop.iterations || []).find(it => it && it.n === n);
   if (!target || target.outcome !== 'candidate' || target.verdict) throw new Error('iteration #' + n + ' is not pending review');
+  { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) throw new Error('review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is'); }
   if (verdict === 'rejected') {
     const undone = await loopUndoWork(loop, n);
     if (!undone.ok) throw new Error(undone.error || 'the iteration could not be undone, so no rejection was recorded');
@@ -9592,6 +9602,7 @@ function handleLoopsVerdict(req, res) {
     if (!target) return json(404, { error: 'no iteration #' + body.n + ' on this loop' });
     if (target.outcome !== 'candidate') return json(409, { error: 'iteration #' + n + ' produced nothing to review (' + target.outcome + ')' });
     if (target.verdict) return json(409, { error: 'iteration #' + n + ' was already ' + target.verdict });
+    { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) return json(409, { error: 'review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is' }); }
 
     const willCascade = verdict === 'rejected' ? loopjob.stackedAbove(loop, n).map(it => it.n) : [];
 
@@ -15583,6 +15594,10 @@ function parseCronScheduleOr400(str, now, tz) {
       : "couldn't read that schedule — try \"every day at 9am\", \"weekdays at 8:30am\", \"mondays at 6pm\", \"tomorrow at 9am\", \"every 30m\", \"in 2h\" or a cron like \"0 9 * * *\"";
     const e = new Error(why); e.code = 400; throw e;
   }
+  // a one-shot in the PAST is not a schedule: stored, it fires on the very next tick (sweep/autonomy 2026-10-20)
+  if (sched.kind === 'once' && Number(sched.runAt) < Number(now) - 60000) {
+    const e = new Error('that time already passed (' + new Date(sched.runAt).toISOString() + ') — a one-shot in the past would run the moment it is saved; give a future time, e.g. "tomorrow at 9am" or "in 2h"'); e.code = 400; throw e;
+  }
   return sched;
 }
 function parseCronAgentIdOr400(value) {
@@ -16001,7 +16016,7 @@ function handleCronHistory(req, res) {
       if (!r || !(r.cronJobId === id || (job.lastRunId && r.runId === job.lastRunId))) continue;
       if (out.some(x => x.runId === r.runId)) continue;
       out.push({ runId: r.runId, at: r.endedAt || r.ts || 0, startedAt: r.startedAt || 0, durationMs: r.durationMs || 0,
-        reason: r.reason, usd: r.usd || 0, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
+        reason: r.reason, usd: r.usd || 0, spendUnknown: !!r.spendUnknown, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
         error: r.error || '', artifacts: (r.artifacts || []).length });
     }
     return json(200, { ok: true, id, runs: out });
@@ -17573,10 +17588,13 @@ async function handleWorkshopBacklog(req, res) {
     attempts: Number(b.attempts) || 0
   }));
   const routine = findWorkshopRoutine(agentId);
+  // a shift fires only through the scheduler: OFF or E-STOPped, the routine's nextRunAt is a time that will not
+  // arrive — withhold the clock and say why (the same live state GET /api/cron reports; sweep/autonomy 2026-10-20)
+  const shiftsPaused = cronHalted ? 'halted' : (!cronArmed ? 'scheduler-off' : null);
   json(200, {
     ok: true, agentId: agentId, granted: rec.grant, backlog: rec.backlog,
-    items: items,
-    nextShiftAt: (routine && routine.enabled && routine.nextRunAt) || null,
+    items: items, shiftsPaused: shiftsPaused,
+    nextShiftAt: (!shiftsPaused && routine && routine.enabled && routine.nextRunAt) || null,
     shiftEvery: WORKSHOP_SHIFT_SCHEDULE,
     lastShift: rec.lastShift || null
   });
@@ -24258,6 +24276,13 @@ async function handleAutonomyPosture(req, res) {
   // below acting, we LEAVE the timer armed — its own gate returns binding:'posture' and no beat fires, which is
   // cheaper + simpler than tearing the timer down and matches how the driver already no-ops when not permitted.
   try { if (nightshiftShouldArm() && !nightshiftTimer) armNightshift(); } catch (_) {}
+  // THE DIAL IS THE CONSENT, MID-BEAT TOO (sweep/autonomy 2026-10-20): a write that no longer permits acting
+  // unattended stops the beat already in flight — otherwise it kept its stream and bought its remaining calls.
+  try {
+    if (postureWritten && !(commanderPosture.summary() || {}).actsUnattended && nightshiftDriver.runInFlight() && nightshiftDriver.abortBeat()) {
+      recordAutonomy({ source: 'nightshift', kind: 'note', agentId: NIGHTSHIFT_AGENT, reason: 'posture-revoked', detail: { phase: 'beat', note: 'the dial was lowered below acting on its own — the in-flight beat was stopped' } });
+    }
+  } catch (e) { failNote('nightshift.revoke.abort', e); }
   // THE DIAL IS THE UNATTENDED-BUILD CONSENT. buildsUnattended (initiative≥leash AND reach≥sandbox) records the
   // night-shift agent's away-workshop grant through the SAME store authority as POST /api/workshop/grant — without
   // it every beat silently degraded to a reason-only draft (the "dial at max, station never builds" trap,
@@ -27136,8 +27161,18 @@ function syncInterruptedRunHistory(r) {
     && String(existing.continuedReason || '') === continuedReason && !settled) return null;
   const startedAt = Number(meta.startedAt || r.firstTs || 0) || 0;
   const endedAt = Math.max(startedAt, Number(r.lastTs || 0) || 0);   // the last durable journal record = last proof of life
+  // A ROUTINE RUN THAT DIED BETWEEN FIRE AND SETTLEMENT (sweep/autonomy 2026-10-20): the row carries the journal's
+  // cronJobId so the routine's own history lists it, and the routine record stops reporting the previous run's ok.
+  const cronJobId = String(meta.trigger === 'schedule' && meta.cronJobId || '').slice(0, 100);
+  if (cronJobId) {
+    const j = cronStore.getJob(cronJobs, cronJobId);
+    if (j && cronStore.markInterrupted([j], cronJobId, { runId: r.runId, startedAt })[0] !== j) {
+      withCronWrite(jobs => cronStore.markInterrupted(jobs, cronJobId, { runId: r.runId, startedAt, error: INTERRUPTED_HISTORY_LINES[next.status] }))
+        .catch(e => failNote('cron.interrupted.mark', e));
+    }
+  }
   return runStore.record({
-    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''),
+    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''), cronJobId,
     reason: 'interrupted', turns: Number((r.checkpoint && r.checkpoint.turn) || 0) || 0, tokens: 0,
     usd: settled ? settled.usd : 0, spendUnknown: !settled, spendSettled: settled ? settled.attestedAs : '',
     title: String(meta.userTitle || ''), streamId: String(meta.streamId || ''), model: String(meta.model || ''),
