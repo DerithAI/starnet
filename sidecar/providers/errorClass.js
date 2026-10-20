@@ -262,8 +262,9 @@
      created team doesn't have any credits yet. You can purchase credits on https://console.x.ai/…") or
      "…has either used all available credits or reached its monthly spending limit". The plain status read called
      that `auth`, and the user was told no model was connected. */
-  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?|credit balance is too low/;
+  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?|credit balance is too low|key limit exceeded/;
 
+  const REGION_REFUSAL_RE = /unsupported_country_region_territory|country,? region,? or territory not supported|not available in your (?:country|region)/;
   const TOOL_GEN_FAILED_RE = /tool_use_failed|failed to call a function|tool call validation failed/;
   function classify400(low, code, ctx) {
     const c = String(code || '').toLowerCase();
@@ -336,6 +337,9 @@
     if ((!status || status === 400 || status === 422) && parseOutputCap(low) > 0) return 'output_cap';
     // 2. HTTP status
     if (status) {
+      // a 403 the UPSTREAM gave for this region (OpenAI behind OpenRouter: unsupported_country_region_territory) is the
+      // model being unavailable here — the key is fine, and another model/provider may answer (shouldFallback)
+      if (status === 403 && REGION_REFUSAL_RE.test(low)) return 'model_not_found';
       if (status === 401 || status === 403) return NO_CREDIT_RE.test(low) ? 'billing' : 'auth';
       if (status === 402) return /(resets? at|retry[- ]?after|rate limit)/.test(low) ? 'rate_limit' : 'billing';
       if (status === 404) return 'model_not_found';

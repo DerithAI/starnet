@@ -413,7 +413,11 @@
      answers a bad key with HTTP 400 "Incorrect API key provided", and a team with no prepaid credits with 403
      "…doesn't have any credits yet. You can purchase credits on https://console.x.ai/…" (2026-09-27). */
   const REJECTED_KEY_RE = /incorrect api key|invalid api key|api key (?:is )?(?:invalid|not valid|incorrect)|invalid x-api-key/;
-  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?|credit balance is too low/;
+  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?|credit balance is too low|key limit exceeded/;
+  // mirrored from errorClass.js: an upstream region refusal is the model being unavailable here, not a bad key
+  const REGION_REFUSAL_RE = /unsupported_country_region_territory|country,? region,? or territory not supported|not available in your (?:country|region)/;
+  // a provider adapter's own failure sentence ("openrouter http 403 — …", "openai-compatible http 403 - …")
+  const PROVIDER_HTTP_RE = /\b(?:openrouter|anthropic|gemini|codex|openai-compatible|grok \(xai\)|kimi for coding|xai) http \d{3}\b/;
   // the ONE sentence both classifier paths use for "no model is picked": the sidecar guard and the page preflight
   const NO_MODEL_RE = /\bno model selected\b/;
   /* WHICH grok failures mean "this account can't use Grok sign-in" (the allowlist yank)? Only ones that carry the
@@ -467,7 +471,9 @@
     if (s) {
       // OUR OWN sidecar's token gate (crash+respawn → stale X-StarNet-Token): a "sidecar HTTP 403" throw or a
       // "forbidden token/origin/host" body means reload for the fresh boot token — never the provider-key door.
-      if (s === 403 && (/sidecar http/.test(low) || /\bforbidden\b/.test(low))) return 'stale_session';
+      // …but a PROVIDER's own "Forbidden" (its adapter label names it) is the provider's refusal, never this page's token
+      if (s === 403 && (/sidecar http/.test(low) || (/\bforbidden\b/.test(low) && !PROVIDER_HTTP_RE.test(low)))) return 'stale_session';
+      if (s === 403 && REGION_REFUSAL_RE.test(low)) return 'model_not_found';
       if (s === 401 || s === 403) return NO_CREDIT_RE.test(low) ? 'billing' : 'auth';
       if (s === 402) return /(resets? at|retry[- ]?after|rate limit)/.test(low) ? 'rate_limit' : 'billing';
       if (s === 404) return 'model_not_found';
@@ -708,7 +714,11 @@
     // provider only: a sign-in subscription was turned into quota_exhausted above
     if (kind === 'billing') {
       const provider = providerFromRaw(raw);
-      const userMessage = provider && PROVIDER_PROSE[provider] ? 'Your ' + PROVIDER_PROSE[provider] + ' account is out of credit — top it up, then try again.' : k.msg;
+      // OpenRouter's per-KEY credit limit: the key and the account may both be fine — the limit set on the key is the lever
+      const nm = PROVIDER_PROSE[provider] || 'provider';
+      const userMessage = /key limit exceeded/.test(raw.toLowerCase())
+        ? 'This ' + nm + " key reached the credit limit set on it — raise that key's limit in your " + nm + ' key settings, or use a different key.'
+        : provider && PROVIDER_PROSE[provider] ? 'Your ' + PROVIDER_PROSE[provider] + ' account is out of credit — top it up, then try again.' : k.msg;
       return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, provider: provider, raw: raw };
     }
     // a spent plan allowance names the plan when it is a sign-in subscription's (quotaMessage); otherwise the neutral copy
