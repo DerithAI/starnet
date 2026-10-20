@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "4c02c17b6debceef4c1851139af2d5d9cad65198",
+    "sourceCommit": "ef854abc046afb38fa7ee67a1eba44656d5bb740",
     "pathSetSha256": "645b62b27dcfe10fc7a600d07db0eb5464e0456b3744f0a51ecfbeaee126d3e9",
     "files": [
       {
@@ -1138,8 +1138,8 @@
       },
       {
         "path": "frontend/app/skinstage.js",
-        "bytes": 4558,
-        "sha256": "b35b35c83e01198617ef9c8c07ec58aa78b5764cf2c1a0e5599a45b2c4984b22"
+        "bytes": 5141,
+        "sha256": "de8a9cdcbc7e4082a6c62d5316c2e6dff9b19161fe9d1dd3ed06a6fc3aa454f7"
       },
       {
         "path": "frontend/app/slaglog.js",
@@ -1533,8 +1533,8 @@
       },
       {
         "path": "frontend/css/agent-dossier.css",
-        "bytes": 18415,
-        "sha256": "a09bb9ef96d23b74fdc50055cdbff275da573712f5e1348b96659e0f8ecdd0a5"
+        "bytes": 19404,
+        "sha256": "06120ae2fb328b72c2bdc1e9269dfe898e322100b27b00af8e95f347a8a70618"
       },
       {
         "path": "frontend/css/app.css",
@@ -1658,8 +1658,8 @@
       },
       {
         "path": "frontend/css/pipglass.css",
-        "bytes": 77133,
-        "sha256": "d5431699168aea805a67f7a96c0e74c7d47392d30813d305b6912fe9b3699abc"
+        "bytes": 77708,
+        "sha256": "71aae210720a7680df36fc6a54d9245bc0e802506e01bb7cb5e5e6c7d48810c7"
       },
       {
         "path": "frontend/css/plugins.css",
@@ -1824,7 +1824,7 @@
       {
         "path": "frontend/index.html",
         "bytes": 99258,
-        "sha256": "a8be77b7cf03366c7947fea37fe662b99f5fe782622d4fd709f75e813cd80ef9"
+        "sha256": "f23c3a6d4d2ed6510d3175d4cd7283fb89007d4eabdc4dd67209f82de8341285"
       },
       {
         "path": "frontend/js/arcade.js",
