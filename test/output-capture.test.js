@@ -186,5 +186,22 @@ function streamingSpawn(chunks, code) {
     A.ok(/The full 8388700-character \/ 8388700-byte UTF-8 output was saved/.test(st.boundToolResult(base, 0).content), 'and is unchanged for a whole capture');
   }
 
+  // ---- 12. outputElided survives executeCalls, so the REAL turn squeeze tells the truth (both paths) ----
+  {
+    const { _internals: L } = require('../sidecar/loop.js');
+    const calls = [{ id: 'c1', name: 'shell.exec', argsRaw: '{}' }, { id: 'c2', name: 'shell.exec', argsRaw: '{}' }];
+    const dispatch = async c => c.id === 'c1'
+      ? { ok: true, content: 'h'.repeat(50000), summary: 'exit 0', parkedPath: '.output/shell-1.txt', outputElided: 12345678 }
+      : { ok: true, content: 'w'.repeat(50000), summary: 'exit 0', parkedPath: '.output/shell-2.txt' };
+    for (const parallel of [true, false]) {
+      const label = parallel ? 'parallel' : 'sequential';
+      const res = await L.executeCalls(calls, dispatch, {}, () => {}, { agentId: 'a', runId: 'r', parallelSafe: () => parallel, turnOutputMax: 4000 });
+      A.eq(res[0].outputElided, 12345678, label + ': executeCalls carries outputElided to the turn budget');
+      A.ok(!('outputElided' in res[1]), label + ': a whole capture gets no outputElided field');
+      A.ok(/THE KEPT FIRST AND LAST PARTS OF THIS OUTPUT WERE SAVED to \.output\/shell-1\.txt/.test(res[0].content) && !/THE FULL OUTPUT OF THIS CALL WAS SAVED/.test(res[0].content), label + ': the squeezed elided result says only the first and last parts were saved');
+      A.ok(/THE FULL OUTPUT OF THIS CALL WAS SAVED to \.output\/shell-2\.txt/.test(res[1].content), label + ': the squeezed whole result keeps the full-output note');
+    }
+  }
+
   A.report('output-capture.test');
 })().catch(e => { console.error(e); process.exit(1); });

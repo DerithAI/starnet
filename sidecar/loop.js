@@ -375,7 +375,7 @@
         return { c, r, ms: Math.max(0, (meta.clock ? meta.clock.now() : 0) - t0) };
       }));
       for (const s of settled) {
-        results.push({ callId: s.c.id, isError: !!s.r.isError, ok: !!s.r.ok, content: s.r.content, summary: s.r.summary || (s.r.isError ? 'error' : 'ok'), control: s.r.control || null, images: s.r.images || null, parkedPath: s.r.parkedPath || null, ...(s.r.quietRepair ? { quietRepair: true } : {}) });
+        results.push({ callId: s.c.id, isError: !!s.r.isError, ok: !!s.r.ok, content: s.r.content, summary: s.r.summary || (s.r.isError ? 'error' : 'ok'), control: s.r.control || null, images: s.r.images || null, parkedPath: s.r.parkedPath || null, ...(s.r.outputElided > 0 ? { outputElided: s.r.outputElided } : {}), ...(s.r.quietRepair ? { quietRepair: true } : {}) });
         if (meta.hiddenTools && meta.hiddenTools.has(s.c.name)) continue;
         emit('agent.tool_result', {
           agentId: meta.agentId, runId: meta.runId, callId: s.c.id, ok: !!s.r.ok,
@@ -418,7 +418,7 @@
       }
       r = quietHiddenError(c, r || { ok: false, isError: true, content: 'tool returned nothing', summary: 'error' }, meta);
       const t1 = meta.clock ? meta.clock.now() : 0;
-      results.push({ callId: c.id, isError: !!r.isError, ok: !!r.ok, content: r.content, summary: r.summary || (r.isError ? 'error' : 'ok'), control: r.control || null, images: r.images || null, parkedPath: r.parkedPath || null, ...(r.quietRepair ? { quietRepair: true } : {}) });
+      results.push({ callId: c.id, isError: !!r.isError, ok: !!r.ok, content: r.content, summary: r.summary || (r.isError ? 'error' : 'ok'), control: r.control || null, images: r.images || null, parkedPath: r.parkedPath || null, ...(r.outputElided > 0 ? { outputElided: r.outputElided } : {}), ...(r.quietRepair ? { quietRepair: true } : {}) });
       if (r.control && r.control.final) finalControl = r.control;
       if (r.control && r.control.stopTools) stopToolsControl = r.control;
       if (!hidden) emit('agent.tool_result', {
