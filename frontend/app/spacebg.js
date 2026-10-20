@@ -72,6 +72,10 @@ const SpaceBG = (() => {
   const NEB_HUES = [[150, 90, 255], [255, 90, 190], [90, 200, 255], [90, 255, 200]];
 
   const rgba = (c, a) => 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + (+a).toFixed(3) + ')';
+  /* a three-step near twinkler's fillStyle strings, made on its first draw and kept on the star (2026-10-20): the near
+     loops built one rgba() per star per frame out of three values. Each loop passes its own level literals, so every
+     string is the one it used to build (test/spacebg-void-strings.test.js pins each sky's draw stream). */
+  const twinkleStyles = (s, lo, mid, hi) => s.tw || (s.tw = [rgba(s.c, lo), rgba(s.c, mid), rgba(s.c, hi)]);
   // linear blend of two [r,g,b] triples — for ramps written straight into an ImageData buffer
   const mix3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
   const px1 = () => Math.max(1, Math.round((typeof window !== 'undefined' && window.devicePixelRatio) || 1));
@@ -846,10 +850,11 @@ const SpaceBG = (() => {
           if (Math.abs(yy) <= R - 1) { ctx.fillStyle = rgba(P.WHITE, 1); ctx.fillRect(x - core, y + yy, 2 * core + 1, 1); }
         }
       }
+      let fill = null;   // three steps: each star keeps its strings (twinkleStyles), fillStyle set only on a change
       for (const s of st.near) {
         const ph = Math.sin(now / s.rate + s.ph);
-        const lv = ph > 0.45 ? 0.9 : ph > -0.4 ? 0.52 : 0.22;
-        ctx.fillStyle = rgba(s.c, lv);
+        const f = twinkleStyles(s, 0.22, 0.52, 0.9)[ph > 0.45 ? 2 : ph > -0.4 ? 1 : 0];
+        if (f !== fill) ctx.fillStyle = fill = f;
         ctx.fillRect(fl(((s.x * w + nx0) % w + w) % w), fl(((s.y * h + ny0) % h + h) % h), s.r, s.r);
       }
 
@@ -1045,10 +1050,11 @@ const SpaceBG = (() => {
 
       /* the near twinklers: THREE brightness steps, snapped — a pixel star does not fade */
       const nx0 = parX(cam, D.near) + t * S.near * dx, ny0 = parY(cam, D.near) + t * S.near * dy;
+      let fill = null;
       for (const s of st.near) {
         const ph = Math.sin(now / s.rate + s.ph);
-        const lv = ph > 0.45 ? 0.85 : ph > -0.4 ? 0.5 : 0.22;
-        ctx.fillStyle = rgba(s.c, lv);
+        const f = twinkleStyles(s, 0.22, 0.5, 0.85)[ph > 0.45 ? 2 : ph > -0.4 ? 1 : 0];
+        if (f !== fill) ctx.fillStyle = fill = f;
         ctx.fillRect(fl(((s.x * w + nx0) % w + w) % w), fl(((s.y * h + ny0) % h + h) % h), s.r, s.r);
       }
 
@@ -1294,10 +1300,11 @@ const SpaceBG = (() => {
         ctx.fillStyle = rgba(P.HOT, 0.9); ctx.fillRect(x, y, 1, 1);
       }
       const nx0 = parX(cam, D.near) + t * S.near * dx, ny0 = parY(cam, D.near) + t * S.near * dy;
+      let fill = null;
       for (const s of st.near) {
         const ph = Math.sin(now / s.rate + s.ph);
-        const lv = ph > 0.45 ? 0.9 : ph > -0.4 ? 0.55 : 0.25;
-        ctx.fillStyle = rgba(s.c, lv);
+        const f = twinkleStyles(s, 0.25, 0.55, 0.9)[ph > 0.45 ? 2 : ph > -0.4 ? 1 : 0];
+        if (f !== fill) ctx.fillStyle = fill = f;
         ctx.fillRect(Math.floor(((s.x * w + nx0) % w + w) % w), Math.floor(((s.y * h + ny0) % h + h) % h), s.r, s.r);
       }
 
