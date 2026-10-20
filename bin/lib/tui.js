@@ -110,8 +110,16 @@ const HELP = [
   ['↑  ↓', 'your earlier messages'],
   ['pgup  pgdn', 'scroll COMMS'],
   ['/stop', 'stop the shown agent\'s runs'],
+  ['/retry', 'send your last message again'],
+  ['/status', 'the agent, its model, its folder, the station'],
+  ['/skills', 'its skills · run one: /<skill> <task>'],
+  ['/usage  /tools', 'spend · what it can call'],
+  ['/routine', 'scheduled routines: list, create, pause'],
+  ['/cron  on · off', 'the routines scheduler: its state, arm it'],
+  ['/away', 'work it builds on its own away shift'],
   ['/flow', 'list workflows'],
   ['/flow run name text', 'send one job down a workflow'],
+  ['/version', 'the CLI and the station'],
   ['/help', 'this list'],
   ['ctrl+c', 'quit']
 ];
@@ -414,7 +422,15 @@ function paneRows(log, focusRow, tw, now) {
   const out = [];
   const name = focusRow ? focusRow.name : '';
   log.forEach((e, i) => {
-    if ((e.k === 'you' || e.k === 'start') && i > 0) out.push(null);
+    if ((e.k === 'you' || e.k === 'start' || e.k === 'say') && i > 0) out.push(null);
+    if (e.k === 'say') {
+      // a station command's answer, under the command that asked: its title, then its lines as the station wrote them
+      const rowsOf = (e.title ? [[e.title, 'hi b']] : []).concat(e.lines.flatMap(l => String(l).split('\n')).map(l => [l, e.ok ? 'fg' : 'am']));
+      let first = true;
+      for (const [t, s] of rowsOf) for (const ln of wrap(t, tw)) { out.push({ label: first ? e.cmd : '', lc: 'ph b', segs: [[ln, s]] }); first = false; }
+      if (first) out.push({ label: e.cmd, lc: 'ph b', segs: [['done', 'dim']] });
+      return;
+    }
     if (e.k === 'tool') {
       const segs = [['↳ ', 'dim'], [e.name, 'ph'], ['  ' + e.args, 'fg']];
       if (e.running) segs.push(['  ' + ['·  ', '·· ', '···'][Math.floor(now / 320) % 3], 'dim']);
@@ -456,7 +472,8 @@ function paneRows(log, focusRow, tw, now) {
 function drawPane(g, log, focusRow, top, bot, x0, x1, ui, now) {
   const H = bot - top;
   if (H <= 0) return;
-  const L = Math.max(8, Math.min(14, (focusRow ? width(focusRow.name) : 0) + 2));
+  // the label column fits the agent's name and any command whose answer is shown (/routine, /version …)
+  const L = Math.max(8, Math.min(14, Math.max(focusRow ? width(focusRow.name) : 0, ...log.filter(e => e.k === 'say').map(e => width(e.cmd))) + 2));
   const all = paneRows(log, focusRow, x1 - x0 + 1 - L, now);
   if (!all.length) { g.put(x0 + L, top, trunc(focusRow ? 'nothing yet · type a message for ' + focusRow.name + ' and press enter' : '', x1 - x0 - L), 'dim'); return; }
   const maxScroll = Math.max(0, all.length - H);

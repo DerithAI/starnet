@@ -10,7 +10,9 @@
      4. `-p` marks a task (the model is offered tools) and talk as talk (none) — without isTask no tool was ever offered;
      5. `flow` on a station with no lines says so, exit 0; a bare `starnet` in a pipe prints usage, never a screen;
      6. `-p` started inside a project works in it once the station trusts it (the agent is told the folder and a
-        relative write lands there), and before that says the folder is not trusted and works in its own workspace.
+        relative write lands there), and before that says the folder is not trusted and works in its own workspace;
+     7. the station's own slash commands answer the terminal (POST /api/slash/dispatch, client 'terminal'): /tools reads
+        the agent's SAVED floor (the floor a terminal run gets), /usage answers, a page-only command says it is one.
    Part of test:http. */
 'use strict';
 
@@ -103,10 +105,14 @@ function hermetic(profile) {
   let watcher = null;
   try {
     // a watcher first, so it sees the whole run
-    const watched = { out: '' };
+    const watched = { out: '', err: '' };
     watcher = spawn(process.execPath, [BIN, 'watch', '--json', '--port', port], { env: Object.assign({}, process.env, env), stdio: ['ignore', 'pipe', 'pipe'] });
     watcher.stdout.setEncoding('utf8'); watcher.stdout.on('data', d => { watched.out += d; });
-    await sleep(1500);
+    watcher.stderr.setEncoding('utf8'); watcher.stderr.on('data', d => { watched.err += d; });
+    // the run starts only once the watcher says its feed is live (a fixed wait let a slow start miss the run's first events)
+    const live = Date.now() + 30000;
+    while (Date.now() < live && !/watching .* live/.test(watched.err)) await sleep(100);
+    A.ok(/^· watching http:\/\/127\.0\.0\.1:\d+ live · ctrl\+c stops$/m.test(watched.err) && watched.out === '', 'watch says once, on stderr, that its feed is live (stdout stays the events): ' + watched.err.trim());
 
     // the page starts work on its own conversation (the bare agent asks before every write; no task brief, so the
     // write goes straight to the approval gate)
@@ -194,6 +200,29 @@ function hermetic(profile) {
       A.ok(seen.some(s => s.sys.indexOf('anchored to the trusted project folder ' + root) >= 0), 'the agent is told it works in that project');
       A.ok(fs.existsSync(path.join(proj, 'project-note.md')) && /started in/.test(fs.readFileSync(path.join(proj, 'project-note.md'), 'utf8')), 'and its write (a relative path) landed in the project');
     } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+
+    /* ---- 7. the station's slash commands, from the terminal ----------------------------------------- */
+    // a floor with a files cabinet on it, saved the way the app saves it: an agent with no room of its own uses it
+    const WM = require('../frontend/app/worldmodel.js');   // loaded here: the page's world model, only this section needs it
+    const station = WM.create();
+    A.ok(station.addProp({ t: 'war_intelcab', x: 2, y: 2, w: 1, h: 2 }).ok, 'a cabinet on the floor');
+    const rev = ((await fixture.json('GET', '/api/save?agent=agent')).body.save || {})._saveRevision || 0;
+    const saved = await fixture.json('POST', '/api/save', { schema: 'starnet.save', version: 5, _saveRevision: rev, updatedAt: Date.now(), agent: { id: 'agent' }, station: station.serialize() });
+    A.ok(saved.body && saved.body.ok, 'the floor is saved: ' + saved.text);
+    const dispatch = async (input, extra) => (await post(fixture, '/api/slash/dispatch', Object.assign({ input, agentId: 'agent' }, extra || {}))).json || {};
+    const said = d => (d.directive ? [d.directive.title].concat(d.directive.lines || [], [d.directive.text]) : []).filter(Boolean).join(' | ');
+    const termTools = await dispatch('/tools', { client: 'terminal' });
+    A.ok(termTools.ok && termTools.directive.type === 'say' && /✓ [^|]*fs[._]/.test(said(termTools)), '/tools from the terminal lists the files tools its saved floor grants: ' + said(termTools).slice(0, 300));
+    const floorless = await dispatch('/tools');
+    A.ok(floorless.ok && !/✓ [^|]*fs[._]/.test(said(floorless)), 'a caller sending no floor and not the terminal keeps the old reading (none): ' + said(floorless).slice(0, 200));
+    const page = await dispatch('/tools', { client: 'terminal', placed: [] });
+    A.ok(page.ok && !/✓ [^|]*fs[._]/.test(said(page)), 'a floor the caller sends (even an empty one) is never replaced by the saved one');
+    const usage = await dispatch('/usage', { client: 'terminal' });
+    A.ok(usage.ok && usage.directive.type === 'say' && said(usage).length > 0, '/usage answers the terminal: ' + said(usage).slice(0, 200));
+    const yolo = await dispatch('/yolo', { client: 'terminal' });
+    A.ok(yolo.ok && yolo.directive.type === 'client', 'a page-only command comes back as one (the terminal says it only works in the app)');
+    const cat = (await fixture.json('GET', '/api/slash/catalog?agent=agent&client=terminal')).body;
+    A.ok(cat && Array.isArray(cat.commands) && cat.commands.some(c => c.name === 'usage'), 'the catalog answers the terminal');
   } catch (e) {
     A.ok(false, 'cli-station e2e threw: ' + ((e && e.stack) || e));
   } finally {

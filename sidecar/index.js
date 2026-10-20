@@ -11302,7 +11302,8 @@ const TERMINAL_NOTE = '\n\n[TERMINAL] The Commander is talking to you from the S
   + 'terminal: an approval shows as a card they answer with y (allow once), n (deny) or v (read the full request first); a '
   + 'question you ask with brief.ask is answered by number or by typing; /model shows and switches your model; /new starts a fresh '
   + 'conversation and /resume reopens an earlier one; /stop stops your run; /flow lists workflows and /flow run <name> <text> sends '
-  + 'one job; @name talks to another agent; /help lists everything. Never write a FORK: line — ask in plain words. When something '
+  + 'one job; @name talks to another agent; /help lists everything. The station\'s own commands work there too: /usage, /tools, '
+  + '/routine, /away, the Commander\'s own commands, and each skill as /<skill> <task> (/skills lists them). Never write a FORK: line — ask in plain words. When something '
   + 'can only be done in the StarNet desktop app (placing props, building the station, connecting accounts or keys), say so '
   + 'plainly. Write for a terminal: plain text and simple markdown (short paragraphs, lists, code blocks), no wide tables.';
 const remoteCrypto = require('./remote/crypto.js');
@@ -18566,6 +18567,16 @@ function placedTypesFrom(v) {
   if (Array.isArray(v)) return v.map(e => (e && typeof e === 'object') ? e.objectType : e).map(s => String(s || '').trim()).filter(Boolean);
   return String(v || '').split(',').map(s => s.trim()).filter(Boolean);
 }
+/* The floor a slash command reads. The page sends its live floor; the TERMINAL (`starnet`) has no floor to see and sends
+   none, and its runs then use the agent's SAVED floor (handleRun: no `placed` → savedPlacement). Its commands read that
+   same floor, so /tools and the skills it lists in the terminal are the ones a terminal run really gets. Any other caller
+   without a floor keeps the old reading (none). */
+function slashPlacedFor(placed, client, agentId) {
+  if (placed != null || client !== 'terminal') return placedTypesFrom(placed);
+  const id = /^[A-Za-z0-9_-]{1,40}$/.test(String(agentId || '')) ? String(agentId) : 'agent';
+  try { return placedTypesFrom(require('./capability/saved-placement.js').savedPlacement(saveStore.load('agent'), id)); }
+  catch (e) { failNote('slash.terminal-floor', e); return []; }
+}
 
 /* The gear a skill can use for this agent: what the browser reports placed (its room + shared station gear) PLUS what
    the agent's execution profile or Full Access grants, plus the ORCHESTRATOR every Commander-started run carries
@@ -18593,8 +18604,8 @@ function serveSlashCatalog(req, res) {
   let placedTypes = [], agentId = 'agent';
   try {
     const u = new URL(req.url, 'http://127.0.0.1');
-    placedTypes = placedTypesFrom(u.searchParams.get('placed') || '');
     agentId = String(u.searchParams.get('agent') || 'agent');
+    placedTypes = slashPlacedFor(u.searchParams.has('placed') ? (u.searchParams.get('placed') || '') : null, u.searchParams.get('client'), agentId);
   } catch (_) {}
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(slash.catalog(slashOptions(skillGearFor(agentId, placedTypes)))));
@@ -18849,7 +18860,7 @@ async function handleSlashDispatch(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 1 << 14)) || {}; } catch (e) { return json(400, { ok: false, error: 'bad json' }); }
   const input = body.input != null ? body.input : ('/' + String(body.command || ''));
-  const placed = placedTypesFrom(body.placed);
+  const placed = slashPlacedFor(body.placed, body.client, body.agentId);
   // skills resolve against the agent's full gear (profile / Full Access grants included); `placed` itself still rides
   // the server-action ctx unchanged below
   const out = slash.dispatch(input, slashOptions(skillGearFor(String(body.agentId || 'agent'), placed)));

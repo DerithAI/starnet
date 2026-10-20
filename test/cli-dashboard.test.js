@@ -462,4 +462,30 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!screen(crew(), {}, 110, 34, T0).map(tui.toPlain).some(l => /╰─ \S/.test(l)), 'in no project: the foot says nothing');
 }
 
+// ---- the station's slash commands in COMMS ------------------------------------------------------------------------
+{
+  const m = crew();
+  m.noteSaid('astra', '/usage', 'Spend', ['today $0.42 · lifetime $12.30', '214 runs'], true, T0);
+  m.noteSaid('astra', '/routine', '', ['no routine named "nightly"'], false, T0 + 1);
+  m.noteSent('astra', 'Use the "plan" skill recipe for this task.\n\nSkill recipe:\n1. read\n2. plan\n\nTask: refactor commands', 'cli-astra', T0 + 2);
+  const shown = m.logOf('astra')[m.logOf('astra').length - 1];
+  A.ok(/^Use the "plan" skill/.test(shown.text), 'noteSent keeps what it is handed (the dashboard hands it what to SHOW)');
+  const m2 = crew();
+  m2.noteSaid('astra', '/usage', 'Spend', ['today $0.42 · lifetime $12.30', '214 runs'], true, T0);
+  m2.noteSaid('astra', '/routine', '', ['no routine named "nightly"'], false, T0 + 1);
+  m2.noteSent('astra', '/plan refactor commands', 'cli-astra', T0 + 2);
+  const rows = screen(m2, {}, 110, 34, T0 + 10);
+  const text = rows.map(tui.toPlain);
+  const u = text.findIndex(l => /\/usage +Spend/.test(l));
+  A.ok(u > 0 && /today \$0\.42 · lifetime \$12\.30/.test(text[u + 1]) && /214 runs/.test(text[u + 2]), 'a station command\'s answer shows under the command that asked: its title, then its lines: ' + text.slice(u, u + 3).join(' / '));
+  const label = rows[u].find(([t]) => /\/usage/.test(t));
+  A.ok(label && /ph b/.test(label[1]), 'the command is the label, in the accent');
+  const no = text.findIndex(l => /\/routine +no routine named "nightly"/.test(l));
+  const noSeg = no > 0 && rows[no].find(([t]) => /no routine named/.test(t));
+  A.ok(noSeg && /am/.test(noSeg[1]), 'a "no" from the station is amber, not an error: it answered');
+  A.ok(text.some(l => /YOU +\/plan refactor commands/.test(l)) && !text.some(l => /skill recipe for this task/.test(l)), 'a skill shows as you typed it, not as the whole recipe it sends');
+  for (const c of ['/retry', '/status', '/skills', '/usage  /tools', '/routine', '/away', '/version']) A.ok(tui.HELP.some(([k]) => k === c), '/help lists ' + c);
+  A.ok(/\/usage · \/tools · \/routine · \/away/.test(core.USAGE) && /each skill as \/<skill> <task>/.test(core.USAGE), 'the usage names the station\'s own commands and skills');
+}
+
 A.report('cli-dashboard.test');

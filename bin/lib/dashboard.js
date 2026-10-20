@@ -21,7 +21,7 @@
 const http = require('node:http');
 const readline = require('node:readline');
 const core = require('./cli-core.js');
-const { makeStation } = require('./station-model.js');
+const { makeStation, costText } = require('./station-model.js');
 const tui = require('./tui.js');
 const sixel = require('./sixel.js');
 const camfeed = require('./camfeed.js');
@@ -48,7 +48,8 @@ function runDashboard(station, opts) {
     logoImage: null,
     // the folder this terminal works in: project = the trusted project every message works in; trust = the card asking
     // to trust the folder it was started in
-    project: null, trust: null
+    project: null, trust: null,
+    lastSent: {}   // agentId -> { text, shown }: what /retry sends again
   };
   const mine = new Map();       // requests this terminal holds open: id -> { req, agentId, kind }
   let feedReq = null, cursor = '', feedRetry = null, stopped = false;
@@ -220,12 +221,14 @@ function runDashboard(station, opts) {
   }
 
   // ---- doing things ---------------------------------------------------------------------------------------
-  function send(agentId, text) {
+  // shown: what COMMS says you sent, when it is not the text itself (a skill goes as its whole recipe, shown as /skill task)
+  function send(agentId, text, shown) {
     const a = model.state.agents.get(agentId);
     if (!a) return flash('no agent named ' + agentId);
     if (!a.model) return flash(a.name + ' has no model set — pick one in the app first');
     const streamId = streamOf(agentId);
-    model.noteSent(agentId, text, streamId, now());
+    ui.lastSent[agentId] = { text, shown };
+    model.noteSent(agentId, shown || text, streamId, now());
     ui.scroll = 0;
     // tools only for a task, decided the way the page decides it (the agent's last reply lets a bare "yes" to its offer count)
     const prior = [...model.logOf(agentId)].reverse().find(e => e.k === 'agent');
@@ -451,7 +454,113 @@ function runDashboard(station, opts) {
       ui.overlay = { title: 'WORKFLOWS', items: fl.length ? fl.map(f => [f.name, f.state + ' · ' + f.text + (f.shipped ? ' · ' + f.shipped + ' shipped' : '')]) : [['none yet', 'build a line in the app (INBOX → steps → OUTBOX)']], foot: 'send one job: /flow run <name> <text>' };
       return paint();
     }
-    flash('unknown command ' + cmd + ' · /help lists them');
+    if (cmd === '/retry') { const last = ui.lastSent[ui.focus]; return last ? send(ui.focus, last.text, last.shown) : flash('nothing sent to ' + ((model.state.agents.get(ui.focus) || {}).name || 'this agent') + ' from here yet'); }
+    if (cmd === '/status' || cmd === '/whoami') return showStatus();
+    if (cmd === '/version') return showVersion();
+    if (cmd === '/skills') return openSkillsPicker(parts.slice(1).join(' '));
+    if (cmd === '/history') return openResumePicker();
+    if (cmd === '/cron') return cronCommand(parts.slice(1).join(' '));
+    // everything else is the station's: its own commands, the Commander's, each skill and recipe
+    return stationCommand(text, cmd);
+  }
+  /* A slash command the station runs (POST /api/slash/dispatch, the same registry the app's "/" and the messaging channels
+     use): a server command or one of the Commander's comes back as what the station said, shown in COMMS under the command;
+     a skill or recipe comes back as the message that asks for it, sent to the agent (COMMS shows it as you typed it). A
+     command only the app's own screen can do says so. */
+  async function stationCommand(text, cmd) {
+    const a = model.state.agents.get(ui.focus);
+    const agentId = a ? a.id : 'agent';
+    flash(cmd + ' …', 'dim', 60000);
+    const r = await client.request('POST', '/api/slash/dispatch', { input: text, agentId, client: 'terminal' }, { timeoutMs: 60000 });
+    ui.flash = null;
+    const j = (r && r.json) || {};
+    if (r.status === 404 && /unknown slash command/.test(String(j.error || ''))) return flash('unknown command ' + cmd + ' · /help lists them');
+    if (!(r.ok && r.status === 200 && j.ok && j.directive)) return flash(cmd + ': ' + (j.error || r.error || 'HTTP ' + r.status), 'bad', 8000);
+    const d = j.directive;
+    if (d.type === 'say') {
+      const lines = Array.isArray(d.lines) && d.lines.some(l => String(l || '').trim()) ? d.lines : String(d.text || '').split('\n');
+      model.noteSaid(agentId, cmd, d.title, lines.filter(l => String(l).trim()), d.ok !== false, now());
+      ui.scroll = 0; ui.overlay = null;
+      return paint();
+    }
+    if (d.type === 'insert') {
+      const body = String(d.text || ''), args = text.slice(text.split(/\s+/)[0].length).trim();
+      // a skill needs the task; a recipe, any blank it still has ({topic})
+      if (d.source === 'skill' ? !args : /\{[A-Za-z_][A-Za-z0-9_]*\}/.test(body)) return flash(cmd + ' needs what to do: ' + cmd + ' <task>', 'am', 6000);
+      if (!a) return flash('no agent to talk to');
+      return send(a.id, body, text);
+    }
+    flash(cmd + ' only works in the StarNet desktop app', 'am', 6000);
+  }
+  // /cron: the routines scheduler, as the app's /cron does it — on / off arms it, alone it says its real state (a read
+  // that failed says the state is unknown, never "off, 0 jobs")
+  async function cronCommand(args) {
+    const raw = String(args || '').trim().toLowerCase();
+    const agentId = ui.focus || 'agent';
+    const say = (t, ok) => { model.noteSaid(agentId, '/cron', '', [t], ok !== false, now()); ui.scroll = 0; paint(); };
+    const on = /^(on|enable|enabled|arm)$/.test(raw), off = /^(off|disable|disabled|disarm)$/.test(raw);
+    if (on || off) {
+      const r = await client.request('POST', '/api/cron/arm', { enabled: on }, { timeoutMs: 10000 });
+      return say(r.ok && r.status === 200 && r.json ? 'Routines scheduler ' + (r.json.enabled ? 'enabled' : 'disabled') + '.' : 'Could not update the routines scheduler (' + (r.error || 'HTTP ' + r.status) + ').', r.ok && r.status === 200);
+    }
+    if (raw) return say('/cron takes on or off — /routine lists, adds, pauses and deletes routines.', false);
+    const r = await get('/api/cron');
+    if (!(r.ok && r.status === 200 && r.json)) return say('Could not read the routines scheduler (' + (r.error || 'HTTP ' + r.status) + ') — its real state is unknown.', false);
+    const j = r.json, jobs = Array.isArray(j.jobs) ? j.jobs : [];
+    const bits = jobs.slice(0, 5).map((job, i) => (i + 1) + '. ' + (job.name || job.id || 'routine') + (job.enabled === false ? ' [paused]' : ''));
+    say('Routines: scheduler ' + (j.halted ? 'stopped (E-STOP)' : j.enabled ? 'on' : 'off') + ', ' + jobs.length + ' job' + (jobs.length === 1 ? '' : 's') +
+      (bits.length ? ' - ' + bits.join(' | ') : '.') + (j.halted ? ' Use /cron on to resume.' : ' Use /cron on or /cron off to arm/disarm.'));
+  }
+  function showStatus() {
+    const a = model.state.agents.get(ui.focus);
+    if (!a) return flash('no agent on this station yet');
+    const row = model.rows(now()).find(r => r.id === a.id);
+    ui.overlay = {
+      title: 'STATUS · ' + a.name,
+      items: [
+        ['agent', a.name + ' (' + a.id + ')' + (row ? ' · ' + row.status.text : '')],
+        ['model', (a.provider ? a.provider + ' · ' : '') + (a.model || 'not set')],
+        ['conversation', streamOf(a.id)],
+        ['folder', ui.project ? ui.project.root : 'its own workspace (no trusted project here)'],
+        ['station', ui.stationLabel],
+        ['spend', costText(model.header(now()).cost)]
+      ],
+      foot: 'any key closes this'
+    };
+    paint();
+  }
+  async function showVersion() {
+    let cli = 'dev';
+    try { cli = require('../../package.json').version; } catch (_) {}
+    const r = await get('/api/version');
+    const v = (r.ok && r.status === 200 && r.json) || {};
+    ui.overlay = { title: 'VERSION', items: [['starnet', cli], ['station', v.harness ? 'harness ' + v.harness + (v.app ? ' · app ' + v.app : '') : 'did not say (' + (r.error || 'HTTP ' + r.status) + ')'], ['node', (v.node ? v.node + ' (station) · ' : '') + process.version + ' (here)']], foot: 'any key closes this' };
+    paint();
+  }
+  // /skills: the agent's skills and recipes as the station lists them for it (its saved floor), picked into the prompt
+  async function openSkillsPicker(filter) {
+    const a = model.state.agents.get(ui.focus);
+    if (!a) return flash('no agent on this station yet');
+    const p = {
+      kind: 'skills', title: 'SKILLS · ' + a.name, note: 'run one: /<skill> <task>', filter: String(filter || ''), sel: 0, items: [], loading: true,
+      foot: '↑ ↓ pick · enter puts it in the prompt · esc close · type to filter',
+      onPick: it => { ui.input = '/' + it.name + ' '; paint(); }
+    };
+    ui.picker = p; ui.overlay = null; paint();
+    const r = await get('/api/slash/catalog?agent=' + encodeURIComponent(a.id) + '&client=terminal', 15000);
+    const cmds = (r.ok && r.status === 200 && r.json && Array.isArray(r.json.commands)) ? r.json.commands : null;
+    if (!cmds) p.error = 'the station did not list its skills (' + (r.error || 'HTTP ' + r.status) + ')';
+    else {
+      // your own commands, then the agent's skills, then the recipes everyone has
+      const rank = { user: 0, skill: 1, recipe: 2 };
+      p.items = cmds.filter(c => c && rank[c.source] != null).sort((x, y) => rank[x.source] - rank[y.source]).map(c => ({
+        name: c.name, search: (c.name + ' ' + c.desc + ' ' + c.source).toLowerCase(),
+        cols: [[padTo('/' + c.name, 24), 'ph'], [c.source === 'recipe' ? 'recipe  ' : c.source === 'user' ? 'yours   ' : 'skill   ', 'dim'], [c.desc || '', 'fg']]
+      }));
+      if (!p.items.length) p.error = a.name + ' has no skills ready · add them in the desktop app';
+    }
+    p.loading = false;
+    paint();
   }
   function focusStep(d) {
     const ids = model.state.order;

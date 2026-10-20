@@ -160,7 +160,15 @@ function watchCommand(opts, station, io) {
             if (ev.id) cursor = ev.id;
             let j = null; try { j = JSON.parse(ev.data); } catch (_) { continue; }
             // a reset on a RE-connect means events were missed; the first connect has nothing to miss
-            if (!j || !j.name) { if (j && j.stream === 'ready') { if (j.reset && seenReady && opts.json) io.out(JSON.stringify({ name: 'feed.reset', ts: Date.now() }) + '\n'); seenReady = true; } continue; }
+            if (!j || !j.name) {
+              if (j && j.stream === 'ready') {
+                if (j.reset && seenReady && opts.json) io.out(JSON.stringify({ name: 'feed.reset', ts: Date.now() }) + '\n');
+                // said once, on stderr (stdout stays the events): until now a quiet station looked the same as no connection
+                if (!seenReady) io.err('· watching ' + client.base + ' live · ctrl+c stops\n');
+                seenReady = true;
+              }
+              continue;
+            }
             if (opts.json) io.out(JSON.stringify({ name: j.name, ts: Date.now(), payload: j.payload }) + '\n');
             else for (const line of fmt(j, Date.now())) io.out(line + '\n');
           }
