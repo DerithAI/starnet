@@ -120,6 +120,7 @@ const RunRecovery = require('./run-recovery.js');
 const { makeSegmentedTranscriptIo } = require('./transcript-history.js');
 const { makeRunTranscript, recoveryBase } = require('./transcript-run.js');   // H2: a run's transcript rows land at the loop's durable boundaries, not only at run end
 const { makeSkillStore } = require('./skillstore.js');             // H4: per-agent owned skill library (singleton)
+const { makeSkillsIo } = require('./skills-io.js');                // skills.jsonl: read whole, compacted, never rotated
 const { makeCredPool } = require('./credpool.js');
 const { resolveTools } = require('./capability/resolve.js');
 const { CAP_REGISTRY } = require('./capability/registry.js');
@@ -1792,21 +1793,12 @@ function rewriteJsonlDurable(file, entries) {
   const body = (entries || []).map(e => JSON.stringify(e)).join('\n') + (entries && entries.length ? '\n' : '');
   writeFileDurable({ fs: fs, path: path }, file, body);
 }
-const skillsIo = {
-  // bounded boot-load (last LOG_MAX_BYTES of archive+live), same as ledger/runs — after compaction exists, so a
-  // bounded read never silently drops a still-live skill (compaction keeps newest-per-key; the tail read then
-  // covers far more than the compacted file). A missing file -> [].
-  readAll() {
-    try { return readBoundedJsonl(SKILLS_FILE); } catch (e) { return []; }
-  },
-  append(entry) {
-    // The skill store publishes to RAM only after this durable write returns.
-    // Never swallow a failure and claim a proposal, rejection, or promotion survived it.
-    appendJsonlDurable({ fs, note: failNote }, SKILLS_FILE, entry);
-    rotateJsonl(SKILLS_FILE);
-  },
-  rewrite(entries) { rewriteJsonlDurable(SKILLS_FILE, entries); }   // compaction full-replace
-};
+// skills.jsonl is a STATE log (newest record per skill wins), so it is never size-rotated or tail-read like the
+// ledger: rotation deleted the only copy of skills not used recently (skills-io.js). It is read whole and kept small
+// by compaction instead. The store publishes to RAM only after a durable append returns (a failure throws).
+const SKILLS_COMPACT_BYTES = Math.max(1 << 20, num(ENV('SKILLS_COMPACT_BYTES'), 4 * 1024 * 1024));
+const skillsIo = makeSkillsIo({ fs, file: SKILLS_FILE, note: failNote, compactBytes: SKILLS_COMPACT_BYTES,
+  writeDurable: (file, body) => writeFileDurable({ fs: fs, path: path }, file, body) });
 const SKILL_PACKAGES_DIR = path.join(WORKSPACES, 'skill-packages');
 const skillPackageStore = skillPackages.makePackageStore({ fs, pathMod: path, root: SKILL_PACKAGES_DIR, now: () => Date.now() });
 const skillStore = makeSkillStore({ io: skillsIo, clock: { now: () => Date.now() }, redact, packageStore: skillPackageStore, guard: skillGuard, digest: skillDigestOf,
@@ -1933,15 +1925,16 @@ const skillExchange = makeSkillExchange({
   hash: (text) => crypto.createHash('sha256').update(String(text), 'utf8').digest('hex'),
   now: () => Date.now(), makeId: () => crypto.randomBytes(16).toString('hex')
 });
-// BOOT COMPACTION: when skills.jsonl has grown past a threshold, rewrite it to one line per (agentId,name) so
-// view-bump churn + repeated edits can't grow it without bound. Runs AFTER the store loaded `latest`, so the
-// rewrite is exactly the current newest-per-skill set. Safe + idempotent; fail-open.
+// BOOT COMPACTION: when skills.jsonl has grown past a threshold, or a legacy rotated skills.jsonl.1 is still on disk
+// (an older StarNet rotated this file), rewrite it to one line per (agentId,name). Runs AFTER the store loaded
+// `latest` (archive + live, read whole), so the rewrite is exactly the current newest-per-skill set and folds the
+// archive back in. The store refuses when its load was incomplete. Safe + idempotent; fail-open.
 try {
-  const SKILLS_COMPACT_BYTES = Math.max(1 << 20, num(ENV('SKILLS_COMPACT_BYTES'), 4 * 1024 * 1024));
   let sz = 0; try { sz = fs.statSync(SKILLS_FILE).size; } catch (_) {}
-  if (sz > SKILLS_COMPACT_BYTES && typeof skillStore.compact === 'function') {
+  if (skillsIo.needsCompaction() && typeof skillStore.compact === 'function') {
     const r = skillStore.compact();
     if (r && r.ok) { try { console.warn('[skills] boot-compacted skills.jsonl (' + sz + 'B -> ' + r.kept + ' entries)'); } catch (_) {} }
+    else if (r) failNote('skills.boot-compact', new Error(r.reason || 'compaction refused'));
   }
 } catch (_) {}
 

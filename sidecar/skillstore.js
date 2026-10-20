@@ -241,9 +241,22 @@
       if (!skill || skill.agentId !== str(r.agentId) || skill.name !== r.name) return;
       candidateRows.set(keyOf(skill.agentId, skill.name), Object.assign({}, r, { skill }));
     }
+    // A USAGE ROW (markUsed) carries only the counters, keyed by `skillName` — never `name`, so an older StarNet
+    // that does not know the row reads it as a nameless record and skips it instead of replacing the skill.
+    function applyUsage(r) {
+      const e = latest.get(keyOf(str(r.agentId), str(r.skillName)));
+      if (!e) return;
+      e.useCount = Math.max(num(e.useCount), num(r.useCount));
+      if (r.lastUsedAt != null) e.lastUsedAt = Math.max(num(e.lastUsedAt), num(r.lastUsedAt));
+      if (r.activated && e.state === 'stale') e.state = 'active';
+    }
+    // The library may only be rewritten (compact) from a COMPLETE load: a failed or partial read rewritten as the
+    // whole library is exactly how skills get deleted.
+    let loaded = false;
     try {
       const raw = io.readAll();
       if (Array.isArray(raw)) for (const r of raw) {
+        if (r && r.recordType === 'skill-usage') { applyUsage(r); continue; }
         if (r && r.recordType === 'skill-candidate') { restoreCandidate(r); continue; }
         if (r && r.recordType === 'skill-promotion') {
           const active = normalizeEntry(r.entry);
@@ -253,7 +266,15 @@
         const n = normalizeEntry(r);
         if (n) latest.set(keyOf(n.agentId, n.name), n);
       }
+      loaded = true;
     } catch (e) { /* corrupt log -> empty library (fail-open) */ }
+    function canCompact() { return loaded && !(io && typeof io.loadComplete === 'function' && io.loadComplete() === false); }
+    // Compaction instead of rotation: once the io says the file has grown (or a legacy rotated archive is still on
+    // disk), rewrite it to one line per skill. Runs only after a write was published to RAM, so the rewrite holds it.
+    function maybeCompact() {
+      try { if (io && typeof io.needsCompaction === 'function' && io.needsCompaction()) compact(); }
+      catch (e) { failNote('skillstore.compact', e); }
+    }
 
     function now() { return num(clock.now()); }
     function red(s, max) {
@@ -322,6 +343,7 @@
         try { if (packageStore && typeof packageStore.writePackage === 'function') packageStore.writePackage(projectSkill(entry, true)); }
         catch (e) { failNote('skillstore.package.promotion', e); }
       }
+      maybeCompact();
       return entry;
     }
     function mine(agentId, opts2) {
@@ -878,6 +900,12 @@
       }
       return projectSkill(out, true);
     }
+    /* A USE IS TELEMETRY, NOT A NEW VERSION. markUsed runs at the end of every run for every skill the run loaded.
+       It used to persist() the WHOLE record each time (body, support files, base64 package, a guard re-scan and a
+       package rewrite), which grew skills.jsonl by megabytes a day; the log's size rotation then deleted the only
+       durable copy of every skill not used recently. Now each use appends a ~150-byte usage row (applied on load,
+       folded into the record by the next compaction) and updates RAM. A failed append keeps the RAM bump, which
+       the next compaction flushes. */
     function markUsed(agentId, idOrNames) {
       const ids = Array.isArray(idOrNames) ? idOrNames : [idOrNames];
       let count = 0;
@@ -887,9 +915,15 @@
         const entry = clone(s);
         entry.useCount = (entry.useCount || 0) + 1;
         entry.lastUsedAt = now();
-        if (entry.state === 'stale') entry.state = 'active';
-        persist(entry); count++;
+        const activated = entry.state === 'stale';
+        if (activated) entry.state = 'active';
+        const row = { recordType: 'skill-usage', agentId: entry.agentId, skillName: entry.name, useCount: entry.useCount, lastUsedAt: entry.lastUsedAt };
+        if (activated) row.activated = true;
+        try { io.append(row); } catch (e) { failNote('skillstore.usage.append', e); }
+        latest.set(keyOf(entry.agentId, entry.name), entry);
+        count++;
       }
+      if (count) maybeCompact();
       return { ok: true, count };
     }
     /* compact — rewrite the append-only JSONL keeping ONLY the newest entry per (agentId, name). `latest`
@@ -903,6 +937,7 @@
     function compact() {
       const entries = Array.from(latest.values()).concat(Array.from(candidateRows.values())).map(e => clone(e));
       if (!io || typeof io.rewrite !== 'function') return { ok: false, reason: 'io has no rewrite', kept: entries.length };
+      if (!canCompact()) return { ok: false, reason: 'the library did not load completely, so it is never rewritten from RAM', kept: entries.length };
       try { io.rewrite(entries); return { ok: true, kept: entries.length }; }
       catch (e) { return { ok: false, reason: (e && e.message) || 'rewrite failed', kept: entries.length }; }
     }
