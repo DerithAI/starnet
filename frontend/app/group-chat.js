@@ -158,8 +158,16 @@ const GroupChat = (() => {
     // a direct chat has no group notice line on screen: say it where the Commander is looking
     if (active?.conversationMode !== 'group' && typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(notice, 'bad');
   }
-  async function api(body, query = '') {
-    const r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' });
+  /* opts.deadlineMs: the read aborts after that long (idle CPU piece 3 fix round 2, 2026-10-20). The station-wide watch is
+     an awaited PollGate beat, and its list read had no deadline: a /api/groups read the sidecar accepted and never
+     answered (every groupSessions read awaits the durable store's `ready`) held the beat until PollGate abandoned it at
+     15 s, and the next beat opened ANOTHER — one more hung socket every 15 s (60 s away) until Chromium's six per host were
+     gone and every /api call (saves, runs, HALT) queued behind them. Only the watch passes it: it is silent about a failed
+     read and retries on its next beat. Reads the Commander is waiting on keep their own error text and pace (the open
+     group's poll is a chain that waits for its read, so a hung one holds one socket and never piles up). */
+  async function api(body, query = '', opts) {
+    const deadline = opts && opts.deadlineMs && typeof U !== 'undefined' && U.timeoutSignal ? U.timeoutSignal(opts.deadlineMs) : null;
+    const r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : deadline ? { cache: 'no-store', signal: deadline } : { cache: 'no-store' });
     if (r.status === 401 || r.status === 403) throw new Error('Reconnect to this station by refreshing the page. Your conversation is saved.');
     if (r.status === 404 && !body && !query) throw new Error('Group chat is unavailable on this server. Run the current StarNet backend, then try again.');
     let out;
@@ -358,6 +366,7 @@ const GroupChat = (() => {
      Every few seconds (never while the window is hidden) the station-wide list says what each group is doing, and the
      rail reads it: unread activity, "Reply needed", "Approval needed", working. All of it is backend state. */
   const states = new Map();
+  const WATCH_READ_MS = 15000;   // the watch's list read gives up here, like every other polled read (api() above)
   let watching = false, watchTimer = 0;
   function stateOf(id) {
     if (group && group.id === id && active?.id === id) {
@@ -377,7 +386,7 @@ const GroupChat = (() => {
     const tick = async () => {
       try {
         if (gate || typeof document === 'undefined' || !document.hidden) {
-          const result = await api(); roster = result.roster || roster;
+          const result = await api(null, '', { deadlineMs: WATCH_READ_MS }); roster = result.roster || roster;
           let changed = false;
           for (const g of result.groups || []) {
             const next = { approvals: g.approvals || 0, questions: g.questions || 0, busy: !!g.busy && !g.paused, paused: !!g.paused };
