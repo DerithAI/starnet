@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**23** open (open+claimed) of 307 total — 0 P0 · 1 P1 · 22 P2
+**23** open (open+claimed) of 308 total — 0 P0 · 1 P1 · 22 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -330,6 +330,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | channels | [E-STOP silences the channel reply path via the supersede flag, so a deliberately stopped run is indistinguishable from a crashed bot on the phone](bugs/600f4982-e-stop-silences-the-channel-reply-path-via-the-s.md) | sweep/channels | 96fe108d |
 | P2 | fixed | channels | [Every channel run without a configured system prompt reaches the provider with the persona replaced by the literal text '() => p'](bugs/446602ab-every-channel-run-without-a-configured-system-pr.md) | sweep/channels | d81a757f6 |
 | P2 | fixed | channels | [Station button redesign escaped the bottom navigation](bugs/d28ba8f4-station-button-redesign-escaped-the-bottom-navig.md) | agent/comms-controls-0906 | e4e4512b198279e35cdd9f2cc2be9d786b02e87f |
+| P2 | fixed | channels | [/usage on an unsettled ledger answers '…See SETTINGS › SPENDING LIMITS..' with a doubled period, on Telegram and in COMMS](bugs/67ba42c6-usage-on-an-unsettled-ledger-answers-see-setting.md) | sweep/channels | aa85f5799 |
 | P2 | fixed | channels | [With /mention off, a group command @-addressed to another bot (/new@otherbot, /stop@otherbot) runs on this bot](bugs/bbf17048-with-mention-off-a-group-command-addressed-to-an.md) | sweep/channels | f39590dd4 |
 | P2 | fixed | onboarding | [First-path offer silently vanishes for a long or repeated mission](bugs/2ea198d9-first-path-offer-silently-vanishes-for-a-long-or.md) | sweep/onboarding | 6d86bbfe2 |
 | P2 | fixed | onboarding | [Onboarding sign-in codes have dark text on dark backgrounds](bugs/c9929ae3-onboarding-sign-in-codes-have-dark-text-on-dark.md) | agent/onboarding-test-0919 | 51dcb517d2ed6935bca7ed924d8ca6c095a17913 |
