@@ -165,18 +165,26 @@ const GroupChat = (() => {
      gone and every /api call (saves, runs, HALT) queued behind them. The watch is silent about a failed read and retries
      on its next beat. The open group's poll passes one too (fix round 4): it is a chain that waits for its read, and a
      read that never answered left it waiting for good — never rescheduled, the wake catch-up skipped as "in flight", the
-     transcript frozen. A read past its deadline rejects with a TimeoutError, whatever the engine made of the abort. */
+     transcript frozen. A read past its deadline rejects with a TimeoutError, whatever the engine made of the abort.
+     THE DEADLINE IS CLEARED ONCE THE READ ANSWERS (fix round 5), as Harness.requestJson's is. It was U.timeoutSignal —
+     native AbortSignal.timeout, whose timer cannot be cleared — so every 0.9 s read of the open group left a live signal
+     and a pending 15 s timer that later aborted a request long finished: ~16 alive at any moment, ~1.1 extra timer
+     wake-ups a second while a group was open. */
   async function api(body, query = '', opts) {
-    const deadline = opts && opts.deadlineMs && typeof U !== 'undefined' && U.timeoutSignal ? U.timeoutSignal(opts.deadlineMs) : null;
+    const deadlineMs = !body && opts && opts.deadlineMs > 0 && typeof AbortController === 'function' ? opts.deadlineMs : 0;
+    const deadline = deadlineMs ? new AbortController() : null;
+    const deadlineTimer = deadline ? setTimeout(() => deadline.abort(), deadlineMs) : 0;
     const timedOut = () => Object.assign(new Error('The station did not answer in time.'), { name: 'TimeoutError' });
-    let r;
-    try { r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : deadline ? { cache: 'no-store', signal: deadline } : { cache: 'no-store' }); }
-    catch (e) { if (deadline && deadline.aborted) throw timedOut(); throw e; }
-    if (r.status === 401 || r.status === 403) throw new Error('Reconnect to this station by refreshing the page. Your conversation is saved.');
-    if (r.status === 404 && !body && !query) throw new Error('Group chat is unavailable on this server. Run the current StarNet backend, then try again.');
-    let out;
-    try { out = await r.json(); } catch (_) { if (deadline && deadline.aborted) throw timedOut(); throw new Error('The server could not load group chat. Try again.'); }
-    if (!r.ok || !out?.ok) throw new Error(out?.error || 'Group request failed'); return out.result;
+    try {
+      let r;
+      try { r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : deadline ? { cache: 'no-store', signal: deadline.signal } : { cache: 'no-store' }); }
+      catch (e) { if (deadline && deadline.signal.aborted) throw timedOut(); throw e; }
+      if (r.status === 401 || r.status === 403) throw new Error('Reconnect to this station by refreshing the page. Your conversation is saved.');
+      if (r.status === 404 && !body && !query) throw new Error('Group chat is unavailable on this server. Run the current StarNet backend, then try again.');
+      let out;
+      try { out = await r.json(); } catch (_) { if (deadline && deadline.signal.aborted) throw timedOut(); throw new Error('The server could not load group chat. Try again.'); }
+      if (!r.ok || !out?.ok) throw new Error(out?.error || 'Group request failed'); return out.result;
+    } finally { if (deadlineTimer) clearTimeout(deadlineTimer); }
   }
   function save() { if (typeof App !== 'undefined') { App.persist(); App.refreshRail(); } }
   // Who sits in each group, as the backend last reported it. The rail's per-agent view lists a group

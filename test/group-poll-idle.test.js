@@ -96,7 +96,7 @@ function harness({ stamps = true, realU = false, realGate = false, listMs = 0 } 
     }
     clock = until;
   }
-  return { ctx, ws, server, reads, wakers, listReads, advance, settle, log: () => ctx.document.getElementById('gc-log'),
+  return { ctx, ws, server, reads, wakers, listReads, advance, pendingIn: () => [...timers.values()].map(t => t.at - clock), settle, log: () => ctx.document.getElementById('gc-log'),
     persists: () => persists, groupStringifies: () => groupStringifies, setAway: v => { away = v; }, hang: v => { hanging = v; }, draft: () => { draftSeq++; }, now: () => clock, stepWall: ms => { wallStep += ms; } };
 }
 
@@ -204,6 +204,19 @@ function harness({ stamps = true, realU = false, realGate = false, listMs = 0 } 
     await h.advance(16000);
     A.ok(h.reads.length > atWake, 'the station answering again is read');
     A.ok(h.ws.history.some(m => m.content === 'after the hang'), '…and the open group repaints with what changed meanwhile (it stayed frozen)');
+  }
+
+  /* (i) fix round 5 (2026-10-20): A READ THAT ANSWERED LEAVES NO DEADLINE BEHIND. The open group's read deadline was
+     U.timeoutSignal — native AbortSignal.timeout in WebView2, whose timer cannot be cleared (its fallback's neither) — so
+     every 0.9 s read left a live signal and a pending 15 s timer that later aborted a request long finished: ~16 alive
+     at any moment, ~1.1 extra timer wake-ups a second while a group was open. Executed with the app's own util.js. */
+  {
+    const h = harness({ realU: true });
+    h.ctx.GroupChat.bind(h.ws); await h.settle();
+    await h.advance(20000);
+    A.ok(h.reads.length >= 20, 'fixture: the open group was read every 0.9 s (' + h.reads.length + ' reads in 20 s)');
+    const deadlines = h.pendingIn().filter(ms => ms > 4000);   // the beat (0.9 s) and the watch chain (4 s) are the only shorter ones
+    A.ok(deadlines.length <= 1, 'answered reads leave no pending deadline timer behind (' + deadlines.length + ' pending; it was ~16)');
   }
 
   /* (h) fix round 5 (2026-10-20): THE STATION-WIDE WATCH KEEPS ITS REST. In trunk it was a chain: the next tick was armed

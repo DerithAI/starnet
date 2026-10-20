@@ -138,15 +138,16 @@ function hangingStation() {
     const ctx = vm.createContext({
       document: { body, head, hidden: false, addEventListener() {}, createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), getElementById: id => all(body).find(e => e.id === id) },
       console: { log() {}, warn() {}, error() {}, debug() {} }, crypto: { randomUUID: () => 'u' }, queueMicrotask, performance: { now: () => clock },
-      setTimeout: setT, clearTimeout: clearT, JSON, PollGate: G, U,
+      setTimeout: setT, clearTimeout: clearT, JSON, PollGate: G, U, AbortController,
       fetch: (url, opts) => {
         if (/\?/.test(String(url))) return Promise.resolve(listed());
         const signal = opts && opts.signal;
-        reads.push({ at: clock, deadlineMs: signal ? signal.deadlineMs : null });
+        const rec = { at: clock, abortedAt: null, signal: !!signal };
+        reads.push(rec);
         if (!answered) { answered = true; return Promise.resolve(listed()); }   // discover's first read
         open++; maxOpen = Math.max(maxOpen, open);
         return new Promise((_, reject) => {   // accepted, never answered — unless its signal aborts
-          if (signal) signal.addEventListener('abort', () => { open--; reject(signal.reason); });
+          if (signal) signal.addEventListener('abort', () => { open--; rec.abortedAt = clock; reject(signal.reason || new Error('aborted')); });
         });
       },
       Chat: { consentPhrase: () => '', consentInspect: () => null, clockLabel: () => '', breakLabel: () => '' },
@@ -164,7 +165,8 @@ function hangingStation() {
     }
     const watchReads = reads.slice(1);
     A.ok(watchReads.length >= 8, 'fixture: the watch kept beating for 3 minutes (' + watchReads.length + ' list reads)');
-    A.ok(watchReads.every(r => r.deadlineMs === 15000), 'every watch list read carries a 15 s deadline signal (it had none)');
+    A.ok(watchReads.every(r => r.signal), 'every watch list read carries a deadline signal (it had none)');
+    A.ok(watchReads.filter(r => r.abortedAt != null).length >= watchReads.length - 1 && watchReads.every(r => r.abortedAt == null || r.abortedAt - r.at === 15000), 'each hung watch read is aborted 15 s after it went out: ' + JSON.stringify(watchReads.map(r => r.abortedAt == null ? null : r.abortedAt - r.at)));
     A.ok(maxOpen <= 1, 'a station that never answers the list holds at most ONE watch read open (' + maxOpen + '; it was 12 after 3 min)');
     A.eq(open <= 1, true, '…and no hung read is left behind it');
     A.ok(watchReads.slice(1).every((r, i) => r.at - watchReads[i].at >= 15000), 'each read is given its full 15 s before the next one asks');
