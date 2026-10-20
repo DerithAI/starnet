@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "4c02c17b6debceef4c1851139af2d5d9cad65198",
+    "sourceCommit": "bd810aebbeb466b493de4fb0da60deca9c24d8e4",
     "pathSetSha256": "645b62b27dcfe10fc7a600d07db0eb5464e0456b3744f0a51ecfbeaee126d3e9",
     "files": [
       {
@@ -578,8 +578,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 120883,
-        "sha256": "4138790801729c06829d3e2536732740f6d48cef48e664db03e558efadf9ad31"
+        "bytes": 121926,
+        "sha256": "06e32dc848a5cb6523c04c709fbaf3028aa6b8bb8825cb9e6b5e3816d313ec23"
       },
       {
         "path": "frontend/app/hint.js",
@@ -598,8 +598,8 @@
       },
       {
         "path": "frontend/app/intake.js",
-        "bytes": 8256,
-        "sha256": "9053e96f9a473f98df8a517dfa001fc83fa319d2fc6a89fa78122239b7508822"
+        "bytes": 8559,
+        "sha256": "74f7beb841de1b9587b254ac9f4df2cff6457ff71a518f8b60edaecd70a63589"
       },
       {
         "path": "frontend/app/intentoffer.js",
@@ -608,8 +608,8 @@
       },
       {
         "path": "frontend/app/interview.js",
-        "bytes": 10029,
-        "sha256": "2eda416911c1ec352b4729c3fb1a6f26d1b0986cf238a8846955d9d15d263d18"
+        "bytes": 10125,
+        "sha256": "5110003db5e78bf48fd112df3804f9f5128c2d1297d5ed2f96e54e4ccae06223"
       },
       {
         "path": "frontend/app/journey.js",
@@ -693,8 +693,8 @@
       },
       {
         "path": "frontend/app/marketplace.js",
-        "bytes": 275532,
-        "sha256": "40fa67b19c5c287883ceed96c602e0eb784d0abb93fdb9f34dfcfa2cddc121eb"
+        "bytes": 275992,
+        "sha256": "16194e711c24e7bc4afe8633fd8e0a369a413a019cbca7bd1ff91785d851e478"
       },
       {
         "path": "frontend/app/mint.js",
@@ -743,8 +743,8 @@
       },
       {
         "path": "frontend/app/onboarding.js",
-        "bytes": 69507,
-        "sha256": "b96090328655c9bc009fbb19b6e654f68721cd6fa9e2ee80b443ffe5033b9b40"
+        "bytes": 71156,
+        "sha256": "cd9a9e44cee3ab8668f694adf5834cfdcc6c61b4d538d8ea9458589a9cc5afa9"
       },
       {
         "path": "frontend/app/outputbrowser.js",
