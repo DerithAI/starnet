@@ -123,6 +123,130 @@ async function advance(ms) {
   await advance(10000);
   A.ok(runs.length === 5 || runs.length === 6, 'ms() = 5 s: the cadence follows the function (' + (runs.length - 3) + ' runs in 10 s)');
 
+  /* ---- A BEAT THAT NEVER SETTLES NEVER ENDS THE LOOP (fix round, 2026-10-20) ----
+     world.js pollFeedState and the loops watcher returned fetches with no deadline: one read the sidecar accepted and never
+     answered left the chain waiting on it for good (2 runs in 10 min where setInterval made 10). Each beat now has a
+     deadline of max(2 x its cadence, 15 s); past it the chain moves on, and the abandoned promise's late answer changes
+     nothing. */
+  G._resetForTest();
+  let calls = 0;
+  G.every(() => { calls++; return calls === 2 ? new Promise(() => {}) : undefined; }, { ms: 60000 });
+  await advance(10 * 60000);
+  A.ok(calls >= 9, 'a 60 s loop whose 2nd read hangs forever still runs in 10 min (' + calls + ' runs; 2 before the deadline)');
+  A.ok(timers.size > 0, '…and is still scheduled');
+
+  G._resetForTest();
+  let lateFirst = null, beats = 0;
+  G.every(() => { beats++; if (beats === 1) return new Promise(r => { lateFirst = r; }); return undefined; }, { ms: 1000 });
+  await advance(14999);
+  A.eq(beats, 1, 'a 1 s beat in flight is waited on up to its 15 s deadline (no overlap before it)');
+  await advance(1);
+  A.eq(beats, 2, 'at the deadline the chain moves on and runs the overdue beat');
+  lateFirst(); for (let n = 0; n < 10; n++) await Promise.resolve();
+  const atLate = beats;
+  await advance(10000);
+  A.eq(beats - atLate, 10, 'the abandoned beat answering late starts no second chain (10 runs in 10 s, not 20)');
+
+  /* the Commander comes back while a beat started away is hung: the catch-up is not blocked by it */
+  G._resetForTest();
+  let k = 0;
+  G.every(() => { k++; if (k === 2) return new Promise(() => {}); return undefined; }, { ms: 1000 });
+  doc.hidden = true;
+  await advance(30000);
+  A.eq(k, 2, 'fixture: away, the 30 s beat ran and hangs');
+  await advance(20000);   // 20 s into the hung away beat: past a 1 s loop's 15 s deadline, short of the 60 s away one
+  doc.hidden = false; doc.fire('visibilitychange');
+  A.eq(k, 3, 'back on screen: a beat hung past the live deadline is abandoned and the overdue loop runs at once');
+  G._resetForTest();
+  k = 0;
+  G.every(() => { k++; if (k === 2) return new Promise(() => {}); return undefined; }, { ms: 1000 });
+  doc.hidden = true;
+  await advance(30000);
+  await advance(5000);    // 5 s into the hung away beat
+  doc.hidden = false; doc.fire('visibilitychange');
+  A.eq(k, 2, 'a beat only 5 s out on return is still awaited (its answer is on its way)');
+  await advance(9999);
+  A.eq(k, 2, '…until the live 15 s deadline');
+  await advance(1);
+  A.eq(k, 3, '…which is pulled in from the 60 s away deadline: the loop runs at 15 s, not 60 s');
+  G._resetForTest();
+  k = 0;
+  const hungLoop = G.every(() => { k++; return k === 1 ? new Promise(() => {}) : undefined; }, { ms: 1000, immediate: true });
+  clock += 16000;   // timers frozen (a frozen page): the guard has not fired yet
+  hungLoop.runNow();
+  A.eq(k, 2, 'runNow() is not blocked by a beat hung past its deadline either');
+  doc.hidden = false;
+
+  /* ---- AWAY IS NEVER CLAIMED AGAINST THE PAGE'S OWN EVIDENCE OF BEING ON SCREEN ----
+     world.js cinecamTick: embedded webviews (the preview harness, some Tauri states) report document.hidden while still
+     rendering, and a hands-off viewer gives no input. Away now needs every signal the page has to agree. */
+  G._resetForTest();
+  const frames = [];
+  G._setFrameForTest(cb => { frames.push(cb); return frames.length; });
+  doc.hidden = true; doc.visibilityState = 'visible';
+  A.eq(G.away(), false, 'hidden but visibilityState "visible": the signals disagree, so not away');
+  doc.visibilityState = 'hidden'; doc.hasFocus = () => true;
+  A.eq(G.away(), false, 'hidden but the document holds focus: on screen, not away');
+  doc.hasFocus = () => false;
+  frames.length = 0;
+  A.eq(G.away(), false, 'hidden, unfocused, idle: not away until a frame probe has had its chance');
+  A.eq(frames.length, 1, 'one rAF probe is out');
+  G.away(); A.eq(frames.length, 1, '…only one, however often away() is asked');
+  clock += 1999; A.eq(G.away(), false, 'no frame for 1.999 s: not proven yet');
+  clock += 1; A.eq(G.away(), true, 'no frame for 2 s (a really hidden page never runs rAF): away');
+  frames.shift()(0);   // the page draws again with no visibilitychange (a webview that never says it is back)
+  A.eq(G.away(), false, 'a drawn frame proves the page is on screen again');
+
+  /* a webview that says hidden but keeps drawing keeps the visible cadence (it slowed to 30 s before) */
+  G._resetForTest();
+  frames.length = 0;
+  G._setFrameForTest(cb => { const id = ++seq; timers.set(id, { fn: () => cb(clock), at: clock + 16 }); return id; });
+  let drawn = 0;
+  G.every(() => { drawn++; }, { ms: 1000, immediate: false });
+  await advance(60000);
+  A.eq(drawn, 60, 'hidden + idle + unfocused but drawing frames: a 1 s loop keeps its 1 s cadence (' + drawn + ' runs in 60 s, was 2)');
+  /* …and a page that really is hidden still slows */
+  G._resetForTest();
+  G._setFrameForTest(cb => { frames.push(cb); return frames.length; });
+  frames.length = 0;
+  drawn = 0;
+  G.every(() => { drawn++; }, { ms: 1000, immediate: false });
+  await advance(60000);
+  A.ok(drawn >= 2 && drawn <= 4, 'hidden + idle + no frames: the 1 s loop slows to the 30 s floor (' + drawn + ' runs in 60 s)');
+  /* a frame after being away is a return: the overdue loop runs at once */
+  clock += 5000;
+  const before = drawn;
+  frames.splice(0).forEach(f => f(0));
+  A.eq(drawn, before + 1, 'the first frame drawn after being away wakes the gate: the overdue loop runs at once');
+  G._setFrameForTest(null);
+  doc.hidden = false; delete doc.visibilityState; delete doc.hasFocus;
+
+  G._resetForTest();
+
+  /* ---- THE DEFAULT CLOCK IS MONOTONIC (a backward wall-clock step never stalls a loop) ----
+     A fresh PollGate in a vm with its OWN defaults: performance.now advances steadily while Date.now steps back 5 min
+     (a w32time correction after resume). The next 1 s beat must come 1 s later, not 5 min later. */
+  {
+    const vm = require('vm');
+    let mono = 50000, wall = 1760000000000;
+    const q = new Map(); let qs = 0;
+    const box = { module: { exports: {} }, Promise,
+      performance: { now: () => mono }, Date: { now: () => wall },
+      setTimeout: (fn, ms) => { const id = ++qs; q.set(id, { fn, at: mono + Math.max(0, ms) }); return id; },
+      clearTimeout: id => { q.delete(id); } };
+    vm.runInNewContext(require('fs').readFileSync(require('path').join(__dirname, '../frontend/app/pollgate.js'), 'utf8'), box);
+    const P = box.module.exports;
+    const step = ms => { const until = mono + ms; for (;;) { let nx = null; for (const [id, t] of q) if (t.at <= until && (!nx || t.at < nx[1].at)) nx = [id, t]; if (!nx) break; q.delete(nx[0]); wall += nx[1].at - mono; mono = nx[1].at; nx[1].fn(); } wall += until - mono; mono = until; };
+    let r = 0;
+    P.every(() => { r++; }, { ms: 1000 });
+    A.eq(r, 1, 'fixture: the loop ran on arm');
+    wall -= 5 * 60000;
+    step(1000);
+    A.eq(r, 2, 'the wall clock stepped back 5 min: the next 1 s beat still comes 1 s later (it waited 5 min on Date.now)');
+    step(3000);
+    A.eq(r, 5, '…and the cadence carries on');
+  }
+
   G._resetForTest();
   A.report('pollgate.test');
 })().catch(e => { console.error(e); process.exit(1); });

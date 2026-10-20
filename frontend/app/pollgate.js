@@ -7,21 +7,42 @@
    minute with nobody looking, each parsed on the UI thread.
 
    THE RULE. A poll registered here runs at its own cadence (unchanged) while the page can be seen, and slows to a 30 s floor
-   while the Commander is AWAY. It never stops: a loop that stops is a claim nobody can check, and some embedded webviews
-   report document.hidden while still on screen (world.js cinecamTick). So AWAY means BOTH: the document says hidden AND
-   there has been no input (pointer, key, wheel, focus) for 10 s — input proves the page is on screen whatever `hidden` says.
-   Coming back (visible again, window focus, or the first input after being away) runs every loop that is overdue against
-   its own live cadence at once, then fires onWake callbacks, so nothing on screen is older than it was before.
+   while the Commander is AWAY. It never stops: a loop that stops is a claim nobody can check. Coming back (visible again,
+   window focus, the first input, or the first frame drawn after being away) runs every loop that is overdue against its
+   own live cadence at once, then fires onWake callbacks, so nothing on screen is older than it was before.
+
+   AWAY IS NEVER CLAIMED AGAINST THE PAGE'S OWN EVIDENCE OF BEING ON SCREEN. Some embedded webviews (the preview harness,
+   some Tauri states — world.js cinecamTick) report document.hidden while still rendering, and a hands-off viewer (the idle
+   cinecam) gives no input. The desktop shell has no visibility event of its own to listen to: on minimize / park-in-tray it
+   calls the WebView2 controller's SetIsVisible(false) (src-tauri main.rs set_webview_on_screen), and that is exactly what
+   makes Chromium set document.hidden AND stop running requestAnimationFrame. So AWAY needs every signal the page has to agree:
+     · document.hidden is true, and document.visibilityState (when present) is not 'visible';
+     · the document does not hold focus (document.hasFocus(), when present);
+     · no input (pointer, key, wheel, focus) for 10 s — input proves the page is on screen whatever `hidden` says;
+     · no frame drawn: while the rest says away, ONE rAF probe is kept out, and away is claimed only once it has gone 2 s
+       unanswered. A page that is really hidden never runs it (it costs nothing there); a webview that says hidden but is
+       still drawing answers within a frame and keeps its visible cadence; a frame drawn after being away is a return.
+     Where requestAnimationFrame does not exist (node tests) the frame proof is skipped.
+
+   THE CLOCK IS MONOTONIC (performance.now when present). Intervals measured on Date.now stalled every loop for as long as a
+   backward wall-clock step (a w32time correction after resume, a manual fix) — setInterval, which these loops replaced,
+   never did. Nothing here displays a time.
+
+   A BEAT THAT NEVER SETTLES NEVER ENDS THE LOOP. A run that returns a promise is awaited before the next is scheduled (no
+   overlap), but only up to its deadline, max(2 x the cadence it ran at, 15 s). Past it the beat is abandoned and the chain
+   moves on; the abandoned promise answering late changes nothing (no second chain). On a return (wake) or runNow(), a beat
+   still out past the deadline of the cadence in force NOW is abandoned at once and the loop runs; one inside it is awaited,
+   with its deadline pulled in from the longer one an away beat was given.
 
    API
-     PollGate.away()                         → true while hidden with no input in the last 10 s
+     PollGate.away()                         → true while every signal above says nobody can see the page
      PollGate.every(fn, { ms, awayMs, immediate })
         ms: number | () => number            the visible cadence (a function is read live)
         awayMs: the floor while away (30000)  immediate: run fn now (true) or after the first ms (false)
         → { stop, runNow, lastRunAt(), cadence(), interval() }
-        A setTimeout chain that never overlaps: a run that returns a promise is awaited before the next is scheduled; a
-        throw or rejection is re-raised outside the chain, which carries on. cadence() is the interval in force when the last run
-        started; interval() is the one in force now.
+        A setTimeout chain that never overlaps a beat inside its deadline; a throw or rejection is re-raised outside the
+        chain, which carries on. cadence() is the interval in force when the last run started; interval() is the one in
+        force now.
      PollGate.onWake(cb) → unsubscribe      cb runs when the Commander comes back after the gate was away
    Callers fall back to their old timers when PollGate is undefined (single-file node tests load them without it).
    Dependency-free and browser-global, with injection seams for node tests (module.exports). */
@@ -29,26 +50,51 @@
 const PollGate = (() => {
   const AWAY_MS = 30000;          // the slowest any registered poll runs while nobody is looking
   const INPUT_GRACE_MS = 10000;   // input this recent proves the page is on screen, whatever document.hidden says
+  const FRAME_PROOF_MS = 2000;    // a frame probe unanswered this long proves nothing is being drawn
+  const DEADLINE_MIN_MS = 15000;  // a beat's promise is waited on for max(2 x its cadence, this)
   const MIN_MS = 16;              // a misconfigured cadence can never become a busy loop
 
-  let now = () => Date.now();
+  const monotonic = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+    ? () => performance.now() : () => Date.now();
+  let now = monotonic;
   let setT = (fn, ms) => setTimeout(fn, ms);
   let clearT = id => clearTimeout(id);
+  let frame = typeof requestAnimationFrame === 'function' ? cb => requestAnimationFrame(cb) : null;
   let doc = typeof document !== 'undefined' ? document : null;
   /* A beat that throws (or rejects) must stay as loud as it was under setInterval: re-raised outside the chain, it is an
      uncaught error / unhandled rejection again — the console shows it and BootGuard counts it for the diagnostics report —
      while the chain itself carries on. */
   let raise = e => { setTimeout(() => { throw e; }, 0); };
   let raiseRejection = e => { Promise.reject(e); };
-  let lastInputAt = 0;
+  let lastInputAt = -Infinity;    // no input yet (never "recent" — a page that boots hidden is not held on screen by the clock's origin)
   let awaySeen = false;           // a due-check (or a caller) saw the gate away since the last wake
+  let probeAt = 0, probeSeq = 0;  // the frame probe out (armed at probeAt, 0 = none) and its generation
   const loops = new Set();
   const wakers = new Set();
 
+  // a frame was asked for FRAME_PROOF_MS ago and none came → true; otherwise keep (or arm) the one probe → false
+  function noFrames() {
+    if (probeAt) return now() - probeAt >= FRAME_PROOF_MS;
+    probeAt = now();
+    const mine = ++probeSeq;
+    try {
+      frame(() => {
+        if (mine !== probeSeq) return;
+        probeAt = 0;
+        if (awaySeen) wake();     // drawing again after being away is a return, even with no visibilitychange
+      });
+    } catch (_) { /* no frame can be asked for: after FRAME_PROOF_MS the other signals decide alone */ }
+    return false;
+  }
   function away() {
-    let hidden = false;
-    try { hidden = !!(doc && doc.hidden); } catch (_) { hidden = false; }
-    const out = hidden && now() - lastInputAt >= INPUT_GRACE_MS;
+    let out = false;
+    try {
+      out = !!(doc && doc.hidden)
+        && !(typeof doc.visibilityState === 'string' && doc.visibilityState === 'visible')
+        && !(typeof doc.hasFocus === 'function' && doc.hasFocus());
+    } catch (_) { out = false; }
+    out = out && now() - lastInputAt >= INPUT_GRACE_MS;
+    if (out && frame) out = noFrames();
     if (out) awaySeen = true;
     return out;
   }
@@ -59,7 +105,9 @@ const PollGate = (() => {
     const awayMs = Number(o.awayMs) > 0 ? Number(o.awayMs) : AWAY_MS;
     const liveMs = () => { let v = 0; try { v = Number(msOf()); } catch (_) { v = 0; } return Math.max(MIN_MS, Number.isFinite(v) ? v : 0); };
     const interval = () => { const ms = liveMs(); return away() ? Math.max(ms, awayMs) : ms; };
-    const l = { stopped: false, running: false, timer: 0, lastRunAt: now(), cadence: 0 };
+    const deadlineOf = iv => Math.max(2 * iv, DEADLINE_MIN_MS);
+    // running: the token of the beat in flight (0 = none); guard: its deadline timer, due at guardAt
+    const l = { stopped: false, running: 0, seq: 0, timer: 0, guard: 0, guardAt: 0, lastRunAt: now(), cadence: 0 };
     function schedule() {
       if (l.stopped || l.running) return;
       if (l.timer) clearT(l.timer);
@@ -72,22 +120,44 @@ const PollGate = (() => {
       if (now() - l.lastRunAt < iv) { schedule(); return; }
       run(iv);
     }
-    function settle() { l.running = false; schedule(); }
+    function release() { l.running = 0; if (l.guard) { clearT(l.guard); l.guard = 0; } }
+    // beat `token` is over (settled, or abandoned at its deadline). A token that is no longer the beat in flight is a late
+    // answer from an abandoned beat: it changes nothing, so it can never start a second chain.
+    function settle(token) { if (l.running !== token) return; release(); schedule(); }
+    function armGuard(token, at) {
+      if (l.guard) clearT(l.guard);
+      l.guardAt = at;
+      l.guard = setT(() => { l.guard = 0; settle(token); }, Math.max(0, at - now()));
+    }
     function run(iv) {
       if (l.stopped || l.running) return;
       if (l.timer) { clearT(l.timer); l.timer = 0; }
-      l.running = true; l.lastRunAt = now(); l.cadence = iv;
+      const token = ++l.seq;
+      l.running = token; l.lastRunAt = now(); l.cadence = iv;
       let p = null;
       try { p = fn(); } catch (e) { p = null; raise(e); }   // one failed beat never ends the chain
-      if (p && typeof p.then === 'function') p.then(settle, e => { settle(); raiseRejection(e); }); else settle();
+      if (p && typeof p.then === 'function') {
+        if (l.running === token) armGuard(token, l.lastRunAt + deadlineOf(iv));
+        p.then(() => settle(token), e => { settle(token); raiseRejection(e); });
+      } else settle(token);
+    }
+    // a beat still out when the Commander is back (or runNow asks): past the deadline of the cadence in force now it is
+    // hung, so it is abandoned (→ true: free to run); inside it, it is awaited with that nearer deadline (→ false)
+    function unstick() {
+      if (!l.running) return true;
+      const at = l.lastRunAt + deadlineOf(liveMs());
+      if (now() >= at) { release(); return true; }
+      if (at < l.guardAt) armGuard(l.running, at);
+      return false;
     }
     l.catchUp = () => {
-      if (l.stopped || l.running) return;
+      if (l.stopped || !unstick()) return;
       if (now() - l.lastRunAt >= liveMs()) run(interval()); else schedule();
     };
+    l.halt = () => { l.stopped = true; if (l.timer) { clearT(l.timer); l.timer = 0; } release(); };
     const handle = {
-      stop() { l.stopped = true; if (l.timer) { clearT(l.timer); l.timer = 0; } loops.delete(l); },
-      runNow() { run(interval()); },
+      stop() { l.halt(); loops.delete(l); },
+      runNow() { if (!l.stopped && unstick()) run(interval()); },
       lastRunAt: () => l.lastRunAt,
       cadence: () => l.cadence || interval(),
       interval
@@ -127,16 +197,17 @@ const PollGate = (() => {
   if (typeof document !== 'undefined' && typeof window !== 'undefined') bind(document, window);
 
   return {
-    away, every, onWake, AWAY_MS, INPUT_GRACE_MS,
+    away, every, onWake, AWAY_MS, INPUT_GRACE_MS, FRAME_PROOF_MS, DEADLINE_MIN_MS,
     _setDocForTest(d, w) { bind(d, w); },
-    _setClockForTest(fn) { now = fn; },
+    _setClockForTest(fn) { now = fn || monotonic; },
     _setTimersForTest(setFn, clearFn) { setT = setFn; clearT = clearFn; },
+    _setFrameForTest(fn) { frame = typeof fn === 'function' ? fn : null; probeAt = 0; probeSeq++; },
     _setRaiseForTest(onThrow, onReject) { raise = onThrow; raiseRejection = onReject || onThrow; },
     _resetForTest() {
-      for (const l of Array.from(loops)) { l.stopped = true; if (l.timer) clearT(l.timer); }
-      loops.clear(); wakers.clear(); lastInputAt = 0; awaySeen = false;
+      for (const l of Array.from(loops)) l.halt();
+      loops.clear(); wakers.clear(); lastInputAt = -Infinity; awaySeen = false; probeAt = 0; probeSeq++;
     },
-    _debug: () => ({ loops: loops.size, wakers: wakers.size, awaySeen, lastInputAt })
+    _debug: () => ({ loops: loops.size, wakers: wakers.size, awaySeen, lastInputAt, probeOut: !!probeAt })
   };
 })();
 
