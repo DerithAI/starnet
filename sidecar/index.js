@@ -7734,7 +7734,26 @@ const documentDiscovery = DiscoveryDocuments.makeDocumentDiscovery({ fsp, path, 
   hash: text => crypto.createHash('sha256').update(text).digest('hex') });
 const DISCOVERY_TICK_MS = Math.max(60 * 1000, Number(process.env.SKYNET_ENV_DISCOVERY_TICK_MS) || 15 * 60 * 1000);
 let discoveryState = (() => { try { const o = loadResilient(DISCOVERY_FILE, 'discovery'); return Discovery.normalize(o && o.state); } catch (_) { return Discovery.normalize(null); } })();
-function persistDiscovery() { try { saveResilient(DISCOVERY_FILE, { v: 1, state: discoveryState }); } catch (e) { console.warn('[discovery] state persist failed:', (e && e.message) || e); } }
+/* PERSIST-IF-CHANGED (2026-10-19, idle-CPU piece 2). Every 15-min discovery tick persisted, including the no-fire
+   path (no roots, cooldown, all fresh), and saveResilient is TWO durable writes (a .bak copy + the main file) plus a
+   read-back parse of the prior — 192 fsync'd writes a day of byte-identical content. The envelope text that last
+   reached disk is remembered; a persist whose text matches it writes nothing. The memo is cleared BEFORE each write
+   and set only AFTER the write returns, so a failed or half-done write (.bak landed, main did not) retries next
+   tick. RAM-only: the first persist after boot always writes once. Every writer of DISCOVERY_FILE goes through
+   writeDiscovery so the memo can never describe a file another writer replaced. */
+let discoveryPersistedJson = null;
+function writeDiscovery(state) {   // throws on failure (the sources route must not lie about a settings write)
+  const text = JSON.stringify({ v: 1, state: state });
+  discoveryPersistedJson = null;
+  saveResilient(DISCOVERY_FILE, { v: 1, state: state });
+  discoveryPersistedJson = text;
+}
+function persistDiscovery() {
+  try {
+    if (discoveryPersistedJson !== null && JSON.stringify({ v: 1, state: discoveryState }) === discoveryPersistedJson) return;
+    writeDiscovery(discoveryState);
+  } catch (e) { console.warn('[discovery] state persist failed:', (e && e.message) || e); }
+}
 let discoveringNow = false;
 let documentSourceRevision = 0;
 function activeDocumentSource() {
@@ -7931,7 +7950,7 @@ async function handleDiscoverySourcesPost(req, res) {
   // Save before publishing success; unlike best-effort tick persistence, a settings write must not lie.
   const next = Discovery.normalize({ ...discoveryState, sources });
   next.staged = next.staged.filter(f => f.kind !== 'client-update');
-  try { saveResilient(DISCOVERY_FILE, { v: 1, state: next }); } catch (_) { return json(500, { ok: false, error: 'could not persist source settings' }); }
+  try { writeDiscovery(next); } catch (_) { return json(500, { ok: false, error: 'could not persist source settings' }); }
   discoveryState = next;
   documentSourceRevision++;
   return json(200, { ok: true, sources: discoveryState.sources, grantsChanged: false });
