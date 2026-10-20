@@ -343,7 +343,32 @@ async function invokeTts(overrides, body) {
     assert.equal(said[0].length, 1200, 'and spoken whole');
   }
 
-  console.log('media-service: OK (42 assertions)');
+  // One sentence, one paid synthesis (sweep/voice 2026-10-20): the desk gives up on a request at 30s and retries,
+  // while the sidecar's keyed call runs on for up to 60s — so a provider slower than 30s was paid TWICE for the same
+  // sentence (live: keyed calls at 19 ms and 30432 ms, sentence played at 61.6 s from the first call's cache). A
+  // request for a clip whose synthesis is already in flight joins it instead of buying another.
+  {
+    let calls = 0, release = null;
+    const gate = new Promise(r => { release = r; });
+    const slow = {
+      providerRuntimeKey: provider => provider === 'openrouter' ? 'key' : '',
+      fetch: async () => { calls++; await gate; return { ok: true, status: 200, headers: { get: () => 'audio/mpeg' }, arrayBuffer: async () => Buffer.from('keyed-mp3') }; }
+    };
+    const a = { status: 0, headers: {}, body: Buffer.alloc(0) }, b = { status: 0, headers: {}, body: Buffer.alloc(0) };
+    const res = r => ({ headersSent: false, writeHead(s, h) { r.status = s; r.headers = h || {}; this.headersSent = true; }, end(v) { r.body = Buffer.isBuffer(v) ? v : Buffer.from(String(v || '')); } });
+    const shared = await make(Object.assign({}, slow, { readBody: async () => JSON.stringify({ text: 'one slow sentence' }) }));
+    const first = shared.handleTts({}, res(a));
+    await new Promise(r => setTimeout(r, 20));
+    const second = shared.handleTts({}, res(b));   // the desk's retry, while the first synthesis is still running
+    await new Promise(r => setTimeout(r, 20));
+    release();
+    await Promise.all([first, second]);
+    assert.equal(calls, 1, 'a retry for a clip already being synthesized does not pay for it again (calls=' + calls + ')');
+    assert.equal(b.body.toString(), 'keyed-mp3', 'the retry is answered with the one synthesis');
+    assert.equal(a.body.toString(), 'keyed-mp3', 'and so is the original request');
+  }
+
+  console.log('media-service: OK (45 assertions)');
 })().finally(async () => {
   for (const root of roots) await fsp.rm(root, { recursive: true, force: true });
 }).catch(error => {
