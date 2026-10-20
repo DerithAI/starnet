@@ -35,11 +35,6 @@
   let preflightOk = false;
 
   const T = () => (typeof LoopTemplates !== 'undefined' ? LoopTemplates : null);
-  // background polls run through PollGate (idle CPU piece 3, 2026-10-20): the same cadence on screen, a 30 s floor while the
-  // Commander is away, a catch-up on return. A bare interval when PollGate is absent (node tests). `ms` may be a function,
-  // read live by PollGate (the interval takes its value at arm time).
-  const pollEvery = (fn, ms) => (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(fn, { ms, immediate: false }) : setInterval(fn, typeof ms === 'function' ? ms() : ms);
-  const pollStop = p => { if (p && typeof p.stop === 'function') p.stop(); else if (p) clearInterval(p); };
 
   function loopsLane(body) {
     const roster = H.present.length ? H.present : [{ id: 'agent', name: 'Agent', color: 'var(--ph)' }];
@@ -282,10 +277,6 @@
     }
 
     let refreshGeneration = 0;
-    // held: a restore found the cards older than a beat, and they stay unpainted until its read settles (the poller below)
-    let held = false;
-    const hold = () => { held = true; gateEl.style.visibility = 'hidden'; listEl.style.visibility = 'hidden'; };
-    const unhold = () => { if (!held) return; held = false; gateEl.style.visibility = ''; listEl.style.visibility = ''; };
     let refreshing = false, refreshAgain = false;
     const pendingControls = new Set();
     const pendingVerdicts = new Set();
@@ -378,7 +369,6 @@
       } finally {
         refreshing = false;
         if (refreshAgain && body.isConnected) { refreshAgain = false; refresh(); }
-        else unhold();   // the read a restore waited on has painted its answer (or the "may be out of date" line)
       }
     }
 
@@ -727,50 +717,15 @@
     body.querySelector('#lp-create').addEventListener('click', createLoop);
     shapeCards(); renderForm(); refresh();
     // poll while the window is open — a loop advances on its own tick, so the panel must not go stale.
-    /* ONE POLLER PER WINDOW BODY (idle CPU piece 3, 2026-10-20). StationUI re-renders a window by running its builder
-       again on the SAME connected body (AWAY WORK's openAway, a roster change, "AUTOMATION › section" while it is open),
-       and every wire() armed one more 4 s poller here. The old one only died once the body left the DOM, so each
-       re-render added a permanent /api/loops poller that also held the previous render's closures alive. Re-arming now
-       replaces the body's one poller (windows/messaging.js's idiom), so this render's refresh is the only one.
-       A MINIMIZED window skips its beat (design 3.1a): StationUI keeps a window minimized to the strip connected and
-       display:none, so only its client rects say nobody can see it.
-       RESTORED = READ AT ONCE (fix round 3, 2026-10-20). StationUI's restore repaints only the dossier, so a window
-       minimized for an hour showed its hour-old loop states (a "running" loop long finished) until its next beat. A
-       ResizeObserver on the body sees it come back — its box goes from none to a size in the very frame it is shown,
-       before that frame is painted — and the beat runs then (PollGate runNow: never a second read beside one in
-       flight; the next beat comes a full 4 s later). The same holds for any way the body is shown again. Where there is
-       no ResizeObserver (node tests), a skipping beat comes every 1 s instead, so a restore reads within ~1 s.
-       RESTORED = NOTHING STALE DRAWN (fix round 5). That read is a round trip away (hundreds of ms on a loaded sidecar),
-       and the first frames of the power-on drew the pre-minimize states meanwhile — a "running" loop long finished. When
-       a beat was skipped while minimized (the cards are older than one beat, which trunk's ungated poller never let
-       them be), the gate line and the cards stay unpainted (visibility: nothing moves) until that read settles: its
-       answer paints them, or its failure paints them under the "may be out of date" line. A window restored inside one
-       beat shows its cards at once, as before. */
-    if (body.__lpPoll) pollStop(body.__lpPoll);
-    const unobserve = () => { const ro = body.__lpShown; body.__lpShown = null; if (ro && typeof ro.disconnect === 'function') ro.disconnect(); };
-    unobserve();
-    const poll = body.__lpPoll = pollEvery(() => {
-      if (!body.isConnected) {
-        pollStop(poll);
-        if (body.__lpPoll === poll) { body.__lpPoll = 0; unobserve(); }
-        return undefined;
-      }
-      if (!body.getClientRects().length) { body.__lpSkipped = true; return undefined; }   // minimized: skip
-      body.__lpSkipped = false;
-      return refresh();
-    }, () => (body.__lpSkipped === true && !body.__lpShown ? 1000 : 4000));
-    if (typeof ResizeObserver === 'function') {
-      let hidden = !body.getClientRects().length;
-      const shown = body.__lpShown = new ResizeObserver(() => {
-        const nowHidden = !body.getClientRects().length;
-        if (hidden && !nowHidden && body.__lpPoll === poll) {
-          if (body.__lpSkipped === true) hold();   // before this frame is painted; the read below lets it go
-          if (poll && typeof poll.runNow === 'function') poll.runNow(); else refresh();
-        }
-        hidden = nowHidden;
-      });
-      shown.observe(body);
-    }
+    // ONE POLLER PER WINDOW BODY (idle CPU piece 3, 2026-10-20): StationUI re-renders a window by running its builder
+    // again on the SAME connected body, and every wire() armed one more 4 s poller that died only once the body left the
+    // DOM. Re-arming replaces the body's one poller, so this render's refresh is the only one reading /api/loops.
+    if (body.__lpPoll) clearInterval(body.__lpPoll);
+    const poll = body.__lpPoll = setInterval(() => {
+      if (body.isConnected) { refresh(); return; }
+      clearInterval(poll);
+      if (body.__lpPoll === poll) body.__lpPoll = 0;
+    }, 4000);
     }
 
     return { sections, wire };
@@ -834,10 +789,7 @@
   async function watch() {
     let j;
     try {
-      // a 15 s deadline like every other bounded poll: a read the sidecar accepts and never answers must not hold this
-      // beat (PollGate awaits it) or a connection slot to the sidecar for good
-      const signal = (typeof U !== 'undefined' && U.timeoutSignal) ? U.timeoutSignal(15000) : undefined;
-      const r = await fetch('/api/loops', { headers: { 'X-StarNet-Token': window.__STARNET_API_TOKEN__ || '' }, signal });
+      const r = await fetch('/api/loops', { headers: { 'X-StarNet-Token': window.__STARNET_API_TOKEN__ || '' } });
       if (!r.ok) return;                        // an errored read must not clear the waiting badge
       j = await r.json();
     }
@@ -862,5 +814,5 @@
     }
   }
   // first sweep after boot settles, then a slow heartbeat — this is a notifier, not a live view.
-  setTimeout(() => { watch(); pollEvery(watch, 25000); }, 6000);
+  setTimeout(() => { watch(); setInterval(watch, 25000); }, 6000);
 })();
