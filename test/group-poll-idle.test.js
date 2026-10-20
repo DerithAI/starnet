@@ -38,8 +38,10 @@ class El {
 const all = e => [e, ...e.children.flatMap(all)];
 
 /* one station: a group whose stamp moves like group-sessions.js's (revision + draft writes); `stamps:false` = an old sidecar */
-function harness({ stamps = true } = {}) {
-  let clock = 1e9, wallStep = 0, seq = 0, persists = 0, groupStringifies = 0, away = false, draftSeq = 0;
+/* realU: the REAL frontend/js/util.js loaded into the page first, so U.timeoutSignal is the app's own (its AbortController
+   fallback, on this fake timer queue). hanging: the sidecar accepts every ?id= read and never answers it */
+function harness({ stamps = true, realU = false } = {}) {
+  let clock = 1e9, wallStep = 0, seq = 0, persists = 0, groupStringifies = 0, away = false, draftSeq = 0, hanging = false;
   const timers = new Map(), reads = [], wakers = [];
   const server = { id: 'g1', title: 'Launch', members: ['agent', 'copy'], leadId: 'agent', revision: 3, paused: false, artifacts: [], questions: [],
     messages: [{ id: 'm1', seq: 1, author: 'user', content: 'hello', at: 1 }, { id: 'm2', seq: 2, author: 'agent', content: 'hi there', at: 2, turnId: 't1' }],
@@ -57,10 +59,11 @@ function harness({ stamps = true } = {}) {
     JSON: { stringify: (v, ...r) => { if (isGroup(v)) groupStringifies++; return JSON.stringify(v, ...r); }, parse: JSON.parse },
     setTimeout: (fn, ms) => { const id = ++seq; timers.set(id, { fn, at: clock + (ms || 0) }); return id; },
     clearTimeout: id => { timers.delete(id); },
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       url = String(url);
       if (!/\?id=/.test(url)) return { status: 200, ok: true, json: async () => ({ ok: true, result: { roster: [{ id: 'agent', name: 'NOVA' }, { id: 'copy', name: 'COPY' }], groups: [] } }) };
       reads.push(url);
+      if (hanging) return new Promise((_res, rej) => { const sig = init && init.signal; if (sig) sig.addEventListener('abort', () => rej(sig.reason || new Error('aborted'))); });
       const since = (url.match(/[?&]since=([^&]*)/) || [])[1];
       const result = stamps && since && decodeURIComponent(since) === stampOf() ? { id: 'g1', unchanged: true, stamp: stampOf() }
         : Object.assign(JSON.parse(JSON.stringify(server)), stamps ? { stamp: stampOf() } : {});
@@ -72,6 +75,7 @@ function harness({ stamps = true } = {}) {
     StationUI: { notify() {}, toggleTerm() {}, closeTerm() {} },
     Workstreams: { get: id => (id === 'g1' ? ws : null), list: () => [ws], activeId: () => 'g1', adopt: o => Object.assign(ws, o), generalId: () => 'home' }
   });
+  if (realU) { ctx.AbortController = AbortController; ctx.DOMException = DOMException; vm.runInContext(read('frontend/js/util.js'), ctx); }
   vm.runInContext(read('frontend/app/group-chat.js') + '\nglobalThis.GroupChat = GroupChat;', ctx);
   const settle = async () => { for (let n = 0; n < 60; n++) await Promise.resolve(); };
   async function advance(ms) {
@@ -85,7 +89,7 @@ function harness({ stamps = true } = {}) {
     clock = until;
   }
   return { ctx, ws, server, reads, wakers, advance, settle, log: () => ctx.document.getElementById('gc-log'),
-    persists: () => persists, groupStringifies: () => groupStringifies, setAway: v => { away = v; }, draft: () => { draftSeq++; }, now: () => clock, stepWall: ms => { wallStep += ms; } };
+    persists: () => persists, groupStringifies: () => groupStringifies, setAway: v => { away = v; }, hang: v => { hanging = v; }, draft: () => { draftSeq++; }, now: () => clock, stepWall: ms => { wallStep += ms; } };
 }
 
 (async () => {
@@ -168,6 +172,30 @@ function harness({ stamps = true } = {}) {
     h.stepWall(-5 * 60000);
     await h.advance(9000);
     A.ok(h.reads.length - 1 >= 10, 'the wall clock stepped back 5 min: the group is still read every 0.9 s (' + (h.reads.length - 1) + ' more reads in 9 s)');
+  }
+
+  /* (g) fix round 4 (2026-10-20): THE OPEN GROUP'S READ HAS A DEADLINE TOO. Only the station-wide watch had one: an open
+     group's read the sidecar accepted and never answered (every groupSessions read awaits the durable store's `ready`)
+     left the chain waiting on it for good — it never rescheduled, the wake catch-up returned early on the read "in
+     flight", and the transcript froze with nothing on screen saying so until the Commander switched chats. */
+  {
+    const h = harness({ realU: true });
+    h.ctx.GroupChat.bind(h.ws); await h.settle();
+    A.eq(h.reads.length, 1, 'fixture: bound and read once');
+    h.hang(true);
+    await h.advance(900);
+    const hungAt = h.reads.length;
+    A.eq(hungAt, 2, 'fixture: the next read went out and the sidecar sits on it');
+    await h.advance(20000);
+    A.ok(h.reads.length > hungAt, 'a read the sidecar never answers ends at its 15 s deadline and the poll carries on (' + (h.reads.length - hungAt) + ' more reads in 20 s; it was 0 — the chain was dead)');
+    A.ok(h.reads.length - hungAt <= 2, '…one hung read at a time, never a pile (' + (h.reads.length - hungAt) + ' in 20 s)');
+    A.eq(h.ctx.document.getElementById('gc-notice').textContent, '', 'a read that ran past its deadline puts nothing on screen: it is simply asked again');
+    const atWake = h.reads.length;
+    h.hang(false);
+    h.server.messages.push({ id: 'm9', seq: 9, author: 'agent', content: 'after the hang', at: 9 }); h.server.revision++;
+    await h.advance(16000);
+    A.ok(h.reads.length > atWake, 'the station answering again is read');
+    A.ok(h.ws.history.some(m => m.content === 'after the hang'), '…and the open group repaints with what changed meanwhile (it stayed frozen)');
   }
 
   A.report('group-poll-idle.test');

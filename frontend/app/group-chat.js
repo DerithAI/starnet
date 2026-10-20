@@ -162,16 +162,20 @@ const GroupChat = (() => {
      an awaited PollGate beat, and its list read had no deadline: a /api/groups read the sidecar accepted and never
      answered (every groupSessions read awaits the durable store's `ready`) held the beat until PollGate abandoned it at
      15 s, and the next beat opened ANOTHER — one more hung socket every 15 s (60 s away) until Chromium's six per host were
-     gone and every /api call (saves, runs, HALT) queued behind them. Only the watch passes it: it is silent about a failed
-     read and retries on its next beat. Reads the Commander is waiting on keep their own error text and pace (the open
-     group's poll is a chain that waits for its read, so a hung one holds one socket and never piles up). */
+     gone and every /api call (saves, runs, HALT) queued behind them. The watch is silent about a failed read and retries
+     on its next beat. The open group's poll passes one too (fix round 4): it is a chain that waits for its read, and a
+     read that never answered left it waiting for good — never rescheduled, the wake catch-up skipped as "in flight", the
+     transcript frozen. A read past its deadline rejects with a TimeoutError, whatever the engine made of the abort. */
   async function api(body, query = '', opts) {
     const deadline = opts && opts.deadlineMs && typeof U !== 'undefined' && U.timeoutSignal ? U.timeoutSignal(opts.deadlineMs) : null;
-    const r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : deadline ? { cache: 'no-store', signal: deadline } : { cache: 'no-store' });
+    const timedOut = () => Object.assign(new Error('The station did not answer in time.'), { name: 'TimeoutError' });
+    let r;
+    try { r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : deadline ? { cache: 'no-store', signal: deadline } : { cache: 'no-store' }); }
+    catch (e) { if (deadline && deadline.aborted) throw timedOut(); throw e; }
     if (r.status === 401 || r.status === 403) throw new Error('Reconnect to this station by refreshing the page. Your conversation is saved.');
     if (r.status === 404 && !body && !query) throw new Error('Group chat is unavailable on this server. Run the current StarNet backend, then try again.');
     let out;
-    try { out = await r.json(); } catch (_) { throw new Error('The server could not load group chat. Try again.'); }
+    try { out = await r.json(); } catch (_) { if (deadline && deadline.aborted) throw timedOut(); throw new Error('The server could not load group chat. Try again.'); }
     if (!r.ok || !out?.ok) throw new Error(out?.error || 'Group request failed'); return out.result;
   }
   function save() { if (typeof App !== 'undefined') { App.persist(); App.refreshRail(); } }
@@ -458,8 +462,11 @@ const GroupChat = (() => {
      there is no reason to ask an idle group less often — and slowing it delayed the first sign of a turn another member
      started by up to 3 s. Only while the Commander is away (PollGate) is a read due every 30 s, with one at once on return.
      When a read is due is measured on the monotonic clock (performance.now when present): on Date.now a backward wall-clock
-     step (a w32time correction after resume) skipped every read, a live turn's too, until the wall clock caught up. */
-  const POLL_BEAT_MS = 900;
+     step (a w32time correction after resume) skipped every read, a live turn's too, until the wall clock caught up.
+     A READ THAT NEVER ANSWERS ENDS (fix round 4): each has OPEN_READ_MS, like the station-wide watch. Past it the read is
+     simply asked again on the 0.9 s beat and nothing is put on screen — the transcript claims nothing about a read that
+     did not answer, and a notice would outlive the next read that does. */
+  const POLL_BEAT_MS = 900, OPEN_READ_MS = 15000;
   const monoNow = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? () => performance.now() : () => Date.now();
   let polled = { gen: -1, at: 0 }, pollingGen = -1, goneGen = -1;
   const pollDue = () => (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away() ? PollGate.AWAY_MS || 30000 : POLL_BEAT_MS);
@@ -472,11 +479,12 @@ const GroupChat = (() => {
     pollingGen = gen; polled = { gen, at: monoNow() };
     try {
       const id = active.id, since = group && group.id === id && typeof group.stamp === 'string' ? group.stamp : '';
-      const result = await api(null, '?id=' + encodeURIComponent(id) + (since ? '&since=' + encodeURIComponent(since) : ''));
+      const result = await api(null, '?id=' + encodeURIComponent(id) + (since ? '&since=' + encodeURIComponent(since) : ''), { deadlineMs: OPEN_READ_MS });
       if (gen !== generation) return;
       if (!(result && result.unchanged === true)) { group = result; paint(); }   // unchanged: the group on screen is current
     } catch (e) {
-      if (gen === generation) showError(/not found/i.test(e.message || '') ? new Error('This group no longer exists on this station. Delete it from the session list.') : e);
+      if (e && e.name === 'TimeoutError') { /* past its deadline: asked again on the next beat, below; nothing on screen */ }
+      else if (gen === generation) showError(/not found/i.test(e.message || '') ? new Error('This group no longer exists on this station. Delete it from the session list.') : e);
       if (/not found/i.test(e.message || '')) { goneGen = gen; return; }   // never poll a gone group every 900 ms forever
     } finally { if (pollingGen === gen) pollingGen = -1; }
     if (gen === generation && active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), POLL_BEAT_MS);
