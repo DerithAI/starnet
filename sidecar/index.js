@@ -19178,7 +19178,7 @@ async function handleSkillExchangeRollback(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);
   const body = await readJsonBody(req, readBody, 1 << 16, res); if (body === null) return json(400, { ok: false, error: 'bad json' });
   const agentId = String(body.agentId || 'agent'); if (!isAgentId(agentId)) return json(403, { ok: false, error: 'forbidden' });
-  try { const result = skillExchange.rollback({ agentId, id: body.id, digest: body.digest }); skillMetrics.record('rollback', 'success', {}); return json(200, result); }
+  try { const result = skillExchange.rollback({ agentId, id: body.id, digest: body.digest, force: body.force === true }); skillMetrics.record('rollback', 'success', {}); return json(200, result); }
   catch (e) { skillMetrics.record('rollback', 'failed', { error: e && e.message }); return json(400, { ok: false, error: (e && e.message) || 'could not roll back that skill' }); }
 }
 

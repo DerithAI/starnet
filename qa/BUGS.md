@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**27** open (open+claimed) of 321 total — 0 P0 · 2 P1 · 25 P2
+**30** open (open+claimed) of 329 total — 0 P0 · 2 P1 · 28 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -272,8 +272,11 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | sessions | [Large accepted worker output can be silently truncated](bugs/2d537ab3-worker-final-output-truncation.md) | thread-ux-review-1011 | 18c1ec59f094775ada818175d927e9c4ffc845d8 |
 | P1 | fixed | sessions | [Workshop reports a completed web tool when its entry file is missing](bugs/097269b5-workshop-reports-a-completed-web-tool-when-its-e.md) | agent/release-ui-audit-0906 | 44a8c3006 |
 | P1 | fixed | skills | [Approved skill is withheld from autonomous workers](bugs/f702f2f6-approved-skill-is-withheld-from-autonomous-worke.md) | release-0135-prep | df73589b8 |
+| P1 | fixed | skills | [Base64-stored support files are scanned as their encoding, so a body edit releases a withheld installed package](bugs/297e2db4-base64-stored-support-files-are-scanned-as-their.md) | sweep/skills | bd449b81b |
 | P1 | fixed | skills | [Campaign cards missing from browser element discovery](bugs/305a9e3d-campaign-cards-missing-from-browser-element-disc.md) | agent/browser-campaign-navigation-0912 | dcbc2b941 |
 | P1 | fixed | skills | [gate.verify()'s tamper branch re-enters decide(), which clears the tamper against the STALE stored contentDigest — one approval permanently blesses whatever is](bugs/76d5dc8a-gate-verify.md) | sweep/skills | 598ab4a4 |
+| P1 | fixed | skills | [Installed package description and category are never scanned yet ride every run's skill index](bugs/23996f04-installed-package-description-and-category-are-n.md) | sweep/skills | bd449b81b |
+| P1 | fixed | skills | [Skill hydrate reads files through a support folder that is itself a junction, and through hardlinked files](bugs/c723d5f4-skill-hydrate-reads-files-through-a-support-fold.md) | sweep/skills | bd449b81b |
 | P1 | fixed | voice | [A stale sidecar token lets Local Live open a silent microphone session after restart](bugs/ff73b79a-a-stale-sidecar-token-lets-local-live-open-a-sil.md) | agent/voice-release-sweep | 8bc9ff9a |
 | P1 | fixed | voice | [Live spoken replies stall after the output audio context closes](bugs/3364dfb0-live-spoken-replies-stall-after-the-output-audio.md) | agent/live-speech-0910 | f129e19e3 |
 | P1 | fixed | voice | [Mac desktop microphone blocked while browser mirror works](bugs/8a553481-mac-desktop-microphone-blocked-while-browser-mir.md) | agent/voice-agents-mac-0906 | d65f8f538 |
@@ -320,6 +323,9 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | safecell | [Execution history shows a shortened shell command instead of the full redacted command](bugs/9f908b02-execution-history-shows-a-shortened-shell-comman.md) | release-0135-prep | — |
 | P2 | open | safecell | [First file write in a fresh station can time out while the checkpoint runs inside its 10s budget](bugs/e47efecf-first-file-write-in-a-fresh-station-can-time-out.md) | agent/ollama-fixes | — |
 | P2 | open | sessions | [Saved station opening is blocked despite a reachable engine](bugs/4c0efd8c-saved-station-opening-is-blocked-despite-a-reach.md) | release-0135-prep | — |
+| P2 | open | skills | [A diverged installed package's support files are mirrored to disk and shown to the model as base64 text](bugs/a36d1b00-a-diverged-installed-package-s-support-files-are.md) | sweep/skills | — |
+| P2 | open | skills | [A legacy skill record's unscanned summary still rides the prompt index](bugs/56c6f962-a-legacy-skill-record-s-unscanned-summary-still.md) | sweep/skills | — |
+| P2 | open | skills | [A model can remove the Commander's pin on a skill directly, without a staged proposal](bugs/97743dff-a-model-can-remove-the-commander-s-pin-on-a-skil.md) | sweep/skills | — |
 | P2 | open | world | [station.test_line claims an unconfirmed onward hand-off for a job that landed in a non-sending OUTBOX](bugs/3ee2d13a-test-line-unconfirmed-hand-off-from-a-non-sendin.md) | conveyor-final-runtime | — |
 | P2 | fixed | autonomy | [Cancelled edit starts a replacement language server](bugs/37059128-cancelled-edit-starts-a-replacement-language-ser.md) | reliability-audit | 547dd03d7 |
 | P2 | fixed | autonomy | [Commander-reported plan step shown as StarNet recorded](bugs/024e4e15-commander-reported-plan-step-shown-as-starnet-re.md) | sweep/autonomy | e0b979995 |
@@ -400,6 +406,8 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | sessions | [Worker recovery rebuilds an unrelated conversation and loses reader state](bugs/abb287e8-worker-recovery-reader-state.md) | thread-ux-review-1011 | a69664135e4983fe624ec11bea6b2bd4666ee651 |
 | P2 | fixed | sessions | [Workshop Keep accepts an empty decision acknowledgement](bugs/9bc0b751-workshop-keep-accepts-an-empty-decision-acknowle.md) | agent/system-polish-0920 | 4a2028759 |
 | P2 | fixed | skills | [Design references assert requested image properties as observed](bugs/436ab17d-design-references-assert-requested-image-propert.md) | agent/provider-triage-1011 | 2e9c7ffb4 |
+| P2 | fixed | skills | [Rolling back an installed skill overrides its pin without an explicit force](bugs/29043870-rolling-back-an-installed-skill-overrides-its-pi.md) | sweep/skills | bd449b81b |
+| P2 | fixed | skills | [Skill hydrate has no file-count or byte limit, so 10k files on disk reach the provider in one request](bugs/4ab22e0e-skill-hydrate-has-no-file-count-or-byte-limit-so.md) | sweep/skills | bd449b81b |
 | P2 | fixed | voice | [Failed Live Voice startup leaves a user mute force-enabled](bugs/d02d029b-failed-live-voice-startup-leaves-a-user-mute-for.md) | agent/voice-release-sweep | 8bc9ff9a |
 | P2 | fixed | voice | [Muting the speaker mid-reply in hands-free nulls the only surviving rearm heartbeat — the mic never re-opens while the mode button still reads 'hands-free ON'](bugs/2f7b280c-muting-the-speaker-mid-reply-in-hands-free-nulls.md) | sweep/voice | 50a8b07b |
 | P2 | fixed | voice | [Revoked or replaced speech synthesis can publish stale audio](bugs/4fca711c-revoked-speech-synthesis-publishes-stale-audio.md) | agent/runtime-triage-1011 | 1d1a89980717271a2dbbc627088dca2f1c25c1ba |
@@ -461,7 +469,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | providers | 9 |
 | safecell | 3 |
 | sessions | 1 |
-| skills | 0 |
+| skills | 3 |
 | onboarding | 2 |
 | world | 1 |
 | voice | 0 |
