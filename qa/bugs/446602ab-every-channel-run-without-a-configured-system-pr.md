@@ -7,7 +7,7 @@ severity: P2
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: d81a757f6
+fix: 9e15c999e
 origin: audit
 ---
 
@@ -32,4 +32,4 @@ Booted sidecar :9721 (SKYNET_TELEGRAM_TOKEN + SKYNET_TELEGRAM_API_BASE -> mock B
 
 ## Verdict
 
-Fixed: the fallback factory is invoked, so a string (or absent) persona is the run's persona. Live re-check on the wire: the next station-bot request (req-270) opened "You are the Commander's AI agent aboard the STARNET station, reachable over Telegram. Address the user as \"Commander\"…". Fix: `d81a757f6`.
+Fixed: the fallback factory is invoked, so a string (or absent) persona is the run's persona. Live re-check on the wire: the next station-bot request (req-270) opened "You are the Commander's AI agent aboard the STARNET station, reachable over Telegram. Address the user as \"Commander\"…". Fix: `9e15c999e`.

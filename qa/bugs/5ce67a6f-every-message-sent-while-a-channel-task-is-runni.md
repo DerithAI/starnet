@@ -7,7 +7,7 @@ severity: P1
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: f0c22d077
+fix: 2899b4102
 origin: audit
 ---
 
@@ -35,4 +35,4 @@ Same with step 2 = "/routine add every day at 9am | check the morning news" or "
 
 ## Verdict
 
-Fixed: recoverInbox re-checks that an item is still durably pending immediately before replaying it, so a message that finished on its own path while recovery waited is skipped. Live re-check on the fixed sidecar: steered "also add a sonnet" + "/away build a recipe card generator" during a held run -> one ack each, no second run, no duplicate /away reply. Fix: `f0c22d077`.
+Fixed: recoverInbox re-checks that an item is still durably pending immediately before replaying it, so a message that finished on its own path while recovery waited is skipped. Live re-check on the fixed sidecar: steered "also add a sonnet" + "/away build a recipe card generator" during a held run -> one ack each, no second run, no duplicate /away reply. Fix: `2899b4102`.

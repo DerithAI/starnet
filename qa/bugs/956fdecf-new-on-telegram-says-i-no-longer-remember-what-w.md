@@ -7,7 +7,7 @@ severity: P1
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: bf7a10cc5
+fix: 5b934e4e2
 origin: audit
 ---
 
@@ -32,4 +32,4 @@ Booted sidecar :9721, mock Telegram + scripted mock OpenRouter, owner paired in 
 
 ## Verdict
 
-Fixed: /new also moves the chat onto a fresh canonical stream (chat record streamId — as /new starts a fresh workstream in COMMS) and counts the turns a run would have replayed; the old transcript stays in the station history but is never replayed. Live re-check: /new -> "Cleared 100 messages"; the next run's request had 2 messages and channel.send delivered report.txt and the unicode-named file. Fix: `bf7a10cc5`.
+Fixed: /new also moves the chat onto a fresh canonical stream (chat record streamId — as /new starts a fresh workstream in COMMS) and counts the turns a run would have replayed; the old transcript stays in the station history but is never replayed. Live re-check: /new -> "Cleared 100 messages"; the next run's request had 2 messages and channel.send delivered report.txt and the unicode-named file. Fix: `5b934e4e2`.

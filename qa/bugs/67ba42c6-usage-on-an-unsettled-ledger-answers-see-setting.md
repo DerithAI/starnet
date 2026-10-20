@@ -7,7 +7,7 @@ severity: P2
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: aa85f5799
+fix: cc57c42b6
 origin: audit
 ---
 
@@ -30,4 +30,4 @@ Booted sidecar :9721 after hard-killing it mid-run (ledger health complete:false
 
 ## Verdict
 
-Fixed: trailing punctuation of the host's error is trimmed before the sentence's own period. Fix: `aa85f5799`.
+Fixed: trailing punctuation of the host's error is trimmed before the sentence's own period. Fix: `cc57c42b6`.

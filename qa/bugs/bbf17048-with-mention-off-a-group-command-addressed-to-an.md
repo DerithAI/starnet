@@ -7,7 +7,7 @@ severity: P2
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: f39590dd4
+fix: debe64ba4
 origin: audit
 ---
 
@@ -32,4 +32,4 @@ Booted sidecar :9721, mock Telegram, owner 99 paired.
 
 ## Verdict
 
-Fixed: admission refuses a command whose @suffix names a different bot before the mention gate (observed if the chat observes, else dropped); a bare command and one addressed to us still run. Live re-check: "/new@otherbot" and "/stop@otherbot" got no reply and /status still showed "History: 2 messages remembered."; "/status@bot123456" still answered. Fix: `f39590dd4`.
+Fixed: admission refuses a command whose @suffix names a different bot before the mention gate (observed if the chat observes, else dropped); a bare command and one addressed to us still run. Live re-check: "/new@otherbot" and "/stop@otherbot" got no reply and /status still showed "History: 2 messages remembered."; "/status@bot123456" still answered. Fix: `debe64ba4`.

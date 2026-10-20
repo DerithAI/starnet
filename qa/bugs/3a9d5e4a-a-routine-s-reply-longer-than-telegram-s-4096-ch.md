@@ -7,7 +7,7 @@ severity: P1
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: 4c5cb6e2e
+fix: 9af08a5a0
 origin: audit
 ---
 
@@ -32,4 +32,4 @@ Booted sidecar :9721 with a mock Bot API that enforces Telegram's 4096-character
 
 ## Verdict
 
-Fixed: the routine reply is split with the hub's chunker at the channel registry's maxMessageLength and sent in order; a mid-way failure names how many parts landed. Live re-check: the same routine delivered in 4 messages, none refused, `lastDeliveryOk true`, finalization `delivered`. Fix: `4c5cb6e2e`.
+Fixed: the routine reply is split with the hub's chunker at the channel registry's maxMessageLength and sent in order; a mid-way failure names how many parts landed. Live re-check: the same routine delivered in 4 messages, none refused, `lastDeliveryOk true`, finalization `delivered`. Fix: `9af08a5a0`.

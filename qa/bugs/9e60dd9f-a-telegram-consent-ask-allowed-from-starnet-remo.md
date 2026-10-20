@@ -7,7 +7,7 @@ severity: P1
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: f1002804b
+fix: 0fcbbd42d
 origin: audit
 ---
 
@@ -33,4 +33,4 @@ Booted sidecar :9721 with STARNET_REMOTE_PORT / STARNET_REMOTE_LAN=1 / STARNET_R
 
 ## Verdict
 
-Fixed: the host remembers how each settled channel ask ended (`channelConsentOutcome`, bounded) and the hub's late-tap path reports an allow as "▸ already answered in StarNet — ALLOWED (once)" with no denial toast or correction. Live re-check: phone approved, Telegram Deny tapped -> ack "✓ Already answered elsewhere — allowed", stamp "▸ already answered in StarNet — ALLOWED (once)", delta.md written. Fix: `f1002804b`.
+Fixed: the host remembers how each settled channel ask ended (`channelConsentOutcome`, bounded) and the hub's late-tap path reports an allow as "▸ already answered in StarNet — ALLOWED (once)" with no denial toast or correction. Live re-check: phone approved, Telegram Deny tapped -> ack "✓ Already answered elsewhere — allowed", stamp "▸ already answered in StarNet — ALLOWED (once)", delta.md written. Fix: `0fcbbd42d`.

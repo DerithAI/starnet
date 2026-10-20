@@ -7,7 +7,7 @@ severity: P2
 status: fixed
 found: 2026-10-20
 lane: sweep/channels
-fix: 19adab192
+fix: 00bc7ba60
 origin: audit
 ---
 
@@ -30,4 +30,4 @@ Booted sidecar :9721, mock Telegram + scripted mock OpenRouter, owner DM 4242 wi
 
 ## Verdict
 
-Fixed: only a file that was read and then failed to upload is said to be on the station; an unreadable one is "could not be found in the workspace, so nothing was attached". Live re-check: "Note: this file could not be found in the workspace, so nothing was attached — \"../../channels/secrets.json\"." Fix: `19adab192`.
+Fixed: only a file that was read and then failed to upload is said to be on the station; an unreadable one is "could not be found in the workspace, so nothing was attached". Live re-check: "Note: this file could not be found in the workspace, so nothing was attached — \"../../channels/secrets.json\"." Fix: `00bc7ba60`.
