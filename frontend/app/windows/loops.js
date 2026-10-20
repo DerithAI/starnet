@@ -35,6 +35,10 @@
   let preflightOk = false;
 
   const T = () => (typeof LoopTemplates !== 'undefined' ? LoopTemplates : null);
+  // background polls run through PollGate (idle CPU piece 3, 2026-10-20): the same cadence on screen, a 30 s floor while the
+  // Commander is away, a catch-up on return. A bare interval when PollGate is absent (node tests).
+  const pollEvery = (fn, ms) => (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(fn, { ms, immediate: false }) : setInterval(fn, ms);
+  const pollStop = p => { if (p && typeof p.stop === 'function') p.stop(); else if (p) clearInterval(p); };
 
   function loopsLane(body) {
     const roster = H.present.length ? H.present : [{ id: 'agent', name: 'Agent', color: 'var(--ph)' }];
@@ -722,10 +726,10 @@
        and every wire() armed one more 4 s poller here. The old one only died once the body left the DOM, so each
        re-render added a permanent /api/loops poller that also held the previous render's closures alive. Re-arming now
        replaces the body's one poller (windows/messaging.js's idiom), so this render's refresh is the only one. */
-    if (body.__lpPoll) clearInterval(body.__lpPoll);
-    const poll = body.__lpPoll = setInterval(() => {
-      if (body.isConnected) refresh();
-      else { clearInterval(poll); if (body.__lpPoll === poll) body.__lpPoll = 0; }
+    if (body.__lpPoll) pollStop(body.__lpPoll);
+    const poll = body.__lpPoll = pollEvery(() => {
+      if (body.isConnected) return refresh();
+      pollStop(poll); if (body.__lpPoll === poll) body.__lpPoll = 0;
     }, 4000);
     }
 
@@ -815,5 +819,5 @@
     }
   }
   // first sweep after boot settles, then a slow heartbeat — this is a notifier, not a live view.
-  setTimeout(() => { watch(); setInterval(watch, 25000); }, 6000);
+  setTimeout(() => { watch(); pollEvery(watch, 25000); }, 6000);
 })();

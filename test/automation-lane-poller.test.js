@@ -82,5 +82,21 @@ mine[1].fn();
 A.eq(lanePollers().length, 1, 'a body that left the DOM ends its poller on the next beat');
 A.ok(!body.__lpPoll, 'and forgets it');
 
+// in the app the poller runs through PollGate (idle CPU piece 3): still exactly one loop per body, at the 4 s cadence
+const gateLoops = new Set();
+const gatedLanes = [];
+const gated = vm.createContext(Object.assign({}, ctx, {
+  AutomationWindow: { registerLane: fn => gatedLanes.push(fn) },
+  PollGate: { every(fn, o) { const loop = { fn, ms: o.ms, immediate: o.immediate, stop() { gateLoops.delete(loop); } }; gateLoops.add(loop); return loop; } }
+}));
+vm.runInContext(src, gated, { filename: 'windows/loops.js' });
+const gBody = el();
+for (let i = 0; i < 3; i++) gatedLanes[0](gBody).wire();
+const gLane = [...gateLoops].filter(l => l.ms === 4000);
+A.eq(gLane.length, 1, 'through PollGate: three renders of one body keep ONE 4 s loop');
+A.eq(gLane[0].immediate, false, '…armed like the interval it replaces (first beat after 4 s)');
+gBody.isConnected = false; gLane[0].fn();
+A.eq([...gateLoops].filter(l => l.ms === 4000).length, 0, 'through PollGate: a body that left the DOM stops its loop');
+
 A.report('automation-lane-poller.test');
 })().catch(e => { console.error(e); process.exit(1); });
