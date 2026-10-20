@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**22** open (open+claimed) of 304 total — 0 P0 · 1 P1 · 21 P2
+**22** open (open+claimed) of 305 total — 0 P0 · 1 P1 · 21 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -326,6 +326,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | channels | [COMMS report lists lose plus and tab-separated markers](bugs/3ad3e2b8-comms-report-lists-lose-plus-and-tab-separated-m.md) | agent/release-0112-audit-0910 | cb6c30b4d |
 | P2 | fixed | channels | [Dense service cards squeeze technical prose into tiny columns](bugs/734b469e-dense-service-cards-squeeze-technical-prose-into.md) | agent/ui-density-audit | 221775a85 |
 | P2 | fixed | channels | [E-STOP silences the channel reply path via the supersede flag, so a deliberately stopped run is indistinguishable from a crashed bot on the phone](bugs/600f4982-e-stop-silences-the-channel-reply-path-via-the-s.md) | sweep/channels | 96fe108d |
+| P2 | fixed | channels | [Every channel run without a configured system prompt reaches the provider with the persona replaced by the literal text '() => p'](bugs/446602ab-every-channel-run-without-a-configured-system-pr.md) | sweep/channels | d81a757f6 |
 | P2 | fixed | channels | [Station button redesign escaped the bottom navigation](bugs/d28ba8f4-station-button-redesign-escaped-the-bottom-navig.md) | agent/comms-controls-0906 | e4e4512b198279e35cdd9f2cc2be9d786b02e87f |
 | P2 | fixed | channels | [With /mention off, a group command @-addressed to another bot (/new@otherbot, /stop@otherbot) runs on this bot](bugs/bbf17048-with-mention-off-a-group-command-addressed-to-an.md) | sweep/channels | f39590dd4 |
 | P2 | fixed | onboarding | [First-path offer silently vanishes for a long or repeated mission](bugs/2ea198d9-first-path-offer-silently-vanishes-for-a-long-or.md) | sweep/onboarding | 6d86bbfe2 |
