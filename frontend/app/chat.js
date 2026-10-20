@@ -3192,8 +3192,16 @@ const Chat = (() => {
     const stat = chip.querySelector('.tc-stat');
     if (/^browser\./.test(ev.name || '') && ev.runId) {
       stat.setAttribute('aria-live', 'polite');
+      /* AN ORPHANED CHIP STOPS ASKING (idle CPU piece 3, 2026-10-20). This loop read /api/connectors every second until
+         the chip resolved or left the DOM. A run that ended without this call's result (stopped, failed) leaves the chip
+         'pending' inside its folded but still connected .run-fold, so it polled once a second until the session was
+         switched. Once the conversation's run is over nothing can still be waiting on this call: the loop ends and the
+         chip keeps the look it has. */
+      const wsId = activeWs && activeWs.id;
+      const runOver = () => typeof Channels === 'undefined' || !Channels.isBusy || !wsId || !Channels.isBusy(wsId);
       const checkWait = async () => {
         if (!chip.isConnected || !chip.classList.contains('pending')) return;
+        if (runOver()) { stat.textContent = ''; return; }
         try {
           const j = await Harness.api.get('/api/connectors');
           if (!chip.isConnected || !chip.classList.contains('pending')) return;
