@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**18** open (open+claimed) of 292 total — 0 P0 · 0 P1 · 18 P2
+**20** open (open+claimed) of 304 total — 0 P0 · 0 P1 · 20 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -137,8 +137,11 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P0 | fixed | safecell | [The Permissions panel's normalizeGrants regex drops every path: and mcp: standing grant — the ledger prints "No standing approvals yet" while the backend holds](bugs/7274ff21-the-permissions-panel-s-normalizegrants-regex-dr.md) | sweep/safecell | 6afeb9ee |
 | P0 | fixed | sessions | [An attachment-bearing user turn is dropped from the durable transcript and the PREVIOUS turn is written in its place — the string-only scan at index.js:11299 fa](bugs/e7dcb889-an-attachment-bearing-user-turn-is-dropped-from.md) | sweep/sessions | 6afeb9ee |
 | P0 | fixed | skills | [skill.view's hydrate-then-bump stores the RENDERED SKILL.md as the skill's body, so every view→persist cycle re-appends '## Setup' and '## Support Files' — unbo](bugs/c70f8965-skill-view-s-hydrate-then-bump-stores-the-render.md) | sweep/skills | 598ab4a4 |
+| P1 | fixed | autonomy | [A routine run killed between fire and settlement leaves the routine reporting the previous run's ok and absent from its own history](bugs/0de13603-a-routine-run-killed-between-fire-and-settlement.md) | sweep/autonomy | 124feb5b0 |
 | P1 | fixed | autonomy | [Agent loop pause leaves cancelled iteration running and lease held](bugs/c66e8c39-agent-loop-pause-leaves-cancelled-iteration-runn.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P1 | fixed | autonomy | [Ambiguous permission and routine acknowledgements report unproven changes](bugs/95d13aaf-ambiguous-permission-and-routine-acknowledgement.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
+| P1 | fixed | autonomy | [An E-STOP mid night-shift beat records the partial stream as a delivered draft](bugs/778080b7-an-e-stop-mid-night-shift-beat-records-the-parti.md) | sweep/autonomy | 4fc2117d7 |
+| P1 | fixed | autonomy | [Approving a newer loop candidate before the older one it was built on breaks the rejection cascade](bugs/0582c793-approving-a-newer-loop-candidate-before-the-olde.md) | sweep/autonomy | d0003aa49 |
 | P1 | fixed | autonomy | [Autonomy controls claim unconfirmed settings and overwrite server state on reload](bugs/b0349a7c-autonomy-controls-claim-unconfirmed-settings-and.md) | agent/system-polish-0920 | 4a2028759 |
 | P1 | fixed | autonomy | [Checkpoint maintenance bypass and orphan Git pack processes](bugs/8bdf73bb-checkpoint-maintenance-bypass-and-orphan-git-pac.md) | issue-triage-1011 | 7680f00da |
 | P1 | fixed | autonomy | [Concurrency-limited routines starve later due jobs in store order](bugs/0cfef8af-concurrency-limited-routines-starve-later-due-jo.md) | reliability-audit-0919 | b651a8f5d |
@@ -162,6 +165,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | autonomy | [Routine follow-up checkbox saves an unusable session origin](bugs/962032ba-routine-follow-up-checkbox-saves-an-unusable-ses.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P1 | fixed | autonomy | [SEND TO loses producing workspace for relative file artifacts](bugs/cc760146-send-to-loses-producing-workspace-for-relative-f.md) | agent/session-handoff-1011 | 1428c8b11 |
 | P1 | fixed | autonomy | [Stale routine recovery drops its fence before failure persistence](bugs/50741e0d-stale-routine-recovery-drops-its-fence-before-fa.md) | agent/cron-reliability-0921 | 0f881f44afde73e79de13f0117cf0dd9f2771ff9 |
+| P1 | fixed | autonomy | [The away-workshop card counts down to its next shift while scheduling is OFF or E-STOPped](bugs/a8f9ad8b-the-away-workshop-card-counts-down-to-its-next-s.md) | sweep/autonomy | c6b725e8f |
 | P1 | fixed | autonomy | [Windows computer movement resolves to filesystem Move-Item](bugs/758185bc-windows-computer-movement-resolves-to-filesystem.md) | computer-move-proof-0911 | dd85573b9 |
 | P1 | fixed | channels | [A lost-race consent tap stamps "▸ ✅ Allow once" onto the message before resolveConsent is asked, so a DENIED request keeps a permanent "approved" record](bugs/64563ad9-a-lost-race-consent-tap-stamps-allow-once-onto-t.md) | sweep/channels | 96fe108d |
 | P1 | fixed | channels | [`channel.targets` derives "reachable now" from the adapter handle's existence, so an errored (or still-connecting) channel is reported connected while telegramS](bugs/a199ee3c-channel-targets-derives-reachable-now-from-the-a.md) | sweep/channels | 96fe108d |
@@ -292,6 +296,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | channels | [Zoho Mail bootstrap tool reportedly requires undiscoverable account](bugs/54564ff9-zoho-mail-bootstrap-tool-reportedly-requires-und.md) | agent/reliability-audit-0919 | — |
 | P2 | open | onboarding | [Google Drive authorization is hard blocked for a fresh personal account](bugs/f2ac6356-google-drive-authorization-is-hard-blocked-for-a.md) | release-0135-prep | — |
 | P2 | open | onboarding | [Customer reports unusable visibility without build or platform details](bugs/6bb9d2a1-visibility-failure-without-diagnostics.md) | release-0120-prep-0915 | — |
+| P2 | open | providers | [A run cancelled mid-stream is recorded as a known zero-dollar run instead of spend unknown](bugs/80de2a75-a-run-cancelled-mid-stream-is-recorded-as-a-know.md) | sweep/autonomy | — |
 | P2 | open | providers | [Connector sign-in is lost after credential-store recovery](bugs/e7b2ffcd-connector-sign-in-is-lost-after-credential-store.md) | release-0135-prep | — |
 | P2 | open | providers | [Funded account runs fail again after a credit-limit workaround](bugs/a5060cc3-funded-account-runs-fail-again-after-a-credit-li.md) | release-0135-prep | — |
 | P2 | open | providers | [Managed Sonnet request still returns an uncorrelated HTTP 400](bugs/fd9c4b4d-managed-sonnet-400-unresolved.md) | reliability-followup | — |
@@ -303,15 +308,22 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | safecell | [Execution history shows a shortened shell command instead of the full redacted command](bugs/9f908b02-execution-history-shows-a-shortened-shell-comman.md) | release-0135-prep | — |
 | P2 | open | safecell | [First file write in a fresh station can time out while the checkpoint runs inside its 10s budget](bugs/e47efecf-first-file-write-in-a-fresh-station-can-time-out.md) | agent/ollama-fixes | — |
 | P2 | open | sessions | [Saved station opening is blocked despite a reachable engine](bugs/4c0efd8c-saved-station-opening-is-blocked-despite-a-reach.md) | release-0135-prep | — |
+| P2 | open | sessions | [The phone's routine list shows a live green dot and cadence while scheduling is OFF or E-STOPped](bugs/96dcbade-the-phone-s-routine-list-shows-a-live-green-dot.md) | sweep/autonomy | — |
 | P2 | open | world | [station.test_line claims an unconfirmed onward hand-off for a job that landed in a non-sending OUTBOX](bugs/3ee2d13a-test-line-unconfirmed-hand-off-from-a-non-sendin.md) | conveyor-final-runtime | — |
+| P2 | fixed | autonomy | [A clock that jumped ahead and was corrected back strands recurring routines for the length of the jump](bugs/7ae7e435-a-clock-that-jumped-ahead-and-was-corrected-back.md) | sweep/autonomy | 6102a1612 |
+| P2 | fixed | autonomy | [A cron advance anchored inside a fall-back repeated hour fires that day's ambiguous time a second time](bugs/10ecf010-a-cron-advance-anchored-inside-a-fall-back-repea.md) | sweep/autonomy | 822503be5 |
+| P2 | fixed | autonomy | [A force-killed holder's cron.lock with a recycled PID mutes the scheduler for up to 8 minutes](bugs/1186e4e7-a-force-killed-holder-s-cron-lock-with-a-recycle.md) | sweep/autonomy | 283face2e |
+| P2 | fixed | autonomy | [A one-shot routine whose time already passed is stored and fires on the next tick](bugs/94e4036f-a-one-shot-routine-whose-time-already-passed-is.md) | sweep/autonomy | 17e0d3965 |
 | P2 | fixed | autonomy | [Cancelled edit starts a replacement language server](bugs/37059128-cancelled-edit-starts-a-replacement-language-ser.md) | reliability-audit | 547dd03d7 |
 | P2 | fixed | autonomy | [Commander-reported plan step shown as StarNet recorded](bugs/024e4e15-commander-reported-plan-step-shown-as-starnet-re.md) | sweep/autonomy | e0b979995 |
 | P2 | fixed | autonomy | [Deliverable naming instruction conflicts with explicit stop limits](bugs/5a35bcfe-deliverable-note-overrides-stop.md) | report-0110-0908 | 72a8a3043c263cd53ed353daed2042e256c8e236 |
 | P2 | fixed | autonomy | [Loop pause and resume discard refused control responses](bugs/32fd08b2-loop-pause-and-resume-discard-refused-control-re.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P2 | fixed | autonomy | [Loop polling erases the rejection explanation being typed](bugs/2b5b18a3-loop-polling-erases-the-rejection-explanation-be.md) | agent/seam-audit-0912-b | b5c5cba75 |
+| P2 | fixed | autonomy | [Lowering the autonomy dial to WAIT does not stop the night-shift beat already in flight](bugs/50551f59-lowering-the-autonomy-dial-to-wait-does-not-stop.md) | sweep/autonomy | ac17d27be |
 | P2 | fixed | autonomy | [Paused routines falsely keep an idle desktop armed](bugs/ce430c35-paused-routines-falsely-keep-an-idle-desktop-arm.md) | release-0112-finalprep-0911 | b87bdf26099327e91eae85f9c5b1933ea5dbbe56 |
 | P2 | fixed | autonomy | [routine.create's default `arm:true` bypasses the documented single resume seam and clears the durable cron E-STOP — the workshop auto-arm path at index.js:8214](bugs/300b34ab-routine-create-s-default-arm.md) | sweep/autonomy | 6afeb9ee |
 | P2 | fixed | autonomy | [Routine schedule preview races newer input and stalls after failures](bugs/eba7e8aa-routine-schedule-preview-races-newer-input-and-s.md) | agent/system-polish-0920 | 4a2028759 |
+| P2 | fixed | autonomy | [The night-shift panel shows a next-job clock that a spent leash or a held gate will not honor](bugs/72fef60f-the-night-shift-panel-shows-a-next-job-clock-tha.md) | sweep/autonomy | c6ebbb0ce |
 | P2 | fixed | autonomy | [Unique line names block multi-inbox and repeated template builds](bugs/58136a6a-unique-line-names-block-multi-inbox-and-repeated.md) | agent/session-handoff-1011 | 07b522235232032e2b85a4cf201937fc85ebf1f0 |
 | P2 | fixed | channels | [Answering one prompt clears other parallel approvals](bugs/47c3a845-answering-one-clarification-clears-other-paralle.md) | agent/ux-triage-1011 | ced84e2f04e4a94a77f04cac97f7f469d4f4c336 |
 | P2 | fixed | channels | [COMMS report lists lose plus and tab-separated markers](bugs/3ad3e2b8-comms-report-lists-lose-plus-and-tab-separated-m.md) | agent/release-0112-audit-0910 | cb6c30b4d |
@@ -429,9 +441,9 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | --- | --- |
 | channels | 1 |
 | autonomy | 3 |
-| providers | 5 |
+| providers | 6 |
 | safecell | 2 |
-| sessions | 1 |
+| sessions | 2 |
 | skills | 0 |
 | onboarding | 2 |
 | world | 1 |
