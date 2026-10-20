@@ -166,12 +166,12 @@ console.log('refit placement: prop-only pixels, fresh geometry/routing, mixed ed
 const fnBody=require('./_assert').fnBody;
 let buildOpen=true,derived=0,painted=0;
 const render=vm.createContext({
-  station:{},geo:{},geoDirty:true,bakeDirty:false,cache:{},bakedAnchorKey:null,handedBake:null,
+  station:{},geo:{},geoDirty:true,bakeDirty:false,cache:{},bakedAnchorKey:null,handedBake:null,bakeEdits:null,
   Build:{isOpen:()=>buildOpen},
   StationBake:{bake(){painted++;return {}; }},fixtureAnchorKey:()=>'',recordBakeProbe(){},
   rederive(){derived++;render.geo={};render.geoDirty=false;}
 });
-vm.runInContext(['buildHoldsFloor','rebake','renderStill','renderStillOfTiles'].map(n=>fnBody(world,'function '+n+'(')).join('\n'),render);
+vm.runInContext(['buildHoldsFloor','bakeKnobs','bakeEditedChunks','rebake','renderStill','renderStillOfTiles'].map(n=>fnBody(world,'function '+n+'(')).join('\n'),render);
 render.rebake();
 assert.equal(derived,0,'art/lighting refresh cannot recompile a held edit');
 assert.equal(painted,0,'held geometry is not baked as if it were published');

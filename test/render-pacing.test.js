@@ -192,7 +192,7 @@ A.ok(/armFlickerClock\(\); armMotionRest\(\);/.test(ui), 'applySettings arms bot
 // EMA at the 250 ms cap, STRAINED DETAIL switched on at draw 11, and a floor whose full draw is 22 ms (fine at 30 fps, but over
 // the 19.6 ms exit line) never earned its way back: crew lost walk frames, pose dissolve and body light for the session.
 // The real frame() and rebake() run here against a clock the stubs advance.
-const rebakeSrc = A.fnBody(code, 'function rebake()');
+const rebakeSrc = ['function bakeKnobs()', 'function bakeEditedChunks(', 'function rebake()'].map(h => A.fnBody(code, h)).join('\n');
 A.ok(rebakeSrc && /StationBake\.bake\(geo\)/.test(rebakeSrc), 'rebake() is the one place the station bake runs');
 // a floor whose every draw (full detail, lite or probe) costs clk.drawMs, and whose station bake costs 2.5 s
 function floorSim() {
@@ -203,7 +203,7 @@ function floorSim() {
   vm.createContext(sb);
   vm.runInContext('let frameCapMs = 0, lastDrawnAt = 0, running = true, raf = 0, renderFaults = 0, lastFaultMsg = "", reviewParts = null, reviewStamp = 0;\n' +
     'const RENDER_FAULT_LIMIT = 30, reviewPerformance = { enabled: false, samples: [] };\n' +
-    'let station = {}, geo = {}, cache = null, geoDirty = false, bakeDirty = true, bakedAnchorKey = null, handedBake = null;\n' +
+    'let station = {}, geo = {}, cache = null, geoDirty = false, bakeDirty = true, bakedAnchorKey = null, handedBake = null, bakeEdits = null;\n' +
     'function buildHoldsFloor() { return false; } function rederive() {} function fixtureAnchorKey() { return ""; } function recordBakeProbe() {} function drawRenderFault() {}\n' +
     'function frameBody(now) { if (bakeDirty || !cache) rebake(); clk.now += clk.drawMs; }\n' +
     world.slice(from, to) + '\n' + rebakeSrc + '\n' + frameSrc +
