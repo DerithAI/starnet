@@ -1505,6 +1505,13 @@
         const items = store.loadInbox(channel) || [];
         for (const it of items) {
           if (closed || !it || !it.message) break;
+          /* THE SNAPSHOT GOES STALE WHILE WE AWAIT. A live item's onInbound hands back its RUNNING promise, so this
+             loop can park behind a whole run while a later item (a follow-up steered into that run, a /routine add
+             typed meanwhile) finishes on its own path and leaves the inbox — replaying it from this list then ran it
+             a second time (2026-10-20). Replay only what is still durably pending right now. */
+          let pending = true;
+          try { pending = (store.loadInbox(channel) || []).some(x => x && x.id === it.id); } catch (_) { pending = true; }
+          if (!pending) continue;
           try { await onInbound(it.message, { recovered: true }); }
           catch (e) { try { console.error('[' + channel + '] durable inbox recovery failed for ' + String(it.id || '') + ':', (e && e.message) || e); } catch (_) {} break; }
         }
