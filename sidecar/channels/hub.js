@@ -525,6 +525,9 @@
     const editMessage = typeof o.editMessage === 'function' ? o.editMessage : null;
     const askConsent = typeof o.askConsent === 'function' ? o.askConsent : null;
     const resolveConsent = typeof o.resolveConsent === 'function' ? o.resolveConsent : null;
+    //   consentOutcome(runId, promptId) -> how an already-settled prompt really ended ('once'|'session'|'always'|'full'|
+    //   'deny'|'timeout'|''): STARNET REMOTE answers the same waiter, so a lost race is not always an expiry (optional)
+    const consentOutcome = typeof o.consentOutcome === 'function' ? o.consentOutcome : null;
     const buttonsOk = !!(prompts && answerCallback);   // the minimum to render a tappable keyboard at all
     // Telegram truncates long inline-button labels on narrow phones, so the FULL option text always stays in the
     // message body and the button carries a short, numbered echo of it (reference-harness lesson). 30 chars fits
@@ -2343,14 +2346,22 @@
         try { done = !!resolveConsent(entry.meta.runId, entry.meta.promptId, opt.value); } catch (_) { done = false; }
         lostRace = !done;
       }
-      await ack(lostRace ? '⚠ Already expired — denied' : ((/^[\p{L}\p{N}]/u.test(shown) ? '✓ ' : '') + shown));
+      // A lost race is not always a denial: the same ask may have been ALLOWED on another surface (STARNET REMOTE) a moment
+      // before this tap — stamping that "expired — DENIED" contradicted an action that ran (2026-10-20).
+      let allowedAs = '';
+      if (lostRace && consentOutcome) {
+        try { const d = String(consentOutcome(entry.meta.runId, entry.meta.promptId) || ''); if (/^(once|session|always|full)$/.test(d)) allowedAs = d; } catch (_) { allowedAs = ''; }
+      }
+      await ack(allowedAs ? '✓ Already answered elsewhere — allowed' : lostRace ? '⚠ Already expired — denied' : ((/^[\p{L}\p{N}]/u.test(shown) ? '✓ ' : '') + shown));
 
       // Stamp the OUTCOME into the original message and strip the spent buttons. Cosmetic ONLY in the sense
       // that the decision is already recorded whether or not this edit lands (Telegram 400s a no-op edit, and
       // the message may have been deleted by the user) — which is why it is fired inside its own guard and its
       // result is not read. What it must never be is a different answer from the one the broker applied.
       if (editMessage && entry.messageId) {
-        const outcome = lostRace
+        const outcome = allowedAs
+          ? '▸ already answered in StarNet — ALLOWED (' + allowedAs + ')'
+          : lostRace
           ? '▸ ⚠ expired — DENIED, the run moved on'
           : '▸ ' + String(opt.display || opt.value);
         try { await editMessage(chatId, entry.messageId, String(entry.meta.text || '') + '\n\n' + outcome, {}); } catch (_) {}
@@ -2359,7 +2370,7 @@
       if (entry.kind === 'consent') {
         // The host had already settled it — the fail-closed timer fired, the run was superseded, or E-STOP hit.
         // Telling the user their tap landed would be a lie about what the harness actually did.
-        if (lostRace) { try { await deliver(chatId, '⚠ That permission request had already expired — the action was denied and the run moved on.', entry.meta.runId || '', 'prompt'); } catch (_) {} }
+        if (lostRace && !allowedAs) { try { await deliver(chatId, '⚠ That permission request had already expired — the action was denied and the run moved on.', entry.meta.runId || '', 'prompt'); } catch (_) {} }
         return;
       }
 
