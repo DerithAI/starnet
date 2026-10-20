@@ -122,6 +122,7 @@ const World = (() => {
   let camLock = null;                  // {id, sc, source:'session'|'cine'} — the followed body + its target zoom
   let camUserAt = 0;                   // last USER camera act (performance.now clock) — the cinecam idle clock
   const CINE_IDLE_MS = 120000;         // hands-off threshold before the auto-director may take the camera (2 min)
+  const CAM_SETTLE_PX = 0.25;          // a follow-lock axis this close to its target (device px) lands ON it — see CAMERA SETTLE in frameBody
   let cineIdleMs = CINE_IDLE_MS;       // live threshold (setCinecamIdle lets DEV/verify shrink it — never shipped-UI-tunable)
   let cineHoldUntil = 0;               // director: when the current shot may be re-cast
   let cineWalkAt = 0;                  // last time the director's subject was actually WALKING (movement grace before a cut)
@@ -5928,8 +5929,36 @@ const World = (() => {
      so a bed reclaimed mid-nap can never leave a body posed on a mattress that is no longer there. */
   function lyingBed(b) {
     if (!b || !b.lying || b.goal !== 'sleep' || !b.usingProp || !geo || !geo.props) return null;
-    const p = geo.props.find(q => q.id === b.usingProp);
+    const p = propById(b.usingProp);
     return (p && (propUse(p) || {}).kind === 'bed') ? p : null;
+  }
+  /* ONE WALK, NOT ONE PER PROP (perf, 2026-10-20). The prop pass asked, for EVERY prop, which body sleeps in it and which
+     sits on it — a crew.find per prop, each lyingBed a geo.props.find — O(props² × bodies) per frame: ~1.5 ms on a
+     furnished 300-prop station with sleepers, 12 ms at 600. propById reads the floor's props through an id index (the
+     FIRST prop with an id, as props.find answered), rebuilt whenever the projected prop list is replaced or resized —
+     rederive hands over a fresh array on every edit and nothing mutates it in place. bodyPropIndex() walks [agent,
+     ...crew] once per frame and keeps the FIRST body per bed and per seat: the hero, then the crew in order — exactly
+     what `(agent && … === p) ? agent : crew.find(…)` picked. */
+  let propIndexOf = null, propIndexLen = -1, propIndex = null;
+  function propById(id) {
+    const props = geo && geo.props;
+    if (!props) return undefined;
+    if (props !== propIndexOf || props.length !== propIndexLen) {
+      propIndex = new Map();
+      for (const q of props) if (!propIndex.has(q.id)) propIndex.set(q.id, q);
+      propIndexOf = props; propIndexLen = props.length;
+    }
+    return propIndex.get(id);
+  }
+  function bodyPropIndex() {
+    const sleeper = new Map(), sitter = new Map();   // bed prop -> the body dormant in it · prop id -> the body seated on it
+    for (const b of [agent, ...crew]) {
+      if (!b) continue;
+      const bed = lyingBed(b);
+      if (bed && !sleeper.has(bed)) sleeper.set(bed, b);
+      if (b.seated && !b.lying && !sitter.has(b.usingProp)) sitter.set(b.usingProp, b);
+    }
+    return { sleeper, sitter };
   }
   function planBedSleep(now, reviewBedId = null, reviewZone = null) {
     if (!geo || !geo.props || !geo.props.length) return false;
@@ -6724,6 +6753,17 @@ const World = (() => {
         const ts = camLock.sc, lx = cv.width / 2 - bodyPosX(lb) * ts, ly = cv.height * fy - bodyPosY(lb) * ts;
         const k = easeK(0.08, dt);   // softer than the one-shot focus ease (0.16): a trailing, cinematic follow of a moving body
         scale += (ts - scale) * k; panX += (lx - panX) * k; panY += (ly - panY) * k;
+        /* CAMERA SETTLE (perf, 2026-10-20 — "it eats my PC's resources"). A geometric ease never reaches its target: in
+           float64 each cine shot's zoom crept for ~400 frames (6.6 s; a pan near 0 for 150 s), and every cache keyed on the
+           camera — the belt atlas, the prop shadow layer — was dropped and rebuilt on each of them, all day while idle.
+           Each axis lands on its own once its remaining motion is under CAM_SETTLE_PX device px — the zoom measured at
+           the on-screen pixel it would move farthest, (sx - panX) * Δscale / scale at a screen edge: a walking subject
+           keeps panning, but its zoom still lands. Not camLerp's joint rule — that waits for scale AND pan, which never
+           happens on a walking body, and its 1px/0.01 snap can pop ~4px at the edge. */
+        const reach = Math.max(Math.abs(panX), Math.abs(cv.width - panX), Math.abs(panY), Math.abs(cv.height - panY));
+        if (Math.abs(ts - scale) / scale * reach < CAM_SETTLE_PX) scale = ts;
+        if (Math.abs(lx - panX) < CAM_SETTLE_PX) panX = lx;
+        if (Math.abs(ly - panY) < CAM_SETTLE_PX) panY = ly;
       }
     }
     if (camLerp && !camAnim && !camLock) {   // gently ease toward a conversation framing (set by focusAgent); the awakening camera + a follow-lock win
@@ -6818,6 +6858,7 @@ const World = (() => {
         PropSprites.setJourneyStage(journeyStage);   // one proven goal = one physical beacon on the TROPHY CASE crown
       }
       const outboxLit = now - lastOutboxFlash < 600;   // the OUTBOX flares for 600ms after a reply dispatches
+      const occupants = bodyPropIndex();   // who lies in / sits on each prop, one walk for the whole pass (ONE WALK, NOT ONE PER PROP)
       for (const p of geo.props) {
         // FLOOR DECALS never enter the y-sort: they are paint on the deck, so they go in the floor pass
         // and everything else — props, crates, bodies — is drawn ON them. Decals carry no seat/mount/live
@@ -6836,12 +6877,11 @@ const World = (() => {
         // occludes the sitter's lower body. Beds/beanbags never set `seated` and never enter this branch.
         // A BODY IS IN THIS BED (lyingBed): the bed paints in TWO passes around it — frame + pillow under
         // the sleeper, quilt over it — so the head shows on the pillow and the rest is under the covers.
-        const sleeper = ((agent && lyingBed(agent) === p) ? agent : crew.find(b => lyingBed(b) === p)) || null;
+        const sleeper = occupants.sleeper.get(p) || null;
         // a sleeper is `seated` (it holds a mattress claim with a render anchor) but it is NOT a sitter:
         // the sitter branch pulls the prop's sort key onto the body, which is right for a stool and wrong
         // for a bed, whose frame must keep its own footprint key with the body sorted INSIDE it.
-        const sitter = (agent && agent.seated && !agent.lying && agent.usingProp === p.id) ? agent
-          : crew.find(b => b.seated && !b.lying && b.usingProp === p.id);
+        const sitter = occupants.sitter.get(p.id);
         const sitterUse = sitter ? propUse(p) : null;
         // a SIDE SEAT sorts BEHIND its sitter like a stool, not in front like a sofa: its near arm
         // comes back over the body as the seat-front overlay below, so the sitter shows through the
@@ -8720,11 +8760,17 @@ const World = (() => {
   /* PER-OUTBOX CRATES (Andrew 10-03: an OUTBOX shows only ITS conveyor's output). A pending row belongs to a line only
      when a line-job record PROVES it: the row's run stream is a job sent down that line (/api/line-jobs streamId → line).
      Routines, chats and while-away runs are no conveyor's output — they wait in DELIVERABLES › TO REVIEW, never on a
-     chute. Memoized on (pending count, stream join, plan) so the per-frame read stays cheap. */
+     chute. Memoized on (ledger revision, stream join, plan) so the per-frame read stays cheap: the revision moves on every
+     ReturnStore write (perf, 2026-10-20 — the pending COUNT it used to key on cost a ledger hydrate per frame, and a
+     resolve plus a fold between two frames kept the count and left a crate on the old line's chute). A store without
+     revision() keys on the count, as before. */
+  function returnRevision() {
+    try { return (typeof ReturnStore !== 'undefined' && ReturnStore.revision) ? ReturnStore.revision() : undefined; } catch (_) { return undefined; }
+  }
   let lineJobStream = {};   // job streamId -> line key, from the server's line-job records (refreshed with the line plates)
   let crateMemo = null, crateKey = null;
   function outboxCrateMap() {
-    const n = returnCrates(), key = [n, lineJobStream, routingPlan];
+    const n = returnCrates(), rev = returnRevision(), key = [rev, rev === undefined ? n : 0, lineJobStream, routingPlan];
     if (crateKey && crateKey.every((v, i) => v === key[i])) return crateMemo;
     const by = {}, outOf = {};
     try {

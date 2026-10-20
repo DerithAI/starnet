@@ -202,6 +202,7 @@ test/cloudsave-unload.test.js
 test/fullscreen.test.js
 test/titlebar.test.js
 test/hudmode.test.js
+test/camera-settle.test.js
 test/logo-occlusion.test.js
 test/keepawake.test.js
 test/grace.test.js
@@ -694,6 +695,7 @@ test/loop-review-needs-you.test.js
 test/routine-origin-race.test.js
 test/returnstore-rate-sync.test.js
 test/returnstore-recovery.test.js
+test/outbox-crate-memo.test.js
 test/settings-save-failure.test.js
 test/loop-tools.test.js
 test/loopgit.test.js
@@ -750,6 +752,7 @@ test/model-ack-honesty.test.js
 test/toolprops.test.js
 test/worldmodel.test.js
 test/path-smoothing.test.js
+test/path-oracle.test.js
 test/run-truth.test.js
 test/station-authority.test.js
 test/zones.test.js
@@ -847,6 +850,7 @@ test/propanchor.test.js
 test/prop-mount.test.js
 test/prop-flat-decal.test.js
 test/bed-sleep.test.js
+test/scene-index.test.js
 test/prop-render-smoke.test.js
 test/proprotate.test.js
 test/recliner-side-seat.test.js
@@ -1303,3 +1307,4 @@ test/openrouter-free-daily-cap.test.js
 test/openrouter-inband-error.test.js
 test/provider-403-truth.test.js
 test/oauth-refresh-throttle-copy.test.js
+test/proc-footprint.test.js
