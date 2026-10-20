@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**18** open (open+claimed) of 292 total — 0 P0 · 0 P1 · 18 P2
+**22** open (open+claimed) of 299 total — 0 P0 · 1 P1 · 21 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -137,6 +137,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P0 | fixed | safecell | [The Permissions panel's normalizeGrants regex drops every path: and mcp: standing grant — the ledger prints "No standing approvals yet" while the backend holds](bugs/7274ff21-the-permissions-panel-s-normalizegrants-regex-dr.md) | sweep/safecell | 6afeb9ee |
 | P0 | fixed | sessions | [An attachment-bearing user turn is dropped from the durable transcript and the PREVIOUS turn is written in its place — the string-only scan at index.js:11299 fa](bugs/e7dcb889-an-attachment-bearing-user-turn-is-dropped-from.md) | sweep/sessions | 6afeb9ee |
 | P0 | fixed | skills | [skill.view's hydrate-then-bump stores the RENDERED SKILL.md as the skill's body, so every view→persist cycle re-appends '## Setup' and '## Support Files' — unbo](bugs/c70f8965-skill-view-s-hydrate-then-bump-stores-the-render.md) | sweep/skills | 598ab4a4 |
+| P1 | open | sessions | [A deleted session keeps reaching the model: its words ride every later run's RECENT ACTIVITY and recall_conversation returns it](bugs/3e926b6a-a-deleted-session-keeps-reaching-the-model-its-w.md) | sweep/sessions | — |
 | P1 | fixed | autonomy | [Agent loop pause leaves cancelled iteration running and lease held](bugs/c66e8c39-agent-loop-pause-leaves-cancelled-iteration-runn.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P1 | fixed | autonomy | [Ambiguous permission and routine acknowledgements report unproven changes](bugs/95d13aaf-ambiguous-permission-and-routine-acknowledgement.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
 | P1 | fixed | autonomy | [Autonomy controls claim unconfirmed settings and overwrite server state on reload](bugs/b0349a7c-autonomy-controls-claim-unconfirmed-settings-and.md) | agent/system-polish-0920 | 4a2028759 |
@@ -228,6 +229,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | safecell | [Shell approvals and history hide full command arguments](bugs/082ee8e5-shell-approvals-and-history-hide-full-command-ar.md) | release-0135-prep | 4c89890bc |
 | P1 | fixed | safecell | [The Projects rail's ADD doorway records a NON-canonical path grant, so blessing a folder reached through a junction/symlink reports success and grants nothing](bugs/cf0cd4cd-the-projects-rail-s-add-doorway-records-a-non-ca.md) | sweep/safecell | 226cec3c |
 | P1 | fixed | safecell | [Token overlap attests inverted memory as owner instruction](bugs/ecd03ee7-token-overlap-attests-inverted-memory-as-owner-i.md) | agent/provider-triage-1011 | 05618ec62 |
+| P1 | fixed | sessions | [A second save quarantine after a restart deletes the first quarantined copy the recovery notice points to](bugs/e862d9ff-a-second-save-quarantine-after-a-restart-deletes.md) | sweep/sessions | dd8662b5c |
 | P1 | fixed | sessions | [Add agents silently fails when group backend is unavailable](bugs/0245a284-add-agents-silently-fails-when-group-backend-is.md) | comms-add-agents-0906 | cf6b3ca03c372c404bcb46997a56d570d7747d70 |
 | P1 | fixed | sessions | [Agent session focus commands can unexpectedly retarget the composer](bugs/774641dc-agent-session-focus-commands-can-unexpectedly-re.md) | typing-focus-0916-c7a2 | 86b33ace3 |
 | P1 | fixed | sessions | [Backup write failure is swallowed before replacing the committed primary](bugs/83c34908-backup-write-failure-is-swallowed-before-replaci.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
@@ -302,6 +304,9 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | release | [Windows Node 24 HTTP test exits with a native libuv assertion after passing](bugs/6e29727c-windows-node-24-http-test-exits-with-a-native-li.md) | reliability-audit-0919 | — |
 | P2 | open | safecell | [Execution history shows a shortened shell command instead of the full redacted command](bugs/9f908b02-execution-history-shows-a-shortened-shell-comman.md) | release-0135-prep | — |
 | P2 | open | safecell | [First file write in a fresh station can time out while the checkpoint runs inside its 10s budget](bugs/e47efecf-first-file-write-in-a-fresh-station-can-time-out.md) | agent/ollama-fixes | — |
+| P2 | open | sessions | [Every crash mid-write leaves a uniquely named full-copy tmp file that nothing ever sweeps](bugs/75558694-every-crash-mid-write-leaves-a-uniquely-named-fu.md) | sweep/sessions | — |
+| P2 | open | sessions | [Internal title and goal self-talk is stored as Commander dialogue in the global transcript and recalled as such](bugs/4dee26ba-internal-title-and-goal-self-talk-is-stored-as-c.md) | sweep/sessions | — |
+| P2 | open | sessions | [Reloading the newer window boots the stale window's cached station and calls it this window's work](bugs/27bae3d6-reloading-the-newer-window-boots-the-stale-windo.md) | sweep/sessions | — |
 | P2 | open | sessions | [Saved station opening is blocked despite a reachable engine](bugs/4c0efd8c-saved-station-opening-is-blocked-despite-a-reach.md) | release-0135-prep | — |
 | P2 | open | world | [station.test_line claims an unconfirmed onward hand-off for a job that landed in a non-sending OUTBOX](bugs/3ee2d13a-test-line-unconfirmed-hand-off-from-a-non-sendin.md) | conveyor-final-runtime | — |
 | P2 | fixed | autonomy | [Cancelled edit starts a replacement language server](bugs/37059128-cancelled-edit-starts-a-replacement-language-ser.md) | reliability-audit | 547dd03d7 |
@@ -347,6 +352,8 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | safecell | [Browser upload resolves wrong project file and claims success without selection proof](bugs/d9a3499f-browser-upload-resolves-wrong-project-file-and-c.md) | ux-triage-1011 | 61117661631fb4e2be6450d100354f8a4cb05c72 |
 | P2 | fixed | safecell | [A named-file search also returns nested files with the same name](bugs/abc6edf6-named-file-search-returns-nested-namesakes.md) | agent/runtime-triage-1011 | 15c01f97bc930032f7a4e17c79d7481fa1be4ac8 |
 | P2 | fixed | safecell | [Windows child tools lose required runtime environment and launch directory](bugs/08802e9f-windows-child-tools-lose-required-runtime-enviro.md) | agent/session-handoff-1011 | fc3c9132a |
+| P2 | fixed | sessions | [A project forgotten under its open home polls a 404 forever while saying reconnecting](bugs/82537ce6-a-project-forgotten-under-its-open-home-polls-a.md) | sweep/sessions | 121374d64 |
+| P2 | fixed | sessions | [A task whose run was stopped reads FINISHED - RESULT READY on the board](bugs/47e83241-a-task-whose-run-was-stopped-reads-finished-resu.md) | sweep/sessions | 898cdd327 |
 | P2 | fixed | sessions | [Agent work rating fails with a generic not saved message](bugs/1fc69e6a-agent-work-rating-fails-with-a-generic-not-saved.md) | agent/rating-repair-0908 | a55a1ed07 |
 | P2 | fixed | sessions | [Background worker responses leave answered prompts pending](bugs/402ce8f7-background-worker-response-pending.md) | thread-ux-review-1011 | 049e6ff7e7c92b7b0f38ab34ce1eeb9ae30c7833 |
 | P2 | fixed | sessions | [COMMS starters suggest arbitrary tasks and lose session context](bugs/e84d1dfd-comms-starters-suggest-arbitrary-tasks-and-lose.md) | agent/useful-starters-0906 | 33d995fed |
@@ -431,7 +438,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | autonomy | 3 |
 | providers | 5 |
 | safecell | 2 |
-| sessions | 1 |
+| sessions | 5 |
 | skills | 0 |
 | onboarding | 2 |
 | world | 1 |
