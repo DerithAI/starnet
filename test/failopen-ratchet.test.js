@@ -192,7 +192,7 @@ const SYNC_BASELINE = {
   'routing/chain.js': 1,
   'run-journal.js': 7,
   'runroute.js': 2,
-  'savestore.js': 7,   // AUDITED — 7 left: ensureRoot, stale .corrupt target unlink, fd close in finally, .bak staging (x2), warn wrappers (x2)
+  'savestore.js': 6,   // AUDITED — 6 left: ensureRoot, fd close in finally, .bak staging (x2), warn wrappers (x2) (the stale .corrupt unlink is gone: a quarantine never replaces an earlier copy)
   'servicekeys.js': 1,
   'shellbg.js': 1,   // h2 2026-09-22 — 1 left: child.unref() on a fresh spawn (kill/ledger/pin paths now failNote)
   'shellhooks.js': 4,

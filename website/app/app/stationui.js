@@ -4990,20 +4990,22 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // chat.js's in-band error branch. null (no outcome recorded — legacy save / delegated run) keeps
       // the DONE chip: we only claim FAILED when the failure is provable, never by inference.
       if (s.lastRunOk === false) return '<div class="kb-state failed">✗ RUN FAILED — REVIEW</div>';
+      if (s.lastRunOk == null && s.lastRunReason) return '<div class="kb-state stopped">■ STOPPED — REVIEW</div>';   // stopped before it finished (noteStopReason)
       return '<div class="kb-state done">FINISHED — RESULT READY</div>';
     }
     return '';
   }
   function activeAggregate(items) {
-    let running = 0, ready = 0, failed = 0;
+    let running = 0, ready = 0, failed = 0, stopped = 0;
     items.forEach(s => {
       const busy = (typeof Channels !== 'undefined' && Channels.isBusy && Channels.isBusy(s.id));
       if (busy) running++;
-      else if (s.runIds && s.runIds.length) { if (s.lastRunOk === false) failed++; else ready++; }
+      else if (s.runIds && s.runIds.length) { if (s.lastRunOk === false) failed++; else if (s.lastRunOk == null && s.lastRunReason) stopped++; else ready++; }
     });
     const parts = [];
     if (running) parts.push(running + ' RUNNING');
     if (failed) parts.push(failed + ' FAILED');
+    if (stopped) parts.push(stopped + ' STOPPED');
     if (ready) parts.push(ready + ' READY TO OPEN');
     return parts.length ? '<small class="kb-col-state">' + parts.join(' · ') + '</small>' : '';
   }
