@@ -28,9 +28,15 @@
    leeway). A beat timed from when it RAN added that lateness to the next one, so a 1 s loop slid ~5 beats a minute behind
    its own phase and the live elapsed clocks it draws (the rail ticker, the station tick) jumped two seconds in one tick
    every few minutes. A beat due on schedule now starts the next interval from the time it was DUE (Blink's repeating
-   timer does the same); one run late by more than a whole interval (a stall, an awaited beat that ran long) runs once and
-   then takes the grid's next point, as setInterval would. A run that starts a new phase (the first, a catch-up on return,
-   runNow) anchors the grid where it ran.
+   timer does the same); a timer a stall held up past a whole interval runs once and then takes the grid's next point, as
+   setInterval would. A run that starts a new phase (the first, a catch-up on return, runNow) anchors the grid where it ran.
+   A SLOW ANSWER IS NEVER ASKED AGAIN AT ONCE (fix round 5). An awaited beat that outlasted its interval was re-run the
+   moment it settled, so a sidecar slower than the cadence was asked back to back with no rest — the overseer every 3 s
+   on a 2.5 s beat, never idle. The setInterval these loops replaced skipped the ticks that came while the read was out
+   (each caller's busy guard) and asked on the next one: a beat that settles past its next slot now waits for the first
+   grid point at or after it settles. A loop armed with { gap: true } was a setTimeout chain (re-armed after the await):
+   its next beat is due a whole interval after the last one ENDED, so a 5 s read on a 4 s chain is followed by 4 s of
+   rest, as before.
 
    THE CLOCK IS MONOTONIC (performance.now when present). Intervals measured on Date.now stalled every loop for as long as a
    backward wall-clock step (a w32time correction after resume, a manual fix) — setInterval, which these loops replaced,
@@ -44,9 +50,10 @@
 
    API
      PollGate.away()                         → true while every signal above says nobody can see the page
-     PollGate.every(fn, { ms, awayMs, immediate })
+     PollGate.every(fn, { ms, awayMs, immediate, gap })
         ms: number | () => number            the visible cadence (a function is read live)
         awayMs: the floor while away (30000)  immediate: run fn now (true) or after the first ms (false)
+        gap: true for a loop that was a setTimeout chain: each beat is due one interval after the last one ended
         → { stop, runNow, lastRunAt(), cadence(), interval() }
         A setTimeout chain that never overlaps a beat inside its deadline; a throw or rejection is re-raised outside the
         chain, which carries on. cadence() is the interval in force when the last run started; interval() is the one in
@@ -118,6 +125,7 @@ const PollGate = (() => {
     const liveMs = () => { let v = 0; try { v = Number(msOf()); } catch (_) { v = 0; } return Math.max(MIN_MS, Number.isFinite(v) ? v : 0); };
     const interval = () => { const ms = liveMs(); return away() ? Math.max(ms, awayMs) : ms; };
     const deadlineOf = iv => Math.max(2 * iv, DEADLINE_MIN_MS);
+    const gap = o.gap === true;   // a chain: each beat is due a whole interval after the last one ended (setTimeout after the await)
     // running: the token of the beat in flight (0 = none); guard: its deadline timer, due at guardAt. lastRunAt: the last
     // beat's slot on the loop's grid (what the next is due from); startedAt: when it actually started (its deadline's base)
     const l = { stopped: false, running: 0, seq: 0, timer: 0, guard: 0, guardAt: 0, lastRunAt: now(), startedAt: 0, cadence: 0 };
@@ -135,13 +143,26 @@ const PollGate = (() => {
       run(iv, at + Math.floor((t - at) / iv) * iv);   // keep the grid: the latest slot at or before now, never "now"
     }
     function release() { l.running = 0; if (l.guard) { clearT(l.guard); l.guard = 0; } }
+    // an awaited beat is over: in a chain (gap) the next comes a whole interval after it; on the grid, a slot that passed
+    // while it was out is skipped (the next is the first grid point at or after now), as setInterval's busy-guarded tick did
+    function afterAwait() {
+      const t = now();
+      if (gap) { l.lastRunAt = t; return; }
+      const iv = interval(), at = l.lastRunAt + iv;
+      if (t > at) l.lastRunAt = at + (Math.ceil((t - at) / iv) - 1) * iv;
+    }
     // beat `token` is over (settled, or abandoned at its deadline). A token that is no longer the beat in flight is a late
     // answer from an abandoned beat: it changes nothing, so it can never start a second chain.
-    function settle(token) { if (l.running !== token) return; release(); schedule(); }
+    function settle(token, awaited) {
+      if (l.running !== token) return;
+      release();
+      if (awaited || gap) afterAwait();
+      schedule();
+    }
     function armGuard(token, at) {
       if (l.guard) clearT(l.guard);
       l.guardAt = at;
-      l.guard = setT(() => { l.guard = 0; settle(token); }, Math.max(0, at - now()));
+      l.guard = setT(() => { l.guard = 0; settle(token, true); }, Math.max(0, at - now()));
     }
     // slot: the grid point a scheduled beat runs in (due); absent, the run anchors a new phase where it starts
     function run(iv, slot) {
@@ -153,7 +174,7 @@ const PollGate = (() => {
       try { p = fn(); } catch (e) { p = null; raise(e); }   // one failed beat never ends the chain
       if (p && typeof p.then === 'function') {
         if (l.running === token) armGuard(token, l.startedAt + deadlineOf(iv));
-        p.then(() => settle(token), e => { settle(token); raiseRejection(e); });
+        p.then(() => settle(token, true), e => { settle(token, true); raiseRejection(e); });
       } else settle(token);
     }
     // a beat still out when the Commander is back (or runNow asks): past the deadline of the cadence in force now it is

@@ -308,7 +308,47 @@ async function advance(ms) {
     await advance(3000);   // the 5 s beat is still out at 8 s
     hold(); for (let n = 0; n < 10; n++) await Promise.resolve();
     await advance(5000);
-    A.eq(starts, [2500, 5000, 8000, 10000, 12500], 'a beat that ran 3 s: the overdue one runs when it settles (never overlapping it), and the chain keeps its 2.5 s grid');
+    A.eq(starts, [2500, 5000, 10000, 12500], 'a beat that ran 3 s: never overlapped, the 7.5 s slot it covered is skipped (as setInterval\'s busy-guarded tick), and the chain keeps its 2.5 s grid');
+  }
+
+  /* ---- A SLOW ANSWER IS NEVER ASKED AGAIN AT ONCE (fix round 5, 2026-10-20) ----
+     An awaited beat that outlasted its interval was re-run the moment it settled: a /api/overseer that answers in 3 s on
+     the 2.5 s beat was asked at 0, 3, 6, 9 s… with no rest between an answer and the next ask. Trunk's
+     setInterval(refresh, 2500) with its `if (busy) return` guard asked at 0, 5, 10 s… (~2 s idle between). */
+  G._resetForTest(); timers.clear();
+  {
+    const armedAt = clock, starts = [], ends = [];
+    G.every(() => { starts.push(clock - armedAt); return new Promise(r => { const id = ++seq; timers.set(id, { fn: () => { ends.push(clock - armedAt); r(); }, at: clock + 3000 }); }); }, { ms: 2500 });
+    await advance(20000);
+    A.eq(starts, [0, 5000, 10000, 15000, 20000], 'a 3 s read on the 2.5 s beat is asked on the grid points after each answer, as setInterval\'s busy guard did (it was 0, 3000, 6000…)');
+    const rests = starts.slice(1).map((s, i) => s - ends[i]);
+    A.ok(rests.every(r => r >= 2000), 'every answer is followed by rest before the next ask: ' + JSON.stringify(rests) + ' ms (it was 0 each time)');
+  }
+  /* …while a timer a stall held up still runs once at once (only an awaited beat's own overrun skips slots) */
+  G._resetForTest(); timers.clear();
+  {
+    const armedAt = clock, starts = [];
+    G.every(() => { starts.push(clock - armedAt); return Promise.resolve(); }, { ms: 1000, immediate: false });
+    await advance(2000);
+    clock += 2300;   // the page's event loop busy: no timer runs
+    await advance(1000);
+    A.eq(starts, [1000, 2000, 4300, 5000], 'a quick awaited beat after a 2.3 s stall: the overdue one runs once at its end, then back on the grid');
+  }
+  /* { gap: true }: a loop that was a setTimeout chain keeps a whole interval of rest after each beat (group-chat.js's
+     station-wide list watch re-armed setTimeout(tick, 4000) after its read) */
+  G._resetForTest(); timers.clear();
+  {
+    const armedAt = clock, starts = [], ends = [];
+    G.every(() => { starts.push(clock - armedAt); return new Promise(r => { const id = ++seq; timers.set(id, { fn: () => { ends.push(clock - armedAt); r(); }, at: clock + 5000 }); }); }, { ms: 4000, immediate: false, gap: true });
+    await advance(40000);
+    A.eq(starts, [4000, 13000, 22000, 31000, 40000], 'gap: a 5 s read on a 4 s chain is asked every 9 s, as the chain did');
+    A.ok(starts.slice(1).every((s, i) => s - ends[i] === 4000), 'gap: each answer is followed by the chain\'s full 4 s rest');
+    G._resetForTest(); timers.clear();
+    const quick = [];
+    const t0 = clock;
+    G.every(() => { quick.push(clock - t0); return new Promise(r => { const id = ++seq; timers.set(id, { fn: r, at: clock + 40 }); }); }, { ms: 4000, immediate: false, gap: true });
+    await advance(12200);
+    A.eq(quick, [4000, 8040, 12080], 'gap: a 40 ms read comes every 4.04 s, as setTimeout(tick, 4000) after the await did');
   }
 
   G._resetForTest();
