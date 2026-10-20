@@ -48,85 +48,172 @@ const path = require('node:path');
   finally { Date.now=realNow; }
   timeout();await stuck;hang=false;
 
-  /* IDLE CPU PIECE 3 (2026-10-20): the beat runs through PollGate — 2.5 s on screen, a 30 s floor while the Commander is
-     away, a catch-up read the moment they are back. Freshness is measured against the cadence that produced the answer and
-     a hang is counted from THIS ask, so the catch-up read on return is never called "station unreachable" just because the
-     last answer is 40 s old (trunk: busy && now - okAt > 7.5 s said unreachable at once). */
-  let cadence=2500,ready=null,offset=0;const clockNow=Date.now;
-  const gated=Object.assign({},context,{
-    module:{exports:{}},Date:{now:()=>clockNow()+offset},setInterval:()=>0,
-    document:{addEventListener(k,fn){if(k==='DOMContentLoaded')ready=fn;},createElement(){throw new Error('No additional UI permitted');}},
-    PollGate:{every(fn,o){assert.equal(o.ms,2500,'the overseer keeps its 2.5 s visible beat');return {interval:()=>cadence,cadence:()=>cadence,stop(){},runNow(){}};}}
-  });
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),gated);
-  const g=gated.module.exports;ready();for(let n=0;n<20;n++)await Promise.resolve();
-  await g.refresh();assert.equal(g.fresh(),true,'gated: a ledger just answered is fresh');
-  // the Commander comes back after 40 s away: the catch-up read is on its way
-  offset+=40000;hang=true;const catchUp=g.refresh();
-  assert.equal(g.unreachable(),false,'the catch-up read on return is not "station unreachable" while it is on its way');
-  assert.equal(g.fresh(),false,'…but an ask in flight never vouches for an answer older than three of the beats that produced it (40 s at 2.5 s)');
-  offset+=4000;assert.equal(g.unreachable(),false,'four seconds into the ask: still not hung');
-  offset+=1500;assert.equal(g.unreachable(),true,'past two beats of THIS ask: hung, so unreachable');
-  assert.equal(g.fresh(),false,'…and no longer fresh');
-  timeout();await catchUp;hang=false;
-  // an answer asked for while away (the 30 s floor) stays current for three of those beats
-  cadence=30000;await g.refresh();
-  offset+=40000;assert.equal(g.fresh(),true,'an answer from a 30 s away beat is still current 40 s later');
-  offset+=60000;assert.equal(g.fresh(),false,'…but not past three of its beats');
-  // back on screen at 2.5 s: an answer older than three beats with no ask out is no longer vouched for
-  cadence=2500;await g.refresh();
-  offset+=4000;assert.equal(g.fresh(),true,'visible: an answer 4 s old is current');
-  offset+=60000;assert.equal(g.fresh(),false,'visible: an answer a minute old with nothing asked since is not');
-  /* fix round (2026-10-20): fresh() is EXACTLY the design's formula — !failing && !hung && now - okAt <= 3 x max(BEAT, the
-     cadence that produced the answer). The old `busy ||` term let any ask in flight vouch for the last ledger however old
-     it was: after a sleep or a frozen page the catch-up read made an hour-old ledger "fresh" (crew lamps "working", a
-     delegated row's live clock) until it answered or hung. */
-  // the design's own case: the last answer came from a 30 s away beat, the catch-up read is on its way 40 s later
-  cadence=30000;await g.refresh();cadence=2500;
-  offset+=40000;hang=true;const back=g.refresh();
-  assert.equal(g.unreachable(),false,'an answer from a 30 s away beat, 40 s old, catch-up in flight: not unreachable');
-  assert.equal(g.fresh(),true,'…and still fresh (40 s is inside three 30 s beats)');
-  timeout();await back;hang=false;
-  // an hour-old ledger (sleep / a frozen page) with the catch-up read in flight
-  await g.refresh();assert.equal(g.fresh(),true,'fixture: a ledger just answered');
-  offset+=3600000;hang=true;const resumed=g.refresh();
-  assert.equal(g.unreachable(),false,'an hour later the catch-up read is on its way: not (yet) unreachable');
-  assert.equal(g.fresh(),false,'…but an hour-old ledger is never fresh because an ask is out (it was, with busy ||)');
-  timeout();await resumed;hang=false;
+  /* RIG: the REAL overseer.js on one fake monotonic clock (performance.now) + wall clock (Date.now) + timer queue, and an
+     /api/overseer that answers after a round trip, hangs (honouring the abort) or fails on cue. `gate`: 'real' = the REAL
+     pollgate.js drives the beat through its seams; an object = a PollGate stub; absent = the test calls refresh() itself.
+     stall(ms) = the page's own event loop busy (a long task), or the machine asleep: the clocks move and NO task runs, so
+     a reader right after it (the rail's 1 s tick) can run before what queued up behind it. advance(ms) then runs every
+     task that came due, oldest first. */
+  const PollGate=require('../frontend/app/pollgate.js');
+  function rig({gate=null,rtt=40}={}){
+    let T=5e6,wall=0,nextId=1;const timers=new Map();
+    const setT=(fn,ms)=>{const id=nextId++;timers.set(id,{at:T+Math.max(0,ms||0),fn});return id;};
+    const clearT=id=>{timers.delete(id);};
+    const drain=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+    const advance=async ms=>{const end=T+ms;for(;;){let best=null;for(const [id,t] of timers) if(t.at<=end&&(!best||t.at<best[1].at||(t.at===best[1].at&&id<best[0])))best=[id,t];if(!best)break;timers.delete(best[0]);T=Math.max(T,best[1].at);best[1].fn();await drain();}T=Math.max(T,end);await drain();};
+    const s={mode:'answer',rtt,reconcileMs:0};
+    const ledger={threads:[],workers:[{runId:'w1',status:'running',parentStreamId:'planning'}],reviews:[]};
+    let ready=null;const listeners={};
+    const doc={hidden:false,visibilityState:'visible',hasFocus:()=>!doc.hidden,addEventListener(k,fn){(listeners[k]=listeners[k]||[]).push(fn);},removeEventListener(){}};
+    if(gate==='real'){PollGate._resetForTest();PollGate._setClockForTest(()=>T);PollGate._setTimersForTest(setT,clearT);PollGate._setFrameForTest(cb=>{if(!doc.hidden)setT(()=>cb(T),16);});PollGate._setDocForTest(doc,{addEventListener(){},removeEventListener(){}});}
+    const c={module:{exports:{}},console:{debug(){}},AbortController,performance:{now:()=>T},Date:{now:()=>T+wall},
+      setTimeout:setT,clearTimeout:clearT,setInterval:()=>0,
+      document:{addEventListener(k,fn){if(k==='DOMContentLoaded')ready=fn;}},
+      Workstreams:{generalId:()=>'general',get:()=>null,adopt:r=>r},App:{persist(){},refreshRail(){}},
+      StationCommands:{reconcile:()=>new Promise(res=>setT(res,s.reconcileMs))},
+      fetch:(_u,o)=>new Promise((res,rej)=>{
+        o.signal.addEventListener('abort',()=>rej(new Error('aborted')));
+        if(s.mode==='hang')return;
+        if(s.mode==='fail'){setT(()=>rej(new Error('offline')),s.rtt);return;}
+        setT(()=>res({ok:true,json:async()=>ledger}),s.rtt);
+      })};
+    if(gate)c.PollGate=gate==='real'?PollGate:gate;
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),c);
+    const o=c.module.exports;
+    return Object.assign(s,{o,advance,stall:ms=>{T+=ms;},stepWall:ms=>{wall+=ms;},
+      start:async()=>{ready();await drain();},
+      ask:async()=>{const p=o.refresh();await advance(s.rtt+1);await p;},   // one read, answered (or refused)
+      read:()=>({fresh:o.fresh(),unreachable:o.unreachable()}),
+      done(){if(gate==='real')PollGate._resetForTest();}});
+  }
 
-  /* the freshness clock is monotonic (performance.now when present): a backward wall-clock step can neither make an old
-     ledger current nor keep a hung ask from reading as hung */
-  let mono=1e6,wallStep=0,monoReady=null;
-  const monoCtx=Object.assign({},context,{
-    module:{exports:{}},Date:{now:()=>clockNow()+wallStep},performance:{now:()=>mono},setInterval:()=>0,
-    document:{addEventListener(k,fn){if(k==='DOMContentLoaded')monoReady=fn;},createElement(){throw new Error('No additional UI permitted');}},
-    PollGate:{every(){return {interval:()=>2500,cadence:()=>2500,stop(){},runNow(){}};}}
-  });
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),monoCtx);
-  const m=monoCtx.module.exports;monoReady();for(let n=0;n<20;n++)await Promise.resolve();
-  await m.refresh();assert.equal(m.fresh(),true,'monotonic: a ledger just answered is fresh');
-  mono+=60000;wallStep-=3600000;
-  assert.equal(m.fresh(),false,'a minute with no answer, wall clock stepped back an hour: still not fresh (Date.now said fresh)');
-  hang=true;const stepped=m.refresh();mono+=6000;wallStep-=3600000;
-  assert.equal(m.unreachable(),true,'an ask out 6 s on the monotonic clock is hung, whatever the wall clock did');
-  timeout();await stepped;hang=false;
-  /* fix round 2 (2026-10-20): every age is the LONGER of the two clocks. WebKit's performance.now (macOS WKWebView, Linux
-     WebKitGTK) stands still while the machine sleeps; on it alone a pre-sleep ledger read seconds old after an hour's sleep
-     and painted pre-sleep "working" lamps as current. Windows' WebView2 counts the sleep on both clocks. */
-  wallStep=0;await m.refresh();assert.equal(m.fresh(),true,'fixture: a ledger just answered');
-  wallStep+=3600000;   // an hour of sleep: the wall clock moved, the monotonic clock did not
-  assert.equal(m.fresh(),false,'an hour-old ledger after a sleep that stopped performance.now is not current (it read fresh)');
-  await m.refresh();assert.equal(m.fresh(),true,'fixture: answered again after the resume');
-  hang=true;const slept=m.refresh();wallStep+=3600000;
-  assert.equal(m.unreachable(),true,'an ask out across an hour of that sleep is hung, as on WebView2 (it read 0 s old)');
-  timeout();await slept;hang=false;
+  /* IDLE CPU PIECE 3 (2026-10-20): the beat runs through PollGate — 2.5 s on screen, a 30 s floor while the Commander is
+     away, a catch-up read the moment they are back. Freshness counts the cadence that produced the answer.
+     fix round 3 (2026-10-20): "station unreachable" only once the page has SEEN the station fail — a failed read, or an ask
+     that ran past its 8 s deadline on the page's own timer. A clock read alone never says it (a reader right after a
+     stall found "this ask is 5 s old" while the answer sat queued behind it). */
+  {
+    let cadence=2500;
+    const r=rig({gate:{every(fn,o){assert.equal(o.ms,2500,'the overseer keeps its 2.5 s visible beat');return {interval:()=>cadence,cadence:()=>cadence,stop(){},runNow(){}};}}});
+    await r.start();const g=r.o;
+    await r.ask();assert.equal(g.fresh(),true,'gated: a ledger just answered is fresh');
+    // the Commander comes back 40 s later with nothing asked meanwhile; the catch-up read goes out and the station sits on it
+    r.stall(40000);r.mode='hang';let p=g.refresh();
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'IN FLIGHT, OLD LEDGER: a 40 s old visible-beat ledger is not vouched for while the catch-up read is out, and that read is not "station unreachable"');
+    await r.advance(4000);assert.equal(g.unreachable(),false,'four seconds into the ask: not unreachable');
+    await r.advance(4100);assert.deepEqual(r.read(),{fresh:false,unreachable:true},'REAL FAILURE: the ask ran past its 8 s deadline on the page own timer: unreachable');
+    await p;r.mode='answer';
+    // an answer asked for while away (the 30 s floor) stays current for three of those beats, plus the late grace
+    cadence=30000;await r.ask();
+    r.stall(40000);assert.equal(g.fresh(),true,'an answer from a 30 s away beat is still current 40 s later');
+    r.stall(70000);assert.equal(g.fresh(),false,'…but not 110 s later (three of its beats and the 15 s late grace)');
+    // back on screen at 2.5 s
+    cadence=2500;await r.ask();
+    r.stall(4000);assert.equal(g.fresh(),true,'visible: an answer 4 s old is current');
+    r.stall(60000);assert.equal(g.fresh(),false,'visible: an answer a minute old with nothing asked since is not');
+    // the design's own case: the last answer came from a 30 s away beat, the catch-up read is on its way 40 s later
+    cadence=30000;await r.ask();cadence=2500;
+    r.stall(40000);p=g.refresh();
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'an answer from a 30 s away beat, 40 s old, catch-up in flight: still current');
+    await r.advance(100);await p;
+    // an hour-old ledger (a sleep, a frozen page) with the catch-up read in flight
+    r.stall(3600000);p=g.refresh();
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'IN FLIGHT, OLD LEDGER: an hour-old ledger is never fresh because an ask is out, and the ask on its way is not "station unreachable"');
+    await r.advance(100);await p;
+    assert.equal(g.fresh(),true,'…until the catch-up read answers');
+    // a refused read is the station not answering, at once; the next answer recovers
+    r.mode='fail';await r.ask();
+    assert.deepEqual(r.read(),{fresh:false,unreachable:true},'REAL FAILURE: a refused read: unreachable, not fresh');
+    r.mode='answer';await r.ask();
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the next answer makes the ledger current again');
+  }
+
+  /* the ledger's ages are monotonic AND wall: the longer of the two (performance.now when present). A backward wall-clock
+     step can never make an old ledger current; WebKit's performance.now (macOS WKWebView, Linux WebKitGTK) stands still
+     while the machine sleeps, so the wall clock still ages a pre-sleep ledger. */
+  {
+    const r=rig();const m=r.o;
+    await r.ask();assert.equal(m.fresh(),true,'monotonic: a ledger just answered is fresh');
+    r.stall(60000);r.stepWall(-3600000);
+    assert.equal(m.fresh(),false,'a minute with no answer, wall clock stepped back an hour: still not fresh (Date.now said fresh)');
+    r.mode='hang';let p=m.refresh();await r.advance(6000);r.stepWall(-3600000);
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'an ask the station has sat on for 6 s (monotonic): no longer vouched for, not yet past its deadline');
+    await r.advance(2100);
+    assert.equal(m.unreachable(),true,'…past its 8 s deadline on the monotonic clock: unreachable, whatever the wall clock did');
+    await p;r.mode='answer';
+    await r.ask();assert.equal(m.fresh(),true,'fixture: answered again');
+    r.stepWall(3600000);   // an hour of sleep that stopped performance.now: the wall clock moved, the monotonic one did not
+    assert.equal(m.fresh(),false,'an hour-old ledger after a sleep that stopped performance.now is not current (it read fresh)');
+    await r.ask();assert.equal(m.fresh(),true,'fixture: answered again after the resume');
+    r.mode='hang';p=m.refresh();r.stepWall(3600000);
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'an ask out across an hour of that sleep: its pre-sleep ledger is not vouched for (it read 0 s old), and the page has not lived through its deadline (the station slept too)');
+    await r.advance(8100);
+    assert.equal(m.unreachable(),true,'…once the page has lived through the deadline: unreachable');
+    await p;r.mode='answer';
+  }
+
+  /* fix round 3 (2026-10-20): THE PAGE'S OWN LATENESS IS NOT THE STATION'S. Each case below failed on the previous formula
+     (fresh = an age past three beats with nothing else; hung = a clock read 5 s after the ask, the beat's reconcile too). */
+  {
+    // LATE BEAT, nothing asked: the REAL PollGate beats on screen; right after an answer the page's event loop is busy 10 s,
+    // and the first reader after it is the rail's tick. Every ask the station was given, it answered.
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'fixture: beating on screen, the ledger is current');
+    r.stall(10000);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'LATE BEAT: a ledger a 10 s stall left old is still current (it read "crew · unknown — station unreachable")');
+    await r.advance(3000);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the overdue beat answers and keeps it current');
+    r.done();
+  }
+  {
+    // LATE BEAT, ask out: the beat's ask went out on time, its answer arrived 40 ms later, and the page's event loop was
+    // busy for the next 10 s — the answer is queued behind the reader that runs first
+    const r=rig({gate:'real'});await r.start();await r.advance(20000);   // the 20 s beat's ask is out, its answer due at +40 ms
+    r.stall(10000);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'LATE BEAT: an answer queued behind a 10 s stall is not "station unreachable" (it read hung: "this ask is 10 s old")');
+    await r.advance(1);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…the queued answer lands first and the ledger stays current');
+    r.done();
+  }
+  {
+    // LATE DEADLINE: the station answered at 9 s while the page was stalled until 12 s, so the page's 8 s deadline fires
+    // after the answer came in but before it was read. A deadline the page saw late gives the ask one more beat.
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.rtt=9000;await r.advance(2400);   // the 22.5 s beat: its ask is out, the station answers at +9 s
+    r.stall(12000);
+    await r.advance(1);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'LATE DEADLINE: the answer that came in during the stall is taken, never thrown away as "station unreachable" (the 8 s abort ran first)');
+    r.done();
+  }
+  {
+    // the station really sits on an on-time ask, and the page is watching (its timers run on time)
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.mode='hang';await r.advance(2400);   // the 22.5 s beat's ask is out and never answers
+    await r.advance(4900);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'4.9 s into an on-time ask: still current (7.4 s from the answer)');
+    await r.advance(200);
+    assert.deepEqual(r.read(),{fresh:false,unreachable:false},'IN FLIGHT, OLD LEDGER: two beats into an ask the station sits on, the ledger no longer vouches, and nothing claims unreachable yet (it did at 5 s)');
+    await r.advance(3000);
+    assert.deepEqual(r.read(),{fresh:false,unreachable:true},'REAL FAILURE: past the 8 s deadline the page lived through: unreachable');
+    // the overdue beat right after the abort asked again (still hanging); once that one is aborted too, a beat answers
+    r.mode='answer';await r.advance(9000);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the next beat that answers recovers');
+    r.done();
+  }
+  {
+    // the station answered and the page is busy reconciling deliveries (StationCommands.reconcile, awaited in the beat)
+    const r=rig();r.reconcileMs=6000;
+    const p=r.o.refresh();await r.advance(5500);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'a 6 s reconcile after the answer is not the station hanging (it read hung 5 s after the ask)');
+    await r.advance(600);await p;
+  }
+
 
   /* fix round 2 (2026-10-20): AN AWAY STRETCH IS NOT STALENESS. GENUINE (executed): the REAL pollgate.js (fake monotonic
      clock + timers through its seams, a rAF probe that answers only while visible) and the REAL overseer.js, whose fetch
      answers after a 40 ms round trip. The last answer before a minimize came from the 2.5 s visible beat and the
      first away beat answers ~30 s later: a Commander back 10-32 s after a minimize saw the rail's crew row read "crew ·
      unknown — station unreachable" (fresh() false) while the station answered all along. */
-  const PollGate=require('../frontend/app/pollgate.js');
   async function minimizeAndReturn({awayMs,frozenMs=0}){
     let T=5e6;const timers=new Map();let nextId=1;
     const setT=(fn,ms)=>{const id=nextId++;timers.set(id,{at:T+Math.max(0,ms||0),fn});return id;};

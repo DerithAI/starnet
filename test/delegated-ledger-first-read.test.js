@@ -125,17 +125,27 @@ const A = require('./_assert.js');
     A.eq(sumOf(html), '3 status unknown', 'the header: ' + sumOf(html));
     A.ok(!claimsAnEnd(html) && /aria-expanded="false"/.test(html), 'nothing claims an end, and rows never seen running open nothing');
   }
-  // 4c. a first read that hangs past three beats is the station not answering too
+  // 4c. a first read that runs past its deadline is the station not answering too. The page must have lived through that
+  // deadline (its own timer fired): a clock that moved while the page's event loop was busy proves nothing, since the
+  // answer may be queued behind the very reader that looks (idle CPU piece 3, fix round 3)
   global.Overseer = freshOverseer();
   mode = 'hold';
-  const stuck = global.Overseer.refresh();
+  const realSetTimeout = global.setTimeout, armed = [];
+  global.setTimeout = (fn, ms) => { armed.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
+  let stuck;
+  try { stuck = global.Overseer.refresh(); } finally { global.setTimeout = realSetTimeout; }
   A.eq(card().rows[0].live, 'checking…', 'a first read on its way: checking…');
-  // a minute passes on both clocks: the ledger's ages run on the monotonic one (performance.now), the rows' on Date.now
+  // its 8 s pass on both clocks: the ledger's ages run on the monotonic one (performance.now), the rows' on Date.now
   const realNow = Date.now, realPerfNow = performance.now;
-  Date.now = () => realNow() + 60000;
-  performance.now = () => realPerfNow.call(performance) + 60000;
-  try { A.eq(card().rows[0].live, 'status unknown — station unreachable', 'a first read hung past three beats: station unreachable'); }
-  finally { Date.now = realNow; performance.now = realPerfNow; }
+  Date.now = () => realNow() + 8000;
+  performance.now = () => realPerfNow.call(performance) + 8000;
+  try {
+    A.eq(card().rows[0].live, 'checking…', 'the clocks say 8 s but the page has not seen its deadline fire: still checking… (it said unreachable from a clock read)');
+    const deadline = armed.find(t => t.ms === 8000);
+    A.ok(deadline, 'the first read armed its 8 s deadline');
+    if (deadline) deadline.fn();
+    A.eq(card().rows[0].live, 'status unknown — station unreachable', 'the deadline fired with the read still out: station unreachable');
+  } finally { Date.now = realNow; performance.now = realPerfNow; }
   data = ledger(kids.map((k, i) => done(k.id, i + 1)));
   release(); await stuck;
   A.eq(sumOf(card().html), 'all 3 done', 'and when it lands the ledger decides');
