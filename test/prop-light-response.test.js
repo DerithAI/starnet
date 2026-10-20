@@ -390,8 +390,10 @@ test('table-top props handed over as a fresh object every frame never flicker pa
     const s = at('fill' + i).slice(1);
     assert.ok(s.every(image => image === s[0]), 'fill' + i + ': the same overlay (or none) on every frame after the cold one');
   }
-  // (the solo prop rebuilds its own light every frame; the group's new light is one more, on the frame it changes)
-  assert.ok(builds.slice(1).every((n, k) => n <= (k + 1 === 30 ? 2 : 1)), 'builds per frame: ' + builds.join(','));
+  // the solo prop holds its own overlay through its flicker too (round 6: it rebuilt its light every frame); the group's
+  // new light is the one build, on the frame it changes
+  assert.ok(builds.slice(1).every((n, k) => n === (k + 1 === 30 ? 1 : 0)), 'builds per frame: ' + builds.join(','));
+  assert.ok(at('solo').every(image => image === at('solo')[0]), 'solo: the identical overlay every frame (a quantum edge holds)');
   assert.ok(stats.entries <= stats.ceilEntries && stats.pixels <= stats.ceilPixels, 'never past the ceiling');
 });
 
@@ -412,6 +414,35 @@ function overlayOf(size) {
 }
 const shows = (image, pixels) => !!image && Buffer.from(image.pixels.buffer, image.pixels.byteOffset, image.pixels.byteLength).equals(pixels);
 const fillers = n => Array.from({ length: n }, (_, i) => [surface('fill' + i), { ...east, color: [(i%16)*16,128,Math.floor(i/16)*16] }]);
+
+/* REVIEW ROUND 6 (2026-10-20): AN OVERLAY NO OTHER PROP DRAWS HOLDS THROUGH A FLICKER TOO. Past the budget, a prop
+   whose light flips on a quantization edge (a screen's flicker) and whose overlay is its alone evicted it and built the
+   other light on every flip: a new canvas and a pass over every pixel, every frame, with the camera still. Through
+   world.js's drawLitProp: 200 distinct small props (163 fit), every tenth flickering irregularly, a still camera. */
+test('past the budget, props flickering on their own overlays build nothing, and a light that stays moved gets its own', () => {
+  const { props, live } = worldHarness(), small = { w: 4, h: 2 }, ref = overlayOf(small), holdFrames = props.lightResponseStats().holdFrames;
+  const base = i => ({ ...east, color: [(i % 16) * 16, 64, Math.floor(i / 16) * 16] }), edge = i => ({ ...base(i), strength: .625 });
+  const pattern = 'AABABBABBBABBBBAABA';   // the other light for at most holdFrames frames running
+  assert.ok(!/B{5,}/.test(pattern) && holdFrames === 4, '(setup: every run of the other light fits the hold)');
+  const N = pattern.length + 6, lit = new Set(), runs = {};
+  for (let k = 0; k < N; k++) {
+    const moved = k >= pattern.length;   // then the flickerers' light stays moved
+    const scene = Array.from({ length: 200 }, (_, i) => [surface('p' + i, small), i % 10 || (!moved && pattern[k] === 'A') ? base(i) : edge(i)]);
+    const s0 = props.lightResponseStats(), shown = live(70000 + k * 16.7, scene), s1 = props.lightResponseStats();
+    if (!k) { shown.forEach((image, i) => image && lit.add(i)); assert.ok(lit.size === 163 && s1.skipped === 37, '(setup: 163 of 200 fit)'); continue; }
+    const builds = s1.builds - s0.builds;
+    if (k === pattern.length + holdFrames) assert.equal(builds, 17, 'frame ' + k + ': each lit flickerer whose light stayed moved builds it, once');
+    else assert.equal(builds, 0, 'frame ' + k + ': nothing built');
+    for (const i of lit) {
+      assert.ok(shown[i], 'p' + i + ' (frame ' + k + ') stays lit');
+      if (i % 10) { assert.ok(shows(shown[i], ref(base(i))), 'p' + i + ': its steady light'); continue; }
+      const light = scene[i][1];
+      runs[i] = shows(shown[i], ref(light)) ? 0 : (runs[i] || 0) + 1;
+      assert.ok(runs[i] <= holdFrames && (!runs[i] || shows(shown[i], ref(base(i)))), 'p' + i + ' (frame ' + k + '): its own light, or holds it ' + runs[i] + ' frames');
+      if (k === N - 1) assert.equal(runs[i], 0, 'p' + i + ': a light that stays moved is its own');
+    }
+  }
+});
 
 /* REVIEW ROUND 5 (2026-10-20): A LIGHT CHANGE REACHING THE PROPS THAT SHARE AN OVERLAY ON DIFFERENT FRAMES. Round 4
    showed an early mover its old overlay for one frame, then nothing until the last sharer moved (lit, dark, lit…); a
@@ -470,24 +501,63 @@ test('past the budget, a light change reaching sharers on different frames never
   assert.ok(stats.skipped > 0 && stats.overBudget > 0, '(setup: past the budget, and builds past it)');
 });
 
-// The overflow past the budget has a hard ceiling. There, nothing more is built while everything is on screen: a lit
-// prop whose light changed keeps the overlay it shows, never one another prop's rebuild took away, until room frees.
-test('at the ceiling a lit prop keeps the overlay it shows until room frees, then gets its own light', () => {
+// The overflow past the budget has a hard ceiling. There, nothing more joins the cache while everything is on screen.
+// A lit prop whose light changed gets its own light built for that draw alone, as a still does (round 5 showed it the
+// old light for as long as the ceiling stayed full); props drawing the same light in one frame share that build. Once
+// room frees, its light joins the cache and nothing is built any more.
+test('at the ceiling a lit prop shows its own light on every frame, built for the draw alone until room frees', () => {
   const { props, live } = worldHarness(), ref = overlayOf();
   const K = { ...east, color: [0,64,0] }, far = i => ({ ...east, color: [240, (i % 8) * 32, 240 - (i >> 3) * 64] });
-  let stale = 0;
+  let passed = 0;
   for (let k = 0; k < 16; k++) {
-    const lights = Array.from({ length: 20 }, (_, i) => k < 3 ? K : far(i)), s0 = props.lightResponseStats();
+    const lights = Array.from({ length: 20 }, (_, i) => k < 3 ? K : far(i >> 1)), s0 = props.lightResponseStats();   // pairs share a light
     const shown = live(30000 + k * 16.7, [...lights.map((l, i) => [surface('s' + i), l]), ...fillers(k < 10 ? 28 : 8)]);   // 20 fillers leave at 10
-    const s1 = props.lightResponseStats(); stale += s1.stale - s0.stale;
+    const s1 = props.lightResponseStats(), draws = s1.transient - s0.transient, built = s1.transientBuilds - s0.transientBuilds;
+    passed += draws;
     assert.ok(s1.entries <= s1.ceilEntries && s1.pixels <= s1.ceilPixels, 'frame ' + k + ': never past the ceiling');
-    lights.forEach((l, i) => {
-      assert.ok(shown[i], 's' + i + ' (frame ' + k + ') has an overlay');
-      assert.ok(shows(shown[i], ref(l)) || (k < 11 && shows(shown[i], ref(K))), 's' + i + ' (frame ' + k + ') shows its own light or the one it had');
-      if (k >= 11) assert.ok(shows(shown[i], ref(l)), 's' + i + ' (frame ' + k + '): room freed, its own light');
-    });
+    lights.forEach((l, i) => assert.ok(shows(shown[i], ref(l)), 's' + i + ' (frame ' + k + '): its own light'));
+    assert.equal(draws, 2 * built, 'frame ' + k + ': the two props of a pair share the one build for the draw');
+    if (k >= 12) assert.deepEqual([draws, s1.builds - s0.builds], [0, 0], 'frame ' + k + ': room freed, every light in the cache');
   }
-  assert.ok(stale > 0, '(setup: the ceiling was reached)');
+  assert.ok(passed > 0, '(setup: the ceiling was reached)');
+});
+
+/* REVIEW ROUND 6 (2026-10-20): THE ROOM A DROPPED OVERLAY'S HOLDERS NEED IS KEPT FOR THEM. Past the budget, a prop
+   replaces an overlay that other props only hold (a light one quantum off) only while the ceiling has room to give each
+   of them its own light. Round 5 checked that room and kept none of it: another prop's build past the budget in the
+   same frame took it, the holder found the ceiling full and its overlay gone and went dark, and the next frame it was a
+   newcomer, dark for as long as the scene held. */
+test('the room a dropped overlay\'s holders need is kept for them against a build past the budget in the same frame', () => {
+  const L = (r, g, b, strength = .75) => ({ ...east, color: [r, g, b], strength });
+  const K = L(0,64,0), Knear = L(0,64,0,.625), KA = L(240,0,0), KY = L(0,0,240), KY2 = L(240,240,0);
+  const pairs = Array.from({ length: 6 }, (_, j) => [L(16 * j,128,64), L(16 * j,128,160)]);   // [shared light, a far move]
+  const others = Array.from({ length: 21 }, (_, i) => [surface('f' + i), L(16 * (i % 16), 32 + 16 * Math.floor(i / 16), 32)]);
+  const ref = overlayOf();
+  // A wants K, H holds it from frame 4 (its light one quantum off); on frame 5 A's light moves far (it replaces K) and so
+  // does Y's, whose old light Z still wants (a build past the budget). H drawn after A and Y: H's first draw after the
+  // drop is in that frame. H drawn first: H has drawn K in that frame, before the drop, so its first draw after it is
+  // the next frame (and its one draw of K last frame is the one holder: room for one is room enough).
+  for (const order of ['AYH', 'HAY']) {
+    const { props, live } = worldHarness(), switched = order === 'AYH' ? 5 : 6;
+    const light = { A: k => k < 5 ? K : KA, Y: k => k < 5 ? KY : KY2, H: k => k < 4 ? K : Knear };
+    const scene = k => [...[...order].map(id => [surface(id), light[id](k)]),
+      ...pairs.flatMap(([s, far], j) => [[surface('pa' + j), k >= 2 ? far : s], [surface('pb' + j), s]]), [surface('Z'), KY], ...others];
+    const kept = { A: [], H: [] };
+    for (let k = 0; k < 10; k++) {
+      const out = live(60000 + k * 16.7, scene(k)), s = props.lightResponseStats(), size = s.pixels / s.entries;
+      const shown = id => out[order.indexOf(id)];
+      assert.ok(s.entries <= s.ceilEntries && s.pixels <= s.ceilPixels, order + ' frame ' + k + ': never past the ceiling');
+      if (k === 4) assert.ok(s.skipped === 0 && s.overBudget === 6 && s.ceilPixels - s.pixels >= size && s.ceilPixels - s.pixels < 2 * size,
+        '(setup: six builds past the budget, room under the ceiling for one more)');
+      for (const id of order) assert.ok(shown(id), order + ': ' + id + ' (frame ' + k + ') has an overlay');
+      assert.ok(shows(shown('H'), ref(k < switched ? K : Knear)), order + ': H (frame ' + k + ') shows ' + (k < switched ? 'K' : 'its own light'));
+      if (k >= 5) assert.ok(shows(shown('A'), ref(KA)) && shows(shown('Y'), ref(KY2)), order + ': A and Y (frame ' + k + ') show their own light');
+      if (k >= 5) kept.A.push(shown('A'));
+      if (k >= switched) kept.H.push(shown('H'));
+    }
+    // cached, not built per frame: H's own light in the room kept for it, A's in the place of the overlay it replaced
+    for (const id of ['A', 'H']) assert.ok(kept[id].every(image => image === kept[id][0]), order + ': ' + id + ' keeps its own light in the cache');
+  }
 });
 
 /* A STILL'S OWN OVERLAYS (2026-10-20, review round 5). Round 4 dropped every overlay a still built when the still ended:
