@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "5ced300fd680f8e4fefc2c9d53164e6689461901",
+    "sourceCommit": "3bc8abb371b9478ebe5d584042ff9e3c463e1977",
     "pathSetSha256": "977cb6e7a6c2fefcbe01097ab7c9c2befa08c45c866b457b0aaeb9b3dcbb20b6",
     "files": [
       {
@@ -1243,8 +1243,8 @@
       },
       {
         "path": "frontend/app/tooltip.js",
-        "bytes": 10464,
-        "sha256": "afecac6f5baf6f01512eacfd7b468b0e6fcb59979d2f315102388c7497a93438"
+        "bytes": 10632,
+        "sha256": "431f7096df9adadf61a475b7965036a3fcab9e149634525a52e80ee5535a225c"
       },
       {
         "path": "frontend/app/topbar.js",
@@ -1278,8 +1278,8 @@
       },
       {
         "path": "frontend/app/typefloor.js",
-        "bytes": 10222,
-        "sha256": "8cbc90018f0873920c1abeebc7891bae7af2a77f9ef696b868d87c698c884d52"
+        "bytes": 11360,
+        "sha256": "21287633e34cc941677e32b3ef4852481b85b25c8bfcd749ffbc63c094b9dc3e"
       },
       {
         "path": "frontend/app/understanding.js",
@@ -1648,8 +1648,8 @@
       },
       {
         "path": "frontend/css/pipglass.css",
-        "bytes": 164008,
-        "sha256": "ae2e9901a43330a3ae7f06532fed46bca3fde31226f55ed4cc80ee6d2953cf30"
+        "bytes": 167181,
+        "sha256": "a77fe23f40d987ec8ce896c4f4cf87017885df6278b9b36805f434c7fb23d76a"
       },
       {
         "path": "frontend/css/plugins.css",
