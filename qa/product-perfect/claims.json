@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "e387526402a6cee78058b682feda95d40f598eb5",
+    "sourceCommit": "e62dda7fbd6646a20f7a3f2428f4d391b11d958e",
     "pathSetSha256": "645b62b27dcfe10fc7a600d07db0eb5464e0456b3744f0a51ecfbeaee126d3e9",
     "files": [
       {
@@ -733,8 +733,8 @@
       },
       {
         "path": "frontend/app/nightreport.js",
-        "bytes": 26828,
-        "sha256": "70818b7e8da8b36f2140685fb294924543fcd102d65467e59f84abd36990e300"
+        "bytes": 27578,
+        "sha256": "c3b72b2990a3d7f4f10b1e9993c6f4712bdb30a99fa032a7d5f859d398f9ba8b"
       },
       {
         "path": "frontend/app/nightreportstore.js",
@@ -1198,8 +1198,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 946787,
-        "sha256": "29a1d503d861c9d1a7f5b85b65db3c06fe5fc6e98dd8a3db9724aa4a816dfa1e"
+        "bytes": 947168,
+        "sha256": "9ed934defe97fe3dbb1409ec4a26c28fa4010701b903321444098542753666db"
       },
       {
         "path": "frontend/app/stepin.js",
@@ -1373,8 +1373,8 @@
       },
       {
         "path": "frontend/app/windows/loops.js",
-        "bytes": 51923,
-        "sha256": "14c3944848a003ffeced1dfe0dcb74564925bcb062e22f9fe6b5d017485ac0bb"
+        "bytes": 52205,
+        "sha256": "c63a7103d38e21a76f27b0277960e5faf60909a38a74e43c73bda46cda7f6ecc"
       },
       {
         "path": "frontend/app/windows/messaging.js",
@@ -1393,8 +1393,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 74783,
-        "sha256": "5a5b7f0f0f913aa14f5e9417617fd24a50e9434fa82c1af1882b38443cf5c614"
+        "bytes": 74926,
+        "sha256": "3f7827d1ca376bc2d4f2582c3485771426c0a5fda07d6554d06f95773dfe8d4e"
       },
       {
         "path": "frontend/app/windows/trophies.js",
