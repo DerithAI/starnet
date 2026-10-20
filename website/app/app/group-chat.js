@@ -158,13 +158,33 @@ const GroupChat = (() => {
     // a direct chat has no group notice line on screen: say it where the Commander is looking
     if (active?.conversationMode !== 'group' && typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(notice, 'bad');
   }
-  async function api(body, query = '') {
-    const r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' });
-    if (r.status === 401 || r.status === 403) throw new Error('Reconnect to this station by refreshing the page. Your conversation is saved.');
-    if (r.status === 404 && !body && !query) throw new Error('Group chat is unavailable on this server. Run the current StarNet backend, then try again.');
-    let out;
-    try { out = await r.json(); } catch (_) { throw new Error('The server could not load group chat. Try again.'); }
-    if (!r.ok || !out?.ok) throw new Error(out?.error || 'Group request failed'); return out.result;
+  /* opts.deadlineMs: the read aborts after that long (idle CPU piece 3 fix round 2, 2026-10-20). The station-wide watch is
+     an awaited PollGate beat, and its list read had no deadline: a /api/groups read the sidecar accepted and never
+     answered (every groupSessions read awaits the durable store's `ready`) held the beat until PollGate abandoned it at
+     15 s, and the next beat opened ANOTHER — one more hung socket every 15 s (60 s away) until Chromium's six per host were
+     gone and every /api call (saves, runs, HALT) queued behind them. The watch is silent about a failed read and retries
+     on its next beat. The open group's poll passes one too (fix round 4): it is a chain that waits for its read, and a
+     read that never answered left it waiting for good — never rescheduled, the wake catch-up skipped as "in flight", the
+     transcript frozen. A read past its deadline rejects with a TimeoutError, whatever the engine made of the abort.
+     THE DEADLINE IS CLEARED ONCE THE READ ANSWERS (fix round 5), as Harness.requestJson's is. It was U.timeoutSignal —
+     native AbortSignal.timeout, whose timer cannot be cleared — so every 0.9 s read of the open group left a live signal
+     and a pending 15 s timer that later aborted a request long finished: ~16 alive at any moment, ~1.1 extra timer
+     wake-ups a second while a group was open. */
+  async function api(body, query = '', opts) {
+    const deadlineMs = !body && opts && opts.deadlineMs > 0 && typeof AbortController === 'function' ? opts.deadlineMs : 0;
+    const deadline = deadlineMs ? new AbortController() : null;
+    const deadlineTimer = deadline ? setTimeout(() => deadline.abort(), deadlineMs) : 0;
+    const timedOut = () => Object.assign(new Error('The station did not answer in time.'), { name: 'TimeoutError' });
+    try {
+      let r;
+      try { r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : deadline ? { cache: 'no-store', signal: deadline.signal } : { cache: 'no-store' }); }
+      catch (e) { if (deadline && deadline.signal.aborted) throw timedOut(); throw e; }
+      if (r.status === 401 || r.status === 403) throw new Error('Reconnect to this station by refreshing the page. Your conversation is saved.');
+      if (r.status === 404 && !body && !query) throw new Error('Group chat is unavailable on this server. Run the current StarNet backend, then try again.');
+      let out;
+      try { out = await r.json(); } catch (_) { if (deadline && deadline.signal.aborted) throw timedOut(); throw new Error('The server could not load group chat. Try again.'); }
+      if (!r.ok || !out?.ok) throw new Error(out?.error || 'Group request failed'); return out.result;
+    } finally { if (deadlineTimer) clearTimeout(deadlineTimer); }
   }
   function save() { if (typeof App !== 'undefined') { App.persist(); App.refreshRail(); } }
   // Who sits in each group, as the backend last reported it. The rail's per-agent view lists a group
@@ -358,6 +378,7 @@ const GroupChat = (() => {
      Every few seconds (never while the window is hidden) the station-wide list says what each group is doing, and the
      rail reads it: unread activity, "Reply needed", "Approval needed", working. All of it is backend state. */
   const states = new Map();
+  const WATCH_READ_MS = 15000;   // the watch's list read gives up here, like every other polled read (api() above)
   let watching = false, watchTimer = 0;
   function stateOf(id) {
     if (group && group.id === id && active?.id === id) {
@@ -370,10 +391,14 @@ const GroupChat = (() => {
   function attentionIds() { return [...states.keys()].filter(id => { const st = stateOf(id); return st && (st.approvals || st.questions); }); }
   function watch() {
     if (watching) return; watching = true;
+    /* idle CPU piece 3 (2026-10-20): through PollGate the watch keeps its 4 s beat on screen and slows to a 30 s floor while
+       the Commander is away, instead of stopping on document.hidden (a webview that reports hidden while on screen got no
+       group list at all). Without PollGate (node tests) it is the old hidden-gated 4 s chain. */
+    const gate = typeof PollGate !== 'undefined' && PollGate.every;
     const tick = async () => {
       try {
-        if (typeof document === 'undefined' || !document.hidden) {
-          const result = await api(); roster = result.roster || roster;
+        if (gate || typeof document === 'undefined' || !document.hidden) {
+          const result = await api(null, '', { deadlineMs: WATCH_READ_MS }); roster = result.roster || roster;
           let changed = false;
           for (const g of result.groups || []) {
             const next = { approvals: g.approvals || 0, questions: g.questions || 0, busy: !!g.busy && !g.paused, paused: !!g.paused };
@@ -387,11 +412,14 @@ const GroupChat = (() => {
           if (changed) save();
         }
       } catch (_) { /* the open group's own poll reports errors; the watch stays quiet and retries */ }
-      clearTimeout(watchTimer); watchTimer = setTimeout(tick, 4000);
+      if (!gate) { clearTimeout(watchTimer); watchTimer = setTimeout(tick, 4000); }
     };
-    watchTimer = setTimeout(tick, 4000);
+    // gap (fix round 5): the watch was a chain — setTimeout(tick, 4000) re-armed after the read — so a read that takes 4 s
+    // or more is still followed by 4 s of rest; on the bare grid a slow sidecar was asked again the moment it answered
+    const loop = gate ? PollGate.every(tick, { ms: 4000, immediate: false, gap: true }) : null;
+    if (!loop) watchTimer = setTimeout(tick, 4000);
     // back from a minimize: look now, not up to 4 s later
-    if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('visibilitychange', () => { if (!document.hidden) { clearTimeout(watchTimer); tick(); } });
+    if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (loop) loop.runNow(); else { clearTimeout(watchTimer); tick(); } } });
   }
   async function discover() {
     const result = await api(); roster = result.roster;
@@ -434,17 +462,48 @@ const GroupChat = (() => {
     clearTimeout(timer); $('gc-log').replaceChildren(); $('gc-states').replaceChildren(); $('gc-questions').replaceChildren(); input.value = composerDrafts.get(ws?.id) || ''; draftKey = null; notice = ''; $('gc-notice').textContent = ''; closeMentions(); recipientLabel();
     if (enabled) poll(generation);
   }
+  /* THE OPEN GROUP'S POLL ASKS "SINCE", AND SLOWS ONLY WHILE NOBODY IS LOOKING (idle CPU piece 3, 2026-10-20). It
+     re-downloaded the whole group every 0.9 s forever, stringified it to decide whether to paint, and every change (each
+     streamed draft too) remapped every message into the workstream. A read now sends the stamp of the group on screen
+     (since): an unchanged group answers { unchanged: true } (sidecar group-sessions.js, without building the group) and
+     nothing is parsed, painted or adopted. A group set from a POST answer carries no stamp, so the next read is a full one;
+     an older sidecar sends no stamp at all and every read is full, as before.
+     ON SCREEN THE READ CADENCE IS TRUNK'S 0.9 s, ALWAYS (fix round 3): an unchanged since-read costs next to nothing, so
+     there is no reason to ask an idle group less often — and slowing it delayed the first sign of a turn another member
+     started by up to 3 s. Only while the Commander is away (PollGate) is a read due every 30 s, with one at once on return.
+     When a read is due is measured on the monotonic clock (performance.now when present): on Date.now a backward wall-clock
+     step (a w32time correction after resume) skipped every read, a live turn's too, until the wall clock caught up.
+     A READ THAT NEVER ANSWERS ENDS (fix round 4): each has OPEN_READ_MS, like the station-wide watch. Past it the read is
+     simply asked again on the 0.9 s beat and nothing is put on screen — the transcript claims nothing about a read that
+     did not answer, and a notice would outlive the next read that does. */
+  const POLL_BEAT_MS = 900, OPEN_READ_MS = 15000;
+  const monoNow = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? () => performance.now() : () => Date.now();
+  let polled = { gen: -1, at: 0 }, pollingGen = -1, goneGen = -1;
+  const pollDue = () => (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away() ? PollGate.AWAY_MS || 30000 : POLL_BEAT_MS);
   async function poll(gen) {
-    try {
-      const id = active.id, result = await api(null, '?id=' + encodeURIComponent(id));
-      if (gen !== generation) return;
-      group = result; paint();
-    } catch (e) {
-      if (gen === generation) showError(/not found/i.test(e.message || '') ? new Error('This group no longer exists on this station. Delete it from the session list.') : e);
-      if (/not found/i.test(e.message || '')) return;   // never poll a gone group every 900 ms forever
+    if (gen !== generation || pollingGen === gen) return;
+    if (polled.gen === gen && monoNow() - polled.at < pollDue()) {   // not due: keep the beat, skip the read
+      if (active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), POLL_BEAT_MS);
+      return;
     }
-    if (gen === generation && active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), 900);
+    pollingGen = gen; polled = { gen, at: monoNow() };
+    try {
+      const id = active.id, since = group && group.id === id && typeof group.stamp === 'string' ? group.stamp : '';
+      const result = await api(null, '?id=' + encodeURIComponent(id) + (since ? '&since=' + encodeURIComponent(since) : ''), { deadlineMs: OPEN_READ_MS });
+      if (gen !== generation) return;
+      if (!(result && result.unchanged === true)) { group = result; paint(); }   // unchanged: the group on screen is current
+    } catch (e) {
+      if (e && e.name === 'TimeoutError') { /* past its deadline: asked again on the next beat, below; nothing on screen */ }
+      else if (gen === generation) showError(/not found/i.test(e.message || '') ? new Error('This group no longer exists on this station. Delete it from the session list.') : e);
+      if (/not found/i.test(e.message || '')) { goneGen = gen; return; }   // never poll a gone group every 900 ms forever
+    } finally { if (pollingGen === gen) pollingGen = -1; }
+    if (gen === generation && active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), POLL_BEAT_MS);
   }
+  // back on screen: read the open group now, not on its next due beat
+  if (typeof PollGate !== 'undefined' && PollGate.onWake) PollGate.onWake(() => {
+    if (!root || active?.conversationMode !== 'group' || goneGen === generation || pollingGen === generation) return;
+    clearTimeout(timer); polled = { gen: -1, at: 0 }; poll(generation);
+  });
   /* A REPLY'S FLOW (rc walk 2026-10-14). The group transcript glued the lead's streamed sentences together ("Let me configure
      it:The steps are locked.") and showed none of its tool calls. A reply that made visible calls carries its flow from the
      host (sidecar group-sessions.js: the prose as it streamed + each call's offset into it); it is drawn the way the
@@ -500,9 +559,14 @@ const GroupChat = (() => {
   }
   function paint() {
     if (!group || group.id !== active?.id) return;
-    const signature = JSON.stringify(group); if (lastPaint === signature) return; lastPaint = signature;
+    // the station's stamp names exactly what this group shows (idle CPU piece 3); a stampless group (a POST answer, an older
+    // sidecar) is compared whole, as before
+    const signature = typeof group.stamp === 'string' && group.stamp ? 'stamp:' + group.stamp : JSON.stringify(group);
+    if (lastPaint === signature) return; lastPaint = signature;
     const priorRevision = active.groupRevision;
-    adopt(group);
+    // messages, turns, title, lead and members are committed state: they only move with the revision (a streamed draft
+    // never touches them), so the workstream is re-adopted only when it moved — or the first time this page sees the group
+    if (priorRevision !== group.revision || !membersById.has(group.id)) adopt(group);
     if (priorRevision !== group.revision) { active.groupRevision = group.revision; save(); }
     participantsHeader($('gc-header'), group.members, !!group.paused, group.leadId);
     if (pickerFor === group.id && pickerRepaint) pickerRepaint(group);

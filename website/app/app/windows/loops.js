@@ -717,7 +717,15 @@
     body.querySelector('#lp-create').addEventListener('click', createLoop);
     shapeCards(); renderForm(); refresh();
     // poll while the window is open — a loop advances on its own tick, so the panel must not go stale.
-    const poll = setInterval(() => { if (body.isConnected) refresh(); else clearInterval(poll); }, 4000);
+    // ONE POLLER PER WINDOW BODY (idle CPU piece 3, 2026-10-20): StationUI re-renders a window by running its builder
+    // again on the SAME connected body, and every wire() armed one more 4 s poller that died only once the body left the
+    // DOM. Re-arming replaces the body's one poller, so this render's refresh is the only one reading /api/loops.
+    if (body.__lpPoll) clearInterval(body.__lpPoll);
+    const poll = body.__lpPoll = setInterval(() => {
+      if (body.isConnected) { refresh(); return; }
+      clearInterval(poll);
+      if (body.__lpPoll === poll) body.__lpPoll = 0;
+    }, 4000);
     }
 
     return { sections, wire };

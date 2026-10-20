@@ -1630,7 +1630,10 @@ const App = (() => {
     // froze BOTH copies at the first failure, so every restart reverted the station.
     const envelope = Save.envelope ? Save.envelope(saveState) : saveState;
     const doc = Save.write(envelope);
-    if (typeof CloudSave !== 'undefined') CloudSave.push(doc || envelope, { cacheFailed: !doc, cacheError: doc ? null : (Save.writeError ? Save.writeError() : null) });   // durable write-through to the sidecar (debounced, best-effort)
+    // raw: the exact string Save.write just produced for this envelope, so CloudSave clones it with one parse instead of a
+    // second whole-save stringify (idle CPU piece 3, 2026-10-20)
+    const raw = Save.takeWriteRaw ? Save.takeWriteRaw() : null;
+    if (typeof CloudSave !== 'undefined') CloudSave.push(doc || envelope, { cacheFailed: !doc, cacheError: doc ? null : (Save.writeError ? Save.writeError() : null), raw });   // durable write-through to the sidecar (debounced, best-effort)
     if (rosterPushFailed) pushRoster();   // a prior roster POST failed — retry it opportunistically on this persist
     if (!doc) {
       // #121: the cache refused this save (the browser's per-site cap). It was queued for the station file above; the save
@@ -4509,8 +4512,10 @@ const App = (() => {
       if (card && !card.hidden && li.getAttribute('aria-describedby') === 'station-tip' && card.textContent !== tip) card.textContent = tip;
     });
   }
-  function armRailTicker() { if (!railTicker) railTicker = setInterval(updateRailLive, 1000); }
-  function stopRailTicker() { if (railTicker) { clearInterval(railTicker); railTicker = 0; } }
+  // through PollGate (idle CPU piece 3, 2026-10-20): 1 s while the rail can be seen, a 30 s floor while the Commander is
+  // away, one beat at once on return (the visibilitychange renderRail below also snaps every row back to truth)
+  function armRailTicker() { if (!railTicker) railTicker = (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(updateRailLive, { ms: 1000, immediate: false }) : setInterval(updateRailLive, 1000); }
+  function stopRailTicker() { if (railTicker) { if (railTicker.stop) railTicker.stop(); else clearInterval(railTicker); railTicker = 0; } }
   // A backgrounded tab FREEZES/intensively-throttles its timers, so the live clock stalls while you're away. The
   // instant the station is visible again, snap every row back to truth (and re-arm the heartbeat) so the elapsed
   // and "last worked" stamps are never caught stale — they jump straight to correct, not after the next tick.
