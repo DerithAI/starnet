@@ -21,7 +21,7 @@
 const http = require('node:http');
 const readline = require('node:readline');
 const core = require('./cli-core.js');
-const { makeStation, costText } = require('./station-model.js');
+const { makeStation, costText, ONCE_ONLY_TOOLS } = require('./station-model.js');
 const tui = require('./tui.js');
 const sixel = require('./sixel.js');
 const camfeed = require('./camfeed.js');
@@ -276,7 +276,8 @@ function runDashboard(station, opts) {
       }
       return paint();
     }
-    const decision = key === 'y' ? 'once' : 'deny';
+    // y once · a always (this kind of action from now on, as the app's card offers it) · n deny
+    const decision = key === 'y' ? 'once' : key === 'a' ? 'always' : 'deny';
     ui.keyFlash = { k: key, until: now() + 700 };
     const r = await client.request('POST', '/api/consent', { runId: q.runId, promptId: q.promptId, decision, via: 'terminal' });
     if (r.ok && r.json && r.json.ok) model.apply('permission.response', { promptId: q.promptId, decision: r.json.decision || decision, via: 'terminal' }, now());
@@ -609,6 +610,7 @@ function runDashboard(station, opts) {
     ui.overlay = null;
     const q = model.front();
     if (!ui.input && q && !q.question && /^[ynv]$/i.test(ch)) { answer(ch.toLowerCase()); return; }
+    if (!ui.input && q && !q.question && /^a$/i.test(ch) && ONCE_ONLY_TOOLS.indexOf(q.tool) < 0) { answer('a'); return; }
     if (!ui.input && !q && ui.trust && /^[yn]$/i.test(ch)) { answerTrust(ch.toLowerCase()); return; }
     if (!ui.input && q && q.question && /^[1-6]$/.test(ch) && q.question.options[Number(ch) - 1]) { answerQuestion(q.question.options[Number(ch) - 1]); return; }
     if (ui.input.length < 4000) ui.input += ch;

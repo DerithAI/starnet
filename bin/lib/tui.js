@@ -11,7 +11,7 @@
    control characters and escape sequences before it reaches a cell: model output can never drive the terminal. */
 'use strict';
 
-const { fmtDur, fmtShort, costText, askInspect } = require('./station-model.js');
+const { fmtDur, fmtShort, costText, askInspect, ONCE_ONLY_TOOLS } = require('./station-model.js');
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
 const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
@@ -104,7 +104,7 @@ const HELP = [
   ['/model [name]', 'show or switch the shown agent\'s model'],
   ['/new', 'start a fresh conversation with it'],
   ['/resume', 'go back to an earlier conversation'],
-  ['y  n  v', 'answer the open ask: yes, no, view'],
+  ['y  a  n  v', 'answer the open ask: once, always, no, view'],
   ['1-6 or text', 'answer an open question'],
   ['tab  shift+tab', 'switch the agent shown in COMMS'],
   ['↑  ↓', 'your earlier messages'],
@@ -321,7 +321,7 @@ function render(model, ui, size, now) {
   else if (ui.quitArmed && ui.quitArmed > now) g.put(0, hintY, trunc('ctrl+c again to quit — ' + ui.quitNote, W), 'am b');
   else {
     const t = front
-      ? (front.question ? (front.question.options.length ? '1-' + front.question.options.length + ' pick · ' : '') + 'type an answer + enter · esc clears' : 'y allow once · n deny · v ' + (front.view ? 'hide' : 'view') + ' · ' + (narrow ? 'tab agent' : 'tab next agent'))
+      ? (front.question ? (front.question.options.length ? '1-' + front.question.options.length + ' pick · ' : '') + 'type an answer + enter · esc clears' : 'y allow once · ' + (canAlways(front) ? 'a always · ' : '') + 'n deny · v ' + (front.view ? 'hide' : 'view') + ' · ' + (narrow ? 'tab agent' : 'tab next agent'))
       : ui.trust ? 'y trust this folder · n not now · or just type to talk'
         : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  ctrl+c quit';
     g.put(0, hintY, trunc(t, W), 'dim');
@@ -550,9 +550,12 @@ function cardLines(q, model, cw, H) {
       if (detail.length > room) lines.push({ kind: 'body', segs: [['… ' + (detail.length - room) + ' more line(s)', 'dim']] });
     }
   }
-  lines.push({ kind: 'bottom', question: !!q.question, view: q.view, more: model.state.prompts.length - 1 });
+  lines.push({ kind: 'bottom', question: !!q.question, view: q.view, always: canAlways(q), more: model.state.prompts.length - 1 });
   return lines;
 }
+// Always (allow this kind of action from now on) is offered where the app's card offers it: not on an ask answered fresh
+// every time
+function canAlways(q) { return !!q && !q.question && ONCE_ONLY_TOOLS.indexOf(q.tool) < 0; }
 // the card that asks to trust the folder `starnet` was started in: the project root the station would trust, and what that
 // means. Answered with y / n like an ask.
 function trustLines(t, cw) {
@@ -586,6 +589,7 @@ function drawCard(g, lines, y0, x0, cw, blink) {
       else if (l.question) x = g.put(x, y, 'pick a number or type an answer', 'am b');
       else {
         x = g.put(x, y, '[y] allow once', 'am b'); x = g.put(x, y, '   ', 'am');
+        if (l.always) { x = g.put(x, y, '[a] always', 'fg'); x = g.put(x, y, '   ', 'am'); }
         x = g.put(x, y, '[n] deny', 'fg'); x = g.put(x, y, '   ', 'am');
         x = g.put(x, y, l.view ? '[v] hide' : '[v] view', 'fg');
       }

@@ -488,4 +488,24 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(/\/usage · \/tools · \/routine · \/away/.test(core.USAGE) && /each skill as \/<skill> <task>/.test(core.USAGE), 'the usage names the station\'s own commands and skills');
 }
 
+// ---- an ask's answers: the app card's own ladder (once · always · deny), Always only where the app offers it ---------------
+{
+  const m = crew();
+  m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
+  m.apply('permission.prompt', { runId: 'r1', agentId: 'astra', promptId: 'p1', tool: 'fs.write', argsSummary: 'auth.js (+2 −1)' }, T0 + 2);
+  const s1 = screen(m, {}, 110, 34, T0 + 10).map(tui.toPlain);
+  A.ok(s1.some(l => /└─ \[y\] allow once {3}\[a\] always {3}\[n\] deny {3}\[v\] view ─/.test(l)), 'a file write offers Always, as the app\'s card does');
+  A.ok(/^y allow once · a always · n deny · v view/.test(s1[33]), 'and the key line says a');
+  m.apply('permission.response', { promptId: 'p1', decision: 'always', via: 'terminal' }, T0 + 20);
+  A.ok(m.logOf('astra').some(e => e.k === 'ok' && /^always allowed from the terminal · fs\.write/.test(e.text)), 'answered Always: COMMS says so in the card\'s words');
+  const m2 = crew();
+  m2.apply('agent.run.start', { runId: 'r2', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'more room' }, T0);
+  m2.apply('permission.prompt', { runId: 'r2', agentId: 'astra', promptId: 'p2', tool: 'station.power', argsSummary: 'widen the leash' }, T0 + 2);
+  const s2 = screen(m2, {}, 110, 34, T0 + 10).map(tui.toPlain);
+  A.ok(s2.some(l => /└─ \[y\] allow once {3}\[n\] deny/.test(l)) && !s2.some(l => /\[a\] always/.test(l)) && !/a always/.test(s2[33]), 'an ask the app answers fresh every time (the station\'s leash) has no Always');
+  m2.apply('permission.response', { promptId: 'p2', decision: 'once', via: 'terminal' }, T0 + 20);
+  A.ok(m2.logOf('astra').some(e => e.k === 'ok' && /^allowed once from the terminal/.test(e.text)), 'and the station\'s echo (once) is what COMMS says');
+  A.ok(tui.HELP.some(([k, d]) => k === 'y  a  n  v' && /once, always, no, view/.test(d)), '/help lists a');
+}
+
 A.report('cli-dashboard.test');

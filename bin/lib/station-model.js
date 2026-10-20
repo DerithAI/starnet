@@ -14,6 +14,12 @@
 const SLOTS = 14;            // activity history width
 const SLOT_MS = 2000;        // one activity bar = 2 s of the agent's events
 const RECENT_MS = 8000;      // how long "done" / "stopped" stays on a row before it settles to idle
+// what an answered ask granted, in the app card's own words (the station echoes what it APPLIED: a fresh-consent ask's
+// "always" comes back as once)
+const GRANT_WORDS = { once: 'allowed once', always: 'always allowed', full: 'full access', session: 'allowed for this session' };
+// the asks the app answers fresh every time — once or deny, no standing answer (chat.js: login windows, the station's
+// leash, a plugin install)
+const ONCE_ONLY_TOOLS = ['browser.login', 'browser.login.done', 'station.power', 'plugin.submit'];
 const LOG_MAX = 300;         // per-agent conversation lines kept in memory
 const ORPHAN_GRACE_MS = 4000;   // a run the snapshot no longer lists is only called ended after this long
 
@@ -218,7 +224,7 @@ function makeStation() {
     if (p.expired) log(a, { k: 'bad', text: 'no answer in time — denied · ' + what, at: now });
     else if (p.stopped) log(a, { k: 'sys', text: 'stopped before an answer · ' + what, at: now });
     else if (p.decision === 'deny') log(a, { k: 'bad', text: 'denied' + where + ' · ' + what, at: now });
-    else log(a, { k: 'ok', text: (q.question ? 'answered' : p.decision === 'once' ? 'allowed once' : 'allowed (' + p.decision + ')') + where + ' · ' + what, at: now });
+    else log(a, { k: 'ok', text: (q.question ? 'answered' : GRANT_WORDS[p.decision] || 'allowed (' + p.decision + ')') + where + ' · ' + what, at: now });
     return q;
   }
 
@@ -474,4 +480,4 @@ function costText(cost) {
   return 'spend unknown';
 }
 
-module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, askGlance, askInspect, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RECENT_MS };
+module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, askGlance, askInspect, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RECENT_MS, ONCE_ONLY_TOOLS };
