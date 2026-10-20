@@ -370,9 +370,13 @@ const GroupChat = (() => {
   function attentionIds() { return [...states.keys()].filter(id => { const st = stateOf(id); return st && (st.approvals || st.questions); }); }
   function watch() {
     if (watching) return; watching = true;
+    /* idle CPU piece 3 (2026-10-20): through PollGate the watch keeps its 4 s beat on screen and slows to a 30 s floor while
+       the Commander is away, instead of stopping on document.hidden (a webview that reports hidden while on screen got no
+       group list at all). Without PollGate (node tests) it is the old hidden-gated 4 s chain. */
+    const gate = typeof PollGate !== 'undefined' && PollGate.every;
     const tick = async () => {
       try {
-        if (typeof document === 'undefined' || !document.hidden) {
+        if (gate || typeof document === 'undefined' || !document.hidden) {
           const result = await api(); roster = result.roster || roster;
           let changed = false;
           for (const g of result.groups || []) {
@@ -387,11 +391,12 @@ const GroupChat = (() => {
           if (changed) save();
         }
       } catch (_) { /* the open group's own poll reports errors; the watch stays quiet and retries */ }
-      clearTimeout(watchTimer); watchTimer = setTimeout(tick, 4000);
+      if (!gate) { clearTimeout(watchTimer); watchTimer = setTimeout(tick, 4000); }
     };
-    watchTimer = setTimeout(tick, 4000);
+    const loop = gate ? PollGate.every(tick, { ms: 4000, immediate: false }) : null;
+    if (!loop) watchTimer = setTimeout(tick, 4000);
     // back from a minimize: look now, not up to 4 s later
-    if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('visibilitychange', () => { if (!document.hidden) { clearTimeout(watchTimer); tick(); } });
+    if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (loop) loop.runNow(); else { clearTimeout(watchTimer); tick(); } } });
   }
   async function discover() {
     const result = await api(); roster = result.roster;

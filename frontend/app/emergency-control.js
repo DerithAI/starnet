@@ -63,6 +63,9 @@
   recovery.addEventListener('click', resume);
   window.addEventListener('focus', refresh);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-  setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+  /* idle CPU piece 3 (2026-10-20): through PollGate the read slows to a 30 s floor while the Commander is away instead of
+     stopping on document.hidden — a webview that reports hidden while still on screen got NO pause-state reads at all. */
+  if (typeof PollGate !== 'undefined' && PollGate.every) PollGate.every(refresh, { ms: 5000, immediate: false });
+  else setInterval(() => { if (!document.hidden) refresh(); }, 5000);
   refresh();
 })();
