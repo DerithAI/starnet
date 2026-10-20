@@ -37,7 +37,7 @@
    readJsonResilient({ fs }, file) -> { value, status }     status: 'ok'|'recovered'|'absent'|'corrupt'|'unreadable'
    writeJsonResilient({ fs, path, writeDurable? }, file, value) -> void   (throws on a real write failure)
    makeDurableJsonStore({ fs, path, fileFor, writeDurable?, mutex?, onRecover?, onCorrupt? }) ->
-       { get(key), set(key,value), update(key,mutator)->Promise, readKey(key), mutex } */
+       { get(key), set(key,value), update(key,mutator)->Promise, readKey(key), signature(key)->string|null, mutex } */
 'use strict';
 
 const { writeFileDurable } = require('./durable-write.js');
@@ -183,7 +183,34 @@ function makeDurableJsonStore(deps) {
   function set(key, value) {
     const file = fileFor(key);
     try { if (pathMod && pathMod.dirname && fs.mkdirSync) fs.mkdirSync(pathMod.dirname(file), { recursive: true }); } catch (_) {}
-    writeJsonResilient({ fs: fs, path: pathMod, writeDurable: wd }, file, value);
+    try { writeJsonResilient({ fs: fs, path: pathMod, writeDurable: wd }, file, value); }
+    finally { const k = String(key); if (writeGen.has(k)) writeGen.set(k, writeGen.get(k) + 1); }   // even a throw mid-write invalidates
+  }
+  /* signature(key) — ADDITIVE + OPT-IN (2026-10-19, idle-CPU pass): a cheap token that changes whenever this key's
+     committed main file may have changed, so a caller can keep its last parsed read and skip the read+parse+normalize
+     while the token holds. It is the bigint stat of the main file (dev, ino, size, mtimeNs, ctimeNs — a tmp+rename
+     write changes the ino, an in-place same-size rewrite changes mtimeNs/ctimeNs only ACROSS a filesystem timestamp
+     tick: ~1 ms on NTFS, 2 s on FAT) plus an in-process write generation bumped by every set(), so a write this
+     process made can never hide inside one tick. An outside writer rewriting in place twice within one tick could
+     (racy-clean); the single-writer contract above forbids that writer, so no racy guard is kept here.
+     bigint is required: inodes on this class of box exceed 2^53, where a plain number collides.
+     null means "do not cache": no statSync (the in-memory test fakes), a stat without bigint fields, a missing main
+     (absent/recovered states keep their uncached, loud path), or any stat error (noted, never silent).
+     The generation is LAZY — tracked only for keys someone has asked a signature of — so the stores that never
+     call this pay nothing. Reads only: update() still re-reads disk under the mutex, a cache never feeds a mutator. */
+  const writeGen = new Map();   // key -> set() count since the key's first signature() (in-process, never persisted)
+  function signature(key) {
+    if (typeof fs.statSync !== 'function') return null;
+    const k = String(key);
+    let st;
+    try { st = fs.statSync(fileFor(key), { bigint: true }); }
+    catch (e) {
+      if (!e || e.code !== 'ENOENT') failNote('durable-store.signature', e);
+      return null;
+    }
+    if (!st || typeof st.ino !== 'bigint' || typeof st.mtimeNs !== 'bigint' || typeof st.ctimeNs !== 'bigint') return null;
+    if (!writeGen.has(k)) writeGen.set(k, 0);
+    return writeGen.get(k) + ':' + st.dev + ':' + st.ino + ':' + st.size + ':' + st.mtimeNs + ':' + st.ctimeNs;
   }
   function update(key, mutator) {
     return mutex.run(key, async function () {
@@ -205,7 +232,7 @@ function makeDurableJsonStore(deps) {
       return next;
     });
   }
-  return { get: get, set: set, update: update, readKey: readKey, mutex: mutex };
+  return { get: get, set: set, update: update, readKey: readKey, signature: signature, mutex: mutex };
 }
 
 /* ---- verifiable durable write (read-back proof + retry-once) ----
