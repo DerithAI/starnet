@@ -185,10 +185,28 @@ function makeQuestStore(deps) {
   });
   const warn = typeof deps.warn === 'function' ? deps.warn : function () {};
 
-  // ---- reads (sync, recovery-aware) ----
+  /* ---- reads (sync, recovery-aware, CACHED) ----
+     READ CACHE (2026-10-19, idle-CPU pass): an open station polls this ledger from several routes with no user
+     action (GET /api/quests every 4 s, the refresh status every 6 s at 4 list() calls each, the journey reconcile),
+     and every call re-read, re-parsed and re-normalized the whole file (~400 KB at the cap) to answer the same thing.
+     read() now keeps the last CLEAN parse and serves it while durable.signature() — the main file's bigint stat plus
+     this process's write generation — is unchanged. The signature is taken BEFORE the read, so a racing external
+     write can only make the cache look older than it is, never newer. Only a status 'ok' read is cached:
+     recovered / corrupt / unreadable / absent keep today's loud, uncached path on every call. Writers are untouched:
+     every mutation goes through durable.update(), which re-reads disk under the lock — the cache never feeds one.
+     ⚠ READ-ONLY CONTRACT: read()/list()/get()/openForAgent() now hand every caller the SAME objects. Never mutate
+     them (no in-place sort/push/assign) — copy first (filter/map/slice). test/journey-read-cache.test.js deep-freezes
+     the cache and runs every audited reader against it. */
+  let cache = null;   // { sig, rec } — the last 'ok' read, proven current by its signature
   function read() {
-    try { return normalize(durable.get(STORE_KEY)); }
-    catch (e) { warn('[quests] read failed:', (e && e.message) || e); return normalize(null); }
+    try {
+      const sig = durable.signature(STORE_KEY);
+      if (sig !== null && cache && cache.sig === sig) return cache.rec;
+      const r = durable.readKey(STORE_KEY);
+      const rec = normalize((r.status === 'ok' || r.status === 'recovered') ? r.value : undefined);   // = durable.get()
+      cache = (sig !== null && r.status === 'ok') ? { sig: sig, rec: rec } : null;
+      return rec;
+    } catch (e) { cache = null; warn('[quests] read failed:', (e && e.message) || e); return normalize(null); }
   }
   function list() { return read().quests; }
   function get(id) { return read().quests.find(q => q.id === String(id)) || null; }
