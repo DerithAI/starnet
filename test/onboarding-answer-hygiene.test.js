@@ -69,6 +69,20 @@ function awakening(answerFor) {
   A.ok(purpose.length <= 2000, 'a 42k-char answer is clipped before it is committed (got ' + purpose.length + ' chars)');
   A.ok(wall.startsWith(purpose.replace(/…$/, '').trim()), 'the clip keeps the beginning of what they said');
 
+  // the clip counts code points: an emoji-studded wall never ends in half an emoji
+  const studded = '🚀a'.repeat(1500);   // aligned so a UTF-16 slice at 1999 lands mid-emoji
+  const run1b = awakening(cfg => {
+    const first = String((cfg.lines && cfg.lines[0] && cfg.lines[0].text) || '');
+    if ((cfg.options || []).some(o => o.value === 'quick')) return { value: 'quick', label: 'Quick setup' };
+    if (/set up an agent/.test(first)) return { value: studded, label: studded, custom: true };
+    return { value: '', skip: true };
+  });
+  run1b.ctx.Onboarding.start({ docs: {}, commit: p => run1b.commits.push(p), wake: false, name: 'TEST', role: 'orchestrator' });
+  for (let i = 0; i < 200 && !run1b.commits.some(c => c && c.purpose); i++) await new Promise(r => setImmediate(r));
+  const p1b = (run1b.commits.find(c => c && c.purpose) || {}).purpose || '';
+  A.ok(p1b.length > 0 && Array.from(p1b).length <= 2000, 'an emoji-studded wall is clipped too (' + Array.from(p1b).length + ' code points)');
+  A.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(p1b), 'the clip never leaves a lone surrogate');
+
   /* ---------- 2. text typed at a read gate goes back to the composer, never into the void ---------- */
   const gate = awakening(() => new Promise(() => {}));   // the ceremony is parked on a beat
   gate.ctx.Onboarding.start({ docs: {}, commit() {}, wake: false, name: 'TEST', role: 'orchestrator' });

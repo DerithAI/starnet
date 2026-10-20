@@ -407,7 +407,10 @@ const Onboarding = (() => {
   // ONE answer's ceiling. Answers land in context.md, which rides EVERY system prompt, and are quoted into each meeting
   // directive — a pasted 42k-char wall made every later call ~93 KB (sweep/onboarding 2026-10-20). Keep the start.
   const ANSWER_CHARS = 2000;
-  const clipAnswer = t => (t.length > ANSWER_CHARS ? t.slice(0, ANSWER_CHARS - 1).replace(/\s+\S*$/, '') + '…' : t);
+  const clipAnswer = t => {   // by code point, never splitting an emoji into a lone surrogate (cf. qa/bugs/d1d77332)
+    const cps = Array.from(t);
+    return cps.length > ANSWER_CHARS ? cps.slice(0, ANSWER_CHARS - 1).join('').replace(/\s+\S*$/, '') + '…' : t;
+  };
   // reason-only + internal — no tools reachable (placed:[]), no run.start/end on the bus (the awakening
   // thinking about you is not a shipped task; XP/telemetry stay honest), cost still counted.
   function llmCall(directive) {
