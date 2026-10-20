@@ -726,6 +726,16 @@ const Harness = (() => {
       : '';
     return 'the station refused the key check (HTTP ' + status + (t && !/^[{<]/.test(t) ? ' ' + t : '') + ')' + hint;
   }
+  // the key check's failure in words a first-time user can act on: an unreachable or overloaded PROVIDER is not a
+  // key problem, and "fetch failed (ECONNREFUSED)" / "credential probe HTTP 503" say nothing to a beginner. Same
+  // classifier the run errors use (Friendly); the raw cause rides along in brackets. Anything else passes through.
+  function keyCheckLine(why) {
+    let kind = '';
+    try { kind = (typeof Friendly !== 'undefined' && Friendly.friendlyError) ? Friendly.friendlyError(new Error(why)).kind : ''; } catch (_) {}
+    if (kind === 'provider_unreachable') return 'couldn’t reach the AI provider — check your internet connection, VPN or proxy, then try again (' + why + ')';
+    if (kind === 'provider_server_error') return 'the AI provider’s servers are having trouble right now — wait a moment and try again (' + why + ')';
+    return why;
+  }
   async function postKeyCheck(route, body) {
     const r = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const text = await r.text().catch(() => '');
@@ -991,10 +1001,11 @@ const Harness = (() => {
     const p = normalizeProviderId(provider || getProv());
     const candidate = cleanKey(key);
     if (!candidate) return setKey('', p);
+    const hadKey = hasStoredCredential(p);   // a first-time WAKE has no previous key to keep — never claim one
     const checkModel = String(model || '').trim() || (p === getProv() ? getModel() : '');
     const { r, j, text } = await postKeyCheck('/api/providers/validate', { provider: p, key: candidate, baseUrl: getBaseUrl(p) || '', model: checkModel });
     if (!r.ok || !j.credentialVerified) {
-      throw new Error(keyCheckFailure(r.status, j, text) + ' — your previous key is unchanged');
+      throw new Error(keyCheckLine(keyCheckFailure(r.status, j, text)) + (hadKey ? ' — your previous key is unchanged' : ' — nothing was saved'));
     }
     const stored = await Promise.resolve(setKey(candidate, p));
     return Object.assign({}, j, { stored: true }, (stored && stored.engine) ? { engine: stored.engine } : {});
