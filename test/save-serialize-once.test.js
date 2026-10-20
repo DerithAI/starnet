@@ -152,7 +152,7 @@ function oldAck(cachedRaw, sentDoc, revision, body) {
     A.ok(landed._saveDirty === false && landed.workstreams[1].title === 'newer', 'the newest save becomes clean on its own ACK');
   }
 
-  /* a failed POST keeps the string for the retry: the re-queued doc still takes the fast path on its ACK */
+  /* a failed POST drops the string (an outage pins no second whole-save copy): the retry takes the old compare path */
   {
     const s = station();
     const raw = s.persist(bigConvs());
@@ -163,7 +163,7 @@ function oldAck(cachedRaw, sentDoc, revision, body) {
     const expected = oldAck(raw, sent, 9, { updatedAt: 1760000000999 });
     s.reset();
     A.eq(await s.CloudSave.flush({ force: true }), true, 'the retry is acknowledged');
-    A.eq(s.counts().parse, 0, 'the retried doc still has its string: the ACK marks the cache clean without a parse');
+    A.ok(s.counts().parse >= 1, 'the retried doc no longer holds its string: the ACK compares the old way (a parse)');
     A.eq(s.cache.get('starnet.save'), expected, '…writing the same bytes the old path wrote');
   }
 

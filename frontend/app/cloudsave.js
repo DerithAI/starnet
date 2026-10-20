@@ -220,7 +220,8 @@ const CloudSave = (() => {
         markFail();
         // re-queue the newest doc (newest-wins: a fresher push during the attempt already replaced it) and
         // arm the backoff retry. Fail soft — the cache is still authoritative locally, nothing throws out.
-        if (!isSave(pending)) { pending = doc; pendingRaw = sentRaw; pendingCacheFailed = docCacheFailed; pendingSeq = docSeq; }
+        // the string is dropped on a failure: an outage must not pin a second whole-save copy (the retry compares the old way)
+        if (!isSave(pending)) { pending = doc; pendingRaw = null; pendingCacheFailed = docCacheFailed; pendingSeq = docSeq; }
         scheduleRetry();
         return false;
       });

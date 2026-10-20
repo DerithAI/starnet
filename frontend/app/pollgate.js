@@ -128,7 +128,7 @@ const PollGate = (() => {
     function schedule() {
       if (l.stopped || l.running) return;
       if (l.timer) clearT(l.timer);
-      l.timer = setT(due, Math.max(0, l.lastRunAt + interval() - now()));
+      l.timer = setT(due, Math.ceil(Math.max(0, l.lastRunAt + interval() - now())));   // ceil: a truncated delay fired a hair early and re-armed
     }
     function due() {
       l.timer = 0;

@@ -1218,9 +1218,9 @@ const StationCommands = (() => {
       let rows = [];
       try {
         const r = await fetch('/api/runs?agent=*&limit=500', readInit());
-        if (!r.ok) return 0;
+        if (!r.ok) return -1;
         rows = ((await r.json()) || {}).runs || [];
-      } catch (_) { return 0; }
+      } catch (_) { return -1; }   // -1 = the run list was never read: nothing was reconciled, a caller may retry
       let folded = 0, outcomes = 0;
       const rank = new Map(rows.filter(r => r && r.runId).map((r, i) => [String(r.runId), i]));
       // /api/runs is newest-first. Fold oldest-first so multiple missed answers preserve conversation order.

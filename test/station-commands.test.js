@@ -712,8 +712,8 @@ for (const text of ['', 'Older partial work.']) {
   A.eq(reads.length, 1, 'fixture: a second reconcile while the first is out joins it');
   A.eq(reads[0].deadline, true, 'the /api/runs read carries a deadline (it had none)');
   A.eq(fire(15000), 1, '…of 15 s');
-  A.eq(await settled(first), 0, 'a run index read the sidecar never answers ends at its deadline: the pass settles, folding nothing (it hung for good)');
-  A.eq(await settled(joined), 0, '…and so does every reconcile that joined it');
+  A.eq(await settled(first), -1, 'a run index read the sidecar never answers ends at its deadline: the pass settles, folding nothing and saying the list was never read (-1, so the overseer retries)');
+  A.eq(await settled(joined), -1, '…and so does every reconcile that joined it');
   hangRuns = false;
   await settled(env.S.reconcile());
   A.eq(reads.length, 2, 'the next reconcile reads again, no longer held by the hung pass');

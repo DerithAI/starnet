@@ -40,7 +40,8 @@ const Overseer = (() => {
       const deliveries = JSON.stringify([(data.workers || []).map(w => [w.runId, w.status]),
         (data.reviews || []).map(r => [r.reviewRunId, r.status])]);
       if ((adopted || deliveries !== lastDeliveries) && typeof StationCommands !== 'undefined') {
-        await StationCommands.reconcile(); lastDeliveries = deliveries;
+        // -1: the run list was never read (failed or timed out), so these deliveries are not reconciled — retry next beat
+        if ((await StationCommands.reconcile()) !== -1) lastDeliveries = deliveries;
       }
     } catch (error) {
       // Existing connection UI owns outages. Retry reconciliation after recovery.
