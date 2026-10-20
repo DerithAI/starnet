@@ -1163,6 +1163,18 @@
           const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
           for (const k of (rec && Array.isArray(rec.hopKeys) ? rec.hopKeys : [])) if (typeof k === 'string' && AID_RE.test(k)) dropped += store.clearHistory(k) || 0;
         } catch (e) { failNote('channels.hub.hopKeys.clear', e); }
+        /* A RUN READS ITS HISTORY FROM THE CANONICAL STREAM (historyFor), not from the store file above: clearing only the
+           file answered "I no longer remember" while the next run replayed up to 100 turns of the old chat, taint and all
+           (2026-10-20). Move the chat onto a fresh stream, as /new does in COMMS; the old one stays in the station's
+           history, it is just never replayed again. */
+        const oldStream = (historyFor && typeof store.saveChatRecord === 'function') ? resolvedStreamId(chatId) : null;
+        if (oldStream && !streamIdFor) {
+          try { dropped = Math.max(dropped, (historyFor(oldStream, boundId) || []).length); } catch (e) { failNote('channels.hub.new.count', e); }
+          const tail = '_n' + String(newId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
+          const base = ('channel_' + channel + '_' + String(chatId)).replace(/[^A-Za-z0-9_-]/g, '_');
+          try { store.saveChatRecord(chatId, { streamId: base.slice(0, 64 - tail.length) + tail }); }
+          catch (e) { await deliver(chatId, '⚠ Could not start this chat fresh: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
+        }
         await deliver(chatId, dropped
           ? ('Cleared ' + dropped + ' message' + (dropped === 1 ? '' : 's') + ' — this chat starts fresh. I no longer remember what we discussed.')
           : 'Nothing to clear — this chat had no history yet.', '', 'command');
