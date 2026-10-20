@@ -597,6 +597,8 @@ test/capprop-map.contract.test.js
 test/dock-terms-open.test.js
 test/settings-p1-ui.test.js
 test/dossier-persona-ui.test.js
+test/dossier-persona-toggle-skin.test.js
+test/skinstage-idle-loop.test.js
 test/settings-codex-row.test.js
 test/settings-oauth-rows.test.js
 test/genesis-oauth-providers.test.js
@@ -950,6 +952,7 @@ test/personalization-authority-wiring.test.js
 test/sprite-loading.test.js
 test/textsize-screen-space.test.js
 test/mobile-control-reachability.test.js
+test/mobile-topbar-glass-cascade.test.js
 test/station-tooltip.test.js
 test/hint-input-mode.test.js
 test/hints-setting.test.js
