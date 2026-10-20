@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**34** open (open+claimed) of 337 total — 0 P0 · 3 P1 · 31 P2
+**37** open (open+claimed) of 342 total — 0 P0 · 3 P1 · 34 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -318,7 +318,10 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | providers | [Model catalog lookups resolve a bare model id against another provider's catalog](bugs/f6744691-model-catalog-lookups-resolve-a-bare-model-id-ag.md) | sweep/providers | — |
 | P2 | open | providers | [Ollama run times out with no chat POST observed by reporter](bugs/5274c7b7-ollama-chat-request-not-observed.md) | release-0120-prep-0915 | — |
 | P2 | open | providers | [Reported macOS web fetch TLS decode and socket failures](bugs/1d3ac09a-reported-macos-web-fetch-tls-decode-and-socket-f.md) | release-0135-prep | — |
+| P2 | open | release | [All 30 superseded StarNet releases (v0.6.4 to v0.13.3) remain publicly downloadable from the releases repo](bugs/1a69136d-all-30-superseded-starnet-releases-v0-6-4-to-v0.md) | sweep/release | — |
+| P2 | open | release | [Every INSTALL UPDATE attempt writes another full-station backup to update-snapshots and nothing ever prunes them](bugs/31db37b0-every-install-update-attempt-writes-another-full.md) | sweep/release | — |
 | P2 | open | release | [Mac installer reports application unsupported on the computer](bugs/ff3fb4cb-mac-unsupported-installation-uncorrelated.md) | release-0120-prep-0915 | — |
+| P2 | open | release | [T0.2 reports a clean Windows surface is available when only a QEMU binary exists and no Windows guest is configured](bugs/c856c4f7-t0-2-reports-a-clean-windows-surface-is-availabl.md) | sweep/release | — |
 | P2 | open | release | [Windows 0.13.2 startup fails loading a packaged backend module](bugs/85f602c4-windows-0132-packaged-backend-startup.md) | release-0135-prep | — |
 | P2 | open | release | [Windows Node 24 HTTP test exits with a native libuv assertion after passing](bugs/6e29727c-windows-node-24-http-test-exits-with-a-native-li.md) | reliability-audit-0919 | — |
 | P2 | open | safecell | [A process a shell command detaches (Start-Process) survives E-STOP and sidecar exit and nothing reports it](bugs/1ac8819d-a-process-a-shell-command-detaches-start-process.md) | sweep/safecell | — |
@@ -367,6 +370,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | providers | [The browser per-minute rate-limit veto lost rpm and tpm to collapsed backspace bytes](bugs/a1ce5839-the-browser-per-minute-rate-limit-veto-lost-rpm.md) | sweep/providers | 163c2d772 |
 | P2 | fixed | providers | [The index.js summarize closure captures the pre-failover provider/model — after a credential rotation or provider fallback, two failed summaries flip compaction](bugs/cb8dc6c3-the-index-js-summarize-closure-captures-the-pre.md) | sweep/providers | fdbb12a2 |
 | P2 | fixed | providers | [The ledger's `unmetered` flag is a stamped verdict with zero readers — every ledger USD aggregate (/api/budget, day/global caps) counts subscription dollars tha](bugs/4007eb1f-the-ledger-s-unmetered-flag-is-a-stamped-verdict.md) | sweep/providers | fdbb12a2 |
+| P2 | fixed | release | [A refused update download shows the bare minisign/reqwest error text and never says nothing was installed](bugs/5a215a68-a-refused-update-download-shows-the-bare-minisig.md) | sweep/release | eeb5cf20f |
 | P2 | fixed | release | [Browser probe request timers survive completed requests](bugs/4a518eb8-browser-probe-request-timers-survive-completed-r.md) | reliability-audit-0919 | 9cdfc0ba5 |
 | P2 | fixed | release | [Desktop bundles include development-only native dependencies](bugs/037ec5d2-desktop-bundles-include-development-only-native.md) | reliability-audit-0919 | a711f6ea2 |
 | P2 | fixed | release | [Desktop overlay version disagrees with sidecar diagnostics](bugs/65587128-desktop-overlay-version-disagrees-with-sidecar-d.md) | agent/release-0112-audit-0910 | bed625bdd |
@@ -379,6 +383,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | release | [Scale soak misclassifies separate scheduler ticks between store polls](bugs/59040543-scale-soak-misclassifies-separate-scheduler-tick.md) | agent/release-0112-audit-0910 | 7efce3552 |
 | P2 | fixed | release | [Seeded lifecycle campaigns reuse a shared workspace and inherit stale ownership](bugs/46f9dad7-seeded-lifecycle-campaigns-reuse-a-shared-worksp.md) | reliability-audit-0919 | b123e3ea3 |
 | P2 | fixed | release | [t5.1 prerequisite gate accepts T0–T4 verdicts with no installer-hash or freshness binding, though t3.2 already binds T0's recorded installer sha256 to the binar](bugs/4bd953e0-t5-1-prerequisite-gate-accepts-t0-t4-verdicts-wi.md) | sweep/release | b76e340c |
+| P2 | fixed | release | [T5 stamps publicDistributionReady on an updater .sig that signs different bytes, because T5.2 only text-compares it to latest.json](bugs/6c707133-t5-stamps-publicdistributionready-on-an-updater.md) | sweep/release | d2960405c |
 | P2 | fixed | release | [The glossary shows the Windows data path with a BEL byte instead of a backslash](bugs/9515a903-the-glossary-shows-the-windows-data-path-with-a.md) | sweep/providers | 163c2d772 |
 | P2 | fixed | release | [Update canary uses obsolete saves and snapshots the startup WebView](bugs/050da842-update-canary-uses-obsolete-saves-and-snapshots.md) | agent/release-0112-audit-0910 | bed625bdd |
 | P2 | fixed | safecell | [A mid-run "Full access" click writes a per-agent '*' wildcard with no readout and no revoke anywhere, and the same wildcard is read by that agent's UNATTENDED r](bugs/13646d93-a-mid-run-full-access-click-writes-a-per-agent-w.md) | sweep/safecell | 226cec3c |
@@ -481,5 +486,5 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | onboarding | 2 |
 | world | 1 |
 | voice | 0 |
-| release | 3 |
+| release | 6 |
 
