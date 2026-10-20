@@ -80,6 +80,7 @@ test/cancel-host-run.e2e.test.js
 test/cron.station-default.e2e.test.js
 test/cron.degraded.e2e.test.js
 test/cron.interrupted-settlement.http.test.js
+test/cron-lock-recycled-pid.http.test.js
 test/routing.chain-seam.e2e.test.js
 test/routine-manage.e2e.test.js
 test/comms-send.e2e.test.js

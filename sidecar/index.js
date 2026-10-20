@@ -6475,7 +6475,10 @@ let cronArmed = CRON_ENABLED || loadCronArmed();
    no-ops). It is re-entrant within this process, so applyTick(lock) -> setJobs -> saveCronJobs(lock) nests
    safely. now() uses the same Date.now the driver does (the staleness comparison is the only clock read). ---- */
 const CRON_LOCK_FILE = path.join(WORKSPACES, 'cron.lock');
-const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS });
+// The same dead-holder proofs the workspace-owner lock carries (sweep/autonomy 2026-10-20): a force-killed holder's PID
+// recycled to an unrelated process, or a lockfile older than this OS boot, is reclaimed now — not obeyed for maxRunMs.
+const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS,
+  bootedAt: makeBootedAt(() => Date.now()), processIdentity: processIdentity });
 
 const _sleep = (ms) => new Promise(r => { const t = setTimeout(r, ms); if (t && t.unref) t.unref(); });
 // CRON_WRITE_RETRIES × CRON_WRITE_RETRY_MS bounds the async wait for a live cross-process lock holder (was a
