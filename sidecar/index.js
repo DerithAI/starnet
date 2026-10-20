@@ -5378,6 +5378,10 @@ const overseer = require('./overseer.js').makeOverseer({ fs, path, writeDurable:
   file: path.join(WORKSPACES, 'overseer.json'), now: () => Date.now(),
   newId: () => 'ws_' + crypto.randomUUID().replace(/-/g, ''),
   sessions: () => saveStore.load('agent') || {}, hasAgent: id => id === 'agent' || agentRoster.has(id),
+  // the same save read plus its stamp, so GET /api/overseer's thread list re-parses the save only when it changed
+  // (overseer.js listedThreads; savestore.js stamp: one stat, never a cached doc)
+  sessionsRead: () => { const r = saveStore.loadStamped('agent'); return { doc: r.doc || {}, stamp: r.stamp }; },
+  sessionsStamp: () => saveStore.stamp('agent'),
   isRunActive: id => runs.has(id),
   // how long one hand-off's report waits on a straggler before NOVA reports the finished part (env OVERSEER_REPORT_CEILING_MS)
   reportCeilingMs: Math.max(30000, Number(process.env.OVERSEER_REPORT_CEILING_MS) || 600000) });
@@ -5456,7 +5460,9 @@ async function tickOverseer() {
       }
       if (review.status !== 'pending') continue;
       let parent;
-      try { parent = overseer.resolve(review.parentStreamId); }
+      // existence + project only: the listed rows, re-read only when the save changed (a review waiting for a provider
+      // credential re-ran this every tick, one full save parse per pending review per 2 s). The lock re-resolves afresh.
+      try { parent = overseer.resolveListed(review.parentStreamId); }
       catch (_) { overseer.patchReview(review.id, { status: 'cancelled', error: 'Parent conversation is archived or deleted.' }); continue; }
       if (parent.projectRoot && !isBlessedRoot(parent.projectRoot)) {
         overseer.patchReview(review.id, { status: 'interrupted', error: 'The parent project is no longer trusted. Restore its project access before continuing.' }); continue;
