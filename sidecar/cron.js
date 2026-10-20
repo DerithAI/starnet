@@ -345,6 +345,22 @@
     // when a fall-back repeats an hour, suppress matches whose local minute-of-day is <= this watermark
     // on the day the repeat began, until the clock climbs past it (we've exited the doubled window).
     let repeatBand = -1, repeatDay = -1;
+    /* ANCHOR ALREADY INSIDE THE REPEAT (sweep/autonomy 2026-10-20): the band below is armed only when the scan
+       CROSSES the fall-back, so an advance computed from an anchor in the second pass (a late wake at 01:10 EST, a
+       transient retry landing there) re-matched the day's 01:30 and fired it twice. If the UTC offset dropped in
+       the last 2h (a fall-back; the repeat lasts <= 1h), find the transition minute and pre-arm the same band. */
+    if (zone !== 'UTC') {
+      const offOf = ms => { const f = localFieldsOf(ms, zone); return Date.UTC(f.year, f.month - 1, f.day, f.hour, f.minute) - Math.floor(ms / MIN) * MIN; };
+      let lo = t - MIN - 2 * HOUR, hi = t - MIN;
+      const offLo = offOf(lo);
+      if (offOf(hi) < offLo) {
+        while (hi - lo > MIN) { const mid = lo + Math.floor((hi - lo) / 2 / MIN) * MIN; if (offOf(mid) === offLo) lo = mid; else hi = mid; }
+        const before = localFieldsOf(hi - MIN, zone), after = localFieldsOf(hi, zone);
+        if (before.day === after.day && before.month === after.month && prev.day === after.day && prev.minOfDay <= before.minOfDay) {
+          repeatBand = before.minOfDay; repeatDay = after.year * 10000 + after.month * 100 + after.day;
+        }
+      }
+    }
     for (; t <= stop; t += MIN) {
       const lf = localFieldsOf(t, zone);
       if (zone !== 'UTC') {
