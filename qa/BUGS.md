@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**40** open (open+claimed) of 360 total — 0 P0 · 5 P1 · 35 P2
+**42** open (open+claimed) of 367 total — 0 P0 · 5 P1 · 37 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -286,6 +286,8 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | skills | [Installed package description and category are never scanned yet ride every run's skill index](bugs/23996f04-installed-package-description-and-category-are-n.md) | sweep/skills | bd449b81b |
 | P1 | fixed | skills | [Skill hydrate reads files through a support folder that is itself a junction, and through hardlinked files](bugs/c723d5f4-skill-hydrate-reads-files-through-a-support-fold.md) | sweep/skills | bd449b81b |
 | P1 | fixed | voice | [A stale sidecar token lets Local Live open a silent microphone session after restart](bugs/ff73b79a-a-stale-sidecar-token-lets-local-live-open-a-sil.md) | agent/voice-release-sweep | 8bc9ff9a |
+| P1 | fixed | voice | [An Edge read-aloud stream cut before turn.end is served as a whole clip and cached under the full sentence; a dropped connection hangs the full 15s per attempt](bugs/81812888-an-edge-read-aloud-stream-cut-before-turn-end-is.md) | sweep/voice | 0efc04afe |
+| P1 | fixed | voice | [Instant TTS retries let a 300 ms provider blip spend every in-flight chunk's budget, so MID_REPLY_GIVEUP silences the whole spoken reply](bugs/1b924a90-instant-tts-retries-let-a-300-ms-provider-blip-s.md) | sweep/voice | 468524e05 |
 | P1 | fixed | voice | [Live spoken replies stall after the output audio context closes](bugs/3364dfb0-live-spoken-replies-stall-after-the-output-audio.md) | agent/live-speech-0910 | f129e19e3 |
 | P1 | fixed | voice | [Mac desktop microphone blocked while browser mirror works](bugs/8a553481-mac-desktop-microphone-blocked-while-browser-mir.md) | agent/voice-agents-mac-0906 | d65f8f538 |
 | P1 | fixed | voice | [On a zero-key station every Edge blip is misclassified as 'no key': no retry, a 60s dead-voice cold-off, and a tooltip demanding a credential the station never](bugs/151c8d9a-on-a-zero-key-station-every-edge-blip-is-misclas.md) | sweep/voice | 50a8b07b |
@@ -341,6 +343,8 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | skills | [A diverged installed package's support files are mirrored to disk and shown to the model as base64 text](bugs/a36d1b00-a-diverged-installed-package-s-support-files-are.md) | sweep/skills | — |
 | P2 | open | skills | [A legacy skill record's unscanned summary still rides the prompt index](bugs/56c6f962-a-legacy-skill-record-s-unscanned-summary-still.md) | sweep/skills | — |
 | P2 | open | skills | [A model can remove the Commander's pin on a skill directly, without a staged proposal](bugs/97743dff-a-model-can-remove-the-commander-s-pin-on-a-skil.md) | sweep/skills | — |
+| P2 | open | voice | [/api/tts asks only the first credentialed keyed provider: a station holding OpenRouter and Gemini keys drops to Edge's different voice when OpenRouter fails](bugs/243de8bd-api-tts-asks-only-the-first-credentialed-keyed-p.md) | sweep/voice | — |
+| P2 | open | voice | [Paired-device speech ends the rest of a reply on one failed later sentence, with no retry](bugs/19429523-paired-device-speech-ends-the-rest-of-a-reply-on.md) | sweep/voice | — |
 | P2 | open | world | [station.test_line claims an unconfirmed onward hand-off for a job that landed in a non-sending OUTBOX](bugs/3ee2d13a-test-line-unconfirmed-hand-off-from-a-non-sendin.md) | conveyor-final-runtime | — |
 | P2 | fixed | autonomy | [A clock that jumped ahead and was corrected back strands recurring routines for the length of the jump](bugs/7ae7e435-a-clock-that-jumped-ahead-and-was-corrected-back.md) | sweep/autonomy | 6102a1612 |
 | P2 | fixed | autonomy | [A cron advance anchored inside a fall-back repeated hour fires that day's ambiguous time a second time](bugs/10ecf010-a-cron-advance-anchored-inside-a-fall-back-repea.md) | sweep/autonomy | 822503be5 |
@@ -439,10 +443,13 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | skills | [Design references assert requested image properties as observed](bugs/436ab17d-design-references-assert-requested-image-propert.md) | agent/provider-triage-1011 | 2e9c7ffb4 |
 | P2 | fixed | skills | [Rolling back an installed skill overrides its pin without an explicit force](bugs/29043870-rolling-back-an-installed-skill-overrides-its-pi.md) | sweep/skills | bd449b81b |
 | P2 | fixed | skills | [Skill hydrate has no file-count or byte limit, so 10k files on disk reach the provider in one request](bugs/4ab22e0e-skill-hydrate-has-no-file-count-or-byte-limit-so.md) | sweep/skills | bd449b81b |
+| P2 | fixed | voice | [A keyed voice provider slower than the desk's 30s synth ceiling is paid twice for one sentence, which then plays after a minute of silence](bugs/df610df1-a-keyed-voice-provider-slower-than-the-desk-s-30.md) | sweep/voice | 22c36eed6 |
+| P2 | fixed | voice | [/api/tts silently truncates a script over 1200 characters and answers 200 audio as if the whole text was spoken](bugs/d41323ed-api-tts-silently-truncates-a-script-over-1200-ch.md) | sweep/voice | 35f80804c |
 | P2 | fixed | voice | [Failed Live Voice startup leaves a user mute force-enabled](bugs/d02d029b-failed-live-voice-startup-leaves-a-user-mute-for.md) | agent/voice-release-sweep | 8bc9ff9a |
 | P2 | fixed | voice | [Muting the speaker mid-reply in hands-free nulls the only surviving rearm heartbeat — the mic never re-opens while the mode button still reads 'hands-free ON'](bugs/2f7b280c-muting-the-speaker-mid-reply-in-hands-free-nulls.md) | sweep/voice | 50a8b07b |
 | P2 | fixed | voice | [Revoked or replaced speech synthesis can publish stale audio](bugs/4fca711c-revoked-speech-synthesis-publishes-stale-audio.md) | agent/runtime-triage-1011 | 1d1a89980717271a2dbbc627088dca2f1c25c1ba |
 | P2 | fixed | voice | [The /api/stt degrade reason is written to the status line then overwritten by endListening()'s restore in the same synchronous block, so it is never painted](bugs/562b14a5-the-api-stt-degrade-reason-is-written-to-the-sta.md) | sweep/voice | 50a8b07b |
+| P2 | fixed | voice | [The TTS failure classifier reads the whole ladder string: OpenAI insufficient_quota (HTTP 429) is retried on a 4s cold-off, and Gemini's per-minute 429 text pin](bugs/4dea1814-the-tts-failure-classifier-reads-the-whole-ladde.md) | sweep/voice | 4aa163337 |
 | P2 | fixed | world | [A COPY section inside a review loop stops the job on its second pass](bugs/45054e87-a-copy-section-inside-a-review-loop-stops-the-jo.md) | conveyor-final-runtime | d3bf4937d |
 | P2 | fixed | world | [A hand-off the station's own fault stopped is blamed on E-STOP](bugs/de6f8dc7-a-hand-off-the-station-s-own-fault-stopped-is-bl.md) | conveyor-final-runtime | 20134a0af |
 | P2 | fixed | world | [A hand-off whose dispatch throws is dropped with only a console line](bugs/32df5ca7-a-hand-off-whose-dispatch-throws-is-dropped-with.md) | conveyor-final-runtime | 9ccd2ba42 |
@@ -503,6 +510,6 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | skills | 3 |
 | onboarding | 3 |
 | world | 1 |
-| voice | 0 |
+| voice | 2 |
 | release | 3 |
 
