@@ -661,8 +661,7 @@ const World = (() => {
        builder lays. WorldModel already marks the edits that leave the bake alone (staticBakeUnchanged; airlocks never
        are), exactly as BUILD mode reads them, so the floor now re-bakes only for an edit that changes the bake — or when
        the derived floor's size or origin moved (the bake is drawn in that frame). */
-    bakeEdits = null;                                   // INCREMENTAL STATIC BAKE: a new floor bakes whole
-    if (station && station.onChange) unsub = station.onChange(p => { geoDirty = true; if (!p || !p.staticBakeUnchanged || p.global) { bakeEditPending = true; noteBakeEdit(p); } });
+    if (station && station.onChange) unsub = station.onChange(p => { geoDirty = true; if (!p || !p.staticBakeUnchanged || p.global) bakeEditPending = true; });
     rederive();
   }
 
@@ -720,9 +719,7 @@ const World = (() => {
     scanNovelty();   // diff props/belts vs last frame — anything new becomes a "go check it out" target
     const frameMoved = !cache || cache.W !== geo.W || cache.H !== geo.H || !cache.origin || !geo.origin
       || cache.origin.tx !== geo.origin.tx || cache.origin.ty !== geo.origin.ty;
-    const anchorMoved = fixtureAnchorKey(geo) !== bakedAnchorKey;
-    if (frameMoved || anchorMoved) bakeEdits = null;   // INCREMENTAL STATIC BAKE: a moved frame or lamp anchor bakes whole
-    if (bakeEditPending || frameMoved || anchorMoved) bakeDirty = true;   // STATIC BAKE: a props-only edit keeps the deck it already has
+    if (bakeEditPending || frameMoved || fixtureAnchorKey(geo) !== bakedAnchorKey) bakeDirty = true;   // STATIC BAKE: a props-only edit keeps the deck it already has
     geoDirty = false; bakeEditPending = false;
   }
 
@@ -751,52 +748,17 @@ const World = (() => {
      they cover this exact floor); the rebake that start() runs takes it only for THIS station at THIS edit revision, and
      the offer dies with that first frame either way. */
   let handedBake = null;
-  /* INCREMENTAL STATIC BAKE (perf, 2026-10-20). A room edit outside BUILD MODE — a lead-builder station tool, an airlock
-     seal — re-baked the whole station: ~2.5 s of frozen main thread on a large industrial floor, although WorldModel names
-     the tiles every edit reaches (patch.dirtyRects) and BUILD MODE already re-bakes only the chunks those rects reach. The
-     world now does the same, through BUILD MODE's own path: it collects the rects of the bake edits since its last bake
-     and re-bakes just those chunks against its whole-station bake, stitched back into one (StationBake.bakeIncremental +
-     stitchWhole — the chunks it keeps are cut 1:1 from that bake, one set of pixels by construction; stitchWhole refuses
-     a set that does not cover this exact floor with this floor's fixture plan). Anything global or unknown bakes whole,
-     exactly as before: an edit with no rects or a global one, a moved frame or origin, a moved lamp anchor, changed bake
-     knobs (ROOM LIGHT, the CRT LAB) or texture state, canvas-loss recovery, a font or texture arrival, every outside
-     World.rebake(), a floor whose bake is not stitched (one chunk), or a stitch StationBake refuses.
-     bakeEdits = { base, rects, knobs } — the rects of the edits since `base` (the bake they apply to) was made, with the
-     knobs it was made with; null = the next bake is whole. */
-  let bakeEdits = null;
-  function noteBakeEdit(p) {
-    const rects = p && !p.global && Array.isArray(p.dirtyRects) ? p.dirtyRects : null;
-    if (!rects || !rects.length) bakeEdits = null;
-    else if (bakeEdits) for (const r of rects) bakeEdits.rects.push(r);
-  }
-  // every global input a bake reads that no edit names: the live-tunable knobs and the texture pack's state
-  function bakeKnobs() {
-    const IT = typeof IndustrialTextures !== 'undefined' ? IndustrialTextures : null;
-    const ds = typeof document !== 'undefined' && document.documentElement && document.documentElement.dataset;
-    return JSON.stringify([StationBake.LIGHT, StationBake.WALL, StationBake.DEPTH, StationBake.SHAPE, StationBake.HULL_EXPOSURE,
-      IT && IT.lighting, !!(IT && IT.enabled && IT.enabled()), ds ? ds.textureRevision || '' : '']);
-  }
-  function bakeEditedChunks(edits) {
-    if (!edits || !edits.rects.length || !cache || edits.base !== cache || !cache.stitched) return null;
-    if (!StationBake.bakeIncremental || !StationBake.stitchWhole || edits.knobs !== bakeKnobs()) return null;
-    try { return StationBake.stitchWhole(geo, StationBake.bakeIncremental(geo, cache, edits.rects)) || null; }
-    catch (e) { console.warn('[world] the edited chunks could not be re-baked; baking the whole station', e); return null; }
-  }
-  // the PUBLIC World.rebake(): every outside caller changed something no edit names (ROOM LIGHT, a CRT LAB knob, art) — whole
-  function rebakeWhole() { bakeEdits = null; rebake(); }
   function rebake() {
     if (buildHoldsFloor()) { bakeDirty = true; return; }
     if (geoDirty || !geo) rederive();
     if (!geo) return;
     const handed = handedBake; handedBake = null;
-    const edits = bakeEdits; bakeEdits = null;   // spent either way: a bake that throws leaves the next one whole
     cache = handed && handed.station === station && handed.seq === station.getSeq() && handed.bake.W === geo.W && handed.bake.H === geo.H &&
       handed.bake.origin && geo.origin && handed.bake.origin.tx === geo.origin.tx && handed.bake.origin.ty === geo.origin.ty
-      ? handed.bake : bakeEditedChunks(edits) || StationBake.bake(geo);
+      ? handed.bake : StationBake.bake(geo);
     bakedAnchorKey = fixtureAnchorKey(geo);
-    bakeEdits = { base: cache, rects: [], knobs: bakeKnobs() };
     for (const d of cache.doorOccluders || []) {
-      if (d.image.addEventListener) d.image.addEventListener('contextlost', () => { bakeDirty = true; bakeEdits = null; });
+      if (d.image.addEventListener) d.image.addEventListener('contextlost', () => { bakeDirty = true; });
     }
     bakeDirty = false;
     recordBakeProbe();
@@ -1015,7 +977,7 @@ const World = (() => {
     try {
       console.warn('[world] cached canvases lost (' + why + ') — rebuilding station + sky + ground (recovery #' + recoveries + ')');
     } catch (_) {}
-    bakeDirty = true; bakeProbe = null; bakeEdits = null;   // lost canvases are never cut into a new bake (INCREMENTAL STATIC BAKE)
+    bakeDirty = true; bakeProbe = null;
     resetLossProbe();
     try { if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.restoreMaterials) IndustrialTextures.restoreMaterials(); } catch (_) {}
     // the prop catalog is re-prepared once per loss, not per futile retry: PropRemaster retries its own failed entries, and
@@ -1544,7 +1506,7 @@ const World = (() => {
     try {
       if (document.fonts && !document.fonts.check("16px 'VT323'", 'Station')) {
         document.fonts.load("16px 'VT323'", 'Station')
-          .then(() => { bakeDirty = true; bakeEdits = null; redrawNow(); })
+          .then(() => { bakeDirty = true; redrawNow(); })
           .catch(() => {});
       }
     } catch (e) {}
@@ -1553,7 +1515,7 @@ const World = (() => {
         // Keep the shipped v0.11.2 PHOSPHOR treatment for these PNG props too.
         // Asset readiness must not reduce static, film, scanlines or curvature.
         refreshWorkstationSeats();
-        bakeDirty = true; bakeEdits = null; redrawNow();
+        bakeDirty = true; redrawNow();
       }
     });
     window.addEventListener('resize', resize);
@@ -11673,7 +11635,7 @@ const World = (() => {
     pollFeed: () => pollFeedState(),
     pollShip: () => pollShipStats()
   });
-  return { init, rebake: rebakeWhole, invalidatePropShadows, frameReviewRoom, renderStill, renderStillOfTiles, crewFrames, crt: CRT, renderPace, slagLog: () => (slaglog ? slaglog.recent() : []),
+  return { init, rebake, invalidatePropShadows, frameReviewRoom, renderStill, renderStillOfTiles, crewFrames, crt: CRT, renderPace, slagLog: () => (slaglog ? slaglog.recent() : []),
     // LINE WATCH: the Workflow panel pushes the step-test session it polls; reads today's numbers for a line
     noteStepTest, lineStatsFor: id => (lineStats.known ? (lineStats.byLine[id] || null) : null), pollLineStats,
     // a bay's live state — the lamp's own fold (WORKING only once the sidecar confirmed the run), with how long it has held
