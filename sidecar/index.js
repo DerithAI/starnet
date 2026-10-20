@@ -18757,6 +18757,8 @@ const slashActions = slashActionsMod.makeSlashActions({
         lifetime: ledger.totalUsd(),
         runs: ledger.count(),
         tokens: ledger.all().reduce((s, r) => s + (Number(r && r.tokens) || 0), 0),
+        unpricedRuns: ledger.all().filter(r => r && r.unpriced === true && !r.unmetered).length,
+        unmeteredRuns: ledger.all().filter(r => r && r.unmetered === true).length,
         agentUsd: ledger.usdForAgent(agentId),
         caps: { perRun: effectiveCaps.perRun, perAgent: effectiveCaps.perAgent, perDay: effectiveCaps.perDay, global: effectiveCaps.global }
       };

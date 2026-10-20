@@ -393,7 +393,12 @@ const mk = (over) => { const d = deps(over); return { S: makeSlashActions(d), ca
     A.ok(/ledger unreadable/.test(broken.text), 'the real error reaches the user');
     const none = await makeSlashActions({}).run('usage', '', {});
     A.eq(none.ok, false, 'usage with no ledger dep refuses instead of reporting zero spend');
+    // UNPRICED + SUBSCRIPTION runs are counted in "N runs" but carry no proven dollars: say so, never imply $0 (sweep/providers)
+    const mixed = await makeSlashActions({ budget: { snapshot: async () => Object.assign({}, SNAP, { unpricedRuns: 2, unmeteredRuns: 3 }) } }).run('usage', '', {});
+    A.ok(mixed.lines.some(l => /2 runs? .*no published price/.test(l) && /3 .*subscription/.test(l) && /not in these dollars/.test(l)), 'unpriced and subscription runs are named as outside the dollar figures (' + mixed.lines.join(' | ') + ')');
+    A.ok(!r0usageHasCaveat(await makeSlashActions({ budget: { snapshot: async () => SNAP } }).run('usage', '', {})), 'a fully priced ledger carries no caveat line');
   }
+  function r0usageHasCaveat(res) { return res.lines.some(l => /no published price|subscription/.test(l)); }
 
   /* ---------------- contract ---------------- */
   {
