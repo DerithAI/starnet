@@ -15567,6 +15567,10 @@ function parseCronScheduleOr400(str, now, tz) {
       : "couldn't read that schedule — try \"every day at 9am\", \"weekdays at 8:30am\", \"mondays at 6pm\", \"tomorrow at 9am\", \"every 30m\", \"in 2h\" or a cron like \"0 9 * * *\"";
     const e = new Error(why); e.code = 400; throw e;
   }
+  // a one-shot in the PAST is not a schedule: stored, it fires on the very next tick (sweep/autonomy 2026-10-20)
+  if (sched.kind === 'once' && Number(sched.runAt) < Number(now) - 60000) {
+    const e = new Error('that time already passed (' + new Date(sched.runAt).toISOString() + ') — a one-shot in the past would run the moment it is saved; give a future time, e.g. "tomorrow at 9am" or "in 2h"'); e.code = 400; throw e;
+  }
   return sched;
 }
 function parseCronAgentIdOr400(value) {
