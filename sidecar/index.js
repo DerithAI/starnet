@@ -4154,7 +4154,8 @@ const revokedByTaint = { ok: taintPolicy.allowedWhenTainted, isSource: taintPoli
 
 function hardlineFloor(call) {
   const p = call && call.args && call.args.path;
-  if (typeof p === 'string' && (/(^|[\\/])\.env(\.|$)/i.test(p) || /(^|[\\/])\.git([\\/]|$)/i.test(p)))
+  // `:` too — Windows opens `.env::$DATA` as `.env` and `.git::$INDEX_ALLOCATION\hooks` as `.git\hooks` (NTFS stream syntax)
+  if (typeof p === 'string' && (/(^|[\\/])\.env(\.|:|$)/i.test(p) || /(^|[\\/])\.git([\\/:]|$)/i.test(p)))
     return 'writing ' + p + ' is blocked by the protected-file floor';
   return null;
 }

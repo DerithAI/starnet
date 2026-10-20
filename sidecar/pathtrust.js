@@ -129,8 +129,10 @@
       // UNC / network path — off-host, never blessable. Check the RAW string (P.resolve can mangle it).
       if (/^[\\/]{2}/.test(rawAbs)) return 'network paths (UNC) are not permitted: ' + rawAbs;
       const probe = resolvedAbs || rawAbs;
-      if (/(^|[\\/])\.env(\.|$)/i.test(probe)) return 'reading ' + probe + ' is blocked by the protected-file floor (.env)';
-      if (/(^|[\\/])\.git([\\/]|$)/i.test(probe)) return 'reading ' + probe + ' is blocked by the protected-file floor (.git)';
+      // `:` too: NTFS stream syntax (`.env::$DATA`, `.git::$INDEX_ALLOCATION\hooks`) opens the protected file itself, and the
+      // realpath re-proof below only canonicalizes a target that already exists
+      if (/(^|[\\/])\.env(\.|:|$)/i.test(probe)) return 'reading ' + probe + ' is blocked by the protected-file floor (.env)';
+      if (/(^|[\\/])\.git([\\/:]|$)/i.test(probe)) return 'reading ' + probe + ' is blocked by the protected-file floor (.git)';
       const cred = credentialFloor(probe);
       if (cred) return 'reading ' + probe + ' is blocked by the credential floor (' + cred + ') — only Full Power reaches it';
       return null;
