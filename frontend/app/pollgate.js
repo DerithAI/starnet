@@ -44,6 +44,9 @@
         chain, which carries on. cadence() is the interval in force when the last run started; interval() is the one in
         force now.
      PollGate.onWake(cb) → unsubscribe      cb runs when the Commander comes back after the gate was away
+     PollGate.lastAwayAt()                   → when (on the gate's monotonic clock) away was last claimed, -Infinity if never.
+        A reader of a poll's answer can tell an answer that was followed by an away stretch (its next beat comes on the
+        30 s floor, so it stays the newest the station has given) from one that simply went unrefreshed (overseer fresh()).
    Callers fall back to their old timers when PollGate is undefined (single-file node tests load them without it).
    Dependency-free and browser-global, with injection seams for node tests (module.exports). */
 'use strict';
@@ -68,6 +71,7 @@ const PollGate = (() => {
   let raiseRejection = e => { Promise.reject(e); };
   let lastInputAt = -Infinity;    // no input yet (never "recent" — a page that boots hidden is not held on screen by the clock's origin)
   let awaySeen = false;           // a due-check (or a caller) saw the gate away since the last wake
+  let lastAwayAt = -Infinity;     // when away() last claimed away (never reset by a wake: it is a time, not a state)
   let probeAt = 0, probeSeq = 0;  // the frame probe out (armed at probeAt, 0 = none) and its generation
   const loops = new Set();
   const wakers = new Set();
@@ -95,7 +99,7 @@ const PollGate = (() => {
     } catch (_) { out = false; }
     out = out && now() - lastInputAt >= INPUT_GRACE_MS;
     if (out && frame) out = noFrames();
-    if (out) awaySeen = true;
+    if (out) { awaySeen = true; lastAwayAt = now(); }
     return out;
   }
 
@@ -197,7 +201,7 @@ const PollGate = (() => {
   if (typeof document !== 'undefined' && typeof window !== 'undefined') bind(document, window);
 
   return {
-    away, every, onWake, AWAY_MS, INPUT_GRACE_MS, FRAME_PROOF_MS, DEADLINE_MIN_MS,
+    away, every, onWake, lastAwayAt: () => lastAwayAt, AWAY_MS, INPUT_GRACE_MS, FRAME_PROOF_MS, DEADLINE_MIN_MS,
     _setDocForTest(d, w) { bind(d, w); },
     _setClockForTest(fn) { now = fn || monotonic; },
     _setTimersForTest(setFn, clearFn) { setT = setFn; clearT = clearFn; },
@@ -205,7 +209,7 @@ const PollGate = (() => {
     _setRaiseForTest(onThrow, onReject) { raise = onThrow; raiseRejection = onReject || onThrow; },
     _resetForTest() {
       for (const l of Array.from(loops)) l.halt();
-      loops.clear(); wakers.clear(); lastInputAt = -Infinity; awaySeen = false; probeAt = 0; probeSeq++;
+      loops.clear(); wakers.clear(); lastInputAt = -Infinity; awaySeen = false; lastAwayAt = -Infinity; probeAt = 0; probeSeq++;
     },
     _debug: () => ({ loops: loops.size, wakers: wakers.size, awaySeen, lastInputAt, probeOut: !!probeAt })
   };

@@ -110,5 +110,64 @@ const path = require('node:path');
   hang=true;const stepped=m.refresh();mono+=6000;wallStep-=3600000;
   assert.equal(m.unreachable(),true,'an ask out 6 s on the monotonic clock is hung, whatever the wall clock did');
   timeout();await stepped;hang=false;
+  /* fix round 2 (2026-10-20): every age is the LONGER of the two clocks. WebKit's performance.now (macOS WKWebView, Linux
+     WebKitGTK) stands still while the machine sleeps; on it alone a pre-sleep ledger read seconds old after an hour's sleep
+     and painted pre-sleep "working" lamps as current. Windows' WebView2 counts the sleep on both clocks. */
+  wallStep=0;await m.refresh();assert.equal(m.fresh(),true,'fixture: a ledger just answered');
+  wallStep+=3600000;   // an hour of sleep: the wall clock moved, the monotonic clock did not
+  assert.equal(m.fresh(),false,'an hour-old ledger after a sleep that stopped performance.now is not current (it read fresh)');
+  await m.refresh();assert.equal(m.fresh(),true,'fixture: answered again after the resume');
+  hang=true;const slept=m.refresh();wallStep+=3600000;
+  assert.equal(m.unreachable(),true,'an ask out across an hour of that sleep is hung, as on WebView2 (it read 0 s old)');
+  timeout();await slept;hang=false;
+
+  /* fix round 2 (2026-10-20): AN AWAY STRETCH IS NOT STALENESS. GENUINE (executed): the REAL pollgate.js (fake monotonic
+     clock + timers through its seams, a rAF probe that answers only while visible) and the REAL overseer.js, whose fetch
+     answers after a 40 ms round trip. The last answer before a minimize came from the 2.5 s visible beat and the
+     first away beat answers ~30 s later: a Commander back 10-32 s after a minimize saw the rail's crew row read "crew ·
+     unknown — station unreachable" (fresh() false) while the station answered all along. */
+  const PollGate=require('../frontend/app/pollgate.js');
+  async function minimizeAndReturn({awayMs,frozenMs=0}){
+    let T=5e6;const timers=new Map();let nextId=1;
+    const setT=(fn,ms)=>{const id=nextId++;timers.set(id,{at:T+Math.max(0,ms||0),fn});return id;};
+    const clearT=id=>{timers.delete(id);};
+    const drain=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+    const advance=async ms=>{const end=T+ms;for(;;){let best=null;for(const [id,t] of timers) if(t.at<=end&&(!best||t.at<best[1].at||(t.at===best[1].at&&id<best[0])))best=[id,t];if(!best)break;timers.delete(best[0]);T=best[1].at;best[1].fn();await drain();}T=end;await drain();};
+    const listeners={};
+    const doc={hidden:false,visibilityState:'visible',hasFocus:()=>!doc.hidden,addEventListener(k,fn){(listeners[k]=listeners[k]||[]).push(fn);},removeEventListener(){}};
+    PollGate._resetForTest();PollGate._setClockForTest(()=>T);PollGate._setTimersForTest(setT,clearT);
+    PollGate._setFrameForTest(cb=>{if(!doc.hidden)setT(()=>cb(T),16);});
+    PollGate._setDocForTest(doc,{addEventListener(){},removeEventListener(){}});
+    let ready=null;
+    const ledger={threads:[],workers:[{runId:'w1',status:'running',parentStreamId:'planning'}],reviews:[]};
+    const c={module:{exports:{}},console:{debug(){}},AbortController,PollGate,performance:{now:()=>T},setTimeout:setT,clearTimeout:clearT,setInterval:()=>0,
+      document:{addEventListener(k,fn){if(k==='DOMContentLoaded')ready=fn;}},Workstreams:{generalId:()=>'general',get:()=>null,adopt:r=>r},App:{persist(){},refreshRail(){}},
+      fetch:()=>new Promise(res=>setT(()=>res({ok:true,json:async()=>ledger}),40))};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),c);
+    const o=c.module.exports;ready();await drain();
+    await advance(20000);
+    const before=o.fresh();
+    doc.hidden=true;doc.visibilityState='hidden';for(const fn of listeners.visibilitychange||[])fn();
+    await advance(awayMs);
+    T+=frozenMs;   // a sleep / a frozen page: the clock moves, nothing runs
+    doc.hidden=false;doc.visibilityState='visible';for(const fn of listeners.visibilitychange||[])fn();
+    const atReturn={fresh:o.fresh(),unreachable:o.unreachable()};   // what app.js's visibilitychange renderRail reads
+    await advance(3000);
+    const after=o.fresh();
+    PollGate._resetForTest();
+    return {before,atReturn,after};
+  }
+  for(const awayMs of [12000,20000,28000]){
+    const r=await minimizeAndReturn({awayMs});
+    assert.equal(r.before,true,'fixture: the ledger is current before the minimize');
+    assert.equal(r.atReturn.fresh,true,'back '+awayMs/1000+' s after a minimize: the last ledger is still current while the catch-up read is out (it read "station unreachable")');
+    assert.equal(r.after,true,'…and the catch-up answer keeps it current');
+  }
+  {
+    const r=await minimizeAndReturn({awayMs:20000,frozenMs:3600000});
+    assert.equal(r.atReturn.unreachable,false,'minimized, then an hour frozen: the catch-up read on its way is not "unreachable"');
+    assert.equal(r.atReturn.fresh,false,'…but an hour-old ledger is never current because the gate went away after it');
+    assert.equal(r.after,true,'…until the catch-up read answers');
+  }
   console.log('overseer sync: existing sessions, no added UI/focus changes, recovery and timeout PASS');
 })().catch(e=>{console.error(e);process.exitCode=1;});

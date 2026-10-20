@@ -8,7 +8,7 @@ const Overseer = (() => {
   // anything that says "working" must read fresh() first: the rail's crew lamp and the delegation card's stateOf
   // (delegated.js) both do, so neither ticks a running row through an outage (review app-shell-ui-05)
   const BEAT = 2500;
-  let okAt = 0, failing = false, askedAt = 0;
+  let okAt = 0, okAtWall = 0, failing = false, askedAt = 0, askedAtWall = 0;
   /* THE BEAT RUNS THROUGH POLLGATE (idle CPU piece 3, 2026-10-20): 2.5 s while the station can be seen, a 30 s floor while
      the Commander is away, and a catch-up read the moment they are back. Freshness is therefore measured against the
      cadence that actually produced the answer, never a fixed 7.5 s from the last answer — or the catch-up read on return
@@ -18,20 +18,31 @@ const Overseer = (() => {
          that, the design's formula. An ask on its way never vouches for an older answer: after a sleep or a frozen page
          the catch-up read is out while the last ledger is hours old, and that ledger is not current until it answers.
      While visible both reduce to the old reading: a 2.5 s beat, a hang after ~5 s of the ask (7.5 s from the answer).
-     Both ages run on the monotonic clock (performance.now when present): a backward wall-clock step can neither make an
-     old ledger current nor keep a hung ask from reading as hung. Nothing here displays these times. */
+     AN AWAY STRETCH IS NOT STALENESS (fix round 2, 2026-10-20). The last answer before a minimize was asked at the 2.5 s
+     beat, and the first away beat answers only ~30 s later: on that formula alone, a Commander back 10-32 s after a
+     minimize saw the rail say "station unreachable — crew state unknown" and every DELEGATED row "status unknown" while
+     the station answered the whole time (trunk's beat kept running while hidden). An answer that PollGate went away after
+     (PollGate.lastAwayAt() >= okAt) is measured against the 30 s floor that was due to replace it, so it stays current for
+     90 s — through the catch-up read on return — and an hour-old one (a sleep, a frozen page) still never is.
+     Every age is the LONGER of two clocks: the monotonic one (performance.now when present), so a backward wall-clock step
+     can neither make an old ledger current nor keep a hung ask from reading as hung; and the wall clock, because WebKit's
+     performance.now (macOS WKWebView, Linux WebKitGTK) stands still while the machine sleeps, so a pre-sleep answer would
+     read seconds old after resume. Windows' WebView2 counts the sleep on both. Nothing here displays these times. */
   let loop = null, okCadence = BEAT, askCadence = BEAT;
   const mono = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? () => performance.now() : () => Date.now();
   const gateCadence = () => { try { return loop ? loop.interval() : BEAT; } catch (_) { return BEAT; } };
-  const hung = () => busy && mono() - askedAt > (okAt ? 2 : 3) * BEAT;
-  const fresh = () => !!last && !failing && !hung() && mono() - okAt <= 3 * Math.max(BEAT, okCadence);
+  const ageOf = (at, atWall) => Math.max(mono() - at, Math.max(0, Date.now() - atWall));
+  // the gate went away after this answer landed: its replacement was due on the away floor, not the visible beat
+  const awayCover = () => (typeof PollGate !== 'undefined' && PollGate.lastAwayAt && PollGate.lastAwayAt() >= okAt) ? (PollGate.AWAY_MS || 30000) : 0;
+  const hung = () => busy && ageOf(askedAt, askedAtWall) > (okAt ? 2 : 3) * BEAT;
+  const fresh = () => !!last && !failing && !hung() && ageOf(okAt, okAtWall) <= 3 * Math.max(BEAT, okCadence, awayCover());
   // the station is not answering the ledger read: the latest poll failed, or this one hangs (above). Readable BEFORE the
   // first answer, when snapshot() is still null: the delegation card says "checking…" while that first read is on its way
   // and "station unreachable" once it has failed — never a worker state the ledger has not given (delegated.js ledgerRead)
   const unreachable = () => failing || hung();
   async function refresh() {
     if (busy || typeof Workstreams === 'undefined' || !Workstreams.generalId()) return;
-    busy = true; askedAt = mono(); askCadence = gateCadence();
+    busy = true; askedAt = mono(); askedAtWall = Date.now(); askCadence = gateCadence();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
     try {
@@ -48,7 +59,7 @@ const Overseer = (() => {
         const adoptedRow = Workstreams.adopt(row);
         if (adoptedRow && (!before || before[0] !== adoptedRow.parentStreamId || before[1] !== adoptedRow.worker || before[2] !== adoptedRow.projectRoot)) adopted = true;
       }
-      last = data; okAt = mono(); okCadence = askCadence; failing = false;
+      last = data; okAt = mono(); okAtWall = Date.now(); okCadence = askCadence; failing = false;
       if (adopted) { App.persist(); App.refreshRail(); }
       if (typeof Delegated !== 'undefined' && Delegated.repaint) Delegated.repaint();   // the parent's DELEGATED card follows the ledger
       const deliveries = JSON.stringify([(data.workers || []).map(w => [w.runId, w.status]),
