@@ -28,10 +28,14 @@ const flush = async () => { for (let i = 0; i < 25; i++) await new Promise(r => 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
 // one station: the real overseer + the real tick, every other dependency a fake whose state the test reads
-function station(file) {
+function station(file, opts) {
+  const o = opts || {};
   let clock = 1000;
-  const overseer = makeOverseer({ fs, path, file: path.join(root, file), now: () => ++clock, newId: () => 'ws_' + (++clock),
-    sessions: () => JSON.parse(JSON.stringify(page)), hasAgent: () => true });
+  const reads = { n: 0 };
+  // o.stamped: the save read the way sidecar/index.js wires it (a clean read carries a stamp that holds while the save does)
+  const overseer = makeOverseer(Object.assign({ fs, path, file: path.join(root, file), now: () => ++clock, newId: () => 'ws_' + (++clock),
+    sessions: () => { reads.n++; return JSON.parse(JSON.stringify(page)); }, hasAgent: () => true },
+    o.stamped ? { sessionsRead: () => { reads.n++; return { doc: JSON.parse(JSON.stringify(page)), stamp: 'save-1' }; }, sessionsStamp: () => 'save-1' } : {}));
   const workers = [];
   const proofs = [];
   const calls = [];           // the stream of every paid review run, in launch order
@@ -44,7 +48,7 @@ function station(file) {
     subagents: { list: () => workers.slice(), get: id => workers.find(w => w.id === id) },
     runStore: { all: () => proofs.slice() }, isBlessedRoot: () => true,
     agentRoster: new Map([['agent', { provider: 'openrouter', model: 'test/model', system: 'You coordinate work.' }]]),
-    normalizeProvider: p => p, providerRuntimeKey: () => 'sk-test', providerRuntimeBaseUrl: () => '', providerHasCredential: () => true,
+    normalizeProvider: p => p, providerRuntimeKey: () => 'sk-test', providerRuntimeBaseUrl: () => '', providerHasCredential: () => o.credential !== false,
     crypto, runs, runsMeta,
     delegatedReportPrompt: () => 'Review the background work you delegated for this conversation.',
     runOnceCoreCounted: o => {
@@ -63,7 +67,7 @@ function station(file) {
   // a tick that must come back on its own: never awaited blind (the old tick hung on a busy lock)
   const tickReturns = async () => { let back = false; tick().then(() => { back = true; }); await flush(); return back; };
   const release = async conv => { gates.get(conv).resolve(); gates.delete(conv); await flush(); };
-  return { overseer, tick, tickReturns, release, settle, row, workers, calls, gates, order, runs, reviewTasks, proofs };
+  return { overseer, tick, tickReturns, release, settle, row, workers, calls, gates, order, runs, reviewTasks, proofs, reads };
 }
 
 (async () => {
@@ -143,6 +147,15 @@ function station(file) {
     s.overseer.patchReview(id, { status: 'reviewing', reviewRunId: 'run-from-a-dead-process' });
     await s.tickReturns();
     A.eq([s.row('convA').status, s.calls], ['interrupted', []], 'a reviewing row with no task and no proof reads interrupted, nothing is re-run');
+  }
+  // ── 4. a report waiting for a provider credential costs no save parse per tick (it re-resolved its parent every 2 s) ──
+  {
+    const s = station('four.json', { stamped: true, credential: false });
+    s.settle('wA', 'convA');
+    for (let i = 0; i < 10; i++) await s.tickReturns();
+    A.eq([s.row('convA').status, s.row('convA').error], ['pending', 'Connect the overseer provider to review this result.'], 'no credential: the report waits, saying why');
+    A.eq(s.calls, [], 'and nothing runs');
+    A.ok(s.reads.n <= 2, 'ten ticks parse the save at most twice (the first look, and once after the error note changed the state): ' + s.reads.n);
   }
   fs.rmSync(root, { recursive: true, force: true });
   A.report('overseer-busy-lock');
