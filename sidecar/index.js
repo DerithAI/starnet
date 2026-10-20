@@ -17553,10 +17553,13 @@ async function handleWorkshopBacklog(req, res) {
     attempts: Number(b.attempts) || 0
   }));
   const routine = findWorkshopRoutine(agentId);
+  // a shift fires only through the scheduler: OFF or E-STOPped, the routine's nextRunAt is a time that will not
+  // arrive — withhold the clock and say why (the same live state GET /api/cron reports; sweep/autonomy 2026-10-20)
+  const shiftsPaused = cronHalted ? 'halted' : (!cronArmed ? 'scheduler-off' : null);
   json(200, {
     ok: true, agentId: agentId, granted: rec.grant, backlog: rec.backlog,
-    items: items,
-    nextShiftAt: (routine && routine.enabled && routine.nextRunAt) || null,
+    items: items, shiftsPaused: shiftsPaused,
+    nextShiftAt: (!shiftsPaused && routine && routine.enabled && routine.nextRunAt) || null,
     shiftEvery: WORKSHOP_SHIFT_SCHEDULE,
     lastShift: rec.lastShift || null
   });
