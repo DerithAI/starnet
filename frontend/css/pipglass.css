@@ -1409,14 +1409,14 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-questions .gc-questi
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state:not(.hold) {
   align-items: center; gap: 10px; min-height: 34px; padding: 6px 12px; border: 1px solid rgba(var(--ph-rgb), .22); border-radius: 2px;
-  background: rgba(0, 0, 0, .28); box-shadow: none; font-size: 15px; letter-spacing: .4px;
+  background: rgba(0, 0, 0, .28); box-shadow: none; font-size: var(--sn-type-meta); letter-spacing: .4px;
 }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence.paused:not(.resolved),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state.hold {
   border: 1px solid rgba(var(--gold-rgb), .45); border-radius: 2px; box-shadow: none;
   background: linear-gradient(180deg, rgba(var(--gold-rgb), .06), rgba(var(--gold-rgb), .012) 55%), rgba(0, 0, 0, .28);
 }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) :is(.cp-verb, .cp-tool, .cp-time) { font-size: 15px; text-shadow: none; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) :is(.cp-verb, .cp-tool, .cp-time) { font-size: var(--sn-type-meta); text-shadow: none; }   /* the floor (16), was 15 */
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) .cp-verb { letter-spacing: 1.8px; color: var(--ph-bright); }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence:not(.resolved) :is(.cp-tool, .cp-time) { color: var(--text); opacity: 1; }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence.paused:not(.resolved) :is(.cp-verb, .cp-tool) { color: var(--gold); }
@@ -1443,8 +1443,8 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state:is(
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state.bad .gc-dot { background: var(--bad); }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #comms-presence.paused:not(.resolved) .cp-dot::after,
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state:is(.hold, .bad) .gc-dot::after { content: none; }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-verb { font-size: 15px; letter-spacing: 1.8px; text-shadow: none; }
-body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-what { font-size: 15px; text-shadow: none; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-verb { font-size: var(--sn-type-meta); letter-spacing: 1.8px; text-shadow: none; }
+body.glass-demo:not(.hud-mode) #screen-game #chat-panel #gc-states .gc-state .gc-what { font-size: var(--sn-type-meta); text-shadow: none; }
 @media (prefers-reduced-motion: reduce) {
   body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#comms-presence .cp-dot, #gc-states .gc-dot)::after { animation: none !important; transform: none; }
 }
@@ -1487,7 +1487,7 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel .tool-chip {
 }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .tool-chip:hover { border-color: rgba(var(--ph-rgb), .45); background: rgba(var(--ph-rgb), .06); }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .tool-chip .tc-head {
-  align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; font-size: 15px; line-height: 1.2; letter-spacing: .3px; color: var(--text);
+  align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; font-size: var(--sn-type-meta); line-height: 1.2; letter-spacing: .3px; color: var(--text);
 }
 /* the tool's name reads as the terminal's opcode: tracked caps in the bright phosphor */
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel .tool-chip .tc-name { color: var(--ph-bright); letter-spacing: 1.4px; text-transform: uppercase; }
@@ -1516,7 +1516,7 @@ body.glass-demo:not(.hud-mode) #screen-game #chat-panel .tool-chip .tc-d-res.hel
 /* RUN COMPLETE: still the reply's quiet footer (Andrew 10-03), legible: 15px in the muted text colour at full strength
    (it was 14px at half opacity), its fold key the same drawn caret */
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved {
-  font-size: 15px; letter-spacing: 1px; line-height: 1.35; color: var(--cg-mute, var(--text)); opacity: .9; padding: 2px 0;
+  font-size: var(--sn-type-meta); letter-spacing: 1px; line-height: 1.35; color: var(--cg-mute, var(--text)); opacity: .9; padding: 2px 0;
 }
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.has-fold:is(:hover, :focus-visible),
 body.glass-demo:not(.hud-mode) #screen-game #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.open { color: var(--ph-bright); opacity: 1; }
@@ -1831,4 +1831,30 @@ body.glass-demo:not(.hud-mode) #terms .gx-zlabels { display: flex; flex-wrap: wr
   body.glass-demo:not(.hud-mode) #terms .sk-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
   body.glass-demo:not(.hud-mode) #terms .cc-chip { white-space: normal; }
   body.glass-demo:not(.hud-mode) #terms .src-badge { display: inline-block; max-width: 100%; white-space: normal; }
+}
+
+/* ============================================================
+   THE SAME FLOOR BEYOND THE WINDOWS (Andrew 10-20: "run the same audits over COMMS and the dashboard rails at every text
+   size, BUILD MODE, onboarding, toasts and tooltips, and the other colour themes, then fix what they find"). Measured at
+   his settings: BUILD MODE drew 92 texts at 11-12.5px (material names, the tier, key hints — his glass standard for the
+   Build Library is 15-17px), the first-run screens 12-13px help and labels, the dock coach a 12px key, and COMMS's
+   working card, tool rows and group status words 15px. typefloor.js now watches BUILD MODE (and the workflow panel), the
+   first-run screens and the coach too; COMMS keeps its own tuned scale with its 15px roles named here.
+   ============================================================ */
+body.glass-demo:not(.hud-mode) :is(.refit-overlay, .wf-panel, #screen-splash, #screen-connect, #nav-coach) { --sn-type-meta: 16px; --sn-type-compact: 16px; }
+body.glass-demo:not(.hud-mode) :is(.refit-overlay, .wf-panel, #screen-splash, #screen-connect, #nav-coach) [data-sn-floor] { font-size: var(--sn-type-meta) !important; }
+body.glass-demo:not(.hud-mode) :is(.refit-overlay, .wf-panel, #screen-splash, #screen-connect, #nav-coach) [data-sn-caps="label"] { letter-spacing: 1.6px !important; }
+body.glass-demo:not(.hud-mode) :is(.refit-overlay, .wf-panel, #screen-splash, #screen-connect, #nav-coach) [data-sn-caps="key"] { letter-spacing: .9px !important; }
+/* BUILD MODE › Edit: the shortcut rows' key column fits its longest key at the floor ("Drag a selected one"; the 108px
+   column was sized for 12px key caps, so at 16px they ran into their descriptions) */
+body.glass-demo:not(.hud-mode) .refit-overlay .refit-keyrow { grid-template-columns: 156px minmax(0, 1fr); }
+/* COMMS: the first-run interview's stage line (COMMS's status strip, step rows, run footer and a group's status words
+   take the floor in their own rules above — they were 15px) */
+body.glass-demo:not(.hud-mode) #chat-panel .fnv-stage { font-size: var(--sn-type-meta); }
+@supports (animation-timeline: scroll()) {
+  body.glass-demo:not(.hud-mode) :is(.refit-overlay, .wf-panel, #screen-splash, #screen-connect, #nav-coach) [data-sn-cut="line"] { text-overflow: clip !important; animation: sn-cut-line 1s linear both; animation-timeline: scroll(self inline); }
+  body.glass-demo:not(.hud-mode) :is(.refit-overlay, .wf-panel, #screen-splash, #screen-connect, #nav-coach) [data-sn-cut="clamp"] { display: block !important; -webkit-line-clamp: none !important;
+    max-height: calc(var(--sn-clamp, 2) * 1lh); overflow: hidden !important; animation: sn-cut-clamp 1s linear both; animation-timeline: scroll(self block); }
+  /* the dashboard's own one-line cuts — a crew row's step at a large text size, COMMS's model line — fade too */
+  body.glass-demo:not(.hud-mode) :is(#left .crew-step, #chat-panel .comms-agent-model) { text-overflow: clip; animation: sn-cut-line 1s linear both; animation-timeline: scroll(self inline); }
 }

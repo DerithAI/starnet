@@ -36,6 +36,7 @@ function el(tag, opts = {}, kids = []) {
     },
     attrs };
   if (!node.style.setProperty) node.style.setProperty = (k, v) => { node.style[k] = v; };
+  Object.defineProperty(node, 'children', { get: () => node.childNodes.filter(c => c.nodeType === 1) });
   for (const k of kids) { const c = typeof k === 'string' ? { nodeType: 3, textContent: k } : k; c.parent = node; node.childNodes.push(c); }
   return node;
 }
@@ -126,7 +127,23 @@ A.eq(TF.pass(root, view), 0, 'a second pass over the same text marks nothing new
   A.ok(marked(shrinks), 'that read lifts what the new size shrank');
 }
 
-/* ---- 5. the stylesheet and the page ---- */
+/* ---- 5. beyond the windows: the first-run screens and the coach from the start, BUILD MODE when it mounts ---- */
+{
+  A.ok(['#terms', '#screen-splash', '#screen-connect', '#nav-coach'].every(h => TF.HOSTS.includes(h)), 'the floor holds in the windows, the first-run screens and the dock coach');
+  let bodyCb = null;
+  const v3 = Object.assign({}, view, { MutationObserver: function (fn) { if (!bodyCb) bodyCb = fn; this.observe = () => {}; } });
+  const screen = el('DIV', { attrs: { id: 'screen-connect' }, style: { size: 16 } }, [el('P', { cls: 'ov-help', style: { size: 13 } }, ['Leave blank and we will choose a codename.'])]);
+  const body = el('BODY', { style: { size: 16 } }, []);
+  const doc = { querySelector: sel => (sel === '#screen-connect' ? screen : null), body };
+  TF.startAll(doc, v3);
+  A.ok(marked(screen.childNodes[0]), 'a first-run screen\'s 13px help line is lifted at start');
+  const overlay = el('DIV', { cls: 'refit-overlay', style: { size: 16 } }, [el('SPAN', { cls: 'refit-matname', style: { size: 12 } }, ['TERRAZZO'])]);
+  body.childNodes.push(overlay); overlay.parent = body;
+  bodyCb([{ type: 'childList', addedNodes: [overlay], target: body }]);
+  A.ok(marked(overlay.childNodes[0]), 'BUILD MODE mounting on the body is watched too: its 12px material name is lifted');
+}
+
+/* ---- 6. the stylesheet and the page ---- */
 const glass = read('frontend/css/pipglass.css');
 A.ok(/body\.glass-demo:not\(\.hud-mode\) #terms \{ --sn-type-meta: 16px; --sn-type-compact: 16px; \}/.test(glass), 'the windows raise the reading tokens to the floor (readability.css keeps its bounded defaults)');
 A.ok(/body\.glass-demo:not\(\.hud-mode\) #terms \[data-sn-floor\] \{ font-size: var\(--sn-type-meta\) !important; \}/.test(glass), 'a lifted text takes the token, only inside the windows');

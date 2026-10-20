@@ -262,7 +262,7 @@ const byClass = (root, c) => all(root).filter(e => e._cls && e._cls.has(c));
     'a picked answer stays visibly pressed over the card key');
   A.ok(/#comms-presence:not\(\.resolved\) \.cp-dot,[\s\S]{0,200}font-size: 0; color: transparent; text-shadow: none; animation: none;/.test(pipCards) && /@keyframes pip-meter-cp /.test(pipCards),
     'the working line drops the blinking block caret for the CREW rail\'s calm meter');
-  A.ok(/#comms-presence:not\(\.resolved\) :is\(\.cp-verb, \.cp-tool, \.cp-time\) \{ font-size: 15px;/.test(pipCards), 'the working line reads at 15px (its tool name and time were 12px and dim)');
+  A.ok(/#comms-presence:not\(\.resolved\) :is\(\.cp-verb, \.cp-tool, \.cp-time\) \{ font-size: var\(--sn-type-meta\);/.test(pipCards), 'the working line reads at the floor, 16px (its tool name and time were 12px and dim, then 15)');
   A.ok(/#comms-presence\.paused:not\(\.resolved\) \.cp-dot::after,[\s\S]{0,140}\{ content: none; \}/.test(pipCards), 'a run waiting on you shows one steady lamp, no meter (the CREW rail hides its meter then too)');
   A.report('ask-cards-readable.test');
 })().catch(e => { console.error(e); process.exitCode = 1; });
