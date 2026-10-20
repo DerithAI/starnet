@@ -82,6 +82,7 @@
   'use strict';
 
   const MIN = 60000, HOUR = 3600000, DAY = 86400000;
+  const REWIND_SLACK_MS = 5 * MIN;                 // lastRunAt this far past now = the wall clock went backwards
   const CRON_SEARCH_LIMIT_MS = 5 * 366 * DAY;       // enough to cover leap-day schedules
   const UNIT_MS = { s: 1000, m: MIN, h: HOUR, d: DAY };
 
@@ -788,6 +789,17 @@
       }
 
       const dueAt = dueAtOf(job, now, defaultTz);
+      /* CLOCK REWOUND (sweep/autonomy 2026-10-20): a recurring job that last ran in the FUTURE was advanced by a wall
+         clock that jumped ahead and was then corrected back — its nextRunAt is a period past a time that never
+         happened, and waiting for it silenced the routine for the whole jump. Re-anchor from the real now (no fire). */
+      if (isRecurring(sched) && job.lastRunAt && dueAt != null && dueAt > now) {
+        const lr = Date.parse(job.lastRunAt);
+        if (isFinite(lr) && lr > now + REWIND_SLACK_MS) {
+          const re = sched.kind === 'interval' ? now + periodMs(sched) : nextRecurringAt(sched, now, defaultTz);
+          if (re != null && isFinite(re) && re < dueAt) next.push({ jobId: job.id, nextAt: re, prevAt: dueAt });
+          continue;
+        }
+      }
       if (dueAt == null || isNaN(dueAt) || dueAt > now) continue;   // not due yet (or no computable fire)
 
       if (sched.kind === 'once') {
