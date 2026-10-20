@@ -8140,6 +8140,19 @@ function nightshiftBeliefMap() {
   return out;
 }
 
+// recent RUNS (newest-first already from runStore.list). We pass the whole recent window; the pure core windows
+// to ~7d + excludes internal streamIds (nightshift-/cron-/workshop-) + de-dupes. limit generous; core caps to 8.
+// `internal` rides through: the pure core's `!r.internal` filter was dead because this map dropped the flag, so the
+// station's own reason-only calls read as the Commander's recent work (USER-STUDY LOOP, 2026-09-28).
+// Filter provenance before projecting into the pure pack: otherwise attachment/quoted content becomes ambient
+// owner activity in a later, clean run. Run storage omits taintedBy on clean rows; legacy rows share that shape.
+// Internal titles are exclusion markers only: retain them even when a later tool taints their run, so its
+// initially clean directive cannot reappear as owner chat. The pure pack never renders an internal run title.
+// Shared by the context pack and the readiness count, so both always read the SAME projection.
+function nightshiftRecentRuns() {
+  try { return (runStore.list(null, { limit: 60 }) || []).filter(r => r && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { return []; }
+}
+
 /* NS-2: the CONTEXT-PACK io — the ambient half of contextpack.js. Gathers REAL recent activity from the durable
    stores (runs / transcript / goal arc / autonomy ledger for kept-vs-discarded / dossier beliefs / learn store) and
    hands the pure assembler already-fetched arrays (determinism-split: this side reads Date.now + the stores, the
@@ -8148,16 +8161,7 @@ function nightshiftBeliefMap() {
    not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty. */
 function nightshiftContextPack() {
   const now = Date.now();
-  // recent RUNS (newest-first already from runStore.list). We pass the whole recent window; the pure core windows
-  // to ~7d + excludes internal streamIds (nightshift-/cron-/workshop-) + de-dupes. limit generous; core caps to 8.
-  let runs = [];
-  // `internal` rides through: the pure core's `!r.internal` filter was dead because this map dropped the flag, so the
-  // station's own reason-only calls read as the Commander's recent work (USER-STUDY LOOP, 2026-09-28).
-  // Filter provenance before projecting into the pure pack: otherwise attachment/quoted content becomes ambient
-  // owner activity in a later, clean run. Run storage omits taintedBy on clean rows; legacy rows share that shape.
-  // Internal titles are exclusion markers only: retain them even when a later tool taints their run, so its
-  // initially clean directive cannot reappear as owner chat. The pure pack never renders an internal run title.
-  try { runs = (runStore.list(null, { limit: 60 }) || []).filter(r => r && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { runs = []; }
+  const runs = nightshiftRecentRuns();
   // Only host-recorded clean owner turns can ground activity. Check the full content before the pure core takes
   // its first line; a harmless heading cannot launder a quoted document below it. Bound the source window first.
   let cleanOwnerChats = [], chats = [];
@@ -8201,6 +8205,7 @@ function nightshiftContextPack() {
   // from the proven transcript/brief projection; retain internal run markers solely to suppress self-talk.
   pack.trustedActivityLines = contextpack.assemble({ runs: runs.filter(r => r.internal), briefs, chats, redact }, { now }).activityLines || [];
   // the count of recent USER-INITIATED runs the pack recognized — the ACTIVITY-as-grounding evidence for readiness.
+  // (nightshiftUserRunCount computes exactly this without building the rest of the pack.)
   pack.userRunCount = (pack.counts && pack.counts.runs) || 0;
   // NS-6: the top OPEN threads (durable ideas the Commander raised but never acted on), recency-ranked. The propose
   // step draws from these FIRST (improv is the fallback); citing a thread's tag in GROUNDS is the preferred grounding.
@@ -8259,6 +8264,18 @@ function commanderEvidenceContext(existingSystem, extra) {
   return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), extra || {}, { existingSystem: existingSystem || '' }));
 }
 
+/* nightshiftUserRunCount() — the readiness evidence (pack.userRunCount) WITHOUT building the whole context pack
+   (2026-10-19, idle-CPU piece 2). The precheck runs every 60 s night-shift tick once the gates clear, and while
+   readiness stays cold it stands down every time — yet it built the full pack to read one number: two clones of the
+   whole transcript, two of the whole run history (provenance proofs), the briefs join, the ledger join, the track
+   record (whose verdict map parses agent.save.json) and two assemble passes. The pure core's counts.runs is a
+   function of the projected runs and `now` ALONE (internal heads only filter chats), so assembling just those runs
+   yields the identical number from one bounded 60-row read. */
+function nightshiftUserRunCount() {
+  const pack = contextpack.assemble({ runs: nightshiftRecentRuns(), redact }, { now: Date.now() });
+  return (pack.counts && pack.counts.runs) || 0;
+}
+
 // NS-2: the PURELY-LOCAL pre-spend readiness gate for the night-shift driver (the cold-leash fix). Answers, with NO
 // model call, "could a beat even reach a model call right now?" — the same readiness/eligibility conditions the act
 // pipeline checks first. Dossier OR substantial recent activity counts as grounding (Autopilot.readiness folds both).
@@ -8290,7 +8307,7 @@ function nightshiftPrecheck() {
     const summary = { known: Array.isArray(snap.known) ? snap.known : Object.keys((snap.beliefs) || {}) };
     const beliefsByDim = (dim) => (snap.beliefs && snap.beliefs[dim]) || [];
     let activityCount = 0;
-    try { activityCount = nightshiftContextPack().userRunCount || 0; } catch (_) { activityCount = 0; }
+    try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
     const eligible = Autopilot.eligibleArchetypes(rd.usableDims, { activityGrounded: rd.groundedBy === 'activity' });
     if (rd.tier !== 'hot' || !eligible.length) return { ok: false, reason: 'readiness' };
@@ -8308,7 +8325,7 @@ function nightshiftReadinessView() {
     const summary = { known: Array.isArray(snap.known) ? snap.known : Object.keys((snap.beliefs) || {}) };
     const beliefsByDim = (dim) => (snap.beliefs && snap.beliefs[dim]) || [];
     let activityCount = 0;
-    try { activityCount = nightshiftContextPack().userRunCount || 0; } catch (_) { activityCount = 0; }
+    try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
     return {
       tier: rd.tier, goalsUsable: !!rd.goalsUsable, usableDims: rd.usableDims || [],
