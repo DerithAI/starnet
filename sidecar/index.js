@@ -11431,7 +11431,8 @@ async function handleGroups(req, res) {
       res.writeHead(200, { 'Content-Type': plain ? 'text/plain; charset=utf-8' : 'application/octet-stream', 'Content-Disposition': (plain ? 'inline' : 'attachment') + "; filename*=UTF-8''" + encodeURIComponent(file.name), 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.end(Buffer.from(file.content, 'base64'));
     }
-    if (req.method === 'GET') out = id ? await groupSessions.get(id) : await groupSessions.list();
+    // since: the open group chat's last stamp — an unchanged group answers { unchanged: true } (idle CPU piece 3, 2026-10-20)
+    if (req.method === 'GET') out = id ? await groupSessions.get(id, url.searchParams.get('since') || '') : await groupSessions.list();
     else {
       const b = JSON.parse(await readBody(req, 2 << 20, res));
       const handlers = { create: () => groupSessions.create(b), send: () => groupSessions.send(b.id, b),

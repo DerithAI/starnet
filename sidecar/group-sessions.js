@@ -3,7 +3,7 @@
 // Durable conversation coordinator. A turn always delegates to the existing runOnce host.
 // Clock, IDs, filesystem and execution are injected to make crash/race behavior testable.
 const { makeDurableJsonStore } = require('./durable-store.js');
-const { createHash } = require('node:crypto');
+const { createHash, randomBytes } = require('node:crypto');
 const { swallow, note: failNote } = require('./failopen.js');
 const ACTIVE = new Set(['connecting', 'running', 'waiting for approval', 'waiting for answer', 'stopping']);
 const clone = x => JSON.parse(JSON.stringify(x));
@@ -18,6 +18,19 @@ function makeGroupSessions(d) {
   const workers = new Map();
   const controllers = new Map();
   const drafts = new Map();
+  /* THE OPEN GROUP'S POLL ASKS "SINCE" (idle CPU piece 3, 2026-10-20). The open group chat re-reads its group every
+     0.9 s; nearly every answer is the group it already has. get(id, since) answers { unchanged: true } when nothing a
+     reader can see has moved since `since`. What a reader sees is publicGroup(g): the committed group — every write to it
+     bumps g.revision (update, halt, dropAgent; create starts a new group at 1) — plus the live drafts, which only change
+     through setDraft/dropDraft and bump that group's draft count (per group, so one group streaming never makes another
+     re-send). The boot tag covers what neither counter can: boot recovery rewrites turn states without a revision bump,
+     and a restarted sidecar starts its counters again. */
+  const bootTag = typeof d.bootTag === 'string' && d.bootTag ? d.bootTag : randomBytes(4).toString('hex');
+  const draftSeq = new Map();   // group id -> draft writes since boot
+  const bumpDrafts = groupId => draftSeq.set(groupId, (draftSeq.get(groupId) || 0) + 1);
+  function setDraft(groupId, turnId, draft) { drafts.set(turnId, draft); bumpDrafts(groupId); }
+  function dropDraft(groupId, turnId) { if (drafts.delete(turnId)) bumpDrafts(groupId); }
+  const stampOf = g => bootTag + '.' + g.revision + '.' + (draftSeq.get(g.id) || 0);
   const pending = new Map();
   const agentLeases = new Set();
   const haltedGroups = new Set();
@@ -561,15 +574,15 @@ function makeGroupSessions(d) {
           if (breakNext && delta.trim() && streamed.trim() && !/^\s*\n/.test(delta)) streamed = streamed.replace(/[ \t]+$/, '') + '\n\n';
           if (delta.trim()) breakNext = false;
           streamed += delta;
-          drafts.set(t.id, { text: streamed, steps: steps.slice() });
+          setDraft(id, t.id, { text: streamed, steps: steps.slice() });
         }
         if (name === 'agent.tool_call' && steps.length < GROUP_STEPS_MAX) {
           steps.push({ at: streamed.length, callId: String(p.callId || ''), name: String(p.name || 'tool'), args: String(p.argsSummary || ''), done: false });
-          breakNext = true; drafts.set(t.id, { text: streamed, steps: steps.slice() });
+          breakNext = true; setDraft(id, t.id, { text: streamed, steps: steps.slice() });
         }
         if (name === 'agent.tool_result') {
           const s = steps.find(x => !x.done && (!p.callId || x.callId === String(p.callId)));
-          if (s) { Object.assign(s, { done: true, isError: !!p.isError, summary: String(p.summary || ''), ms: Number.isFinite(p.ms) ? p.ms : null }); drafts.set(t.id, { text: streamed, steps: steps.slice() }); }
+          if (s) { Object.assign(s, { done: true, isError: !!p.isError, summary: String(p.summary || ''), ms: Number.isFinite(p.ms) ? p.ms : null }); setDraft(id, t.id, { text: streamed, steps: steps.slice() }); }
         }
         if (name === 'agent.run.error') error = String(p.message || 'Run failed');
         if (name === 'agent.cost' && p.reconciled && Number.isFinite(p.usd)) usd = (usd || 0) + p.usd;
@@ -630,7 +643,7 @@ function makeGroupSessions(d) {
         // A tool timeout may end execution before its question waiter resolves. Retire that
         // in-memory waiter so a later answer creates a durable continuation, not a lost reply.
         for (const q of peek(id).questions || []) if (q.turnId === t.id) answers.get(q.id)?.({ answered: false });
-        progress.delete(t.id); drafts.delete(t.id); controllers.delete(id); workingTurn.delete(id); agentLeases.delete(t.agentId);
+        progress.delete(t.id); dropDraft(id, t.id); controllers.delete(id); workingTurn.delete(id); agentLeases.delete(t.agentId);
       }
     }
   }
@@ -704,7 +717,13 @@ function makeGroupSessions(d) {
       const cur = committed();
       return { groups: Object.values(cur.groups).filter(g => !g.deleted).map(row), templates: clone(cur.templates), roster: roster() };
     },
-    get: async id => { await ready; return publicGroup(peek(id)); },
+    // since: the stamp of the group the caller already holds — unchanged answers just that, with nothing cloned
+    get: async (id, since) => {
+      await ready;
+      const g = peek(id), stamp = stampOf(g);
+      if (since && since === stamp) return { id: g.id, unchanged: true, stamp };
+      return Object.assign(publicGroup(g), { stamp });
+    },
     file: async (id, aid) => { await ready; const f = peek(id).artifacts.find(a => a.id === aid); if (!f) fail('Shared file not found', 404); return clone(f); },
     attach: async (id, b) => {
       await ready;
