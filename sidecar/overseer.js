@@ -274,6 +274,18 @@ function makeOverseer(deps) {
     state = next;
     commit(state);
   }
+  /* THE TICK AND THE HALT READ NO SAVE (idle-cpu piece 2, 2026-10-19). paused and reviews come from overseer.json's
+     state already held in RAM, yet the 2 s tick and GET /api/halt read them through snapshot(), which also builds every
+     thread from a full parse of the page's save (3.8 MB on a real station: ~20 ms a tick, ~86k parses a day, at idle).
+     These four answer from RAM with exactly the values snapshot() would carry; snapshot() stays the page's full picture. */
+  function paused() { return unavailable ? true : (emergencyPaused || !!state.paused); }
+  function error() { return unavailable || ''; }
+  function reviews() { return unavailable ? [] : copy(state.reviews); }
+  function review(id) {
+    if (unavailable) return null;
+    const row = state.reviews.find(r => r.id === id);
+    return row ? copy(row) : null;
+  }
   function snapshot() { if (unavailable) return { threads: [], reviews: [], paused: true, error: unavailable };
     return { threads: threads().map(w => ({ id: w.id, title: w.title, agentId: w.agentId,
     parentStreamId: w.parentStreamId || '', projectRoot: w.projectRoot || null, projectHome: !!w.projectHome, worker: w.worker === true,
@@ -285,7 +297,7 @@ function makeOverseer(deps) {
     // session.create title may hold a colon, and that is never a call
     call: w.worker === true ? (p => p.length > 2 ? p[1] : '')(String(w.requestId || '').split(':')) : '',
     // the worker slot in that call: the page lists a call's workers in the order they were asked
-    slot: Number(String(w.requestId || '').split(':').pop()) || 0 })), reviews: copy(state.reviews), paused: emergencyPaused || !!state.paused }; }
+    slot: Number(String(w.requestId || '').split(':').pop()) || 0 })), reviews: copy(state.reviews), paused: paused() }; }
   function resumeReviews() {
     // A damaged optional coordination store must not prevent ordinary chat.
     // Reads/creates still refuse, and the poller remains paused; never overwrite it.
@@ -293,7 +305,8 @@ function makeOverseer(deps) {
     if (state.paused || emergencyPaused) update(s => { s.paused = false; return null; });
     emergencyPaused = false;
   }
-  return { threads, resolve, create, ensure, projectHome, collect, patchReview, withThread, snapshot, stopReviews, resumeReviews, membersOf, refreshReview };
+  return { threads, resolve, create, ensure, projectHome, collect, patchReview, withThread, snapshot, stopReviews, resumeReviews, membersOf, refreshReview,
+    paused, error, reviews, review };
 }
 /* station.read_session as the OVERSEER answers it (org P29-sys review, 2026-10-14). The lead's session.peek in an interactive
    coordinator run is wired to overseerStation (sidecar/index.js), which answers read_session itself and never reaches the

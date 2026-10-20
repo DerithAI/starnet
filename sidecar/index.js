@@ -5438,11 +5438,11 @@ function delegatedReportPrompt(live, waiting, followUp) {
       stillWorking: waiting.map(w => ({ name: nameOf(w.agentId), agentId: w.agentId, objective: w.prompt, status: w.status })) });
 }
 async function tickOverseer() {
-  if (overseerTickRunning || workspaceDegraded || updateHolding() || overseer.snapshot().paused) return;
+  if (overseerTickRunning || workspaceDegraded || updateHolding() || overseer.paused()) return;
   overseerTickRunning = true;
   try {
     overseer.collect(subagents.list());
-    for (let review of overseer.snapshot().reviews) {
+    for (let review of overseer.reviews()) {
       if (review.agentId !== 'agent') {
         if (review.status === 'pending' || review.status === 'reviewing') overseer.patchReview(review.id, {
           status: 'cancelled', error: 'Automatic coordination belongs to the station orchestrator.' });
@@ -5476,7 +5476,8 @@ async function tickOverseer() {
         overseer.patchReview(review.id, { status: 'superseded', error: 'Every worker in this request has a newer attempt.' }); continue;
       }
       await overseer.withThread(parent.id, async () => {
-        if (updateHolding() || overseer.snapshot().paused || !overseer.snapshot().reviews.some(r => r.id === review.id && r.status === 'pending')) return;
+        const row = overseer.review(review.id);
+        if (updateHolding() || overseer.paused() || !row || row.status !== 'pending') return;
         try { parent = overseer.resolve(review.parentStreamId); }
         catch (_) { overseer.patchReview(review.id, { status: 'cancelled', error: 'Parent conversation is no longer available.' }); return; }
         review = overseer.refreshReview(review.id, subagents.list()) || review;
@@ -5491,7 +5492,7 @@ async function tickOverseer() {
         const reviewAbort = new AbortController();
         overseer.patchReview(review.id, { status: 'reviewing', reviewRunId: runId, error: '' });
         const settleReview = fields => {
-          const current = overseer.snapshot().reviews.find(r => r.id === review.id);
+          const current = overseer.review(review.id);
           if (current && current.status === 'reviewing' && current.reviewRunId === runId) overseer.patchReview(review.id, fields);
         };
         runs.set(runId, reviewAbort);
@@ -25007,7 +25008,7 @@ function haltStatus() {
     cron: { halted: !!cronHalted },
     nightshift: { halted: nightshift.isHalted(nightshiftState) },
     loops: { halted: !!loopsHalted },
-    overseer: { halted: overseer.snapshot().paused, error: overseer.snapshot().error || '' }
+    overseer: { halted: overseer.paused(), error: overseer.error() }
   };
   return { halted: Object.values(subsystems).some(s => s.halted), subsystems };
 }
