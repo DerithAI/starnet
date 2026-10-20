@@ -307,7 +307,11 @@
      quota metric", and that must stay rate_limit — hence the short-window veto. */
   const QUOTA_EXHAUSTED_RE = /usage[_ ]?limit(?:[_ ]?(?:has|is)(?:[_ ]?been)?)?[_ ]?reached|hit (?:your|the) (?:usage|weekly|monthly|plan|daily) limit|(?:weekly|monthly|daily) (?:quota|limit)|resets? in \s*\d+\s*(?:day|hour|week)|resets? (?:on|at) \d|quota (?:will )?reset(?:s)? (?:in|on|at)/;
   const SHORT_WINDOW_RE = /per[- ]?(?:minute|second)|quota metric|\brpm\b|\btpm\b|requests per/;
-  function isQuotaExhausted(low) { return QUOTA_EXHAUSTED_RE.test(low) && !SHORT_WINDOW_RE.test(low); }
+  /* OpenRouter's FREE-MODEL DAILY CAP ("Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free
+     model requests per day") resets the next UTC day. Its own text says "requests per day", which the short-window veto
+     above reads as a per-minute limit — so it is named outright, ahead of the veto (sweep/providers 2026-10-20). */
+  const DAILY_FREE_CAP_RE = /free-models-per-day/;
+  function isQuotaExhausted(low) { return DAILY_FREE_CAP_RE.test(low) || (QUOTA_EXHAUSTED_RE.test(low) && !SHORT_WINDOW_RE.test(low)); }
 
   function pickReason(status, code, low, err, ctx) {
     // 0. errors that never reached an API: a certificate the machine rejects, or a crash in our own code. First,
