@@ -128,5 +128,31 @@ async function rejects(p, label) {
   A.ok((await Q.refresh('hung')).data.recovered, 'a new generation recovers without awaiting its hung predecessor');
   await hungFailure;
   A.ok(!Q.state('hung').pending && !Q.state('hung').error, 'obsolete timeout cannot poison recovered state');
+
+  /* IDLE CPU PIECE 3 (2026-10-20): while the Commander is away (PollGate) a polled resource reads at most once per 30 s,
+     never zero times, and the wake on return re-reads whatever is older than its own cadence. */
+  const drain = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
+  Q.define('away-poll', { path: '/away-poll', pollMs: 4000, ttlMs: 1 });
+  let awayNow = false, awayReads = 0, awayTick = null;
+  Q._setAwayForTest(() => awayNow);
+  Q._setTimersForTest((fn, ms) => { awayTick = fn; return 99; }, () => { awayTick = null; });
+  Q._setGetForTest(() => { awayReads++; return Promise.resolve({ n: awayReads }); });
+  const offAway = Q.subscribe('away-poll', () => {}, { refresh: false });
+  await Q.refresh('away-poll');
+  A.eq(awayReads, 1, 'fixture: one read lands');
+  awayTick(); await drain();
+  A.eq(awayReads, 2, 'on screen, every beat reads (the visible cadence is unchanged)');
+  awayNow = true;
+  for (let i = 0; i < 6; i++) { clock += 4000; awayTick(); await drain(); }
+  A.eq(awayReads, 2, 'away: beats inside 30 s of the last read skip the wire (was one read per 4 s)');
+  clock += 7000; awayTick(); await drain();
+  A.eq(awayReads, 3, 'away: once the value is 30 s old the beat reads again — slower, never stopped');
+  clock += 9000;
+  awayNow = false; Q._wakeForTest(); await drain();
+  A.eq(awayReads, 4, 'back on screen: a value older than its own 4 s cadence is re-read at once');
+  Q._wakeForTest(); await drain();
+  A.eq(awayReads, 4, 'a fresh value is not re-read on wake');
+  offAway(); clock += 60000; Q._wakeForTest(); await drain();
+  A.eq(awayReads, 4, 'a resource nobody watches is never re-read on wake');
   A.report('queryspine.test');
 })().catch(err => { console.error(err && err.stack ? err.stack : err); process.exit(1); });
