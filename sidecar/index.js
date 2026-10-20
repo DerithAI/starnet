@@ -24244,6 +24244,13 @@ async function handleAutonomyPosture(req, res) {
   // below acting, we LEAVE the timer armed — its own gate returns binding:'posture' and no beat fires, which is
   // cheaper + simpler than tearing the timer down and matches how the driver already no-ops when not permitted.
   try { if (nightshiftShouldArm() && !nightshiftTimer) armNightshift(); } catch (_) {}
+  // THE DIAL IS THE CONSENT, MID-BEAT TOO (sweep/autonomy 2026-10-20): a write that no longer permits acting
+  // unattended stops the beat already in flight — otherwise it kept its stream and bought its remaining calls.
+  try {
+    if (postureWritten && !(commanderPosture.summary() || {}).actsUnattended && nightshiftDriver.runInFlight() && nightshiftDriver.abortBeat()) {
+      recordAutonomy({ source: 'nightshift', kind: 'note', agentId: NIGHTSHIFT_AGENT, reason: 'posture-revoked', detail: { phase: 'beat', note: 'the dial was lowered below acting on its own — the in-flight beat was stopped' } });
+    }
+  } catch (e) { failNote('nightshift.revoke.abort', e); }
   // THE DIAL IS THE UNATTENDED-BUILD CONSENT. buildsUnattended (initiative≥leash AND reach≥sandbox) records the
   // night-shift agent's away-workshop grant through the SAME store authority as POST /api/workshop/grant — without
   // it every beat silently degraded to a reason-only draft (the "dial at max, station never builds" trap,
