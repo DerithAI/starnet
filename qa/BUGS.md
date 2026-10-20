@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**22** open (open+claimed) of 299 total — 0 P0 · 1 P1 · 21 P2
+**22** open (open+claimed) of 300 total — 0 P0 · 1 P1 · 21 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -374,6 +374,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | sessions | [Session recommendations ignore user goals and actual work](bugs/a55c0020-session-recommendations-ignore-user-goals-and-ac.md) | agent/useful-starters-0906 | 51768e661 |
 | P2 | fixed | sessions | [Shared query refresh cannot retire a stalled predecessor](bugs/c095c750-shared-query-refresh-cannot-retire-a-stalled-pre.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P2 | fixed | sessions | [Stalled finite JSON mutations never release their callers](bugs/38aad6db-stalled-finite-json-mutations-never-release-thei.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
+| P2 | fixed | sessions | [The fast gate's save-quota-writethrough Q3 precondition flakes when two saves land in one millisecond](bugs/c9c58539-the-fast-gate-s-save-quota-writethrough-q3-preco.md) | sweep/sessions | 0151a2b74 |
 | P2 | fixed | sessions | [Spoken approvals clear sibling waits before confirmation](bugs/35c720c1-voice-approval-sibling-settlement.md) | thread-ux-review-1011 | fcd8007ca473d52488986537e304370c37f7f9a0 |
 | P2 | fixed | sessions | [Worker recovery rebuilds an unrelated conversation and loses reader state](bugs/abb287e8-worker-recovery-reader-state.md) | thread-ux-review-1011 | a69664135e4983fe624ec11bea6b2bd4666ee651 |
 | P2 | fixed | sessions | [Workshop Keep accepts an empty decision acknowledgement](bugs/9bc0b751-workshop-keep-accepts-an-empty-decision-acknowle.md) | agent/system-polish-0920 | 4a2028759 |
