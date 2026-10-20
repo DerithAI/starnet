@@ -6,6 +6,7 @@
    is never marked (so never made smaller), an icon glyph alone, anything aria-hidden and a checkbox keep their own
    metrics; a caps label at the floor's size is marked a label (tracked 1.6) and a caps key a key (tracked .9), a bigger
    caps title keeps its own tracking; reads all happen before any write; a re-classed element is measured again.
+   A text an ellipsis or a line clamp cuts is marked to fade; a window is read again after it resizes.
    SOURCE-LOCKED: pipglass.css sets marked text to the token and the two trackings, only inside the windows (#terms),
    raises the tokens there, and the page loads the module. */
 const A = require('./_assert.js');
@@ -23,14 +24,25 @@ function el(tag, opts = {}, kids = []) {
   const node = { nodeType: 1, tagName: tag, className: opts.cls || '', style: opts.style || {}, childNodes: [], parent: null, isConnected: true,
     getAttribute: k => (k in attrs ? attrs[k] : null), hasAttribute: k => k in attrs,
     setAttribute: (k, v) => { attrs[k] = String(v); writes++; }, removeAttribute: k => { delete attrs[k]; },
+    classList: { contains: c => (' ' + (opts.cls || '') + ' ').includes(' ' + c + ' ') },
     closest(sel) { const m = /^\[aria-hidden="true"\]$/.exec(sel); for (let n = node; n; n = n.parent) if (m && n.getAttribute && n.getAttribute('aria-hidden') === 'true') return n; return null; },
-    querySelectorAll(sel) { const out = []; const walk = n => { for (const c of n.childNodes) if (c.nodeType === 1) { out.push(c); walk(c); } }; if (sel === '*') walk(node); return out; },
+    // '*', '.class', or a list of '[attr]' (what typefloor.js asks for)
+    querySelectorAll(sel) {
+      const out = []; const walk = n => { for (const c of n.childNodes) if (c.nodeType === 1) { out.push(c); walk(c); } }; walk(node);
+      if (sel === '*') return out;
+      if (sel[0] === '.') return out.filter(c => c.classList.contains(sel.slice(1)));
+      const names = sel.split(',').map(s => s.replace(/[[\]]/g, '').trim());
+      return out.filter(c => names.some(k => c.hasAttribute(k)));
+    },
     attrs };
+  if (!node.style.setProperty) node.style.setProperty = (k, v) => { node.style[k] = v; };
   for (const k of kids) { const c = typeof k === 'string' ? { nodeType: 3, textContent: k } : k; c.parent = node; node.childNodes.push(c); }
   return node;
 }
 const view = {
-  getComputedStyle(n) { reads++; if (writes) writesBeforeLastRead = writes; const s = n.style; return { fontSize: (s.size || 16) + 'px', textTransform: s.caps ? 'uppercase' : 'none', getPropertyValue: k => (k === '--sn-type-meta' ? (s.floor || 16) + 'px' : '') }; },
+  getComputedStyle(n) { reads++; if (writes) writesBeforeLastRead = writes; const s = n.style; return { fontSize: (s.size || 16) + 'px', textTransform: s.caps ? 'uppercase' : 'none',
+    webkitLineClamp: s.clamp ? String(s.clamp) : 'none', textOverflow: s.ell ? 'ellipsis' : 'clip', overflowX: s.ox || 'visible', overflowY: s.oy || s.ox || 'visible',
+    getPropertyValue: k => (k === '--sn-type-meta' ? (s.floor || 16) + 'px' : '') }; },
   MutationObserver: null
 };
 
@@ -76,12 +88,54 @@ A.eq(TF.pass(root, view), 0, 'a second pass over the same text marks nothing new
   A.ok(!marked(added), 'a re-classed element is measured again without its mark: a state that grows it is never held at the floor');
 }
 
-/* ---- 3. the stylesheet and the page ---- */
+/* ---- 3. cut text: a clamp on a clipping box and a one-line ellipsis are marked to fade; nothing else is ---- */
+{
+  const clamp = el('DIV', { cls: 'cc-blurb', style: { size: 16, clamp: 4, ox: 'hidden' } }, ['Work through the review comments on a pull request']);
+  const line = el('P', { cls: 'ds-job', style: { size: 16, ell: true, ox: 'hidden' } }, ['Last job: Write the opportunity brief']);
+  const loose = el('DIV', { style: { size: 16, clamp: 2 } }, ['a clamp with nothing clipping it cuts nothing']);
+  const plain = el('P', { style: { size: 16, ox: 'hidden' } }, ['clipped, no ellipsis']);
+  TF.pass(el('DIV', { style: { size: 16 } }, [clamp, line, loose, plain]), view);
+  A.eq([clamp, line, loose, plain].map(x => x.getAttribute(TF.CUT)), ['clamp', 'line', null, null], 'a clamp on a clipping box and a one-line ellipsis are marked to fade; nothing else is');
+  A.eq(clamp.style['--sn-clamp'], '4', 'a clamp carries its own line count to the fade (--sn-clamp)');
+}
+
+/* ---- 4. a window read again after a resize: its own narrow rules can shrink a text, or grow a lifted one ---- */
+{
+  const shrinks = el('SPAN', { style: { size: 16 } }, ['GIVE A JOB']);        // at the floor until a narrow rule takes it to 14
+  const grows = el('SPAN', { style: { size: 13 } }, ['3 of 9 topics']);       // lifted, then a wide rule takes it to 18
+  const term = el('DIV', { cls: 'term', style: { size: 16 } }, [shrinks, grows]);
+  TF.pass(term, view);
+  A.ok(!marked(shrinks) && marked(grows), 'first read: at the floor untouched, under it lifted');
+  shrinks.style.size = 14; grows.style.size = 18;
+  TF.refloor(term, view);
+  A.ok(marked(shrinks) && !marked(grows), 'read again: the text a narrow rule shrank is lifted, the one a rule grew is let go');
+  // the observer re-reads a window 150ms after its last resize, and stops watching a window that closes
+  let roCb = null; const observed = new Set(); const timers = [];
+  const v2 = Object.assign({}, view, {
+    MutationObserver: function () { this.observe = () => {}; },
+    ResizeObserver: function (fn) { roCb = fn; this.observe = t => observed.add(t); this.unobserve = t => observed.delete(t); },
+    setTimeout: (fn, ms) => { timers.push([fn, ms]); return timers.length; }, clearTimeout: () => {}
+  });
+  const host = el('DIV', { style: { size: 16 } }, [term]);
+  TF.watch(host, v2);
+  A.ok(observed.has(term), 'every window under #terms is watched for its size');
+  shrinks.style.size = 13; delete shrinks.attrs[TF.ATTR];
+  roCb([{ target: term }]);
+  A.eq(timers.length && timers[timers.length - 1][1], 150, 'a resize schedules one read 150ms after it settles');
+  timers[timers.length - 1][0]();
+  A.ok(marked(shrinks), 'that read lifts what the new size shrank');
+}
+
+/* ---- 5. the stylesheet and the page ---- */
 const glass = read('frontend/css/pipglass.css');
 A.ok(/body\.glass-demo:not\(\.hud-mode\) #terms \{ --sn-type-meta: 16px; --sn-type-compact: 16px; \}/.test(glass), 'the windows raise the reading tokens to the floor (readability.css keeps its bounded defaults)');
 A.ok(/body\.glass-demo:not\(\.hud-mode\) #terms \[data-sn-floor\] \{ font-size: var\(--sn-type-meta\) !important; \}/.test(glass), 'a lifted text takes the token, only inside the windows');
 A.ok(/#terms \[data-sn-caps="label"\] \{ letter-spacing: 1\.6px !important; \}/.test(glass) && /#terms \[data-sn-caps="key"\] \{ letter-spacing: \.9px !important; \}/.test(glass),
   'window caps labels and keys take the dashboard\'s two trackings');
+A.ok(/@supports \(animation-timeline: scroll\(\)\) \{[\s\S]*#terms \[data-sn-cut="line"\][\s\S]*animation-timeline: scroll\(self inline\)[\s\S]*#terms \[data-sn-cut="clamp"\][\s\S]*animation-timeline: scroll\(self block\)/.test(glass),
+  'a cut text fades only while it overflows (a scroll-driven animation on its own box), and only where the engine can tell — elsewhere the ellipsis stays');
+A.ok(/#terms :is\(\.con-pane, \.term-body:not\(\.term-console-body\)\) \{ container-type: inline-size; \}/.test(glass),
+  'each window\'s content pane is a container, so its layouts stack by the window\'s own width');
 const html = read('frontend/index.html');
 A.ok(html.indexOf('app/typefloor.js') > html.indexOf('app/tooltip.js') && html.indexOf('id="terms"') < html.indexOf('app/typefloor.js'),
   'the page loads the floor after #terms exists, beside the tooltip (both self-start)');

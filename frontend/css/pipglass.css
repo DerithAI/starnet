@@ -1714,8 +1714,10 @@ body.glass-demo:not(.hud-mode) #terms :is(.set-sub, .ch-sum-copy) { row-gap: 4px
 body.glass-demo:not(.hud-mode) #terms .gx-tro .sub { margin-top: 4px; }
 body.glass-demo:not(.hud-mode) #terms .sn-menu-nav-note { margin-top: 4px; }
 body.glass-demo:not(.hud-mode) #terms .nf-meta { margin-bottom: 4px; }
-body.glass-demo:not(.hud-mode) #terms .fm-chapter .fm-eyebrow { margin-bottom: 4px; }
-body.glass-demo:not(.hud-mode) #terms .fm-chapter h2 { margin-top: 0; }
+body.glass-demo:not(.hud-mode) #terms .fm-eyebrow { margin-bottom: 4px; }
+body.glass-demo:not(.hud-mode) #terms .fm-eyebrow + :is(h2, h3) { margin-top: 0; }
+body.glass-demo:not(.hud-mode) #terms :is(.ag-role-line, .key-meta) { margin-top: 4px; }
+body.glass-demo:not(.hud-mode) #terms .up-mini > div > b + span { margin-top: 4px; }
 /* the quest card's kicker row: its 32px dismiss key hangs into the card's padding instead of setting the row's height */
 body.glass-demo:not(.hud-mode) #terms .q-card-meta { margin-bottom: 0; }
 body.glass-demo:not(.hud-mode) #terms .q-card-meta .q-dismiss { margin-block: -7px; }
@@ -1723,7 +1725,10 @@ body.glass-demo:not(.hud-mode) #terms .q-card-meta .q-dismiss { margin-block: -7
 body.glass-demo:not(.hud-mode) #terms .con-sec-head + .con-sec-body { margin-top: -4px; }   /* a section with no description starts its body where the description would */
 body.glass-demo:not(.hud-mode) #terms :is(.sec, .gx-sec):not(.con-sec-head) { margin-bottom: 8px; }
 body.glass-demo:not(.hud-mode) #terms :is(.sec, .gx-sec):not(.con-sec-head) + * { margin-top: 0; }
-body.glass-demo:not(.hud-mode) #terms :is(.ms-h, .cd-sech) { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms :is(.sec, .gx-sec):not(.con-sec-head) + .con-lane > :first-child { margin-top: 0; }
+body.glass-demo:not(.hud-mode) #terms .cc-group > .sec { margin-bottom: 0; }   /* the group's own 8px flex gap is the gap */
+body.glass-demo:not(.hud-mode) #terms :is(.ms-h, .cd-sech, .ch-section-title) { margin-bottom: 8px; }
+body.glass-demo:not(.hud-mode) #terms :is(.ms-h, .ch-section-title) + * { margin-top: 0; }
 body.glass-demo:not(.hud-mode) #terms .cf-group-summary { margin-top: 2px; }
 body.glass-demo:not(.hud-mode) #terms .wh-content > h4 { margin-bottom: 8px; }
 body.glass-demo:not(.hud-mode) #terms .wh-source-settings > .wh { margin-top: 8px; }
@@ -1740,6 +1745,9 @@ body.glass-demo:not(.hud-mode) #terms .cf-nav { margin-bottom: 20px; }
 body.glass-demo:not(.hud-mode) #terms .set-reset-browser { margin-top: 20px; }
 body.glass-demo:not(.hud-mode) #terms .wh-content > * + h4 { margin-top: 20px; }
 body.glass-demo:not(.hud-mode) #terms #sk-lib .sk-lib-sum { margin-bottom: 20px; }
+body.glass-demo:not(.hud-mode) #terms .cc-list { margin-top: 16px; row-gap: 16px; }   /* + its category heading's own 4px */
+/* A TEXT TO ITS KEY ROW: 16px (settings' own action rows) */
+body.glass-demo:not(.hud-mode) #terms .ag-can-do { margin-bottom: 18px; }
 /* A PARAGRAPH TO THE NEXT: one blank line, 22px (a section description's gap in most windows; agents, commander and
    settings had drifted to 16 and 18; a new routine's form keeps its own tighter start) */
 body.glass-demo:not(.hud-mode) #terms .con-sec:not([data-section="routines-create"]) > .con-sec-desc { margin-bottom: 24px; }
@@ -1748,3 +1756,79 @@ body.glass-demo:not(.hud-mode) #terms .wh-content > p + p { margin-top: 24px; }
    the la…", a VT323 ellipsis a flat bar), so which run it was could not be read: the whole line, wrapped, over its
    charge field and SETTLE key */
 body.glass-demo:not(.hud-mode) #terms #budget-unsettled .bg-un-what { flex: 1 1 100%; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+
+/* ============================================================
+   CUT TEXT FADES (Andrew 10-19: "swap the cut-off card descriptions to fades"). VT323 draws "…" as one flat bar, and 63
+   card descriptions in CONNECT › CATALOG and SKILL MARKET ended on it. typefloor.js marks the window text its own box cuts
+   (`data-sn-cut`: a one-line ellipsis, or a line clamp with its line count in --sn-clamp) and the ellipsis becomes a
+   fade — a line's last 28px, a clamp's last line top to bottom. The fade is a scroll-driven animation on the box's own
+   overflow, so it runs only while there is text to cut: a description that fits never fades. An engine without
+   scroll-driven animations (an older macOS or Linux webview) keeps the ellipsis rather than fading text that fits.
+   ============================================================ */
+@supports (animation-timeline: scroll()) {
+  @keyframes sn-cut-line { from, to { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } }
+  @keyframes sn-cut-clamp { from, to { -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 1lh), transparent); mask-image: linear-gradient(180deg, #000 calc(100% - 1lh), transparent); } }
+  body.glass-demo:not(.hud-mode) #terms [data-sn-cut="line"] { text-overflow: clip !important; animation: sn-cut-line 1s linear both; animation-timeline: scroll(self inline); }
+  body.glass-demo:not(.hud-mode) #terms [data-sn-cut="clamp"] { display: block !important; -webkit-line-clamp: none !important; max-height: calc(var(--sn-clamp, 2) * 1lh);
+    overflow: hidden !important; animation: sn-cut-clamp 1s linear both; animation-timeline: scroll(self block); }
+}
+
+/* ============================================================
+   NARROW WINDOWS AND LARGE TEXT (Andrew 10-20: "check other text sizes and narrow windows"). Every window audited at
+   TEXT SIZE 90, 100, 115, 130 and 145 and at its minimum width (the resize grip's 320px; 560 with a section rail). The
+   windows' own narrow layouts keyed on the SCREEN's width (@media), so a narrow window on a wide screen never stacked —
+   nor did any window at a large text size, where the crew rail and COMMS take more of the screen: MY WORK's files and
+   the quest briefing squeezed to one letter per line, the dossier's name ran down the pane, the trophy case ran a 4th
+   column out of the window even at 90, and the station record, a dossier's achievements and setup tiles kept fixed
+   column counts. Each window's content pane is a container now, and these layouts follow ITS width.
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #terms :is(.con-pane, .term-body:not(.term-console-body)) { container-type: inline-size; }
+/* a fixed column count → as many columns as fit (each minimum keeps the column count his TEXT SIZE 90 had; only the
+   trophy case changes there, 4 columns that ran out of the window → 3) */
+body.glass-demo:not(.hud-mode) #terms .gx-tros { grid-template-columns: repeat(auto-fill, minmax(min(100%, 170px), 1fr)); }
+body.glass-demo:not(.hud-mode) #terms .agent-dossier .gx-tros { grid-template-columns: repeat(auto-fill, minmax(min(100%, 96px), 1fr)); }
+body.glass-demo:not(.hud-mode) #terms .cd-record-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); }
+body.glass-demo:not(.hud-mode) #terms .ag-setup { grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); }
+body.glass-demo:not(.hud-mode) #terms .gx-2 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
+body.glass-demo:not(.hud-mode) #terms .stat-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 56px), 1fr)); }
+body.glass-demo:not(.hud-mode) #terms .ns-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(210px, calc(50% - 12px))), 1fr)); }
+/* a tab strip, a key row, a URL: wrap rather than run out of the window (each only moves when it would not fit) */
+body.glass-demo:not(.hud-mode) #terms .fam-tabs { flex-wrap: wrap; }
+body.glass-demo:not(.hud-mode) #terms .dlv-bucket h4 { flex-wrap: wrap; }
+body.glass-demo:not(.hud-mode) #terms .q-actions { flex-wrap: wrap; }
+body.glass-demo:not(.hud-mode) #terms .q-actions .q-go { white-space: normal; min-width: 0; }
+body.glass-demo:not(.hud-mode) #terms :is(.ch-card, .cc-card) :is(b, code, .dim) { overflow-wrap: anywhere; }
+/* a desk's job line keeps its own line height when a short window squeezes the desk (it was cut through its letters) */
+body.glass-demo:not(.hud-mode) #terms .ds-job { flex-shrink: 0; }
+/* a rail item keeps its whole height and the rail scrolls (a 36px minimum let an item shrink, and its two-line note
+   spilled onto the next item) */
+body.glass-demo:not(.hud-mode) #terms .con-rail-item { flex-shrink: 0; }
+/* the permission cards: never wider than their window */
+body.glass-demo:not(.hud-mode) #terms .pp-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); }
+/* a growth bar's zone legend: at the floor its four words are wider than their zones, so they ran together past the card
+   ("BUILDSTEADYRELIABLETRUST") — they read in order now, wrapping under the bar */
+body.glass-demo:not(.hud-mode) #terms .gx-zlabels { display: flex; flex-wrap: wrap; gap: 2px 12px; text-align: left; }
+/* layouts that stack by the window's own width */
+@container (max-width: 500px) {   /* side by side needs ~500: a 220px list, the gap, a readable briefing */
+  body.glass-demo:not(.hud-mode) #terms .quests-win .q-journal { grid-template-columns: minmax(0, 1fr); }
+}
+@container (max-width: 480px) {
+  body.glass-demo:not(.hud-mode) #terms .dlv-split { grid-template-columns: minmax(0, 1fr); }
+}
+/* a console pane under 340px: his TEXT SIZE 90 panes measure ~360, 115 ~230, 145 ~135 with his rail and COMMS widths, and
+   a window at its 560px minimum ~320 — so these rows reflow only where they would cut or collide, never in his view */
+@container (max-width: 340px) {
+  body.glass-demo:not(.hud-mode) #terms :is(.ag-hero, .ag-growth-hero) { flex-wrap: wrap; }
+  body.glass-demo:not(.hud-mode) #terms :is(.ag-info, .ag-growth-heading) { flex: 1 1 100%; }
+  /* a messaging row: its name and help keep 160px or the state drops to its own line (at 115 they had 36px and ran one
+     word per line under "○ not connected") */
+  body.glass-demo:not(.hud-mode) #terms .ch-sum-row { flex-wrap: wrap; }
+  body.glass-demo:not(.hud-mode) #terms .ch-sum-copy { flex: 1 1 160px; grid-template-columns: minmax(0, 1fr); }
+  body.glass-demo:not(.hud-mode) #terms .ch-sum-row .ch-state { margin-left: 0; max-width: none; text-align: left; }
+  body.glass-demo:not(.hud-mode) #terms .ch-sum-row .ch-sum-arrow { margin-left: auto; }
+  /* a card's head, a skill's switch, the updater, a growth band, an "environment default" badge: wrap, never cut */
+  body.glass-demo:not(.hud-mode) #terms :is(.cc-head, .cc-identity, .cc-acts, .up-mini, :has(> .gx-band)) { flex-wrap: wrap; }
+  body.glass-demo:not(.hud-mode) #terms .sk-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+  body.glass-demo:not(.hud-mode) #terms .cc-chip { white-space: normal; }
+  body.glass-demo:not(.hud-mode) #terms .src-badge { display: inline-block; max-width: 100%; white-space: normal; }
+}
