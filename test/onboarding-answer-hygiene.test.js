@@ -24,11 +24,15 @@ const read = f => fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 
 
 function awakening(answerFor) {
   const commits = [], prefills = [];
+  let nodes = 0;
   let composer = null;
   const ctx = {
     console, Promise,
     Interview: require('../frontend/app/interview.js'),
-    setTimeout: fn => { Promise.resolve().then(fn); return 0; }, clearTimeout() {},
+    // every timer fires on a later macrotask: a stubbed brain that answers at once (microtasks) always beats its own
+    // patience windows and ceilings, as a fast real reply does — and the heartbeat's self-rescheduling timer can never
+    // spin the microtask queue (report() exits the process, so its loop does not hold the test open)
+    setTimeout: fn => { setImmediate(fn); return 0; }, clearTimeout() {},
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     World: {},
     Chat: {
@@ -40,7 +44,7 @@ function awakening(answerFor) {
       open() {}, setStage() {}, ink() {}, close() {}, isOpen: () => false,
       say: async () => {},
       answer: () => false,          // a read gate: no free-text question is waiting
-      node: async cfg => answerFor(cfg)
+      node: async cfg => (++nodes > 120 ? new Promise(() => {}) : answerFor(cfg))   // a re-ask loop parks instead of spinning
     }
   };
   vm.createContext(ctx);
@@ -95,6 +99,54 @@ function awakening(answerFor) {
   icb('I run a print shop');
   A.eq(ip, ['I run a print shop'], 'an intake answer typed mid-question is handed back to the composer');
   A.eq(committed, null, '…and nothing was committed for it');
+
+  /* ---------- 3. THE MIRROR (deep meeting, live mind): a grabbed offer and a redirect ----------
+     Live (2026-10-20): wakemind's directive REQUIRES offers phrased as the agent ("i could …"). Grabbing one stored
+     the goal belief "Wants the station to: i could draft your launch checklist tonight." and prefilled the FIRST TASK
+     with the agent's own sentence, which Start sent as the Commander's message verbatim. And the redirect box
+     ("none of these — i'll say it") bypassed askStep, so an emoji-only reply landed as a STATED goal + first task. */
+  function deep(mirrorPick, redirectText) {
+    const upserts = [], armed = [];
+    const run2 = awakening(cfg => {
+      const first = String((cfg.lines && cfg.lines[0] && cfg.lines[0].text) || '');
+      const opts = cfg.options || [];
+      if (opts.some(o => o.value === 'deep')) return { value: 'deep', label: 'deep' };
+      if (/set up an agent/.test(first)) return { value: 'I run a small poster shop and drown in customer email.', label: 'x', custom: true };
+      if (opts.some(o => o.value === 'redirect')) return mirrorPick === 'redirect' ? { value: 'redirect' } : { value: 'o0' };
+      if (/what would you actually hand me/.test(first)) return { value: redirectText, label: redirectText, custom: true };
+      const skip = opts.find(o => o.skip);
+      return skip ? { value: '', skip: true } : (opts[0] || { value: '', skip: true });
+    });
+    const W = require('../frontend/app/wakemind.js');
+    const reply = d => {
+      if (/THE OFFERS/.test(d)) return 'OFFER1: i could draft your launch checklist tonight.\nOFFER2: i could sort your inbox into three piles.\nOFFER3: NONE\nOFFER4: NONE';
+      if (/THE READ/.test(d)) return 'READ: you sell posters and want your evenings back.\nPURPOSE: Keep the shop running smoothly.\nSTACK: NONE';
+      return 'ACK: got it.\nASK: NONE';
+    };
+    Object.assign(run2.ctx, {
+      WakeMind: W,
+      Harness: { configured: () => true, chat: async o => ({ text: reply(String(o.messages[0].content)) }) },
+      DossierStore: { upsert: (dim, b) => upserts.push({ dim, text: b.text, weight: b.weight }), beliefs: () => [] },
+      PitchStore: { armFirstMove: m => armed.push(m) }
+    });
+    run2.ctx.Onboarding.start({ docs: {}, commit: p => run2.commits.push(p), wake: false, name: 'TEST', role: 'orchestrator' });
+    return { run: run2, upserts, armed };
+  }
+  const settle = async (pred) => { for (let i = 0; i < 400 && !pred(); i++) await new Promise(r => setImmediate(r)); };
+
+  const grab = deep('o0');
+  await settle(() => grab.armed.length > 0);
+  A.eq(grab.armed.length, 1, 'grabbing an offer arms the first task');
+  A.ok(!/^\s*i could\b/i.test(grab.armed[0] || ''), 'the first task is not the agent’s own sentence: ' + grab.armed[0]);
+  A.ok(/draft your launch checklist tonight/.test(grab.armed[0] || ''), '…it still carries the offer they picked: ' + grab.armed[0]);
+  const g = grab.upserts.find(u => u.dim === 'goals' && /launch checklist/.test(u.text));
+  A.ok(g && !/to: i could/i.test(g.text), 'the goal belief reads as a fact about the Commander, not "Wants the station to: i could …": ' + (g && g.text));
+
+  const redir = deep('redirect', '🚀🔥💯🙏');
+  await settle(() => redir.run.commits.some(c => c && c.purpose));
+  A.ok(redir.run.commits.some(c => c && c.purpose), 'the emoji redirect run reached the mission');
+  A.ok(!redir.upserts.some(u => u.dim === 'goals' && /🚀/.test(u.text)), 'an emoji-only redirect is not stored as a stated goal');
+  A.eq(redir.armed.length, 0, 'an emoji-only redirect arms no first task');
 
   A.report('onboarding-answer-hygiene.test');
 })();

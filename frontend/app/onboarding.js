@@ -754,7 +754,7 @@ const Onboarding = (() => {
     // their own life: the possibility-space teacher. A grab arms the closing proof beat AND the post-tour
     // first move; a redirect is premium signal (their own words → a stated goals belief). A quiet mind
     // SKIPS this beat entirely — a canned offer would be fake listening.
-    let grabbedMove = '';
+    let grabbedMove = '', firstTask = '';   // what they chose (the synthesis reads it) · the first task a grabbed offer becomes
     if (!loose && brainReady() && (tuesdayT || digT)) {
       // the agent's REAL hands: live placed caps (object=capability), labeled with the same power-words the
       // palette uses. Empty on a fresh awakening (honest — the kit-out is still ahead, and the mirror's
@@ -785,8 +785,12 @@ const Onboarding = (() => {
         const pick = await Dialogue.node({ lines: mir.offers.map((o, i) => seg((i ? '  ' : '') + '· ' + o, 46, 220)), options: opts });
         if (!running) return;
         if (pick && /^o\d$/.test(String(pick.value))) {
-          grabbedMove = mir.offers[Number(String(pick.value).slice(1))] || '';
-          if (grabbedMove && typeof DossierStore !== 'undefined' && DossierStore.upsert) { DossierStore.upsert('goals', { text: 'Wants the station to: ' + grabbedMove, source: 'onboarding', weight: 'synth' }); ink('goals', 'Wants the station to: ' + grabbedMove); }
+          // the directive makes every offer the AGENT speaking ("i could …"): store and hand it on as the offer they
+          // accepted — verbatim it read "Wants the station to: i could …" and became the Commander's own first task
+          const offer = mir.offers[Number(String(pick.value).slice(1))] || '';
+          grabbedMove = offer;   // the synthesis reads the offer itself ("the offer of yours they grabbed")
+          firstTask = offer ? 'Go ahead with your offer: “' + offer.replace(/[.\s]+$/, '') + '.”' : '';
+          if (offer && typeof DossierStore !== 'undefined' && DossierStore.upsert) { DossierStore.upsert('goals', { text: 'Accepted the station’s offer: ' + offer, source: 'onboarding', weight: 'synth' }); ink('goals', 'Accepted the station’s offer: ' + offer); }
           bumpTruth();
           await Dialogue.say([seg('then that’s the one i keep my eye on.', 44, 340)]);
           break;
@@ -805,7 +809,9 @@ const Onboarding = (() => {
             skipOnEmpty: true
           });
           if (!running) return;
-          const t = (!f.skip && f.value != null) ? String(f.value).trim() : '';
+          const said = (!f.skip && f.value != null) ? String(f.value).trim() : '';
+          // this box bypasses askStep, so it gets askStep's two guards here: a no-word reply is a non-answer, and a wall is clipped
+          const t = (said && !(typeof Interview !== 'undefined' && Interview.isSkipAnswer && Interview.isSkipAnswer(said))) ? clipAnswer(said) : '';
           if (t) {
             grabbedMove = t;
             if (typeof DossierStore !== 'undefined' && DossierStore.upsert) { DossierStore.upsert('goals', { text: t, source: 'onboarding', weight: 'stated' }); ink('goals', t); }
@@ -899,7 +905,7 @@ const Onboarding = (() => {
 
     // Carry the selected proposal into an editable handoff; starting happens there, once.
     if (grabbedMove && typeof PitchStore !== 'undefined' && PitchStore.armFirstMove) {
-      PitchStore.armFirstMove(grabbedMove);
+      PitchStore.armFirstMove(firstTask || grabbedMove);
     }
 
   }
