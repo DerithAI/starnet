@@ -8728,11 +8728,17 @@ const World = (() => {
   /* PER-OUTBOX CRATES (Andrew 10-03: an OUTBOX shows only ITS conveyor's output). A pending row belongs to a line only
      when a line-job record PROVES it: the row's run stream is a job sent down that line (/api/line-jobs streamId → line).
      Routines, chats and while-away runs are no conveyor's output — they wait in DELIVERABLES › TO REVIEW, never on a
-     chute. Memoized on (pending count, stream join, plan) so the per-frame read stays cheap. */
+     chute. Memoized on (ledger revision, stream join, plan) so the per-frame read stays cheap: the revision moves on every
+     ReturnStore write (perf, 2026-10-20 — the pending COUNT it used to key on cost a ledger hydrate per frame, and a
+     resolve plus a fold between two frames kept the count and left a crate on the old line's chute). A store without
+     revision() keys on the count, as before. */
+  function returnRevision() {
+    try { return (typeof ReturnStore !== 'undefined' && ReturnStore.revision) ? ReturnStore.revision() : undefined; } catch (_) { return undefined; }
+  }
   let lineJobStream = {};   // job streamId -> line key, from the server's line-job records (refreshed with the line plates)
   let crateMemo = null, crateKey = null;
   function outboxCrateMap() {
-    const n = returnCrates(), key = [n, lineJobStream, routingPlan];
+    const n = returnCrates(), rev = returnRevision(), key = [rev, rev === undefined ? n : 0, lineJobStream, routingPlan];
     if (crateKey && crateKey.every((v, i) => v === key[i])) return crateMemo;
     const by = {}, outOf = {};
     try {

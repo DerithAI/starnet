@@ -695,6 +695,7 @@ test/loop-review-needs-you.test.js
 test/routine-origin-race.test.js
 test/returnstore-rate-sync.test.js
 test/returnstore-recovery.test.js
+test/outbox-crate-memo.test.js
 test/settings-save-failure.test.js
 test/loop-tools.test.js
 test/loopgit.test.js
