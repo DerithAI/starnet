@@ -148,12 +148,29 @@
     };
   }
 
-  // Self-start in the browser: the station windows mount into #terms, which is in the page from the start
+  /* Where the floor holds (Andrew 10-20, after the windows: "run the same audits over … BUILD MODE, onboarding, toasts and
+     tooltips … then fix what they find"): the station windows (#terms), the first-run screens and the dock coach — all in
+     the page from the start — and BUILD MODE and the workflow panel, which mount on the body when they open. The
+     dashboard rails and COMMS keep their own tuned scale (pipglass.css). */
+  const HOSTS = ['#terms', '#screen-splash', '#screen-connect', '#nav-coach'];
+  const LATE_HOSTS = /(^|\s)(refit-overlay|wf-panel)(\s|$)/;
+  function startAll(doc, view) {
+    const w = viewOf(view), watched = new WeakSet();   // a closed BUILD MODE overlay is let go
+    const take = el => { if (el && !watched.has(el)) { watched.add(el); watch(el, w); } };
+    for (const sel of HOSTS) take(doc.querySelector(sel));
+    for (const el of doc.body.children) if (LATE_HOSTS.test(String(el.className || ''))) take(el);
+    if (typeof w.MutationObserver !== 'function') return;
+    new w.MutationObserver(records => {
+      for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1 && LATE_HOSTS.test(String(n.className || ''))) take(n);
+    }).observe(doc.body, { childList: true });
+  }
+
+  // Self-start in the browser
   if (typeof document !== 'undefined') {
-    const start = () => { const host = document.getElementById('terms'); if (host) watch(host); };
+    const start = () => startAll(document);
     if (document.body) start();
     else document.addEventListener('DOMContentLoaded', start, { once: true });
   }
 
-  return { pass, refloor, watch, ownsWords, ATTR, CAPS, CUT };
+  return { pass, refloor, watch, startAll, ownsWords, ATTR, CAPS, CUT, HOSTS };
 });
