@@ -1668,17 +1668,17 @@ const Marketplace = (() => {
        "picked from your real work" therefore sat over two catalog cards the station had never seen touched: the
        honest-header fix, still overclaiming one path down. Three states, one per thing that actually happened. */
     const scored = Number.isFinite(ranked.scored) ? ranked.scored : (ranked.personalized ? items.length : 0);
-    const head = exhausted
-      ? coldHead('STARTING POINTS — you passed on every recipe, so here is the library again')
-      : !(ready && ranked.personalized)
+    const head = !(ready && ranked.personalized)
       ? coldHead('STARTING POINTS — a varied lineup while the station gets to know you')
       : (scored >= items.length)
         ? noticedHead('picked from your real work')
         : noticedHead(scored === 1
           ? 'one pick from your real work, plus starting points'
           : scored + ' picks from your real work, plus starting points');
+    // the declined-everything floor says so instead of any personalized claim (sweep/onboarding 2026-10-20)
+    const shownHead = exhausted ? coldHead('STARTING POINTS — you passed on every recipe, so here is the library again') : head;
     items.forEach((r, i) => trackRecommendation('recipe', r, reasonFor(r), i + 1));
-    return '<div class="mkt-sect-h mkt-foryou-sect">' + head + '</div><div class="mkt-rec-rail">' +
+    return '<div class="mkt-sect-h mkt-foryou-sect">' + shownHead + '</div><div class="mkt-rec-rail">' +
       items.map(r => forYouCardHTML(r, reasonFor(r))).join('') + '</div>';
   }
 
