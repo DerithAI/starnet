@@ -55,7 +55,7 @@ const path = require('node:path');
      a reader right after it (the rail's 1 s tick) can run before what queued up behind it. advance(ms) then runs every
      task that came due, oldest first. */
   const PollGate=require('../frontend/app/pollgate.js');
-  function rig({gate=null,rtt=40}={}){
+  function rig({gate=null,rtt=40,navigator=undefined}={}){
     let T=5e6,wall=0,nextId=1;const timers=new Map();
     const setT=(fn,ms)=>{const id=nextId++;timers.set(id,{at:T+Math.max(0,ms||0),fn});return id;};
     const clearT=id=>{timers.delete(id);};
@@ -81,6 +81,7 @@ const path = require('node:path');
         setT(()=>res(answer),s.rtt);
       })};
     if(gate)c.PollGate=gate==='real'?PollGate:gate;
+    if(navigator)c.navigator=navigator;
     vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),c);
     const o=c.module.exports;
     return Object.assign(s,{o,advance,stall:ms=>{T+=ms;},stepWall:ms=>{wall+=ms;},
@@ -153,6 +154,27 @@ const path = require('node:path');
     await r.advance(8100);
     assert.equal(m.unreachable(),true,'…once the page has lived through the deadline: unreachable');
     await p;r.mode='answer';
+  }
+
+  /* fix round 4 (2026-10-20): THE WALL CLOCK AGES A LEDGER ONLY WHERE performance.now STANDS STILL IN A SLEEP. On Windows
+     (WebView2: QueryPerformanceCounter) the monotonic clock counts the sleep itself, and reading the wall clock there only
+     let a forward wall step (a w32time correction, the Commander setting the clock) make a ledger 0.1 s old read stale:
+     the rail said "crew · unknown — checking the station" though the station had answered every ask. */
+  {
+    const r=rig({navigator:{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',platform:'Win32'}});const m=r.o;
+    await r.ask();assert.equal(m.fresh(),true,'Windows: a ledger just answered is fresh');
+    r.stepWall(60000);r.stall(100);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'WINDOWS, WALL STEPPED +60 s: a ledger 0.1 s old on the monotonic clock is still current (it read "checking the station")');
+    r.stall(3600000);
+    assert.equal(m.fresh(),false,'Windows: an hour of sleep counted by performance.now still makes the ledger stale');
+    await r.ask();r.stepWall(-3600000);
+    assert.equal(m.fresh(),true,'Windows: a backward wall step changes nothing either');
+  }
+  for(const nav of [{userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)',platform:'MacIntel'},
+    {userAgent:'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)',platform:'Linux x86_64'}]){
+    const r=rig({navigator:nav});const m=r.o;
+    await r.ask();r.stepWall(3600000);
+    assert.equal(m.fresh(),false,nav.platform+': an hour of sleep that stopped performance.now still makes the pre-sleep ledger stale (the wall clock is read there)');
   }
 
   /* fix round 3 (2026-10-20): THE PAGE'S OWN LATENESS IS NOT THE STATION'S. Each case below failed on the previous formula

@@ -34,10 +34,13 @@ const Overseer = (() => {
          read answers; the rail then says it is checking, never that the station is unreachable.
      AN AWAY STRETCH IS NOT STALENESS (fix round 2): an answer PollGate went away after (PollGate.lastAwayAt() >= okAt) is
      measured against the 30 s floor that was due to replace it, so it stays current through the catch-up read on return.
-     Every age is the LONGER of two clocks: the monotonic one (performance.now when present), so a backward wall-clock step
-     can never make an old ledger current; and the wall clock, because WebKit's performance.now (macOS WKWebView, Linux
-     WebKitGTK) stands still while the machine sleeps. Windows' WebView2 counts the sleep on both. Nothing here displays
-     these times. */
+     Every age is measured on the monotonic clock (performance.now when present), so a backward wall-clock step can never
+     make an old ledger current. Where performance.now stands still while the machine sleeps — macOS and Linux (WKWebView,
+     WebKitGTK: the OS monotonic clocks under them stop in a sleep) — the age is the LONGER of it and the wall clock, so a
+     pre-sleep ledger is never current after the sleep. On Windows (WebView2: QueryPerformanceCounter) performance.now
+     counts the sleep itself, and the wall clock is not read (fix round 4): there it only let a forward wall step (a
+     w32time correction, the Commander setting the clock) make a ledger 0.1 s old read stale, and the rail said "checking
+     the station" though the station had answered every ask. Nothing here displays these times. */
   const ASK_MS = 8000;          // an ask's deadline: past it the read is aborted and the station is not answering
   const LATE_GRACE = 15000;     // how long past its window a ledger the page's own late beat left old stays current
   const LATE_FIRE_MS = 1000;    // a deadline timer this late was held up by the page (busy, asleep), not by the station
@@ -45,7 +48,13 @@ const Overseer = (() => {
   let asking = false, slow = false, expired = false;   // an ask is out · it has been out two beats · it ran past its deadline
   const mono = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? () => performance.now() : () => Date.now();
   const gateCadence = () => { try { return loop ? loop.interval() : BEAT; } catch (_) { return BEAT; } };
-  const ageOf = (at, atWall) => Math.max(mono() - at, Math.max(0, Date.now() - atWall));
+  const monoCountsSleep = (() => {
+    try {
+      const n = typeof navigator !== 'undefined' && navigator ? navigator : {};
+      return /\bWin(dows|32|64)\b/.test(String(n.userAgent || '') + ' ' + String(n.platform || '') + ' ' + String((n.userAgentData && n.userAgentData.platform) || ''));
+    } catch (_) { return false; }   // unknown: read the wall clock too (a stale ledger is the safe side)
+  })();
+  const ageOf = (at, atWall) => (monoCountsSleep ? mono() - at : Math.max(mono() - at, Math.max(0, Date.now() - atWall)));
   // the gate went away after this answer landed: its replacement was due on the away floor, not the visible beat
   const awayCover = () => (typeof PollGate !== 'undefined' && PollGate.lastAwayAt && PollGate.lastAwayAt() >= okAt) ? (PollGate.AWAY_MS || 30000) : 0;
   const fresh = () => !!last && !failing && !(asking && (slow || expired))
