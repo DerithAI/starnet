@@ -1,0 +1,159 @@
+/* node test/group-poll-idle.test.js — the open group chat's poll asks only when due, and only "since" (idle CPU piece 3,
+   2026-10-20).
+
+   THE COST. The open group re-downloaded its whole group every 0.9 s forever — minimized or not — JSON.stringified it to
+   decide whether to paint, and every change (each streamed draft too) remapped every message into the workstream; every
+   revision also ran App.persist + a full rail rebuild.
+
+   GENUINE (executed): the REAL frontend/app/group-chat.js runs in a vm over the small El DOM from group-stop-truth.test.js,
+   with a fake clock + timer queue, a fake /api/groups that honours `since` like sidecar/group-sessions.js, and a PollGate
+   stub (away flag + onWake). Counted: ?id= reads, App.persist, whole-group JSON.stringify calls, transcript node identity. */
+'use strict';
+const A = require('./_assert.js');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const read = p => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+
+class El {
+  constructor(tag) { this.tagName = tag; this.children = []; this.attrs = {}; this.dataset = {}; this.events = {}; this.value = ''; this.style = { setProperty() {} }; this._cls = new Set(); const self = this; this.classList = { add: c => self._cls.add(c), remove: c => self._cls.delete(c), toggle: (c, on) => (on === undefined ? (self._cls.has(c) ? self._cls.delete(c) : self._cls.add(c)) : (on ? self._cls.add(c) : self._cls.delete(c))), contains: c => self._cls.has(c) }; }
+  get className() { return [...this._cls].join(' '); } set className(v) { this._cls = new Set(String(v || '').split(/\s+/).filter(Boolean)); }
+  get isConnected() { return true; }
+  setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = v; if (k === 'class') this.className = v; }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  removeAttribute(k) { delete this.attrs[k]; }
+  querySelectorAll() { return []; } querySelector() { return null; }
+  addEventListener(k, fn) { (this.events[k] = this.events[k] || []).push(fn); }
+  focus() {}
+  append(...n) { for (const e of n) { const x = typeof e === 'string' ? Object.assign(new El('#text'), { textContent: e }) : e; if (x.parentElement) x.remove(); x.parentElement = this; this.children.push(x); } }
+  appendChild(n) { this.append(n); return n; }
+  replaceChildren(...n) { for (const c of this.children) c.parentElement = null; this.children = []; this.append(...n); }
+  before(n) { this.parentElement && this.parentElement.append(n); }
+  insertBefore(n, ref) { if (n.parentElement) n.remove(); const i = ref ? this.children.indexOf(ref) : -1; n.parentElement = this; if (i < 0) this.children.push(n); else this.children.splice(i, 0, n); return n; }
+  get lastElementChild() { return this.children[this.children.length - 1] || null; }
+  remove() { if (this.parentElement) { this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.parentElement = null; } }
+  get textContent() { return this._text != null ? this._text : this.children.map(c => c.textContent).join(''); }
+  set textContent(v) { this._text = String(v); this.children = []; }
+}
+const all = e => [e, ...e.children.flatMap(all)];
+
+/* one station: a group whose stamp moves like group-sessions.js's (revision + draft writes); `stamps:false` = an old sidecar */
+function harness({ stamps = true } = {}) {
+  let clock = 1e9, seq = 0, persists = 0, groupStringifies = 0, away = false, draftSeq = 0;
+  const timers = new Map(), reads = [], wakers = [];
+  const server = { id: 'g1', title: 'Launch', members: ['agent', 'copy'], leadId: 'agent', revision: 3, paused: false, artifacts: [], questions: [],
+    messages: [{ id: 'm1', seq: 1, author: 'user', content: 'hello', at: 1 }, { id: 'm2', seq: 2, author: 'agent', content: 'hi there', at: 2, turnId: 't1' }],
+    turns: [{ id: 't1', origin: 'm1', agentId: 'agent', state: 'completed', endedAt: 2 }] };
+  const stampOf = () => 'boot.' + server.revision + '.' + draftSeq;
+  const body = new El('body'), head = new El('head');
+  for (const id of ['comms-idbar', 'chat-input', 'chat-log', 'chat-queued', 'chat-inputrow']) { const e = new El('div'); e.id = id; body.append(e); }
+  const ws = { id: 'g1', agentId: 'agent', title: 'Launch', conversationMode: 'group', history: [] };
+  const isGroup = v => !!(v && typeof v === 'object' && Array.isArray(v.turns) && Array.isArray(v.messages));
+  const ctx = vm.createContext({
+    document: { body, head, hidden: false, addEventListener() {}, createElement: tg => new El(tg), createTextNode: tx => Object.assign(new El('#text'), { textContent: tx }), getElementById: id => all(body).find(e => e.id === id) },
+    console, crypto: { randomUUID: () => 'u' }, queueMicrotask,
+    Date: class extends Date { static now() { return clock; } },
+    JSON: { stringify: (v, ...r) => { if (isGroup(v)) groupStringifies++; return JSON.stringify(v, ...r); }, parse: JSON.parse },
+    setTimeout: (fn, ms) => { const id = ++seq; timers.set(id, { fn, at: clock + (ms || 0) }); return id; },
+    clearTimeout: id => { timers.delete(id); },
+    fetch: async (url) => {
+      url = String(url);
+      if (!/\?id=/.test(url)) return { status: 200, ok: true, json: async () => ({ ok: true, result: { roster: [{ id: 'agent', name: 'NOVA' }, { id: 'copy', name: 'COPY' }], groups: [] } }) };
+      reads.push(url);
+      const since = (url.match(/[?&]since=([^&]*)/) || [])[1];
+      const result = stamps && since && decodeURIComponent(since) === stampOf() ? { id: 'g1', unchanged: true, stamp: stampOf() }
+        : Object.assign(JSON.parse(JSON.stringify(server)), stamps ? { stamp: stampOf() } : {});
+      return { status: 200, ok: true, json: async () => ({ ok: true, result }) };
+    },
+    PollGate: { away: () => away, AWAY_MS: 30000, onWake: cb => { wakers.push(cb); return () => {}; } },
+    Chat: { consentPhrase: () => '', consentInspect: () => null, clockLabel: () => '', breakLabel: () => '' },
+    App: { pushRoster: async () => {}, agents: () => [{ id: 'agent', name: 'NOVA' }, { id: 'copy', name: 'COPY' }], persist() { persists++; }, refreshRail() {}, openWorkstream() {} },
+    StationUI: { notify() {}, toggleTerm() {}, closeTerm() {} },
+    Workstreams: { get: id => (id === 'g1' ? ws : null), list: () => [ws], activeId: () => 'g1', adopt: o => Object.assign(ws, o), generalId: () => 'home' }
+  });
+  vm.runInContext(read('frontend/app/group-chat.js') + '\nglobalThis.GroupChat = GroupChat;', ctx);
+  const settle = async () => { for (let n = 0; n < 60; n++) await Promise.resolve(); };
+  async function advance(ms) {
+    const until = clock + ms;
+    for (;;) {
+      let next = null;
+      for (const [id, t] of timers) if (t.at <= until && (!next || t.at < next[1].at)) next = [id, t];
+      if (!next) break;
+      timers.delete(next[0]); clock = Math.max(clock, next[1].at); next[1].fn(); await settle();
+    }
+    clock = until;
+  }
+  return { ctx, ws, server, reads, wakers, advance, settle, log: () => ctx.document.getElementById('gc-log'),
+    persists: () => persists, groupStringifies: () => groupStringifies, setAway: v => { away = v; }, draft: () => { draftSeq++; }, now: () => clock };
+}
+
+(async () => {
+  /* (b) a visible, idle group: a read every 3 s, not every 0.9 s */
+  {
+    const h = harness();
+    h.ctx.GroupChat.bind(h.ws); await h.settle();
+    A.eq(h.reads.length, 1, 'binding the group reads it at once');
+    A.ok(h.log() && h.log().children.length > 0, 'fixture: the transcript painted');
+    await h.advance(9000);
+    A.ok(h.reads.length >= 3 && h.reads.length <= 4, 'visible + idle: at most 4 reads in 9 s (was 10) — got ' + h.reads.length);
+
+    /* (d) every later read carries the stamp of the group on screen; an unchanged answer touches nothing */
+    A.ok(h.reads.slice(1).every(u => /&since=boot\.3\.0$/.test(u)), 'later reads send since=<the stamp on screen>: ' + h.reads[1]);
+    const nodes = h.log().children.slice(), persisted = h.persists(), stringified = h.groupStringifies();
+    await h.advance(9000);
+    A.ok(h.reads.length >= 6, 'fixture: more idle reads happened');
+    A.eq(h.persists(), persisted, 'an unchanged answer never persists the station');
+    A.eq(h.groupStringifies(), stringified, 'an unchanged answer is never stringified');
+    A.ok(h.log().children.length === nodes.length && h.log().children.every((n, i) => n === nodes[i]), 'an unchanged answer leaves every transcript node as it was');
+
+    /* a streamed draft (same revision): painted, but the workstream is not re-adopted and the station not persisted */
+    const adoptedHistory = h.ws.history;
+    h.server.turns.push({ id: 't2', origin: 'm1', agentId: 'copy', state: 'running' });
+    h.server.revision++; h.draft();
+    await h.advance(4000);   // the next due idle read (3 s after the last, on a 0.9 s beat)
+    A.ok(h.ws.history !== adoptedHistory && h.persists() > persisted, 'a revision bump adopts and persists, as before');
+    const persistedAtRun = h.persists(), historyAtRun = h.ws.history;
+    // a live turn: the poll keeps the 0.9 s beat
+    const before = h.reads.length;
+    for (let i = 0; i < 4; i++) { h.server.turns[1].draft = 'streaming ' + i; h.draft(); await h.advance(900); }
+    A.ok(h.reads.length - before >= 4, '(c) a live turn keeps the 0.9 s cadence (' + (h.reads.length - before) + ' reads in 3.6 s)');
+    A.eq(h.persists(), persistedAtRun, 'streamed drafts never persist the station');
+    A.ok(h.ws.history === historyAtRun, 'streamed drafts never re-adopt the workstream (its history is the same array)');
+    A.eq(h.groupStringifies(), stringified, 'a stamped group is never stringified to decide whether to paint');
+  }
+
+  /* (a) hidden with no input: one read per 30 s; back on screen, a read at once */
+  {
+    const h = harness();
+    h.ctx.GroupChat.bind(h.ws); await h.settle();
+    h.setAway(true);
+    await h.advance(20000);
+    A.eq(h.reads.length, 1, 'away: no further read in the next 20 s (was ~22)');
+    await h.advance(11000);
+    A.eq(h.reads.length, 2, 'away: one read per 30 s — slower, never stopped');
+    h.setAway(false);
+    A.eq(h.wakers.length, 1, 'the group chat registers one wake');
+    h.wakers[0](); await h.settle();
+    A.eq(h.reads.length, 3, 'back on screen: the open group is read at once');
+    await h.advance(900);
+    A.eq(h.reads.length, 3, '…and its idle cadence resumes from that read');
+  }
+
+  /* (e) an older sidecar (no stamp): every read is a full one compared whole, as before — still due-gated */
+  {
+    const h = harness({ stamps: false });
+    h.ctx.GroupChat.bind(h.ws); await h.settle();
+    await h.advance(9000);
+    A.ok(h.reads.every(u => !/since=/.test(u)), 'no stamp from the station: no since is ever sent');
+    A.ok(h.reads.length >= 3 && h.reads.length <= 4, 'still read only when due');
+    const persisted = h.persists();
+    await h.advance(9000);
+    A.eq(h.persists(), persisted, 'an unchanged full answer still paints nothing new (the whole-group comparison)');
+    A.ok(h.groupStringifies() > 0, 'the whole-group comparison is what decides, as before');
+    h.server.messages.push({ id: 'm3', seq: 3, author: 'agent', content: 'new', at: 3 }); h.server.revision++;
+    await h.advance(4000);
+    A.ok(h.ws.history.some(m => m.content === 'new'), 'a real change from an older sidecar still lands');
+  }
+
+  A.report('group-poll-idle.test');
+})().catch(e => { console.error(e); process.exit(1); });

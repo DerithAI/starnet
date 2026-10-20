@@ -439,17 +439,43 @@ const GroupChat = (() => {
     clearTimeout(timer); $('gc-log').replaceChildren(); $('gc-states').replaceChildren(); $('gc-questions').replaceChildren(); input.value = composerDrafts.get(ws?.id) || ''; draftKey = null; notice = ''; $('gc-notice').textContent = ''; closeMentions(); recipientLabel();
     if (enabled) poll(generation);
   }
+  /* THE OPEN GROUP'S POLL ASKS ONLY WHEN DUE, AND ONLY "SINCE" (idle CPU piece 3, 2026-10-20). It re-downloaded the whole
+     group every 0.9 s forever, stringified it to decide whether to paint, and every change (each streamed draft too)
+     remapped every message into the workstream. The 0.9 s beat stays, but it asks the station only when due: every beat
+     while a turn is live or a draft streams, every 3 s while the group is idle, every 30 s while the Commander is away
+     (PollGate), and at once on their return. A read sends the stamp of the group on screen (since): an unchanged group
+     answers { unchanged: true } and nothing is parsed, painted or adopted. A group set from a POST answer carries no stamp,
+     so the next read is a full one; an older sidecar sends no stamp at all and every read is full, as before. */
+  const POLL_BEAT_MS = 900, POLL_IDLE_MS = 3000;
+  let polled = { gen: -1, at: 0 }, pollingGen = -1, goneGen = -1;
+  function pollDue() {
+    if (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away()) return PollGate.AWAY_MS || 30000;
+    const drafting = !!(group && group.id === active?.id && (group.turns || []).some(t => t.draft || (t.draftSteps && t.draftSteps.length)));
+    return isBusy() || drafting ? POLL_BEAT_MS : POLL_IDLE_MS;
+  }
   async function poll(gen) {
+    if (gen !== generation || pollingGen === gen) return;
+    if (polled.gen === gen && Date.now() - polled.at < pollDue()) {   // not due: keep the beat, skip the read
+      if (active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), POLL_BEAT_MS);
+      return;
+    }
+    pollingGen = gen; polled = { gen, at: Date.now() };
     try {
-      const id = active.id, result = await api(null, '?id=' + encodeURIComponent(id));
+      const id = active.id, since = group && group.id === id && typeof group.stamp === 'string' ? group.stamp : '';
+      const result = await api(null, '?id=' + encodeURIComponent(id) + (since ? '&since=' + encodeURIComponent(since) : ''));
       if (gen !== generation) return;
-      group = result; paint();
+      if (!(since && result && result.unchanged === true && result.stamp === since)) { group = result; paint(); }
     } catch (e) {
       if (gen === generation) showError(/not found/i.test(e.message || '') ? new Error('This group no longer exists on this station. Delete it from the session list.') : e);
-      if (/not found/i.test(e.message || '')) return;   // never poll a gone group every 900 ms forever
-    }
-    if (gen === generation && active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), 900);
+      if (/not found/i.test(e.message || '')) { goneGen = gen; return; }   // never poll a gone group every 900 ms forever
+    } finally { if (pollingGen === gen) pollingGen = -1; }
+    if (gen === generation && active?.conversationMode === 'group') timer = setTimeout(() => poll(gen), POLL_BEAT_MS);
   }
+  // back on screen: read the open group now, not on its next due beat
+  if (typeof PollGate !== 'undefined' && PollGate.onWake) PollGate.onWake(() => {
+    if (!root || active?.conversationMode !== 'group' || goneGen === generation || pollingGen === generation) return;
+    clearTimeout(timer); polled = { gen: -1, at: 0 }; poll(generation);
+  });
   /* A REPLY'S FLOW (rc walk 2026-10-14). The group transcript glued the lead's streamed sentences together ("Let me configure
      it:The steps are locked.") and showed none of its tool calls. A reply that made visible calls carries its flow from the
      host (sidecar group-sessions.js: the prose as it streamed + each call's offset into it); it is drawn the way the
@@ -505,9 +531,14 @@ const GroupChat = (() => {
   }
   function paint() {
     if (!group || group.id !== active?.id) return;
-    const signature = JSON.stringify(group); if (lastPaint === signature) return; lastPaint = signature;
+    // the station's stamp names exactly what this group shows (idle CPU piece 3); a stampless group (a POST answer, an older
+    // sidecar) is compared whole, as before
+    const signature = typeof group.stamp === 'string' && group.stamp ? 'stamp:' + group.stamp : JSON.stringify(group);
+    if (lastPaint === signature) return; lastPaint = signature;
     const priorRevision = active.groupRevision;
-    adopt(group);
+    // messages, turns, title, lead and members are committed state: they only move with the revision (a streamed draft
+    // never touches them), so the workstream is re-adopted only when it moved — or the first time this page sees the group
+    if (priorRevision !== group.revision || !membersById.has(group.id)) adopt(group);
     if (priorRevision !== group.revision) { active.groupRevision = group.revision; save(); }
     participantsHeader($('gc-header'), group.members, !!group.paused, group.leadId);
     if (pickerFor === group.id && pickerRepaint) pickerRepaint(group);
