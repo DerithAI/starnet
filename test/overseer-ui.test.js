@@ -64,7 +64,7 @@ const path = require('node:path');
   // the Commander comes back after 40 s away: the catch-up read is on its way
   offset+=40000;hang=true;const catchUp=g.refresh();
   assert.equal(g.unreachable(),false,'the catch-up read on return is not "station unreachable" while it is on its way');
-  assert.equal(g.fresh(),true,'…and the last answer stays current until that read hangs');
+  assert.equal(g.fresh(),false,'…but an ask in flight never vouches for an answer older than three of the beats that produced it (40 s at 2.5 s)');
   offset+=4000;assert.equal(g.unreachable(),false,'four seconds into the ask: still not hung');
   offset+=1500;assert.equal(g.unreachable(),true,'past two beats of THIS ask: hung, so unreachable');
   assert.equal(g.fresh(),false,'…and no longer fresh');
@@ -77,5 +77,38 @@ const path = require('node:path');
   cadence=2500;await g.refresh();
   offset+=4000;assert.equal(g.fresh(),true,'visible: an answer 4 s old is current');
   offset+=60000;assert.equal(g.fresh(),false,'visible: an answer a minute old with nothing asked since is not');
+  /* fix round (2026-10-20): fresh() is EXACTLY the design's formula — !failing && !hung && now - okAt <= 3 x max(BEAT, the
+     cadence that produced the answer). The old `busy ||` term let any ask in flight vouch for the last ledger however old
+     it was: after a sleep or a frozen page the catch-up read made an hour-old ledger "fresh" (crew lamps "working", a
+     delegated row's live clock) until it answered or hung. */
+  // the design's own case: the last answer came from a 30 s away beat, the catch-up read is on its way 40 s later
+  cadence=30000;await g.refresh();cadence=2500;
+  offset+=40000;hang=true;const back=g.refresh();
+  assert.equal(g.unreachable(),false,'an answer from a 30 s away beat, 40 s old, catch-up in flight: not unreachable');
+  assert.equal(g.fresh(),true,'…and still fresh (40 s is inside three 30 s beats)');
+  timeout();await back;hang=false;
+  // an hour-old ledger (sleep / a frozen page) with the catch-up read in flight
+  await g.refresh();assert.equal(g.fresh(),true,'fixture: a ledger just answered');
+  offset+=3600000;hang=true;const resumed=g.refresh();
+  assert.equal(g.unreachable(),false,'an hour later the catch-up read is on its way: not (yet) unreachable');
+  assert.equal(g.fresh(),false,'…but an hour-old ledger is never fresh because an ask is out (it was, with busy ||)');
+  timeout();await resumed;hang=false;
+
+  /* the freshness clock is monotonic (performance.now when present): a backward wall-clock step can neither make an old
+     ledger current nor keep a hung ask from reading as hung */
+  let mono=1e6,wallStep=0,monoReady=null;
+  const monoCtx=Object.assign({},context,{
+    module:{exports:{}},Date:{now:()=>clockNow()+wallStep},performance:{now:()=>mono},setInterval:()=>0,
+    document:{addEventListener(k,fn){if(k==='DOMContentLoaded')monoReady=fn;},createElement(){throw new Error('No additional UI permitted');}},
+    PollGate:{every(){return {interval:()=>2500,cadence:()=>2500,stop(){},runNow(){}};}}
+  });
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),monoCtx);
+  const m=monoCtx.module.exports;monoReady();for(let n=0;n<20;n++)await Promise.resolve();
+  await m.refresh();assert.equal(m.fresh(),true,'monotonic: a ledger just answered is fresh');
+  mono+=60000;wallStep-=3600000;
+  assert.equal(m.fresh(),false,'a minute with no answer, wall clock stepped back an hour: still not fresh (Date.now said fresh)');
+  hang=true;const stepped=m.refresh();mono+=6000;wallStep-=3600000;
+  assert.equal(m.unreachable(),true,'an ask out 6 s on the monotonic clock is hung, whatever the wall clock did');
+  timeout();await stepped;hang=false;
   console.log('overseer sync: existing sessions, no added UI/focus changes, recovery and timeout PASS');
 })().catch(e=>{console.error(e);process.exitCode=1;});

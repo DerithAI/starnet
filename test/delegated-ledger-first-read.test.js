@@ -130,10 +130,12 @@ const A = require('./_assert.js');
   mode = 'hold';
   const stuck = global.Overseer.refresh();
   A.eq(card().rows[0].live, 'checking…', 'a first read on its way: checking…');
-  const realNow = Date.now;
+  // a minute passes on both clocks: the ledger's ages run on the monotonic one (performance.now), the rows' on Date.now
+  const realNow = Date.now, realPerfNow = performance.now;
   Date.now = () => realNow() + 60000;
+  performance.now = () => realPerfNow.call(performance) + 60000;
   try { A.eq(card().rows[0].live, 'status unknown — station unreachable', 'a first read hung past three beats: station unreachable'); }
-  finally { Date.now = realNow; }
+  finally { Date.now = realNow; performance.now = realPerfNow; }
   data = ledger(kids.map((k, i) => done(k.id, i + 1)));
   release(); await stuck;
   A.eq(sumOf(card().html), 'all 3 done', 'and when it lands the ledger decides');

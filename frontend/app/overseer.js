@@ -14,20 +14,24 @@ const Overseer = (() => {
      cadence that actually produced the answer, never a fixed 7.5 s from the last answer — or the catch-up read on return
      would be called unreachable just because the last answer is 30 s old:
        · hung: THIS ask has been out for two beats (three for the very first read, exactly as before);
-       · fresh: not failing, not hung, and the answer is no older than three of the cadences in force (the one that asked
-         for it, or the one in force now) — an ask on its way is fresh until it hangs.
-     While visible both reduce to the old reading: a 2.5 s beat, a hang after ~5 s of the ask (7.5 s from the answer). */
+       · fresh: not failing, not hung, and the answer is no older than three of the cadence that asked for it — exactly
+         that, the design's formula. An ask on its way never vouches for an older answer: after a sleep or a frozen page
+         the catch-up read is out while the last ledger is hours old, and that ledger is not current until it answers.
+     While visible both reduce to the old reading: a 2.5 s beat, a hang after ~5 s of the ask (7.5 s from the answer).
+     Both ages run on the monotonic clock (performance.now when present): a backward wall-clock step can neither make an
+     old ledger current nor keep a hung ask from reading as hung. Nothing here displays these times. */
   let loop = null, okCadence = BEAT, askCadence = BEAT;
+  const mono = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? () => performance.now() : () => Date.now();
   const gateCadence = () => { try { return loop ? loop.interval() : BEAT; } catch (_) { return BEAT; } };
-  const hung = () => busy && Date.now() - askedAt > (okAt ? 2 : 3) * BEAT;
-  const fresh = () => !!last && !failing && !hung() && (busy || Date.now() - okAt <= 3 * Math.max(BEAT, okCadence, gateCadence()));
+  const hung = () => busy && mono() - askedAt > (okAt ? 2 : 3) * BEAT;
+  const fresh = () => !!last && !failing && !hung() && mono() - okAt <= 3 * Math.max(BEAT, okCadence);
   // the station is not answering the ledger read: the latest poll failed, or this one hangs (above). Readable BEFORE the
   // first answer, when snapshot() is still null: the delegation card says "checking…" while that first read is on its way
   // and "station unreachable" once it has failed — never a worker state the ledger has not given (delegated.js ledgerRead)
   const unreachable = () => failing || hung();
   async function refresh() {
     if (busy || typeof Workstreams === 'undefined' || !Workstreams.generalId()) return;
-    busy = true; askedAt = Date.now(); askCadence = gateCadence();
+    busy = true; askedAt = mono(); askCadence = gateCadence();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
     try {
@@ -44,7 +48,7 @@ const Overseer = (() => {
         const adoptedRow = Workstreams.adopt(row);
         if (adoptedRow && (!before || before[0] !== adoptedRow.parentStreamId || before[1] !== adoptedRow.worker || before[2] !== adoptedRow.projectRoot)) adopted = true;
       }
-      last = data; okAt = Date.now(); okCadence = askCadence; failing = false;
+      last = data; okAt = mono(); okCadence = askCadence; failing = false;
       if (adopted) { App.persist(); App.refreshRail(); }
       if (typeof Delegated !== 'undefined' && Delegated.repaint) Delegated.repaint();   // the parent's DELEGATED card follows the ledger
       const deliveries = JSON.stringify([(data.workers || []).map(w => [w.runId, w.status]),
