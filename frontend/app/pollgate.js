@@ -20,7 +20,7 @@
         awayMs: the floor while away (30000)  immediate: run fn now (true) or after the first ms (false)
         → { stop, runNow, lastRunAt(), cadence(), interval() }
         A setTimeout chain that never overlaps: a run that returns a promise is awaited before the next is scheduled; a
-        throw or rejection is swallowed and the chain carries on. cadence() is the interval in force when the last run
+        throw or rejection is re-raised outside the chain, which carries on. cadence() is the interval in force when the last run
         started; interval() is the one in force now.
      PollGate.onWake(cb) → unsubscribe      cb runs when the Commander comes back after the gate was away
    Callers fall back to their old timers when PollGate is undefined (single-file node tests load them without it).
@@ -35,6 +35,11 @@ const PollGate = (() => {
   let setT = (fn, ms) => setTimeout(fn, ms);
   let clearT = id => clearTimeout(id);
   let doc = typeof document !== 'undefined' ? document : null;
+  /* A beat that throws (or rejects) must stay as loud as it was under setInterval: re-raised outside the chain, it is an
+     uncaught error / unhandled rejection again — the console shows it and BootGuard counts it for the diagnostics report —
+     while the chain itself carries on. */
+  let raise = e => { setTimeout(() => { throw e; }, 0); };
+  let raiseRejection = e => { Promise.reject(e); };
   let lastInputAt = 0;
   let awaySeen = false;           // a due-check (or a caller) saw the gate away since the last wake
   const loops = new Set();
@@ -73,8 +78,8 @@ const PollGate = (() => {
       if (l.timer) { clearT(l.timer); l.timer = 0; }
       l.running = true; l.lastRunAt = now(); l.cadence = iv;
       let p = null;
-      try { p = fn(); } catch (_) { p = null; }   // one failed beat never ends the chain
-      if (p && typeof p.then === 'function') p.then(settle, settle); else settle();
+      try { p = fn(); } catch (e) { p = null; raise(e); }   // one failed beat never ends the chain
+      if (p && typeof p.then === 'function') p.then(settle, e => { settle(); raiseRejection(e); }); else settle();
     }
     l.catchUp = () => {
       if (l.stopped || l.running) return;
@@ -126,6 +131,7 @@ const PollGate = (() => {
     _setDocForTest(d, w) { bind(d, w); },
     _setClockForTest(fn) { now = fn; },
     _setTimersForTest(setFn, clearFn) { setT = setFn; clearT = clearFn; },
+    _setRaiseForTest(onThrow, onReject) { raise = onThrow; raiseRejection = onReject || onThrow; },
     _resetForTest() {
       for (const l of Array.from(loops)) { l.stopped = true; if (l.timer) clearT(l.timer); }
       loops.clear(); wakers.clear(); lastInputAt = 0; awaySeen = false;

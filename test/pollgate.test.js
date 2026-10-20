@@ -102,12 +102,16 @@ async function advance(ms) {
   await advance(1000);
   A.eq(started, 2, 'once it settles the chain carries on');
   G._resetForTest();
+  const raised = [];
+  G._setRaiseForTest(e => raised.push('throw:' + e.message), e => raised.push('reject:' + e.message));
   let throws = 0, rejects = 0;
   G.every(() => { throws++; throw new Error('boom'); }, { ms: 1000 });
   G.every(() => { rejects++; return Promise.reject(new Error('offline')); }, { ms: 1000 });
   await advance(3000);
   A.eq(throws, 4, 'a throwing poll still reschedules');
   A.eq(rejects, 4, 'a rejecting poll still reschedules');
+  A.eq(raised.filter(x => x === 'throw:boom').length, 4, 'each throw is re-raised outside the chain (as loud as under setInterval)');
+  A.eq(raised.filter(x => x === 'reject:offline').length, 4, 'each rejection is re-raised as an unhandled rejection (as loud as an unawaited poll)');
 
   // ---- a live cadence function is read at every schedule ----
   G._resetForTest();
