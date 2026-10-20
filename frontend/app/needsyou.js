@@ -468,7 +468,7 @@ const NeedsYou = (() => {
     if (i.kind === 'stepin') { if (typeof StepIn !== 'undefined' && StepIn.open) StepIn.open(i.handoffId); return true; }
     if (!ui || !ui.openTerm) return true;
     if (i.kind === 'extension') ui.openTerm('connectors', 'extensions');
-    else if (i.kind === 'attest') ui.openTerm('quests');
+    else if (i.kind === 'attest') ui.openTerm('quests', 'available');   // the attest confirm lives on NOW (PASS leads the log since 10-19)
     else if (i.kind === 'loop') ui.openTerm('loops');
     else if (i.kind === 'asked') ui.openTerm('notifs');   // a stored wait with no conversation: where it was filed (Dismiss settles it)
     else if (i.kind === 'build') {

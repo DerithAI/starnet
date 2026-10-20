@@ -514,6 +514,7 @@ test/rec-evidence.test.js
 test/recquality.test.js
 test/recqualitystore.test.js
 test/quests.test.js
+test/battlepass.test.js
 test/queststore.test.js
 test/queststate.test.js
 test/queststatestore.test.js

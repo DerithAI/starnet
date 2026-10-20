@@ -197,7 +197,7 @@ const body = {
   set innerHTML(html) {
     rendered = html; buttons = { '.q-filter': [], '.q-mission': [], '[data-quest-view]': [], '.q-view-panel': [] };
     detailNodes = [resultDisclosure()];
-    for (const id of ['available', 'goals', 'progress', 'completed']) {
+    for (const id of ['pass', 'available', 'goals', 'progress', 'completed']) {
       buttons['.q-view-panel'].push({ id: 'q-view-' + id, hidden: false });
       buttons['[data-quest-view]'].push({ dataset: { questView: id }, attributes: {},
         setAttribute(k, v) { this.attributes[k] = v; },
@@ -221,14 +221,17 @@ const ctx = vm.createContext({ body, QuestStore: { view: () => ({ quests: questR
   esc: s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
   QUEST_KIND_TAG: { station: 'STATION', dossier: 'ABOUT YOU' }, GO_LABEL: {},
   questGoDest: () => null, questCompletesWhen: () => 'the recorded condition is met', workshopGrantOn: () => false,
-  questBriefingHtml: () => '', questTrackHtml: () => '', lifeGoalsHtml: () => '', journeyChaptersHtml: () => '', questRefreshHtml: () => '', journeyHtml: () => '',
+  passHtml: () => '<section class="bp"></section>', bpClaimed: () => 0, bpSetClaimed: () => {}, questBriefingHtml: () => '', questTrackHtml: () => '', lifeGoalsHtml: () => '', journeyChaptersHtml: () => '', questRefreshHtml: () => '', journeyHtml: () => '',
   systemsHtml: () => '', wireSystems: () => {}, stationPrestigeHtml: () => '', consoleSection: {},   // STATION SYSTEMS + prestige blocks + deep-link view (front doors)
   rerender: () => ctx.buildQuests(body)
 });
 const journalSource = station.slice(station.indexOf('  function buildQuests(body)'), station.indexOf('    // COMMANDER JOURNEY writes')) + '\n}';
 vm.runInContext(journalSource, ctx);
 ctx.buildQuests(body);
-A.eq(body.dataset.questView, 'available', 'available quests lead on first open');
+A.eq(body.dataset.questView, 'pass', 'the battle pass leads on first open (Andrew 2026-10-19)');
+A.ok(rendered.includes('id="q-view-pass"') && rendered.includes('class="bp"'), 'the PASS view renders the pass');
+buttons['[data-quest-view]'][1].click();
+A.eq(body.dataset.questView, 'available', 'NOW is one tab over');
 detailNodes[0].open = false;
 ctx.buildQuests(body);
 A.eq(detailNodes[0].open, false, 'a result the user collapsed stays closed after a data repaint');
@@ -236,16 +239,16 @@ detailNodes[0].open = true;
 ctx.buildQuests(body);
 A.eq(detailNodes[0].open, true, 'a result the user expanded stays open after a data repaint');
 const beforeTab = rendered;
-buttons['[data-quest-view]'][1].click();
+buttons['[data-quest-view]'][2].click();
 A.eq(body.dataset.questView, 'goals', 'Goals tab selects its own view');
 A.eq(rendered, beforeTab, 'tab changes do not rebuild forms or discard entered values');
 A.eq(buttons['.q-view-panel'].filter(p => !p.hidden).map(p => p.id).join(','), 'q-view-goals', 'only the selected panel is exposed');
 ctx.buildQuests(body);
 A.eq(body.dataset.questView, 'goals', 'background refresh preserves the selected tab');
-buttons['[data-quest-view]'][1].keydown({ key: 'ArrowRight', preventDefault() {} });
+buttons['[data-quest-view]'][2].keydown({ key: 'ArrowRight', preventDefault() {} });
 A.eq(body.dataset.questView, 'progress', 'arrow keys move to the next tab');
 A.eq(focused, 'progress', 'keyboard selection moves focus with the tab');
-buttons['[data-quest-view]'][0].click();
+buttons['[data-quest-view]'][1].click();
 A.eq(body.dataset.questSelected, 'st:crew', 'journal initially selects the first available quest');
 A.eq((rendered.match(/class="gx-tro q-card /g) || []).length, 1, 'journal renders exactly one open briefing, not nine competing cards');
 buttons['.q-mission'][1].click();

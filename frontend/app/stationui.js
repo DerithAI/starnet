@@ -10665,6 +10665,88 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       + proof + '</section>';
   }
 
+  /* ============== THE PASS — the quest log as a battle pass (2026-10-19) ==============
+     Andrew: "it should feel like a Fortnite battle pass, except the goals are based off the user's actual goals."
+     BattlePass.build (pure, battlepass.js) projects the sidecar's OWN Commander progression — level = tier, achievement
+     points = pass pts, achievement timestamps = the streak + this week's challenges — so every number here is one the
+     journey ledger already proves. Rewards are cosmetic and applied on the spot (a rank title, an ASCII frame every
+     five tiers); CLAIM is a per-viewer acknowledgement with a sting, never a gate. Drawn in plain ASCII so VT323 owns
+     every glyph. */
+  const BP_KEY = 'starnet.battlepass.v1';
+  function bpClaimed() { try { const r = JSON.parse(localStorage.getItem(BP_KEY) || 'null'); return r && Number(r.claimedTier) || 0; } catch (_) { return 0; } }
+  function bpSetClaimed(t) { try { localStorage.setItem(BP_KEY, JSON.stringify({ claimedTier: t })); } catch (_) {} }
+  function bpModel() {
+    if (typeof BattlePass === 'undefined' || !BattlePass.build) return null;
+    const j = typeof JourneyStore !== 'undefined' && JourneyStore.status ? JourneyStore.status() : null;
+    if (!j || !j.progression) return null;
+    const g = typeof GoalStore !== 'undefined' && GoalStore.activeGoal ? GoalStore.activeGoal() : null;
+    const pr = g && typeof Goals !== 'undefined' && Goals.progress ? Goals.progress(g) : { done: 0, total: 0 };
+    const registered = !!(g && Array.isArray(j.goals) && j.goals.some(x => x && x.id === g.id));
+    const metric = g && Array.isArray(j.metrics) ? j.metrics.find(m => m && m.goalId === g.id) : null;
+    return BattlePass.build({ progression: j.progression, goal: g ? { id: g.id, text: g.text, done: pr.done, total: pr.total } : null,
+      goalRegistered: registered, metric, claimedTier: bpClaimed(), now: Date.now() });
+  }
+  function bpRule(frame, label) {
+    const run = frame.run.repeat(240);
+    return '<div class="bp-rule" aria-hidden="true"><span>' + esc(frame.corner) + esc(frame.run.repeat(2)) + '</span>'
+      + (label ? '<span class="bp-rule-label"> ' + esc(label) + ' </span>' : '')
+      + '<span class="bp-rule-run">' + esc(run) + '</span><span>' + esc(frame.corner) + '</span></div>';
+  }
+  function passHtml() {
+    const m = bpModel();
+    if (!m) return '<div class="q-journal-empty"><span aria-hidden="true">◇</span><h3>Pass offline</h3><p>Your Commander progression has not loaded yet. It appears here as soon as the station reports it.</p></div>';
+    const f = m.frame, pad = n => String(n).padStart(2, '0');
+    const s = m.streak;
+    // the flame: lit while the streak is alive, an ember when it is at risk, cold ash at zero.
+    const flame = s.current > 0
+      ? (s.atRisk ? '   .   \n  ( )  \n (   ) \n  \'-\'  ' : '   (   \n  ) )  \n ( ( ( \n  \'-\'  ')
+      : '       \n       \n   .   \n  \'-\'  ';
+    const weekRow = s.week.map(d => '<span class="bp-day' + (d.active ? ' on' : '') + (d.today ? ' today' : '') + (d.future ? ' future' : '') + '">'
+      + '<i>' + d.label + '</i>' + (d.active ? '[#]' : d.future ? ' · ' : '[ ]') + '</span>').join('');
+    const streakLine = s.current > 0
+      ? (s.atRisk ? 'earn points today to keep it alive' : 'today counted — come back tomorrow')
+      : (m.empty ? 'a day counts when you earn pass points' : 'earn points today to start a new streak');
+    const nodes = m.track.map((t, i) => {
+      const box = '.------.\n| T ' + pad(t.tier) + ' |\n\'------\'';
+      const need = Math.max(0, (t.tier - 1) * m.perTier - m.points);
+      const foot = t.claimable ? '<button class="bp-claim" data-tier="' + t.tier + '">[ CLAIM ]</button>'
+        : t.state === 'now' ? '<span class="bp-here">^ YOU ARE HERE</span>'
+        : t.state === 'done' ? '<span class="bp-got">CLAIMED</span>'
+        : '<span class="bp-need">' + need + ' PTS</span>';
+      const link = i < m.track.length - 1 ? '<span class="bp-link bp-link-' + (t.state === 'ahead' ? 'ahead' : t.state === 'now' ? 'now' : 'done') + '" aria-hidden="true">' + (t.state === 'done' ? '==' : t.state === 'now' ? '>>' : '--') + '</span>' : '';
+      return '<li class="bp-node bp-' + t.state + (t.claimable ? ' bp-claimable' : '') + '" aria-label="Tier ' + t.tier + ', ' + esc(t.title) + ', ' + (t.claimable ? 'earned, ready to claim' : t.state === 'now' ? 'your current tier' : t.state === 'done' ? 'claimed' : need + ' points away') + '"><pre class="bp-box" aria-hidden="true">' + box + '</pre>'
+        + '<span class="bp-node-title">' + esc(t.title) + '</span>'
+        + (t.frame ? '<span class="bp-node-frame">+ FRAME: ' + esc(t.frame) + '</span>' : '')
+        + foot + '</li>' + link;
+    }).join('');
+    const claimAll = m.claimable.length
+      ? '<div class="bp-claimbar"><span>' + m.claimable.length + ' tier' + (m.claimable.length === 1 ? '' : 's') + ' earned and waiting</span><button class="consent-btn bp-claim-all" data-tier="' + m.tier + '">CLAIM ALL</button></div>' : '';
+    const chal = m.challenges.map(c => '<li class="bp-chal' + (c.done ? ' done' : '') + '">'
+      + '<span class="bp-check" aria-hidden="true">' + (c.done ? '[x]' : '[ ]') + '</span>'
+      + '<span class="bp-chal-main"><span class="bp-chal-title">' + esc(c.title) + '</span>'
+      + '<span class="bp-chal-meter"><span class="bp-mini">' + esc(BattlePass.bar(c.have / c.need * 100, Math.min(12, c.need * 4))) + '</span> ' + c.have + '/' + c.need
+      + ' <span class="bp-pts">' + esc(c.pts) + '</span></span></span>'
+      + (c.done ? '<span class="bp-done-tag">DONE</span>' : '<button class="consent-btn bp-go" data-view="' + esc(c.go.view) + '"' + (c.go.category ? ' data-category="' + esc(c.go.category) + '"' : '') + '>GO</button>') + '</li>').join('');
+    return '<section class="bp bp-frame-' + esc(f.name.toLowerCase().replace(/\s+/g, '-')) + '" aria-label="Battle pass">'
+      + bpRule(f, 'SEASON ' + m.season.no + ' · ' + m.season.name + ' · ' + m.season.daysLeft + 'D LEFT')
+      + '<div class="bp-hero">'
+      + '<pre class="bp-tier" aria-hidden="true"> .--------.\n |  TIER  |\n |   ' + pad(m.tier) + '   |\n \'--------\'</pre>'
+      + '<div class="bp-hero-main"><span class="bp-eyebrow">RANK</span><b class="bp-rank">' + esc(m.rank) + '</b>'
+      + '<div class="bp-xp"><span class="bp-bar" aria-hidden="true">' + esc(BattlePass.bar(m.pct, 24)) + '</span> <b>' + m.into + '</b>/' + m.perTier + ' PTS</div>'
+      + '<div class="sub">' + m.toNext + ' pts to TIER ' + (m.tier + 1) + ' · ' + esc(m.nextRank) + ' &nbsp;·&nbsp; season +' + m.season.pts + ' pts</div></div>'
+      + '<div class="bp-streak' + (s.current > 0 ? ' lit' : '') + (s.atRisk ? ' risk' : '') + '"><pre class="bp-flame" aria-hidden="true">' + flame + '</pre>'
+      + '<div><b class="bp-streak-n">' + s.current + '</b> DAY STREAK<div class="sub">' + esc(streakLine) + '</div><div class="sub dim">BEST ' + s.best + '</div></div>'
+      + '<div class="bp-week" aria-label="Last seven days">' + weekRow + '</div></div>'
+      + '</div>'
+      + bpRule(f, 'TIER TRACK') + claimAll
+      + '<ol class="bp-track">' + nodes + '</ol>'
+      + bpRule(f, 'WEEKLY CHALLENGES · RESETS IN ' + m.week.resetsIn)
+      + '<ul class="bp-chals">' + chal + '</ul>'
+      + '<p class="sub dim bp-law">Points come only from real progress on your goals: +10 for each goal quest you confirm, planned step you finish, or metric checkpoint you pass, and +100 when you confirm a goal is achieved. Station, profile, and build quests earn no points. Tiers give titles and frames only. Every tool works at every tier.</p>'
+      + bpRule(f, '')
+      + '</section>';
+  }
+
   function questTrackHtml(arcs) {
     const goal = arcs.find(q => q && q.kind === 'arc-goal') || null;
     /* ORDER IS THE WHOLE POINT OF A PATH — and the list handed to us is NOT in it. Quests.build() returns
@@ -11317,6 +11399,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         + (open.length ? 'Choose another category to find your next action.' : 'Set a direction or refresh your quests when you are ready for what comes next.') + '</p></div>')
       + '</section></div>';
     const questViews = [
+      ['pass', 'PASS', 'Your battle pass: every point comes from real progress on your goals. Tiers give titles and frames only, never tools.'],
       ['available', 'NOW', 'Your next move, open work, and station quests.'],
       ['goals', 'GOALS', 'Define what you want to achieve long term, then choose a goal to focus on. Its plan breaks the goal into smaller steps.'],
       ['progress', 'PROGRESS', 'Your recorded progress across all goals: planned steps, tracked metrics, and earned achievements.'],
@@ -11330,6 +11413,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         '<button type="button" role="tab" id="q-tab-' + v[0] + '" data-quest-view="' + v[0] + '" aria-controls="q-view-' + v[0] + '">' + v[1]
         + '</button>').join('') + '</div>'
       + '<p class="q-view-description"></p>'
+      + '<section id="q-view-pass" class="q-view-panel q-journal-pass" role="tabpanel" aria-labelledby="q-tab-pass">' + passHtml() + '</section>'
       + '<section id="q-view-available" class="q-view-panel" role="tabpanel" aria-labelledby="q-tab-available">'
       + questBriefingHtml() + proposalsHtml + filtersHtml + journalHtml
       + (deferred.length ? '<details class="q-deferred"><summary>Saved for later / blocked (' + deferred.length + ')</summary><div class="gx-tros q-grid">' + deferred.map(tro).join('') + '</div></details>' : '')
@@ -11380,6 +11464,27 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     body.querySelectorAll('.q-step-outputs').forEach(b => b.addEventListener('click', () => {
       questOpenOutputs(b.dataset.run, b.dataset.label);
     }));
+    // THE PASS: CLAIM acknowledges tiers already earned (a sting + the per-viewer mark — nothing is unlocked by it),
+    // and a challenge's GO jumps to the view where that kind of progress is actually made.
+    body.querySelectorAll('.bp-claim, .bp-claim-all').forEach(b => b.addEventListener('click', () => {
+      const t = Number(b.dataset.tier) || 0;
+      if (t > bpClaimed()) bpSetClaimed(t);
+      try { if (typeof SFX === 'object' && SFX.level) SFX.level(); } catch (_) {}
+      body.dataset.bpFlash = String(t);
+      rerender('quests');
+    }));
+    body.querySelectorAll('.bp-go').forEach(b => b.addEventListener('click', () => {
+      // a challenge that names a NOW category (goal quests → Missions) lands on that filter — the category list is built
+      // at render, so set both and repaint; a view-only GO just switches the tab.
+      if (b.dataset.category) { body.dataset.questView = b.dataset.view; body.dataset.questCategory = b.dataset.category; body.dataset.questSelected = ''; rerender('quests'); }
+      else selectQuestView(b.dataset.view);
+      body.scrollTop = 0;
+    }));
+    if (body.dataset.bpFlash) {
+      const lit = body.querySelectorAll('.bp-node.bp-done, .bp-node.bp-now');
+      lit.forEach(n => n.classList.add('bp-flash'));
+      delete body.dataset.bpFlash;
+    }
     body.querySelectorAll('.q-goal-start').forEach(b => b.addEventListener('click', () => {
       selectQuestView('goals'); const form = body.querySelector('.q-life-manage');
       form.open = true; form.scrollIntoView({ block: 'start' }); form.querySelector('.q-new-goal').focus();
