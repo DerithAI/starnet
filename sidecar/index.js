@@ -244,7 +244,7 @@ const { makeTelegramTransport } = require('./channels/telegram.transport.js');  
 const { makeEnvironmentProxyFetch } = require('./channels/proxy-fetch.js');
 const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
-const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS } = require('./channels/hub.js');
+const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS, chunkText: hubChunkText } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
 const { hostPowerWithheldFor, entryUntrusted, standingWorkEscalates } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
@@ -6806,8 +6806,15 @@ async function deliverCronResult(job, result) {
     if (!(live && live.adapter)) { failed++; firstError = firstError || channel + ' is not connected'; continue; }
     const chatId = String(rec.chatId || target), route = rec.threadId ? { threadId: rec.threadId } : undefined;
     try {
-      const sent = await live.adapter.send(chatId, redact(chatText), route);
-      if (sent && sent.ok === false) throw new Error(sent.error || 'send failed');
+      // A routine's reply is as long as the model made it, and the adapter sends ONE message (the hub chunks chat
+      // replies before calling it). Sent whole, a digest past Telegram's 4096 was refused "message is too long" on the
+      // fire and on every retry — the chat never saw it (2026-10-20). Split it under the platform's ceiling, in order.
+      const desc = channelRegistry.get(channel.split(':')[0]);
+      const parts = hubChunkText(redact(chatText), Number(desc && desc.maxMessageLength) > 200 ? Number(desc.maxMessageLength) : 1900);
+      for (let i = 0; i < parts.length; i++) {
+        const sent = await live.adapter.send(chatId, parts[i], route);
+        if (sent && sent.ok === false) throw new Error((sent.error || 'send failed') + (i ? ' (after ' + i + ' of ' + parts.length + ' parts)' : ''));
+      }
       deliveredTargets.add(target);
       if (job.attachToSession) {
         channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
