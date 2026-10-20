@@ -90,7 +90,10 @@ async function waitFor(fn) { for (let n = 0; n < 200; n++) { if (await fn()) ret
     for (const s of seen) assert.ok(io.committed.some(text => isDeepStrictEqual(JSON.parse(text).groups[s.o.g.id], s.o.g)), 'what a turn started from is exactly a group the file held');
     const artifact = seen.at(-1).o.g.artifacts.find(a => a.name === 'notes.txt');
     assert.ok(artifact && !('encoding' in artifact), 'an undefined field from uploadFile never survives into the committed copy');
-    assert.deepStrictEqual(await api.get(g.id), pub(disk().groups[g.id]), 'what the API serves is what the file holds');
+    // get() also names the group's stamp (idle CPU piece 3, 2026-10-20: the open group's poll asks "since"); it is transport
+    // metadata, not group state, so the file holds everything else
+    const unstamped = ({ stamp, ...g }) => g;
+    assert.deepStrictEqual(unstamped(await api.get(g.id)), pub(disk().groups[g.id]), 'what the API serves is what the file holds');
     assert.deepStrictEqual((await api.list()).templates, disk().templates);
     // a group's very FIRST commit: a conversion with a kickoff hands that snapshot straight to its lead's turn
     execute = async () => finish('parts handed out');
@@ -120,7 +123,9 @@ async function waitFor(fn) { for (let n = 0; n < 200; n++) { if (await fn()) ret
     const live = await api.get(g.id);
     api.close();
     api = makeGroupSessions({ ...deps, sweepMs: 1e9 }); await api.ready;
-    assert.deepStrictEqual(await api.get(g.id), live, 'a restart reads back exactly the group the old process served');
+    const reread = await api.get(g.id);
+    assert.deepStrictEqual(unstamped(reread), unstamped(live), 'a restart reads back exactly the group the old process served');
+    assert.notEqual(reread.stamp, live.stamp, '…under a new boot stamp, so a poll holding the old one gets the full group');
 
     /* ---- B (frozen). every committed snapshot deep-frozen: a mixed workload writes nothing in place ---- */
     api.close();
@@ -164,7 +169,7 @@ async function waitFor(fn) { for (let n = 0; n < 200; n++) { if (await fn()) ret
     cur = await api.get(f.id);
     assert.equal(cur.title, 'Renamed'); assert.deepEqual(cur.members, ['agent', 'engineer']);
     assert.equal((await api.list()).templates.length, 1, 'save-group replaced its template, never pushed into the shared array');
-    assert.deepStrictEqual(cur, pub(disk().groups[f.id]), 'frozen run: memory and disk still agree');
+    assert.deepStrictEqual(unstamped(cur), pub(disk().groups[f.id]), 'frozen run: memory and disk still agree');
     const inPlace = /read.only|frozen|not extensible|Cannot (assign|add|delete|define)/i;
     assert.deepEqual(problems, [], 'every tool call and every frozen check passed');
     assert.deepEqual(logs.filter(m => inPlace.test(m)), [], 'no worker died writing to a committed snapshot');

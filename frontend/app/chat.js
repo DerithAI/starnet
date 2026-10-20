@@ -2383,9 +2383,33 @@ const Chat = (() => {
      raw ws.history) so the gauge estimates the same bytes the send path actually puts on the wire:
      local markers the model never sees must not inflate the reading. Returns null with no active
      stream, which the gauge reads as "nothing to measure yet". */
+  /* THE GAUGE READS A MEMO (idle CPU piece 3, 2026-10-20). The 1 s station tick asks for this every second, and
+     historyWindow re-serialized the whole conversation three or four times per call (JSON.stringify + TextEncoder per
+     message for the byte cap, again per message for the token fit, and again for the calibrated refit) — on a long chat,
+     every second, with nothing changed. Its answer can only move when one of these does: the conversation and its agent,
+     the history array (replaced, appended, popped or spliced — chat.js never edits a kept message's content in place, and a
+     streaming reply's growing content is in the key), the selected model or its catalog limit, or a context reading
+     (Harness.contextRevision, bumped on every write to the readings). A 15 s ceiling re-derives it anyway, so an edit none
+     of these can see is never stale for long. Without contextRevision (an older harness) nothing is memoized. */
+  const CTX_MEMO_TTL_MS = 15000;
+  let ctxMemo = null;
   function contextRef() {
     if (!activeWs) return null;
-    return { agentId: activeWs.agentId || 'agent', streamId: activeWs.id, messages: historyWindow(activeWs) };
+    let key = null;
+    try {
+      if (typeof Harness !== 'undefined' && Harness.contextRevision) {
+        const h = Array.isArray(activeWs.history) ? activeWs.history : null;
+        const last = h && h.length ? h[h.length - 1] : null;
+        const model = Harness.getModel ? (Harness.getModel() || '') : '';
+        key = [activeWs.id, activeWs.agentId, h, h ? h.length : -1, last, last ? String(last.content == null ? '' : last.content).length : -1,
+          model, Harness.contextLimitOf ? Harness.contextLimitOf(model) : 0, Harness.contextRevision()];
+      }
+    } catch (_) { key = null; }
+    const now = Date.now(), age = ctxMemo ? now - ctxMemo.at : -1;   // a negative age (the wall clock stepped back) cannot be measured: re-derive
+    if (key && ctxMemo && age >= 0 && age < CTX_MEMO_TTL_MS && ctxMemo.key.every((v, i) => v === key[i])) return ctxMemo.ref;
+    const ref = { agentId: activeWs.agentId || 'agent', streamId: activeWs.id, messages: historyWindow(activeWs) };
+    ctxMemo = key ? { key, at: now, ref } : null;
+    return ref;
   }
   // A streamed fragment is real assistant output even when the transport dies before a clean result envelope.
   // Persist it as its own turn before the failure marker so switch/reload cannot erase what was already visible.
@@ -3192,8 +3216,18 @@ const Chat = (() => {
     const stat = chip.querySelector('.tc-stat');
     if (/^browser\./.test(ev.name || '') && ev.runId) {
       stat.setAttribute('aria-live', 'polite');
+      /* AN ORPHANED CHIP STOPS ASKING (idle CPU piece 3, 2026-10-20). This loop read /api/connectors every second until
+         the chip resolved or left the DOM. A run that ended without this call's result (stopped, failed) leaves the chip
+         'pending' inside its folded but still connected .run-fold, so it polled once a second until the session was
+         switched. Once the conversation's run is over nothing can still be waiting on this call: the loop ends and the
+         chip keeps the look it has. */
+      const wsId = activeWs && activeWs.id;
+      const runOver = () => typeof Channels === 'undefined' || !Channels.isBusy || !wsId || !Channels.isBusy(wsId);
       const checkWait = async () => {
         if (!chip.isConnected || !chip.classList.contains('pending')) return;
+        if (runOver()) { stat.textContent = ''; return; }
+        // nobody is looking (PollGate): keep the beat, skip the read; the first beat back on screen reads again
+        if (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away()) { setTimeout(checkWait, 1000); return; }
         try {
           const j = await Harness.api.get('/api/connectors');
           if (!chip.isConnected || !chip.classList.contains('pending')) return;

@@ -9,6 +9,9 @@ test/group-sessions.edge.test.js
 test/group-chat-picker.test.js
 test/group-sessions.repair.test.js
 test/group-sessions.memory.test.js
+test/group-sessions.since.test.js
+test/group-poll-idle.test.js
+test/save-serialize-once.test.js
 test/contract.test.js
 test/events-contract.test.js
 test/clock-rng.test.js
@@ -692,6 +695,11 @@ test/loopjob-driver.test.js
 test/model-loop-control.test.js
 test/loop-review-controls.test.js
 test/loop-review-needs-you.test.js
+test/automation-lane-poller.test.js
+test/browser-chip-wait.test.js
+test/pollgate.test.js
+test/poll-fetch-deadline.test.js
+test/ctx-gauge-memo.test.js
 test/routine-origin-race.test.js
 test/returnstore-rate-sync.test.js
 test/returnstore-recovery.test.js
@@ -1137,6 +1145,7 @@ test/budget-authority-ui.test.js
 test/settle-managed-copy.test.js
 test/staging-development-closure.test.js
 test/overseer-ui.test.js
+test/overseer-pollgate.test.js
 test/workspace-owner-election.test.js
 test/project-home-ui.test.js
 test/cli.test.js

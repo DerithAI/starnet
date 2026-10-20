@@ -1549,9 +1549,12 @@ const World = (() => {
     pollFeedState();          // feed truth (channels/cron) for the NO FEED intake nag — server-proven, refreshed slowly
     pollShipStats();          // SHIPPED TODAY truth (completed runs since local midnight) — reload-proof
     pollAffinity();           // the PROVEN social graph — who the run log says works together (biases idle social beats)
-    setInterval(pollFeedState, 60000);   // listenersBound guards init's one-time block, so these arm exactly once
-    setInterval(pollShipStats, 60000);
-    setInterval(pollAffinity, 300000);   // the graph moves on the timescale of DAYS — a 5min refresh is already generous
+    // through PollGate (idle CPU piece 3, 2026-10-20): the same cadence on screen, a 30 s floor while away (never slower
+    // than these already are), a catch-up on return; setInterval when PollGate is absent (node tests)
+    const gatedPoll = (fn, ms) => (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(fn, { ms, immediate: false }) : setInterval(fn, ms);
+    gatedPoll(pollFeedState, 60000);   // listenersBound guards init's one-time block, so these arm exactly once
+    gatedPoll(pollShipStats, 60000);
+    gatedPoll(pollAffinity, 300000);   // the graph moves on the timescale of DAYS — a 5min refresh is already generous
   }
 
   /* Every handler the stage canvas owns, bound to the CURRENT `cv`. Called once from init
@@ -8488,7 +8491,10 @@ const World = (() => {
   }
   function pollFeedState() {
     if (typeof fetch === 'undefined') return;
-    const get = u => { try { return fetch(apiUrl(u)).then(r => (r.ok ? r.json() : null)).catch(() => null); } catch (_) { return Promise.resolve(null); } };
+    // each read has a 15 s deadline like every other bounded poll: one the sidecar accepts and never answers must not hold
+    // this beat (PollGate awaits it) or a connection slot to the sidecar for good; a timed-out read is "no answer"
+    const deadline = () => ((typeof U !== 'undefined' && U.timeoutSignal) ? U.timeoutSignal(15000) : undefined);
+    const get = u => { try { return fetch(apiUrl(u), { signal: deadline() }).then(r => (r.ok ? r.json() : null)).catch(() => null); } catch (_) { return Promise.resolve(null); } };
     return Promise.all([get('/api/channels/status'), get('/api/cron'), get('/api/routing/triggers')]).then(([chans, cron, trg]) => {
       if (!chans && !cron && !trg) return;   // nothing answered — keep the last known truth
       const chan = !!(chans && typeof chans === 'object' && Object.keys(chans).some(id => chans[id] && chans[id].configured));
@@ -9216,8 +9222,8 @@ const World = (() => {
   }
   function pauseBridge() {
     bridgePaused = true;
-    if (connPollTimer) { clearInterval(connPollTimer); connPollTimer = null; }
-    if (spotifyPollTimer) { clearInterval(spotifyPollTimer); spotifyPollTimer = null; }
+    if (connPollTimer) { if (connPollTimer.stop) connPollTimer.stop(); else clearInterval(connPollTimer); connPollTimer = null; }   // a PollGate loop or a bare interval
+    if (spotifyPollTimer) { if (spotifyPollTimer.stop) spotifyPollTimer.stop(); else clearInterval(spotifyPollTimer); spotifyPollTimer = null; }
     if (chanES) { try { chanES.close(); } catch (_) {} chanES = null; }
   }
   // E1: the ONE public read of the SSE bridge health — the SAME predicate the canvas dims its live
@@ -9233,8 +9239,9 @@ const World = (() => {
   function resumeBridge() {
     if (!bridged) return;                 // never set up yet (no agent has entered) — connectChannelBridge will open it
     bridgePaused = false;
-    if (!connPollTimer && connPollFn) { connPollFn(); connPollTimer = setInterval(connPollFn, 5000); }
-    if (!spotifyPollTimer && spotifyPollFn) { spotifyPollFn(); spotifyPollTimer = setInterval(spotifyPollFn, 5000); }
+    const gated = typeof PollGate !== 'undefined' && PollGate.every;   // idle CPU piece 3: 5 s on screen, 30 s floor while away
+    if (!connPollTimer && connPollFn) { connPollFn(); connPollTimer = gated ? PollGate.every(connPollFn, { ms: 5000, immediate: false }) : setInterval(connPollFn, 5000); }
+    if (!spotifyPollTimer && spotifyPollFn) { spotifyPollFn(); spotifyPollTimer = gated ? PollGate.every(spotifyPollFn, { ms: 5000, immediate: false }) : setInterval(spotifyPollFn, 5000); }
     if (!chanES && connOpenFn) connOpenFn();
   }
   let floor = null, lastSlagAt = -1e9;   // FloorStats: the factory-floor economy fold + a fresh-slag pulse clock
@@ -11173,7 +11180,8 @@ const World = (() => {
         if (PropSprites.reconcileConnectors) PropSprites.reconcileConnectors(connIds);
       }).catch(() => {});   // E4/E6f: on failure keep the last-known portal states — never blank them from an error body
     }
-    connPollFn = pollConnectors; pollConnectors(); connPollTimer = setInterval(pollConnectors, 5000);
+    // idle CPU piece 3 (2026-10-20): 5 s on screen, a 30 s floor while away, a catch-up on return (pauseBridge stops it)
+    connPollFn = pollConnectors; pollConnectors(); connPollTimer = (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(pollConnectors, { ms: 5000, immediate: false }) : setInterval(pollConnectors, 5000);
     // JUKEBOX dead-vs-live: poll Spotify's OAuth connected state so a placed jukebox reads DEAD (unplugged)
     // until the user connects Spotify in TOOLSETS, then comes alive. Same keep-last-known-on-failure contract.
     function pollSpotify() {
@@ -11182,7 +11190,7 @@ const World = (() => {
         .then(j => PropSprites.setSpotifyConnected(!!(j && j.connected)))
         .catch(() => {});   // keep last-known on a failed poll (mirrors the connector contract)
     }
-    spotifyPollFn = pollSpotify; pollSpotify(); spotifyPollTimer = setInterval(pollSpotify, 5000);
+    spotifyPollFn = pollSpotify; pollSpotify(); spotifyPollTimer = (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(pollSpotify, { ms: 5000, immediate: false }) : setInterval(pollSpotify, 5000);
     // TRUTH (audit T1 finding 5): the per-prop capability SURGE must reflect the tool's REAL OUTCOME, not the
     // mere attempt. agent.tool_call fires BEFORE the capability/consent gate (loop.js), so a denied or errored
     // call emits a tool_call identically to a success — pulsing the granting prop green on tool_call was a lie.
@@ -11304,7 +11312,9 @@ const World = (() => {
     // authoritative snapshot on a slow cadence: truth converges within ~30s in BOTH directions (a dead run is
     // cleared; a genuinely live one is re-stamped, which also keeps the per-run TTL from biting a long quiet
     // run, e.g. one paused on a consent prompt). Paused bridge = deliberate silence — no polling.
-    setInterval(() => { if (!bridgePaused) fetchSnapshot(); }, 30000);
+    // idle CPU piece 3 (2026-10-20): through PollGate — 30 s on screen and away alike, plus a catch-up read on return
+    if (typeof PollGate !== 'undefined' && PollGate.every) PollGate.every(() => { if (!bridgePaused) fetchSnapshot(); }, { ms: 30000, immediate: false });
+    else setInterval(() => { if (!bridgePaused) fetchSnapshot(); }, 30000);
   }
   /* E2: fetch the authoritative live-state snapshot on every SSE (re)open and reconcile the paired-state maps.
      404/failure-tolerant: the endpoint is owned by the lifecycle lane and may not exist here — any non-OK/throw
