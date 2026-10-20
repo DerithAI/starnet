@@ -27,6 +27,15 @@ const QuerySpine = (() => {
   // how long ago the wire last answered. The stamps are wall-clock (snapshots show them), so a backward step makes the age
   // negative: that is unknown, never "fresh" — the beat reads rather than waiting for the wall clock to catch up
   const ageOf = r => { const a = now() - touchedAt(r); return a >= 0 ? a : Infinity; };
+  /* AN AWAY STRETCH IS NOT STALENESS (fix round 5, 2026-10-20; overseer.js's awayCover). Away, journey's value is read
+     only once it is 30 s old, so for most of the stretch it was past its 12 s TTL: the snapshot said stale, and the topbar
+     read "Lv N · saved" — painted by its own 30 s tick while away, and again by the catch-up read's pending snapshot the
+     moment the Commander was back, until that answer landed. Trunk read every 4 s while hidden, so a return within 5 min
+     never showed it. The station never stopped answering; the page chose not to ask. A beat that sees the Commander away
+     marks the resource (awayCover) until a read lands: its TTL then runs from the away floor that is due to replace it,
+     AWAY_MS on top of its own, with the same headroom past that due read as on screen. A failed read, an invalidation, or
+     a value older than that (a sleep, a frozen page) is still stale. */
+  const ttlOf = r => (r.awayCover && r.ttlMs > 0 ? AWAY_MS + r.ttlMs : r.ttlMs);
 
   function positiveMs(v) { return Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0; }
   function define(key, spec) {
@@ -52,7 +61,8 @@ const QuerySpine = (() => {
         inFlight: null,
         inFlightGeneration: 0,
         listeners: new Set(),
-        timer: null
+        timer: null,
+        awayCover: false
       });
     } else if (spec.path && resources.get(key).path !== String(spec.path)) {
       throw new Error('query resource path conflict: ' + key);
@@ -75,7 +85,7 @@ const QuerySpine = (() => {
       data: r.data,
       updatedAt: r.updatedAt,
       ageMs,
-      stale: !r.hasData || r.invalidated || !!r.error || (r.ttlMs > 0 && ageMs >= r.ttlMs),
+      stale: !r.hasData || r.invalidated || !!r.error || (r.ttlMs > 0 && ageMs >= ttlOf(r)),
       error: r.error,
       errorAt: r.errorAt,
       pending: !!r.inFlight
@@ -125,6 +135,7 @@ const QuerySpine = (() => {
         r.invalidated = false;
         r.error = null;
         r.errorAt = 0;
+        r.awayCover = false;   // a read landed: the next away beat marks it again
         return data;
       })
       .catch(err => {
@@ -174,7 +185,10 @@ const QuerySpine = (() => {
     if (!r.pollMs || !r.listeners.size || r.timer != null) return;
     r.timer = armInterval(() => {
       if (!r.listeners.size) return;
-      if (isAway() && ageOf(r) < AWAY_MS) return;   // away: one read per AWAY_MS, never none
+      if (isAway()) {
+        r.awayCover = true;                     // its replacement is due on the away floor now (ttlOf)
+        if (ageOf(r) < AWAY_MS) return;         // away: one read per AWAY_MS, never none
+      }
       refresh(r.key).catch(() => {}); // subscribers receive the error-bearing snapshot
     }, r.pollMs);
   }
@@ -233,7 +247,7 @@ const QuerySpine = (() => {
         stopTimer(r);
         r.hasData = false; r.data = undefined; r.updatedAt = 0; r.invalidated = false;
         r.error = null; r.errorAt = 0; r.generation = 0; r.inFlight = null;
-        r.inFlightGeneration = 0; r.listeners.clear();
+        r.inFlightGeneration = 0; r.listeners.clear(); r.awayCover = false;
       }
     },
     _setGetForTest(fn) { getJson = fn; },

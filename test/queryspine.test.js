@@ -167,5 +167,91 @@ async function rejects(p, label) {
   clock -= 300000; awayNow = false; Q._wakeForTest(); await drain();
   A.eq(awayReads, stepAt + 2, 'a wake after a backward step re-reads too');
   offStep();
+
+  /* fix round 5 (2026-10-20): AN AWAY STRETCH IS NOT STALENESS. GENUINE (executed): the REAL pollgate.js, queryspine.js,
+     journeystore.js and topbar.js in one page (vm), on one fake monotonic + wall clock and timer queue, with an
+     /api/journey that answers after 40 ms. Away, journey (12 s TTL, 4 s poll) is read only once its value is 30 s old,
+     so its snapshot said stale for most of the stretch: the topbar's COMMANDER label read "Lv 3 · saved" from its own
+     30 s repaint while away, and from the catch-up read's pending snapshot the moment the Commander was back, until the
+     answer landed. Trunk read every 4 s while hidden, so a return within 5 min never showed it. */
+  async function topbarAcrossAway({ awayMs, frozenMs = 0, failAway = false }) {
+    const vm = require('node:vm'), fs = require('node:fs'), path = require('node:path');
+    let mono = 5e6, wall = 1760000000000, seq = 0, reads = 0, failing = false;
+    const timers = new Map();
+    const arm = (fn, ms, every) => { const id = ++seq; timers.set(id, { fn, at: mono + Math.max(0, ms || 0), every: every ? Math.max(1, ms) : 0 }); return id; };
+    const labels = [];
+    const label = { set textContent(v) { labels.push(String(v)); this._t = String(v); }, get textContent() { return this._t; } };
+    const listeners = {};
+    const doc = { readyState: 'loading', hidden: false, visibilityState: 'visible', hasFocus: () => !doc.hidden,
+      addEventListener(k, fn) { (listeners[k] = listeners[k] || []).push(fn); }, removeEventListener() {},
+      getElementById: id => (id === 'gt-station' ? label : null), querySelector: () => null, body: { dataset: {} } };
+    const journey = { progression: { level: 3, points: 330, levelStartsAt: 300, nextLevelAt: 400, pointsToNextLevel: 70 }, evolution: { stage: 1 } };
+    const ctx = vm.createContext({ console, Promise, AbortController,
+      performance: { now: () => mono }, Date: { now: () => wall },
+      setTimeout: (fn, ms) => arm(fn, ms, false), clearTimeout: id => timers.delete(id),
+      setInterval: (fn, ms) => arm(fn, ms, true), clearInterval: id => timers.delete(id),
+      document: doc,
+      Harness: { api: { get: () => new Promise((res, rej) => { reads++; const f = failing; arm(() => (f ? rej(new Error('offline')) : res({ ok: true, journey })), 40, false); }) } } });
+    for (const f of ['pollgate.js', 'queryspine.js', 'journeystore.js', 'topbar.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '../frontend/app', f), 'utf8'), ctx);
+    const win = { addEventListener() {}, removeEventListener() {} };
+    vm.runInContext('PollGate', ctx)._setDocForTest(doc, win);
+    const advance = async ms => {
+      const until = mono + ms;
+      for (;;) {
+        let next = null;
+        for (const [id, t] of timers) if (t.at <= until && (!next || t.at < next[1].at || (t.at === next[1].at && id < next[0]))) next = [id, t];
+        if (!next) break;
+        const [id, t] = next;
+        wall += t.at - mono; mono = Math.max(mono, t.at);
+        if (t.every) { t.at += t.every; while (t.at <= mono) t.at += t.every; } else timers.delete(id);   // an interval a freeze held up fires once
+        t.fn();
+        for (let n = 0; n < 20; n++) await Promise.resolve();
+      }
+      wall += until - mono; mono = until;
+    };
+    const Topbar = vm.runInContext('Topbar', ctx), JourneyStore = vm.runInContext('JourneyStore', ctx);
+    JourneyStore.init();
+    await advance(8000);
+    const before = label.textContent;
+    // the Commander leaves: hidden, unfocused, no input (no rAF in this page: the frame proof is skipped)
+    doc.hidden = true; doc.visibilityState = 'hidden';
+    for (const fn of listeners.visibilitychange || []) fn();
+    failing = failAway;
+    const readsAtLeave = reads;
+    const awayLabels = [];
+    for (let t = 0; t < awayMs; t += 10000) { await advance(Math.min(10000, awayMs - t)); Topbar._paintXp(); awayLabels.push(label.textContent); }   // the topbar's own 30 s repaint, while away
+    const readsAway = reads - readsAtLeave;
+    mono += frozenMs; wall += frozenMs;   // a sleep / a frozen page: the clocks move, nothing runs
+    failing = false;
+    const atWake = labels.length;
+    doc.hidden = false; doc.visibilityState = 'visible';
+    for (const fn of listeners.visibilitychange || []) fn();
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    const atReturn = labels.slice(atWake);
+    const readsAtReturn = reads;
+    await advance(100);
+    return { before, awayLabels, readsAway, atReturn, catchUp: reads > readsAtLeave + readsAway, after: label.textContent, readsAtReturn };
+  }
+  for (const awayMs of [20000, 60000, 240000]) {
+    const r = await topbarAcrossAway({ awayMs });
+    A.eq(r.before, 'Lv 3', 'fixture: on screen, the COMMANDER label reads the live level');
+    A.ok(r.readsAway <= Math.ceil(awayMs / 30000) + 1, 'fixture: away, journey is read on the 30 s floor (' + r.readsAway + ' reads in ' + awayMs / 1000 + ' s)');
+    A.ok(r.awayLabels.every(t => t === 'Lv 3'), 'AWAY ' + awayMs / 1000 + ' s: the topbar\'s own repaint never reads "· saved" for a value the page chose not to re-read: ' + JSON.stringify(r.awayLabels));
+    A.ok(r.atReturn.length >= 1 && r.atReturn.every(t => t === 'Lv 3'), 'BACK after ' + awayMs / 1000 + ' s: the catch-up read\'s pending snapshot paints no "· saved" (it flashed until the answer landed): ' + JSON.stringify(r.atReturn));
+    A.ok(r.catchUp, '…the catch-up read went out on return');
+    A.eq(r.after, 'Lv 3', '…and after the answer lands the label still reads the live level');
+  }
+  {
+    // still truthful: a value a sleep left an hour old is stale until the catch-up answer lands
+    const r = await topbarAcrossAway({ awayMs: 20000, frozenMs: 3600000 });
+    A.ok(r.atReturn.length >= 1 && r.atReturn.every(t => t === 'Lv 3 · saved'), 'an hour-old value after a sleep reads "· saved" while the catch-up read is out: ' + JSON.stringify(r.atReturn));
+    A.eq(r.after, 'Lv 3', '…until it answers');
+  }
+  {
+    // still truthful: an away read the station failed is stale (an error, not an age)
+    const r = await topbarAcrossAway({ awayMs: 40000, failAway: true });
+    A.ok(r.awayLabels.some(t => t === 'Lv 3 · saved'), 'an away read that failed reads "· saved": ' + JSON.stringify(r.awayLabels));
+    A.eq(r.after, 'Lv 3', '…and the catch-up answer on return makes it live again');
+  }
   A.report('queryspine.test');
 })().catch(err => { console.error(err && err.stack ? err.stack : err); process.exit(1); });
