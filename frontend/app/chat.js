@@ -8915,7 +8915,10 @@ const Chat = (() => {
   // thread showed a cut-off reply with no reason. renderHistory replays it as the same ⏹ line. Metadata only — the
   // model's wire carries role/content, never this field.
   function stoppedByLine(by) { return by === 'esc' ? 'stopped by you (Esc)' : by ? 'stopped by you' : ''; }
-  function noteStopReason(ws, note) {
+  // The run id settles the STREAM's outcome too: a stopped run is neither FINISHED nor FAILED (task-board truth — with
+  // nothing recorded the board read it as done). A deliberate Stop is 'stopped'; an in-band stop keeps its own reason.
+  function noteStopReason(ws, note, runId, reason) {
+    if (runId && ws && typeof Workstreams !== 'undefined' && Workstreams.noteRunEnd) Workstreams.noteRunEnd(ws.id, runId, null, reason && reason !== 'cancelled' ? reason : 'stopped');
     const n = String(note || '').trim();
     if (!n || !ws || !Array.isArray(ws.history)) return;
     const last = ws.history[ws.history.length - 1];
@@ -11172,7 +11175,7 @@ const Chat = (() => {
           // the card already says STOPPED BY YOU — the work log only repeats a reason the card can't carry
           if (isActiveWs(ws)) { breakLive(); if (stopLine && !stoppedBy) toolLine('⏹ ' + stopLine); }
           markStoppedTurn(ws, replyText);
-          noteStopReason(ws, stopLine);
+          noteStopReason(ws, stopLine, thisRunId, endReason);
           if (stoppedBy) presenceStoppedBy = stoppedBy;
           // GOAL LOOP: a stopped step is not judgeable — the loop pauses and SAYS why (judgeGoalTurn), never stalls silently
           goalStall = stopLine || ('the step stopped (' + endReason + ')');
@@ -11305,7 +11308,7 @@ const Chat = (() => {
         const by = stopSource.get(ws.id);
         if (isActiveWs(ws)) { if (activeLiveRow) activeLiveRow.done(); resolvePresence(ws, { stopped: true, steps: runToolsOk, stoppedBy: by }); }
         markStoppedTurn(ws, acc);
-        noteStopReason(ws, stoppedByLine(by));
+        noteStopReason(ws, stoppedByLine(by), thisRunId);
         if (isActiveWs(ws)) offerTryAgain();
         if (!isTask && isActiveWs(ws) && acc.trim()) World.say(acc);
       } else {
