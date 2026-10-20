@@ -448,23 +448,21 @@ const GroupChat = (() => {
     clearTimeout(timer); $('gc-log').replaceChildren(); $('gc-states').replaceChildren(); $('gc-questions').replaceChildren(); input.value = composerDrafts.get(ws?.id) || ''; draftKey = null; notice = ''; $('gc-notice').textContent = ''; closeMentions(); recipientLabel();
     if (enabled) poll(generation);
   }
-  /* THE OPEN GROUP'S POLL ASKS ONLY WHEN DUE, AND ONLY "SINCE" (idle CPU piece 3, 2026-10-20). It re-downloaded the whole
-     group every 0.9 s forever, stringified it to decide whether to paint, and every change (each streamed draft too)
-     remapped every message into the workstream. The 0.9 s beat stays, but it asks the station only when due: every beat
-     while a turn is live or a draft streams, every 3 s while the group is idle, every 30 s while the Commander is away
-     (PollGate), and at once on their return. A read sends the stamp of the group on screen (since): an unchanged group
-     answers { unchanged: true } and nothing is parsed, painted or adopted. A group set from a POST answer carries no stamp,
-     so the next read is a full one; an older sidecar sends no stamp at all and every read is full, as before.
+  /* THE OPEN GROUP'S POLL ASKS "SINCE", AND SLOWS ONLY WHILE NOBODY IS LOOKING (idle CPU piece 3, 2026-10-20). It
+     re-downloaded the whole group every 0.9 s forever, stringified it to decide whether to paint, and every change (each
+     streamed draft too) remapped every message into the workstream. A read now sends the stamp of the group on screen
+     (since): an unchanged group answers { unchanged: true } (sidecar group-sessions.js, without building the group) and
+     nothing is parsed, painted or adopted. A group set from a POST answer carries no stamp, so the next read is a full one;
+     an older sidecar sends no stamp at all and every read is full, as before.
+     ON SCREEN THE READ CADENCE IS TRUNK'S 0.9 s, ALWAYS (fix round 3): an unchanged since-read costs next to nothing, so
+     there is no reason to ask an idle group less often — and slowing it delayed the first sign of a turn another member
+     started by up to 3 s. Only while the Commander is away (PollGate) is a read due every 30 s, with one at once on return.
      When a read is due is measured on the monotonic clock (performance.now when present): on Date.now a backward wall-clock
      step (a w32time correction after resume) skipped every read, a live turn's too, until the wall clock caught up. */
-  const POLL_BEAT_MS = 900, POLL_IDLE_MS = 3000;
+  const POLL_BEAT_MS = 900;
   const monoNow = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? () => performance.now() : () => Date.now();
   let polled = { gen: -1, at: 0 }, pollingGen = -1, goneGen = -1;
-  function pollDue() {
-    if (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away()) return PollGate.AWAY_MS || 30000;
-    const drafting = !!(group && group.id === active?.id && (group.turns || []).some(t => t.draft || (t.draftSteps && t.draftSteps.length)));
-    return isBusy() || drafting ? POLL_BEAT_MS : POLL_IDLE_MS;
-  }
+  const pollDue = () => (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away() ? PollGate.AWAY_MS || 30000 : POLL_BEAT_MS);
   async function poll(gen) {
     if (gen !== generation || pollingGen === gen) return;
     if (polled.gen === gen && monoNow() - polled.at < pollDue()) {   // not due: keep the beat, skip the read

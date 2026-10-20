@@ -1,5 +1,5 @@
-/* node test/group-poll-idle.test.js — the open group chat's poll asks only when due, and only "since" (idle CPU piece 3,
-   2026-10-20).
+/* node test/group-poll-idle.test.js — the open group chat's poll asks only "since": every 0.9 s on screen (trunk's
+   cadence, always), every 30 s while the Commander is away (idle CPU piece 3, 2026-10-20).
 
    THE COST. The open group re-downloaded its whole group every 0.9 s forever — minimized or not — JSON.stringified it to
    decide whether to paint, and every change (each streamed draft too) remapped every message into the workstream; every
@@ -89,14 +89,15 @@ function harness({ stamps = true } = {}) {
 }
 
 (async () => {
-  /* (b) a visible, idle group: a read every 3 s, not every 0.9 s */
+  /* (b) a visible, idle group: read at trunk's 0.9 s, every read a since-read (fix round 3: on screen the cadence never
+     slows; it was every 3 s while idle, so a turn another member started showed up to 3 s late) */
   {
     const h = harness();
     h.ctx.GroupChat.bind(h.ws); await h.settle();
     A.eq(h.reads.length, 1, 'binding the group reads it at once');
     A.ok(h.log() && h.log().children.length > 0, 'fixture: the transcript painted');
     await h.advance(9000);
-    A.ok(h.reads.length >= 3 && h.reads.length <= 4, 'visible + idle: at most 4 reads in 9 s (was 10) — got ' + h.reads.length);
+    A.ok(h.reads.length - 1 >= 10, 'visible + idle: a read every 0.9 s, as trunk (10 in 9 s; it read every 3 s) — got ' + (h.reads.length - 1));
 
     /* (d) every later read carries the stamp of the group on screen; an unchanged answer touches nothing */
     A.ok(h.reads.slice(1).every(u => /&since=boot\.3\.0$/.test(u)), 'later reads send since=<the stamp on screen>: ' + h.reads[1]);
@@ -111,7 +112,7 @@ function harness({ stamps = true } = {}) {
     const adoptedHistory = h.ws.history;
     h.server.turns.push({ id: 't2', origin: 'm1', agentId: 'copy', state: 'running' });
     h.server.revision++; h.draft();
-    await h.advance(4000);   // the next due idle read (3 s after the last, on a 0.9 s beat)
+    await h.advance(4000);   // a few 0.9 s reads
     A.ok(h.ws.history !== adoptedHistory && h.persists() > persisted, 'a revision bump adopts and persists, as before');
     const persistedAtRun = h.persists(), historyAtRun = h.ws.history;
     // a live turn: the poll keeps the 0.9 s beat
@@ -136,17 +137,19 @@ function harness({ stamps = true } = {}) {
     A.eq(h.wakers.length, 1, 'the group chat registers one wake');
     h.wakers[0](); await h.settle();
     A.eq(h.reads.length, 3, 'back on screen: the open group is read at once');
-    await h.advance(900);
-    A.eq(h.reads.length, 3, '…and its idle cadence resumes from that read');
+    await h.advance(899);
+    A.eq(h.reads.length, 3, '…and the 0.9 s cadence resumes from that read');
+    await h.advance(1);
+    A.eq(h.reads.length, 4, '…the next read 0.9 s after it');
   }
 
-  /* (e) an older sidecar (no stamp): every read is a full one compared whole, as before — still due-gated */
+  /* (e) an older sidecar (no stamp): every read is a full one compared whole, as before */
   {
     const h = harness({ stamps: false });
     h.ctx.GroupChat.bind(h.ws); await h.settle();
     await h.advance(9000);
     A.ok(h.reads.every(u => !/since=/.test(u)), 'no stamp from the station: no since is ever sent');
-    A.ok(h.reads.length >= 3 && h.reads.length <= 4, 'still read only when due');
+    A.ok(h.reads.length - 1 >= 10, 'read every 0.9 s, as before (' + (h.reads.length - 1) + ' in 9 s)');
     const persisted = h.persists();
     await h.advance(9000);
     A.eq(h.persists(), persisted, 'an unchanged full answer still paints nothing new (the whole-group comparison)');
@@ -164,7 +167,7 @@ function harness({ stamps = true } = {}) {
     A.eq(h.reads.length, 1, 'fixture: bound and read once');
     h.stepWall(-5 * 60000);
     await h.advance(9000);
-    A.ok(h.reads.length >= 3 && h.reads.length <= 4, 'the wall clock stepped back 5 min: the idle group is still read every 3 s (' + (h.reads.length - 1) + ' more reads in 9 s)');
+    A.ok(h.reads.length - 1 >= 10, 'the wall clock stepped back 5 min: the group is still read every 0.9 s (' + (h.reads.length - 1) + ' more reads in 9 s)');
   }
 
   A.report('group-poll-idle.test');
