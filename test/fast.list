@@ -1306,3 +1306,4 @@ test/openrouter-free-daily-cap.test.js
 test/openrouter-inband-error.test.js
 test/provider-403-truth.test.js
 test/oauth-refresh-throttle-copy.test.js
+test/proc-footprint.test.js
