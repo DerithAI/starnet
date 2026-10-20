@@ -4509,8 +4509,10 @@ const App = (() => {
       if (card && !card.hidden && li.getAttribute('aria-describedby') === 'station-tip' && card.textContent !== tip) card.textContent = tip;
     });
   }
-  function armRailTicker() { if (!railTicker) railTicker = setInterval(updateRailLive, 1000); }
-  function stopRailTicker() { if (railTicker) { clearInterval(railTicker); railTicker = 0; } }
+  // through PollGate (idle CPU piece 3, 2026-10-20): 1 s while the rail can be seen, a 30 s floor while the Commander is
+  // away, one beat at once on return (the visibilitychange renderRail below also snaps every row back to truth)
+  function armRailTicker() { if (!railTicker) railTicker = (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(updateRailLive, { ms: 1000, immediate: false }) : setInterval(updateRailLive, 1000); }
+  function stopRailTicker() { if (railTicker) { if (railTicker.stop) railTicker.stop(); else clearInterval(railTicker); railTicker = 0; } }
   // A backgrounded tab FREEZES/intensively-throttles its timers, so the live clock stalls while you're away. The
   // instant the station is visible again, snap every row back to truth (and re-arm the heartbeat) so the elapsed
   // and "last worked" stamps are never caught stale — they jump straight to correct, not after the next tick.

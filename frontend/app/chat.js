@@ -3202,6 +3202,8 @@ const Chat = (() => {
       const checkWait = async () => {
         if (!chip.isConnected || !chip.classList.contains('pending')) return;
         if (runOver()) { stat.textContent = ''; return; }
+        // nobody is looking (PollGate): keep the beat, skip the read; the first beat back on screen reads again
+        if (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away()) { setTimeout(checkWait, 1000); return; }
         try {
           const j = await Harness.api.get('/api/connectors');
           if (!chip.isConnected || !chip.classList.contains('pending')) return;

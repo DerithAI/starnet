@@ -62,6 +62,18 @@ function fakeChip() {
   for (let i = 0; i < 5; i++) await step();
   A.eq(apiCalls, 0, 'a chip whose run is not live never reads the connectors status');
 
+  // nobody looking (PollGate away): the beat keeps going but skips the read; back on screen it reads again
+  timers = []; apiCalls = 0; busy = true; let away = true;
+  ctx.PollGate = { away: () => away };
+  const awayChip = ctx.toolChip({ callId: 'c4', name: 'browser.open', runId: 'r1' });
+  for (let i = 0; i < 5; i++) await step();
+  A.eq(apiCalls, 0, 'while away the chip does not read /api/connectors');
+  A.eq(timers.length, 1, '…but keeps its beat');
+  away = false; await step();
+  A.eq(apiCalls, 1, 'back on screen the next beat reads again');
+  A.eq(awayChip.stat.textContent, 'Waiting for browser session…', '…and says what the run is waiting on');
+  delete ctx.PollGate;
+
   // a non-browser chip never polls
   timers = []; busy = true;
   ctx.toolChip({ callId: 'c3', name: 'fs.read', runId: 'r3' });
