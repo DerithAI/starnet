@@ -60,8 +60,8 @@ const path = require('node:path');
     const setT=(fn,ms)=>{const id=nextId++;timers.set(id,{at:T+Math.max(0,ms||0),fn});return id;};
     const clearT=id=>{timers.delete(id);};
     const drain=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
-    const advance=async ms=>{const end=T+ms;for(;;){let best=null;for(const [id,t] of timers) if(t.at<=end&&(!best||t.at<best[1].at||(t.at===best[1].at&&id<best[0])))best=[id,t];if(!best)break;timers.delete(best[0]);T=Math.max(T,best[1].at);best[1].fn();await drain();}T=Math.max(T,end);await drain();};
-    const s={mode:'answer',rtt,reconcileMs:0};
+    const advance=async ms=>{const end=T+ms;for(;;){let best=null;for(const [id,t] of timers) if(t.at<=end&&(!best||t.at<best[1].at||(t.at===best[1].at&&id<best[0])))best=[id,t];if(!best)break;timers.delete(best[0]);T=Math.max(T,best[1].at);best[1].fn();await drain();if(s.afterTask)s.afterTask();}T=Math.max(T,end);await drain();};
+    const s={mode:'answer',rtt,reconcileMs:0,bodyTask:false,afterTask:null,deliver:null};
     const ledger={threads:[],workers:[{runId:'w1',status:'running',parentStreamId:'planning'}],reviews:[]};
     let ready=null;const listeners={};
     const doc={hidden:false,visibilityState:'visible',hasFocus:()=>!doc.hidden,addEventListener(k,fn){(listeners[k]=listeners[k]||[]).push(fn);},removeEventListener(){}};
@@ -75,7 +75,10 @@ const path = require('node:path');
         o.signal.addEventListener('abort',()=>rej(new Error('aborted')));
         if(s.mode==='hang')return;
         if(s.mode==='fail'){setT(()=>rej(new Error('offline')),s.rtt);return;}
-        setT(()=>res({ok:true,json:async()=>ledger}),s.rtt);
+        // bodyTask: the body is read on a task of its own, posted when json() is called, and an abort errors it
+        const answer={ok:true,json:()=>s.bodyTask?new Promise((r2,j2)=>{if(o.signal.aborted)return j2(new Error('aborted'));setT(()=>r2(ledger),0);o.signal.addEventListener('abort',()=>j2(new Error('aborted')));}):Promise.resolve(ledger)};
+        if(s.mode==='held'){s.deliver=()=>res(answer);return;}   // the answer sits in the page's queue until deliver()
+        setT(()=>res(answer),s.rtt);
       })};
     if(gate)c.PollGate=gate==='real'?PollGate:gate;
     vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/app/overseer.js'),'utf8'),c);
@@ -206,6 +209,55 @@ const path = require('node:path');
     const p=r.o.refresh();await r.advance(5500);
     assert.deepEqual(r.read(),{fresh:true,unreachable:false},'a 6 s reconcile after the answer is not the station hanging (it read hung 5 s after the ask)');
     await r.advance(600);await p;
+  }
+
+  /* fix round 4 (2026-10-20): THE SLOW TIMER IS A VERDICT TOO. Round 3 gave the 8 s deadline its "seen late" grace, but
+     the 5 s timer that marks an ask slow (and makes fresh() false) had none: a page stalled past the 5 s mark ran it
+     before the station's answer — already in, only queued behind the stall — and a reader between them said "crew ·
+     unknown — checking the station". Neither verdict is drawn by a timer the page saw late, or once the answer is in. */
+  {
+    // the whole answer queued behind the overdue timers: the station answered at once, the page stalled 10 s, and the
+    // answer's task runs only after the timers that came due during the stall
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.mode='held';await r.advance(2450);   // the 22.5 s beat's ask is out; the station's answer waits in the page's queue
+    r.stall(10000);
+    await r.advance(0);                    // the overdue slow (5 s) and deadline (8 s) timers run first
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'SLOW SEEN LATE: an answer queued behind a 10 s stall is not "checking the station" (the overdue 5 s timer marked the ask slow)');
+    r.deliver();await r.advance(0);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the queued answer lands and keeps the ledger current');
+    r.done();
+  }
+  {
+    // the answer's headers came in at 4.6 s, the page was busy 4.55 → 5.5 s (the slow timer fires 0.5 s late — inside
+    // LATE_FIRE_MS), and the body is read on a task of its own posted when json() is called: the slow timer runs between
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.rtt=4600;r.bodyTask=true;await r.advance(2400 + 4550);   // 4.55 s into the 22.5 s beat's ask, every timer on time
+    r.stall(950);
+    const seen=[];r.afterTask=()=>seen.push(r.read());
+    await r.advance(0);r.afterTask=null;
+    assert.ok(seen.length>=3&&seen.every(x=>x.fresh&&!x.unreachable),'ANSWER IN, BODY ON ITS WAY: every reader between the headers and the body says current (one said "checking the station"): '+JSON.stringify(seen));
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'…and the body lands');
+    r.done();
+  }
+  {
+    // the same at the deadline: headers at 7.9 s, the page busy 7.85 → 8.5 s, so the 8 s deadline fires 0.5 s late with
+    // the answer in and its body still being read. It aborted that read, and the rail said "station unreachable".
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.rtt=7900;r.bodyTask=true;await r.advance(2400 + 7850);   // 7.85 s into the 22.5 s beat's ask
+    r.stall(650);
+    await r.advance(0);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'ANSWER IN AT THE DEADLINE: a body still being read when a late deadline fires is taken, never thrown away as "station unreachable"');
+    r.done();
+  }
+  {
+    // …and the verdicts still come when the station really sits on an ask: a deadline graced once still aborts
+    const r=rig({gate:'real'});await r.start();await r.advance(20100);
+    r.mode='hang';await r.advance(2450);
+    r.stall(10000);await r.advance(0);
+    assert.deepEqual(r.read(),{fresh:true,unreachable:false},'the overdue verdicts were seen late: each gives the ask one more beat');
+    await r.advance(2600);
+    assert.deepEqual(r.read(),{fresh:false,unreachable:true},'a beat the page lived through on time with no answer: slow, and past the deadline — unreachable');
+    r.done();
   }
 
 

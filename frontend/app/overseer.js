@@ -19,6 +19,12 @@ const Overseer = (() => {
          the page has to live through, so an answer queued ahead of it lands first; and a deadline the page saw LATE (its
          timer fired more than LATE_FIRE_MS after it was due: the page was held up, or asleep, not the station) gives the
          ask one more beat before it is called hung.
+       · BOTH VERDICTS ARE TIMERS THE PAGE MUST LIVE THROUGH ON TIME (fix round 4): slow at two beats and the deadline at
+         ASK_MS. Either one seen late, or one that finds the station's answer already in (its headers: only the body is
+         still being read, on a task of its own), gives the ask one more beat, once. Round 3 graced only the deadline: a
+         page stalled past the 5 s mark ran the slow timer ahead of an answer queued behind that stall, and a reader in
+         between said "checking the station"; a late deadline that found the body still being read aborted it, and the rail
+         said "station unreachable" for an answer the station had given in time.
        · fresh(): the last ledger can still vouch for a worker at work. Not when unreachable; not once THIS ask has been
          out two beats by the page's own timer (slow: the station is sitting on it — 7.5 s from an on-time answer, as
          before); and not when the ledger is older than three of the cadence that produced it plus LATE_GRACE. The grace
@@ -52,19 +58,27 @@ const Overseer = (() => {
     if (busy || typeof Workstreams === 'undefined' || !Workstreams.generalId()) return;
     busy = true; asking = true; slow = false; expired = false; askCadence = gateCadence();
     const controller = new AbortController();
-    const slowTimer = setTimeout(() => { if (asking) slow = true; }, 2 * BEAT);
-    let timeout = 0, graced = false;
-    const armDeadline = ms => {
-      const due = mono() + ms;
-      timeout = setTimeout(() => {
-        if (!asking) return;
-        if (!graced && mono() - due > LATE_FIRE_MS) { graced = true; armDeadline(BEAT); return; }   // seen late: one more beat
-        expired = true; controller.abort();
-      }, ms);
+    let responded = false;   // the station's answer is in (its headers): any wait from here on is the page's own
+    // a verdict against the station, drawn only by a timer the page lived through on time with no answer in; seen late
+    // (more than LATE_FIRE_MS past due) or with the answer in, it gives the ask one more beat — once
+    const verdict = (ms, act) => {
+      let graced = false, id = 0;
+      const arm = wait => {
+        const due = mono() + wait;
+        id = setTimeout(() => {
+          if (!asking) return;
+          if (!graced && (responded || mono() - due > LATE_FIRE_MS)) { graced = true; arm(BEAT); return; }
+          act();
+        }, wait);
+      };
+      arm(ms);
+      return () => clearTimeout(id);
     };
-    armDeadline(ASK_MS);
+    const endSlow = verdict(2 * BEAT, () => { slow = true; });
+    const endDeadline = verdict(ASK_MS, () => { expired = true; controller.abort(); });
     try {
       const response = await fetch('/api/overseer', { signal: controller.signal });
+      responded = true;
       if (!response.ok) throw new Error('Delegation synchronization unavailable');
       const data = await response.json();
       let adopted = false;
@@ -91,7 +105,7 @@ const Overseer = (() => {
       failing = true;
       if (typeof Delegated !== 'undefined' && Delegated.repaint) Delegated.repaint();   // at once, so a row that reads fresh() drops its live claim
       console.debug('[overseer sync]', error.message);
-    } finally { clearTimeout(slowTimer); clearTimeout(timeout); busy = false; asking = false; }
+    } finally { endSlow(); endDeadline(); busy = false; asking = false; }
   }
   if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => {
     if (typeof PollGate !== 'undefined' && PollGate.every) loop = PollGate.every(refresh, { ms: BEAT });

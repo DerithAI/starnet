@@ -16,7 +16,7 @@ const vm = require('node:vm');
 
 (async () => {
   // ---- the REAL overseer on one fake clock + timer queue; /api/overseer answers after 40 ms, hangs or refuses on cue ----
-  let T = 7e6, mode = 'answer', tid = 0;
+  let T = 7e6, mode = 'answer', tid = 0, rtt = 40, bodyTask = false;
   const timers = new Map();
   const setT = (fn, ms) => { const id = ++tid; timers.set(id, { fn, at: T + Math.max(0, ms || 0) }); return id; };
   const drain = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
@@ -39,7 +39,9 @@ const vm = require('node:vm');
     fetch: (_u, o) => new Promise((res, rej) => {
       o.signal.addEventListener('abort', () => rej(new Error('aborted')));
       if (mode === 'hang') return;
-      setT(() => (mode === 'fail' ? rej(new Error('offline')) : res({ ok: true, json: async () => ledger })), 40);
+      // bodyTask: the body is read on a task of its own, posted when json() is called, and an abort errors it
+      const json = () => (bodyTask ? new Promise((r2, j2) => { setT(() => r2(ledger), 0); o.signal.addEventListener('abort', () => j2(new Error('aborted'))); }) : Promise.resolve(ledger));
+      setT(() => (mode === 'fail' ? rej(new Error('offline')) : res({ ok: true, json })), rtt);
     })
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../frontend/app/overseer.js'), 'utf8'), oc);
@@ -93,6 +95,21 @@ const vm = require('node:vm');
   mode = 'fail'; await ask();
   A.eq(row(), 'crew · unknown | station unreachable — crew state unknown', 'REAL FAILURE: a refused read is unreachable at once');
   A.eq(card(), 'status unknown — station unreachable', 'REAL FAILURE: on the DELEGATED row too');
+
+  /* 5. THE SLOW TIMER AND A RAIL TICK BOTH RIPE AHEAD OF AN ANSWER THAT CAME IN BEFORE 5 s (fix round 4): the station's
+     answer arrives 4.6 s into the ask while the page is busy 4.55 → 6.0 s; its body is read on a task of its own. Ripe
+     at 6.0 s in due order: the answer's headers (4.6), the ask's 5 s slow timer, the rail's 1 s tick (5.4), the body. */
+  mode = 'answer'; await ask();
+  rtt = 4600; bodyTask = true;
+  const t0 = T, p5 = O.refresh();
+  await advance(4550);   // every timer on time up to 4.55 s
+  stall(1450);           // the page's event loop busy until 6.0 s
+  let railSaw = null;
+  timers.set(++tid, { fn: () => { railSaw = row() + ' / ' + card(); }, at: t0 + 5400 });   // the rail's tick, due at 5.4 s
+  await advance(0); await p5;
+  A.eq(railSaw, '2 working | 2 of the crew working on what you delegated / working', 'SLOW TIMER SEEN WITH THE ANSWER IN: the rail tick between it and the body still says "2 working" (it read "crew · unknown | checking the station — crew state unknown")');
+  A.eq(row(), '2 working | 2 of the crew working on what you delegated', '…and the body lands');
+  rtt = 40; bodyTask = false;
 
   delete global.Overseer; delete global.Channels; delete global.App; delete global.document;
   A.report('overseer-rail-truth.test');
