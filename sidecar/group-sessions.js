@@ -7,6 +7,8 @@ const { createHash } = require('node:crypto');
 const { swallow, note: failNote } = require('./failopen.js');
 const ACTIVE = new Set(['connecting', 'running', 'waiting for approval', 'waiting for answer', 'stopping']);
 const clone = x => JSON.parse(JSON.stringify(x));
+// test seam (d.freezeCommitted): a write to a committed snapshot in place throws instead of silently showing unsaved state
+function deepFreeze(x) { if (x && typeof x === 'object' && !Object.isFrozen(x)) { Object.freeze(x); for (const v of Object.values(x)) deepFreeze(v); } return x; }
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
 function identifier(x) { const s = String(x || ''); if (!/^[\w-]{1,64}$/.test(s)) fail('Invalid identifier'); return s; }
 function text(x, max = 100000) { const s = String(x || ''); if (s.length > max) fail('Text too long'); return s; }
@@ -25,21 +27,44 @@ function makeGroupSessions(d) {
   let ready;
   const stallMs = d.stallMs || 450000;
   const toolStallMs = d.toolStallMs || 1200000;
-  function read() {
-    const r = store.readKey('all');
-    if (r.status === 'absent') return { groups: {}, templates: [] };
-    if (!['ok', 'recovered'].includes(r.status)) fail('Group session storage is ' + r.status, 503);
-    if (!r.value || !r.value.groups || !Array.isArray(r.value.templates)) fail('Invalid group session storage', 503);
-    return r.value;
+  /* THE COMMITTED STATE LIVES IN MEMORY (idle-CPU pass 2026-10-19). The file used to be the only state: the open group's
+     poll (~0.9 s), the station-wide list (4 s, which read it twice), this module's own 5 s sweep and every pump step each
+     re-read and re-parsed the WHOLE group-sessions.json — every shared file rides in it as base64 — and then cloned the
+     group once or twice more (measured at a 21 MB store with one group open and nothing happening: ~13% of the sidecar's
+     only thread, in 30-120 ms blocking slices; the file only grows with use).
+     One sidecar owns a WORKSPACES dir (durable-store's HARD INVARIANT), so this module is the file's only writer, and
+     `committedState` is exactly what the last durable write put on disk. It is NEVER mutated in place: a write runs inside
+     the store's own mutex, clones what it changes, commits the copy (.bak + main, fsync, as before) and only then swaps the
+     snapshot in — a throw in the mutator or a failed write leaves memory and disk both at the previous commit. Internal
+     read-only paths (pump, sweep, ask, the tool defs) peek() at the committed objects; everything that leaves the module
+     is a copy (publicGroup, get, list, file). */
+  let committedState = null;
+  const freeze = d.freezeCommitted ? deepFreeze : x => x;
+  function committed() { if (!committedState) fail('Group session storage is unavailable', 503); return committedState; }
+  function peek(id) { const g = committed().groups[identifier(id)]; if (!g || g.deleted) fail('Group session not found', 404); return g; }
+  function get(id) { return clone(peek(id)); }
+  // fn(next, draft) edits `next`, a shallow copy of the committed state; draft(key) swaps in a private clone of that group
+  // to mutate. Every group fn replaced or added is committed as its JSON round trip, so memory holds exactly what disk
+  // holds (no undefined/NaN, and nothing a caller still references).
+  function transact(fn) {
+    return store.mutex.run('all', () => {
+      const cur = committed(), next = { groups: Object.assign({}, cur.groups), templates: cur.templates };
+      const out = fn(next, key => (next.groups[key] = clone(cur.groups[key])));
+      for (const k of Object.keys(next.groups)) if (next.groups[k] !== cur.groups[k]) next.groups[k] = clone(next.groups[k]);
+      if (next.templates !== cur.templates) next.templates = clone(next.templates);
+      store.set('all', next);
+      committedState = freeze(next);
+      return out;
+    });
   }
-  function get(id) { const g = read().groups[identifier(id)]; if (!g || g.deleted) fail('Group session not found', 404); return clone(g); }
   function update(id, fn) {
-    return store.update('all', state => {
-      state = state || { groups: {}, templates: [] };
-      const g = state.groups[identifier(id)];
-      if (!g || g.deleted) fail('Group session not found', 404);
-      fn(g, state); g.revision++; g.updatedAt = d.now(); return state;
-    }).then(s => clone(s.groups[id]));
+    return transact((next, draft) => {
+      const key = identifier(id), g0 = next.groups[key];
+      if (!g0 || g0.deleted) fail('Group session not found', 404);
+      const g = draft(key);
+      fn(g, next); g.revision++; g.updatedAt = d.now();
+      return g;   // the working copy: the committed group is its clone, so the caller owns this one
+    });
   }
   function roster() { return d.roster().map(a => ({ id: a.id, name: a.name || a.id, model: a.model || '', provider: a.provider || '' })); }
   function members(ids) {
@@ -85,10 +110,10 @@ function makeGroupSessions(d) {
   // A Commander upload belongs to the message that carries it. One no message links (the send that carried it was
   // refused, or never went out) is not shared: agents don't see it in context and group.read refuses it.
   function shared(g, a) { return !(a.agentId === 'user' && a.attachmentKey && !g.messages.some(m => (m.artifactIds || []).includes(a.id))); }
+  // one clone, and the shared files' base64 is dropped BEFORE it (the same object, key for key, as cloning then stripping)
   function publicGroup(g) {
-    const out = clone(g);
+    const out = clone({ ...g, artifacts: g.artifacts.map(({ content, ...a }) => a) });
     for (const t of out.turns) if (drafts.has(t.id)) { const dr = drafts.get(t.id); t.draft = dr.text; if (dr.steps.length) t.draftSteps = dr.steps; }
-    out.artifacts = out.artifacts.map(({ content, ...a }) => a);
     return out;
   }
   // A reply that made visible tool calls keeps its flow (the prose as it streamed + the calls between) for the transcript to
@@ -117,7 +142,7 @@ function makeGroupSessions(d) {
     const kickoff = b.kickoff ? text(b.kickoff, 1000).trim() : '';
     const conversionFingerprint = conversionKey ? createHash('sha256').update(JSON.stringify({ history: b.history || [], originalAgentId: b.originalAgentId || leadId, members: ids, leadId, title: b.title || 'Group chat', instructions: b.instructions || '' })).digest('hex') : null;
     const sameConversion = g => conversionKey && g.conversionKey === conversionKey && g.conversionFingerprint === conversionFingerprint && !g.deleted;
-    const existing = read().groups[id];
+    const existing = committed().groups[id];
     if (existing && sameConversion(existing)) return publicGroup(existing);
     if (existing) fail('Session already exists', 409);
     // Snapshot every referenced file before committing the conversion. A file that can't be shared (over the 1 MiB
@@ -143,10 +168,9 @@ function makeGroupSessions(d) {
       }
       imported.push({ source: m, artifactIds, missing });
     }
-    await store.update('all', s => {
-      s = s || { groups: {}, templates: [] };
+    await transact(s => {
       if (s.groups[id]) {
-        if (sameConversion(s.groups[id])) return s;
+        if (sameConversion(s.groups[id])) return;
         fail('Session already exists', 409);
       }
       const g = { id, title: text(b.title || 'Group chat', 80), members: ids, leadId,
@@ -160,10 +184,10 @@ function makeGroupSessions(d) {
           body, { imported: true, ...(Number.isFinite(m.ts) ? { at: m.ts } : {}), ...(artifactIds.length ? { artifactIds } : {}) });
       }
       if (kickoff) { const origin = [...g.messages].reverse().find(m => m.author === 'user'); if (origin) turn(g, origin.id, leadId, { request: kickoff, kickoff: true }); }
-      s.groups[id] = g; return s;
+      s.groups[id] = g;
     });
     if (kickoff) kick(id);
-    return publicGroup(get(id));
+    return publicGroup(peek(id));
   }
   function recipients(g, b) {
     const here = liveMembers(g);
@@ -238,7 +262,7 @@ function makeGroupSessions(d) {
     if (abort) abort.abort();
     if (resumed) haltedGroups.delete(id);
     kick(id);
-    return publicGroup(get(id));
+    return publicGroup(peek(id));
   }
   async function invite(id, b) {
     await ready;
@@ -251,7 +275,7 @@ function makeGroupSessions(d) {
       if (!g.members.includes(g.leadId)) g.leadId = liveLead(g);
     });
     if (abort) abort.abort();
-    return publicGroup(get(id));
+    return publicGroup(peek(id));
   }
   async function ask(id, turnId, fields, signal) {
     const question = text(fields.question, 400).trim();
@@ -278,7 +302,7 @@ function makeGroupSessions(d) {
       answers.set(q.id, finish);
       signal.addEventListener('abort', onAbort, { once: true });
       // An answer may have arrived between the durable write and installing the waiter.
-      const saved = get(id).questions.find(x => x.id === q.id);
+      const saved = peek(id).questions.find(x => x.id === q.id);
       if (saved.state === 'answered') finish({ answered: true, text: saved.answer });
       else if (signal.aborted || saved.state !== 'pending') onAbort();
     });
@@ -304,7 +328,7 @@ function makeGroupSessions(d) {
       g.paused = false;
     });
     if (changed) { answers.get(q.id)?.({ answered: true, text: value }); haltedGroups.delete(id); kick(id); }
-    return publicGroup(get(id));
+    return publicGroup(peek(id));
   }
   function cancelQuestions(g, predicate) {
     for (const q of g.questions || []) if (q.state === 'pending' && predicate(q)) {
@@ -377,7 +401,7 @@ function makeGroupSessions(d) {
       } else fail('Unknown group action');
     });
     if (abort) abort.abort();
-    if (b.action !== 'delete') { kick(id); return publicGroup(get(id)); }
+    if (b.action !== 'delete') { kick(id); return publicGroup(peek(id)); }
     await workers.get(id);
     // DELETE MEANS GONE (sweep 2026-10-02): the tombstone keeps only what dedupe and membership need. The messages, turns,
     // questions, instructions and artifacts (full file contents) used to stay in group-sessions.json forever — a privacy
@@ -401,7 +425,7 @@ function makeGroupSessions(d) {
       dest.artifacts = source.artifacts.filter(a => linked.has(a.id) ? retained.has(a.id) : a.messageSeq <= cutoff);
       dest.branchedFrom = { id, cutoff };
     });
-    return publicGroup(get(g.id));
+    return publicGroup(peek(g.id));
   }
   function context(g, t) {
     const all = g.messages.filter(m => !t.cutoff || m.seq <= t.cutoff);
@@ -433,7 +457,7 @@ function makeGroupSessions(d) {
   function toolDefs(id, turnId, signal) {
     function live() {
       if (signal.aborted) fail('Turn stopped');
-      const g = get(id), t = g.turns.find(x => x.id === turnId);
+      const g = peek(id), t = g.turns.find(x => x.id === turnId);
       if (!t || !ACTIVE.has(t.state) || t.state === 'stopping') fail('Turn no longer active');
       return { g, t };
     }
@@ -482,7 +506,7 @@ function makeGroupSessions(d) {
   }
   async function pump(id) {
     for (;;) {
-      let g = get(id);
+      let g = peek(id);
       if (closed || g.paused || g.deleting || haltedGroups.has(id) || (g.questions || []).some(q => q.state === 'pending')) return;
       let t = g.turns.find(x => x.state === 'queued');
       if (!t) return;
@@ -517,7 +541,7 @@ function makeGroupSessions(d) {
       }); }
       catch (e) { agentLeases.delete(t.agentId); controllers.delete(id); workingTurn.delete(id); throw e; }
       if (!claimed) { agentLeases.delete(t.agentId); controllers.delete(id); workingTurn.delete(id); continue; }
-      t = get(id).turns.find(x => x.id === t.id);
+      t = peek(id).turns.find(x => x.id === t.id);
       let chain = Promise.resolve(), output = '', error = '', usd = null;
       /* THE TURN'S FLOW, AS THE ONE-ON-ONE CHAT SHOWS IT (rc walk 2026-10-14). The draft glued every model turn onto the last
          ("Let me configure it:The steps are locked.") — the one-on-one page breaks its paragraph at each tool call, this
@@ -552,7 +576,7 @@ function makeGroupSessions(d) {
         if (name === 'agent.run.start') chain = chain.then(() => update(id, state => { const turn = state.turns.find(x => x.id === t.id); if (turn.state !== 'stopping') turn.state = 'running'; }));
       };
       try {
-        if (get(id).turns.find(x => x.id === t.id).state === 'stopping') ac.abort();
+        if (peek(id).turns.find(x => x.id === t.id).state === 'stopping') ac.abort();
         const result = await d.execute({ g, t, ctx, runId, signal: ac.signal, emit, askCommander: async fields => { await chain; return ask(id, t.id, fields, ac.signal); }, tools: toolDefs(id, t.id, ac.signal),
           prompt: async (asked) => {
             // argsFull (the whole redacted request) stays on the in-memory pending entry, never in the saved turn
@@ -605,7 +629,7 @@ function makeGroupSessions(d) {
       } finally {
         // A tool timeout may end execution before its question waiter resolves. Retire that
         // in-memory waiter so a later answer creates a durable continuation, not a lost reply.
-        for (const q of get(id).questions || []) if (q.turnId === t.id) answers.get(q.id)?.({ answered: false });
+        for (const q of peek(id).questions || []) if (q.turnId === t.id) answers.get(q.id)?.({ answered: false });
         progress.delete(t.id); drafts.delete(t.id); controllers.delete(id); workingTurn.delete(id); agentLeases.delete(t.agentId);
       }
     }
@@ -615,7 +639,7 @@ function makeGroupSessions(d) {
     let failed = false;
     const task = Promise.resolve().then(() => pump(id)).catch(e => { failed = true; d.log('group session ' + id + ': ' + e.message); }).finally(() => {
       workers.delete(id);
-      if (!closed && !failed) try { const g = get(id); if (!g.paused && !g.deleting && !haltedGroups.has(id) && !(g.questions || []).some(q => q.state === 'pending') && g.turns.some(t => t.state === 'queued')) kick(id); } catch (e) { if (e.status !== 404) failNote('group.worker.rearm', e); }
+      if (!closed && !failed) try { const g = peek(id); if (!g.paused && !g.deleting && !haltedGroups.has(id) && !(g.questions || []).some(q => q.state === 'pending') && g.turns.some(t => t.state === 'queued')) kick(id); } catch (e) { if (e.status !== 404) failNote('group.worker.rearm', e); }
     });
     workers.set(id, task);
   }
@@ -624,7 +648,7 @@ function makeGroupSessions(d) {
     if (closed || sweeping) return;
     sweeping = true;
     try {
-      for (const g of Object.values(read().groups)) {
+      for (const g of Object.values(committed().groups)) {
         if (g.deleted || g.deleting || g.paused || haltedGroups.has(g.id) || (g.questions || []).some(q => q.state === 'pending')) continue;
         for (const t of g.turns.filter(t => ['connecting', 'running'].includes(t.state))) {
           const pulse = progress.get(t.id);
@@ -663,20 +687,25 @@ function makeGroupSessions(d) {
       }
     }
     return s;
+  }).then(s => {
+    // the shape every read used to check: a store that is not one stays unavailable (every op rejects with this)
+    if (!s || !s.groups || typeof s.groups !== 'object' || !Array.isArray(s.templates)) fail('Invalid group session storage', 503);
+    committedState = freeze(s);
   });
   ready.catch(e => d.log('group storage unavailable: ' + e.message));
   return { ready, create, send, configure, control, fork, invite, answerQuestion, sweep,
     list: async () => {
       await ready;
       // updatedAt + what is waiting on the Commander, so a group you are NOT looking at can still light its rail row
-      const row = g => ({ id: g.id, title: g.title, members: g.members, leadId: g.leadId, updatedAt: g.updatedAt, paused: !!g.paused,
+      const row = g => ({ id: g.id, title: g.title, members: g.members.slice(), leadId: g.leadId, updatedAt: g.updatedAt, paused: !!g.paused,
         approvals: g.turns.filter(t => t.state === 'waiting for approval').length,
         questions: (g.questions || []).filter(q => q.state === 'pending').length,
         busy: g.turns.some(t => t.state === 'queued' || ACTIVE.has(t.state)) });
-      return { groups: Object.values(read().groups).filter(g => !g.deleted).map(row), templates: read().templates, roster: roster() };
+      const cur = committed();
+      return { groups: Object.values(cur.groups).filter(g => !g.deleted).map(row), templates: clone(cur.templates), roster: roster() };
     },
-    get: async id => { await ready; return publicGroup(get(id)); },
-    file: async (id, aid) => { await ready; const f = get(id).artifacts.find(a => a.id === aid); if (!f) fail('Shared file not found', 404); return f; },
+    get: async id => { await ready; return publicGroup(peek(id)); },
+    file: async (id, aid) => { await ready; const f = peek(id).artifacts.find(a => a.id === aid); if (!f) fail('Shared file not found', 404); return clone(f); },
     attach: async (id, b) => {
       await ready;
       const attachmentKey = b.key == null ? null : identifier(b.key);
@@ -689,27 +718,28 @@ function makeGroupSessions(d) {
         }
         g.artifacts.push({ ...file, id: d.id(), agentId: 'user', messageSeq: g.messages.length, createdAt: d.now(), ...(attachmentKey ? { attachmentKey } : {}) });
       });
-      return publicGroup(get(id));
+      return publicGroup(peek(id));
     },
     // the card's INSPECT FULL REQUEST: the live approval's whole (redacted) request; 404 once it settled
     approvalArgs: async (id, b) => { const p = pending.get(b.promptId); if (!p || p.id !== id) fail('This approval is no longer waiting: it was answered, expired, or its run ended.', 404); if (!p.argsFull) return { tool: p.tool || 'tool', args: '', truncated: false, noDetails: true }; /* still waiting, just no arguments */ return { tool: p.tool || 'tool', args: p.argsFull.text, truncated: !!p.argsFull.truncated }; },
     answer: async (id, b) => { const p = pending.get(b.promptId); if (!p || p.id !== id) fail('Approval is no longer pending', 409); if (!['once', 'deny'].includes(b.decision)) fail('Invalid approval'); p.finish(b.decision); return { ok: true }; },
     idle: async id => { await workers.get(id); },
     halt: () => {
-      try { for (const g of Object.values(read().groups)) if (!g.deleted) haltedGroups.add(g.id); }
+      try { for (const g of Object.values(committed().groups)) if (!g.deleted) haltedGroups.add(g.id); }
       catch (e) { failNote('group.halt.read', e); }
       for (const ac of controllers.values()) ac.abort();
-      try { return store.update('all', s => { s = s || { groups: {}, templates: [] }; for (const g of Object.values(s.groups)) if (!g.deleted) { haltedGroups.add(g.id); g.paused = true; cancelQuestions(g, () => true); g.revision++; } return s; }); }
+      try { return transact((s, draft) => { for (const key of Object.keys(s.groups)) if (!s.groups[key].deleted) { const g = draft(key); haltedGroups.add(g.id); g.paused = true; cancelQuestions(g, () => true); g.revision++; } }); }
       catch (e) { return Promise.reject(e); }
     },
     dropAgent: async agentId => {
       await ready;
       const gone = identifier(agentId);
       let abort = [];
-      await store.update('all', s => {
-        s = s || { groups: {}, templates: [] };
-        for (const g of Object.values(s.groups)) {
-          if (g.deleted || !g.members.includes(gone) || g.members.length < 2) continue;
+      await transact((s, draft) => {
+        for (const key of Object.keys(s.groups)) {
+          const g0 = s.groups[key];
+          if (g0.deleted || !g0.members.includes(gone) || g0.members.length < 2) continue;
+          const g = draft(key);
           g.members = g.members.filter(x => x !== gone);
           if (g.leadId === gone) g.leadId = g.members.includes('agent') ? 'agent' : g.members[0];
           for (const t of g.turns) if (t.agentId === gone) {
@@ -719,7 +749,6 @@ function makeGroupSessions(d) {
           cancelQuestions(g, q => q.agentId === gone);
           g.revision++; g.updatedAt = d.now();
         }
-        return s;
       });
       for (const ac of abort) ac.abort();
       return { ok: true };
