@@ -118,13 +118,6 @@ got = step('BUILD MODE hands its floor back', () => { W.onEdit({ seq: ++seq, dir
 A.ok(got === '' && W.cache === handed, 'the handed floor is taken without baking');
 got = step('…then a room edit', () => W.onEdit({ dirtyRects: [R(8, 8, 8, 8)] }));
 A.ok(got === 'inc,stitch' && W.cache.from.prev === handed && W.cache.from.rects.length === 1, '…and the next edit re-bakes its chunks against the handed floor, with only its own rects');
-// rects that reach every chunk gain nothing from cutting the old bake apart: the whole bake is the same work
-SB.dirtyChunks = (g, rects) => (rects.length ? rects.map((r, i) => ({ key: 'c' + i })) : [{ key: 'c0' }, { key: 'c1' }, { key: 'c2' }]);
-got = step('edits reaching every chunk', () => W.onEdit({ dirtyRects: [R(1, 1, 2, 2), R(30, 1, 31, 2), R(60, 1, 61, 2)] }));
-A.eq(got, 'bake', 'an edit whose rects reach every chunk bakes whole');
-got = step('an edit reaching some chunks', () => W.onEdit({ dirtyRects: [R(1, 1, 2, 2)] }));
-A.eq(got, 'inc,stitch', '…one that reaches only some re-bakes those');
-delete SB.dirtyChunks;
 // a StationBake without the chunk API (an old build) bakes whole
 delete SB.bakeIncremental;
 got = step('no chunk API', () => W.onEdit({ dirtyRects: [R(1, 1, 2, 2)] }));

@@ -779,8 +779,6 @@ const World = (() => {
   function bakeEditedChunks(edits) {
     if (!edits || !edits.rects.length || !cache || edits.base !== cache || !cache.stitched) return null;
     if (!StationBake.bakeIncremental || !StationBake.stitchWhole || edits.knobs !== bakeKnobs()) return null;
-    // rects that reach every chunk: the whole bake is that same work, without first cutting every chunk out of this one
-    if (StationBake.dirtyChunks && StationBake.dirtyChunks(geo, edits.rects).length >= StationBake.dirtyChunks(geo, []).length) return null;
     try { return StationBake.stitchWhole(geo, StationBake.bakeIncremental(geo, cache, edits.rects)) || null; }
     catch (e) { console.warn('[world] the edited chunks could not be re-baked; baking the whole station', e); return null; }
   }
