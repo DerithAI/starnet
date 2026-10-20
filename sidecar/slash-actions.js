@@ -333,7 +333,7 @@ function makeSlashActions(deps) {
     const agentId = String((ctx && ctx.agentId) || 'agent');
     let s;
     try { s = await budget.snapshot(agentId); } catch (e) { return fail('Could not read the spend ledger: ' + ((e && e.message) || e)); }
-    if (!s || s.ok === false) return fail('Could not read the spend ledger: ' + String((s && s.error) || 'no answer') + '.');
+    if (!s || s.ok === false) return fail('Could not read the spend ledger: ' + String((s && s.error) || 'no answer').replace(/[.\s]+$/, '') + '.');
     const caps = s.caps || {};
     const lines = [];
     const dayCap = Number(caps.perDay) > 0 ? (' of ' + usd(caps.perDay) + ' daily cap') : '';

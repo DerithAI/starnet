@@ -313,5 +313,52 @@ function mkHub(store, sendImpl, events) {
     hub.close();
   }
 
+  // ---- I. a STALE recovery snapshot never replays a message that completed while recovery waited ----
+  // Live-caught 2026-10-20 (sweep/channels): a follow-up typed while a task was running was steered into it AND
+  // run again as its own task afterwards. The follow-up's ack delivery drained the outbox, whose "capacity is back"
+  // cue called recoverInbox; its snapshot held [the running task, the follow-up], it parked on the running task's
+  // live promise for the whole run, and then replayed the follow-up from the stale list although it had long since
+  // finished and left the inbox. Every message sent during a run (a steer, /routine add, /away …) ran twice.
+  {
+    const events = [], sends = [], runs = [];
+    const store = mkStore(memFs());
+    let releaseA; const gateA = new Promise(r => { releaseA = r; });
+    let releaseAck; const gateAck = new Promise(r => { releaseAck = r; });
+    const hub = makeChannelHub({
+      channel: 'telegram',
+      runOnce: async (o) => {
+        const last = o.messages[o.messages.length - 1];
+        runs.push(String((last && last.content) || ''));
+        o.emit('agent.run.start', { runId: o.runId });
+        o.emit('agent.token', { delta: 'result for ' + String((last && last.content) || '') });
+        if (/long task/.test(String(last && last.content))) await gateA;
+        o.emit('agent.run.end', { reason: 'done' });
+      },
+      steerRun: () => ({ ok: true, status: 200 }),
+      store,
+      send: async (chatId, text) => { sends.push(text); if (/Added to the task/.test(text)) await gateAck; return { ok: true }; },
+      secrets: () => ({ key: 'k', model: 'm', configured: true }),
+      emit: (name, payload) => events.push([name, payload]),
+      newId: (() => { let n = 0; return () => 'irun-' + (++n); })(),
+      sleep: () => Promise.resolve(), outboxRetryMs: 5
+    });
+    const tick = () => new Promise(r => setTimeout(r, 0));
+    const a = hub.onInbound({ chatId: '93', chatType: 'dm', userId: 'u1', text: 'long task', messageId: 'a1', ts: 1 });
+    for (let i = 0; i < 20 && !hub._internals.inflight.get('93'); i++) await tick();
+    A.ok(!!hub._internals.inflight.get('93'), 'fixture: the long task is in flight');
+    const b = hub.onInbound({ chatId: '93', chatType: 'dm', userId: 'u1', text: 'also add a limerick', messageId: 'b1', ts: 2 });
+    for (let i = 0; i < 20 && !sends.some(s => /Added to the task/.test(s)); i++) await tick();
+    A.eq(store.loadInbox('telegram').map(x => x.id).sort(), ['telegram|93|a1', 'telegram|93|b1'], 'fixture: both messages are durably pending while the steer ack is in flight');
+    const recovery = hub._internals.recoverInbox();   // the outbox's "capacity is back" cue, mid-steer
+    releaseAck(); await b;
+    A.eq(store.loadInbox('telegram').map(x => x.id), ['telegram|93|a1'], 'the steered follow-up is done and has left the inbox');
+    releaseA(); await a; await recovery;
+    for (let i = 0; i < 20; i++) await tick();
+    A.eq(runs.filter(t => /also add a limerick/.test(t)).length, 0, 'the steered follow-up never starts a run of its own');
+    A.eq(sends.filter(s => /Added to the task/.test(s)).length, 1, 'and the chat hears its acknowledgement exactly once');
+    A.eq(store.loadInbox('telegram'), [], 'nothing is left pending');
+    hub.close();
+  }
+
   A.report('channels.outbox.test');
 })().catch(e => { console.error(e); process.exit(1); });

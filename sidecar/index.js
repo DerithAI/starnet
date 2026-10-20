@@ -244,7 +244,7 @@ const { makeTelegramTransport } = require('./channels/telegram.transport.js');  
 const { makeEnvironmentProxyFetch } = require('./channels/proxy-fetch.js');
 const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
-const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS } = require('./channels/hub.js');
+const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS, chunkText: hubChunkText } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
 const { hostPowerWithheldFor, entryUntrusted, standingWorkEscalates } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
@@ -4109,7 +4109,7 @@ function channelAskConsent(o) {
     scope: (o.tool && o.tool.scope) || 'write',
     argsSummary: consentSummary(o.call)
   };
-  let untrack = null;
+  let untrack = null, askedId = '';
   return makeConsentWait({
     pending: pend, signal: o.signal, timeoutMs: CONSENT_TIMEOUT_MS, extendMs: CONSENT_ACK_EXTEND_MS,
     uuid: () => crypto.randomUUID(),
@@ -4121,11 +4121,13 @@ function channelAskConsent(o) {
     // already armed, so a throw from the renderer must never escape into the waiter (it would leave the run
     // paused with no timer owner) — hence the guard.
     emitPrompt: (promptId) => {
+      askedId = String(promptId || '');
       try { untrack = remoteApprovals.add(Object.assign({ runId, promptId, agentId: o.agentId, surface: o.surface === 'remote' ? 'remote' : 'channel', finish: pend.get(promptId) }, fields)); } catch (e) { failNote('remote.index.trackChannelPrompt', e); }
       try { if (typeof o.onPrompt === 'function') o.onPrompt(promptId, fields); } catch (e) { failNote('channels.consent.onPrompt', e); }
     }
   }).ask().then((decision) => {
     if (untrack) untrack();
+    if (askedId) noteChannelConsentSettled(askedId, decision);
     // makeConsentWait removes its own promptId; drop the run's bucket once the last prompt settles so a long
     // -lived channel can't accumulate one empty Map per run forever.
     if (pend.size === 0) channelPendingByRun.delete(runId);
@@ -4135,6 +4137,16 @@ function channelAskConsent(o) {
 // Resolve one prompt BY ITS OWN ID. (The reference harness resolves the session's queue head instead, so with
 // two concurrent prompts a tap on the second answers the first — keying by promptId makes that unrepresentable.)
 // Returns false when the host already settled it: timed out, aborted by a superseding message, or E-STOPped.
+/* HOW EACH SETTLED CHANNEL ASK ENDED (bounded, in-memory). STARNET REMOTE answers a channel prompt through the same
+   finisher, so a later tap on the still-live Telegram keyboard loses the race to an ALLOW — and was stamped "expired —
+   DENIED" on an action that ran (2026-10-20). The hub reads this (consentOutcome) to report what really happened. */
+const channelConsentSettled = new Map();
+function noteChannelConsentSettled(promptId, decision) {
+  channelConsentSettled.delete(promptId);
+  channelConsentSettled.set(promptId, String(decision || ''));
+  while (channelConsentSettled.size > 200) channelConsentSettled.delete(channelConsentSettled.keys().next().value);
+}
+function channelConsentOutcome(runId, promptId) { return channelConsentSettled.get(String(promptId == null ? '' : promptId)) || ''; }
 function channelResolveConsent(runId, promptId, decision) {
   const d = (decision === 'once' || decision === 'session' || decision === 'always' || decision === 'full') ? decision : 'deny';
   const pend = channelPendingByRun.get(String(runId == null ? '' : runId));
@@ -6794,8 +6806,15 @@ async function deliverCronResult(job, result) {
     if (!(live && live.adapter)) { failed++; firstError = firstError || channel + ' is not connected'; continue; }
     const chatId = String(rec.chatId || target), route = rec.threadId ? { threadId: rec.threadId } : undefined;
     try {
-      const sent = await live.adapter.send(chatId, redact(chatText), route);
-      if (sent && sent.ok === false) throw new Error(sent.error || 'send failed');
+      // A routine's reply is as long as the model made it, and the adapter sends ONE message (the hub chunks chat
+      // replies before calling it). Sent whole, a digest past Telegram's 4096 was refused "message is too long" on the
+      // fire and on every retry — the chat never saw it (2026-10-20). Split it under the platform's ceiling, in order.
+      const desc = channelRegistry.get(channel.split(':')[0]);
+      const parts = hubChunkText(redact(chatText), Number(desc && desc.maxMessageLength) > 200 ? Number(desc.maxMessageLength) : 1900);
+      for (let i = 0; i < parts.length; i++) {
+        const sent = await live.adapter.send(chatId, parts[i], route);
+        if (sent && sent.ok === false) throw new Error((sent.error || 'send failed') + (i ? ' (after ' + i + ' of ' + parts.length + ' parts)' : ''));
+      }
       deliveredTargets.add(target);
       if (job.attachToSession) {
         channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
@@ -10256,7 +10275,7 @@ function startTelegram(token, key, model, agentCfg) {
     // assembled answer. The hub's final delivery/outbox path remains durable and retryable.
     streamReplies: false,
     canReadAllGroupMessages: () => stationBotSeesAll,
-    askConsent: channelAskConsent, resolveConsent: channelResolveConsent,
+    askConsent: channelAskConsent, resolveConsent: channelResolveConsent, consentOutcome: channelConsentOutcome,
     secrets: () => {
       const t = (channelSecrets && channelSecrets.telegram) || {};
       const provider = normalizeProvider(t.provider);
@@ -10572,7 +10591,7 @@ function startTelegramBot(botId) {
     // raw token deltas never become user-visible, so a tool call cannot rewrite half-formed prose underneath them.
     streamReplies: false,
     canReadAllGroupMessages: () => { const v = (recOf() || {}).seesAllGroupMessages; return (typeof v === 'boolean') ? v : null; },
-    askConsent: channelAskConsent, resolveConsent: channelResolveConsent
+    askConsent: channelAskConsent, resolveConsent: channelResolveConsent, consentOutcome: channelConsentOutcome
   });
   const adapter = makeTelegramAdapter({
     fetch: telegramTransportFetch(), token: token, apiBase: TELEGRAM_API_BASE, clock: { now: () => Date.now() },

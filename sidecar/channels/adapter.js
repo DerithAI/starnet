@@ -316,9 +316,18 @@
       if (allowedUsers.size && !allowedUsers.has(String(m.userId == null ? '' : m.userId))) return 'drop';
       if (m.chatType === 'dm') return 'run';
       if (!chatAllowed(m.chatId)) return admissionCommand(m) ? 'admit' : 'drop';
+      // a command another bot is NAMED for is never ours, even in a room we answer in full: the hub's parse strips the
+      // @suffix, so with /mention off "/new@otherbot" wiped THIS bot's history and "/stop@otherbot" stopped our run (2026-10-20)
+      if (commandForAnotherBot(m)) return observeUnmentionedFor(m.chatId) ? 'observe' : 'drop';
       if (!requireMentionFor(m.chatId)) return 'run';
       if (addressesUs(m)) return 'run';
       return observeUnmentionedFor(m.chatId) ? 'observe' : 'drop';
+    }
+    function commandForAnotherBot(m) {
+      const hit = /^\/[A-Za-z0-9_-]+@([A-Za-z0-9_]+)(?:\s|$)/.exec(String(m.text == null ? '' : m.text).trim());
+      if (!hit) return false;
+      const me = botUsernameNow();
+      return !!me && hit[1].toLowerCase() !== me;   // our own name still unknown: cannot tell, keep the old behaviour
     }
     // DM-only first cut: a direct message is always admitted; a group/channel message only if whitelisted.
     function admitted(m) { return admission(m) === 'run'; }

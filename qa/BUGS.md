@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**19** open (open+claimed) of 296 total — 0 P0 · 0 P1 · 19 P2
+**23** open (open+claimed) of 308 total — 0 P0 · 1 P1 · 22 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -137,6 +137,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P0 | fixed | safecell | [The Permissions panel's normalizeGrants regex drops every path: and mcp: standing grant — the ledger prints "No standing approvals yet" while the backend holds](bugs/7274ff21-the-permissions-panel-s-normalizegrants-regex-dr.md) | sweep/safecell | 6afeb9ee |
 | P0 | fixed | sessions | [An attachment-bearing user turn is dropped from the durable transcript and the PREVIOUS turn is written in its place — the string-only scan at index.js:11299 fa](bugs/e7dcb889-an-attachment-bearing-user-turn-is-dropped-from.md) | sweep/sessions | 6afeb9ee |
 | P0 | fixed | skills | [skill.view's hydrate-then-bump stores the RENDERED SKILL.md as the skill's body, so every view→persist cycle re-appends '## Setup' and '## Support Files' — unbo](bugs/c70f8965-skill-view-s-hydrate-then-bump-stores-the-render.md) | sweep/skills | 598ab4a4 |
+| P1 | open | channels | [A sidecar crash mid-run replays the whole Telegram message as a second identical user turn, so side effects run twice and the reply undercounts them](bugs/e5ecd6b8-a-sidecar-crash-mid-run-replays-the-whole-telegr.md) | sweep/channels | — |
 | P1 | fixed | autonomy | [Agent loop pause leaves cancelled iteration running and lease held](bugs/c66e8c39-agent-loop-pause-leaves-cancelled-iteration-runn.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P1 | fixed | autonomy | [Ambiguous permission and routine acknowledgements report unproven changes](bugs/95d13aaf-ambiguous-permission-and-routine-acknowledgement.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
 | P1 | fixed | autonomy | [Autonomy controls claim unconfirmed settings and overwrite server state on reload](bugs/b0349a7c-autonomy-controls-claim-unconfirmed-settings-and.md) | agent/system-polish-0920 | 4a2028759 |
@@ -164,11 +165,15 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | autonomy | [Stale routine recovery drops its fence before failure persistence](bugs/50741e0d-stale-routine-recovery-drops-its-fence-before-fa.md) | agent/cron-reliability-0921 | 0f881f44afde73e79de13f0117cf0dd9f2771ff9 |
 | P1 | fixed | autonomy | [Windows computer movement resolves to filesystem Move-Item](bugs/758185bc-windows-computer-movement-resolves-to-filesystem.md) | computer-move-proof-0911 | dd85573b9 |
 | P1 | fixed | channels | [A lost-race consent tap stamps "▸ ✅ Allow once" onto the message before resolveConsent is asked, so a DENIED request keeps a permanent "approved" record](bugs/64563ad9-a-lost-race-consent-tap-stamps-allow-once-onto-t.md) | sweep/channels | 96fe108d |
+| P1 | fixed | channels | [A routine's reply longer than Telegram's 4096 characters is sent as one message, refused 'message is too long' on every retry, and never reaches the chat](bugs/3a9d5e4a-a-routine-s-reply-longer-than-telegram-s-4096-ch.md) | sweep/channels | 9af08a5a0 |
+| P1 | fixed | channels | [A Telegram consent ask allowed from STARNET REMOTE is stamped 'expired — DENIED' by a late tap on the still-live keyboard](bugs/9e60dd9f-a-telegram-consent-ask-allowed-from-starnet-remo.md) | sweep/channels | 0fcbbd42d |
 | P1 | fixed | channels | [`channel.targets` derives "reachable now" from the adapter handle's existence, so an errored (or still-connecting) channel is reported connected while telegramS](bugs/a199ee3c-channel-targets-derives-reachable-now-from-the-a.md) | sweep/channels | 96fe108d |
 | P1 | fixed | channels | [Chat replies cut off without confirmed completion](bugs/812c3bfb-chat-replies-cut-off-without-confirmed-completio.md) | agent/chat-cutoff-0919 | 93a4ee64c |
 | P1 | fixed | channels | [Connector stays up after an authenticated tool returns 401](bugs/9dc98fa0-connector-401-still-shows-up.md) | reliability-followup | 6adda1348 |
 | P1 | fixed | channels | [Connector times out waiting for a buffered SSE reply](bugs/11341152-connector-buffered-sse-times-out.md) | reliability-followup | 6adda1348 |
+| P1 | fixed | channels | [Every message sent while a channel task is running is processed twice: inbox recovery replays a follow-up that already finished while it waited](bugs/5ce67a6f-every-message-sent-while-a-channel-task-is-runni.md) | sweep/channels | 2899b4102 |
 | P1 | fixed | channels | [Invalid connector JSON null replaces encrypted recovery credentials at startup](bugs/0428b50d-invalid-connector-json-null-replaces-encrypted-r.md) | release-audit-0124-0920 | 42ad5937f |
+| P1 | fixed | channels | [/new on Telegram says 'I no longer remember what we discussed' while the next run replays up to 100 turns of the old chat, taint included](bugs/956fdecf-new-on-telegram-says-i-no-longer-remember-what-w.md) | sweep/channels | 5b934e4e2 |
 | P1 | fixed | channels | [Telegram-bound lead reports crew delegation unavailable](bugs/98454b83-telegram-lead-delegation-unavailable.md) | release-0120-prep-0915 | 887210a7b |
 | P1 | fixed | onboarding | [Erase Everything resurrects an acknowledged legacy station on restart](bugs/5451970e-erase-everything-resurrects-an-acknowledged-lega.md) | agent/runtime-triage-1011 | 553cfa55d45afca1b588cb0b82219d6bb5673cab |
 | P1 | fixed | onboarding | [Failed remote save adoption falls through to first-run onboarding](bugs/25de9a74-failed-remote-save-adoption-falls-through-to-fir.md) | reliability-audit-0919 | d9b6fba04 |
@@ -290,6 +295,9 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | open | autonomy | [Customer requests accounting for credits consumed during Mac boot trouble](bugs/abd75bb4-credit-usage-during-mac-boot-failure.md) | release-0120-prep-0915 | — |
 | P2 | open | autonomy | [Customer cannot explain idle behavior and unexpectedly high usage](bugs/acb47320-idle-usage-customer-unexplained.md) | reliability-followup | — |
 | P2 | open | autonomy | [Repeated project verification reportedly consumes overnight budget](bugs/f8d479d9-repeated-project-verification-reportedly-consume.md) | agent/reliability-audit-0919 | — |
+| P2 | open | channels | [A steered Telegram reply arrives with the raw '[steering] <note>' echo and both the pre- and post-steer answers glued into one message](bugs/e903a199-a-steered-telegram-reply-arrives-with-the-raw-st.md) | sweep/channels | — |
+| P2 | open | channels | [Desktop slash aliases and client-only commands typed on Telegram (/routines, /reset, /version, /q) fall through to a paid model run](bugs/6cd531b1-desktop-slash-aliases-and-client-only-commands-t.md) | sweep/channels | — |
+| P2 | open | channels | [/routine add typed on Telegram creates a station-only routine: its results never come back to the chat that created it](bugs/3b958e41-routine-add-typed-on-telegram-creates-a-station.md) | sweep/channels | — |
 | P2 | open | channels | [Zoho Mail bootstrap tool reportedly requires undiscoverable account](bugs/54564ff9-zoho-mail-bootstrap-tool-reportedly-requires-und.md) | agent/reliability-audit-0919 | — |
 | P2 | open | onboarding | [Google Drive authorization is hard blocked for a fresh personal account](bugs/f2ac6356-google-drive-authorization-is-hard-blocked-for-a.md) | release-0135-prep | — |
 | P2 | open | onboarding | [Customer reports unusable visibility without build or platform details](bugs/6bb9d2a1-visibility-failure-without-diagnostics.md) | release-0120-prep-0915 | — |
@@ -316,10 +324,14 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | autonomy | [Routine schedule preview races newer input and stalls after failures](bugs/eba7e8aa-routine-schedule-preview-races-newer-input-and-s.md) | agent/system-polish-0920 | 4a2028759 |
 | P2 | fixed | autonomy | [Unique line names block multi-inbox and repeated template builds](bugs/58136a6a-unique-line-names-block-multi-inbox-and-repeated.md) | agent/session-handoff-1011 | 07b522235232032e2b85a4cf201937fc85ebf1f0 |
 | P2 | fixed | channels | [Answering one prompt clears other parallel approvals](bugs/47c3a845-answering-one-clarification-clears-other-paralle.md) | agent/ux-triage-1011 | ced84e2f04e4a94a77f04cac97f7f469d4f4c336 |
+| P2 | fixed | channels | [channel.send tells the chat a missing or refused file 'is saved in the workspace on the station'](bugs/c0beb187-channel-send-tells-the-chat-a-missing-or-refused.md) | sweep/channels | 00bc7ba60 |
 | P2 | fixed | channels | [COMMS report lists lose plus and tab-separated markers](bugs/3ad3e2b8-comms-report-lists-lose-plus-and-tab-separated-m.md) | agent/release-0112-audit-0910 | cb6c30b4d |
 | P2 | fixed | channels | [Dense service cards squeeze technical prose into tiny columns](bugs/734b469e-dense-service-cards-squeeze-technical-prose-into.md) | agent/ui-density-audit | 221775a85 |
 | P2 | fixed | channels | [E-STOP silences the channel reply path via the supersede flag, so a deliberately stopped run is indistinguishable from a crashed bot on the phone](bugs/600f4982-e-stop-silences-the-channel-reply-path-via-the-s.md) | sweep/channels | 96fe108d |
+| P2 | fixed | channels | [Every channel run without a configured system prompt reaches the provider with the persona replaced by the literal text '() => p'](bugs/446602ab-every-channel-run-without-a-configured-system-pr.md) | sweep/channels | 9e15c999e |
 | P2 | fixed | channels | [Station button redesign escaped the bottom navigation](bugs/d28ba8f4-station-button-redesign-escaped-the-bottom-navig.md) | agent/comms-controls-0906 | e4e4512b198279e35cdd9f2cc2be9d786b02e87f |
+| P2 | fixed | channels | [/usage on an unsettled ledger answers '…See SETTINGS › SPENDING LIMITS..' with a doubled period, on Telegram and in COMMS](bugs/67ba42c6-usage-on-an-unsettled-ledger-answers-see-setting.md) | sweep/channels | cc57c42b6 |
+| P2 | fixed | channels | [With /mention off, a group command @-addressed to another bot (/new@otherbot, /stop@otherbot) runs on this bot](bugs/bbf17048-with-mention-off-a-group-command-addressed-to-an.md) | sweep/channels | debe64ba4 |
 | P2 | fixed | onboarding | [First-path offer silently vanishes for a long or repeated mission](bugs/2ea198d9-first-path-offer-silently-vanishes-for-a-long-or.md) | sweep/onboarding | 6d86bbfe2 |
 | P2 | fixed | onboarding | [Onboarding sign-in codes have dark text on dark backgrounds](bugs/c9929ae3-onboarding-sign-in-codes-have-dark-text-on-dark.md) | agent/onboarding-test-0919 | 51dcb517d2ed6935bca7ed924d8ca6c095a17913 |
 | P2 | fixed | providers | [BYOK image recovery omits the supported OpenRouter key option](bugs/3a2837bd-byok-image-recovery-only-offers-paid-link.md) | audit-0112-0910 | d503f00c5 |
@@ -431,7 +443,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 
 | Surface | Open |
 | --- | --- |
-| channels | 1 |
+| channels | 5 |
 | autonomy | 3 |
 | providers | 5 |
 | safecell | 3 |
