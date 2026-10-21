@@ -54,27 +54,41 @@ function makeSkillDocumentFetcher(deps) {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), requestTimeoutMs);
-      let response;
       try {
-        response = await fetchImpl(u.href, {
-          method: 'GET', redirect: 'manual', signal: ctrl.signal,
-          headers: { accept: 'text/markdown,text/plain;q=0.9,*/*;q=0.1', 'user-agent': 'StarNet-Skill-Exchange/1' }
+        let response;
+        try {
+          response = await fetchImpl(u.href, {
+            method: 'GET', redirect: 'manual', signal: ctrl.signal,
+            headers: { accept: 'text/markdown,text/plain;q=0.9,*/*;q=0.1', 'user-agent': 'StarNet-Skill-Exchange/1' }
+          });
+        } catch (e) {
+          if (ctrl.signal.aborted) throw new Error('skill source timed out');
+          throw e;
+        }
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers && response.headers.get('location');
+          if (!location) throw new Error('skill source redirected without a location');
+          if (hop === MAX_REDIRECTS) throw new Error('skill source redirected too many times');
+          u = await checked(new URL(location, u.href).href);
+          continue;
+        }
+        if (!response.ok) throw new Error('skill source returned HTTP ' + response.status);
+        const limit = Number(requestOpts.maxBytes) > 0 ? Math.min(Number(requestOpts.maxBytes), 4000000) : MAX_BYTES;
+        /* THE DEADLINE COVERS THE BODY. The timer used to be cleared the moment headers arrived, so a source that
+           answered its headers and then trickled or stalled the body held the fetch (and the package's 30 s budget)
+           open forever. The race settles even for a body stream that ignores the abort. */
+        const timedOut = new Promise((_, reject) => {
+          const fail = () => reject(new Error('skill source timed out'));
+          if (ctrl.signal.aborted) fail(); else ctrl.signal.addEventListener('abort', fail, { once: true });
         });
-      } catch (e) {
-        if (ctrl.signal.aborted) throw new Error('skill source timed out');
-        throw e;
+        let bytes;
+        try { bytes = await Promise.race([bodyBytes(response, limit, requestOpts.maxBytes ? String(requestOpts.label || 'the download') : ''), timedOut]); }
+        catch (e) {
+          if (ctrl.signal.aborted) throw new Error('skill source timed out');
+          throw e;
+        }
+        return { url: u.href, bytes, text: bytes.toString('utf8') };
       } finally { clearTimeout(timer); }
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers && response.headers.get('location');
-        if (!location) throw new Error('skill source redirected without a location');
-        if (hop === MAX_REDIRECTS) throw new Error('skill source redirected too many times');
-        u = await checked(new URL(location, u.href).href);
-        continue;
-      }
-      if (!response.ok) throw new Error('skill source returned HTTP ' + response.status);
-      const limit = Number(requestOpts.maxBytes) > 0 ? Math.min(Number(requestOpts.maxBytes), 4000000) : MAX_BYTES;
-      const bytes = await bodyBytes(response, limit, requestOpts.maxBytes ? String(requestOpts.label || 'the download') : '');
-      return { url: u.href, bytes, text: bytes.toString('utf8') };
     }
     throw new Error('skill source redirected too many times');
   }

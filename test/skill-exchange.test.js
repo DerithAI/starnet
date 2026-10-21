@@ -99,6 +99,23 @@ function store(io) { return makeSkillStore({ io, clock: { now: () => 9000 }, gua
   try { await fetcher('https://public.example/SKILL.md'); } catch (e) { redirectError = e.message; }
   A.ok(/private host/.test(redirectError), 'every redirect target is revalidated');
 
+  // The request deadline covers the BODY (memory lane 2026-10-20): the timer was cleared when headers arrived, so a
+  // source that answered its headers and then stalled its body held the fetch open forever.
+  {
+    const stalled = makeSkillDocumentFetcher({
+      timeoutMs: 80,
+      fetchImpl: async () => ({ status: 200, ok: true, headers: { get: () => null },
+        body: { async *[Symbol.asyncIterator]() { yield Buffer.from('# Partial'); await new Promise(() => {}); } } })
+    });
+    const t0 = Date.now();
+    const outcome = await Promise.race([
+      stalled('https://slow.example/SKILL.md').then(() => 'resolved', e => e.message),
+      new Promise(r => setTimeout(() => r('still waiting after 3 s'), 3000))
+    ]);
+    A.eq(outcome, 'skill source timed out', 'a body that stalls after its headers times out');
+    A.ok(Date.now() - t0 < 2000, 'at the request deadline, not never (' + (Date.now() - t0) + ' ms)');
+  }
+
   const fetchedUrls = [];
   const genericPackage = makeSkillPackageFetcher({ now: () => 0, fetchDocument: async url => {
     fetchedUrls.push(url);
