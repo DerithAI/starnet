@@ -9,7 +9,9 @@
      (1) repeated status polls + an 80-chunk download parse the save ONCE while it is unchanged;
      (2) a save (a new skin) is visible on the very next poll; an outside edit of the file is too;
      (3) a save that is absent or corrupt (recovered from .bak) is never kept, and the looks stay truthful;
-     (4) the host is wired to it. */
+     (4) the host is wired to it;
+     (5) the desk persists (debounced POST /api/save) between polls, moving the stamp each time: the save handler seeds
+         the looks from the doc it just stored, so the next poll shows the new look with no parse. */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('node:fs');
@@ -23,6 +25,11 @@ const { makeRemoteHost } = require('../sidecar/remote/host.js');
 const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
 const looksFn = fnBody(src, 'function remoteCrewLooks()');
 A.ok(looksFn.startsWith('function remoteCrewLooks()') && looksFn.length < 1500, 'sliced exactly the host crewLooks reader');
+const looksOfFn = fnBody(src, 'function crewLooksOf(save)');
+A.ok(looksOfFn.startsWith('function crewLooksOf(save)') && looksOfFn.length < 800, 'and the looks projection it shares with the save seed');
+const seedFn = fnBody(src, 'function seedSaveMemos(agentId, doc)');
+const saveFn = fnBody(src, 'async function handleSaveWrite(req, res)');
+A.ok(seedFn.startsWith('function seedSaveMemos(agentId, doc)') && seedFn.length < 1500 && saveFn.startsWith('async function handleSaveWrite(req, res)') && saveFn.length < 6000, 'and the POST /api/save handler that seeds it');
 
 (async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-remote-looks-'));
@@ -37,7 +44,8 @@ A.ok(looksFn.startsWith('function remoteCrewLooks()') && looksFn.length < 1500, 
     const saveStore = makeSaveStore({ fs: cfs, pathMod: path, root, clock: { now: () => ++T } });
     const big = Array.from({ length: 200 }, (_, i) => ({ id: 'ws' + i, title: 'session ' + i, history: [{ role: 'user', content: 'x'.repeat(2000) }] }));
     saveStore.save('agent', { updatedAt: 1, agent: { id: 'agent', skin: 'nova', color: '#f00' }, agents: [{ id: 'forge', skin: 'smith', color: '#0f0' }], workstreams: big });
-    const api = vm.runInNewContext("let _remoteLooksMemo = { stamp: '', looks: null };\n" + looksFn + '\n({ remoteCrewLooks })', { saveStore });
+    const api = vm.runInNewContext("let _remoteLooksMemo = { stamp: '', looks: null };\nlet _stationEpochMemo = { stamp: '', epoch: 1 };\n" + [looksOfFn, looksFn, seedFn, saveFn].join('\n') + '\n({ remoteCrewLooks, handleSaveWrite })',
+      { saveStore, workspaceDegraded: false, growthRatings: { latestTs: () => 0 }, readBody: async (req) => req.body, failNote: () => {} });
     const host = makeRemoteHost({ now: () => 5000, newId: () => 'id', broadcast: () => {},
       roster: () => [{ agentId: 'agent', name: 'Nova' }, { agentId: 'forge', name: 'Forge' }], liveRuns: () => [],
       transcript: { streams: () => [], history: () => [] },
@@ -60,6 +68,21 @@ A.ok(looksFn.startsWith('function remoteCrewLooks()') && looksFn.length < 1500, 
     wrapped.doc.agents[0].skin = 'outside';
     fs.writeFileSync(saveFile + '.ext', JSON.stringify(wrapped)); fs.renameSync(saveFile + '.ext', saveFile);
     A.eq((await host.status()).agents[1].skin, 'outside', 'an outside replace of the save is visible on the next poll');
+
+    // ---- (5) the desk persists (POST /api/save) between phone polls: the save seeds the looks, no re-parse ----
+    let rev = 0;
+    for (let i = 0; i < 5; i++) {
+      const doc = { updatedAt: 100 + i, _saveRevision: rev, agent: { id: 'agent', skin: 'skin' + i, color: '#00' + i }, agents: [{ id: 'forge', skin: 'smith', color: '#0f0' }], workstreams: big };
+      let text = '';
+      await api.handleSaveWrite({ body: JSON.stringify(doc) }, { writeHead: () => {}, end: (b) => { text = b; } });
+      const out = JSON.parse(text);
+      A.eq(out.ok, true, 'desk save ' + i + ' lands through the real handler');
+      rev = out.revision;
+      parses = 0;
+      const polled = await host.status();
+      A.eq(polled.agents[0].skin, 'skin' + i, 'the poll right after desk save ' + i + ' shows the saved skin');
+      A.eq(parses, 0, 'and parsed the save 0 times (the stamp-only memo re-parsed after every save)');
+    }
 
     // ---- (3) ----
     fs.writeFileSync(saveFile, '{ torn');

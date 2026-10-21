@@ -11563,15 +11563,32 @@ const remotePortraits = require('./remote/portraits.js').makePortraits({ fs, pat
    read (absent, locked or .bak-recovered save) is never kept. The desk sessions (deskSessions) still parse per request:
    they ARE the bulk of the save, and keeping them would pin ~4x the file in heap (savestore.js never caches the doc). */
 let _remoteLooksMemo = { stamp: '', looks: null };
+function crewLooksOf(save) {
+  const out = {};
+  const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
+  add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
+  return out;
+}
 function remoteCrewLooks() {
   const now = saveStore.stamp('agent');
   if (now && now === _remoteLooksMemo.stamp && _remoteLooksMemo.looks) return Object.assign({}, _remoteLooksMemo.looks);
   const r = saveStore.loadStamped('agent');
-  const save = r.doc || {}, out = {};
-  const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
-  add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
+  const out = crewLooksOf(r.doc || {});
   _remoteLooksMemo = { stamp: r.stamp || '', looks: out };
   return Object.assign({}, out);
+}
+/* SEED THE SAVE-STAMP MEMOS FROM THE SAVE ITSELF (review of perf piece 6). The desk persists (debounced, cloudsave.js)
+   after every state change — the finished reply included — so a save lands between any two task turns and between most
+   phone polls, and memos refreshed only by READING re-parsed the whole save right after each one: stationEpoch saved
+   nothing on the real path. POST /api/save already holds the parsed doc it just stored, so it refreshes both memos from
+   that doc under the stamp of the file the write left (the reasoning savestore.save() keeps its own last-write memo on).
+   A write that did not land (stale, conflict, a throw) seeds nothing, and no stamp means nothing is kept. */
+function seedSaveMemos(agentId, doc) {
+  if (agentId !== 'agent' || !doc || typeof doc !== 'object') return;
+  const stamp = saveStore.stamp('agent');
+  if (!stamp) return;
+  _stationEpochMemo = { stamp: stamp, epoch: Math.max(1, Math.floor(Number(doc.agent && doc.agent.createdAt) || 1)) };
+  _remoteLooksMemo = { stamp: stamp, looks: crewLooksOf(doc) };
 }
 const remoteHost = require('./remote/host.js').makeRemoteHost({
   redact: (s) => redact(s),   // the desk save is raw: its turns are redacted before they merge or leave for the relay
@@ -26944,6 +26961,8 @@ async function handleSaveWrite(req, res) {
   if (latestRatingAt > ratingSyncAt) return json(200, { ok: false, stale: true, growthStale: true, latestRatingAt });
   try {
     const result = saveStore.save(agentId, body, { compareRevision: true });
+    // a memo seed is a cache refresh: it may never turn a landed save into an error reply
+    if (result && result.ok === true) { try { seedSaveMemos(agentId, body); } catch (e) { failNote('save.seed-memos', e); } }
     json(200, result);
   } catch (e) { json(400, { error: (e && e.message) || 'save failed' }); }
 }

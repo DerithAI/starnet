@@ -12,12 +12,18 @@
      (1) the turn's sequence copies each store once and produces the SAME notice + context as separate copies did;
      (2) a context pack built without a caller snapshot still shares one copy between its two proofs;
      (3) stationEpoch parses the save once while its stamp holds, re-reads when it moves, never keeps an unstamped read;
-     (4) the runOnceCore task-turn site hands ONE snapshot to both. */
+     (4) the runOnceCore task-turn site hands ONE snapshot to both;
+     (5) the REAL flow over the REAL savestore: the desk persists (POST /api/save, debounced) between every two task
+         turns, which moves the stamp every time — so the stamp memo alone re-parsed the save on every turn. The save
+         handler seeds the memo from the doc it just stored (seedSaveMemos): 0 parses per turn, a new generation is read
+         at once, a refused save seeds nothing, an outside edit is still read. */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const os = require('node:os');
+const { makeSaveStore } = require('../sidecar/savestore.js');
 const { fnBody } = require('./_fnbody.js');
 const TrustedLearning = require('../sidecar/trusted-learning.js');
 const W = require('../sidecar/workflow-takeover.js');
@@ -123,4 +129,61 @@ const brief = { id: 'current-brief', source: 'interactive', status: 'ready', age
   const notice = fnBody(src, 'function standingWorkNotice(brief, agentId, o, evidence)');
   A.ok(!/runStore\.all\(\)|transcriptStore\.all\(\)|saveStore\.load\(/.test(notice), 'the notice reads no store copy or save parse of its own');
 }
-A.report('task-turn-evidence.test');
+
+// ---- (5) the REAL flow: the desk persists (POST /api/save) between every two task turns ----
+(async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-epoch-flow-'));
+  try {
+    const saveFile = path.join(root, 'agent.save.json');
+    let parses = 0;
+    const cfs = new Proxy(fs, { get(t, p) {
+      if (p === 'readFileSync') return function (f) { if (String(f) === saveFile) parses++; return t.readFileSync.apply(t, arguments); };
+      const v = t[p]; return typeof v === 'function' ? v.bind(t) : v;
+    } });
+    let T = 1000;
+    const saveStore = makeSaveStore({ fs: cfs, pathMod: path, root, clock: { now: () => ++T } });
+    const sliced = ['function stationEpoch()', 'function crewLooksOf(save)', 'function remoteCrewLooks()', 'function seedSaveMemos(agentId, doc)', 'async function handleSaveWrite(req, res)']
+      .map(n => { const b = fnBody(src, n); A.ok(b.startsWith(n) && b.length < 6000, 'sliced exactly ' + n); return b; });
+    const notes = [];
+    const api = vm.runInNewContext("let _stationEpochMemo = { stamp: '', epoch: 1 };\nlet _remoteLooksMemo = { stamp: '', looks: null };\n" + sliced.join('\n') +
+      '\n({ stationEpoch, handleSaveWrite })', { saveStore, workspaceDegraded: false, growthRatings: { latestTs: () => 0 },
+      readBody: async (req) => req.body, failNote: (tag) => notes.push(tag) });
+    const big = Array.from({ length: 300 }, (_, i) => ({ id: 'ws' + i, history: [{ role: 'user', content: 'x'.repeat(2000) }] }));
+    let rev = 0, upd = 0;
+    // the desk's debounced persist, through the real POST /api/save handler
+    const persist = async (createdAt, revision) => {
+      const doc = { schema: 'starnet.save', agent: { id: 'agent', createdAt: createdAt }, agents: [], workstreams: big, updatedAt: ++upd, _saveRevision: revision == null ? rev : revision };
+      let code = 0, text = '';
+      await api.handleSaveWrite({ body: JSON.stringify(doc) }, { writeHead: (c) => { code = c; }, end: (b) => { text = b; } });
+      const out = JSON.parse(text);
+      if (out.ok) rev = out.revision;
+      return { code, out };
+    };
+    A.eq((await persist(4242)).out.ok, true, 'the first desk save lands');
+    let turnParses = 0;
+    const epochs = [];
+    for (let turn = 0; turn < 6; turn++) {
+      const p0 = parses; epochs.push(api.stationEpoch()); turnParses += parses - p0;
+      A.eq((await persist(4242)).out.ok, true, 'the desk persists the finished reply before the next turn (' + turn + ')');
+    }
+    A.eq(epochs, [4242, 4242, 4242, 4242, 4242, 4242], 'every turn reads the saved station generation');
+    A.eq(turnParses, 0, '6 task turns with a desk save between each parse the save 0 times (the stamp-only memo parsed it every turn)');
+    A.eq((await persist(9001)).out.ok, true, 'a save of a new station generation lands');
+    const p1 = parses;
+    A.eq(api.stationEpoch(), 9001, 'and the very next turn reads it');
+    A.eq(parses - p1, 0, 'from the doc the save already held');
+    const refused = await persist(7, rev + 5);
+    A.ok(refused.out.ok === false, 'a stale-revision save is refused');
+    A.eq(api.stationEpoch(), 9001, 'and seeds nothing: the epoch stays the stored one');
+    const wrapped = JSON.parse(fs.readFileSync(saveFile, 'utf8'));
+    wrapped.doc.agent.createdAt = 31337;
+    fs.writeFileSync(saveFile + '.ext', JSON.stringify(wrapped)); fs.renameSync(saveFile + '.ext', saveFile);
+    const p2 = parses;
+    A.eq(api.stationEpoch(), 31337, 'an outside replace of the save is read on the next turn');
+    A.eq(parses - p2, 1, 'with exactly one parse');
+    A.eq(notes, [], 'no seed failure was noted');
+  } finally {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
+  }
+  A.report('task-turn-evidence.test');
+})().catch(e => { console.error(e); process.exit(1); });
