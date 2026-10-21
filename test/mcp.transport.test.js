@@ -390,6 +390,26 @@ const rpc = (id, result) => JSON.stringify({ jsonrpc: '2.0', id, result });
     A.ok(!got.some(m => m.error), 'an unterminated final event still answers the request');
   }
 
+  // THE OPEN EVENT IS CAPPED. An SSE event that never ends (no blank line) used to be buffered without limit until
+  // the request timeout: at full read speed that filled the heap and crashed the sidecar out of memory well inside
+  // it. Past the cap the stream is cancelled, the call fails with the reason, and the connection is reported dead —
+  // for one endless line AND for an endless run of short data: lines (the open event's finished lines count too).
+  A.eq(T.MAX_EVENT_CHARS, 64 * 1024 * 1024, 'the default open-event cap is 64 MiB, the stdio line cap');
+  for (const shape of ['one endless line', 'endless data: lines']) {
+    const piece = shape === 'one endless line' ? 'x'.repeat(65536) : 'data: ' + 'y'.repeat(1018) + '\n';
+    const enc = new TextEncoder().encode(piece.repeat(shape === 'one endless line' ? 1 : 64));
+    let fed = 0, cancelled = false;
+    // endless for this transport's purposes: it ends at 8 MiB only so a regression fails here instead of filling the heap
+    const body = { getReader: () => ({ read: async () => (cancelled || fed >= 8 * 1024 * 1024 ? { done: true } : (fed += enc.length, { done: false, value: enc })), cancel: () => { cancelled = true; } }) };
+    const errs = [];
+    const tp = makeHttpTransport({ url: 'https://mcp.flood.example/mcp', fetchImpl: sseFetch({ body }), timeoutMs: 30000, maxEventChars: 1024 * 1024, onError: e => errs.push(e.message) });
+    const got = []; tp.onMessage(m => got.push(m));
+    await tp.send({ jsonrpc: '2.0', id: 31, method: 'tools/call', params: {} });
+    A.ok(cancelled && fed <= 1024 * 1024 + 2 * enc.length, shape + ': the stream is cancelled at the cap (' + fed + ' bytes read; it buffered all of it, an endless one until the heap ran out)');
+    A.ok(got.length === 1 && got[0].id === 31 && /^connector sent an SSE event longer than 1 MiB without ending it: stream closed$/.test(got[0].error && got[0].error.message), shape + ': the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
+    A.eq(errs, [got[0].error.message], shape + ': the connection is reported dead once, with the same reason');
+  }
+
   // a stream that ENDS without answering the request synthesizes a prompt JSON-RPC error (no hang, no silence).
   {
     const stream = streamBody(['data: {"jsonrpc":"2.0","method":"notifications/x"}\n\n']);
