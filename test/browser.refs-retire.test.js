@@ -111,15 +111,54 @@ async function message(p) { try { await p; return 'resolved'; } catch (e) { retu
     }
     A.eq(outcomes, fields.map(() => 'recovered'), 'all 12 old refs are recovered (7-11 were refused as stale before)');
     A.eq(clicked, fields.map(f => f.text), 'and each click landed on its own field');
-    // recovery refs still retire with the agent's reads around them: a long recover-every-step session stays bounded
+    // a long recover-every-step session stays bounded: recovery's own re-reads mint no refs
     for (let i = 0; i < 200; i++) {
       const fresh = await s.snapshot();
       await s.find({ text: 'field 1' });
       await s.click(fresh[i % 12].ref);   // stale since the find: recovered every time
     }
     A.eq(clicked.length, 12 + 200, 'every one of the 200 stale clicks was recovered');
-    // the last 8 agent reads = 4 cycles of snapshot (12) + find (3 hits), plus the 4 recovery reads (12) between them
-    A.ok(s._internals.refs.size <= 4 * (12 + 3 + 12), 'and the table stays bounded (' + s._internals.refs.size + ' refs after 600 reads; ~5400 kept on trunk)');
+    // the last 8 agent reads = 4 cycles of snapshot (12) + find (3 hits)
+    A.ok(s._internals.refs.size <= 4 * (12 + 3), 'and the table stays bounded (' + s._internals.refs.size + ' refs after 600 reads; ~5400 kept on trunk)');
+  }
+
+  // ---- 1d. a session that recovers on EVERY click, with no read in between, stays bounded (review 2026-10-21) ----
+  // Recovery's re-read minted a whole read of refs uncounted, and only the agent's own reads retired them: snapshot,
+  // find once, then click the same "Next" ref page after page - every click recovered and added 80 refs that nothing
+  // ever retired (2000 clicks = 160 091 entries). The re-read now mints nothing and acts on the re-found node; only an
+  // ambiguity refusal mints the candidates it names, and those are a read the agent sees.
+  {
+    const nodes = Array.from({ length: 80 }, (_, i) => i === 0 ? { role: 'button', text: 'Next' }
+      : i < 3 ? { role: 'button', text: 'Delete' } : { role: 'link', text: 'Item ' + i });
+    nodes.forEach((n, i) => Object.assign(n, { x: 1, y: i, w: 1, h: 1 }));
+    const clicked = [];
+    const drv = {
+      navigate: async u => u,
+      snapshot: async () => nodes.map(n => Object.assign({}, n)),
+      click: async n => { clicked.push(n.text + '@' + n.y); return 'clicked ' + n.text; },
+      tabEpoch: () => 0, close: async () => {}
+    };
+    const s = T.makeBrowserSession({ makeDriver: () => drv, lookup: null, env: {} });
+    await s.navigate('https://example.com/list');
+    const snap = await s.snapshot();
+    const next = snap[0].ref, del = snap[1].ref;
+    await s.find({ text: 'Item 3' });   // one intervening read: `next` is stale but recoverable
+    const answers = new Set();
+    for (let page = 0; page < 2000; page++) answers.add(await s.click(next));
+    A.eq(clicked.length, 2000, 'every one of the 2000 clicks on the same stale ref was recovered');
+    A.ok(clicked.every(c => c === 'Next@0'), 'and each landed on the same control');
+    A.eq([...answers], ['clicked Next (ref ' + next + ' had gone stale; re-found the same element by role and text on the same page)'],
+      'with the same recovery receipt, byte for byte');
+    A.ok(s._internals.refs.size <= 80 + 20, 'and the table holds only the agent\'s own two reads (' + s._internals.refs.size + ' refs; 160 091 before)');
+
+    const amb = await message(s.click(del));
+    const named = /\((b\d+), (b\d+)\), so which one you meant is ambiguous\. Take a fresh browser\.snapshot and pick one\.$/.exec(amb.message || '');
+    A.ok(/^stale browser ref: b\d+ - 2 elements now match \[button\] "Delete" \(/.test(amb.message || '') && named, 'an ambiguous recovery still refuses and names its candidates: ' + amb.message);
+    A.eq(await s.click(named[2]), 'clicked Delete', 'and a candidate it names is a live ref the agent can act on');
+    A.eq(clicked[clicked.length - 1], 'Delete@2', 'on the element it named');
+    for (let i = 0; i < 500; i++) await message(s.click(del));
+    A.ok(s._internals.refs.size <= 80 + 20, 'repeating an ambiguous click keeps the table bounded too (' + s._internals.refs.size + ' refs)');
+    A.eq(clicked.length, 2001, 'and never clicks anything');
   }
 
   // ---- 2. a ref from a CLOSED tab stays refused as a closed tab after it is retired ----
