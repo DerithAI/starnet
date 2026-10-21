@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "12973e1531d374fee3e1d8cb15e80344de85e80b",
+    "sourceCommit": "f9c87ac6760792de73b2f14656d530ced390bf00",
     "pathSetSha256": "4c409160df09a2f14bf676c5aa98c72a119e0cc20e654e285ce10911e769dcad",
     "files": [
       {
@@ -173,8 +173,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 454061,
-        "sha256": "c7d9ae4e8c60ab5fd9e140fdd71de9900b3d064f354a76149f203ba8863043c1"
+        "bytes": 454829,
+        "sha256": "e647e9c5392d0543cfdc2df0d4f0a5d8ff7bf27e731fae93c8c7bae2601413fb"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -708,13 +708,13 @@
       },
       {
         "path": "frontend/app/modeldock.js",
-        "bytes": 56009,
-        "sha256": "73f83be60041176df1e1f4d03ea737f9185c734edc5c5aada7895d9027459f28"
+        "bytes": 57737,
+        "sha256": "8385eec5b010fc92e9c955e29b90d9f54e18e7043b6e6eaf5fc9295d86eca63c"
       },
       {
         "path": "frontend/app/modelpicker.js",
-        "bytes": 9941,
-        "sha256": "2511cb9b605a1904425f0712297bc580e77f148e208af000a087748ec79830fa"
+        "bytes": 10093,
+        "sha256": "3828d152cbc6fef5aba4b2e7d963a5c363f5290bd4c5691e12f8ef736e88f2ad"
       },
       {
         "path": "frontend/app/navdock.js",
