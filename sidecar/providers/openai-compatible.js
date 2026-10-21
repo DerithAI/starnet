@@ -1155,8 +1155,8 @@
     }
     /* Learn this model's window before a run is built (catalog-cache.js runWindow bounds the wait). Native Ollama: the
        served window from one /api/show (shared for the TTL). Otherwise this credential's shared list, or ONE deduped
-       load of it; an OAuth instance (no list scope) loads its own list unless its endpoint already answered in this
-       process (then every window it publishes is already noted). Resolves to the catalog it has. */
+       load of it; an OAuth instance (no list scope) loads its own list unless its endpoint answered inside the TTL
+       (then every window it publishes is already noted). Resolves to the catalog it has. */
     async function warmCatalog(model) {
       if (nativeWire && model) {
         const f = await factsFor(model);
@@ -1192,7 +1192,8 @@
     function declaredFor(id) { const d = declarationFor(id); return d ? d.levels : null; }
     // The model's window, FIRST known source wins and none is invented: its catalog row; the window this instance would
     // serve it at (native Ollama: /api/show's trained maximum under this instance's pin and ceiling, read before the
-    // catalog warmed); what this endpoint reported for it to any instance under any key; an explicit default; 0.
+    // catalog warmed); what this endpoint last reported for it (inside the TTL) to any instance under any key; an
+    // explicit default; 0.
     function contextLimit(id) {
       const m = findModel(id);
       if (m && m.context_length) return m.context_length;

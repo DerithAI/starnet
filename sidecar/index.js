@@ -21910,7 +21910,7 @@ async function runOnceCore(o) {
   const CONTEXT_LIMIT_OVERRIDE = Math.max(0, parseInt(String(ENV('CONTEXT_LIMIT_OVERRIDE') || ''), 10) || 0);
   // THE RUN'S WINDOW is the model's REAL one whenever this process has seen it reported (the shared catalog answers at
   // once: providers/catalog-cache.js); an unknown one gives the adapter at most RUN_WINDOW_WAIT_MS (1.5s) to learn it,
-  // which happens once per endpoint per process. Still unknown = the cold guess above. Read after every provider swap.
+  // which happens at most once per endpoint per TTL. Still unknown = the cold guess above. Read after every provider swap.
   const knownRunWindow = CONTEXT_LIMIT_OVERRIDE ? 0 : await catalogRunWindow(provider, model);
   // RUN_CONTEXT_DEFAULTS (context.js): fold at 65% of the window; the verbatim tail is a TOKEN budget (20% of the
   // window), not six turns — six turns of big results outweighed a 64k window and a fold freed nothing.

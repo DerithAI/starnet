@@ -261,6 +261,68 @@ const hi = model => ({ model, messages: [{ role: 'user', content: 'hi' }] });
     A.eq(CC.RUN_WINDOW_WAIT_MS, 1500, 'the run setup bound');
   }
 
+  /* (j) A LIVE LIST IS AUTHORITATIVE for the ids it lists, and a reported window ages out with the TTL. Before: a window
+     an endpoint once reported outlived the endpoint's own later answer, so a run was built over the real window. */
+  {
+    // LM Studio's /api/v0 on a CUSTOM card: loaded at 32768, then ejected (it JIT-loads at its default, often 4096)
+    let loaded = true;
+    const lmRow = () => Object.assign({ id: 'qwen3-8b', object: 'model', type: 'llm', arch: 'qwen3', quantization: 'Q4_K_M', compatibility_type: 'gguf', max_context_length: 131072 },
+      loaded ? { state: 'loaded', loaded_context_length: 32768 } : { state: 'not-loaded' });
+    const lmFetch = async (url) => { if (/\/models$/.test(url)) return json({ data: [lmRow()] }); return sse(); };
+    const lm = () => factory.selectProvider({ provider: 'custom', fetch: lmFetch, key: '', baseUrl: 'http://localhost:1234/api/v0' });
+    await lm().listModels();
+    A.eq(await CC.runWindow(lm(), 'qwen3-8b'), 32768, 'LM Studio: the run is built on the window it LOADED the model at');
+    loaded = false;
+    clock.t += 11 * MIN;
+    const dock = await lm().listModels();   // a live read: the endpoint's current answer for this id is "no window"
+    A.eq(dock[0].context_length, 0, 'the ejected model\'s live row reports no window');
+    A.eq(lm().contextLimit('qwen3-8b'), 0, 'a fresh adapter no longer reads the window the earlier list reported');
+    A.eq(await CC.runWindow(lm(), 'qwen3-8b'), 0, 'so the run is NOT built over the 4096 it will be JIT-loaded at (was 32768)');
+    A.eq(cache.windowFact('http://localhost:1234/api/v0', 'qwen3-8b'), 0, 'the listed id lost its old window fact');
+
+    // a local port swapped from vLLM (max_model_len) to llama.cpp serving the same id (n_ctx_train is never read)
+    let server = 'vllm';
+    const swapFetch = async (url) => {
+      if (/\/models$/.test(url)) return server === 'vllm' ? json({ data: [{ id: 'm', object: 'model', owned_by: 'vllm', max_model_len: 32768 }] })
+        : json({ data: [{ id: 'm', owned_by: 'llamacpp', meta: { n_ctx_train: 131072 } }] });
+      return sse();
+    };
+    const port = () => factory.selectProvider({ provider: 'custom', fetch: swapFetch, key: '', baseUrl: 'http://localhost:8000/v1' });
+    await port().listModels();
+    A.eq(port().contextLimit('m'), 32768, 'vLLM era: max_model_len');
+    server = 'llamacpp';
+    await port().listModels();   // inside the TTL: still the endpoint's own current answer
+    A.eq(port().contextLimit('m'), 0, 'llama.cpp now serves it and reports no window: unknown, not the vLLM 32768');
+    A.eq(await CC.runWindow(port(), 'm'), 0, 'and the run is not built on it');
+
+    // a duplicate row that reports no window never erases the one the same list reports
+    cache.noteWindows('https://dup.test/v1', [{ id: 'd', context_length: 50000 }, { id: 'd' }]);
+    A.eq(cache.windowFact('https://dup.test/v1', 'd'), 50000, 'one list, one id: its reported window stands');
+
+    // An OAuth adapter lists nothing of its own, so nothing revalidated the window the dock's listing saw: past the TTL
+    // it no longer answers, and the run setup's warm reads the endpoint again (one /models) instead of trusting it.
+    let grokReads = 0, grokWindow = 256000;
+    const grokFetch = async (url) => { if (/\/models$/.test(url)) { grokReads++; return json({ data: [{ id: 'grok-9', context_length: grokWindow }] }); } return sse(); };
+    const grok = tok => factory.selectProvider({ provider: 'grok', fetch: grokFetch, token: tok });
+    await grok('tok-dock').listModels();
+    A.eq(grok('tok-run-1').contextLimit('grok-9'), 256000, 'OAuth: a run adapter reads the window the dock\'s listing reported');
+    grokWindow = 131072;
+    clock.t += 11 * MIN;
+    const late = grok('tok-run-2');
+    A.eq(late.contextLimit('grok-9'), 0, 'past the TTL the old report answers nothing (was 256000)');
+    A.eq(await CC.runWindow(late, 'grok-9'), 131072, 'the run setup re-reads the endpoint and is built on its CURRENT window');
+    A.eq(grokReads, 2, 'with one /models read');
+    A.eq(grok('tok-run-3').contextLimit('grok-9'), 131072, 'and the next run reads the fresh report synchronously');
+    A.eq(grokReads, 2, 'without another read');
+
+    // Codex has no warm: past the TTL its run reads the curated row again (exactly as before this cache)
+    const cxFetch = async () => json({ models: [{ slug: 'gpt-6.1-sol', context_window: 128000, priority: 1 }] });
+    await factory.selectProvider({ provider: 'codex', fetch: cxFetch, token: 'cx-dock' }).listModels();
+    A.eq(factory.selectProvider({ provider: 'codex', fetch: cxFetch, token: 'cx-run' }).contextLimit('gpt-6.1-sol'), 128000, 'Codex: the reported window inside the TTL');
+    clock.t += 11 * MIN;
+    A.eq(factory.selectProvider({ provider: 'codex', fetch: cxFetch, token: 'cx-run-2' }).contextLimit('gpt-6.1-sol'), 272000, 'past the TTL: the documented default, as before');
+  }
+
   /* A /models that never answers cannot pin the scope or hold every later run on the wait: the shared load times out
      into the failure back-off. */
   {

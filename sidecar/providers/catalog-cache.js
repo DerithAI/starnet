@@ -18,7 +18,10 @@
    - FACTS, per endpoint (key-independent, like openai-compatible's declaredByEndpoint): model id -> the window the
      endpoint REPORTED, plus small per-model facts an adapter reads from the server (Ollama /api/show). Written by
      every successful live load from any instance or key. A window is only ever a number the endpoint reported:
-     nothing here invents or defaults one.
+     nothing here invents or defaults one. A live list is the endpoint's CURRENT answer for every id it lists, so an id
+     it lists without a window loses the one an earlier list reported (LM Studio ejected the model; the port now serves
+     llama.cpp), and a window reported longer ago than the TTL answers nothing (nothing may revalidate it: an OAuth
+     adapter lists nothing of its own).
 
    Determinism law: wall time arrives via the injected clock; with no clock nothing ages (no expiry, no automatic
    retry after a failure) and every direct load still runs. */
@@ -37,7 +40,7 @@
   const MAX_ENDPOINTS = 64;       // fact maps
   const MAX_IDS = 4096;           // models remembered per endpoint (OpenRouter publishes ~400)
   // How long a run's setup waits for a cold catalog before building its context on the 131072 assumption. Only a
-  // window nobody in this process has seen yet waits; after the first answer the facts layer replies synchronously.
+  // window nobody in this process has seen reported inside the TTL waits; after that answer it replies synchronously.
   const RUN_WINDOW_WAIT_MS = 1500;
 
   let nodeCrypto = null;
@@ -181,18 +184,32 @@
       const hit = m && m.get(String(id || ''));
       return hit ? { value: hit.value, stale: isStale(hit.at) } : null;
     }
-    // Every window a live list REPORTED (a row without one teaches nothing), and that the endpoint answered at all.
+    /* A live list is the endpoint's current answer for every id it lists: each window it REPORTS is noted, and an id it
+       lists without one loses any window an earlier list reported (only a reported number may stand). Also records
+       that the endpoint answered at all. */
     function noteWindows(endpoint, models) {
       if (!Array.isArray(models)) return;
       const ep = cleanUrl(endpoint);
       if (!ep) return;
-      for (const m of models) { const n = windowOf(m); if (n && m && m.id) noteFact('window', ep, m.id, n); }
+      const listed = new Map();   // id -> the window this list reports for it (0 = none; a duplicate row never erases one)
+      for (const m of models) {
+        const id = (m && m.id) ? String(m.id) : '';
+        if (!id) continue;
+        const n = windowOf(m);
+        if (n || !listed.has(id)) listed.set(id, n);
+      }
+      const known = factMap('window', ep, false);
+      for (const [id, n] of listed) {
+        if (n) noteFact('window', ep, id, n);
+        else if (known) known.delete(id);
+      }
       seen.delete(ep); seen.set(ep, now()); trim(seen, MAX_ENDPOINTS);
     }
-    function windowFact(endpoint, id) { const hit = factOf('window', endpoint, id); return hit ? Number(hit.value) || 0 : 0; }
-    // A live list from this endpoint has landed in this process, so every window it publishes is already noted (one it
-    // does not report is one it does not publish; a later list refreshes the facts as it lands).
-    function endpointSeen(endpoint) { return seen.has(cleanUrl(endpoint)); }
+    // The window this endpoint last reported for id, while that report is inside the TTL. 0 = unknown.
+    function windowFact(endpoint, id) { const hit = factOf('window', endpoint, id); return (hit && !hit.stale) ? Number(hit.value) || 0 : 0; }
+    // A live list from this endpoint landed inside the TTL, so every window it publishes is already noted (one it does
+    // not report is one it does not publish). Past the TTL a warm reads the endpoint again.
+    function endpointSeen(endpoint) { const ep = cleanUrl(endpoint); return seen.has(ep) && !isStale(seen.get(ep)); }
 
     /* One adapter instance's handle: its scope (null = no shared list, e.g. an OAuth token that rotates, so accounts
        never share a list; the facts layer still applies), its endpoint, and its own fetch of the endpoint's list.
