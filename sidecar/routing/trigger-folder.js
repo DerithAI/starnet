@@ -13,7 +13,17 @@
 
    Injected fs/path/clock only (determinism law). The host owns the timer, the seen-store and admission.
 
-   makeFolderWatcher({ fsp, pathMod, settleMs?, maxEntries?, readCap? })
+   EVERY FILE COUNTS (2026-10-20). The listing used to stop at the first 500 files in readdir order, so a file past
+   #500 never fired at all, and deleting an early file slid #501 into view as "new" — an old file firing, real
+   spend. The whole folder is listed now, up to maxEntries; a folder over that is an HONEST error (at arming and on
+   every scan), never a silently-watched subset. maxEntries sits at half the durable record's SEEN_MAX so the
+   record's own newest-wins trim keeps room for fired keys and never evicts a present file's baseline.
+   STATS ARE BOUNDED per scan instead: a name never seen before and every not-yet-fired file are statted each
+   scan (exactly as before); already-fired files are re-statted in a rotating window of statBudget, so an in-place
+   edit of an old file is noticed within ceil(files / statBudget) scans. A folder of up to statBudget files is
+   statted in full every scan, exactly as before.
+
+   makeFolderWatcher({ fsp, pathMod, settleMs?, maxEntries?, statBudget?, readCap? })
      baseline(dir)                         -> Promise<{ ok, keys[], error? }>
      scan(dir, seen, pending, nowMs)       -> Promise<{ ok, ready:[{name, abs, size, mtimeMs, key}], pending, error? }>
      readItem(abs, name)                   -> Promise<{ ok, binary, content, truncated, error? }> */
@@ -21,44 +31,88 @@
 const T = require('./triggers.js');
 const { note: failNote } = require('../failopen.js');
 
+const MAX_WATCHED = Math.floor(T.SEEN_MAX / 2);   // the most files one folder trigger tracks (see EVERY FILE COUNTS)
+const STAT_BUDGET = 500;                          // known files re-statted per scan (the old listing's whole cost)
+const DIR_CACHE_MAX = 64;                         // folders whose last-known stats are kept
+
 function makeFolderWatcher(deps) {
   const d = deps || {};
   const fsp = d.fsp, P = d.pathMod;
   if (!fsp || !P) throw new Error('trigger-folder: fsp and pathMod are required');
   const settleMs = (typeof d.settleMs === 'number' && d.settleMs >= 0) ? d.settleMs : 2000;
-  const maxEntries = (typeof d.maxEntries === 'number' && d.maxEntries > 0) ? d.maxEntries : 500;
+  const maxEntries = (typeof d.maxEntries === 'number' && d.maxEntries > 0) ? d.maxEntries : MAX_WATCHED;
+  const statBudget = (typeof d.statBudget === 'number' && d.statBudget > 0) ? d.statBudget : STAT_BUDGET;
   const readCap = (typeof d.readCap === 'number' && d.readCap > 0) ? d.readCap : T.CONTENT_CAP;
+  const dirs = new Map();   // dir -> { stats: Map(name -> {size, mtimeMs}), cursor } — last-known stats, LRU-bounded
 
-  async function listFiles(dir) {
+  function cacheFor(dir) {
+    let c = dirs.get(dir);
+    if (c) dirs.delete(dir); else c = { stats: new Map(), cursor: 0 };
+    dirs.set(dir, c);
+    while (dirs.size > DIR_CACHE_MAX) dirs.delete(dirs.keys().next().value);
+    return c;
+  }
+  async function statFile(abs) {
+    let st = null;
+    try { st = await fsp.stat(abs); } catch (_) { st = null; }   // vanished between readdir and stat: not a file any more
+    return (st && st.isFile()) ? { size: st.size, mtimeMs: st.mtimeMs } : null;
+  }
+  function overCap(n) { return 'the folder holds ' + n + ' files — a folder trigger watches at most ' + maxEntries + '; move older files out or choose a smaller folder'; }
+  function readError(dir, e) {
+    if (e && e.code === 'ETOOMANY') return e.message;
+    return (e && e.code === 'ENOENT') ? 'the folder no longer exists: ' + dir : ('cannot read the folder: ' + ((e && e.message) || e));
+  }
+
+  /* listFiles(dir, mustStat?) — every watchable file with its size+mtime. A name the cache has never seen is always
+     statted; a known name is re-statted when mustStat(name, lastStat) says so or when it falls in this call's
+     rotating window; any other known name reuses its last stat. mustStat omitted = stat everything (baseline). */
+  async function listFiles(dir, mustStat) {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
+    const names = [];
+    for (const e of entries) if (e.isFile() && !T.isIgnoredName(e.name)) names.push(e.name);
+    if (names.length > maxEntries) { const err = new Error(overCap(names.length)); err.code = 'ETOOMANY'; throw err; }
+    const c = cacheFor(dir);
+    const present = new Set(names);
+    for (const n of Array.from(c.stats.keys())) if (!present.has(n)) c.stats.delete(n);
+    const known = names.filter(n => c.stats.has(n));
+    const window = new Set();
+    if (mustStat && known.length) {
+      const take = Math.min(statBudget, known.length), start = c.cursor % known.length;
+      for (let i = 0; i < take; i++) window.add(known[(start + i) % known.length]);
+      c.cursor = (start + take) % known.length;
+    }
     const out = [];
-    for (const e of entries) {
-      if (out.length >= maxEntries) break;
-      if (!e.isFile() || T.isIgnoredName(e.name)) continue;
-      const abs = P.join(dir, e.name);
-      let st = null;
-      try { st = await fsp.stat(abs); } catch (_) { st = null; }   // vanished between readdir and stat: not a file any more
-      if (st && st.isFile()) out.push({ name: e.name, abs, size: st.size, mtimeMs: st.mtimeMs });
+    for (const name of names) {
+      const abs = P.join(dir, name);
+      let st = c.stats.get(name);
+      if (!st || !mustStat || window.has(name) || mustStat(name, st)) {
+        st = await statFile(abs);
+        if (!st) { c.stats.delete(name); continue; }
+        c.stats.set(name, st);
+      }
+      out.push({ name, abs, size: st.size, mtimeMs: st.mtimeMs });
     }
     return out;
   }
 
   async function baseline(dir) {
     try { const files = await listFiles(dir); return { ok: true, keys: files.map(f => T.fileKey(f.name, f)) }; }
-    catch (e) { return { ok: false, keys: [], error: (e && e.code === 'ENOENT') ? 'the folder no longer exists: ' + dir : ('cannot read the folder: ' + ((e && e.message) || e)) }; }
+    catch (e) { return { ok: false, keys: [], error: readError(dir, e) }; }
   }
 
   /* scan — `seen` is a key->firedAt map (read-only here), `pending` the previous scan's name->{size,mtimeMs,since}.
      Returns the files that have SETTLED and were never seen, plus the next pending map to carry forward. */
   async function scan(dir, seen, pending, nowMs) {
-    let files;
-    try { files = await listFiles(dir); }
-    catch (e) { return { ok: false, ready: [], pending: new Map(), error: (e && e.code === 'ENOENT') ? 'the folder no longer exists: ' + dir : ('cannot read the folder: ' + ((e && e.message) || e)) }; }
     const prev = pending instanceof Map ? pending : new Map();
+    const isSeen = key => !!(seen && Object.prototype.hasOwnProperty.call(seen, key));
+    let files;
+    // a file still settling, or one not fired yet, is always freshly statted — exactly as every file used to be
+    try { files = await listFiles(dir, (name, st) => prev.has(name) || !isSeen(T.fileKey(name, st))); }
+    catch (e) { return { ok: false, ready: [], pending: new Map(), error: readError(dir, e) }; }
     const next = new Map(), ready = [];
     for (const f of files) {
       const key = T.fileKey(f.name, f);
-      if (seen && Object.prototype.hasOwnProperty.call(seen, key)) continue;
+      if (isSeen(key)) continue;
       const p = prev.get(f.name);
       const same = !!(p && p.size === f.size && p.mtimeMs === f.mtimeMs);
       const since = same ? p.since : nowMs;
@@ -87,7 +141,7 @@ function makeFolderWatcher(deps) {
     }
   }
 
-  return { baseline, scan, readItem, settleMs };
+  return { baseline, scan, readItem, settleMs, maxEntries, statBudget };
 }
 
 /* makeFolderPolicy — may this folder be watched? The SAME jail the station already applies to paths a user
@@ -157,4 +211,4 @@ function makeFolderPolicy(deps) {
   return { check, inside };
 }
 
-module.exports = { makeFolderWatcher, makeFolderPolicy, lineOutputError };
+module.exports = { makeFolderWatcher, makeFolderPolicy, lineOutputError, MAX_WATCHED, STAT_BUDGET };

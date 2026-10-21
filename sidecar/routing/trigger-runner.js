@@ -365,7 +365,7 @@ function makeTriggerRunner(deps) {
         const res = await d.watcher.scan(t.config.path, mine, s.pending, now());
         if (!res.ok) { s.scanError = res.error; recordError(t.id, res.error); s.pending = new Map(); continue; }
         // the folder is readable again: a scan failure on record is no longer true — clear it (a fire error stays)
-        if (s.scanError || /^(the folder no longer exists|cannot read the folder)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
+        if (s.scanError || /^(the folder no longer exists|cannot read the folder|the folder holds \d+ files)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
         s.pending = res.pending;
         /* NO prune on absence (live proof 2026-09-23): a folder moved by copy+delete, a cloud-sync placeholder or a
            flaky share makes files vanish for a moment — forgetting them would refire every one of them (real spend)

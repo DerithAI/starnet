@@ -115,6 +115,58 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
   const miss = await W.scan(path.join(root, 'gone'), {}, new Map(), now0);
   A.ok(!miss.ok && /no longer exists/.test(miss.error), 'a vanished folder is an honest error');
 
+  /* ---- 6b. EVERY FILE COUNTS: the listing stopped at the first 500 files in readdir order ----
+     A file past #500 never fired, and deleting an early file slid #501 into view as "new" (an old file firing:
+     real spend). Real files; readdir is sorted so the order is the same on every filesystem. */
+  {
+    const big = path.join(root, 'bigdrop'); fs.mkdirSync(big);
+    const old = Date.now() - 120000;
+    for (let i = 0; i < 520; i++) { const p = path.join(big, 'f' + String(i).padStart(3, '0') + '.txt'); fs.writeFileSync(p, 'old ' + i); fs.utimesSync(p, old / 1000, old / 1000); }
+    let stats = 0;
+    const sorted = Object.assign({}, fsp, {
+      readdir: async (d, o) => (await fsp.readdir(d, o)).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      stat: async (p) => { stats++; return fsp.stat(p); }
+    });
+    const BW = makeFolderWatcher({ fsp: sorted, pathMod: path, settleMs: 0 });
+    const bb = await BW.baseline(big);
+    A.eq(bb.ok && bb.keys.length, 520, 'the baseline records every file in a 520-file folder (it stopped at 500)');
+    const bseen = {}; for (const k of bb.keys) bseen[k] = 0;
+    const late = path.join(big, 'zz-invoice.txt');
+    fs.writeFileSync(late, 'INVOICE 77'); fs.utimesSync(late, old / 1000, old / 1000);
+    const t0 = Date.now();
+    let p1 = await BW.scan(big, bseen, new Map(), t0);
+    let p2 = await BW.scan(big, bseen, p1.pending, t0 + 10);
+    A.eq(p2.ready.map(r => r.name), ['zz-invoice.txt'], 'a new file sorted past #500 fires');
+    for (const r of p2.ready) bseen[r.key] = t0 + 10;
+    fs.unlinkSync(path.join(big, 'f000.txt'));
+    let q1 = await BW.scan(big, bseen, p2.pending, t0 + 20);
+    let q2 = await BW.scan(big, bseen, q1.pending, t0 + 30);
+    A.eq(q1.ready.concat(q2.ready).map(r => r.name), [], 'deleting an early file never makes an old file fire as new');
+    // bounded cost: once the folder is known, a scan re-stats only its rotating window (plus unsettled files)
+    stats = 0;
+    await BW.scan(big, bseen, q2.pending, t0 + 40);
+    A.ok(stats <= BW.statBudget, 'a steady 520-file scan stats at most the budget (' + stats + ' <= ' + BW.statBudget + ')');
+    // a fired file edited in place still fires once more, within ceil(files / budget) scans
+    const SW = makeFolderWatcher({ fsp: sorted, pathMod: path, settleMs: 0, statBudget: 100 });
+    const sb = await SW.baseline(big);
+    const sseen = {}; for (const k of sb.keys) sseen[k] = 0;
+    let pend = (await SW.scan(big, sseen, new Map(), t0 + 50)).pending;
+    stats = 0;
+    pend = (await SW.scan(big, sseen, pend, t0 + 60)).pending;
+    A.ok(stats <= 100, 'with a 100-file budget a 520-file scan stats at most 100 (' + stats + ')');
+    const edited = path.join(big, 'f001.txt');
+    fs.writeFileSync(edited, 'old 1 (amended)'); fs.utimesSync(edited, old / 1000 + 5, old / 1000 + 5);
+    let refired = [];
+    for (let i = 0; i < 8 && !refired.length; i++) { const r = await SW.scan(big, sseen, pend, t0 + 70 + i * 10); pend = r.pending; refired = r.ready.map(x => x.name); }
+    A.eq(refired, ['f001.txt'], 'an in-place edit of an already-fired file is still noticed and fires once more');
+    // over the ceiling: an honest error, never a silently-watched subset
+    const CW = makeFolderWatcher({ fsp: sorted, pathMod: path, settleMs: 0, maxEntries: 500 });
+    const cb = await CW.baseline(big);
+    A.ok(!cb.ok && /^the folder holds 520 files — a folder trigger watches at most 500/.test(cb.error), 'arming a folder over the ceiling is refused with the reason: ' + cb.error);
+    const cs = await CW.scan(big, {}, new Map(), t0);
+    A.ok(!cs.ok && cs.ready.length === 0 && /holds 520 files/.test(cs.error), 'a scan over the ceiling fires nothing and says why');
+  }
+
   /* ---- 7. the folder jail ---- */
   const home = path.join(root, 'home'); fs.mkdirSync(path.join(home, 'inbox'), { recursive: true });
   const station = path.join(home, 'station'); fs.mkdirSync(station);
