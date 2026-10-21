@@ -3246,7 +3246,8 @@ function embedderFor(run) {
    -> { vectors: {id->vec}, queryVec } | null. Backfills missing record vectors (capped) + embeds the query in
    ONE or two bounded calls, books the spend, persists the store. Fail-open: null on any failure. */
 async function hybridVectors(o) {
-  if (!personalizationStore.read().enabled) return null;   // the PAUSE is server authority: no provider call at all
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return null;   // the PAUSE is server authority: no provider call at all
   const embedder = embedderFor(o.run || {});
   if (!embedder) return null;
   const recs = Array.isArray(o.recs) ? o.recs : [];
@@ -3260,6 +3261,7 @@ async function hybridVectors(o) {
     if (plan.length) {
       const r = await embedder.embed(plan.map(p => p.text));
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;   // paused/forgotten mid-call: persist no vectors (the finally still books the spend)
       const rows = plan.map((p, i) => ({ id: p.id, h: p.h, v: r.vectors[i] }));
       await notebookStore.update('embed:' + o.agentId, (cur) => Embed.mergeVectors(cur, embedder.model, rows, recs.map(x => x.id)));
     }
@@ -3270,6 +3272,7 @@ async function hybridVectors(o) {
     if (!queryVec) {
       const r = await embedder.embed([query]);
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;
       queryVec = r.vectors[0];
       embedQueryCache.set(qKey, queryVec);
       while (embedQueryCache.size > EMBED_QUERY_CACHE_MAX) embedQueryCache.delete(embedQueryCache.keys().next().value);
@@ -3282,6 +3285,15 @@ async function hybridVectors(o) {
   } finally {
     if (usd || tokens) { try { ledger.record({ runId: o.runId, agentId: o.agentId, turns: 0, usd, tokens, model: embedder.model, unmetered: !!o.unmetered }); } catch (e) { failNote('embed.ledger.record', e); } }
   }
+}
+
+/* LEARNING RE-CHECK after an await (the scanDocumentSource rule). A learning pass checks the personalization PAUSE
+   at entry, then waits seconds on a model/embedder call; a pause or a forget (DELETE) that lands meanwhile must win,
+   or a memory/interest/draft is written after the Commander turned learning off. setEnabled and markForgotten both
+   bump `revision`, so an unchanged revision + still-enabled proves nothing moved since the pass started. */
+function learningUnchangedSince(start) {
+  const s = personalizationStore.read();
+  return !!(start && s.enabled && s.revision === start.revision);
 }
 
 /* PROJECT TIER (memory-compound lane): a belief formed inside a blessed project root is keyed to that root
@@ -3299,7 +3311,8 @@ async function runReflection(o) {
   // personalization PAUSE (memory-compound lane): reflection is the station learning about the Commander —
   // the same "learned-about-you" class the pause already silences for the scout, study packs and the failure
   // review. Server authority here too: a paused station extracts nothing and spends nothing, whatever the caller gated.
-  if (!personalizationStore.read().enabled) return;
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const origin = String((o && o.origin) || 'commander');   // which surface formed these beliefs (memcore.originOf)
@@ -3338,6 +3351,8 @@ async function runReflection(o) {
     const declined = notebookStore.get('declined:' + agentId);
     const declinedRecs = Array.isArray(declined) ? declined.map(t => ({ content: String(t) })) : [];
     const out = await reflect({ agentId, runId, messages }, { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: 5 });
+    // the Commander paused (or forgot) learning while the model was answering: remember nothing from this pass
+    if (!learningUnchangedSince(pz)) return;
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: reflect() already deduped THIS agent's own notebook declines; drop anything the Commander declined
     // in ANOTHER surface (a mined thread / a quest title / a study belief / a north star) so it isn't re-remembered.
@@ -3399,7 +3414,8 @@ async function runReflection(o) {
    memory.proposed for the confirm deck. PAUSE is server authority here exactly as in runScoutCycle: a paused
    station learns nothing new, whatever the caller gated. */
 async function runFailureReview(o) {
-  if (!personalizationStore.read().enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -3433,6 +3449,7 @@ async function runFailureReview(o) {
         toolTrace: o.toolTrace, recoveryAttempts: o.recoveryAttempts, uncertainMutations: o.uncertainMutations,
         messages },
       { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: Failreview.MAX_LESSONS });
+    if (!learningUnchangedSince(pz)) return;   // paused/forgotten during the review call: no lesson is written
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: any NEW proposal source routes through the shared declined-suppression index (NS-8 lite law).
     if (proposals.length) { const dIdx = buildDeclinedIndex(agentId); proposals = proposals.filter(p => p && !dIdx.has(p.content)); }
@@ -7584,7 +7601,8 @@ function scoutDirectionBlock() {
 /* runScoutCycle — ONE post-run cycle (fire-and-forget; never throws to the caller). Mirrors runReflection's
    aux plumbing: its OWN abort+timeout, ONE streamed completion per pass, spend reconciled + booked. */
 async function runScoutCycle(o) {
-  if (!personalizationStore.read().enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
   const { runId, agentId, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -7616,6 +7634,8 @@ async function runScoutCycle(o) {
         'You extract the recurring, specific work topics a user\'s real activity shows. Reply ONLY in the requested tagged format.',
         Interests.buildDirective({ activityLines: activity, knownTopics: known })
       );
+      // a pause or forget that landed during the model call wins: fold, persist, and note nothing (spend is booked below)
+      if (!learningUnchangedSince(pz)) return;
       const cands = Interests.parse(reply, { activityLines: activity, requireExactEvidence: true });
       interestsState = Interests.fold(interestsState, cands, { now: Date.now(), trustedActivity: true });
       persistInterests();
@@ -7652,6 +7672,7 @@ async function runScoutCycle(o) {
         launchedOften: Scout.launchHints(scoutState, 5)   // lane B: names annotated "(rated well)" when the Commander's own verdicts earn it
       });
       const reply = await propose('You are the station\'s recipe author. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;   // no attempt stamp, no draft, no ledger row after a mid-call pause/forget
       // grounding = the same evidence the directive showed the model — the WHY must cite it (parseRecipe guard). The
       // direction block is part of that evidence, so a WHY that cites an open quest / the north star is grounded —
       // and so is the DOSSIER (it rides the directive at dossierBlock; excluding it here silently killed any WHY
@@ -7704,6 +7725,7 @@ async function runScoutCycle(o) {
         topRecommendation: cx.topRecommendation || ''
       });
       const reply = await propose('You are the station\'s recruiter. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;
       const parsed = ProspectGen.parse(reply, { allowedKit: SCOUT_CAP_KEYS, allowedSkills: skillSlugs, existingClasses: existing });
       scoutState = Scout.stampAttempt(scoutState, 'prospect', { now: Date.now() });
       // ProspectGen.parse has no denylist arm — enforce the dismissed-shape memory here (same 0.6 overlap rule).
