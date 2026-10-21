@@ -51,7 +51,9 @@ const mk = (fs) => makeChannelStore({ fs, pathMod, root: ROOT, clock, limits: { 
   // atomicity: every persisted file arrived via a rename from a .tmp; no .tmp left in the store
   const renames = fs.events.filter(e => e[0] === 'rename');
   A.ok(renames.length >= 2, 'each append renamed a temp onto the target');
-  A.ok(renames.every(e => /\.tmp$/.test(e[1]) && !/\.tmp$/.test(e[2])), 'rename goes .tmp -> final');
+  // a main is only ever replaced FROM a .tmp; the one other rename is the good main rotating to its .bak (perf 10-19)
+  A.ok(renames.every(e => (/\.tmp$/.test(e[1]) && !/\.tmp$/.test(e[2])) || (e[2] === e[1] + '.bak')), 'rename goes .tmp -> final (or the good main -> its .bak)');
+  A.ok(renames.filter(e => !/\.bak$/.test(e[2])).every(e => /\.tmp$/.test(e[1])), 'every main file arrived via a rename from a .tmp');
   A.ok(![...fs.files.keys()].some(k => /\.tmp$/.test(k)), 'no .tmp file left behind');
   A.ok(fs.files.has(pathMod.join(ROOT, 'tg_123.history.json')), 'final history file exists');
 }

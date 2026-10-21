@@ -1319,3 +1319,4 @@ test/oauth-refresh-throttle-copy.test.js
 test/proc-footprint.test.js
 test/checkpoint-measure-nostat.test.js
 test/shellbg-spill-batched.test.js
+test/channels.store-cache.test.js

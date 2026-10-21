@@ -109,7 +109,8 @@
     const writeDurable = (typeof d.writeDurable === 'function') ? d.writeDurable : null;
     const onRecover = (typeof d.onRecover === 'function') ? d.onRecover : function () {};
 
-    function ensureRoot() { try { if (fs.mkdirSync) fs.mkdirSync(root, { recursive: true }); } catch (_) {} }
+    let rootReady = false;   // mkdir once, not before every write (a removed dir is re-made on the ENOENT retry in writeRaw)
+    function ensureRoot() { if (rootReady) return; try { if (fs.mkdirSync) fs.mkdirSync(root, { recursive: true }); rootReady = true; } catch (_) {} }
     function historyFile(agentId) {
       if (!AID_RE.test(String(agentId))) throw new Error('bad channel agentId: ' + agentId);
       return pathMod.join(root, agentId + '.history.json');
@@ -121,9 +122,45 @@
     const inboxLimits = Object.assign({}, INBOX_DEFAULTS, d.inboxLimits || {});
     let outboxSeq = 0;   // deterministic per-process id tail (clock.now() alone can collide within one ms)
 
+    /* PARSED-FILE CACHE (perf review 10-19: ~10 fsyncs + 14 whole-file parses per inbound DM). This store is its files'
+       only writer (one sidecar per WORKSPACES dir; channels/ sits outside every agent's fs jail), so what it last wrote
+       or read is still the truth on the next call — unless something else replaced the file. Every read therefore
+       still asks the DISK, with one statSync instead of open + read + close + parse: a hit needs the same size, mtime
+       AND inode, so an external replace (station recovery, a hand edit, a torn or zero-length main) always misses and
+       re-reads exactly as before. A written file is cached as the exact text written and parsed only if it is read
+       again. Callers mutate what they get back (saveChatRecord, bumpOutboxTry), so a hit hands out a deep copy and the
+       cache never holds a caller's object. An fs without statSync (the in-memory test facades) is never cached. */
+    const canStat = typeof fs.statSync === 'function';
+    const cache = new Map();   // file -> { key: 'size:mtimeMs:ino', value?, text? }
+    const clone = typeof structuredClone === 'function' ? structuredClone : function (v) { return JSON.parse(JSON.stringify(v)); };
+    function stampOf(file) { const st = fs.statSync(file); return st.size + ':' + st.mtimeMs + ':' + st.ino; }
+    function cachedHit(file) {   // the cache entry when the file on disk is still the one it describes, else null
+      if (!canStat) return null;
+      const hit = cache.get(file);
+      if (!hit) return null;
+      let key = null;
+      try { key = stampOf(file); } catch (_) { key = null; }
+      if (key !== hit.key) { cache.delete(file); return null; }
+      if (hit.value === undefined) { hit.value = JSON.parse(hit.text); hit.text = undefined; }
+      return hit;
+    }
     function readRaw(file) {   // parse-or-undefined for ONE file (missing / zero-length / corrupt -> undefined)
-      try { const raw = fs.readFileSync(file, 'utf8'); if (raw == null || String(raw).length === 0) return undefined; return JSON.parse(raw); }
+      const hit = cachedHit(file);
+      if (hit) return clone(hit.value);
+      try {
+        const key = canStat ? stampOf(file) : null;
+        const raw = fs.readFileSync(file, 'utf8');
+        if (raw == null || String(raw).length === 0) return undefined;
+        const value = JSON.parse(raw);
+        if (key) { cache.set(file, { key: key, value: value }); return clone(value); }
+        return value;
+      }
       catch (_) { return undefined; }
+    }
+    function moveCached(from, to) {   // a rename keeps size, mtime and inode: the entry follows the file
+      const hit = cache.get(from);
+      cache.delete(from);
+      if (hit) cache.set(to, hit); else cache.delete(to);
     }
     function readJson(file) {   // recovery-aware: try the main file, then the <file>.bak last-known-good
       const m = readRaw(file);
@@ -133,21 +170,53 @@
       return undefined;   // genuinely absent OR unrecoverable -> caller treats as empty (channels is fail-closed)
     }
     function writeRaw(file, value) {
+      const text = JSON.stringify(value);
+      const put = function () {
+        if (writeDurable) { writeDurable({ fs: fs, path: pathMod }, file, text); return; }
+        const tmp = file + '.' + (++tmpSeq) + '.tmp';
+        fs.writeFileSync(tmp, text);
+        fs.renameSync(tmp, file);   // atomic replace
+      };
+      cache.delete(file);
       ensureRoot();
-      if (writeDurable) { writeDurable({ fs: fs, path: pathMod }, file, JSON.stringify(value)); return; }
-      const tmp = file + '.' + (++tmpSeq) + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(value));
-      fs.renameSync(tmp, file);   // atomic replace
+      try { put(); }
+      catch (e) {
+        if (!(e && e.code === 'ENOENT' && rootReady)) throw e;
+        rootReady = false; ensureRoot(); put();   // the channels dir was removed since the last write
+      }
+      if (canStat) {
+        try { cache.set(file, { key: stampOf(file), text: text }); }
+        catch (e) { failNote('channels.store.cacheStamp', e); }
+      }
     }
     function writeJsonAtomic(file, value) {
-      // snapshot the current GOOD main to <file>.bak BEFORE overwriting it, so a torn replace can be recovered.
-      // A corrupt current main is NOT copied (never clobber a possibly-good .bak with garbage). The read-modify-
+      // keep the current GOOD main as <file>.bak BEFORE replacing it, so a torn replace can be recovered.
+      // A corrupt current main is NOT kept (never clobber a possibly-good .bak with garbage). The read-modify-
       // write in appendTurn/saveChatRecord is fully SYNCHRONOUS (no await between readJson and writeJsonAtomic),
       // so it is inherently serialized per file by the event loop — concurrent in-process writers cannot lose an
-      // update — and now it is durable + recoverable too.
-      const prev = readRaw(file);
-      if (prev !== undefined) { try { writeRaw(file + '.bak', prev); } catch (e) { failNote('channels.store.bak', e); } }
-      writeRaw(file, value);
+      // update — and it is durable + recoverable too.
+      //
+      // The good main becomes the .bak by RENAME (one metadata op), not by re-serializing it through a second durable
+      // write (a second fsync + temp + rename per mutation). Its bytes were made durable when they were written as the
+      // main. A crash between the two renames leaves no main and a good .bak, which readJson already recovers — the
+      // same in-flight-update loss as a crash mid-write before. A write that then fails puts the .bak back as the main.
+      // If the rename itself is refused (a Windows sharing violation), the old copy path runs instead.
+      const bak = file + '.bak';
+      const good = cachedHit(file) ? true : readRaw(file) !== undefined;
+      let rotated = false;
+      if (good) {
+        try { fs.renameSync(file, bak); moveCached(file, bak); rotated = true; }
+        catch (e) {
+          failNote('channels.store.bak.rotate', e);
+          const prev = readRaw(file);
+          if (prev !== undefined) { try { writeRaw(bak, prev); } catch (e2) { failNote('channels.store.bak', e2); } }
+        }
+      }
+      try { writeRaw(file, value); }
+      catch (e) {
+        if (rotated) { try { fs.renameSync(bak, file); moveCached(bak, file); } catch (e2) { failNote('channels.store.bak.restore', e2); } }
+        throw e;
+      }
     }
 
     return {
