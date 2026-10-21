@@ -297,6 +297,7 @@ function makeTriggerRunner(deps) {
     const id = 'trg_' + String(newId()).replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 12);
     const raw = Object.assign({ id, enabled: true, createdAt: at, updatedAt: at, fires: 0, recent: [] }, fields);
     if (raw.kind === 'webhook') { raw.secretHash = extra && extra.secretHash; raw.secretSetAt = at; }
+    if (raw.kind === 'folder') raw.seenV = T.FOLDER_SEEN_V;   // its baseline lists the whole folder (no upgrade owed)
     const t = T.normalizeTrigger(raw);
     if (!t) return { ok: false, error: 'invalid trigger' };
     if (t.kind === 'folder') {
@@ -321,6 +322,7 @@ function makeTriggerRunner(deps) {
       stateOf(id).pending = new Map(); stateOf(id).scanError = null;
     }
     const changes = Object.assign({}, fields, { updatedAt: now() });
+    if (t.kind === 'folder' && extra && Array.isArray(extra.baselineKeys)) changes.seenV = T.FOLDER_SEEN_V;   // re-baselined over the whole folder
     if (fields.config) changes.config = Object.assign({}, t.config, fields.config);
     if (extra && extra.secretHash) { changes.secretHash = extra.secretHash; changes.secretSetAt = now(); }
     // re-enabling (or editing) clears a stale failure: the next fire writes the new truth
@@ -351,6 +353,28 @@ function makeTriggerRunner(deps) {
     if (live.get(id) === s) live.delete(id);
   }
 
+  /* UPGRADE (2026-10-21): a folder trigger armed before the watcher listed the whole folder has a record that knows
+     only the first 500 files (readdir order). The old watcher never looked past them, so a file past #500 that was
+     there at arming was never recorded and never fired; listed now, every one of them would fire as new (old files,
+     real spend). On the trigger's first good scan, each file past that old window still unrecorded is recorded as
+     seen and never fires: what the old watcher would have done with it. It is stamped now, the moment the whole
+     folder came under watch, so the record's newest-wins trim keeps it as long as any fresh fire. A file inside
+     the old window is left to the scan and fires exactly as before. Then the record is marked, once.
+     false = the adoption could not be written: nothing fires this pass, and the next scan tries again. */
+  function adoptLegacy(t, s, mine, keys) {
+    const at = now(), added = [];
+    for (const k of keys) if (!Object.prototype.hasOwnProperty.call(mine, k)) { mine[k] = at; added.push(k); }
+    if (added.length && !saveSeen()) {
+      for (const k of added) delete mine[k];
+      recordError(t.id, 'could not record the folder\'s existing files — paused so they do not fire');
+      return false;
+    }
+    s.adopted = true;   // this process never adopts twice, even if the marker below cannot be written
+    if (!patch(t.id, () => ({ seenV: T.FOLDER_SEEN_V }))) warn('[triggers] ' + t.id + ': the upgraded fired-file record could not be marked; it is adopted again on the next start');
+    if (added.length) warn('[triggers] ' + t.id + ': ' + added.length + ' file' + (added.length === 1 ? '' : 's') + ' already in the folder past the old 500-file watch recorded as seen (never fired)');
+    return true;
+  }
+
   /* ---- the FOLDER poll: one pass over every enabled folder trigger (the host arms the interval) ---- */
   async function tickFolders() {
     if (!d.watcher) return 0;
@@ -362,10 +386,12 @@ function makeTriggerRunner(deps) {
       s.scanning = true;
       try {
         const mine = seen[t.id] || (seen[t.id] = {});
-        const res = await d.watcher.scan(t.config.path, mine, s.pending, now());
+        const upgrade = t.seenV !== T.FOLDER_SEEN_V && !s.adopted;
+        const res = await d.watcher.scan(t.config.path, mine, s.pending, now(), upgrade ? { legacy: true } : undefined);
         if (!res.ok) { s.scanError = res.error; recordError(t.id, res.error); s.pending = new Map(); continue; }
+        if (upgrade && !adoptLegacy(t, s, mine, res.legacy || [])) continue;   // nothing fires until the old record is adopted
         // the folder is readable again: a scan failure on record is no longer true — clear it (a fire error stays)
-        if (s.scanError || /^(the folder no longer exists|cannot read the folder|the folder holds \d+ files)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
+        if (s.scanError || /^(the folder no longer exists|cannot read the folder|the folder holds \d+ files|could not record the folder's existing files)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
         s.pending = res.pending;
         /* NO prune on absence (live proof 2026-09-23): a folder moved by copy+delete, a cloud-sync placeholder or a
            flaky share makes files vanish for a moment — forgetting them would refire every one of them (real spend)

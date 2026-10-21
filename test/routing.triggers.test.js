@@ -337,6 +337,78 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
   // delete forgets the seen record
   A.ok(R4.remove(fid).ok && !(fid in disk.seen), 'delete removes the trigger and its fired-file record');
 
+  /* ---- 9b. UPGRADE: a folder trigger armed under the old 500-file listing (2026-10-21) ----
+     Its durable record knows only the first 500 files in readdir order; the old watcher never looked past them, so
+     those files never fired. Listed whole, every one of them fired as new (old files, real spend). The record is
+     written here exactly as the old station wrote it (no seenV, 500 baseline keys), then the REAL runner + watcher poll. */
+  {
+    const ldir = path.join(root, 'legacydrop'); fs.mkdirSync(ldir);
+    const old = Date.now() - 3600 * 1000;
+    for (let i = 0; i < 800; i++) { const p = path.join(ldir, 'f' + String(i).padStart(4, '0') + '.txt'); fs.writeFileSync(p, 'old ' + i); fs.utimesSync(p, old / 1000, old / 1000); }
+    const sortedFsp = Object.assign({}, fsp, { readdir: async (dd, o) => (await fsp.readdir(dd, o)).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) });
+    const lid = 'trg_legacy0001', armedAt = clock - 1000;
+    const oldSeen = {};
+    for (let i = 0; i < 500; i++) { const nm = 'f' + String(i).padStart(4, '0') + '.txt'; oldSeen[T.fileKey(nm, fs.statSync(path.join(ldir, nm)))] = armedAt; }
+    disk.triggers.triggers.push({ id: lid, lineId: 'L1', kind: 'folder', name: 'old drop', enabled: true, config: { path: ldir, task: 'file it' },
+      maxPerHour: 120, createdAt: armedAt, updatedAt: armedAt, fires: 0, recent: [], lastError: null });
+    disk.seen[lid] = oldSeen;
+    // a file that landed after arming INSIDE the old window (it sorts first): the old watcher would have fired it — so must this
+    fs.writeFileSync(path.join(ldir, 'a-early.txt'), 'landed after arming'); fs.utimesSync(path.join(ldir, 'a-early.txt'), old / 1000, old / 1000);
+    let seenSaveFails = false;
+    const mkL = () => makeTriggerRunner({
+      load: () => JSON.parse(JSON.stringify(disk.triggers)), save: v => { disk.triggers = JSON.parse(JSON.stringify(v)); },
+      seen: { load: () => JSON.parse(JSON.stringify(disk.seen)), save: v => { if (seenSaveFails) throw new Error('disk full'); disk.seen = JSON.parse(JSON.stringify(v)); } },
+      makeHub: fakeHub, plan: () => plan, shipsToOutbox: (a) => a === 'agent-b', dayCap: () => ({ cap: null, spent: 0 }),
+      runsFor: sid => runsByStream[sid] || [], emit: () => {},
+      watcher: makeFolderWatcher({ fsp: sortedFsp, pathMod: path, settleMs: 0 }),
+      now: () => clock, newId: () => 'id' + (++n) + 'abcdef0123456789'
+    });
+    const firedNames = (from, id) => hubCalls.slice(from).filter(c => c.chatId === 'trg-' + id).map(c => (c.text.match(/[a-z]+-?[a-z0-9]*\.txt/) || [''])[0]);
+    const tick = async (r, k) => { for (let i = 0; i < k; i++) { clock += 3000; await r.tickFolders(); await new Promise(res => setTimeout(res, 20)); } };
+    const from0 = hubCalls.length;
+    // the upgraded station boots over that record: the files past the old window are adopted, never fired
+    const RL = mkL();
+    await tick(RL, 4);
+    A.eq(firedNames(from0, lid), ['a-early.txt'], 'after the upgrade NO file past the old 500 fires; the one new file inside the window still does (the 300 old files past it fired as new)');
+    A.eq(disk.triggers.triggers.find(x => x.id === lid).seenV, T.FOLDER_SEEN_V, 'the record is marked as baselined over the whole folder');
+    A.eq(Object.keys(disk.seen[lid]).length, 801, 'the record now holds every file: 500 old + 300 adopted + the 1 fired');
+    // a file that lands after the upgrade fires, even sorted past #500
+    fs.writeFileSync(path.join(ldir, 'zz-late.txt'), 'new'); fs.utimesSync(path.join(ldir, 'zz-late.txt'), old / 1000, old / 1000);
+    await tick(RL, 3);
+    A.eq(firedNames(from0, lid), ['a-early.txt', 'zz-late.txt'], 'a file landing after the upgrade fires, sorted past #500');
+    // the marker survives a restart: a later file past #500 is not swept up by a second adoption
+    const RL2 = mkL();
+    fs.writeFileSync(path.join(ldir, 'zz-later.txt'), 'newer'); fs.utimesSync(path.join(ldir, 'zz-later.txt'), old / 1000, old / 1000);
+    await tick(RL2, 3);
+    A.eq(firedNames(from0, lid), ['a-early.txt', 'zz-late.txt', 'zz-later.txt'], 'after a restart the upgrade is not redone: a new file past #500 still fires');
+    RL2.remove(lid);
+    // an old record whose adoption cannot be written: nothing fires, the reason is on the trigger, the record stays as it was
+    const lid2 = 'trg_legacy0002', names = fs.readdirSync(ldir).sort().slice(0, 500), oldSeen2 = {};
+    for (const nm of names) oldSeen2[T.fileKey(nm, fs.statSync(path.join(ldir, nm)))] = armedAt;
+    disk.triggers.triggers.push({ id: lid2, lineId: 'L1', kind: 'folder', name: 'old drop 2', enabled: true, config: { path: ldir, task: 'file it' },
+      maxPerHour: 120, createdAt: armedAt, updatedAt: armedAt, fires: 0, recent: [], lastError: null });
+    disk.seen[lid2] = oldSeen2;
+    seenSaveFails = true;
+    const from1 = hubCalls.length;
+    const RF = mkL();
+    await tick(RF, 3);
+    A.eq(firedNames(from1, lid2), [], 'an upgrade whose record cannot be written fires nothing');
+    A.ok(/^could not record the folder's existing files/.test(RF.view(lid2).lastError || ''), 'and says why: ' + RF.view(lid2).lastError);
+    A.ok(!disk.triggers.triggers.find(x => x.id === lid2).seenV && Object.keys(disk.seen[lid2]).length === 500, 'and the old record is left as it was');
+    // a restart with a writable record adopts it; still nothing old fires, and the note clears
+    seenSaveFails = false;
+    const RF2 = mkL();
+    await tick(RF2, 3);
+    A.eq(firedNames(from1, lid2), [], 'once the adoption is written, still no old file fires');
+    A.ok(disk.triggers.triggers.find(x => x.id === lid2).seenV === T.FOLDER_SEEN_V && Object.keys(disk.seen[lid2]).length === 803, 'the record is adopted (500 + 303) and marked');
+    A.eq(RF2.view(lid2).lastError, null, 'the could-not-record note clears once the adoption is written');
+    // a trigger armed on this build is marked at create, so it never runs the upgrade at all
+    const nb = await makeFolderWatcher({ fsp, pathMod: path }).baseline(ldir);
+    const cn = RF2.create({ kind: 'folder', lineId: 'L1', config: { path: ldir, task: 'x' } }, { baselineKeys: nb.keys });
+    A.ok(cn.ok && RF2.get(cn.trigger.id).seenV === T.FOLDER_SEEN_V && !('seenV' in cn.trigger), 'a new folder trigger is marked at arming (and the API view never shows it)');
+    RF2.remove(cn.trigger.id); RF2.remove(lid2);
+  }
+
   try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   A.report('routing.triggers.test');
 })().catch(e => { console.log('FAIL: routing.triggers.test threw - ' + (e && e.stack || e)); process.exit(1); });

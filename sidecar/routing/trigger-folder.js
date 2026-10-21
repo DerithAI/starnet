@@ -22,10 +22,15 @@
    scan (exactly as before); already-fired files are re-statted in a rotating window of statBudget, so an in-place
    edit of an old file is noticed within ceil(files / statBudget) scans. A folder of up to statBudget files is
    statted in full every scan, exactly as before.
+   UPGRADE (2026-10-21): a trigger armed under the old listing has a record that knows only the first 500 files, so
+   its other files that were already there would all fire as new. scan(…, { legacy:true }) hands back, instead of
+   settling them, the unrecorded files past the old window (#legacyCap on, in readdir order): the files the old
+   watcher could not see and so would never have fired. The runner records them as seen once (trigger-runner
+   adoptLegacy); a file inside the old window settles and fires exactly as the old watcher would have fired it.
 
-   makeFolderWatcher({ fsp, pathMod, settleMs?, maxEntries?, statBudget?, readCap? })
+   makeFolderWatcher({ fsp, pathMod, settleMs?, maxEntries?, statBudget?, legacyCap?, readCap? })
      baseline(dir)                         -> Promise<{ ok, keys[], error? }>
-     scan(dir, seen, pending, nowMs)       -> Promise<{ ok, ready:[{name, abs, size, mtimeMs, key}], pending, error? }>
+     scan(dir, seen, pending, nowMs, opts?) -> Promise<{ ok, ready:[{name, abs, size, mtimeMs, key}], pending, legacy?:[key], error? }>
      readItem(abs, name)                   -> Promise<{ ok, binary, content, truncated, error? }> */
 'use strict';
 const T = require('./triggers.js');
@@ -33,6 +38,7 @@ const { note: failNote } = require('../failopen.js');
 
 const MAX_WATCHED = Math.floor(T.SEEN_MAX / 2);   // the most files one folder trigger tracks (see EVERY FILE COUNTS)
 const STAT_BUDGET = 500;                          // known files re-statted per scan (the old listing's whole cost)
+const LEGACY_WATCHED = 500;                       // the old listing's cap: a record armed before 2026-10-20 knows no file past it
 const DIR_CACHE_MAX = 64;                         // folders whose last-known stats are kept
 
 function makeFolderWatcher(deps) {
@@ -42,6 +48,7 @@ function makeFolderWatcher(deps) {
   const settleMs = (typeof d.settleMs === 'number' && d.settleMs >= 0) ? d.settleMs : 2000;
   const maxEntries = (typeof d.maxEntries === 'number' && d.maxEntries > 0) ? d.maxEntries : MAX_WATCHED;
   const statBudget = (typeof d.statBudget === 'number' && d.statBudget > 0) ? d.statBudget : STAT_BUDGET;
+  const legacyCap = (typeof d.legacyCap === 'number' && d.legacyCap > 0) ? d.legacyCap : LEGACY_WATCHED;
   const readCap = (typeof d.readCap === 'number' && d.readCap > 0) ? d.readCap : T.CONTENT_CAP;
   const dirs = new Map();   // dir -> { stats: Map(name -> {size, mtimeMs}), cursor } — last-known stats, LRU-bounded
 
@@ -101,25 +108,29 @@ function makeFolderWatcher(deps) {
   }
 
   /* scan — `seen` is a key->firedAt map (read-only here), `pending` the previous scan's name->{size,mtimeMs,since}.
-     Returns the files that have SETTLED and were never seen, plus the next pending map to carry forward. */
-  async function scan(dir, seen, pending, nowMs) {
+     Returns the files that have SETTLED and were never seen, plus the next pending map to carry forward.
+     opts.legacy (the UPGRADE above): an unseen file at listing position legacyCap or later is returned in `legacy`
+     (its key) and is neither pending nor ready. */
+  async function scan(dir, seen, pending, nowMs, opts) {
     const prev = pending instanceof Map ? pending : new Map();
     const isSeen = key => !!(seen && Object.prototype.hasOwnProperty.call(seen, key));
     let files;
     // a file still settling, or one not fired yet, is always freshly statted — exactly as every file used to be
     try { files = await listFiles(dir, (name, st) => prev.has(name) || !isSeen(T.fileKey(name, st))); }
     catch (e) { return { ok: false, ready: [], pending: new Map(), error: readError(dir, e) }; }
-    const next = new Map(), ready = [];
-    for (const f of files) {
-      const key = T.fileKey(f.name, f);
+    const legacyOn = !!(opts && opts.legacy);
+    const next = new Map(), ready = [], legacy = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i], key = T.fileKey(f.name, f);
       if (isSeen(key)) continue;
+      if (legacyOn && i >= legacyCap) { legacy.push(key); continue; }
       const p = prev.get(f.name);
       const same = !!(p && p.size === f.size && p.mtimeMs === f.mtimeMs);
       const since = same ? p.since : nowMs;
       next.set(f.name, { size: f.size, mtimeMs: f.mtimeMs, since });
       if (same && (nowMs - since) >= settleMs && (nowMs - f.mtimeMs) >= settleMs) ready.push({ name: f.name, abs: f.abs, size: f.size, mtimeMs: f.mtimeMs, key });
     }
-    return { ok: true, ready, pending: next };
+    return legacyOn ? { ok: true, ready, pending: next, legacy } : { ok: true, ready, pending: next };
   }
 
   async function readItem(abs, name) {
@@ -141,7 +152,7 @@ function makeFolderWatcher(deps) {
     }
   }
 
-  return { baseline, scan, readItem, settleMs, maxEntries, statBudget };
+  return { baseline, scan, readItem, settleMs, maxEntries, statBudget, legacyCap };
 }
 
 /* makeFolderPolicy — may this folder be watched? The SAME jail the station already applies to paths a user
@@ -211,4 +222,4 @@ function makeFolderPolicy(deps) {
   return { check, inside };
 }
 
-module.exports = { makeFolderWatcher, makeFolderPolicy, lineOutputError, MAX_WATCHED, STAT_BUDGET };
+module.exports = { makeFolderWatcher, makeFolderPolicy, lineOutputError, MAX_WATCHED, STAT_BUDGET, LEGACY_WATCHED };
