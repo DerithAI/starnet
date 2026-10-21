@@ -237,10 +237,46 @@ function writeServer(dir) {
       await cl4.initialize();
       let callErr = null;
       try { await cl4.callTool('flood', {}); } catch (e) { callErr = e; }
-      A.ok(callErr && /longer than 20000 characters without a newline/.test(callErr.message), 'the waiting call fails with the over-long-line reason, not a timeout (' + (callErr && callErr.message) + ')');
-      A.ok(died.some(m => /longer than 20000 characters/.test(m)), 'the transport reports the death to its manager');
+      A.ok(callErr && /sent a line with no newline past the 20000 characters limit/.test(callErr.message), 'the waiting call fails with the over-long-line reason, not a timeout (' + (callErr && callErr.message) + ')');
+      A.ok(died.some(m => /past the 20000 characters limit/.test(m)), 'the transport reports the death to its manager');
       A.eq(tp4.isClosed(), true, 'the transport is closed');
       A.ok(await waitFor(() => freed.length === 1, 5000), 'the flooding child is stopped and its ownership receipt released');
+    }
+
+    // TINY CHUNKS COUNT AS MEMORY (review 2026-10-21, the SSE fix's twin). The open line is kept as the chunks that
+    // carried it; counting characters alone, a server writing an endless line 2 characters at a time kept one string
+    // per chunk: 32M of them under the 64 MiB cap, ~1.7 GB for one connector. Every kept chunk now costs its fixed
+    // overhead too, and the reason says so. The child is injected so the chunking is exact; the transport and client
+    // are the real ones.
+    {
+      const EE = require('events');
+      let fake = null, flood = false;
+      const mkFake = () => {
+        const c = new EE(); c.stdout = new EE(); c.stderr = new EE(); c.pid = 0; c.kill = () => {};
+        c.stdin = { write(line, enc, cb) {
+          const msg = JSON.parse(line);
+          if (msg.id != null) setImmediate(() => {
+            if (msg.method === 'initialize') return c.stdout.emit('data', JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'drip' } } }) + '\n');
+            flood = true;
+          });
+          if (cb) cb(); return true;
+        }, end() {}, setDefaultEncoding() {} };
+        return c;
+      };
+      const died = [];
+      const tp5 = makeStdioTransport({ userControlIsolated: true, command: 'node', allowedCommands: ['node'], processEnv: {}, maxLineChars: 20000,
+        spawnImpl: () => (fake = mkFake()), onError: e => died.push((e && e.message) || String(e)) });
+      const cl5 = makeMcpClient({ transport: tp5, timeoutMs: 5000 });
+      await cl5.initialize();
+      const callP = cl5.callTool('drip', {}).then(() => null, e => e);
+      A.ok(await waitFor(() => flood, 2000), 'fixture: the server starts its endless line');
+      let fed = 0;   // endless for this transport's purposes: it stops at 20000 chunks only so a regression fails here
+      while (!tp5.isClosed() && fed < 20000) { fake.stdout.emit('data', 'ab'); fed++; }
+      const callErr = await callP;
+      A.ok(tp5.isClosed() && fed <= Math.ceil(20000 / (2 + T.PIECE_COST)) + 1, 'an endless line in 2-character chunks is cut off by what it holds: ' + fed + ' chunks kept under a 20000 cap (counting characters alone it kept 10000)');
+      A.eq(T.PIECE_COST, 48, 'each kept chunk is charged 48 on top of its characters, as on the SSE path');
+      A.ok(callErr && /^mcp stdio server sent a line with no newline past the 20000 characters limit \(each chunk held counts its characters plus 48\): connection closed$/.test(callErr.message), 'the call fails with the real accounting: ' + (callErr && callErr.message));
+      A.eq(died, [callErr && callErr.message], 'the connection is reported dead once, with the same reason');
     }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

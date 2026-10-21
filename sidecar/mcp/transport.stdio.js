@@ -41,6 +41,10 @@
   // the longest single JSON-RPC line a stdio server may send (chars). Far above any real reply (a base64
   // screenshot is a few MB), far below V8's ~512M-char string limit, where an unbounded line crashed the host.
   const MAX_LINE_CHARS = 64 * 1024 * 1024;
+  // what each kept chunk of the open line is charged on top of its characters (the SSE transport's PIECE_COST):
+  // about what V8 spends on one short string plus its array slot, so a drip of tiny chunks cannot hold far more
+  // memory than the cap
+  const PIECE_COST = 48;
 
   function commandBase(command) {
     const s = String(command || '').trim();
@@ -179,7 +183,7 @@
       overflowed = true;
       lineParts = []; lineChars = 0;
       const cap = maxLineChars >= 1048576 ? Math.round(maxLineChars / 1048576) + ' MiB' : maxLineChars + ' characters';
-      const msg = 'mcp stdio server sent a line longer than ' + cap + ' without a newline: connection closed';
+      const msg = 'mcp stdio server sent a line with no newline past the ' + cap + ' limit (each chunk held counts its characters plus ' + PIECE_COST + '): connection closed';
       failAll(msg);
       onError(new Error(msg));
       close();
@@ -187,7 +191,10 @@
     /* Newline-framed JSON-RPC, scanned INCREMENTALLY: only the NEW chunk is searched for '\n', and the open line
        is kept as its chunks until its newline arrives. This used to append to one string and re-run a regex over
        the whole unterminated line on every 64 KB chunk (quadratic: a 16 MB reply cost 2.5 s of CPU) with no
-       ceiling, so a server streaming one endless line grew the host until V8's string limit crashed it. */
+       ceiling, so a server streaming one endless line grew the host until V8's string limit crashed it.
+       THE CAP BOUNDS MEMORY, NOT JUST CHARACTERS (review 2026-10-21): every kept chunk is charged PIECE_COST on top
+       of its length. Counting characters alone, a server writing an endless line 2 characters at a time held 32M
+       strings under a 64 MiB cap — about 1.7 GB for one connector. */
     function parseStdoutChunk(chunk) {
       if (overflowed) return;
       const s = String(chunk || '');
@@ -206,7 +213,7 @@
         if (overflowed) return;
       }
       if (from < s.length) {
-        lineChars += s.length - from;
+        lineChars += s.length - from + PIECE_COST;
         if (lineChars > maxLineChars) return overflow();
         lineParts.push(from ? s.slice(from) : s);
       }
@@ -305,5 +312,5 @@
     return { send, onMessage, close, isClosed: function () { return closed; }, get childPid() { return child && child.pid; } };
   }
 
-  return { makeStdioTransport, _internals: { commandBase, assertAllowedCommand, normalizeArgs, normalizeEnv, buildChildEnv, hostStdioAllowed, redactEnv, safeLedgerCommand, MAX_LINE_CHARS } };
+  return { makeStdioTransport, _internals: { commandBase, assertAllowedCommand, normalizeArgs, normalizeEnv, buildChildEnv, hostStdioAllowed, redactEnv, safeLedgerCommand, MAX_LINE_CHARS, PIECE_COST } };
 });
