@@ -42,7 +42,7 @@ const OPEN_GENERATED_CAP = 3;   // ≤3 open kind:'generated' quests per agent (
 const DISPOSITIONS = ['later', 'blocked', 'too_big'];
 const MIN_EVIDENCE = 10;  // an attest_complete needs real evidence (chars after trim), never an empty claim
 
-const clip = (s, n) => String(s == null ? '' : s).slice(0, n);
+const clip = (s, n) => String(s == null ? '' : s).slice(0, n).replace(/[\uD800-\uDBFF]$/, '');   // a cap never ends on half an emoji (a lone surrogate)
 function num(v) { if (v == null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 function numOr(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 function clipKind(k) { return KINDS.indexOf(k) >= 0 ? k : 'user'; }
