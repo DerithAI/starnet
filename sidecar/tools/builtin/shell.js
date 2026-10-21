@@ -412,19 +412,6 @@
     if (/\.(?:sh|bash)$/i.test(rel)) return { kind: 'shell', dialect: 'posix' };
     return { kind: 'code', dialect: null };
   }
-  /* Extra heads for a CODE file, ADDED to trunk's whole-file lexing (never instead of it): each line that names a
-     package runner, an interpreter or PowerShell as a word, or has a script path at its start or after a
-     separator, lexed ALONE in the outer dialect. Alone, an apostrophe in an earlier comment cannot open a quote
-     that hides the line. These lines are not every line a head can come from, so they only ever add refusals. */
-  const CODE_LAUNCH_WORD_RE = /(?:^|[^A-Za-z0-9_.\-\\/$])(?:npm|pnpm|yarn|node|python\d*|py|ruby|php|tsx|ts-node|bun|deno|bash|sh|powershell|pwsh)(?:\.exe|\.cmd)?(?![A-Za-z0-9_\-])/i;
-  const CODE_LAUNCH_PATH_RE = /(?:^[ \t]*@?|[&|;(][ \t]*)["']?[^\s"'&|;()]+\.(?:[cm]?js|ts|tsx|jsx|ps1|py|rb|php|sh|bash|cmd|bat)(?:["'\s)]|$)/i;
-  function codeLaunchHeads(text, dialect) {
-    const heads = [];
-    for (const line of String(text || '').split('\n')) {
-      if (CODE_LAUNCH_WORD_RE.test(line) || CODE_LAUNCH_PATH_RE.test(line)) for (const h of commandHeads(line, dialect)) heads.push(h);
-    }
-    return heads;
-  }
   function commandSources(cmd, opts) { return commandSourceEntries(cmd, opts).map(e => e.text); }
   function commandSourceEntries(cmd, opts) {
     opts = opts || {};
@@ -449,16 +436,7 @@
       const seenKey = String(baseDir || '') + '\0' + text;
       if (!text || seen.has(seenKey)) continue;
       seen.add(seenKey); out.push({ text: text, kind: entry.kind || 'shell', dialect: entry.dialect || dialect });
-      /* TRUNK'S HEADS, PLUS (2026-10-21). Every queued source is still lexed whole in the OUTER dialect, exactly as
-         trunk did: narrowing that lexing (code files by line, shell files in their own dialect only) let commands
-         through that trunk refused, twice. On top of it, a shell source (.cmd/.bat/.ps1/.sh) is also lexed in its
-         OWN dialect and a code source also gets codeLaunchHeads. Both only add heads, so this floor refuses
-         everything trunk refused. */
-      const ownDialect = entry.dialect || dialect;
-      let heads = commandHeads(text, dialect);
-      if ((entry.kind || 'shell') === 'shell') { if (normalizeDialect(ownDialect) !== normalizeDialect(dialect)) heads = heads.concat(commandHeads(text, ownDialect)); }
-      else heads = heads.concat(codeLaunchHeads(text, dialect));
-      for (const parsedHead of heads) {
+      for (const parsedHead of commandHeads(text, dialect)) {
         const head = (parsedHead && parsedHead.text != null ? parsedHead.text : String(parsedHead || '')).replace(/^\s*@/, '');
         let m = head.match(/^(?:npm|npm\.cmd)\s+(?:--[A-Za-z0-9_-]+(?:=[^\s]+)?\s+)*(?:run\s+)?([A-Za-z0-9:_-]+)\b/i);
         if (m) {
