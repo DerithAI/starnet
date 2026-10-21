@@ -53,8 +53,9 @@ const ROOM_GEAR = ['web', 'cabinet', 'workbench', 'memory', 'studio'];
 const FLOOR_UNATTENDED = ['web', 'cabinet'];
 // the unattended room advice's power words: what that gear really grants with nobody watching
 const ROOM_WORD = { web: 'web', cabinet: 'file reading' };
-// memory's headline is 70 chars; the room advice names its core
-const extraHave = (c) => c.id === 'memory' ? 'keep long-term memory' : c.have;
+// memory's headline is 70 chars; the room advice names its core. A STUDIO generates images only on a station with an
+// image route (host fact opts.mediaRoute, the route makeImageTools is built from): without one it grants image_analyze alone.
+const extraHave = (c, noImageRoute) => c.id === 'memory' ? 'keep long-term memory' : (noImageRoute && c.alt) ? c.alt.have : c.have;
 
 const bare = (c) => c.object.replace(/^an? /, '');
 const listJoin = (xs, last) => xs.length > 1 ? xs.slice(0, -1).join(', ') + ' ' + (last || 'and') + ' ' + xs[xs.length - 1] : (xs[0] || '');
@@ -131,18 +132,25 @@ function summarizeCapabilities(resolved, opts) {
      "place a DISH" sent Commanders to gear already standing in HOME. opts.scopeFn (host-built, lazy) is asked only
      when a floor object is really absent (it validates the saved floor) and only on the branches that advise
      placement. A null scope (no scopeFn, an unscoped agent, a saved floor that is not this run's) = byte-identical. */
+  // TOOLSETS kill-switch (host: the same disabledCaps resolveTools used, any shape resolve.js takes): a family switched
+  // OFF is absent because of the switch, not the floor, so placing its gear grants nothing and it is never a room fix
+  const dc = opts.disabledCaps;
+  const switchedOff = !dc ? () => false : (typeof dc.has === 'function') ? (id) => dc.has(id)
+    : Array.isArray(dc) ? (id) => dc.indexOf(id) >= 0 : (id) => !!dc[id];
+  const placeable = (c) => !capIds.has(c.id) && !switchedOff(c.id);
+  const noImageRoute = opts.mediaRoute === false;   // certain only as false (effective-toolsets' convention)
   let scope = null;
   if (typeof opts.scopeFn === 'function' && !unrestrictedHost && (interactive || (!delegatedBy && !ownerTrusted)) &&
-      CAPS.some((c) => (interactive ? ROOM_GEAR : FLOOR_UNATTENDED).indexOf(c.id) !== -1 && !capIds.has(c.id))) {
+      CAPS.some((c) => (interactive ? ROOM_GEAR : FLOOR_UNATTENDED).indexOf(c.id) !== -1 && placeable(c))) {
     try { const s = opts.scopeFn(); scope = (s && s.scoped && s.roomName && Array.isArray(s.placedTypes)) ? s : null; } catch (_) { scope = null; }
   }
   // what placing gear in THAT room would grant: the object is absent from this run (not merely a stripped tool) and
   // absent from the room; on an unattended run only what the floor projects there
-  const roomFix = !scope ? [] : CAPS.filter((c) => ROOM_GEAR.indexOf(c.id) !== -1 && !capIds.has(c.id) && scope.placedTypes.indexOf(c.type) === -1 &&
+  const roomFix = !scope ? [] : CAPS.filter((c) => ROOM_GEAR.indexOf(c.id) !== -1 && placeable(c) && scope.placedTypes.indexOf(c.type) === -1 &&
     (interactive || FLOOR_UNATTENDED.indexOf(c.id) !== -1) && (CORE.indexOf(c.id) !== -1 || ((scope.gearElsewhere || {})[c.type] || []).length > 0));
   const roomExtra = roomFix.filter((c) => CORE.indexOf(c.id) === -1);   // memory / images: not in the core lack list
   const roomIs = scope ? scope.roomName + ', the room your ' + (scope.via === 'bay' ? 'bay' : 'desk') + ' is in' : '';
-  const missing = (interactive ? lackCore.map((c) => c.have) : lackAutonomous).concat(roomExtra.map(extraHave));
+  const missing = (interactive ? lackCore.map((c) => c.have) : lackAutonomous).concat(roomExtra.map((c) => extraHave(c, noImageRoute)));
   if (missing.length) {
     note += '- You do NOT have: ' + missing.join(', ') + '.\n';
     if (interactive) {
@@ -151,7 +159,7 @@ function summarizeCapabilities(resolved, opts) {
       // the next run (the floor decides each run's grants)
       note += 'If the Commander asks for something you lack, do NOT claim, promise, or pretend to do it. Say plainly you can\'t yet, ' +
         (capIds.has('orchestrator') ? 'and offer to place it yourself (station builder add; they approve; works from their next message): ' : 'and name the object to place to grant it: ') +
-        lackCore.map((c) => c.have + ' -> place ' + c.object).concat(roomExtra.map((c) => extraHave(c) + ' -> place ' + c.object)).join('; ') + '. ' +
+        lackCore.map((c) => c.have + ' -> place ' + c.object).concat(roomExtra.map((c) => extraHave(c, noImageRoute) + ' -> place ' + c.object)).join('; ') + '. ' +
         // only what is true of FLOOR gear: files + terminal come from a hire's execution profile and connectors are
         // account-level, so "your tools come only from that room" was false for the very agents this names
         (roomFix.length ? 'Place the ' + listJoin(roomFix.map(bare)) + ' in ' + roomIs + ': gear in any other room' + elsewhereOf(roomFix, scope, true) + ' does not reach you. ' : '') +

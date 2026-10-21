@@ -250,8 +250,12 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
 {
   const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
   A.ok(/const savedFloor = makeSavedFloor\(\{ stamp: \(\) => saveStore\.stamp\('agent'\), loadStamped: \(\) => saveStore\.loadStamped\('agent'\) \}\);/.test(idx), 'the saved floor is memoized by the save stamp');
-  A.ok(/toolless: !isTask,\s*\n[^\n]*\n\s*scopeFn: \(\) => \{ try \{ return scopeForRun\(\{ loadStation: savedFloor, agentId, runStation: o\.station, extraObjects: o\.extraObjects, interactive: surface === 'interactive', floorless: !!o\.floorless \}\); \} catch \(e\) \{ failNote\('capsummary\.roomscope', e\); return null; \} \} \}\) \+ skillBlock;/.test(idx),
-    'summarizeCapabilities gets scopeFn from this run\'s station, placed objects and surface, failing open to null');
+  A.ok(/toolless: !isTask,\s*\n(?:\s*\/\/[^\n]*\n)*\s*disabledCaps: unrestrictedHostNow\(\) \? new Set\(\) : disabledCapsSet\(\), mediaRoute: !!\(studioRoute && studioRoute\.ok\),\s*\n(?:\s*\/\/[^\n]*\n)*\s*scopeFn: \(\) => \{ try \{ return scopeForRun\(\{ loadStation: savedFloor, agentId, runStation: o\.station, extraObjects: o\.extraObjects, interactive: surface === 'interactive', floorless: !!o\.floorless \}\); \} catch \(e\) \{ failNote\('capsummary\.roomscope', e\); return null; \} \} \}\) \+ skillBlock;/.test(idx),
+    'summarizeCapabilities gets the TOOLSETS switches, the image route and scopeFn from this run\'s station, placed objects and surface, failing open to null');
+  // ...and those two facts are the very ones the run's grants and its unavailable set were built from
+  A.ok(idx.indexOf('resolveTools(agentId, station, undefined, { disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet() })') > 0 &&
+    idx.indexOf('mediaRoute: !!(studioRoute && studioRoute.ok),             // the SAME route makeImageTools was built from') > 0,
+    'resolveTools and unavailableTools read the same disabledCaps and image route');
   const at = idx.indexOf('let station = o.station ||');
   A.ok(at > 0 && idx.indexOf('composeOffice({ surface: officeSurface, lead: o.lead || ownerTrusted, connectorIds: connectors.ids(), extraObjects: o.extraObjects })') > 0,
     'the office the scope compares against is composed from the same o.extraObjects');
@@ -316,6 +320,62 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
   const o = noteOn(renamed('HOME', 'HO<ME'));
   A.ok(o.note.indexOf('Place the DISH in RESEARCH, the room your desk is in: gear in any other room does not reach you.') >= 0 && !/HO.?ME/.test(o.note),
     'a lossy gear room is skipped: ' + o.note.slice(o.note.indexOf('Place the'), o.note.indexOf('Place the') + 120));
+}
+
+/* 9. TOOLSETS KILL-SWITCH (review fix 10-21): resolveTools drops a switched-off family's grants (resolve.js isDisabled),
+      so its gear is missing because of the switch, not the floor. Placing that gear grants nothing, so it is never a
+      room fix: the unattended web clause said "the Commander can place one there" and interactive gained SERVER CART
+      advice for a memory family switched OFF. */
+{
+  const officeRun = (off) => resolveTools('rq1', withProfile({ agents: { rq1: { id: 'rq1', room: 'office' } }, rooms: { office: { id: 'office', objects: composeOffice({ surface: 'interactive', extraObjects: extra }) } } }, 'rq1'), undefined, { disabledCaps: off });
+  const off = { web: true, memory: true };
+  const resOff = officeRun(off);
+  A.ok(resOff.tools.indexOf('web_search') < 0 && resOff.tools.indexOf('notebook.write') < 0 && resOff.tools.indexOf('fs.read') >= 0, 'fixture: the switches dropped web + memory');
+  const n = summarizeCapabilities(resOff, { surface: 'interactive', disabledCaps: off, scopeFn: scopeI });
+  A.ok(!/SERVER CART|long-term memory|DISH[^.]*in RESEARCH/.test(n), 'a switched-off web or memory family is never offered as gear to place in RESEARCH: ' + n.slice(n.indexOf('If the Commander')));
+  A.ok(n.indexOf('Place the STUDIO in RESEARCH, the room your desk is in: gear in any other room (like the STUDIO in HOME) does not reach you.') >= 0, 'the STUDIO, not switched off, is still the room fix');
+  // every switchable floor family off: byte-identical to the note with no scope, in each shape resolve.js takes
+  const all = ['web', 'memory', 'studio'];
+  for (const shape of [{ web: true, memory: true, studio: true }, new Set(all), all.slice()]) {
+    const res = officeRun(shape);
+    let asked = 0;
+    A.eq(summarizeCapabilities(res, { surface: 'interactive', disabledCaps: shape, scopeFn: () => { asked++; return scopeI(); } }), summarizeCapabilities(res, { surface: 'interactive' }),
+      'interactive, ' + (Array.isArray(shape) ? 'array' : shape instanceof Set ? 'Set' : 'map') + ' of switched-off families: byte-identical to the no-scope note');
+    A.eq(asked, 0, '...and the scope is never computed');
+  }
+  // the UNATTENDED routed line run: web switched off keeps "Placing objects cannot change that here", byte-identical
+  const rt = makeRouter(); A.ok(rt.setStation(st.serialize()).ok, 'fixture: the router takes the built station');
+  const rsK = rt.stationFor('rq1');
+  const resU = unattended(resolveTools('rq1', withProfile(rsK, 'rq1'), undefined, { disabledCaps: off }));
+  let askedU = 0;
+  const u = summarizeCapabilities(resU, { surface: 'autonomous', disabledCaps: off, scopeFn: () => { askedU++; return scopeForRun({ loadStation: () => saved, agentId: 'rq1', runStation: rsK }); } });
+  A.eq(u, summarizeCapabilities(resU, { surface: 'autonomous' }), 'unattended, web + memory switched off: byte-identical to the no-scope note');
+  A.ok(/so search\/fetch the web and use the controlled browser, [^\n]*on the routine itself\. Placing objects cannot change that here\./.test(u) && !/No web on this run|place one there/.test(u), 'web stays under "placing objects cannot change that"');
+  A.eq(askedU, 0, '...and the scope is never computed');
+}
+
+/* 10. NO IMAGE ROUTE (review fix 10-21): without a ChatGPT sign-in, an OpenAI/OpenRouter key or a StarNet account a
+       placed STUDIO grants image_analyze only (image_generate is certainly unavailable and leaves the note), so the room
+       advice offers the STUDIO for analysis, never generation; with a route it still offers generation. */
+{
+  const { unavailableTools } = require('../sidecar/capability/effective-toolsets.js');
+  // runOnce's own seam: the certainly-unavailable tools leave the list before the note is written
+  const seam = (res, mediaRoute) => { const un = unavailableTools({ mediaRoute }, new Set(res.tools)).byTool; return Object.assign({}, res, { tools: res.tools.filter(t => !Object.prototype.hasOwnProperty.call(un, t)) }); };
+  const n = summarizeCapabilities(seam(resolvedI, false), { surface: 'interactive', mediaRoute: false, scopeFn: scopeI });
+  A.ok(/You do NOT have: [^\n]*, analyze images\./.test(n) && /; analyze images -> place a STUDIO\./.test(n) && !/generate/.test(n), 'no image route: the STUDIO is offered for analysis only: ' + n.slice(n.indexOf('- You do NOT'), n.indexOf('- You do NOT') + 140));
+  // the promise holds: the STUDIO placed in RESEARCH (the real floor) gives exactly that power and no more
+  const fx = M.create(st.serialize()), Rs = fx.rooms().find(r => r.name === 'RESEARCH').rects[0];
+  let placed = null;
+  for (let y = Rs.y1 + 1; y < Rs.y2 && !placed; y++) for (let x = Rs.x1 + 1; x < Rs.x2 && !placed; x++) { const r = fx.addProp({ t: 'studio', x, y, w: 1, h: 1 }); if (r && r.ok) placed = r; }
+  const saveS = { station: fx.serialize() }, flS = checkedStation(saveS), exS = savedPlacement(saveS, 'rq1');
+  A.ok(!!placed && exS.map(o => o.objectType).join() === 'studio', 'fixture: a STUDIO placed in RESEARCH reaches rq1');
+  const nS = summarizeCapabilities(seam(interactiveRun('rq1', exS), false), { surface: 'interactive', mediaRoute: false, scopeFn: () => scopeForRun({ loadStation: () => flS, agentId: 'rq1', extraObjects: exS, interactive: true }) });
+  A.ok(/- You CAN: [^\n]*, analyze images\./.test(nS) && !/generate|STUDIO/.test(nS), 'with it placed: "analyze images" is a power, generation is never claimed');
+  // with an image route the advice is unchanged
+  const nR = summarizeCapabilities(seam(resolvedI, true), { surface: 'interactive', mediaRoute: true, scopeFn: scopeI });
+  A.ok(/; generate and analyze images -> place a STUDIO\./.test(nR), 'an image route: the STUDIO is offered for generation');
+  A.eq(nR, summarizeCapabilities(resolvedI, { surface: 'interactive', scopeFn: scopeI }), 'mediaRoute true = the note before this fix');
+  console.log('[room-scope] no-image-route note: ' + nR.length + ' -> ' + n.length + ' chars (' + (n.length - nR.length) + ')');
 }
 
 A.report('capsummary-room-scope.test');
