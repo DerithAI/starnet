@@ -96,17 +96,11 @@ function makeTriggerRunner(deps) {
     const next = records.slice(); next[i] = nx;
     return commit(next) ? nx : null;
   }
-  /* bound each trigger's record in place (callers hold references to the inner maps): drop the OLDEST stamps — but a
-     key whose file was in the folder at the last scan goes only after every other key. Newest-wins alone dropped the
-     baseline of files still sitting there (stamped at arming, the oldest) once enough files had fired and moved out,
-     and each of those old files then fired as new. A folder holds at most SEEN_MAX / 2 files, so it never comes to that. */
   function saveSeen() {
+    // bound each trigger's record in place (callers hold references to the inner maps): drop the OLDEST stamps
     for (const id of Object.keys(seen)) {
       const m = seen[id], keys = m ? Object.keys(m) : [];
-      if (keys.length <= T.SEEN_MAX) continue;
-      const st = live.get(id), present = st && st.present instanceof Set ? st.present : null;
-      const rank = k => (present && present.has(k) ? 1 : 0);
-      keys.sort((a, b) => (rank(a) - rank(b)) || (m[a] - m[b])).slice(0, keys.length - T.SEEN_MAX).forEach(k => { delete m[k]; });
+      if (keys.length > T.SEEN_MAX) keys.sort((a, b) => m[a] - m[b]).slice(0, keys.length - T.SEEN_MAX).forEach(k => { delete m[k]; });
     }
     try { seenStore.save(seen); return true; } catch (e) { warn('[triggers] fired-file record persist failed: ' + ((e && e.message) || e)); return false; }
   }
@@ -303,7 +297,6 @@ function makeTriggerRunner(deps) {
     const id = 'trg_' + String(newId()).replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 12);
     const raw = Object.assign({ id, enabled: true, createdAt: at, updatedAt: at, fires: 0, recent: [] }, fields);
     if (raw.kind === 'webhook') { raw.secretHash = extra && extra.secretHash; raw.secretSetAt = at; }
-    if (raw.kind === 'folder') raw.seenV = T.FOLDER_SEEN_V;   // its baseline lists the whole folder (no upgrade owed)
     const t = T.normalizeTrigger(raw);
     if (!t) return { ok: false, error: 'invalid trigger' };
     if (t.kind === 'folder') {
@@ -328,7 +321,6 @@ function makeTriggerRunner(deps) {
       stateOf(id).pending = new Map(); stateOf(id).scanError = null;
     }
     const changes = Object.assign({}, fields, { updatedAt: now() });
-    if (t.kind === 'folder' && extra && Array.isArray(extra.baselineKeys)) changes.seenV = T.FOLDER_SEEN_V;   // re-baselined over the whole folder
     if (fields.config) changes.config = Object.assign({}, t.config, fields.config);
     if (extra && extra.secretHash) { changes.secretHash = extra.secretHash; changes.secretSetAt = now(); }
     // re-enabling (or editing) clears a stale failure: the next fire writes the new truth
@@ -359,38 +351,6 @@ function makeTriggerRunner(deps) {
     if (live.get(id) === s) live.delete(id);
   }
 
-  /* UPGRADE (2026-10-21): a folder trigger armed before the watcher listed the whole folder has a record that knows
-     only the first 500 files (readdir order). The old watcher never looked past them, so a file past #500 that was
-     there at arming was never recorded and never fired; listed now, every one of them would fire as new (old files,
-     real spend). On the trigger's first good scan, every unrecorded file last changed at or before the record's
-     last moment (its newest stamp — the arming or the latest fire — or the trigger's last edit) is recorded as seen
-     and never fires; a file changed after it settles and fires. By time, not by position: positions move when files
-     are deleted (the over-cap message asks for exactly that), which let old files slide into the old window and fire.
-     ONLY A FOLDER OVER THE OLD 500 adopts (review 2026-10-21; the watcher decides — trigger-folder LEGACY_WINDOW):
-     the old watcher listed a smaller folder whole, so its record is complete and nothing is adopted; a file waiting
-     there (rate limit, $ cap, E-STOP, a paused line, a read backoff) fires as it would have on the old station.
-     Cost of the rule, in a folder over 500 only: a file that was waiting its turn when the old station stopped is
-     recorded too, and does not fire. Then the record is marked, once.
-     false = the adoption could not be written: nothing fires this pass, and the next scan tries again. */
-  function legacyCutoff(t, mine) {
-    let at = Math.max(Number(t.createdAt) || 0, Number(t.updatedAt) || 0);
-    for (const k of Object.keys(mine)) if (mine[k] > at) at = mine[k];
-    return at;
-  }
-  function adoptLegacy(t, s, mine, keys, listed) {
-    const at = now(), added = [];
-    for (const k of keys) if (!Object.prototype.hasOwnProperty.call(mine, k)) { mine[k] = at; added.push(k); }
-    if (added.length && !saveSeen()) {
-      for (const k of added) delete mine[k];
-      recordError(t.id, 'could not record the folder\'s existing files — paused so they do not fire');
-      return false;
-    }
-    s.adopted = true;   // this process never adopts twice, even if the marker below cannot be written
-    if (!patch(t.id, () => ({ seenV: T.FOLDER_SEEN_V }))) warn('[triggers] ' + t.id + ': the upgraded fired-file record could not be marked; it is adopted again on the next start');
-    if (added.length) warn('[triggers] ' + t.id + ': the folder holds ' + listed + ' files, more than the old 500-file watch listed: ' + added.length + ' of them not on record and last changed no later than the record\'s last moment ' + (added.length === 1 ? 'was' : 'were') + ' recorded as seen (never fired)');
-    return true;
-  }
-
   /* ---- the FOLDER poll: one pass over every enabled folder trigger (the host arms the interval) ---- */
   async function tickFolders() {
     if (!d.watcher) return 0;
@@ -402,13 +362,10 @@ function makeTriggerRunner(deps) {
       s.scanning = true;
       try {
         const mine = seen[t.id] || (seen[t.id] = {});
-        const upgrade = t.seenV !== T.FOLDER_SEEN_V && !s.adopted;
-        const res = await d.watcher.scan(t.config.path, mine, s.pending, now(), upgrade ? { adoptUpTo: legacyCutoff(t, mine) } : undefined);
+        const res = await d.watcher.scan(t.config.path, mine, s.pending, now());
         if (!res.ok) { s.scanError = res.error; recordError(t.id, res.error); s.pending = new Map(); continue; }
-        if (Array.isArray(res.present)) s.present = new Set(res.present);   // read by saveSeen's trim (set before any save below)
-        if (upgrade && !adoptLegacy(t, s, mine, res.legacy || [], Array.isArray(res.present) ? res.present.length : 0)) continue;   // nothing fires until the old record is adopted
         // the folder is readable again: a scan failure on record is no longer true — clear it (a fire error stays)
-        if (s.scanError || /^(the folder no longer exists|cannot read the folder|the folder holds \d+ files|could not record the folder's existing files)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
+        if (s.scanError || /^(the folder no longer exists|cannot read the folder)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
         s.pending = res.pending;
         /* NO prune on absence (live proof 2026-09-23): a folder moved by copy+delete, a cloud-sync placeholder or a
            flaky share makes files vanish for a moment — forgetting them would refire every one of them (real spend)

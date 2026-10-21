@@ -16,10 +16,7 @@
 
    Record (durable, triggers.json):
      { id, lineId, kind:'folder'|'webhook', name, enabled, config, maxPerHour, createdAt, updatedAt,
-       lastFiredAt, lastError, lastErrorAt, fires, lastOutcome, recent:[ms], secretHash?, secretSetAt?, seenV? }
-   seenV (folder only, 2026-10-21): 2 = its fired-file record was baselined over the WHOLE folder. Absent = armed by
-   the older watcher, which listed only the first 500 files (trigger-runner adopts the rest once, then sets it). The
-   API never shows it.
+       lastFiredAt, lastError, lastErrorAt, fires, lastOutcome, recent:[ms], secretHash?, secretSetAt? }
    The webhook SECRET itself is never stored — only its sha256. It is shown once at create/regenerate. */
 'use strict';
 const nodeCrypto = require('node:crypto');
@@ -37,8 +34,6 @@ const PATH_MAX = 1024;
 const ERROR_MAX = 400;
 // the work item carries at most this much outside content (file text / webhook body)
 const CONTENT_CAP = 32 * 1024;
-// a folder trigger's fired-file record format: 2 = baselined over the whole folder (see seenV above)
-const FOLDER_SEEN_V = 2;
 
 const str = (v, max) => String(v == null ? '' : v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, max);
 const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
@@ -88,7 +83,6 @@ function normalizeTrigger(raw) {
     t.secretHash = /^[a-f0-9]{64}$/.test(h) ? h : null;
     t.secretSetAt = num(raw.secretSetAt);
   }
-  if (kind === 'folder' && raw.seenV === FOLDER_SEEN_V) t.seenV = FOLDER_SEEN_V;
   return t;
 }
 
@@ -270,7 +264,7 @@ function webhookBody(raw, contentType) {
 }
 
 module.exports = {
-  KINDS, ID_RE, LINE_RE, HOUR_MS, MAX_PER_HOUR_DEFAULT, MAX_PER_HOUR_CEILING, MAX_TRIGGERS, CONTENT_CAP, FOLDER_SEEN_V,
+  KINDS, ID_RE, LINE_RE, HOUR_MS, MAX_PER_HOUR_DEFAULT, MAX_PER_HOUR_CEILING, MAX_TRIGGERS, CONTENT_CAP,
   normalizeTrigger, normalizeAll, normalizeSeen, SEEN_MAX, publicView, validateInput, clampPerHour,
   mintSecret, hashSecret, secretMatches, admit, recentWithin,
   isIgnoredName, fileKey, looksBinary, composeFolderItem, composeWebhookItem, webhookBody
