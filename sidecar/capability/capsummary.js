@@ -59,20 +59,21 @@ const extraHave = (c, noImageRoute) => c.id === 'memory' ? 'keep long-term memor
 
 const bare = (c) => c.object.replace(/^an? /, '');
 const listJoin = (xs, last) => xs.length > 1 ? xs.slice(0, -1).join(', ') + ' ' + (last || 'and') + ' ' + xs[xs.length - 1] : (xs[0] || '');
-// "(the DISH in HOME does not reach you)", or `like` "(like the DISH in HOME)": the room each missing object already
-// stands in, so the Commander does not place a second one there. '' when none of them stands anywhere else.
+// "(the UPLINK in HOME does not reach you)", or `like` "(like the DISH in HOME)": the prop each missing power's gear really
+// is, in the room it already stands in (cap-scope labels, keyed by room id), so the Commander does not place a second one
+// there. A room named like this agent's own is never named (it would be both places). '' when none stands anywhere else.
 function elsewhereOf(fix, scope, like) {
   const groups = [];
   for (const c of fix) {
-    const r = ((scope.gearElsewhere || {})[c.type] || [])[0];
+    const r = ((scope.gearElsewhere || {})[c.type] || []).find(x => x && x.label && x.name !== scope.roomName);
     if (!r) continue;
-    let g = groups.find(x => x.room === r);
-    if (!g) groups.push(g = { room: r, names: [] });
-    g.names.push(bare(c));
+    let g = groups.find(x => x.id === r.id);
+    if (!g) groups.push(g = { id: r.id, room: r.name, names: [] });
+    g.names.push(r.label);
   }
   const n = groups.reduce((k, g) => k + g.names.length, 0);
   if (!n) return '';
-  const what = (groups.length === 1 && n === fix.length && n > 1) ? 'the ones in ' + groups[0].room
+  const what = (groups.length === 1 && n > 1 && groups[0].names.join() === fix.map(bare).join()) ? 'the ones in ' + groups[0].room
     : listJoin(groups.map(g => 'the ' + listJoin(g.names) + ' in ' + g.room));
   return like ? ' (like ' + what + ')' : ' (' + what + (n > 1 ? ' do' : ' does') + ' not reach you)';
 }

@@ -55,7 +55,7 @@ const unattended = (res) => Object.assign({}, res, { tools: res.tools.filter(n =
   const s = capScope(saved, 'rq1');
   A.ok(s && s.scoped === true && s.roomName === 'RESEARCH' && s.via === 'desk', 'rq1 is scoped to RESEARCH, the room its desk is in: ' + JSON.stringify(s && { r: s.roomName, via: s.via }));
   A.eq(s.placedTypes, [], 'RESEARCH holds no floor gear');
-  A.ok(['dish', 'notebook', 'studio', 'cabinet', 'workbench'].every(t => (s.gearElsewhere[t] || []).indexOf('HOME') >= 0), 'every essential stands in HOME: ' + JSON.stringify(s.gearElsewhere));
+  A.ok(['dish', 'notebook', 'studio', 'cabinet', 'workbench'].every(t => (s.gearElsewhere[t] || []).some(x => x.name === 'HOME' && x.id === saved.rooms().find(r => r.name === 'HOME').id)), 'every essential stands in HOME: ' + JSON.stringify(s.gearElsewhere));
   A.eq(JSON.stringify(savedPlacement(save, 'rq1')), '[]', 'savedPlacement (refactored onto checkedStation) still answers [] for rq1');
   A.eq(savedPlacement(save, 'agent').map(o => o.objectType).sort(), ['cabinet', 'dish', 'notebook', 'studio', 'workbench'], 'savedPlacement still gives the bayless hero the whole station');
   A.eq(capScope(saved, 'agent').scoped, false, 'the hero owns no bay: not room-scoped');
@@ -67,7 +67,7 @@ const unattended = (res) => Object.assign({}, res, { tools: res.tools.filter(n =
   const s2 = capScope(checkedStation({ station: fx.serialize() }), 'rq2');
   A.ok(s2 && s2.scoped && s2.via === 'bay' && s2.roomName === 'RESEARCH', 'a desk-less agent is scoped to its bay\'s room: ' + JSON.stringify(s2 && { r: s2.roomName, via: s2.via }));
   A.ok(/Place the DISH in RESEARCH, the room your bay is in: gear in any other room \(like the DISH in HOME\) does not reach you\./.test(
-    summarizeCapabilities(interactiveRun('rq2', []), { surface: 'interactive', scopeFn: () => Object.assign({}, s2, { gearElsewhere: { dish: ['HOME'] } }) })), '...and the note names the bay\'s room');
+    summarizeCapabilities(interactiveRun('rq2', []), { surface: 'interactive', scopeFn: () => Object.assign({}, s2, { gearElsewhere: { dish: [{ id: 'r1', name: 'HOME', label: 'DISH' }] } }) })), '...and the note names the bay\'s room');
 }
 
 /* 2. the guard: a room is named only when the saved floor reproduces THIS run's floor grants */
@@ -376,6 +376,74 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
   A.ok(/; generate and analyze images -> place a STUDIO\./.test(nR), 'an image route: the STUDIO is offered for generation');
   A.eq(nR, summarizeCapabilities(resolvedI, { surface: 'interactive', scopeFn: scopeI }), 'mediaRoute true = the note before this fix');
   console.log('[room-scope] no-image-route note: ' + nR.length + ' -> ' + n.length + ' chars (' + (n.length - nR.length) + ')');
+}
+
+/* 11. THE PROP THAT REALLY STANDS THERE (review fix 10-21): the hint named each power's CANONICAL prop ("like the DISH in
+       HOME") wherever any web gear stood, so a HOME holding an UPLINK, a RELAY STACK or a SAFE was said to hold a DISH,
+       a SERVER CART or an INTEL CAB; and a gear room sharing the agent's own room's name made the note name one room
+       as both places ("Place the DISH in RESEARCH ... (like the DISH in RESEARCH)"). Rooms are keyed by id, named for display. */
+{
+  const { GEAR_LABEL } = require('../sidecar/capability/cap-scope.js');
+  const NOT_GEAR = { computer: 1, connector: 1, plugin: 1 };
+  for (const t of Object.keys(M.CAP_PROP_MAP).filter(t => !NOT_GEAR[M.capForProp(t)]))
+    A.eq((GEAR_LABEL || {})[t], (Sprites.spec(t) || {}).label, 'the note names a ' + t + ' as the floor labels it');
+  function swapIn(s, roomName, pairs) {   // replace a room's gear with a sibling granting the same power
+    const room = s.rooms().find(r => r.name === roomName);
+    for (const [from, to] of pairs) {
+      const old = s.props().find(p => p.t === from && s.roomAt(p.x, p.y) === room.id);
+      A.ok(!!old && s.removeProp(old.id).ok, 'fixture: ' + roomName + '\'s ' + from + ' removed');
+      const sp = Sprites.spec(to);
+      let ok = false;
+      for (const Rr of room.rects) for (let y = Rr.y1 + 1; y < Rr.y2 && !ok; y++) for (let x = Rr.x1 + 1; x < Rr.x2 && !ok; x++) { const r = s.addProp({ t: to, x, y, w: sp.w, h: sp.h }); ok = !!(r && r.ok); }
+      A.ok(ok, 'fixture: a ' + sp.label + ' placed in ' + roomName);
+    }
+    return s;
+  }
+  const labelsIn = (fl, roomName) => { const id = fl.rooms().find(r => r.name === roomName).id; return fl.props().filter(p => fl.roomAt(p.x, p.y) === id).map(p => (Sprites.spec(p.t) || {}).label); };
+  const sw = swapIn(M.create(st.serialize()), 'HOME', [['comms_dish', 'comms_uplink'], ['gigs_servercart', 'bridge_relaystack'], ['war_intelcab', 'safe']]);
+  const svS = { station: sw.serialize() }, flS = checkedStation(svS), exS = savedPlacement(svS, 'rq1');
+  A.ok(['UPLINK', 'RELAY STACK', 'SAFE', 'STUDIO'].every(l => labelsIn(flS, 'HOME').indexOf(l) >= 0) &&
+    labelsIn(flS, 'HOME').every(l => ['DISH', 'SERVER CART', 'INTEL CAB'].indexOf(l) < 0), 'fixture: HOME holds an UPLINK, a RELAY STACK, a SAFE and a STUDIO, and no DISH, SERVER CART or INTEL CAB');
+  const nI = summarizeCapabilities(interactiveRun('rq1', exS), { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: () => flS, agentId: 'rq1', extraObjects: exS, interactive: true }) });
+  A.ok(nI.indexOf('Place the DISH, SERVER CART and STUDIO in RESEARCH, the room your desk is in: gear in any other room (like the UPLINK, RELAY STACK and STUDIO in HOME) does not reach you.') >= 0,
+    'interactive: the hint names the props HOME really holds: ' + nI.slice(nI.indexOf('Place the'), nI.indexOf('Place the') + 200));
+  A.ok(!/(DISH|SERVER CART|ones) in HOME/.test(nI), 'never "the DISH in HOME" or "the ones in HOME" when they are not there');
+  // the unattended line run (a legacy agent lacks files too): the routed room as the router builds it
+  const rtS = makeRouter(); A.ok(rtS.setStation(sw.serialize()).ok, 'fixture: the router takes the swapped station');
+  const rsS = rtS.stationFor('rq1');
+  const nU = summarizeCapabilities(unattended(resolveTools('rq1', rsS)), { surface: 'autonomous', scopeFn: () => scopeForRun({ loadStation: () => flS, agentId: 'rq1', runStation: rsS }) });
+  A.ok(nU.indexOf('has no DISH or INTEL CAB; the Commander can place them there for your next job (the UPLINK and SAFE in HOME do not reach you). ') >= 0,
+    'unattended: the UPLINK and SAFE are named: ' + nU.slice(nU.indexOf('No web'), nU.indexOf('No web') + 220));
+  // a gear room named like the agent's own room: never named as where the gear stands (it would be both places)
+  const twin = M.create(st.serialize());
+  A.ok(twin.renameRoom(twin.rooms().find(r => r.name === 'HOME').id, 'RESEARCH').ok && twin.rooms().filter(r => r.name === 'RESEARCH').length === 2, 'fixture: HOME renamed RESEARCH (renameRoom allows a twin name)');
+  const svT = { station: twin.serialize() }, flT = checkedStation(svT), exT = savedPlacement(svT, 'rq1');
+  const nT = summarizeCapabilities(interactiveRun('rq1', exT), { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: () => flT, agentId: 'rq1', extraObjects: exT, interactive: true }) });
+  A.ok(nT.indexOf('Place the DISH, SERVER CART and STUDIO in RESEARCH, the room your desk is in: gear in any other room does not reach you.') >= 0,
+    'twin name, interactive: the gear\'s room is not named: ' + nT.slice(nT.indexOf('Place the'), nT.indexOf('Place the') + 160));
+  const rtT = makeRouter(); A.ok(rtT.setStation(twin.serialize()).ok, 'fixture: the router takes the twin-named station');
+  const rsT = rtT.stationFor('rq1');
+  const uT = summarizeCapabilities(unattended(resolveTools('rq1', rsT)), { surface: 'autonomous', scopeFn: () => scopeForRun({ loadStation: () => flT, agentId: 'rq1', runStation: rsT }) });
+  A.ok(uT.indexOf('RESEARCH, the room your desk is in, has no DISH or INTEL CAB; the Commander can place them there for your next job. ') >= 0 && !/in RESEARCH (do|does) not reach/.test(uT),
+    'twin name, unattended: never "has no DISH ... (the ones in RESEARCH do not reach you)": ' + uT.slice(uT.indexOf('No web'), uT.indexOf('No web') + 200));
+  // two OTHER rooms sharing a name stay two rooms: the SERVER CART moved to a new room also called HOME
+  const two = M.create(st.serialize()), spot = two.roomSpots(6, 6, 'hab', 1)[0];
+  A.ok(!!spot, 'fixture: room for a third room');
+  const added = two.addRoom({ kind: 'hab', rect: spot.rect || spot });
+  A.ok(added && added.ok, 'fixture: a third room added (' + JSON.stringify(added && (added.msg || added.error)) + ')');
+  const third = two.rooms().find(r => r.name !== 'HOME' && r.name !== 'RESEARCH');
+  A.ok(!!third && two.renameRoom(third.id, 'HOME').ok, 'fixture: the third room is also called HOME');
+  const cart = two.props().find(p => p.t === 'gigs_servercart');
+  A.ok(two.removeProp(cart.id).ok, 'fixture: the SERVER CART leaves the first HOME');
+  let moved = false;
+  for (const Rr of two.roomById(third.id).rects) for (let y = Rr.y1 + 1; y < Rr.y2 && !moved; y++) for (let x = Rr.x1 + 1; x < Rr.x2 && !moved; x++) { const r = two.addProp({ t: 'gigs_servercart', x, y, w: 1, h: 1 }); moved = !!(r && r.ok); }
+  A.ok(moved, 'fixture: the SERVER CART stands in the second HOME');
+  const svW = { station: two.serialize() }, flW = checkedStation(svW), exW = savedPlacement(svW, 'rq1');
+  const nW = summarizeCapabilities(interactiveRun('rq1', exW), { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: () => flW, agentId: 'rq1', extraObjects: exW, interactive: true }) });
+  A.ok(nW.indexOf('(like the DISH and STUDIO in HOME and the SERVER CART in HOME) does not reach you.') >= 0,
+    'two rooms called HOME are two rooms, never "the ones in HOME": ' + nW.slice(nW.indexOf('Place the'), nW.indexOf('Place the') + 200));
+  // the starter floor (one of each canonical prop in HOME) keeps its exact words
+  A.ok(summarizeCapabilities(resolvedI, { surface: 'interactive', scopeFn: scopeI }).indexOf('(like the ones in HOME) does not reach you.') >= 0, 'canonical gear: "the ones in HOME", unchanged');
 }
 
 A.report('capsummary-room-scope.test');

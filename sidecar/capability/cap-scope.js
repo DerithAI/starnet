@@ -7,7 +7,7 @@
    gear that was already standing in HOME, where it does not reach that agent. Pure: station-model reads only.
 
    capScope(station, agentId, dockId) -> null | { scoped:false } |
-     { scoped:true, roomName, via:'desk'|'bay', placedTypes:[sorted floor types in that room], gearElsewhere:{ type:[room names] } }
+     { scoped:true, roomName, via:'desk'|'bay', placedTypes:[sorted floor types in that room], gearElsewhere:{ type:[{ id, name, label }] } }
    consistentScope(station, agentId, { dockId, grantedTypes }) -> the scope ONLY when the saved floor reproduces THIS
      run's exact floor grants (the truth guard: a stale or different floor names no room), else null.
    scopeForRun({ loadStation, agentId, runStation, extraObjects, interactive, floorless }) -> runOnce's one call:
@@ -21,6 +21,10 @@ const { checkedStation } = require('./saved-placement.js');
 // computer = the compute freebie; connector/plugin = per-instance projections. None is gear the note names
 // (the same filter savedPlacement and World.heroCaps apply).
 const NOT_GEAR = { computer: 1, connector: 1, plugin: 1 };
+// the floor's own name for each gear prop (PropSprites CATALOG labels, test-pinned): the note names the prop that really
+// stands in a room, never its power's canonical one (an UPLINK is not a DISH)
+const GEAR_LABEL = { comms_dish: 'DISH', comms_uplink: 'UPLINK', comms_beacon: 'BEACON', war_intelcab: 'INTEL CAB', safe: 'SAFE', vault: 'VAULT', rack: 'RACK',
+  shelf: 'SHELF', gigs_servercart: 'SERVER CART', bridge_relaystack: 'RELAY STACK', core: 'CORE', workbench: 'WORKBENCH', studio: 'STUDIO', jukebox: 'JUKEBOX' };
 
 function floorTypes(objs) {
   const out = [];
@@ -46,15 +50,15 @@ function capScope(station, agentId, dockId) {
   // agentRoomId takes the desk's room when the agent has a desk (a workstation = a computer prop) in a room
   const desk = props.find(p => p && p.agentId === agentId && station.capForProp(p.t) === 'computer');
   const via = (desk && station.roomAt(desk.x, desk.y) === roomId) ? 'desk' : 'bay';
-  const gearElsewhere = {};
+  const gearElsewhere = {};   // per type, one entry per ROOM ID (two rooms may share a name): the first such prop's label
   for (const p of props) {
     const t = p && station.capForProp(p.t);
     if (!t || NOT_GEAR[t]) continue;
     const r = station.roomAt(p.x, p.y);
     const nm = (r && r !== roomId) ? nameOf(r) : '';
-    if (!nm) continue;
+    if (!nm || !GEAR_LABEL[p.t]) continue;
     const list = gearElsewhere[t] || (gearElsewhere[t] = []);
-    if (list.indexOf(nm) < 0) list.push(nm);
+    if (!list.some(x => x.id === r)) list.push({ id: r, name: nm, label: GEAR_LABEL[p.t] });
   }
   return { scoped: true, roomName: nameOf(roomId), via, placedTypes: floorTypes(station.bayObjects(agentId, dockId)), gearElsewhere };
 }
@@ -96,4 +100,4 @@ function makeSavedFloor(read) {
   };
 }
 
-module.exports = { capScope, consistentScope, scopeForRun, makeSavedFloor, floorTypes };
+module.exports = { capScope, consistentScope, scopeForRun, makeSavedFloor, floorTypes, GEAR_LABEL };
