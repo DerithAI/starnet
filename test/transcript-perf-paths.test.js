@@ -349,6 +349,70 @@ try {
     }
   }
 
+  // ---- 10. a conversation sprinkled through more closed segments than the parse cache holds (DEFAULT config) ----------
+  // The case the perf report measured: a long-lived chat with fewer rows than the limit, between loop and routine
+  // traffic. RAM (newest 3000 rows) holds only part of it, so every history read went to the segments, and only the 2
+  // newest whole segments fit the parse cache: each of the 2-4 reads a run makes re-read and re-parsed the rest.
+  {
+    const root = freshDir();
+    const quick = Object.create(fs);
+    quick.fsyncSync = () => {};   // building ~17 MB of history: the write path is real, only the disk flush is skipped
+    const writer = track(makeSegmentedTranscriptIo({ fs: quick, path, root }));
+    const body = 'filler words for a long day of loop traffic '.repeat(105);
+    let ts = 1000, chat = 0;
+    for (let i = 0; i < 3600; i++) {
+      const isChat = i % 30 === 0;
+      // four busy streams, each under RAM's per-stream cap, so the newest 3000 rows RAM loads are the newest 3000 overall
+      writer.appendDurable({ streamId: isChat ? 'chat' : ['loop-L1', 'cron-c1', 'loop-L2', 'cron-c2'][i % 4], agentId: 'a', role: i % 4 < 2 ? 'user' : 'assistant',
+        content: (isChat ? 'chat turn ' + (chat++) : 'tick ' + i) + ' ' + body, sourceRunId: 'run' + (i % 3), ts: ts++, taintKnown: true });
+    }
+    writer.close();
+    const segs = writer.status().segments;
+    A.ok(segs.length >= 5, 'the history spans 4+ closed segments of the default size (' + segs.length + ')');
+    A.ok(segs.slice(0, -1).reduce((n, s) => n + s.bytes, 0) > 2 * 4 * 1024 * 1024, 'more closed bytes than the default parse cache holds');
+    const { fs: cfs, c } = countingFs();
+    const io = track(makeSegmentedTranscriptIo({ fs: cfs, path, root }));
+    const store = makeTranscriptStore({ io, clock: { now: () => ts++ } });
+    const ram = store.all().filter(r => r.streamId === 'chat').length;
+    A.ok(ram > 0 && ram < chat, 'RAM holds part of the chat (' + ram + ' of ' + chat + '), so its reads go to the segments');
+    const reference = track(makeSegmentedTranscriptIo({ fs, path, root, cacheBytes: 0, indexCacheBytes: 0, sliceCacheBytes: 0 }));
+    const asks = [{ limit: 1200 }, { limit: 3000 }, { limit: 5 }, { limit: 50, sourceRunId: 'run0' }];
+    const run = () => {
+      c.reset();
+      const got = asks.map(o => store.history('chat', o));
+      const rebuilt = store.reconstruct('chat', { limit: 400 });
+      return { got, rebuilt, reads: c.jsonl.length };
+    };
+    const first = run();
+    A.eq(first.got, asks.map(o => reference.history('chat', Object.assign({ limit: 400 }, o))), 'every read is exactly what a fresh process parses from disk');
+    A.eq(first.got[0].length, chat, 'the whole conversation, from every segment');
+    A.ok(first.reads > 0, 'the first run reads the closed segments it needs (' + first.reads + ')');
+    store.append({ streamId: 'chat', role: 'user', content: 'a new message', taint: null });
+    const second = run();
+    A.eq(second.reads, 0, 'the next run re-reads no segment (it re-read every closed segment the parse cache could not hold, on every read)');
+    A.eq(second.got, asks.map(o => reference.history('chat', Object.assign({ limit: 400 }, o))), 'and still answers exactly what the disk holds, the new row included');
+    A.eq(second.got[0].slice(-1)[0].content, 'a new message', 'the newest row is in it');
+    A.eq(second.rebuilt.length, first.rebuilt.length + 1, 'reconstruct sees it too');
+  }
+
+  // ---- 10b. a closed segment that could not be read is read again next time, never remembered as empty ----------------
+  {
+    const root = freshDir();
+    const writer = track(makeSegmentedTranscriptIo({ fs, path, root, segmentBytes: 600 }));
+    for (let i = 0; i < 12; i++) writer.appendDurable({ streamId: 'u', role: 'user', content: 'unreadable test ' + i + ' ' + 'u'.repeat(80), ts: i + 1 });
+    writer.close();
+    let failNext = history._internals.segmentName(1);
+    const flaky = Object.create(fs);
+    flaky.readFileSync = (file, ...rest) => {
+      if (failNext && path.basename(String(file)) === failNext) { failNext = ''; const e = new Error('EBUSY: locked by a scanner'); e.code = 'EBUSY'; throw e; }
+      return fs.readFileSync(file, ...rest);
+    };
+    const io = track(makeSegmentedTranscriptIo({ fs: flaky, path, root, segmentBytes: 600, onWarning: () => {} }));
+    const once = io.history('u', { limit: 100 }).length;
+    A.ok(once < 12, 'a locked segment is skipped on that read (' + once + ' of 12)');
+    A.eq(io.history('u', { limit: 100 }).length, 12, 'and its rows come back on the next read');
+  }
+
   // ---- 8. away briefing: one transcript read per briefed stream, not one per run --------------------------------------
   {
     const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');

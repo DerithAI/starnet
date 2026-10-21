@@ -13,9 +13,9 @@
    Now: ONE 'a+' handle stays open on the append-active segment (the same fsync and the same read-back proof per
    row, through that handle, after an attribute-only stat proves the handle is still the file at the path), the tail
    byte is remembered after our own proven append (re-read whenever the file size is not the size we left it at), and
-   the active checksum is computed when the manifest is written. Reads
-   answer from parses that are exact for the bytes they cover: the active segment's (checked against its size on
-   every read), and a byte-bounded cache of the newest closed segments (immutable) and their verified term indexes. */
+   the active checksum is computed when the manifest is written. Reads answer from parses that are exact for the bytes
+   they cover: the active segment's (checked against its size on every read), a byte-bounded cache of the newest
+   closed segments (immutable) and their verified term indexes, and each stream's own rows of a closed segment. */
 'use strict';
 
 const { writeFileDurable } = require('./durable-write.js');
@@ -27,6 +27,7 @@ const VERSION = 2;
 const DEFAULT_SEGMENT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_RECENT_PER_STREAM = 1200;
 const TOKEN_MAX = 64;
+const UNREADABLE = Object.freeze([]);   // readRows' answer for a segment it could not read (never cached as its rows)
 const CJK_CHAR = /^(?:\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul})$/u;
 const HAS_CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
@@ -79,6 +80,12 @@ function makeSegmentedTranscriptIo(opts) {
   // indexes, because an index parses to ~4-5x its text and only a recall reads one). 0 turns a cache off.
   const rowsCacheBytes = o.cacheBytes != null ? Math.max(0, num(o.cacheBytes)) : segmentBytes * 2;
   const indexCacheBytes = o.indexCacheBytes != null ? Math.max(0, num(o.indexCacheBytes)) : Math.floor(segmentBytes / 2);
+  // ONE stream's rows of a closed segment (history's unit of work), by their approximate JSON characters: one segment's
+  // worth. A conversation whose rows are sprinkled through dozens of closed segments between loop and routine traffic
+  // re-read and re-parsed every one of those segments 2-4 times a run, because only the 2 newest whole segments fit the
+  // parse cache; its own rows are a small fraction of them. A slice larger than 1/8 of this budget is a stream dense
+  // enough that its reads end in the newest segments, which the parse cache already holds: it is not kept here.
+  const sliceCacheBytes = o.sliceCacheBytes != null ? Math.max(0, num(o.sliceCacheBytes)) : segmentBytes;
   const warn = typeof o.onWarning === 'function' ? o.onWarning : function () {};
   const durableWrite = typeof o.writeDurable === 'function' ? o.writeDurable : writeFileDurable;
   const manifestFile = path.join(root, 'manifest.json');
@@ -88,11 +95,12 @@ function makeSegmentedTranscriptIo(opts) {
   let activeHashStale = false;   // the active meta's checksum lags activeIndex until the next manifest write
   let degraded = false;          // init failed: the in-memory view is not the disk's
   let unvouched = false;         // the active segment changed on disk outside this process: its counts may not be the disk's
-  let appendFd = null;          // { n, fd }: the one open 'a+' handle, on the append-active segment
+  let appendFd = null;           // { n, fd }: the one open 'a+' handle, on the append-active segment
   let tail = null;               // { n, size, last }: the active file's size + last byte right after OUR last proven append
   let activeRows = null;         // { n, size, rows, bad }: the append-active segment's parse, exact for `size` bytes
-  const closedRows = { map: new Map(), bytes: 0, budget: rowsCacheBytes };      // n -> { rows, bad, bytes } closed parses
-  const closedIndexes = { map: new Map(), bytes: 0, budget: indexCacheBytes }; // n -> { index, bytes } verified indexes
+  const closedRows = { map: new Map(), bytes: 0, budget: rowsCacheBytes };      // n -> { order, rows, bad, bytes } closed parses
+  const closedIndexes = { map: new Map(), bytes: 0, budget: indexCacheBytes }; // n -> { order, index, bytes } verified indexes
+  const streamSlices = { map: new Map(), bytes: 0, budget: sliceCacheBytes };  // n + sid -> { order, rows, bytes }
   const verifiedIndex = new Map(); // n -> index file size:mtime + the manifest checksum it already matched
 
   function warning(message) { try { warn(message); } catch (_) {} }
@@ -174,28 +182,29 @@ function makeSegmentedTranscriptIo(opts) {
      lifetime search touches every segment, so least-recently-used would evict exactly what the next pass needs (a
      pass over one more segment than fits misses every time). Keeping the highest numbers holds what history reads
      most, and a pass larger than the cache neither empties it nor thrashes it. */
-  function uncache(cache, n) {
-    const prior = cache.map.get(n);
-    if (prior) { cache.map.delete(n); cache.bytes -= prior.bytes; }
+  function uncache(cache, key) {
+    const prior = cache.map.get(key);
+    if (prior) { cache.map.delete(key); cache.bytes -= prior.bytes; }
   }
-  function cacheNewest(cache, n, entry) {
-    uncache(cache, n);
+  // entry.order: the segment number the entry was parsed from (the age "newest" is measured by)
+  function cacheNewest(cache, key, entry) {
+    uncache(cache, key);
     if (entry.bytes > cache.budget) return;
     while (cache.bytes + entry.bytes > cache.budget) {
-      let oldest = Infinity;
-      for (const k of cache.map.keys()) if (k < oldest) oldest = k;
-      if (!(oldest < n)) return;   // everything cached is newer: this segment does not displace it
-      uncache(cache, oldest);
+      let oldestKey = null, oldest = Infinity;
+      for (const [k, v] of cache.map) if (v.order < oldest) { oldest = v.order; oldestKey = k; }
+      if (!(oldest < entry.order)) return;   // everything cached is as new or newer: this entry does not displace it
+      uncache(cache, oldestKey);
     }
-    cache.map.set(n, entry);
+    cache.map.set(key, entry);
     cache.bytes += entry.bytes;
   }
-  function rememberClosed(n, seg) { cacheNewest(closedRows, n, { rows: seg.rows, bad: seg.bad, bytes: seg.bytes }); }
+  function rememberClosed(n, seg) { cacheNewest(closedRows, n, { order: n, rows: seg.rows, bad: seg.bad, bytes: seg.bytes }); }
   function forgetIndex(n) { uncache(closedIndexes, n); verifiedIndex.delete(n); }
-  function rememberIndex(n, index, bytes) { forgetIndex(n); cacheNewest(closedIndexes, n, { index, bytes }); }
+  function rememberIndex(n, index, bytes) { forgetIndex(n); cacheNewest(closedIndexes, n, { order: n, index, bytes }); }
   function forgetCaches() {
     activeRows = null; tail = null;
-    for (const cache of [closedRows, closedIndexes]) { cache.map.clear(); cache.bytes = 0; }
+    for (const cache of [closedRows, closedIndexes, streamSlices]) { cache.map.clear(); cache.bytes = 0; }
     verifiedIndex.clear();
   }
   // The parsed rows of segment n, as { seg, fresh } (fresh: read from disk by this call). The append-active segment
@@ -221,7 +230,7 @@ function makeSegmentedTranscriptIo(opts) {
   function readRows(n, strict) {
     let got;
     try { got = segmentRows(n, !!strict); }
-    catch (e) { if (strict) throw e; warning('segment ' + n + ' unreadable: ' + ((e && e.message) || e)); return []; }
+    catch (e) { if (strict) throw e; warning('segment ' + n + ' unreadable: ' + ((e && e.message) || e)); return UNREADABLE; }
     const seg = got.seg, bad = seg.bad.length;
     if (bad) {
       const claimed = typeof strict === 'function' ? seg.bad.filter(line => strict(line)).length : 0;
@@ -229,6 +238,21 @@ function makeSegmentedTranscriptIo(opts) {
       if (got.fresh) warning('segment ' + n + ' isolated ' + bad + ' corrupt line(s)');
     }
     return seg.rows;
+  }
+  // The rows of ONE stream in segment n, in file order. A closed segment is immutable, so its slice is exact for as long
+  // as the process runs; it is kept only from a parse that succeeded (an unreadable segment is tried again next read,
+  // as before). The append-active segment and a strict read always come from readRows.
+  function rowBytes(row) { return str(row.content).length + str(row.toolCalls).length + str(row.dispatchPrompt).length + 256; }
+  function streamRowsIn(n, sid, strict) {
+    const closed = n !== manifest.activeSegment, key = n + '\u0000' + sid;
+    const hit = closed && !strict ? streamSlices.map.get(key) : null;
+    if (hit) return hit.rows;
+    const all = readRows(n, strict);
+    const rows = [];
+    let bytes = 0;
+    for (const row of all) if (row.streamId === sid) { rows.push(row); bytes += rowBytes(row); }
+    if (closed && all !== UNREADABLE && bytes <= streamSlices.budget / 8) cacheNewest(streamSlices, key, { order: n, rows, bytes });
+    return rows;
   }
   function buildIndex(n) {
     const index = emptyIndex(n);
@@ -635,8 +659,8 @@ function makeSegmentedTranscriptIo(opts) {
     const out = [];
     for (const meta of relevantSegments(streamId, true)) {
       if (since > 0 && num(meta.maxTs) > 0 && num(meta.maxTs) < since - SINCE_SLACK_MS) continue;
-      const rows = readRows(meta.number, strict);
-      for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) if (rows[i].streamId === streamId && (!runId || rows[i].sourceRunId === runId) && (!(options && options.dispatchState) || rows[i].dispatchState === options.dispatchState)) out.push(rows[i]);
+      const rows = streamRowsIn(meta.number, streamId, strict);
+      for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) if ((!runId || rows[i].sourceRunId === runId) && (!(options && options.dispatchState) || rows[i].dispatchState === options.dispatchState)) out.push(rows[i]);
       if (out.length >= limit) break;
     }
     return out.reverse().map(publicRow);
