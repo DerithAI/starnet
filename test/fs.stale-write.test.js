@@ -4,8 +4,10 @@
    agent read it and the moment it writes back. Nothing noticed, so the write silently reverted the other
    change — the classic lost update, and the harder kind to spot because both sides believe they succeeded.
 
-   The guard is scoped to fs.write alone, and these assertions are the reason: fs.edit / fs.append / fs.patch
-   are read-modify-write inside ONE call and cannot clobber, so guarding them would only invent false refusals.
+   The read STAMP is scoped to fs.write alone, and these assertions are the reason: fs.edit / fs.append /
+   fs.patch apply to what is on disk when they write, so stamping them would only invent false refusals. (They
+   once claimed they "cannot clobber" because each is read-modify-write in one call; across CONCURRENT calls
+   that was false — test/fs.concurrent-mutations.test.js proves the per-file lock + re-read that fixed it.)
    Uses a real temp dir with explicitly stamped mtimes so the drift is genuine, not simulated. */
 'use strict';
 const A = require('./_assert.js');

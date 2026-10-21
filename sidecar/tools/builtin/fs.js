@@ -23,6 +23,49 @@ const { note: failNote } = require('../../failopen');
   const crypto = require('node:crypto');
   const { assertWorkspaceId } = require('../../workspace-reserved.js');
 
+  /* ONE WRITER PER FILE, PROCESS-WIDE (2026-10-20, lost-update fix). Every fs mutation is read -> (await the LSP
+     baseline, up to ~10 s) -> writeFile of a whole file computed from that read. makeFsTools is built PER RUN
+     (index.js), and team.dispatch runs its workers with Promise.all, so two runs editing one project file
+     interleaved: the later writer rewrote the file from its stale read and erased the other's change, and BOTH
+     receipts said read-back-verified (each read back its own bytes). fs.append lost a line 10 runs out of 10.
+     The tails live HERE, at factory scope, so the lead, its workers and any other agent in this process share
+     them; per-instance state could not serialize two runs. Keys are taken in sorted order, so a multi-file
+     fs.patch and a single-file writer can never deadlock. A caller holds a key only for re-read + write +
+     read-back (milliseconds), never across the LSP baseline or a consent prompt, so a queued call never burns
+     its own timeoutMs waiting. SCOPE: in-process only. A shell-side writer or an external editor is not locked,
+     but its window shrinks from the LSP baseline (seconds) to one readFile -> writeFile (milliseconds). Keys
+     are lexical paths, so two symlinked spellings of one file do not share a lock. */
+  const MUTATION_TAILS = new Map();
+  function mutationAbortError() { const e = new Error('fs mutation aborted'); e.name = 'AbortError'; return e; }
+  function waitTurn(prev, signal) {
+    if (!signal || typeof signal.addEventListener !== 'function') return prev;
+    if (signal.aborted) return Promise.reject(mutationAbortError());
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(mutationAbortError());
+      signal.addEventListener('abort', onAbort, { once: true });
+      prev.then(() => { signal.removeEventListener('abort', onAbort); resolve(); });
+    });
+  }
+  async function withFileLocks(keys, signal, fn) {
+    const sorted = Array.from(new Set((keys || []).map(String))).sort();
+    const releases = [];
+    try {
+      for (const k of sorted) {
+        const prev = MUTATION_TAILS.get(k) || Promise.resolve();
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const tail = prev.then(() => gate);   // the next caller waits for the holder AND for us, even if we leave early
+        MUTATION_TAILS.set(k, tail);
+        releases.push(() => { release(); if (MUTATION_TAILS.get(k) === tail) MUTATION_TAILS.delete(k); });
+        await waitTurn(prev, signal);
+        if (signal && signal.aborted) throw mutationAbortError();   // a cancelled tool must not turn into a late write
+      }
+      return await fn();
+    } finally {
+      for (let i = releases.length - 1; i >= 0; i--) releases[i]();
+    }
+  }
+
   function safeAgentId(id) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(id || '')) throw new Error('bad agentId');
     // An id equal to a station-owned directory (codex/, channels/, connectors/, plugins/ …) would make that
@@ -70,6 +113,10 @@ const { note: failNote } = require('../../failopen');
     }
     async function readBytesOrMissing(abs) {
       try { return await fsp.readFile(abs); }
+      catch (e) { if (e && e.code === 'ENOENT') return null; throw e; }
+    }
+    async function readUtf8OrMissing(abs) {
+      try { return await fsp.readFile(abs, 'utf8'); }
       catch (e) { if (e && e.code === 'ENOENT') return null; throw e; }
     }
     function receiptLine(receipt) {
@@ -305,24 +352,40 @@ const { note: failNote } = require('../../failopen');
        so the write silently reverted the other change — the classic lost update, and the harder kind to spot
        because both sides believe they succeeded.
 
-       SCOPED TO fs.write ON PURPOSE, after tracing what each writer actually does:
-         · fs.append reads the file and appends to what it FINDS, so a concurrent change survives.
-         · fs.edit reads fresh and replaces an exact `find`; a drifted file either still matches (the edit
-           lands on the NEW text, which is right) or misses and errors honestly.
+       THE STAMP IS SCOPED TO fs.write, after tracing what each writer actually does:
+         · fs.append appends to what it FINDS on disk.
+         · fs.edit replaces an exact `find`; a drifted file either still matches (the edit lands on the NEW
+           text, which is right) or misses and errors honestly.
          · fs.patch validates every hunk's context against current content before writing anything.
-       All three are read-modify-write inside ONE call and cannot clobber. fs.write is the only writer that
-       replaces a whole file with content composed from a read that may now be old — so it is the only one
-       that needs a stamp, and guarding the others would only manufacture false refusals.
+       fs.write is the only writer that replaces a whole file with content composed from a read that may now be
+       old — so it is the only one that needs a stamp, and stamping the others would only manufacture false
+       refusals.
+
+       CORRECTION (2026-10-20): the note above once said all three "cannot clobber" because each is
+       read-modify-write inside ONE call. Across CONCURRENT calls that was false: each awaits the LSP baseline
+       between its read and its write, so two runs interleaved and the later one rewrote the file from its stale
+       read (reproduced 20/20, both receipts "verified"). Every writer now re-reads the file under the
+       process-wide per-file lock (withFileLocks above) right before it writes, and works from THOSE bytes: an
+       edit or append re-applies onto them, a patch whose source moved refuses before writing anything, and an
+       fs.write over a file this agent read refuses with the error below.
 
        A file this agent never read has no stamp and is never refused: writing a file you did not read is
        "create it", not "clobber it". One refusal per drift — the stamp is dropped so the required re-read
        re-arms it, and the agent can never be stuck in a loop it has no way to satisfy. */
     const readStamps = new Map();   // agentId \0 abs -> the mtime this agent last SAW
     const stampKey = (aid, abs) => String(aid) + '\0' + (P.sep === '\\' ? String(abs).toLowerCase() : String(abs));
+    // the process-wide mutation lock key for one file (same case rule as pathInside / stampKey)
+    const lockKey = (abs) => (P.sep === '\\' ? P.resolve(String(abs)).toLowerCase() : P.resolve(String(abs)));
+    const DRIFT_REASON = 'the file changed on disk while this edit was in flight (another writer), so a before/after diagnostic comparison would include their change';
     async function mtimeOf(abs) { try { const st = await fsp.stat(abs); return Number(st.mtimeMs || 0) || 0; } catch (_) { return 0; } }
     async function stampSeen(aid, abs) {
       const m = await mtimeOf(abs);
       if (m) readStamps.set(stampKey(aid, abs), m); else readStamps.delete(stampKey(aid, abs));
+    }
+    function staleWriteError(rel) {
+      const error = new Error('stale write refused: ' + rel + ' changed on disk after you read it — someone else (another agent, or the Commander) edited it. Read it again and re-apply your change on top of the current content, or use fs.edit/fs.patch so your change merges instead of replacing the file.');
+      error.precondition = { code: 'fresh_read_required', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
+      return error;
     }
     async function assertFresh(aid, abs, rel) {
       const key = stampKey(aid, abs);
@@ -331,9 +394,7 @@ const { note: failNote } = require('../../failopen');
       const now = await mtimeOf(abs);
       if (!now || now <= seen) return;            // deleted since, or untouched since we looked
       readStamps.delete(key);                     // one refusal per drift; the re-read below re-arms it
-      const error = new Error('stale write refused: ' + rel + ' changed on disk after you read it — someone else (another agent, or the Commander) edited it. Read it again and re-apply your change on top of the current content, or use fs.edit/fs.patch so your change merges instead of replacing the file.');
-      error.precondition = { code: 'fresh_read_required', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
-      throw error;
+      throw staleWriteError(rel);
     }
 
     const writeTool = {
@@ -346,12 +407,26 @@ const { note: failNote } = require('../../failopen');
         const data = Buffer.from(String(args.content), 'utf8');
         if (data.length > WRITE_BYTES) throw new Error('file too large (' + data.length + ' > ' + WRITE_BYTES + ' bytes)');
         await assertFresh(aid, abs, args.path);   // refuse to overwrite a file that moved under us
-        let beforeBytes = null;
-        try { beforeBytes = await fsp.readFile(abs); } catch (e) { if (!(e && e.code === 'ENOENT')) throw e; }
+        const signal = ctx && ctx.signal, lk = lockKey(abs);
+        // read under the lock: a concurrent writer's truncating writeFile can never hand us a torn half-file
+        const beforeBytes = await withFileLocks([lk], signal, () => readBytesOrMissing(abs));
         const diagnosticTicket = await beginEditDiagnostics(aid, [{ abs, base, rel: String(args.path), text: beforeBytes ? beforeBytes.toString('utf8') : '' }], ctx);
         await fsp.mkdir(P.dirname(abs), { recursive: true });
-        const receipt = await verifiedMutation({ operation: 'write', path: args.path, abs, expected: data, initial: beforeBytes, mutate: () => fsp.writeFile(abs, data) });
-        await stampSeen(aid, abs);                // our own write is the new baseline, so a rewrite never self-trips
+        const receipt = await withFileLocks([lk], signal, async () => {
+          // re-read under the lock: the LSP baseline above can take seconds, and another run may have written since
+          const current = await readBytesOrMissing(abs);
+          let initial = beforeBytes;
+          if (!sameBytes(current, beforeBytes)) {
+            const key = stampKey(aid, abs);
+            // this agent READ the file and composed its content from that read: replacing their change is the lost update
+            if (readStamps.has(key)) { readStamps.delete(key); throw staleWriteError(args.path); }
+            initial = current;
+            if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
+          }
+          const r = await verifiedMutation({ operation: 'write', path: args.path, abs, expected: data, initial, mutate: () => fsp.writeFile(abs, data) });
+          await stampSeen(aid, abs);                // our own write is the new baseline, so a rewrite never self-trips
+          return r;
+        });
         emitDeliverable(ctx, aid, args.path);
         return finishEditDiagnostics(diagnosticTicket,
           { content: 'Wrote ' + args.path + ' (' + data.length + ' bytes).\n' + receiptLine(receipt) + locationLine(args.path, abs, ctx), summary: 'wrote ' + args.path + ' (' + kb(data.length) + ')', mutationReceipt: receipt, receipt }, ctx);
@@ -514,17 +589,31 @@ const { note: failNote } = require('../../failopen');
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
         const { abs, base } = await resolveInside(aid, args.path, { scope: 'write', ctx });
-        let existingBytes = null;
-        try { existingBytes = await fsp.readFile(abs); } catch (e) { if (!(e && e.code === 'ENOENT')) throw e; }
+        const signal = ctx && ctx.signal, lk = lockKey(abs);
+        const existingBytes = await withFileLocks([lk], signal, () => readBytesOrMissing(abs));   // never a torn read
         const existing = existingBytes ? existingBytes.toString('utf8') : '';
         const combined = existing + String(args.content);
-        const bytes = Buffer.byteLength(combined, 'utf8');
+        let bytes = Buffer.byteLength(combined, 'utf8');
         if (bytes > WRITE_BYTES) throw new Error('file too large after append (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');
         const diagnosticTicket = await beginEditDiagnostics(aid, [{ abs, base, rel: String(args.path), text: existing }], ctx);
         await fsp.mkdir(P.dirname(abs), { recursive: true });
-        const expected = Buffer.from(combined, 'utf8');
-        const receipt = await verifiedMutation({ operation: 'append', path: args.path, abs, expected, initial: existingBytes, mutate: () => fsp.writeFile(abs, expected) });
-        await stampSeen(aid, abs);   // our own append is the new baseline — a later fs.write must not read as a third-party race
+        const receipt = await withFileLocks([lk], signal, async () => {
+          // re-read under the lock and append to what is there NOW: another run's line written during our LSP
+          // baseline used to be erased by a whole-file write composed from the older read
+          const current = await readBytesOrMissing(abs);
+          let initial = existingBytes, all = combined;
+          if (!sameBytes(current, existingBytes)) {
+            all = (current ? current.toString('utf8') : '') + String(args.content);
+            bytes = Buffer.byteLength(all, 'utf8');
+            if (bytes > WRITE_BYTES) throw new Error('file too large after append (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');
+            initial = current;
+            if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
+          }
+          const expected = Buffer.from(all, 'utf8');
+          const r = await verifiedMutation({ operation: 'append', path: args.path, abs, expected, initial, mutate: () => fsp.writeFile(abs, expected) });
+          await stampSeen(aid, abs);   // our own append is the new baseline — a later fs.write must not read as a third-party race
+          return r;
+        });
         emitDeliverable(ctx, aid, args.path);
         const added = Buffer.byteLength(String(args.content), 'utf8');
         return finishEditDiagnostics(diagnosticTicket,
@@ -553,30 +642,52 @@ const { note: failNote } = require('../../failopen');
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
         const { abs, base } = await resolveInside(aid, args.path, { scope: 'write', ctx });
-        let initialBytes;
-        try { initialBytes = await fsp.readFile(abs); }
-        catch (e) { if (e && e.code === 'ENOENT') throw new Error('no such file: ' + args.path); throw e; }
+        const signal = ctx && ctx.signal, lk = lockKey(abs);
+        // read under the lock: a concurrent truncating writeFile once produced a false '"find" text not found'
+        const initialBytes = await withFileLocks([lk], signal, () => readBytesOrMissing(abs));
+        if (initialBytes == null) throw new Error('no such file: ' + args.path);
         assertObserved(aid, abs, args.path);
         const txt = initialBytes.toString('utf8');
         const find = String(args.find);
         if (!find) throw new Error('"find" must be a non-empty string');
-        if (txt.indexOf(find) < 0) throw new Error('"find" text not found in ' + args.path + ' — read the file and match it exactly');
-        const count = txt.split(find).length - 1;
         /* UNIQUENESS. Replacing EVERY occurrence silently was the audit's top finding: a "find" like `return x;`
            rewrote five functions when the model meant one, and the result line said "5 replacements" only after
            the damage. Exactly-one-match keeps the historic path; more than one must be asked for explicitly. */
         const replaceAll = args.replace_all === true;
         const expectedCount = args.expected_count == null ? null : Math.floor(Number(args.expected_count));
-        if (expectedCount != null && (!(expectedCount >= 1) || !isFinite(expectedCount))) throw new Error('"expected_count" must be a positive integer');
-        if (expectedCount != null && count !== expectedCount) throw new Error('"find" matches ' + count + ' place' + (count === 1 ? '' : 's') + ' in ' + args.path + ' but expected_count is ' + expectedCount + ' — nothing was changed. Re-read the file and adjust "find" or expected_count.');
-        if (count > 1 && !replaceAll && expectedCount == null) throw new Error('"find" matches ' + count + ' places in ' + args.path + ' — nothing was changed. Include more surrounding text so "find" is unique to the ONE place you mean, or pass { "replace_all": true } to change all ' + count + ', or { "expected_count": ' + count + ' } to confirm that count.');
-        const next = txt.split(find).join(String(args.replace));
-        const bytes = Buffer.byteLength(next, 'utf8');
-        if (bytes > WRITE_BYTES) throw new Error('file too large after edit (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');
+        // the whole match/count/size verdict for one version of the file — run on the first read, and again on the
+        // bytes found under the lock when another writer changed the file in between (same errors either way)
+        function planEdit(text) {
+          if (text.indexOf(find) < 0) throw new Error('"find" text not found in ' + args.path + ' — read the file and match it exactly');
+          const count = text.split(find).length - 1;
+          if (expectedCount != null && (!(expectedCount >= 1) || !isFinite(expectedCount))) throw new Error('"expected_count" must be a positive integer');
+          if (expectedCount != null && count !== expectedCount) throw new Error('"find" matches ' + count + ' place' + (count === 1 ? '' : 's') + ' in ' + args.path + ' but expected_count is ' + expectedCount + ' — nothing was changed. Re-read the file and adjust "find" or expected_count.');
+          if (count > 1 && !replaceAll && expectedCount == null) throw new Error('"find" matches ' + count + ' places in ' + args.path + ' — nothing was changed. Include more surrounding text so "find" is unique to the ONE place you mean, or pass { "replace_all": true } to change all ' + count + ', or { "expected_count": ' + count + ' } to confirm that count.');
+          const next = text.split(find).join(String(args.replace));
+          const bytes = Buffer.byteLength(next, 'utf8');
+          if (bytes > WRITE_BYTES) throw new Error('file too large after edit (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');
+          return { next, count };
+        }
+        let plan = planEdit(txt);
+        // the baseline stays OUTSIDE the lock: it can take ~10 s, and queued edits would time out behind it
         const diagnosticTicket = await beginEditDiagnostics(aid, [{ abs, base, rel: String(args.path), text: txt }], ctx);
-        const expected = Buffer.from(next, 'utf8');
-        const receipt = await verifiedMutation({ operation: 'edit', path: args.path, abs, expected, initial: initialBytes, mutate: () => fsp.writeFile(abs, expected) });
-        await stampSeen(aid, abs);   // our own edit is the new baseline: read -> edit -> write used to refuse with a FABRICATED "someone else edited it" story
+        const receipt = await withFileLocks([lk], signal, async () => {
+          const current = await readBytesOrMissing(abs);
+          if (current == null) throw new Error('no such file: ' + args.path);
+          let initial = initialBytes;
+          if (!sameBytes(current, initialBytes)) {
+            // another writer landed during the baseline: the edit lands on THEIR text (a vanished or now-ambiguous
+            // "find" refuses with the ordinary errors), never on the stale read that would erase their change
+            plan = planEdit(current.toString('utf8'));
+            initial = current;
+            if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
+          }
+          const expected = Buffer.from(plan.next, 'utf8');
+          const r = await verifiedMutation({ operation: 'edit', path: args.path, abs, expected, initial, mutate: () => fsp.writeFile(abs, expected) });
+          await stampSeen(aid, abs);   // our own edit is the new baseline: read -> edit -> write used to refuse with a FABRICATED "someone else edited it" story
+          return r;
+        });
+        const count = plan.count;
         emitDeliverable(ctx, aid, args.path);
         return finishEditDiagnostics(diagnosticTicket,
           { content: 'Edited ' + args.path + ' (' + count + ' replacement' + (count === 1 ? '' : 's') + ').\n' + receiptLine(receipt), summary: 'edited ' + args.path + ' (' + count + 'x)', mutationReceipt: receipt, receipt }, ctx);
@@ -598,8 +709,9 @@ const { note: failNote } = require('../../failopen');
           const key = resolved.abs;
           if (plans.has(key)) return plans.get(key);
           let content = null, exists = false;
-          try { content = await fsp.readFile(key, 'utf8'); exists = true; }
-          catch (e) { if (!(e && e.code === 'ENOENT')) throw e; }
+          // under the per-file lock so a concurrent writer's truncating writeFile is never read half-written
+          content = await withFileLocks([lockKey(key)], ctx && ctx.signal, readUtf8OrMissing.bind(null, key));
+          exists = content != null;
           const plan = { rel: String(rel), abs: key, base: resolved.base, exists, content, initialContent: content, touched: false };
           plans.set(key, plan);
           return plan;
@@ -695,56 +807,69 @@ const { note: failNote } = require('../../failopen');
         const touched = Array.from(plans.values()).filter(p => p.touched);
         const diagnosticTicket = await beginEditDiagnostics(aid,
           touched.map(plan => ({ abs: plan.abs, base: plan.base, rel: plan.rel, text: plan.initialContent == null ? '' : plan.initialContent })), ctx);
-        const patchReceipt = {
-          operation: 'patch', path: touched.map(p => p.rel).join(', '), state: 'attempted', phases: ['attempted'],
-          attemptedBytes: touched.reduce((n, p) => n + (p.content == null ? 0 : Buffer.byteLength(p.content, 'utf8')), 0), writtenBytes: 0, verifiedBytes: 0, sha256: null, files: []
-        };
-        try {
-          // Apply destinations/updated files before deletes. In particular, a move must never
-          // remove the last source copy until its destination was written and read back exactly.
-          const ordered = touched.filter(plan => plan.content != null)
-            .concat(touched.filter(plan => plan.content == null));
-          for (const plan of ordered) {
-            const expected = plan.content == null ? null : Buffer.from(plan.content, 'utf8');
-            const initial = plan.initialContent == null ? null : Buffer.from(plan.initialContent, 'utf8');
-            if (expected) await fsp.mkdir(P.dirname(plan.abs), { recursive: true });
-            const fileReceipt = await verifiedMutation({
-              operation: expected ? 'patch-write' : 'patch-delete', path: plan.rel, abs: plan.abs,
-              expected, initial, mutate: () => expected ? fsp.writeFile(plan.abs, expected) : fsp.rm(plan.abs, { force: true })
-            });
-            await stampSeen(aid, plan.abs);   // our own patch is the new baseline for the stale-write guard (deletes drop the stamp)
-            patchReceipt.files.push(fileReceipt);
-          }
-          patchReceipt.state = 'read-back-verified';
-          patchReceipt.phases.push('written', 'read-back-verified');
-          patchReceipt.writtenBytes = patchReceipt.files.reduce((n, r) => n + r.writtenBytes, 0);
-          patchReceipt.verifiedBytes = patchReceipt.files.reduce((n, r) => n + r.verifiedBytes, 0);
-        } catch (cause) {
-          patchReceipt.files = [];
-          let expectedCount = 0, initialCount = 0;
+        // every touched file, locked together (sorted keys inside withFileLocks: no deadlock with a one-file writer)
+        const patchReceipt = await withFileLocks(touched.map(plan => lockKey(plan.abs)), ctx && ctx.signal, async () => {
+          /* The hunks were matched against the reads above; the baseline then waited, and another run may have
+             written one of these files since. Writing now would rebuild it from the old read and erase that change,
+             so a moved source refuses BEFORE any byte is written. Re-running the same patch re-matches by context. */
           for (const plan of touched) {
-            const expected = plan.content == null ? null : Buffer.from(plan.content, 'utf8');
-            const initial = plan.initialContent == null ? null : Buffer.from(plan.initialContent, 'utf8');
-            let actual = null, unreadable = false;
-            try { actual = await readBytesOrMissing(plan.abs); } catch (_) { unreadable = true; }
-            const state = !unreadable && sameBytes(actual, expected) ? 'read-back-verified'
-              : (!unreadable && sameBytes(actual, initial) ? 'failed' : 'partially-applied');
-            if (state === 'read-back-verified') expectedCount++;
-            if (state === 'failed') initialCount++;
-            patchReceipt.files.push({
-              operation: expected ? 'patch-write' : 'patch-delete', path: plan.rel, state,
-              phases: ['attempted', state], attemptedBytes: expected ? expected.length : 0,
-              writtenBytes: actual ? actual.length : 0, verifiedBytes: state === 'read-back-verified' && expected ? expected.length : 0,
-              sha256: sha256(expected), actualSha256: unreadable ? null : sha256(actual)
-            });
+            const now = await readUtf8OrMissing(plan.abs);
+            if (now !== plan.initialContent) {
+              throw new Error('fs.patch refused: ' + plan.rel + ' changed on disk while this patch was being prepared (another agent or process wrote it) — nothing was written. Re-run the same fs.patch; its hunks match by context.');
+            }
           }
-          patchReceipt.state = expectedCount === touched.length ? 'read-back-verified'
-            : (initialCount === touched.length ? 'failed' : 'partially-applied');
-          patchReceipt.phases.push(patchReceipt.state);
-          patchReceipt.writtenBytes = patchReceipt.files.reduce((n, r) => n + r.writtenBytes, 0);
-          patchReceipt.verifiedBytes = patchReceipt.files.reduce((n, r) => n + r.verifiedBytes, 0);
-          throw receiptError('filesystem patch ' + patchReceipt.state + ': ' + ((cause && cause.message) || cause), patchReceipt);
-        }
+          const patchReceipt = {
+            operation: 'patch', path: touched.map(p => p.rel).join(', '), state: 'attempted', phases: ['attempted'],
+            attemptedBytes: touched.reduce((n, p) => n + (p.content == null ? 0 : Buffer.byteLength(p.content, 'utf8')), 0), writtenBytes: 0, verifiedBytes: 0, sha256: null, files: []
+          };
+          try {
+            // Apply destinations/updated files before deletes. In particular, a move must never
+            // remove the last source copy until its destination was written and read back exactly.
+            const ordered = touched.filter(plan => plan.content != null)
+              .concat(touched.filter(plan => plan.content == null));
+            for (const plan of ordered) {
+              const expected = plan.content == null ? null : Buffer.from(plan.content, 'utf8');
+              const initial = plan.initialContent == null ? null : Buffer.from(plan.initialContent, 'utf8');
+              if (expected) await fsp.mkdir(P.dirname(plan.abs), { recursive: true });
+              const fileReceipt = await verifiedMutation({
+                operation: expected ? 'patch-write' : 'patch-delete', path: plan.rel, abs: plan.abs,
+                expected, initial, mutate: () => expected ? fsp.writeFile(plan.abs, expected) : fsp.rm(plan.abs, { force: true })
+              });
+              await stampSeen(aid, plan.abs);   // our own patch is the new baseline for the stale-write guard (deletes drop the stamp)
+              patchReceipt.files.push(fileReceipt);
+            }
+            patchReceipt.state = 'read-back-verified';
+            patchReceipt.phases.push('written', 'read-back-verified');
+            patchReceipt.writtenBytes = patchReceipt.files.reduce((n, r) => n + r.writtenBytes, 0);
+            patchReceipt.verifiedBytes = patchReceipt.files.reduce((n, r) => n + r.verifiedBytes, 0);
+          } catch (cause) {
+            patchReceipt.files = [];
+            let expectedCount = 0, initialCount = 0;
+            for (const plan of touched) {
+              const expected = plan.content == null ? null : Buffer.from(plan.content, 'utf8');
+              const initial = plan.initialContent == null ? null : Buffer.from(plan.initialContent, 'utf8');
+              let actual = null, unreadable = false;
+              try { actual = await readBytesOrMissing(plan.abs); } catch (_) { unreadable = true; }
+              const state = !unreadable && sameBytes(actual, expected) ? 'read-back-verified'
+                : (!unreadable && sameBytes(actual, initial) ? 'failed' : 'partially-applied');
+              if (state === 'read-back-verified') expectedCount++;
+              if (state === 'failed') initialCount++;
+              patchReceipt.files.push({
+                operation: expected ? 'patch-write' : 'patch-delete', path: plan.rel, state,
+                phases: ['attempted', state], attemptedBytes: expected ? expected.length : 0,
+                writtenBytes: actual ? actual.length : 0, verifiedBytes: state === 'read-back-verified' && expected ? expected.length : 0,
+                sha256: sha256(expected), actualSha256: unreadable ? null : sha256(actual)
+              });
+            }
+            patchReceipt.state = expectedCount === touched.length ? 'read-back-verified'
+              : (initialCount === touched.length ? 'failed' : 'partially-applied');
+            patchReceipt.phases.push(patchReceipt.state);
+            patchReceipt.writtenBytes = patchReceipt.files.reduce((n, r) => n + r.writtenBytes, 0);
+            patchReceipt.verifiedBytes = patchReceipt.files.reduce((n, r) => n + r.verifiedBytes, 0);
+            throw receiptError('filesystem patch ' + patchReceipt.state + ': ' + ((cause && cause.message) || cause), patchReceipt);
+          }
+          return patchReceipt;
+        });
         for (const plan of touched) if (plan.content != null) emitDeliverable(ctx, aid, plan.rel);
         return finishEditDiagnostics(diagnosticTicket, {
           content: 'Applied patch: ' + touched.length + ' file' + (touched.length === 1 ? '' : 's') + ' changed.\n' + receiptLine(patchReceipt),
@@ -1289,7 +1414,7 @@ const { note: failNote } = require('../../failopen');
 
     return {
       writeTool, readTool, listTool, appendTool, editTool, patchTool, searchTool,
-      _internals: { resolveInside, outputPlacement, workspaceRoot, safeAgentId, walk, collectFiles, globToRe, pathInside, parsePatch, fuzzyFindAndReplace, parseGitignore, gitignored, rgBinary },
+      _internals: { resolveInside, outputPlacement, workspaceRoot, safeAgentId, walk, collectFiles, globToRe, pathInside, parsePatch, fuzzyFindAndReplace, parseGitignore, gitignored, rgBinary, withFileLocks, lockKey },
       register(reg) { [writeTool, readTool, listTool, appendTool, editTool, patchTool, searchTool].forEach(t => reg.register(t)); return reg; }
     };
   }
