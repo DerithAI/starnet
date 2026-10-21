@@ -199,7 +199,7 @@ const SYNC_BASELINE = {
   'skills/package.js': 3,
   'skills/prefs.js': 2,
   'skills/registry.js': 1,
-  'skillstore.js': 3,   // AUDITED — 3 left: corrupt log -> empty library (documented), digest stamp, history view projection
+  'skillstore.js': 2,   // AUDITED — 2 left: digest stamp, history view projection (a failed load is now reported + refuses writes)
   'slash-actions.js': 1,
   'station-bridge.js': 2,
   'station-recovery.js': 3,
