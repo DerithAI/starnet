@@ -110,6 +110,28 @@ async function rejection(p) {
     A.ok(/^Wrote c\.js \(7 bytes\)\.\n\[mutation receipt: read-back-verified;/.test(again.content), 'one refusal per drift: the re-read re-arms it and the write lands');
   }
 
+  // ---- 3b. fs.write arriving while another run is INSIDE its locked write: the stamp check waits for it ----
+  {
+    const proj = await project({ 'c.js': 'v1\n' });
+    const old = new Date(Date.now() - 60000); await fsp.utimes(path.join(proj, 'c.js'), old, old);
+    const slowFsp = new Proxy(fsp, { get(tg, p) {   // run B's disk: its writeFile takes 50 ms to land
+      if (p === 'writeFile') return async (...a) => { await sleep(50); return tg.writeFile(...a); };
+      return tg[p];
+    } });
+    const pathTrust = async (abs) => ({ base: proj, abs });
+    const a = run(proj), b = makeFsTools({ fsp: slowFsp, pathMod: path, root: ROOT, pathTrust });
+    const ca = { agentId: 'lead', projectRoot: proj }, cb = { agentId: 'worker', projectRoot: proj };
+    await a.readTool.run({ path: 'c.js' }, ca);
+    await b.readTool.run({ path: 'c.js' }, cb);
+    const pb = b.editTool.run({ path: 'c.js', find: 'v1', replace: 'B edit' }, cb);
+    await sleep(15);                                  // B holds the lock, its bytes not landed yet
+    const ea = await rejection(a.writeTool.run({ path: 'c.js', content: 'A rewrite composed from v1\n' }, ca));
+    const rb = await pb;
+    A.eq(rb.mutationReceipt.state, 'read-back-verified', "the other run's edit is verified");
+    A.ok(ea && /^stale write refused: c\.js changed on disk after you read it/.test(ea.message), 'the whole-file write composed from the older read is refused' + (ea ? '' : ' (it was NOT refused: it overwrote the edit)'));
+    A.eq(await fsp.readFile(path.join(proj, 'c.js'), 'utf8'), 'B edit\n', "and the other run's verified edit survived");
+  }
+
   // ---- 4. fs.patch whose source moved during the baseline refuses before writing anything ----
   {
     const proj = await project({ 'p.txt': 'alpha\nbeta\n' });

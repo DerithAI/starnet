@@ -409,14 +409,19 @@ const { note: failNote } = require('../../failopen');
         const { abs, base } = await resolveInside(aid, args.path, { scope: 'write', ctx });
         const data = Buffer.from(String(args.content), 'utf8');
         if (data.length > WRITE_BYTES) throw new Error('file too large (' + data.length + ' > ' + WRITE_BYTES + ' bytes)');
-        await assertFresh(aid, abs, args.path);   // refuse to overwrite a file that moved under us
         const signal = ctx && ctx.signal, lk = lockKey(abs);
-        // read under the lock: a concurrent writer's truncating writeFile can never hand us a torn half-file
-        const beforeBytes = await withFileLocks([lk], signal, () => readBytesOrMissing(abs));
+        // the stamp check and the read both run UNDER the lock: checked before it, a write still landing from
+        // another run (it holds the lock) passed the check, and this write then replaced it. The read can never
+        // be a torn half-file from a concurrent truncating writeFile either.
+        const beforeBytes = await withFileLocks([lk], signal, async () => {
+          await assertFresh(aid, abs, args.path);   // refuse to overwrite a file that moved under us
+          return readBytesOrMissing(abs);
+        });
         const diagnosticTicket = await beginEditDiagnostics(aid, [{ abs, base, rel: String(args.path), text: beforeBytes ? beforeBytes.toString('utf8') : '' }], ctx);
         await fsp.mkdir(P.dirname(abs), { recursive: true });
         const receipt = await withFileLocks([lk], signal, async () => {
-          // re-read under the lock: the LSP baseline above can take seconds, and another run may have written since
+          // re-check under the lock: the LSP baseline above can take seconds, and another run may have written since
+          await assertFresh(aid, abs, args.path);
           const current = await readBytesOrMissing(abs);
           let initial = beforeBytes;
           if (!sameBytes(current, beforeBytes)) {
