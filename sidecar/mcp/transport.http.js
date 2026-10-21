@@ -22,6 +22,9 @@
   const LOCAL_ERROR = Symbol.for('starnet.mcp.localTransportError');   // read by client.js safeRpcError
   // the longest one unfinished SSE event may grow before the stream is closed (the stdio transport's line cap)
   const MAX_EVENT_CHARS = 64 * 1024 * 1024;
+  // what each kept line or chunk piece of an open event is charged on top of its characters: about what V8 spends
+  // on one short string plus its array slot, so a flood of tiny lines cannot hold far more memory than the cap
+  const PIECE_COST = 48;
 
   // Node's fetch rejects with a bare "fetch failed"; the reason (DNS miss, refused, TLS) lives on e.cause.
   // Only the error CODE and our own wording are kept — never response text — so this stays transport-authored.
@@ -179,20 +182,28 @@
          THE OPEN EVENT IS CAPPED (openChars counts every character not yet handed on). With the rescan gone, a
          server sending one endless event filled memory at full read speed and crashed the whole sidecar out of
          memory well inside the request timeout. Past maxEventChars the event is dropped, the stream cancelled,
-         the call fails with that reason and the manager is told the connection died — as the stdio line cap does. */
+         the call fails with that reason and the manager is told the connection died — as the stdio line cap does.
+         THE CAP BOUNDS MEMORY, NOT JUST CHARACTERS (review 2026-10-21): every kept line and every kept piece of
+         the open line is charged PIECE_COST on top of its length. Counting characters alone, an endless event of
+         2-character lines held 32M strings under a 64 MiB cap — about 1.7 GB for one call, and a few calls at once
+         ran the sidecar out of memory anyway. */
       let evLines = [], lineParts = [], openChars = 0, overflowed = false;
       const takeText = (s) => {           // deliver every COMPLETE (blank-line-terminated) event this text finishes
         let from = 0;
         for (;;) {
           const nl = s.indexOf('\n', from);
           if (nl < 0) break;
-          if (openChars + (nl - from) > maxEventChars) { overflowed = true; break; }
-          openChars += nl - from;
+          const len = nl - from;
+          if (openChars + len > maxEventChars) { overflowed = true; break; }
           let line = s.slice(from, nl);
           if (lineParts.length) { lineParts.push(line); line = lineParts.join(''); lineParts = []; }
           if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
           from = nl + 1;
-          if (line) { evLines.push(line); continue; }
+          if (line) {
+            openChars += len + PIECE_COST;
+            if (openChars > maxEventChars) { overflowed = true; break; }
+            evLines.push(line); continue;
+          }
           openChars = 0;
           if (!evLines.length) continue;
           const ev = evLines.join('\n');
@@ -200,7 +211,7 @@
           for (const m of parseSse(ev + '\n\n')) route(m);
         }
         if (!overflowed && from < s.length) {
-          openChars += s.length - from;
+          openChars += s.length - from + PIECE_COST;
           if (openChars > maxEventChars) overflowed = true;
           else lineParts.push(from ? s.slice(from) : s);
         }
@@ -227,7 +238,7 @@
       } finally { clearTimeout(t); }
       if (overflowed && !answered) {
         const cap = maxEventChars >= 1048576 ? Math.round(maxEventChars / 1048576) + ' MiB' : maxEventChars + ' characters';
-        const msg = 'connector sent an SSE event longer than ' + cap + ' without ending it: stream closed';
+        const msg = 'connector sent an SSE event over the ' + cap + ' limit without ending it: stream closed';
         failTo(id, msg);
         if (id != null) onError(new Error(msg));   // failTo already told onError when there is no id
         return;
@@ -245,5 +256,5 @@
     return { send, onMessage, close };
   }
 
-  return { makeHttpTransport, _internals: { parseSse, assertUrl, isLoopback, safeErrorDetail, MAX_EVENT_CHARS } };
+  return { makeHttpTransport, _internals: { parseSse, assertUrl, isLoopback, safeErrorDetail, MAX_EVENT_CHARS, PIECE_COST } };
 });

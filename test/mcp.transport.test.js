@@ -406,8 +406,24 @@ const rpc = (id, result) => JSON.stringify({ jsonrpc: '2.0', id, result });
     const got = []; tp.onMessage(m => got.push(m));
     await tp.send({ jsonrpc: '2.0', id: 31, method: 'tools/call', params: {} });
     A.ok(cancelled && fed <= 1024 * 1024 + 2 * enc.length, shape + ': the stream is cancelled at the cap (' + fed + ' bytes read; it buffered all of it, an endless one until the heap ran out)');
-    A.ok(got.length === 1 && got[0].id === 31 && /^connector sent an SSE event longer than 1 MiB without ending it: stream closed$/.test(got[0].error && got[0].error.message), shape + ': the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
+    A.ok(got.length === 1 && got[0].id === 31 && /^connector sent an SSE event over the 1 MiB limit without ending it: stream closed$/.test(got[0].error && got[0].error.message), shape + ': the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
     A.eq(errs, [got[0].error.message], shape + ': the connection is reported dead once, with the same reason');
+  }
+  // SHORT LINES COUNT AS MEMORY (review 2026-10-21). Counting characters alone, an endless event of 2-character
+  // lines kept one string per line: 32M of them under the 64 MiB cap, ~1.7 GB for one call (a few calls at once
+  // ran the sidecar out of memory). Every kept line now costs its fixed overhead too, so the cap bounds what it holds.
+  {
+    const enc = new TextEncoder().encode('ab\n'.repeat(1024));
+    let fed = 0, cancelled = false;
+    const body = { getReader: () => ({ read: async () => (cancelled || fed >= 8 * 1024 * 1024 ? { done: true } : (fed += enc.length, { done: false, value: enc })), cancel: () => { cancelled = true; } }) };
+    const errs = [];
+    const tp = makeHttpTransport({ url: 'https://mcp.flood.example/mcp', fetchImpl: sseFetch({ body }), timeoutMs: 30000, maxEventChars: 1024 * 1024, onError: e => errs.push(e.message) });
+    const got = []; tp.onMessage(m => got.push(m));
+    await tp.send({ jsonrpc: '2.0', id: 32, method: 'tools/call', params: {} });
+    const held = Math.round(fed / 3);   // lines read before the cut, every one of them kept
+    A.ok(cancelled && held <= (1024 * 1024) / 32 + 1024, 'an endless run of 2-character lines is cut off by what it holds: ' + held + ' lines kept under a 1 MiB cap (counting characters alone it kept 524288, ~27x the cap in memory)');
+    A.ok(got.length === 1 && got[0].id === 32 && /^connector sent an SSE event over the 1 MiB limit without ending it: stream closed$/.test(got[0].error && got[0].error.message), 'short lines: the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
+    A.eq(errs, [got[0].error.message], 'short lines: the connection is reported dead once, with the same reason');
   }
 
   // a stream that ENDS without answering the request synthesizes a prompt JSON-RPC error (no hang, no silence).
