@@ -5201,7 +5201,7 @@ const appendDurableProcessOutput = entry => outputArtifacts.append(entry);
    ended — an honest 409), or a full one: the COMMS line stays the only signal, exactly as before. The most recently
    started live run of that agent is the one told, so a note is never duplicated across runs (shellbg.js). */
 const wakeOwnerOnBgExit = makeBgExitWaker({ steer: steerBufs, runs: runs, runsMeta: runsMeta, log: (m) => console.log(m) });
-const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, processTable: osProcessTable });
+const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, spillWriter: outputArtifacts, processTable: osProcessTable });
 if (require.main === module) {
   // vouch every minute for bg children whose handle is still open, so a crash's orphan window covers children
   // they start late (procledger.touch). One small ledger write per minute, only while bg processes run.
