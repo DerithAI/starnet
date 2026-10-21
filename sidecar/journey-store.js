@@ -25,7 +25,7 @@ const EVOLUTION_NAMES = ['DRIFT', 'VECTOR', 'ORBIT', 'CONSTELLATION', 'DEEP FIEL
 const METRIC_CAP = 40, OUTCOME_CAP = 300, RECEIPT_CAP = 100, HISTORY_CAP = 24;
 const AGENT_RE = /^[A-Za-z0-9_-]{1,40}$/;
 
-const clip = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n);
+const clip = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n).replace(/[\uD800-\uDBFF]$/, '');   // never half an emoji (a lone surrogate)
 const finite = v => typeof v === 'number' && Number.isFinite(v);
 const number = v => {
   if (v == null || (typeof v === 'string' && !v.trim())) return null;

@@ -2545,9 +2545,9 @@ const commanderGoals = {
     const milestones = goal && typeof goal === 'object' ? GoalAdvance.normMilestones(goal.milestones) : [];
     this._goal = this._fold((goal && typeof goal === 'object') ? {
       id: goal.id == null ? null : String(goal.id).slice(0, 64),
-      text: String(goal.text || '').slice(0, 280),
+      text: String(goal.text || '').slice(0, 280).replace(/[\uD800-\uDBFF]$/, ''),   // never half an emoji (a lone surrogate)
       done: Number(goal.done) | 0, total: Number(goal.total) | 0, pct: Number(goal.pct) | 0,
-      next: goal.next == null ? null : String(goal.next).slice(0, 200),
+      next: goal.next == null ? null : String(goal.next).slice(0, 200).replace(/[\uD800-\uDBFF]$/, ''),
       milestoneId: goal.milestoneId == null ? null : String(goal.milestoneId).slice(0, 80),
       milestones: milestones.length ? milestones : null
     } : null);

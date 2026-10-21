@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "1c5c0338aed472cec3f89e4100a0f68cc9d4e1fa",
+    "sourceCommit": "1ce00e6a0df1756e2796f4ebf2b8baa64d5fd941",
     "pathSetSha256": "4c409160df09a2f14bf676c5aa98c72a119e0cc20e654e285ce10911e769dcad",
     "files": [
       {
@@ -558,18 +558,18 @@
       },
       {
         "path": "frontend/app/goalloop.js",
-        "bytes": 17342,
-        "sha256": "ea65d30905851619d33b1d7f156e00cd28f0765b6a861133f4ec478189c3cbe0"
+        "bytes": 17401,
+        "sha256": "ebbe928fb0d276eee50c33b276afea998ea3b0756818489d417fa38abb762a6f"
       },
       {
         "path": "frontend/app/goals.js",
-        "bytes": 23307,
-        "sha256": "bc40353e225dd3634ce001fc9fab25b10b8a0cc374776849058e15f37601a308"
+        "bytes": 23577,
+        "sha256": "ccae227538769a5a822af83273fa16f9442fbecaffc5e773d525c10c0d2de657"
       },
       {
         "path": "frontend/app/goalstore.js",
-        "bytes": 47693,
-        "sha256": "37208f11b17ad48a71c06dd3b3f1b090c7f78e5eb911c56a7e04854f99783c6e"
+        "bytes": 47820,
+        "sha256": "941982c1897b6cba7ffe23017d31be16d63bebe0f80d884f609ecb8668c39967"
       },
       {
         "path": "frontend/app/group-chat.js",
@@ -683,8 +683,8 @@
       },
       {
         "path": "frontend/app/maintquests.js",
-        "bytes": 11386,
-        "sha256": "a2e68dda1592b63c361f4c6979fc6e6fc29845390eb862b01001efa9bf1fed3a"
+        "bytes": 11474,
+        "sha256": "19ad9e1e97bda2f36731167551455044299dd0fbbce628bb534d204ec72c3ed5"
       },
       {
         "path": "frontend/app/maintqueststore.js",
@@ -918,8 +918,8 @@
       },
       {
         "path": "frontend/app/questledgerstore.js",
-        "bytes": 13732,
-        "sha256": "d86e8dba793ff973e5b2694de4be23c61aa8c0b5ff4eb8bfe3bae6e50c693c8f"
+        "bytes": 13789,
+        "sha256": "e2ce42bcecfc92a2593a1ad9cc5163e0725088cd3b82fbd1c5cec816b5ba5ac0"
       },
       {
         "path": "frontend/app/questrefreshstore.js",
@@ -1188,8 +1188,8 @@
       },
       {
         "path": "frontend/app/stationquests.js",
-        "bytes": 9507,
-        "sha256": "abd68429b33ee1d6bf2d622abaa0eff44ec5aeaf38c8eeb6e93ae426806cb070"
+        "bytes": 9559,
+        "sha256": "5a4278f16f44c83077411c9bb965f5a7f4945f1d2156917f05136e088c70e66e"
       },
       {
         "path": "frontend/app/stationqueststore.js",
@@ -1433,8 +1433,8 @@
       },
       {
         "path": "frontend/app/workquests.js",
-        "bytes": 11645,
-        "sha256": "24d10cbfc832c1d6cca134f94d564bf7af83c5cf1c5b74de5cea6f2bacb3610a"
+        "bytes": 11721,
+        "sha256": "4f64dc575ab23f2b34ca244a21e5bb7d817a83b0ace146adc2f1159fce17b84c"
       },
       {
         "path": "frontend/app/workqueststore.js",
