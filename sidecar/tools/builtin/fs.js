@@ -433,6 +433,159 @@ const { note: failNote } = require('../../failopen');
       }
     };
 
+    /* LARGE TEXT PAGES WITHOUT THE WHOLE FILE (2026-10-20). fs.read read the whole file into a Buffer, decoded ALL of
+       it to a string and (numbered) split all of it into lines on EVERY call, to return one ~24k page: on a 40 MB
+       parked output that was ~90-180 ms of blocking CPU and ~240 MB of transient heap per page, so following
+       "next" through it cost minutes and hitched the whole station (above ~512M characters it threw). A plain
+       UTF-8 file above readStreamMinBytes (default 4 MiB) now gets ONE async index pass — a checkpoint per 1 MiB
+       chunk { byte, unit, line } plus the totals — cached per file (size + mtime key, so any edit invalidates it),
+       and each page streams from the nearest checkpoint. Output is byte-identical to the whole-file path (same
+       decoder: Buffer utf8, BOM kept; same trailers; same summary). A document or image (head sniff), a file that
+       is not valid UTF-8, or an fsp without open() keeps the historic path exactly. */
+    const READ_STREAM_MIN = (deps.limits && deps.limits.readStreamMinBytes != null && Number(deps.limits.readStreamMinBytes) >= 0)
+      ? Number(deps.limits.readStreamMinBytes) : 4 * 1024 * 1024;
+    const READ_CHUNK = 1024 * 1024, READ_HEAD = 64 * 1024;
+    const isUtf8 = (() => { try { const f = require('node:buffer').isUtf8; return typeof f === 'function' ? f : null; } catch (_) { return null; } })();
+    const readIndexCache = new Map();   // abs|size|mtimeMs -> index, least recently used first (8 kept)
+    function readPageMax(ctx) {
+      let v = ctx ? ctx.outputMax : null;
+      if (typeof v === 'function') { try { v = v(); } catch (_) { v = null; } }
+      const n = Math.floor(Number(v));
+      return Number.isFinite(n) && n > 0 ? Math.max(2000, Math.min(READ_RETURN, n - 600)) : READ_RETURN;   // headroom: trailer + fence
+    }
+    // the usable length of buf[0..n): trimmed back (at most 3 bytes) so it never ends inside a UTF-8 character
+    function utf8Cut(buf, n, atEof) {
+      if (atEof || n === 0) return n;
+      let i = n - 1, back = 0;
+      while (back < 3 && i >= 0 && (buf[i] & 0xC0) === 0x80) { i--; back++; }
+      if (i < 0) return n;
+      const lead = buf[i], need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+      return (n - i) < need ? i : n;
+    }
+    // one pass over the file: checkpoints + totals, or null when it is not valid UTF-8 (or changed size under us)
+    async function buildReadIndex(fh, size, buf) {
+      const cps = [];
+      let byte = 0, unit = 0, line = 0, lastByte = -1;
+      while (byte < size) {
+        const { bytesRead } = await fh.read(buf, 0, Math.min(READ_CHUNK, size - byte), byte);
+        if (!bytesRead) break;
+        const n = utf8Cut(buf, bytesRead, byte + bytesRead >= size);
+        if (n === 0) return null;
+        const piece = buf.subarray(0, n);
+        if (!isUtf8(piece)) return null;
+        cps.push({ byte, unit, line });
+        unit += piece.toString('utf8').length;
+        for (let at = piece.indexOf(10); at >= 0; at = piece.indexOf(10, at + 1)) line++;
+        lastByte = piece[n - 1];
+        byte += n;
+      }
+      if (byte !== size) return null;
+      return { size, totalUnits: unit, newlines: line, endsWithNl: lastByte === 10, cps };
+    }
+    // decoded text from checkpoint cp to the indexed end, chunk by chunk; fn(str) returns false to stop
+    async function streamReadText(fh, idx, cp, buf, fn) {
+      let byte = cp.byte;
+      while (byte < idx.size) {
+        const { bytesRead } = await fh.read(buf, 0, Math.min(READ_CHUNK, idx.size - byte), byte);
+        if (!bytesRead) break;
+        const n = utf8Cut(buf, bytesRead, byte + bytesRead >= idx.size);
+        if (n === 0) break;
+        if (fn(buf.toString('utf8', 0, n)) === false) return;
+        byte += n;
+      }
+    }
+    // the historic page, computed from the index instead of the whole decoded file (same args, same output)
+    async function largeTextPage(args, fh, idx, buf, pageMax) {
+      const total = idx.totalUnits;
+      if (args.numbered === true && args.raw !== true) {
+        const totalLines = idx.newlines + (idx.endsWithNl ? 0 : 1);
+        const startLine = Math.max(1, Math.floor(Number(args.offset) || 1));
+        const requestedLines = args.limit == null ? totalLines : Math.floor(Number(args.limit) || 0);
+        if (requestedLines <= 0) throw new Error('limit must be a positive number');
+        if (startLine > totalLines) {
+          return { content: '[offset ' + startLine + ' is past the end: ' + args.path + ' has ' + totalLines + ' line' + (totalLines === 1 ? '' : 's') + ']', summary: totalLines + ' lines; nothing at line ' + startLine };
+        }
+        // a checkpoint sits mid-line, so start from one whose line is BEFORE the first wanted line (byte 0 is a line start)
+        let cp = idx.cps[0];
+        for (const c of idx.cps) { if (c.line < startLine - 1) cp = c; else break; }
+        const rows = [];
+        let chars = 0, endLine = startLine - 1, capped = false, li = cp.line, carry = '', stop = false;
+        const take = (lineText) => {
+          if (li >= startLine - 1 && li < totalLines) {
+            if (rows.length >= requestedLines) { stop = true; return; }
+            const row = (li + 1) + '\t' + lineText.replace(/\r$/, '');
+            if (rows.length && chars + row.length + 1 > pageMax) { capped = true; stop = true; return; }
+            rows.push(row); chars += row.length + 1; endLine = li + 1;
+          }
+          li++;
+        };
+        await streamReadText(fh, idx, cp, buf, (s) => {
+          let from = 0, nl;
+          while ((nl = s.indexOf('\n', from)) >= 0) {
+            take(carry + s.slice(from, nl)); carry = ''; from = nl + 1;
+            if (stop) return false;
+          }
+          carry += s.slice(from);
+        });
+        if (!stop && li < totalLines) take(carry);   // the last line, when the file does not end with a newline
+        let out = rows.join('\n');
+        const more = endLine < totalLines;
+        if (more) out += '\n[showing lines ' + startLine + '-' + endLine + ' of ' + totalLines + (capped ? ' (output cap)' : '')
+          + '; next: fs.read {"path":' + JSON.stringify(String(args.path)) + ',"numbered":true,"offset":' + (endLine + 1) + ',"limit":' + Math.min(requestedLines, Math.max(1, endLine - startLine + 1)) + '}]';
+        else if (startLine > 1) out += '\n[showing lines ' + startLine + '-' + endLine + ' of ' + totalLines + '; end of file]';
+        return { content: out, summary: kb(idx.size) + ' read; lines ' + startLine + '-' + endLine + ' of ' + totalLines };
+      }
+      const offset = Math.min(total, Math.max(0, Math.floor(Number(args.offset) || 0)));
+      const requested = args.limit == null ? READ_RETURN : Math.floor(Number(args.limit) || 0);
+      if (requested <= 0) throw new Error('limit must be a positive number');
+      const limit = Math.min(READ_RETURN, requested, pageMax);
+      const end = Math.min(total, offset + limit);
+      let cp = idx.cps[0];
+      for (const c of idx.cps) { if (c.unit <= offset) cp = c; else break; }
+      let at = cp.unit, out = '';
+      if (end > offset) {
+        await streamReadText(fh, idx, cp, buf, (s) => {
+          const a = Math.max(0, offset - at), b = Math.min(s.length, end - at);
+          if (b > a) out += s.slice(a, b);
+          at += s.length;
+          return at < end;
+        });
+      }
+      if (end < total) out += '\n[showing characters ' + offset + '-' + end + ' of ' + total
+        + (limit < Math.min(READ_RETURN, requested) ? ' (page sized to fit this model\'s context window)' : '')
+        + '; next: fs.read {"path":' + JSON.stringify(String(args.path)) + ',"offset":' + end + ',"limit":' + limit + '}]';
+      else if (offset > 0) out += '\n[showing characters ' + offset + '-' + end + ' of ' + total + '; end of file]';
+      return { content: out, summary: kb(idx.size) + ' read; characters ' + offset + '-' + end + ' of ' + total };
+    }
+    // the large-file path, or null = use the historic whole-file path (small file, document, image, not UTF-8)
+    async function readLargeText(aid, abs, args, ctx) {
+      if (!isUtf8 || typeof fsp.open !== 'function' || !(READ_STREAM_MIN < Infinity)) return null;
+      let st;
+      try { st = await fsp.stat(abs); }
+      catch (e) { if (e && e.code === 'ENOENT') throw new Error('no such file: ' + args.path); return null; }
+      if (!st || typeof st.isFile !== 'function' || !st.isFile() || !(Number(st.size) > READ_STREAM_MIN)) return null;
+      const size = Number(st.size);
+      const fh = await fsp.open(abs, 'r');
+      try {
+        const buf = Buffer.allocUnsafe(READ_CHUNK);
+        const { bytesRead } = await fh.read(buf, 0, Math.min(READ_HEAD, size), 0);
+        const head = Buffer.from(buf.subarray(0, bytesRead));
+        if (docExtract && docExtract.sniff(args.path, head)) return null;
+        if (imageWire && imageWire.sniff(args.path, head)) return null;
+        const key = abs + '|' + size + '|' + Number(st.mtimeMs || 0);
+        let idx = readIndexCache.get(key);
+        if (idx) readIndexCache.delete(key);
+        else idx = await buildReadIndex(fh, size, buf);
+        if (!idx) return null;
+        readIndexCache.set(key, idx);
+        while (readIndexCache.size > 8) readIndexCache.delete(readIndexCache.keys().next().value);
+        await stampSeen(aid, abs);   // what this agent believes the file says, as of now (see the stale-write guard)
+        return await largeTextPage(args, fh, idx, buf, readPageMax(ctx));
+      } finally {
+        await fh.close();
+      }
+    }
+
     const readTool = {
       name: 'fs.read', capability: 'cabinet', scope: 'read', requiresConsent: false, timeoutMs: 10000,
       description: 'Read a file from the current project folder when this session is project-scoped, otherwise from your private workspace. Text files come back as text; for large text use offset and limit to page character ranges without rerunning the command that produced the file. For source code pass { "numbered": true }: every line is prefixed "<line number><TAB>" (cat -n style) so you can cite exact lines, and offset/limit then mean the 1-based START LINE and the NUMBER OF LINES (e.g. offset:120, limit:40). Without "numbered" (or with "raw": true) the text is returned exactly as stored. Word (.docx), Excel (.xlsx) and Jupyter (.ipynb) files are extracted to readable text automatically; PNG/JPEG/GIF/WEBP images are shown to you as actual pixels so you can look at them directly.',
@@ -440,6 +593,8 @@ const { note: failNote } = require('../../failopen');
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
         const { abs } = await resolveInside(aid, args.path, { scope: 'read', ctx });
+        const large = await readLargeText(aid, abs, args, ctx);   // a big plain-text file pages without the whole-file decode
+        if (large) return large;
         let raw;
         try { raw = await fsp.readFile(abs); }
         catch (e) { if (e && e.code === 'ENOENT') throw new Error('no such file: ' + args.path); throw e; }
@@ -483,12 +638,7 @@ const { note: failNote } = require('../../failopen');
            Paging a parked 1.4 MB API response with limit 100000 under a 27k budget lost 73k characters per call, and
            following "next" skipped them for good. A page is now sized to what the model will actually see, so "next"
            is always contiguous. No budget passed (a direct call, a test) = READ_RETURN exactly as before. */
-        const pageMax = (() => {
-          let v = ctx ? ctx.outputMax : null;
-          if (typeof v === 'function') { try { v = v(); } catch (_) { v = null; } }
-          const n = Math.floor(Number(v));
-          return Number.isFinite(n) && n > 0 ? Math.max(2000, Math.min(READ_RETURN, n - 600)) : READ_RETURN;   // headroom: trailer + fence
-        })();
+        const pageMax = readPageMax(ctx);
         /* NUMBERED (2026-09-02, coding-tools lane). Line-cited reads are how a coding agent anchors an fs.edit or
            a diagnostic ("main.js:214"). Opt-in, because ~25 test files and the output-parking read-back path
            consume the plain default and a numbered default would change what they parse; `raw: true` is the
