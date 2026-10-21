@@ -34,6 +34,24 @@ const PropSprites = (() => {
      on it (see the TABLES section). One constant, no per-table lookup. */
   const SURFACE_RISE = 8;
   let ctx = null, now = 0;
+  /* STILL READOUT (world.js STILL VERDICT, 2026-10-21): when the props drawn since clockBegin() next change on the CLOCK,
+     allocation-free, so a still floor is redrawn at the still pace only while every prop on screen shows nothing new.
+     clockNext() <= the frame's now: something drawn is moving — a native draw (its art runs on its own clock, so every
+     native draw that is not frozen counts: unsure is motion), a remaster / projection overlay that moves, a tool-fire surge;
+     a later value: the next phase edge of a stepped one (an occupied screen's beam, a motion strip, a sleeper's quilt);
+     Infinity: everything drawn is static art, alpha-only glow or frozen (reduced motion). A draw with the clock frozen
+     (now = 0: shadow silhouettes) never counts. The world resets it at the top of each scene pass and reads it after. */
+  let clockAt = Infinity, drawClock = Infinity, drawWrapped = false;
+  // a native draw that hands its whole body to IndustrialTextures (a workstation, a chair, a crate, bridge furniture) knows its
+  // clock exactly: it says so here (nativeIs), and draw() / the remaster fallback use that instead of "native = motion"
+  let nativeClock = NaN;
+  const nativeIs = t => { nativeClock = t; };
+  const itWorkstationClock = () => (IndustrialTextures.workstationNext ? IndustrialTextures.workstationNext() : now);
+  function clockBegin() { clockAt = Infinity; }
+  function clockNext() { return clockAt; }
+  function noteClock(t) { if (now > 0 && !buildingShadowSilhouette && t < clockAt) clockAt = t; }
+  // what the remaster just drew reports for itself (PropRemaster.lastChange); a build without the readout is motion
+  const remasterClock = () => (typeof PropRemaster !== 'undefined' && PropRemaster.lastChange ? PropRemaster.lastChange() : now);
 
   /* ============ v13 LOCAL COLOUR — one knob over every pixel a prop paints ============
      MEASURED, not guessed (gal/shot.mjs, 29 lounge/decor props on a live seeded station): the
@@ -1325,7 +1343,7 @@ const PropSprites = (() => {
   };
 
   F.desk = (x, y, w, h, f) => {
-    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.workstation(ctx, x, y, w, h, 's', { ...f, now })) return;
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.workstation(ctx, x, y, w, h, 's', { ...f, now })) return nativeIs(itWorkstationClock());
     /* v43 WORKSTATION — the desk is EXACTLY as it was (v19 body: slab, apron, legs, PC tower,
        monitor, keyboard). The ONLY change is the chair.
        ⛔ CHAIR CHANGES ONLY. The v42 pass rebuilt the whole workstation off the reference and Andrew
@@ -1423,7 +1441,7 @@ const PropSprites = (() => {
   };
 
   F.desk2 = (x, y, w, h, f) => {
-    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.workstation(ctx, x, y, w, h, 's', { ...f, now })) return;
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.workstation(ctx, x, y, w, h, 's', { ...f, now })) return nativeIs(itWorkstationClock());
     /* v45 DUAL WORKSTATION (2x1) — the desk's slab and chair, but TWO screens on a shared crossbar
        and no tower. Six props grant COMPUTE and they must differ by what is ON the desk, since the
        slab underneath is the same piece of furniture in every one of them.
@@ -2483,7 +2501,7 @@ const PropSprites = (() => {
   };
 
   F.crate = (x, y, w, h) => {
-    if (typeof IndustrialTextures !== 'undefined' && typeof IndustrialTextures.crate === 'function' && IndustrialTextures.crate(ctx, x, y, w, h)) return;
+    if (typeof IndustrialTextures !== 'undefined' && typeof IndustrialTextures.crate === 'function' && IndustrialTextures.crate(ctx, x, y, w, h)) return nativeIs(Infinity);
     /* v69 CRATE (2x1) — a METAL freight crate. Timber is retired here: the gold crate already owns the
        "chest" read, so the plain one becomes plain galvanised steel and the two separate by MATERIAL
        rather than by decoration.
@@ -5689,7 +5707,7 @@ const PropSprites = (() => {
   };
 
   F.seatchair = (x, y, w, h, f) => {
-    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h)) return;
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h)) return nativeIs(Infinity);
     /* SEAT CHAIR (1x1) — the chair world.js draws at a workstation seat. NOT in the CATALOG, so the
        PLACEABLE chair prop (F.chair) keeps its shipped art untouched.
        ⛔ THIS IS F.chair's SILHOUETTE, PIXEL FOR PIXEL. Only the MATERIAL changed. Two rewrites failed
@@ -5738,7 +5756,7 @@ const PropSprites = (() => {
   };
 
   F.chair = (x, y, w, h, f) => {
-    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h)) return;
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h)) return nativeIs(Infinity);
     // CHAIR — the renderer draws this at EVERY agent's seat, so it appears more often than any other prop
     // on the station. It is therefore deliberately QUIET: no emissives, no accent LEDs, no bloom. Its only
     // job is to sit next to a workstation and never compete with it. v4 adds material (chrome stem, warm
@@ -5815,7 +5833,7 @@ const PropSprites = (() => {
      casters y+11) so a turned chair stands at exactly the same height as an unturned one beside it.
      WEST (r=1) is this view mirrored — px()'s LSWAP re-lights it, so the key stays high-west. */
   F['chair:e'] = (x, y, w, h, f) => {
-    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h, 'e')) return;
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h, 'e')) return nativeIs(Infinity);
     const r = RAMP.steel;
     shadow2(x + 3, y + 10, 7);
     // star base in profile: the arms fore-and-aft read as one low bar, casters under its ends
@@ -5877,7 +5895,7 @@ const PropSprites = (() => {
      with the pad's rear edge showing under it. ⛔ A back is the emptiest surface a prop owns: give it
      ONE organising shape and keep every mark touching it, or the marks read as glyphs. */
   F['chair:n'] = (x, y, w, h, f) => {
-    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h, 'n')) return;
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.chair(ctx, x, y, w, h, 'n')) return nativeIs(Infinity);
     const r = RAMP.steel;
     shadow2(x + 3, y + 10, 7);
     px(x + 2, y + 10, 8, 1, '#10161a');
@@ -10680,7 +10698,7 @@ const PropSprites = (() => {
   // Command-deck scenery stays in DECOR: these screens depict navigation art,
   // not harness telemetry. Existing workstations still own agent assignments.
   const bridgeFurniture = (name, fallback) => (x, y, w, h, f) => {
-    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.furniture(ctx, name, x, y, w, h)) return;
+    if (typeof IndustrialTextures !== 'undefined' && IndustrialTextures.furniture(ctx, name, x, y, w, h)) return nativeIs(Infinity);
     fallback(x, y, w, h, f);
   };
   F.bridge_consolebank = bridgeFurniture('console-bank', F.consoleL);
@@ -10718,12 +10736,12 @@ const PropSprites = (() => {
   // loaded remaster advertises them; a missing pack keeps the old facing contract.
   for (const id of ['desk','desk2']) for (const facing of ['e','n']) {
     F[id+':'+facing]=(x,y,w,h,f)=>{
-      if(remasterStyle() && IndustrialTextures.workstation(ctx,x,y,w,h,facing,{...f,now}))return;
+      if(remasterStyle() && IndustrialTextures.workstation(ctx,x,y,w,h,facing,{...f,now}))return nativeIs(itWorkstationClock());
       F[id](x,y,w,h,f);
     };
   }
   for (const facing of ['e','n']) F['seatchair:'+facing]=(x,y,w,h,f)=>{
-    if(remasterStyle() && IndustrialTextures.chair(ctx,x,y,w,h,facing))return;
+    if(remasterStyle() && IndustrialTextures.chair(ctx,x,y,w,h,facing))return nativeIs(Infinity);
     F.seatchair(x,y,w,h,f);
   };
 
@@ -11231,6 +11249,17 @@ const PropSprites = (() => {
   let journeyStage = 0;
   function setJourneyStage(n) { journeyStage = Math.max(0, n | 0); }
   function propFired(id) { const s = id && propPulse[id]; return (s && s.at) ? Math.max(0, 1 - (now - s.at) / PULSE_MS) : 0; }
+  /* STILL (world.js STILL VERDICT, 2026-10-21): is any harness-driven pulse still decaying at `t` (the frame's clock) — a
+     connector's packet, a workbench's shell/verify flash, a capability prop's tool-fire surge? Each plays PULSE_MS after
+     the event that fired it; the bus wakes the first frame, and this keeps the decay at the normal pace wherever it is.
+     Allocation-free: plain key walks over the three live maps. */
+  function pulsing(t) {
+    if (wbFiredAt && t - wbFiredAt < PULSE_MS) return true;
+    for (const k in connState) { const s = connState[k]; if (s && s.firedAt && t - s.firedAt < PULSE_MS) return true; }
+    for (const k in wbInst) { const s = wbInst[k]; if (s && s.at && t - s.at < PULSE_MS) return true; }
+    for (const k in propPulse) { const s = propPulse[k]; if (s && s.at && t - s.at < PULSE_MS) return true; }
+    return false;
+  }
 
   /* draw one prop. f = {t, x, y, w, h} in LOCAL tile coords; `work` lights its screens.
      `live` (G0.2/G0.3, optional) carries the seated agent's TRUTHFUL activity: { heat, prog } — heat
@@ -11274,6 +11303,15 @@ const PropSprites = (() => {
     const lift = surfaceLift(f);
     if(typeof PropRemaster!=='undefined'&&PropRemaster.drawForeground&&PropRemaster.drawForeground(ctx,f.t,'s',f.x*TILE,f.y*TILE-lift,(f.w||1)*TILE,(f.h||1)*TILE,canMirror(f.t)&&!!f.m))return;
     fn(f.x * TILE, f.y * TILE - lift, (f.w || 1) * TILE, (f.h || 1) * TILE, { x: f.x, now });
+    noteClock(f.t === 'bunk' ? quiltBreathEdge(now) : now);   // STILL: the native covers run on the clock (the bunk's breath steps)
+  }
+  /* the occupied quilt's breath (bunkQuilt): a 1px step while sin(now / 2000) > 0.2. Its next edge is the next time the
+     phase crosses asin(0.2) or PI - asin(0.2) — computed, so a sleeper is redrawn the vsync it breathes, not 33 ms on. */
+  function quiltBreathEdge(t) {
+    const TAU = Math.PI * 2, a1 = Math.asin(0.2), a2 = Math.PI - a1;
+    const ph = ((t / 2000) % TAU + TAU) % TAU;
+    const d = ph < a1 ? a1 - ph : ph < a2 ? a2 - ph : TAU - ph + a1;
+    return t + Math.max(1, d * 2000);
   }
   /* SEAT-FRONT OVERLAY (stool-sit lane): ONLY the front rim of a single-tile seat's pad, redrawn by the
      world layer just IN FRONT of the body sitting on it, so the sitter's lap tucks INTO the pad instead
@@ -11389,12 +11427,14 @@ const PropSprites = (() => {
       MIRROR = !!mir;
       // finally, not a plain call: a throwing prop must never strand MIRROR set (it would re-light
       // every prop drawn after it this frame) or leak an unbalanced ctx state onto the world pass.
-      _curId = f.t; inkBegin(f.t);
+      _curId = f.t; inkBegin(f.t); drawWrapped = false; nativeClock = NaN;
       try { view.fn(X, Y, BW, BH, o); } finally { MIRROR = false; ctx.restore(); inkEnd(); _curId = null; }
     } else {
-      _curId = f.t; inkBegin(f.t);
+      _curId = f.t; inkBegin(f.t); drawWrapped = false; nativeClock = NaN;
       try { view.fn(X, Y, W, H, o); } finally { inkEnd(); _curId = null; }
     }
+    // STILL: what the remaster reported; else a native draw's declared clock; else a plain native draw runs on its own clock
+    noteClock(drawWrapped ? drawClock : nativeClock === nativeClock ? nativeClock : now);
     /* the status overlays below stay in SCREEN space on the EFFECTIVE box: a progress bar or a
        tool-fire charge bar reads left-to-right regardless of which way its prop is turned. */
     // G0.3 ACTIVITY-HEAT WASH: real token/tool flow burns the working screens brighter + shimmers faster
@@ -11425,6 +11465,7 @@ const PropSprites = (() => {
       glow(X - 1, Y - 3, W + 2, H + 4, acc, 0.10 + 0.32 * pf);               // outer halo
       glow(X + 1, Y - 1, Math.max(2, W - 2), Math.max(2, H - 2), acc, 0.28 * pf);   // hot core
       px(X, Y - 3, Math.max(1, Math.round(W * pf)), 1, acc);                 // draining charge bar
+      noteClock(now);   // STILL: the surge decays and the bar drains every frame
     }
   }
 
@@ -11884,10 +11925,11 @@ const PropSprites = (() => {
   function drawUserView(id, view, fw, fh, x, y, w2, h2, o) {
     const ok = typeof PropRemaster !== 'undefined' && typeof PropRemaster.draw === 'function';
     const st = { ...o, now, still: !!o.still };
-    if (ok && w2 === fw * 12 && h2 === fh * 12) { if (PropRemaster.draw(ctx, id, view, x, y, w2, h2, st, null)) return; }
+    drawWrapped = true; drawClock = Infinity;   // STILL: a made prop is its art (static) unless the remaster reports otherwise
+    if (ok && w2 === fw * 12 && h2 === fh * 12) { if (PropRemaster.draw(ctx, id, view, x, y, w2, h2, st, null)) { drawClock = remasterClock(); return; } }
     else if (ok && ctx && w2 > 0 && h2 > 0) {
       ctx.save();
-      try { ctx.translate(x, y); ctx.scale(w2 / (fw * 12), h2 / (fh * 12)); if (PropRemaster.draw(ctx, id, view, 0, 0, fw * 12, fh * 12, st, null)) return; }
+      try { ctx.translate(x, y); ctx.scale(w2 / (fw * 12), h2 / (fh * 12)); if (PropRemaster.draw(ctx, id, view, 0, 0, fw * 12, fh * 12, st, null)) { drawClock = remasterClock(); return; } }
       finally { ctx.restore(); }
     }
     drawUserPlaceholder(x, y, w2, h2);
@@ -11949,15 +11991,21 @@ const PropSprites = (() => {
         F[key] = (x,y,w,h,o={}) => {
           if (nativeSkinDepth) return native(x,y,w,h,o);
           const still = o.still || prefersStill();
+          let liveNative = false;   // STILL: a native layer painted on the live clock (not frozen) moves on its own clock
           const paintNative = target => {
             const previous = ctx, previousNow = now;
             ctx = target; nativeSkinDepth++;
             try {
               if (still) now = 0; // freeze only decorative motion; o still carries real states
+              else liveNative = true;
               native(x,y,w,h,o);
             } finally { ctx = previous; now = previousNow; nativeSkinDepth--; }
           };
-          if (!PropRemaster.draw(ctx,c.artId||c.id,facing,x,y,w,h,{...o,now,still:!!still},paintNative)) native(x,y,w,h,o);
+          if (!PropRemaster.draw(ctx,c.artId||c.id,facing,x,y,w,h,{...o,now,still:!!still},paintNative)) {
+            nativeClock = NaN; native(x,y,w,h,o); drawClock = nativeClock === nativeClock ? nativeClock : now;   // the native fallback's own clock
+          }
+          else drawClock = liveNative ? now : remasterClock();
+          drawWrapped = true;
         };
       }
     }
@@ -11977,6 +12025,8 @@ const PropSprites = (() => {
     surfacePlacement,
     setCtx(c) { ctx = c; },
     setNow(t) { now = t; },
+    // the world's STILL pacer readouts (see STILL READOUT and pulsing)
+    clockBegin, clockNext, pulsing,
     // v13 LOCAL COLOUR knob (see CHROMA above) — live-tunable like the CRT LAB's own dials, so the
     // value is DIALLED on a real deck and copied back into the constant, never guessed.
     setChroma(k) { CHROMA = (k == null ? 1 : +k) || 1; _cboost.clear(); },

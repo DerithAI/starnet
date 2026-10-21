@@ -234,7 +234,11 @@ test('reduced motion freezes decorative breath/gesture/spill without inventing o
   assert.equal(worker._pose, 'blank.type.north');
   assert.notEqual(work1.frame.image, work2.frame.image, 'working still follows its real typing track');
   assert.deepEqual(Object.keys(worker).filter(k => !Object.hasOwn(body({ working: true, sitting: true, dir: 'north' }), k)).sort(),
-    ['_pose', '_poseLast', '_rA', '_rAt', '_rD8', '_rW', '_renderCycleUnits', '_renderFrame', '_renderGroundGap', '_renderPoseFade', '_renderSpeechAccent', '_renderStandingHeight', '_renderTravelError', '_renderWalkTween', '_speechAt', '_speechEase', '_turnAng'], 'only render telemetry and pose/speech interpolation state are added');
+    ['_pose', '_poseLast', '_rA', '_rAt', '_rD8', '_rW', '_renderCycleUnits', '_renderFrame', '_renderGroundGap', '_renderLive', '_renderNextAt', '_renderPoseFade', '_renderSpeechAccent', '_renderStandingHeight', '_renderTravelError', '_renderWalkTween', '_speechAt', '_speechEase', '_turnAng'], 'only render telemetry and pose/speech interpolation state are added (_renderLive/_renderNextAt: the still pacer readouts, 2026-10-21)');
+  assert.equal(worker._renderLive, false, 'a body under reduced motion has no clock-driven bob or breath: the still pacer may treat it as still');
+  const breather = body({ aph: 0 });
+  draw(sprites, breather, 100000, {});   // (past the boot-time stretch window, which carries its own frame edges)
+  assert.equal(breather._renderLive, true, 'a planted standing body breathes on the clock: the still pacer must treat it as motion');
   const spill1 = draw(sprites, body({ id: 'ULTRON' }), 1000, { reducedMotion: true }).ctx.ellipses;
   const spill2 = draw(sprites, body({ id: 'ULTRON' }), 2200, { reducedMotion: true }).ctx.ellipses;
   assert.deepEqual(spill1, spill2, 'leader spill stops pulsing under reduced motion');
