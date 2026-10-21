@@ -6,9 +6,10 @@
      · a crash rejects everything in flight, marks the plugin crashed, and the NEXT use restarts it — at most
        MAX_RESTARTS times per RESTART_WINDOW_MS, after which it stays down until it is reloaded (re-approve, restart);
      · stop() and a revoke end the process; nothing outlives its approval;
-     · a call that times out is followed by a liveness ping: a process that cannot answer it (its event loop is
-       wedged) is killed, so the next use restarts it (bounded as above) instead of every later hook paying its
-       full timeout.
+     · a call that times out is followed by a liveness ping: a process that cannot answer it while it still holds a
+       call inside that call's own deadline is only marked unresponsive (its hooks are skipped); one that stays silent
+       with nothing left in flight (its event loop is wedged) is killed, so the next use restarts it (bounded as above)
+       instead of every later hook paying its full timeout.
 
    makePluginRuntime({ fork, workerPath, store, now?, onLog?, timeouts? }) -> {
      start(plugin) -> { ok, subs, tools, handlers, jobs } | { ok:false, error }
@@ -77,6 +78,7 @@ function makePluginRuntime(deps) {
     rec.ready = null;
     if (rec.ping) { clearTimeout(rec.ping.timer); rec.ping = null; }   // a probe of the previous process is moot
     rec.hungReason = '';
+    rec.unresponsive = false;
     let child;
     try {
       child = fork(workerPath, [], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true, cwd: workerCwd });
@@ -95,6 +97,7 @@ function makePluginRuntime(deps) {
       rec.state = planned ? 'stopped' : 'crashed';
       if (!planned) rec.error = rec.hungReason || ('its process exited (' + (signal || ('code ' + code)) + ')');
       rec.hungReason = '';
+      rec.unresponsive = false;
       if (rec.ping) { clearTimeout(rec.ping.timer); rec.ping = null; }
       rejectAll(rec, planned ? 'the plugin was stopped' : 'the plugin crashed: ' + rec.error);
       if (rec.readyResolve) { rec.readyResolve({ ok: false, error: rec.error || 'the plugin stopped' }); rec.readyResolve = null; }
@@ -157,9 +160,11 @@ function makePluginRuntime(deps) {
       return resolve(Object.assign({ ok: true }, rec.surface));
     }
     if (m.t === 'req') return void answerRequest(rec, m);
-    if (m.t === 'pong') {
-      if (rec.ping && rec.ping.ref === m.ref) { clearTimeout(rec.ping.timer); rec.ping = null; }
-      return;
+    // a pong (any one) or a call's answer proves the event loop is running: the probe is answered and hooks resume
+    if (m.t === 'pong' || m.t === 'res') {
+      if (rec.ping) { clearTimeout(rec.ping.timer); rec.ping = null; }
+      if (rec.unresponsive) { rec.unresponsive = false; onLog(rec.id, '[runtime] it is answering again'); }
+      if (m.t === 'pong') return;
     }
     if (m.t === 'res') {
       const p = rec.pending.get(m.id); if (!p) return;
@@ -216,7 +221,14 @@ function makePluginRuntime(deps) {
      process that cannot answer within pingMs is wedged (a busy loop, a synchronous hang). It used to stay
      'running' forever, so every later hook call, station-wide, waited out its full timeout. Now it is killed: the
      exit marks it crashed with this reason, and the next use restarts it, bounded by MAX_RESTARTS. One probe at a
-     time. */
+     time.
+     …BUT NOT WHILE A CALL IS STILL INSIDE ITS OWN DEADLINE (review 2026-10-21). A blocked loop is also what legitimate
+     synchronous work looks like (an execSync git or zip call, a sync hash): killing on the first silent ping took a
+     tool call seconds into its 120 s budget down with it, half done, and told the model the plugin crashed. So while
+     any call is pending the process is only marked unresponsive (hooks answer null at once instead of waiting out
+     their timeout) and asked again; it is ended only when it is silent with nothing left in flight, i.e. every call
+     it held has answered or timed out. A real busy loop is still recycled, within the longest pending deadline. It
+     is ended with SIGKILL: a wedged loop can never run a SIGTERM listener the plugin registered. */
   function probe(rec) {
     const child = rec.child;
     if (!child || rec.state !== 'running' || rec.ping) return;
@@ -225,9 +237,13 @@ function makePluginRuntime(deps) {
       if (!rec.ping || rec.ping.ref !== ref) return;
       rec.ping = null;
       if (rec.child !== child || rec.state !== 'running') return;
+      if (rec.pending.size) {
+        if (!rec.unresponsive) { rec.unresponsive = true; onLog(rec.id, '[runtime] it did not answer a liveness check while a call is still running — its hooks are skipped until it answers'); }
+        return void probe(rec);
+      }
       rec.hungReason = 'it stopped responding (a call timed out and it did not answer a liveness check within ' + Math.round(T.pingMs / 1000) + ' s)';
       onLog(rec.id, '[runtime] ' + rec.hungReason + ' — ending its process; the next use restarts it');
-      try { child.kill(); } catch (e) { note('plugins.runtime.kill-hung', e); }
+      try { child.kill('SIGKILL'); } catch (e) { note('plugins.runtime.kill-hung', e); }
     }, T.pingMs);
     if (timer && typeof timer.unref === 'function') timer.unref();
     rec.ping = { ref, timer };
@@ -269,6 +285,7 @@ function makePluginRuntime(deps) {
     let rec;
     try { rec = await live(id); } catch (e) { onLog(id, '[hook] ' + e.message); return null; }
     if (!rec.surface || rec.surface.subs.indexOf(event) < 0) return null;
+    if (rec.unresponsive) { onLog(id, '[hook] ' + event + ' skipped: the plugin is not answering (a call it is running has not returned)'); return null; }
     try { return await send(rec, { t: 'hook', event, payload }, Math.min(Number(timeoutMs) || T.hookMs, 30000), 'the plugin\'s ' + event + ' hook'); }
     catch (e) { onLog(id, '[hook] ' + e.message); return null; }   // a failing hook never blocks the run
   }
