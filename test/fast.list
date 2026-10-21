@@ -418,6 +418,7 @@ test/fs-mutation-receipts.test.js
 test/fs.patch.test.js
 test/fs.stale-write.test.js
 test/fs.concurrent-mutations.test.js
+test/fs.drift-lsp-resync.test.js
 test/docextract.test.js
 test/imagewire.test.js
 test/web.ssrf.test.js

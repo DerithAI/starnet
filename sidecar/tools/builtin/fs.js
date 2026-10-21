@@ -316,11 +316,27 @@ const { note: failNote } = require('../../failopen');
       const where = String(d.file || '?') + ':' + String(d.line || 1) + ':' + String(d.col || 1);
       return where + (d.code ? ' [' + d.code + ']' : '') + ' ' + String(d.message || 'diagnostic');
     }
+    /* RE-SYNC AN ABANDONED TICKET (2026-10-21). beginEdit sent the language server the PRE-edit text as an open
+       document; finishEdit is the only call that sends it the bytes now on disk. A drifted edit (another run wrote
+       the file during the baseline) or a refusal under the file lock used to skip it, and an open document
+       overrides disk for TypeScript/pyright/rust-analyzer: later diagnostics on OTHER files were computed against a
+       file that matched neither run's write. This still finishes the ticket so the server re-reads disk; the
+       caller discards the delta (it would include the other run's change). */
+    async function resyncDiagnostics(ticket, ctx) {
+      if (!editDiagnostics || !ticket || ticket.failedAtBaseline || !(ticket.items && ticket.items.length)) return;
+      try { await editDiagnostics.finishEdit(ticket, { signal: ctx && ctx.signal }); }
+      catch (e) { if (!(e && e.name === 'AbortError')) failNote('fs.lsp.resync', e); }
+    }
+    // a refusal (or any failure) after the baseline: re-sync the server, then fail exactly as before
+    const resyncThenThrow = (ticket, ctx) => async (e) => { await resyncDiagnostics(ticket, ctx); throw e; };
     async function finishEditDiagnostics(ticket, result, ctx) {
       if (!editDiagnostics || !ticket) return result;
       let delta;
       if (ticket.failedAtBaseline) {
         delta = { status: 'unavailable', reason: ticket.failedAtBaseline, added: [], removed: [], addedCount: 0, removedCount: 0 };
+      } else if (ticket.drifted) {
+        await resyncDiagnostics(ticket, ctx);
+        delta = { status: 'unavailable', reason: ticket.drifted, added: [], removed: [], addedCount: 0, removedCount: 0 };
       } else {
         try { delta = await editDiagnostics.finishEdit(ticket, { signal: ctx && ctx.signal }); }
         catch (e) { delta = { status: 'unavailable', reason: String((e && e.message) || e), added: [], removed: [], addedCount: 0, removedCount: 0 }; }
@@ -429,12 +445,12 @@ const { note: failNote } = require('../../failopen');
             // this agent READ the file and composed its content from that read: replacing their change is the lost update
             if (readStamps.has(key)) { readStamps.delete(key); throw staleWriteError(args.path); }
             initial = current;
-            if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
+            if (diagnosticTicket) diagnosticTicket.drifted = DRIFT_REASON;
           }
           const r = await verifiedMutation({ operation: 'write', path: args.path, abs, expected: data, initial, mutate: () => fsp.writeFile(abs, data) });
           await stampSeen(aid, abs);                // our own write is the new baseline, so a rewrite never self-trips
           return r;
-        });
+        }).catch(resyncThenThrow(diagnosticTicket, ctx));
         emitDeliverable(ctx, aid, args.path);
         return finishEditDiagnostics(diagnosticTicket,
           { content: 'Wrote ' + args.path + ' (' + data.length + ' bytes).\n' + receiptLine(receipt) + locationLine(args.path, abs, ctx), summary: 'wrote ' + args.path + ' (' + kb(data.length) + ')', mutationReceipt: receipt, receipt }, ctx);
@@ -765,7 +781,7 @@ const { note: failNote } = require('../../failopen');
             bytes = Buffer.byteLength(all, 'utf8');
             if (bytes > WRITE_BYTES) throw new Error('file too large after append (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');
             initial = current; drifted = true;
-            if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
+            if (diagnosticTicket) diagnosticTicket.drifted = DRIFT_REASON;
           }
           const expected = Buffer.from(all, 'utf8');
           const r = await verifiedMutation({ operation: 'append', path: args.path, abs, expected, initial, mutate: () => fsp.writeFile(abs, expected) });
@@ -774,7 +790,7 @@ const { note: failNote } = require('../../failopen');
           // next fs.write (composed from its own view) is refused until it reads the file again
           if (!drifted) await stampSeen(aid, abs);
           return r;
-        });
+        }).catch(resyncThenThrow(diagnosticTicket, ctx));
         emitDeliverable(ctx, aid, args.path);
         const added = Buffer.byteLength(String(args.content), 'utf8');
         return finishEditDiagnostics(diagnosticTicket,
@@ -841,7 +857,7 @@ const { note: failNote } = require('../../failopen');
             // "find" refuses with the ordinary errors), never on the stale read that would erase their change
             plan = planEdit(current.toString('utf8'));
             initial = current; drifted = true;
-            if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
+            if (diagnosticTicket) diagnosticTicket.drifted = DRIFT_REASON;
           }
           const expected = Buffer.from(plan.next, 'utf8');
           const r = await verifiedMutation({ operation: 'edit', path: args.path, abs, expected, initial, mutate: () => fsp.writeFile(abs, expected) });
@@ -850,7 +866,7 @@ const { note: failNote } = require('../../failopen');
           // its old stamp stays and a later fs.write from its stale view is refused until it reads the file again
           if (!drifted) await stampSeen(aid, abs);
           return r;
-        });
+        }).catch(resyncThenThrow(diagnosticTicket, ctx));
         const count = plan.count;
         emitDeliverable(ctx, aid, args.path);
         return finishEditDiagnostics(diagnosticTicket,
@@ -1033,7 +1049,7 @@ const { note: failNote } = require('../../failopen');
             throw receiptError('filesystem patch ' + patchReceipt.state + ': ' + ((cause && cause.message) || cause), patchReceipt);
           }
           return patchReceipt;
-        });
+        }).catch(resyncThenThrow(diagnosticTicket, ctx));
         for (const plan of touched) if (plan.content != null) emitDeliverable(ctx, aid, plan.rel);
         return finishEditDiagnostics(diagnosticTicket, {
           content: 'Applied patch: ' + touched.length + ' file' + (touched.length === 1 ? '' : 's') + ' changed.\n' + receiptLine(patchReceipt),
