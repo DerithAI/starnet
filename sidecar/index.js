@@ -22988,9 +22988,11 @@ async function runOnceCore(o) {
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
         : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask,
-          // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied (switched-off gear is no room fix) and the image
-          // route makeImageTools was built from (without one a STUDIO only analyzes images)
-          disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet(), mediaRoute: !!(studioRoute && studioRoute.ok),
+          // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied and the routine's own toolset list enforceEnabledToolsets
+          // applied (gear either one leaves out is no room fix), and the image route makeImageTools was built from (without one
+          // a STUDIO only analyzes images)
+          disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet(), enabledToolsets: unrestrictedHostNow() ? null : o.enabledToolsets,
+          mediaRoute: !!(studioRoute && studioRoute.ok),
           // ROOM SCOPE: lazy (called only when a floor object is missing); the room it names is stable per agent, so the cached prefix holds
           scopeFn: () => { try { return scopeForRun({ loadStation: savedFloor, agentId, runStation: o.station, extraObjects: o.extraObjects, interactive: surface === 'interactive', floorless: !!o.floorless }); } catch (e) { failNote('capsummary.roomscope', e); return null; } } }) + skillBlock;
   /* CACHE-STABLE PREFIX (lean-prompt, 2026-10-12). Everything below that changes per MESSAGE — the run's skill index

@@ -138,7 +138,12 @@ function summarizeCapabilities(resolved, opts) {
   const dc = opts.disabledCaps;
   const switchedOff = !dc ? () => false : (typeof dc.has === 'function') ? (id) => dc.has(id)
     : Array.isArray(dc) ? (id) => dc.indexOf(id) >= 0 : (id) => !!dc[id];
-  const placeable = (c) => !capIds.has(c.id) && !switchedOff(c.id);
+  // ...and so is a family the run's own toolset list leaves out (host: the o.enabledToolsets enforceEnabledToolsets narrowed
+  // this run with, same semantics: null = no restriction, any other value keeps only what it lists): a routine limited to
+  // ['cabinet'] lacks web because of its list, so a DISH in its room grants nothing -- the per-routine sentence stays true
+  const et = opts.enabledToolsets;
+  const listed = et == null ? null : new Set(Array.isArray(et) ? et.map(String) : []);
+  const placeable = (c) => !capIds.has(c.id) && !switchedOff(c.id) && (!listed || listed.has(c.id));
   const noImageRoute = opts.mediaRoute === false;   // certain only as false (effective-toolsets' convention)
   let scope = null;
   if (typeof opts.scopeFn === 'function' && !unrestrictedHost && (interactive || (!delegatedBy && !ownerTrusted)) &&

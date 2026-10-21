@@ -250,8 +250,10 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
 {
   const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
   A.ok(/const savedFloor = makeSavedFloor\(\{ stamp: \(\) => saveStore\.stamp\('agent'\), loadStamped: \(\) => saveStore\.loadStamped\('agent'\) \}\);/.test(idx), 'the saved floor is memoized by the save stamp');
-  A.ok(/toolless: !isTask,\s*\n(?:\s*\/\/[^\n]*\n)*\s*disabledCaps: unrestrictedHostNow\(\) \? new Set\(\) : disabledCapsSet\(\), mediaRoute: !!\(studioRoute && studioRoute\.ok\),\s*\n(?:\s*\/\/[^\n]*\n)*\s*scopeFn: \(\) => \{ try \{ return scopeForRun\(\{ loadStation: savedFloor, agentId, runStation: o\.station, extraObjects: o\.extraObjects, interactive: surface === 'interactive', floorless: !!o\.floorless \}\); \} catch \(e\) \{ failNote\('capsummary\.roomscope', e\); return null; \} \} \}\) \+ skillBlock;/.test(idx),
-    'summarizeCapabilities gets the TOOLSETS switches, the image route and scopeFn from this run\'s station, placed objects and surface, failing open to null');
+  A.ok(/toolless: !isTask,\s*\n(?:\s*\/\/[^\n]*\n)*\s*disabledCaps: unrestrictedHostNow\(\) \? new Set\(\) : disabledCapsSet\(\), enabledToolsets: unrestrictedHostNow\(\) \? null : o\.enabledToolsets,\s*\n\s*mediaRoute: !!\(studioRoute && studioRoute\.ok\),\s*\n(?:\s*\/\/[^\n]*\n)*\s*scopeFn: \(\) => \{ try \{ return scopeForRun\(\{ loadStation: savedFloor, agentId, runStation: o\.station, extraObjects: o\.extraObjects, interactive: surface === 'interactive', floorless: !!o\.floorless \}\); \} catch \(e\) \{ failNote\('capsummary\.roomscope', e\); return null; \} \} \}\) \+ skillBlock;/.test(idx),
+    'summarizeCapabilities gets the TOOLSETS switches, the routine\'s own toolset list, the image route and scopeFn from this run\'s station, placed objects and surface, failing open to null');
+  A.ok(idx.indexOf('resolved = enforceEnabledToolsets(resolved, registry, unrestrictedHostNow() ? null : o.enabledToolsets);') > 0,
+    '...and that toolset list is the very one enforceEnabledToolsets narrowed this run with');
   // ...and those two facts are the very ones the run's grants and its unavailable set were built from
   A.ok(idx.indexOf('resolveTools(agentId, station, undefined, { disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet() })') > 0 &&
     idx.indexOf('mediaRoute: !!(studioRoute && studioRoute.ok),             // the SAME route makeImageTools was built from') > 0,
@@ -444,6 +446,60 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
     'two rooms called HOME are two rooms, never "the ones in HOME": ' + nW.slice(nW.indexOf('Place the'), nW.indexOf('Place the') + 200));
   // the starter floor (one of each canonical prop in HOME) keeps its exact words
   A.ok(summarizeCapabilities(resolvedI, { surface: 'interactive', scopeFn: scopeI }).indexOf('(like the ones in HOME) does not reach you.') >= 0, 'canonical gear: "the ones in HOME", unchanged');
+}
+
+/* 12. A ROUTINE'S OWN TOOLSET LIST (review fix 10-21): runOnceCore narrows the run with enforceEnabledToolsets(resolved,
+       registry, o.enabledToolsets), and every cron fire and line hop passes job.enabledToolsets with a routed bay station.
+       A routine limited to ['cabinet'] lacks web because of ITS list, not the floor, so a DISH placed in RESEARCH grants it
+       nothing. The note said "No web on this run: RESEARCH ... has no DISH; the Commander can place one there"; the true
+       sentence (a per-routine setting; placing cannot change that) is the note with no scope, byte-identical. */
+{
+  const { enforceEnabledToolsets } = require('../sidecar/inputpolicy.js');
+  // the registry's family for each tool is its capability (fs.read -> cabinet, web_search -> web, as the tool defs declare)
+  const fam = {};
+  const registry = { get: (n) => ({ capability: fam[n] || '' }) };
+  const lineRun = (station, profiled, list) => {
+    const base = unattended(resolveTools('rq1', profiled ? withProfile(station, 'rq1') : station));
+    for (const g of base.grants) fam[g.tool] = g.capId;
+    return enforceEnabledToolsets(base, registry, list);
+  };
+  const rt = makeRouter(); A.ok(rt.setStation(st.serialize()).ok, 'fixture: the router takes the built station');
+  const rsE = rt.stationFor('rq1');
+  const scopeE = (fl, rs) => scopeForRun({ loadStation: () => fl, agentId: 'rq1', runStation: rs });
+  const res = lineRun(rsE, true, ['cabinet']);
+  A.ok(res.tools.indexOf('web_search') < 0 && res.tools.indexOf('fs.read') >= 0, 'fixture: the routine limited to FILES has files, no web');
+  // the promise the old note made is false: a DISH placed in RESEARCH, the same list, still no web
+  const fx = M.create(st.serialize()), Rr = fx.rooms().find(r => r.name === 'RESEARCH').rects[0];
+  let dish = null;
+  for (let y = Rr.y1 + 1; y < Rr.y2 && !dish; y++) for (let x = Rr.x1 + 1; x < Rr.x2 && !dish; x++) { const r = fx.addProp({ t: 'comms_dish', x, y, w: 1, h: 1 }); if (r && r.ok) dish = r; }
+  const rtD = makeRouter(); A.ok(!!dish && rtD.setStation(fx.serialize()).ok, 'fixture: a DISH placed in RESEARCH');
+  A.ok(lineRun(rtD.stationFor('rq1'), true, null).tools.indexOf('web_search') >= 0 && lineRun(rtD.stationFor('rq1'), true, ['cabinet']).tools.indexOf('web_search') < 0,
+    'that DISH grants web to an unrestricted run, never to the routine limited to FILES');
+  let asked = 0;
+  const n = summarizeCapabilities(res, { surface: 'autonomous', enabledToolsets: ['cabinet'], scopeFn: () => { asked++; return scopeE(saved, rsE); } });
+  A.eq(n, summarizeCapabilities(res, { surface: 'autonomous' }), 'limited to [\'cabinet\']: byte-identical to the no-scope note');
+  A.ok(/so search\/fetch the web and use the controlled browser, [^\n]*on the routine itself\. Placing objects cannot change that here\./.test(n) && !/No web on this run|place one there/.test(n),
+    'web stays under the per-routine sentence: ' + n.slice(n.indexOf('This is an UNATTENDED'), n.indexOf('This is an UNATTENDED') + 160));
+  A.eq(asked, 0, '...and the scope is never computed');
+  // a family the list keeps is still a true room fix: a legacy agent (no profile) limited to FILES is offered the INTEL CAB,
+  // never the DISH, and an INTEL CAB placed in RESEARCH really gives that routine file reading
+  const legacy = summarizeCapabilities(lineRun(rsE, false, ['cabinet']), { surface: 'autonomous', enabledToolsets: ['cabinet'], scopeFn: () => scopeE(saved, rsE) });
+  A.ok(legacy.indexOf('No file reading on this run: RESEARCH, the room your desk is in, has no INTEL CAB; the Commander can place one there for your next job (the INTEL CAB in HOME does not reach you). ') >= 0 &&
+    !/has no DISH|No web/.test(legacy), 'a kept family is still offered, a left-out one never: ' + legacy.slice(legacy.indexOf('Placing objects'), legacy.indexOf('Placing objects') + 260));
+  const fc = M.create(st.serialize()), Rc = fc.rooms().find(r => r.name === 'RESEARCH').rects[0];
+  let cab = null;
+  for (let y = Rc.y1 + 1; y < Rc.y2 && !cab; y++) for (let x = Rc.x1 + 1; x < Rc.x2 && !cab; x++) { const sp = Sprites.spec('war_intelcab'); const r = fc.addProp({ t: 'war_intelcab', x, y, w: sp.w, h: sp.h }); if (r && r.ok) cab = r; }
+  const rtC = makeRouter(); A.ok(!!cab && rtC.setStation(fc.serialize()).ok, 'fixture: an INTEL CAB placed in RESEARCH');
+  A.ok(lineRun(rtC.stationFor('rq1'), false, ['cabinet']).tools.indexOf('fs.read') >= 0, '...and the routine limited to FILES then reads files: the offer holds');
+  // null = no restriction: the section 5 note, unchanged; [] restricts as the gate does (every family out): no scope
+  const resU = unattended(resolveTools('rq1', withProfile(rsE, 'rq1')));
+  A.eq(summarizeCapabilities(resU, { surface: 'autonomous', enabledToolsets: null, scopeFn: () => scopeE(saved, rsE) }), summarizeCapabilities(resU, { surface: 'autonomous', scopeFn: () => scopeE(saved, rsE) }),
+    'enabledToolsets null: the room note is unchanged');
+  let askedEmpty = 0;
+  const resEmpty = lineRun(rsE, true, []);
+  A.eq(summarizeCapabilities(resEmpty, { surface: 'autonomous', enabledToolsets: [], scopeFn: () => { askedEmpty++; return scopeE(saved, rsE); } }), summarizeCapabilities(resEmpty, { surface: 'autonomous' }),
+    'an empty list (the gate keeps only the freebies): byte-identical, no room fix');
+  A.eq(askedEmpty, 0, '...and the scope is never computed');
 }
 
 A.report('capsummary-room-scope.test');
