@@ -1657,9 +1657,15 @@ const { note: failNote } = require('../../failopen');
              (stat -> size cap -> readFile), consumed in path order: sequential stat+read of 6,000 small files took
              33-68 s against 3-9 s windowed, with the same results in the same order. Only a file up to 1 MiB is
              PREFETCHED; a bigger one is read when its turn comes, so the window holds at most ~16 MiB of file
-             bytes plus the one large file being searched. */
+             bytes plus the one large file being searched.
+             A FLOOR: the first SCAN_FLOOR candidates are searched even once the clock has expired. A walk that spent
+             the whole budget otherwise left the scan nothing — it read not one of the files the walk had found and
+             answered "(no matches)" for text sitting in the first of them (trunk, whose walk was unbudgeted, found it).
+             stats.scanned counts the files actually read and searched, for the summary of a cut scan. */
           if (stats.timedOut) timedOut = true;   // the walk itself ran out of budget
-          const PREFETCH_MAX = 1024 * 1024;
+          const PREFETCH_MAX = 1024 * 1024, SCAN_FLOOR = 16;
+          let reached = 0;
+          stats.scanned = 0;
           const readOrSkip = (abs) => fsp.readFile(abs).then((buf) => ({ buf }), () => ({ skip: true }));
           const cut = await inOrderWindow(candidates, 16, async (f) => {
             let size = f.size;
@@ -1671,20 +1677,23 @@ const { note: failNote } = require('../../failopen');
             if (size > maxBytes) return { large: true };
             return size > PREFETCH_MAX ? { later: true } : readOrSkip(f.abs);
           }, async (f, res) => {
+            reached++;
             if (res.large) { stats.skippedLarge.push(f.rel); return; }   // named below, never a silent miss
             if (res.later) res = clock.aborted ? { skip: true } : await readOrSkip(f.abs);
             if (res.skip) return;
             const buf = res.buf;
             if (buf.length > maxBytes) { stats.skippedLarge.push(f.rel); return; }
+            stats.scanned++;
             if (buf.indexOf(0) >= 0) return;   // binary
             const lines = buf.toString('utf8').split(/\r?\n/), idxs = [];
             for (let i = 0; i < lines.length; i++) if (matcher(lines[i])) idxs.push(i);
             if (idxs.length) { fileHits.push({ rel: f.rel, idxs, lines, maxIdx: lines.length - 1 }); totalMatches += idxs.length; }
           }, () => {
             if (clock.aborted) throw searchAbortError();
-            return clock.expired;
+            return clock.expired && reached >= SCAN_FLOOR;
           });
-          if (cut) { timedOut = true; stats.truncated = true; }
+          // a cut scan's summary says how many of the candidates it searched (the walk count is not files scanned)
+          if (cut) { timedOut = true; stats.truncated = true; stats.scanOf = candidates.length; }
         }
         if (timedOut) stats.timedOutNote = budgetNote(clock);
         if (stats.skippedLarge.length) stats.timedOutNote = (stats.timedOutNote || '') + '\n\n[NOT searched — over the '
@@ -1714,7 +1723,8 @@ const { note: failNote } = require('../../failopen');
         const flat = [];
         for (let fi = 0; fi < fileHits.length; fi++) for (const idx of fileHits[fi].idxs) flat.push({ fi, idx });
         const total = flat.length;
-        if (!total) return { content: '(no matches for ' + q + ')' + missNote, summary: '0 matches in ' + stats.files + ' file(s) scanned' + (stats.skippedLarge.length ? ', ' + stats.skippedLarge.length + ' too large' : ''), engine: stats.engine };
+        const scannedCount = stats.scanOf != null ? stats.scanned + ' of ' + stats.scanOf : stats.files;
+        if (!total) return { content: '(no matches for ' + q + ')' + missNote, summary: '0 matches in ' + scannedCount + ' file(s) scanned' + (stats.skippedLarge.length ? ', ' + stats.skippedLarge.length + ' too large' : ''), engine: stats.engine };
         const pageRefs = flat.slice(offset, offset + limit);
         const truncated = stats.truncated || total > offset + limit;
         let body;

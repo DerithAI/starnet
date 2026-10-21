@@ -166,6 +166,32 @@ async function rejection(p) { try { await p; return null; } catch (e) { return e
     A.ok(/\[search stopped at the 0s budget — these are the matches found so far; narrow with file_glob or a more specific query\]/.test(r.content), 'and the listing says the walk was cut');
   }
 
+  // ---- 7b. a content search whose WALK spent the budget still searches the files the walk found ----
+  // (the scan launched nothing once the clock had expired: 0 reads, "(no matches for needle-0)" with the text in
+  // the first file found, and a summary of "0 matches in 5 file(s) scanned"; trunk found it)
+  {
+    const c = counted({ delay: { readdir: 40 } });
+    const r = await tools(c, { searchBudgetMs: 300 }).searchTool.run({ query: 'needle-0', path: 'slow' }, { agentId: 'ag' });
+    const reads = c.calls.readFile.filter((p) => /x\.txt$/.test(p)).length;
+    A.ok(c.calls.readdir.length < 31, 'the walk was cut by the budget (' + c.calls.readdir.length + ' of 31 directories listed)');
+    A.ok(reads >= 1, 'the scan read the files the cut walk found (' + reads + ' read)');
+    A.eq(r.content.split('\n\n')[0], 'slow/d00/x.txt:1: needle-0', 'and finds the text in them: ' + JSON.stringify(r.content.slice(0, 120)));
+    A.ok(/\[search stopped at the 0s budget/.test(r.content), 'still saying the search was cut');
+  }
+
+  // ---- 7c. a scan the budget cut says how many files it searched, never the walk's count ----
+  {
+    await fsp.mkdir(path.join(WS, 'cutc'), { recursive: true });
+    for (let f = 0; f < 100; f++) await fsp.writeFile(path.join(WS, 'cutc', 'f' + String(f).padStart(3, '0') + '.txt'), 'plain\n');
+    const c = counted({ delay: { readFile: 100 } });
+    const r = await tools(c, { searchBudgetMs: 150 }).searchTool.run({ query: 'never-there', path: 'cutc' }, { agentId: 'ag' });
+    const reads = c.calls.readFile.filter((p) => /cutc[\\/]f\d+\.txt$/.test(p)).length;
+    const m = /^0 matches in (\d+) of 100 file\(s\) scanned$/.exec(r.summary || '');
+    A.ok(m, 'a cut scan\'s summary is "0 matches in N of 100 file(s) scanned": ' + JSON.stringify(r.summary));
+    A.ok(m && Number(m[1]) >= 16 && Number(m[1]) < 100 && Number(m[1]) <= reads, 'N is the files actually searched (' + (m && m[1]) + '; ' + reads + ' reads started, at least the 16-file floor)');
+    A.ok(/^\(no matches for never-there\)\n\n\[search stopped at the 0s budget/.test(r.content), 'and the miss carries the budget note');
+  }
+
   // ---- 8. the ripgrep path honours abort: a cancelled run spawns nothing, a cancel mid-listing rejects ----
   {
     const { EventEmitter } = require('events');
