@@ -1254,3 +1254,5 @@ test/markdown-everywhere.test.js
 test/walk-consistency-1014.test.js
 test/delegated-ledger-first-read.test.js
 test/type-floor.test.js
+test/css-parse.test.js
+test/one-gutter.test.js
