@@ -1089,6 +1089,9 @@ const { note: failNote } = require('../../failopen');
     // { ok, code, timedOut, stopped } — ok=false means "fall back to the walker".
     function runRg(bin, argv, absDir, onLine, budgetMs, signal) {
       return new Promise((resolve) => {
+        // an already-cancelled run spawns nothing (its abort event fired before we could listen for it);
+        // the caller sees its clock aborted and throws
+        if (signal && signal.aborted) return resolve({ ok: false, aborted: true });
         let child;
         try { child = spawnFn(bin, argv, { cwd: absDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
         catch (_) { return resolve({ ok: false }); }
@@ -1330,19 +1333,25 @@ const { note: failNote } = require('../../failopen');
       if (clock.expired) { stats.truncated = true; stats.timedOut = true; return true; }
       return false;
     }
-    /* ONE DEADLINE PER SEARCH, armed before anything walks: a TIMER plus the run's abort signal, never a clock read
-       (the determinism law; see the content-scan note below). It covers the walk, the content scan and the
-       target:"files" stats. disarm() runs in the caller's finally. */
+    /* ONE DEADLINE PER SEARCH: a TIMER plus the run's abort signal, never a clock read (the determinism law; see
+       the content-scan note below). The abort listener is live from the top of the call; the TIMER starts at
+       clock.start(), right before the first walk or rg spawn, so a consent card for a new folder (resolveInside
+       waits on the Commander) or the one-time rg probe never spends the search budget. It covers the walk and
+       the content scan. disarm() runs in the caller's finally. */
     function searchClock(signal, budgetMs) {
       const clock = { expired: false, aborted: false, budgetMs };
-      const timer = setTimeout(() => { clock.expired = true; }, budgetMs);
-      if (timer && typeof timer.unref === 'function') timer.unref();
+      let timer = null;
+      clock.start = () => {
+        if (timer) return;
+        timer = setTimeout(() => { clock.expired = true; }, budgetMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+      };
       const onAbort = () => { clock.aborted = true; };
       const listens = !!(signal && typeof signal.addEventListener === 'function');
       if (signal && signal.aborted) clock.aborted = true;
       else if (listens) signal.addEventListener('abort', onAbort, { once: true });
       clock.disarm = () => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         if (listens && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort);
       };
       return clock;
@@ -1384,7 +1393,7 @@ const { note: failNote } = require('../../failopen');
         gitignore: { type: 'boolean' }, max_files: { type: 'number' }
       } },
       run: async (args, ctx) => {
-        // ONE deadline for the whole search, armed before anything walks (see searchClock); always disarmed
+        // ONE deadline for the whole search: abort live from here, the timer started before anything walks (see searchClock); always disarmed
         const clock = searchClock(ctx && ctx.signal, SEARCH_BUDGET_MS);
         try { return await searchRun(args, ctx, clock); } finally { clock.disarm(); }
         // the historic run() body, unchanged in place except that it now reads the run's one clock
@@ -1449,6 +1458,10 @@ const { note: failNote } = require('../../failopen');
         const rgCommon = ['--no-require-git', '--no-messages', '--max-filesize', String(maxBytes), '-g', '!node_modules', '--sort', 'path'];
         if (!stats.gitignore) rgCommon.push('--no-ignore');
         const rgRel = (p) => { const n = String(p).replace(/\\/g, '/').replace(/^\.\//, ''); return startPrefix ? startPrefix + '/' + n : n; };
+        // the budget starts HERE, after the path is resolved (a consent card may have waited on the Commander) and
+        // rg is known; a search cancelled during that wait stops before it walks or spawns anything
+        if (clock.aborted) throw searchAbortError();
+        clock.start();
 
         // ---- target 'files': glob over names, newest first ----
         if (target === 'files') {
@@ -1457,23 +1470,26 @@ const { note: failNote } = require('../../failopen');
           const nameOf = (rel) => hasSlash ? rel : rel.split('/').pop();
           const wanted = (rel) => (!onlyName || rel === onlyRel) && re.test(nameOf(rel));
           /* newest-first needs an mtime, so only the glob HITS are stat'ed (the walk no longer stats every file), 16
-             at a time, in path order, under the run clock. A hit that cannot be stat'ed is dropped, as before. */
+             at a time, in path order. A hit that cannot be stat'ed is dropped, as before. The stats are NOT under
+             the budget: they are bounded by the hits already found (trunk stat'ed every file with no budget at
+             all), and stopping them on an expired clock threw away every name a cut walk or rg had found and
+             answered "(no files matching …)". An abort still stops them. */
           async function stampHits(list) {
             const out = [];
-            const cut = await inOrderWindow(list, 16,
+            await inOrderWindow(list, 16,
               (f) => (f.mtimeMs != null ? Promise.resolve(f.mtimeMs) : fsp.stat(f.abs).then((st) => st.mtimeMs || 0, () => null)),
               (f, m) => { if (m != null) out.push({ rel: f.rel, mtimeMs: m }); },
-              () => walkStopped(stats));
-            if (cut) { stats.truncated = true; stats.timedOut = true; }
+              () => { if (clock.aborted) throw searchAbortError(); return false; });
             return out;
           }
           let hits = null;
           if (rg) {
             const rels = [];
             const r = await runRg(rg, rgCommon.concat(['--files'], onlyName ? ['--', onlyName] : []), abs, (line) => { rels.push(line); if (!onlyName && rels.length >= maxFiles) { stats.truncated = true; return false; } }, clock.budgetMs, signal);
+            if (clock.aborted) throw searchAbortError();   // a cancelled rg listing is not "(no files matching …)"
             if (r.ok) {
               stats.files = rels.length; stats.engine = 'rg';
-              if (r.timedOut) stats.truncated = true;
+              if (r.timedOut) { stats.truncated = true; stats.timedOut = true; }   // killed at the budget: the note says so
               const wantedRels = [];
               for (const p of rels) { const rel = rgRel(p); if (wanted(rel)) wantedRels.push({ rel, abs: P.join(base, rel), mtimeMs: null }); }
               hits = await stampHits(wantedRels);

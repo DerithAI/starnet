@@ -115,6 +115,78 @@ async function rejection(p) { try { await p; return null; } catch (e) { return e
     A.ok(/\[NOT searched — over the 8 MB per-file search limit: same\/big\.txt\. Name one as "path" to search it \(up to 64 MB\)\.\]/.test(big.content), 'an oversized file is still named, now from the scan-time stat');
   }
 
+  // ---- 6. a consent card (pathTrust waiting on the Commander) does not spend the search budget ----
+  {
+    const proj = path.join(ROOT, 'proj-consent');
+    await fsp.mkdir(path.join(proj, 'src'), { recursive: true });
+    await fsp.writeFile(path.join(proj, 'src', 'a.txt'), 'the needle is here\n');
+    await fsp.writeFile(path.join(proj, 'src', 'readme.md'), 'doc\n');
+    const pathTrust = async (abs) => { await sleep(300); return { base: proj, abs: path.resolve(abs) }; };
+    const t = makeFsTools({ fsp, pathMod: path, root: ROOT, rg: false, pathTrust, limits: { searchBudgetMs: 200 } });
+    const c = await t.searchTool.run({ query: 'needle', path: proj }, { agentId: 'ag' });
+    A.eq(c.content, 'src/a.txt:1: the needle is here', 'a content search answered after a 300 ms consent wait still finds the text (it answered "(no matches)" + the budget note)');
+    const f = await t.searchTool.run({ query: '*.md', target: 'files', path: proj }, { agentId: 'ag' });
+    A.eq(f.content, 'src/readme.md', 'a files search answered after the same wait still lists the file');
+  }
+
+  // ---- 7. target:"files" cut by the budget lists the names the walk DID find, with the budget note ----
+  {
+    for (let d = 0; d < 30; d++) {
+      await fsp.mkdir(path.join(WS, 'cutf', 'd' + String(d).padStart(2, '0')), { recursive: true });
+      await fsp.writeFile(path.join(WS, 'cutf', 'd' + String(d).padStart(2, '0'), 'notes' + d + '.md'), 'x\n');
+    }
+    const c = counted({ delay: { readdir: 40 } });
+    const r = await tools(c, { searchBudgetMs: 300 }).searchTool.run({ query: '*.md', target: 'files', path: 'cutf' }, { agentId: 'ag' });
+    const names = r.content.split('\n\n')[0].split('\n').filter((l) => /^cutf\/d\d\d\/notes\d+\.md$/.test(l));
+    const reached = Array.from({ length: names.length }, (_, d) => 'cutf/d' + String(d).padStart(2, '0') + '/notes' + d + '.md');
+    A.ok(c.calls.readdir.length < 31, 'the walk was cut by the budget (' + c.calls.readdir.length + ' of 31 directories listed)');
+    A.ok(names.length >= 1, 'the names found before the cut are listed (' + names.length + '), never "(no files matching *.md)": ' + JSON.stringify(r.content.slice(0, 160)));
+    A.eq(names.slice().sort(), reached, 'exactly the files the walk reached, in its path order');
+    A.ok(/\[search stopped at the 0s budget — these are the matches found so far; narrow with file_glob or a more specific query\]/.test(r.content), 'and the listing says the walk was cut');
+  }
+
+  // ---- 8. the ripgrep path honours abort: a cancelled run spawns nothing, a cancel mid-listing rejects ----
+  {
+    const { EventEmitter } = require('events');
+    const { PassThrough } = require('stream');
+    await fsp.mkdir(path.join(WS, 'rgp'), { recursive: true });
+    await fsp.writeFile(path.join(WS, 'rgp', 'one.md'), 'x\n');
+    await fsp.writeFile(path.join(WS, 'rgp', 'two.md'), 'x\n');
+    // a stand-in rg: prints `lines` and then hangs until killed (a big tree), closing when killed
+    const fakeRg = (lines) => {
+      const spawned = [];
+      const spawn = (bin, argv) => {
+        const child = new EventEmitter();
+        child.stdout = new PassThrough(); child.stderr = new PassThrough();
+        const alive = setInterval(() => {}, 1000);   // a real child process holds the event loop open the same way
+        child.kill = () => { clearInterval(alive); setImmediate(() => child.emit('close', null)); return true; };
+        spawned.push(argv.join(' '));
+        if (lines) setImmediate(() => child.stdout.write(lines));
+        return child;
+      };
+      return { spawn, spawned };
+    };
+    const rgTools = (f, limits) => makeFsTools({ fsp, pathMod: path, root: ROOT, rg: 'rg', spawn: f.spawn, limits });
+    for (const q of [{ query: 'zzzz-not-present', path: 'rgp' }, { query: 'zzzz-not-present*', target: 'files', path: 'rgp' }]) {
+      const f = fakeRg(null), ac = new AbortController(); ac.abort();
+      const e = await rejection(rgTools(f).searchTool.run(q, { agentId: 'ag', signal: ac.signal }));
+      A.ok(e && e.name === 'AbortError', 'rg path, already-cancelled ' + (q.target || 'content') + ' search rejects with AbortError' + (e ? '' : ' (it resolved)'));
+      A.eq(f.spawned.length, 0, 'and spawns no rg (a content search once ran rg for the full budget)');
+    }
+    {
+      const f = fakeRg(null), ac = new AbortController();
+      setTimeout(() => ac.abort(), 50);
+      const e = await rejection(rgTools(f).searchTool.run({ query: 'zzzz-not-present*', target: 'files', path: 'rgp' }, { agentId: 'ag', signal: ac.signal }));
+      A.ok(e && e.name === 'AbortError', 'a files search cancelled while rg lists rejects with AbortError, never "(no files matching …)"' + (e ? '' : ' (it resolved)'));
+    }
+    {
+      const f = fakeRg('one.md\ntwo.md\n');
+      const r = await rgTools(f, { searchBudgetMs: 100 }).searchTool.run({ query: '*.md', target: 'files', path: 'rgp' }, { agentId: 'ag' });
+      A.eq(r.content.split('\n\n')[0].split('\n').sort(), ['rgp/one.md', 'rgp/two.md'], 'rg --files killed at the budget still lists what it printed (they were all dropped): ' + JSON.stringify(r.content.slice(0, 120)));
+      A.ok(/\[search stopped at the 0s budget/.test(r.content), 'and says the listing was cut at the budget');
+    }
+  }
+
   await fsp.rm(ROOT, { recursive: true, force: true });
   A.report('fs.search-budget.test');
 })().catch(async (e) => {
