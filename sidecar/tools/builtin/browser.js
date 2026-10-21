@@ -2999,11 +2999,21 @@
        click or type on whatever page took its place - one the agent never snapshotted (a signed-in checkout or SSO popup)
        - and report a bare "clicked". A tab mark is { driver, epoch }; only the SAME driver's epochs compare (a fresh
        driver already bumped version and navEpoch). syncTab turns a change the session has not seen yet into a document
-       change (version + navEpoch), so role+text recovery can never re-find the "same" control on the new tab. */
-    let seenTab = { d: null, e: 0 };
+       change (version + navEpoch), so role+text recovery can never re-find the "same" control on the new tab.
+       The mark names its driver by a small id (0 = none), never the object: refs and old marks outlive the driver they
+       were minted on, and holding the driver itself kept every replaced browser alive for the life of the session. */
+    const driverIds = new WeakMap();
+    let driverIdSeq = 0;
+    function driverId(d) {
+      if (!d || (typeof d !== 'object' && typeof d !== 'function')) return 0;
+      let id = driverIds.get(d);
+      if (!id) { id = ++driverIdSeq; driverIds.set(d, id); }
+      return id;
+    }
+    let seenTab = { d: 0, e: 0 };
     function tabMark() {
       const d = driver;
-      return { d, e: (d && typeof d.tabEpoch === 'function') ? d.tabEpoch() : 0 };
+      return { d: driverId(d), e: (d && typeof d.tabEpoch === 'function') ? d.tabEpoch() : 0 };
     }
     function syncTab() {
       const m = tabMark();
@@ -3015,7 +3025,7 @@
        and another tab was promoted, browser.press Enter went to that tab - which could submit a form the agent never
        read. lookedAt is the tab mark of the last snapshot, find, navigate or tab_select; a ref-less input refuses when
        the same driver has moved to another tab since (a fresh driver starts a fresh page: nothing to compare). */
-    let lookedAt = { d: null, e: 0 };
+    let lookedAt = { d: 0, e: 0 };
     function requireReadTab(what) {
       const now = syncTab();
       if (now.d && now.d === lookedAt.d && now.e !== lookedAt.e) {
@@ -3025,13 +3035,45 @@
         throw err;
       }
     }
+    /* RETIRED REFS. `refs` holds the CURRENT document's refs only. A ref minted before the document changed can never
+       act again (version moves with navEpoch) and is never recovered (recovery refuses across navEpoch), so its node is
+       dead weight - and the map used to keep every one, for the life of the station browser. All a later use of it
+       still needs is WHICH refusal it gets, and that depends only on the tab mark it was minted on. So when the first
+       ref of a new document is minted, the old entries collapse into seq ranges per tab mark (refs are numbered in
+       order, one snapshot shares one mark): a handful of ranges, however long the session runs. */
+    const retiredRefs = [];   // [{ lo, hi, tab }] ascending, inclusive seq ranges
+    let refsEpoch = navEpoch;
+    function retireRefs() {
+      for (const [ref, r] of refs) {
+        const n = Number(ref.slice(1));
+        const last = retiredRefs[retiredRefs.length - 1];
+        if (last && last.hi === n - 1 && last.tab.d === r.tab.d && last.tab.e === r.tab.e) last.hi = n;
+        else retiredRefs.push({ lo: n, hi: n, tab: { d: r.tab.d, e: r.tab.e } });
+      }
+      refs.clear();
+    }
+    function refEntry(ref) {
+      const key = String(ref || '');
+      const live = refs.get(key);
+      if (live) return live;
+      const m = /^b([1-9]\d*)$/.exec(key);
+      if (!m) return null;
+      const n = Number(m[1]);
+      for (let i = retiredRefs.length - 1; i >= 0; i--) {
+        const g = retiredRefs[i];
+        if (n > g.hi) return null;
+        if (n >= g.lo) return { version: -1, navEpoch: -1, tab: g.tab, node: null };   // minted here, on an earlier document
+      }
+      return null;
+    }
     function refFor(node, mark) {
+      if (refsEpoch !== navEpoch) { retireRefs(); refsEpoch = navEpoch; }
       const ref = 'b' + (++seq);
       refs.set(ref, { version, navEpoch, tab: mark || tabMark(), node });
       return ref;
     }
     function requireRef(ref) {
-      const r = refs.get(String(ref || ''));
+      const r = refEntry(ref);
       if (!r) throw new Error('unknown browser ref: ' + ref + ' (take a fresh browser.snapshot)');
       const now = syncTab();
       if (r.tab && r.tab.d && r.tab.d === now.d && r.tab.e !== now.e) {
@@ -3064,7 +3106,7 @@
         // Only a STALE ref is recoverable - an unknown one was never minted here, so there is nothing to
         // re-find, and a genuine failure thrown by act() must propagate untouched.
         if (!/^stale browser ref/.test(String(e && e.message)) || (e && e.code === 'REF_TAB_CLOSED')) throw e;
-        const known = list.map(r => refs.get(String(r || '')));
+        const known = list.map(refEntry);
         if (known.some(k => !k)) throw e;
         if (known.some(k => k.navEpoch !== navEpoch)) {
           throw new Error('stale browser ref: ' + list.join('/') + ' - the page navigated since that snapshot, '

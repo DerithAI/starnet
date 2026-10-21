@@ -435,6 +435,7 @@ test/dev-seed-preflight.test.js
 test/browser.reach-measure.test.js
 test/browser.tool-parity.test.js
 test/browser.wait-recovery.test.js
+test/browser.refs-retire.test.js
 test/browser.download-receipt.test.js
 test/browser.attach.test.js
 test/browser.pie.test.js
