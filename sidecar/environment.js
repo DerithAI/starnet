@@ -702,6 +702,18 @@
       ready.delete(aid);
       return ensureContainer(aid, false).then(function () { return revived.delete(aid); }, function () { return false; });
     }
+    /* The paths with no refusal to read afterwards re-check a cached cell BEFORE use instead: ensureReady (connector
+       configure, Reload, and every stdio MCP connect — the docker exec -i child is spawned synchronously right after)
+       and a background start (its exec outlives the call). One `docker inspect`: a cell that is no longer running,
+       or a daemon that does not answer, drops the cache and the full ensure brings the cell back (or marks the
+       backend unavailable, as on first use). A foreground exec skips the inspect: it reads docker's refusal instead. */
+    function ensureFresh(aid) {
+      if (!ready.has(aid) || ensuring.has(aid)) return ensureContainer(aid, false);
+      return inspectContainer(aid).then(function (state) {
+        if (!(state.exists && state.running)) ready.delete(aid);
+        return ensureContainer(aid, false);
+      });
+    }
 
     function cleanupAgent(agentId, opts) {
       const aid = safeAgentId(agentId || 'agent');
@@ -773,7 +785,7 @@
           }
         };
       },
-      ensureReady: function (agentId) { touch(safeAgentId(agentId || 'agent')); return ensureContainer(agentId, false); },
+      ensureReady: function (agentId) { const aid = safeAgentId(agentId || 'agent'); touch(aid); return ensureFresh(aid); },
       cleanupAgent: cleanupAgent,
       cleanupIdle: cleanupIdle,
       syncWorkspace: function (agentId) { return Promise.resolve({ ok: true, needed: false, agentId: safeAgentId(agentId || 'agent'), backend: 'docker' }); },
@@ -807,7 +819,7 @@
         const aid = safeAgentId(opts.agentId || 'agent');
         const svc = serviceEnvFor(opts.surface);
         touch(aid);
-        return ensureContainer(aid, false).then(function () {
+        return ensureFresh(aid).then(function () {
           return bg.start({
             agentId: aid, cmd: String(opts.cmd || ''), cwd: workspaceRoot(aid), isWin: WIN,
             file: cfg.dockerBin || 'docker', args: dockerExecArgs(aid, opts.cmd, opts.cwd || getCwd(aid), Object.keys(svc)),

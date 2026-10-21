@@ -927,6 +927,7 @@ test/mcp.description-untrusted.test.js
 test/mcp.resources-prompts.test.js
 test/mcp.transport.test.js
 test/mcp.stdio.test.js
+test/mcp.safecell-reconnect.test.js
 test/mcp.schema-lifecycle.test.js
 test/mcp.manager-race.test.js
 test/mcp.manager-auth-race.test.js
