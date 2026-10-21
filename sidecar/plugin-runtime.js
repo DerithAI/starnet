@@ -7,8 +7,10 @@
        MAX_RESTARTS times per RESTART_WINDOW_MS, after which it stays down until it is reloaded (re-approve, restart);
      · stop() and a revoke end the process; nothing outlives its approval;
      · a call that times out is followed by a liveness ping: a process that then answers nothing at all for longer
-       than the longest call deadline (its event loop is wedged) is killed, so the next use restarts it (bounded as
-       above) instead of every later hook paying its full timeout forever.
+       than the longest call deadline (its event loop is wedged) is killed, so the next use restarts it instead of
+       every later hook paying its full timeout forever — at most once: a plugin killed for silence MAX_HANGS times
+       per HANG_WINDOW_MS stays down (a wedge cycle is a timeout plus that whole silence, ~125 s, so the crash
+       window above, which counts restarts less than 100 s apart, never caught a plugin that wedges on every use).
 
    makePluginRuntime({ fork, workerPath, store, now?, onLog?, timeouts? }) -> {
      start(plugin) -> { ok, subs, tools, handlers, jobs } | { ok:false, error }
@@ -25,6 +27,8 @@ const { note } = require('./failopen.js');   // a failed IPC/kill is noted, neve
 const DEFAULTS = { startMs: 8000, hookMs: 5000, toolMs: 120000, callMs: 30000, wedgeMs: 0 };
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 5 * 60 * 1000;
+const MAX_HANGS = 2;
+const HANG_WINDOW_MS = 30 * 60 * 1000;
 
 function makePluginRuntime(deps) {
   const fork = deps.fork;
@@ -73,7 +77,7 @@ function makePluginRuntime(deps) {
   }
 
   function spawnRecord(plugin) {
-    const rec = procs.get(plugin.id) || { id: plugin.id, plugin, restarts: [], seq: 0 };
+    const rec = procs.get(plugin.id) || { id: plugin.id, plugin, restarts: [], hangs: [], seq: 0 };
     rec.plugin = plugin;
     rec.pending = new Map();
     rec.state = 'starting';
@@ -203,6 +207,8 @@ function makePluginRuntime(deps) {
         if (procs.get(id) === rec && rec.state === 'running' && rec.child) return rec;   // started again while we verified
         if (procs.get(id) !== rec || rec.state !== 'crashed') throw new Error('that plugin is ' + rec.state);
         const t = now();
+        rec.hangs = rec.hangs.filter((x) => t - x < HANG_WINDOW_MS);
+        if (rec.hangs.length >= MAX_HANGS) throw new Error('the plugin stopped responding ' + MAX_HANGS + ' times in 30 minutes and is stopped: ' + rec.error);
         rec.restarts = rec.restarts.filter((x) => t - x < RESTART_WINDOW_MS);
         if (rec.restarts.length >= MAX_RESTARTS) throw new Error('the plugin crashed ' + MAX_RESTARTS + ' times in 5 minutes and is stopped: ' + rec.error);
         rec.restarts.push(t);
@@ -220,7 +226,9 @@ function makePluginRuntime(deps) {
      with it. So a timeout only asks { t:'ping' }: a live event loop answers at once. A process that answers NOTHING
      (no pong, no call result) for WEDGE_MS after that is wedged (a busy loop, a hang); it used to stay 'running'
      forever, so every later hook call, station-wide, waited out its full timeout. Now it is killed: the exit marks it
-     crashed with this reason, and the next use restarts it, bounded by MAX_RESTARTS.
+     crashed with this reason, and the next use restarts it — bounded by MAX_HANGS kills per HANG_WINDOW_MS (review
+     2026-10-21: a hook that busy-loops on every call was killed and restarted forever, and every hook paid its full
+     timeout ~120 s of every ~125 s, because MAX_RESTARTS only trips on restarts less than 100 s apart).
      ONE BUDGET, FROM THE FIRST TIMEOUT (review 2026-10-21). A blocked loop is also what legitimate synchronous work
      looks like (an execSync git or zip call) — a tool's or a background job's — so the first silent ping proves
      nothing; WEDGE_MS is the longest deadline a call may have, so work that fits a call's own budget is never cut off.
@@ -237,7 +245,10 @@ function makePluginRuntime(deps) {
       rec.ping = null;
       if (rec.child !== child || rec.state !== 'running') return;
       rec.hungReason = 'it stopped responding (a call timed out and it then answered nothing, not even a liveness check, for ' + Math.round(WEDGE_MS / 1000) + ' s)';
-      onLog(rec.id, '[runtime] ' + rec.hungReason + ' — ending its process; the next use restarts it');
+      const t = now();
+      rec.hangs = rec.hangs.filter((x) => t - x < HANG_WINDOW_MS).concat(t);
+      onLog(rec.id, '[runtime] ' + rec.hungReason + ' — ending its process; ' + (rec.hangs.length >= MAX_HANGS
+        ? 'it stopped responding ' + MAX_HANGS + ' times in 30 minutes, so it stays down' : 'the next use restarts it'));
       try { child.kill('SIGKILL'); } catch (e) { note('plugins.runtime.kill-hung', e); }
     }, WEDGE_MS);
     if (timer && typeof timer.unref === 'function') timer.unref();
@@ -355,4 +366,4 @@ function makePluginRuntime(deps) {
   return { start, hook, callTool, callHandler, stop, stopAll, setJobsPaused, jobsPaused: () => jobsPaused, status, tools, list, digestOf, surface, hookTimeout: (id, event) => { const s = surface(id); return s && s.hookTimeouts ? Number(s.hookTimeouts[event]) || 0 : 0; } };
 }
 
-module.exports = { makePluginRuntime, MAX_RESTARTS, RESTART_WINDOW_MS };
+module.exports = { makePluginRuntime, MAX_RESTARTS, RESTART_WINDOW_MS, MAX_HANGS, HANG_WINDOW_MS };

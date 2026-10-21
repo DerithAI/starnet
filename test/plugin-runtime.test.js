@@ -362,6 +362,42 @@ async function plugin(id, source) {
       await rtW.stopAll();
     }
 
+    // ---- 5c'+. a plugin that wedges on EVERY use is held down, not recycled forever (review 2026-10-21) ----
+    // One wedge cycle is a hook timeout plus the whole silence budget (5 s + 120 s in production), so restarts came
+    // ~125 s apart and MAX_RESTARTS (3 per 5 minutes) never tripped: a pre_tool_call that busy-loops was killed and
+    // restarted forever, and every hook, station-wide, paid its full timeout. Timers scaled; the injected clock moves
+    // the production cycle (125 s) per cycle.
+    {
+      const hlogs = [];
+      const rtH = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: (id, line) => hlogs.push(line),
+        timeouts: { hookMs: 400, toolMs: 400, callMs: 400, startMs: 5000, wedgeMs: 300 } });
+      const spinner = await plugin('spinhook', `
+        module.exports = { register(api) { api.on('pre_tool_call', () => { for (;;) {} }); } };`);
+      A.ok((await rtH.start(spinner)).ok, 'the always-wedging plugin starts');
+      const cycles = [];
+      for (let c = 0; c < 6; c++) {
+        const t0 = Date.now();
+        const r = await rtH.hook('spinhook', 'pre_tool_call', { tool_name: 'fs.read' });
+        const paid = Date.now() - t0;
+        for (let i = 0; i < 60 && rtH.status('spinhook').state === 'running'; i++) await new Promise(res => setTimeout(res, 25));
+        cycles.push({ r, paid, state: rtH.status('spinhook').state, restarts: rtH.status('spinhook').restarts });
+        clock += 125000;
+      }
+      A.ok(cycles[0].paid >= 350 && cycles[1].paid >= 350, 'the first wedge and its one restart each pay the hook timeout: ' + JSON.stringify(cycles.slice(0, 2)));
+      A.eq(cycles.map(c => c.restarts), [0, 1, 1, 1, 1, 1], 'after its second silence kill it is not restarted again (restarts went 0,1,2,3,3,3 and it was killed every cycle before)');
+      A.ok(cycles.slice(2).every(c => c.r === null && c.paid < 200 && c.state === 'crashed'),
+        'its later hooks answer at once instead of each paying the full timeout: ' + JSON.stringify(cycles.slice(2)));
+      A.ok(hlogs.some(l => /ending its process; it stopped responding 2 times in 30 minutes, so it stays down$/.test(l)), 'the station log says it stays down');
+      A.ok(hlogs.some(l => /^\[hook\] the plugin stopped responding 2 times in 30 minutes and is stopped: it stopped responding/.test(l)),
+        'and each refused use says why, with the reason');
+      clock += 30 * 60 * 1000;   // the hold is a window, like the crash bound: half an hour later it gets one more try
+      const restartsLogged = () => hlogs.filter(l => l.startsWith('[runtime] restarting after: it stopped responding')).length;
+      const before = restartsLogged(), later = Date.now();
+      await rtH.hook('spinhook', 'pre_tool_call', { tool_name: 'fs.read' });
+      A.ok(restartsLogged() === before + 1 && Date.now() - later >= 350, 'once the window has passed the next use restarts it again (' + (Date.now() - later) + ' ms)');
+      await rtH.stopAll();
+    }
+
     // ---- 5c''. legitimate SYNCHRONOUS work is not killed, and a guard's veto still lands (review 2026-10-21) ----
     // A tool or a background job doing an execSync-style call blocks the event loop exactly like a busy loop. The first
     // kill path ended such a process on the first unanswered ping (a job's work, with nothing pending, was cut off half
