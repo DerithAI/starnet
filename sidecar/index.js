@@ -128,6 +128,7 @@ const { toolsetRows, toggleableCaps } = require('./capability/toolsets.js');   /
 const { makeCapCtx } = require('./capability/capGate.js');
 const { composeOffice, stationWithObject, stationWithConnectors } = require('./capability/office.js');   // THE MOAT: interactive office = compute freebie + placed caps
 const { summarizeCapabilities } = require('./capability/capsummary.js');   // truthful "what you can/can't do" so the agent stops over-promising
+const { scopeForRun, makeSavedFloor } = require('./capability/cap-scope.js');   // ...and WHICH room a room-scoped agent's missing gear must go in
 const { starnetManual, starnetManualIndex, starnetManualPointer } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
 const FinishLine = require('./finish-line.js');     // immutable "crawl to the finish line" task doctrine at the final prompt seam
 const { makeHarnessSnapshot } = require('./harness-snapshot.js');   // bounded secret-free build/scheduler/connectors/diagnostics truth for station.inspect
@@ -3006,6 +3007,9 @@ function engineCredentialError(provider, what) {
 // notebook: a sibling of the fs jail. Holds NO secret (the key/tokens live elsewhere). The frontend keeps
 // localStorage as a fast cache and writes through here on every persist; on boot it pulls the newer of the two.
 const saveStore = makeSaveStore({ fs, pathMod: path, root: WORKSPACES, clock: { now: () => Date.now() } });
+// the saved floor as a validated station model for the capability note's room scope (cap-scope.js): re-validated
+// (~11 ms on a 152-prop save) only when the save file's stamp moved, and only asked when a floor object is missing
+const savedFloor = makeSavedFloor({ stamp: () => saveStore.stamp('agent'), loadStamped: () => saveStore.loadStamped('agent') });
 
 /* ---- Cortex M-mem.5b: post-run reflection -> Keep/Edit/Discard turn-in ----
    After a substantive browser run COMPLETES, one cheap aux-model call (the same seam summarize() uses)
@@ -23100,7 +23104,15 @@ async function runOnceCore(o) {
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
-        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask }) + skillBlock;
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask,
+          // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied and the routine's own toolset list enforceEnabledToolsets
+          // applied (gear either one leaves out is no room fix), and the image route makeImageTools was built from (without one
+          // a STUDIO only analyzes images)
+          disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet(), enabledToolsets: unrestrictedHostNow() ? null : o.enabledToolsets,
+          mediaRoute: !!(studioRoute && studioRoute.ok),
+          // ROOM SCOPE: lazy (called only when a floor object is missing); the room it names is stable per agent, so the cached prefix holds.
+          // hasBay first: an agent crewing no dock on the router's plan (the bayless hero) never reads or validates the saved floor
+          scopeFn: () => { try { return scopeForRun({ loadStation: savedFloor, agentId, runStation: o.station, extraObjects: o.extraObjects, interactive: surface === 'interactive', floorless: !!o.floorless, hasBay: () => router.docksOf(agentId).length > 0 }); } catch (e) { failNote('capsummary.roomscope', e); return null; } } }) + skillBlock;
   /* CACHE-STABLE PREFIX (lean-prompt, 2026-10-12). Everything below that changes per MESSAGE — the run's skill index
      (ranked by this message), a /skill preload, the Task Brief (its id is the run's), the away briefing, a one-host
      check, the crew call, [RUNTIME] (run id, today) and the open quests — used to close the system prompt, so the
@@ -24817,18 +24829,28 @@ function openAskCount() {
 async function awayBriefingInputs(since, now, tzOffsetMin) {
   let runs = []; try { runs = runStore.list(null, { limit: 500, since: Math.max(0, since - 1) }) || []; } catch (_) { runs = []; }
   // the run row keeps deliveryText only for session-scoped runs; a routine/loop's own words live in its durable
-  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output
+  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output.
+  // Read ONCE per stream: every iteration of a loop shares its loop- stream, so 50 overnight iterations were 50 reads
+  // of the same last turn (perf review 2026-10-19, "Away briefing N+1").
+  const lastWords = new Map();   // streamId -> that stream's last assistant words ('' = none or unreadable)
+  const lastWordsOf = (streamId) => {
+    if (lastWords.has(streamId)) return lastWords.get(streamId);
+    let text = '';
+    try {
+      const turns = transcriptStore.reconstruct(streamId, { limit: 6 }) || [];
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const t = turns[i];
+        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) { text = t.content.trim().slice(0, 2000); break; }
+      }
+    } catch (e) { failNote('away-briefing.excerpt', e); }
+    lastWords.set(streamId, text);
+    return text;
+  };
   runs = runs.map(r => {
     const k = AwayBriefing.kindOf(r);
     if ((k !== 'routine' && k !== 'loop') || String(r.deliveryText || '').trim() || !r.streamId) return r;
-    try {
-      const turns = transcriptStore.reconstruct(String(r.streamId), { limit: 6 }) || [];
-      for (let i = turns.length - 1; i >= 0; i--) {
-        const t = turns[i];
-        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) return Object.assign({}, r, { deliveryText: t.content.trim().slice(0, 2000) });
-      }
-    } catch (e) { failNote('away-briefing.excerpt', e); }
-    return r;
+    const text = lastWordsOf(String(r.streamId));
+    return text ? Object.assign({}, r, { deliveryText: text }) : r;
   });
   const builds = [];
   for (const agentId of workshopAgentIds()) {
@@ -27760,6 +27782,21 @@ function conversationTranscript(stream, options) {
     transcriptStore.history(stream, { limit: limit + 500 }).filter(r => !transcriptLiveRuns.has(String(r.sourceRunId || ''))),
     id => runStore.latest(id), dispatchDeliveryDeps.hash).slice(-limit);
 }
+/* A run's rows cannot predate the run, so a runId read is bounded to the transcript segments written since it started
+   (the desk screen re-reads its agent's live run every 3 s; without a bound each read scanned the stream's whole
+   lifetime). The start comes from the live registry, else the run's durable row (dispatch-delivery's runSince rule);
+   0 = unknown, which reads every segment as before. */
+function transcriptRunSince(runId) {
+  const id = String(runId || '');
+  if (!id) return 0;
+  const live = runsMeta.get(id);
+  const liveAt = Number(live && live.startedAt);
+  if (Number.isFinite(liveAt) && liveAt > 0) return liveAt;
+  let row = null;
+  try { row = runStore.latest(id); } catch (e) { failNote('transcript.run-since', e); }
+  const at = [row && row.startedAt, row && row.ts].map(Number).filter(v => Number.isFinite(v) && v > 0);
+  return at.length ? Math.min.apply(null, at) : 0;
+}
 function serveTranscript(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);   // canonical helper (sidecar/respond.js)
   try {
@@ -27773,7 +27810,7 @@ function serveTranscript(req, res) {
     const hashText = text => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
     // Explicit delivery reads return only the full accepted projection. The ordinary exact-run view stays raw.
     const finalDelivery = sourceRunId && u.searchParams.get('delivery') === '1';
-    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined }) : [];
+    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined, since: transcriptRunSince(sourceRunId) }) : [];
     const turns = sourceRunId
       ? raw.filter(r => finalDelivery ? transcriptStoreModule.isFinalDeliveryRow(r, hashText, (runStore.latest(r.sourceRunId) || {}).dispatchDelivery) : r.dispatchState !== 'final').slice(-limit)
       : conversationTranscript(stream, { limit });

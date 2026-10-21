@@ -368,7 +368,31 @@ async function invokeTts(overrides, body) {
     assert.equal(a.body.toString(), 'keyed-mp3', 'and so is the original request');
   }
 
-  console.log('media-service: OK (45 assertions)');
+  // The offline (Kokoro) leg sweeps the voice cache like every other leg (memory lane 2026-10-20): its miss branch
+  // wrote a clip per new sentence and never called the sweep, so the folder grew ~120 MB a day at 500 sentences.
+  {
+    let n = 0;
+    const service = await make({
+      readBody: async () => JSON.stringify({ text: 'kokoro sentence ' + (++n), local: true, localVoice: 'af_heart', localEngine: 'local-kokoro' }),
+      localVoice: {
+        status: () => ({ available: true }), defaultVoice: () => 'af_heart', edgeVoiceFor: () => 'en-US-ChristopherNeural',
+        transcribe: async () => '', synthesize: async () => Buffer.from('kokoro-wav')
+      }
+    });
+    const dir = path.join(roots[roots.length - 1], 'voice-cache');
+    for (let i = 0; i < 640; i++) await fsp.writeFile(path.join(dir, 'seed-' + i + '.mp3'), 'x');   // over the 600-clip cap
+    let served = 0;
+    for (let i = 0; i < 32; i++) {
+      const r = { headers: {} };
+      await service.handleTts({}, { headersSent: false, writeHead(s, h) { r.headers = h || {}; }, end(v) { if (r.headers['X-Voice-Cache'] === 'miss' && String(v) === 'kokoro-wav') served++; } });
+    }
+    assert.equal(served, 32, 'every request was a Kokoro cache miss that served audio');
+    let files = (await fsp.readdir(dir)).length;
+    for (let i = 0; i < 100 && files > 480; i++) { await new Promise(r => setTimeout(r, 10)); files = (await fsp.readdir(dir)).length; }
+    assert.ok(files <= 480, 'the 32nd Kokoro miss sweeps the cache back under its cap (' + files + ' clips left of ' + (640 + 32) + ')');
+  }
+
+  console.log('media-service: OK (47 assertions)');
 })().finally(async () => {
   for (const root of roots) await fsp.rm(root, { recursive: true, force: true });
 }).catch(error => {

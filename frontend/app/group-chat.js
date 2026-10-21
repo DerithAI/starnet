@@ -603,14 +603,23 @@ const GroupChat = (() => {
       const at = shown.find(m => m.turnId === t.id) || shown.filter(m => !t.endedAt || (Number(m.at) || 0) <= t.endedAt).at(-1) || shown.find(m => m.id === t.origin);
       if (at) retiredAt.set(at.id, (retiredAt.get(at.id) || []).concat(t));
     }
-    const turnOf = id => (id ? group.turns.find(t => t.id === id) : null);
+    /* ONE PASS OVER THE TURNS, NOT ONE PER MESSAGE (perf p5, 2026-10-20). The loop below asked every turn about every message
+       (its follow-ups, the replies a pause stopped, its own turn), and every question and shared file too: O(messages × turns)
+       on each paint — every 0.9 s while an agent streams. The same lookups, indexed once per paint, in the group's order. */
+    const indexBy = (list, key) => { const out = new Map(); for (const x of list) { const k = x[key], had = out.get(k); if (had) had.push(x); else out.set(k, [x]); } return out; };
+    const firstOf = (index, k) => { const had = index.get(k); return had ? had[0] : undefined; };
+    const turnsById = indexBy(group.turns, 'id'), turnsByOrigin = indexBy(group.turns, 'origin'), turnsByParent = indexBy(group.turns, 'parent');
+    const retriedIds = new Set(group.turns.map(t => t.retryOf));
+    const groupQs = group.questions || [], askingTurnIds = new Set(groupQs.map(q => q.turnId)), questionsById = indexBy(groupQs, 'id');
+    const filesById = indexBy(group.artifacts || [], 'id');
+    const turnOf = id => (id ? firstOf(turnsById, id) : null);
     for (const m of group.messages) {
       // brief.ask's fallback marker belongs to the durable question card, not a chat bubble. A marker no card claimed
       // (a FORK, or a TASK_QUESTION the host never registered) reads as its question and options — never machine syntax.
-      const asks = (group.questions || []).some(q => q.turnId === m.turnId);
+      const asks = askingTurnIds.has(m.turnId);
       const content = (typeof Fork === 'undefined' || m.author === 'user') ? m.content : asks ? Fork.stripMarkers(m.content) : Fork.readable(m.content);
       if (!content) continue;
-      const attachments = (m.artifactIds || []).map(id => group.artifacts.find(f => f.id === id)).filter(Boolean);
+      const attachments = (m.artifactIds || []).map(id => firstOf(filesById, id)).filter(Boolean);
       // TIME BREAKS, the direct chat's rule: the first stamped turn, a new day, or 30 minutes of quiet
       const at = stampOf(m.at), clock = at ? clockLabel(at) : '';
       if (at) {
@@ -621,7 +630,7 @@ const GroupChat = (() => {
         }
         prevAt = at.getTime();
       }
-      const askedQ = m.questionId ? (group.questions || []).find(q => q.id === m.questionId) : null;
+      const askedQ = m.questionId ? firstOf(questionsById, m.questionId) : null;
       // a reply the Commander STOPPED says so; any other unfinished one stays "partial" (failed, cut off)
       const endedTurn = m.partial ? turnOf(m.turnId) : null;
       const unfinished = endedTurn && endedTurn.state === 'stopped' && /^stopped by you$/i.test(String(endedTurn.reason || '')) ? 'stopped by you · work did not complete' : 'partial · work did not complete';
@@ -665,13 +674,13 @@ const GroupChat = (() => {
       }
       // replies a PAUSE stopped before they ran (E-STOP, a restart, PAUSE — then a new message carried on): said under
       // the message they were for, with the one key that runs them now
-      const unrun = m.author === 'user' ? group.turns.filter(t => t.origin === m.id && t.state === 'stopped' && t.reason === 'Paused before it ran' && !group.turns.some(x => x.retryOf === t.id)) : [];
+      const unrun = m.author === 'user' ? (turnsByOrigin.get(m.id) || []).filter(t => t.state === 'stopped' && t.reason === 'Paused before it ran' && !retriedIds.has(t.id)) : [];
       if (unrun.length) {
         const say = unrun.map(t => name(t.agentId)).join(', ') + ' did not run · stopped by the pause';
         keep('ps:' + m.id, say, () => { const line = h('div', { class: 'gc-transfer' }, say + ' '); line.append(button('RETRY', async () => { for (const t of unrun) await action('retry', { turnId: t.id }); })); return line; });
         prevAuthor = null;
       }
-      for (const next of group.turns.filter(t => m.turnId && t.parent === m.turnId && !t.questionId && t.state !== 'stopped')) {
+      for (const next of (m.turnId ? turnsByParent.get(m.turnId) || [] : []).filter(t => !t.questionId && t.state !== 'stopped')) {
         const say = next.recoveryOf ? name(next.agentId) + ' was asked to check a handoff that did not start' : name(m.author) + ' asked ' + name(next.agentId) + ' to follow up';
         keep('tr:' + next.id, say, () => h('div', { class: 'gc-transfer' }, say));
         prevAuthor = null;
