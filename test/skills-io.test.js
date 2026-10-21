@@ -8,6 +8,8 @@
 
    Laws under test (real fs in a temp dir, the same skills-io + skillstore the host wires):
      • the original failure: 5 skills, 40 runs using 2 of them, restart -> all 5, with the uses counted;
+     • two rotations' worth of whole-record edits + a restart: the trunk wiring (rebuilt from logbound) kept 2 of 5,
+       the real store + skills-io keep all 5 and their exact bodies;
      • a use appends a small usage row (never the whole record); uses and the stale->active flip survive restart;
      • the file is compacted, never rotated: it stays bounded and no .1 is ever made;
      • a legacy .1 left by an older StarNet is read whole and folded back in by the boot compaction, then removed;
@@ -39,6 +41,7 @@ function fixture(name, opts) {
   return f;
 }
 const names = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo'];
+const sizeOf = (f) => { try { return fs.statSync(f).size; } catch (_) { return 0; } };   // a rotation leaves no live file
 const seed = (s) => { for (const n of names) A.ok(s.write({ agentId: 'a', name: n, summary: n + ' procedure', body: body(n), createdBy: 'user' }).ok, 'seeded ' + n); };
 
 // ---- 1. the original failure: nothing is lost across heavy use + restart ----
@@ -46,13 +49,56 @@ const seed = (s) => { for (const n of names) A.ok(s.write({ agentId: 'a', name: 
   const f = fixture('loss');
   seed(f.store);
   let maxSize = 0;
-  for (let run = 0; run < 40; run++) { f.store.markUsed('a', ['Alpha', 'Bravo']); maxSize = Math.max(maxSize, fs.statSync(f.file).size); }
+  for (let run = 0; run < 40; run++) { f.store.markUsed('a', ['Alpha', 'Bravo']); maxSize = Math.max(maxSize, sizeOf(f.file)); }
   A.ok(!fs.existsSync(f.file + '.1'), 'the live file is never rotated to .1');
   const s = f.restart();
   A.eq(s.count(), 5, 'all 5 skills survive 40 runs + a restart (trunk kept 2)');
   A.eq(s.view('a', 'Alpha', { bump: false }).useCount, 40, 'the uses survive the restart');
-  A.eq(s.view('a', 'Charlie', { bump: false }).body, body('Charlie'), 'an unused skill keeps its exact body');
+  A.eq((s.view('a', 'Charlie', { bump: false }) || {}).body, body('Charlie'), 'an unused skill keeps its exact body');
   A.ok(maxSize < 256 * 1024 + 64 * 1024, 'uses never balloon the file (max ' + maxSize + ' bytes)');
+}
+
+// ---- 1b. TWO ROTATIONS' worth of whole-record writes + a restart: 5 skills in, 5 out (the report's trunk run kept 2) ----
+// A whole-record append still happens on every edit, so this drives the edit path (write() on an existing name) until the
+// TRUNK wiring of skills.jsonl rotated twice, then the same workload through the real store + skills-io. The control is
+// index.js's pre-fix skillsIo rebuilt from the same logbound functions it called (readBoundedJsonl = loadBounded, append
+// then rotateJsonl = rotateIfLarge) at the LOG_MAX_BYTES floor index.js allows (1 MB); compaction gets the same floor.
+{
+  const { loadBounded, rotateIfLarge, appendJsonlDurable } = require('../sidecar/logbound.js');
+  const FLOOR = 1 << 20;
+  const drive = (store, file, runs) => {   // each run edits two skills; returns how often the live file shrank
+    let shrank = 0, refused = 0, last = sizeOf(file);
+    for (let run = 0; run < runs; run++) {
+      for (const n of ['Alpha', 'Bravo']) if (!store.write({ agentId: 'a', name: n, summary: n + ' procedure', body: body(n) + ' rev ' + run, createdBy: 'user' }).ok) refused++;
+      const sz = sizeOf(file); if (sz < last) shrank++; last = sz;
+    }
+    A.eq(refused, 0, 'every edit is accepted');
+    return shrank;
+  };
+  // control: the trunk wiring
+  const cdir = path.join(tmp, 'rotations-trunk'); fs.mkdirSync(cdir, { recursive: true });
+  const cfile = path.join(cdir, 'skills.jsonl');
+  const ledgerIo = {
+    readAll() { try { return loadBounded({ fs }, cfile, FLOOR).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (e) { return []; } },
+    append(entry) { appendJsonlDurable({ fs }, cfile, entry); try { rotateIfLarge({ fs }, cfile, FLOOR); } catch (_) {} }
+  };
+  const control = makeSkillStore({ io: ledgerIo, clock });
+  seed(control);
+  let runs = 0, rotations = 0;
+  while (rotations < 2 && runs < 200) { rotations += drive(control, cfile, 1); runs++; }
+  A.eq(rotations, 2, 'precondition: the trunk wiring rotated skills.jsonl twice (' + runs + ' runs)');
+  const controlKept = makeSkillStore({ io: ledgerIo, clock }).count();
+  A.eq(controlKept, 2, 'precondition: after two rotations + a restart the trunk wiring kept 2 of 5 (the report lost 3)');
+  // the fix: the same workload through the real store + skills-io
+  const f = fixture('rotations', { compactBytes: FLOOR });
+  seed(f.store);
+  const compactions = drive(f.store, f.file, runs);
+  A.ok(compactions >= 1, 'the same workload compacts the file instead (' + compactions + ' compactions)');
+  A.ok(!fs.existsSync(f.file + '.1'), 'and never makes a .1');
+  const s = f.restart();
+  A.eq(s.count(), 5, 'all 5 skills survive two rotations\' worth of writes + a restart');
+  A.eq((s.view('a', 'Alpha', { bump: false }) || {}).body, body('Alpha') + ' rev ' + (runs - 1), 'an edited skill keeps its newest edit');
+  for (const n of ['Charlie', 'Delta', 'Echo']) A.eq((s.view('a', n, { bump: false }) || {}).body, body(n), 'an untouched skill keeps its exact body (' + n + ')');
 }
 
 // ---- 2. a use is a small usage row, not the whole record; stale -> active survives restart ----
