@@ -128,7 +128,10 @@
        read-back verification is shared by a batch — committed SPILL_COMMIT_MS after the first staged chunk, at
        SPILL_COMMIT_BYTES staged, and ALWAYS before a status/read/wait/exit view, so every receipt that says
        "durably appended" still describes committed, verified bytes. Past maxSpillBytes the file stops growing and the
-       receipt says so (outputSpillError) instead of claiming the full output was saved. */
+       receipt says so (outputSpillCapped: only the first outputBytes are saved) instead of claiming the full output was.
+       A FAILURE IS STICKY on this path: a failed stage rolls its chunk back and a failed commit rolls back the whole
+       uncommitted batch, so the log has a hole from then on and no later commit may let a receipt call it the full
+       output. outputSpillError never carries a path — the tool maps outputPath to where its reader can open it. */
     const spillWriter = (deps.spillWriter && typeof deps.spillWriter.stage === 'function' && typeof deps.spillWriter.commit === 'function') ? deps.spillWriter : null;
     const SPILL_COMMIT_MS = Number(deps.spillCommitMs) > 0 ? Number(deps.spillCommitMs) : 250;
     const SPILL_COMMIT_BYTES = Number(deps.spillCommitBytes) > 0 ? Number(deps.spillCommitBytes) : 262144;
@@ -178,6 +181,8 @@
     }
     function count(agentId) { let n = 0; for (const p of procs.values()) if (p.agentId === agentId && holdsSlot(p)) n++; return n; }
     function spillEntry(r, text) { return { agentId: r.agentId, kind: 'shell-bg', id: r.bgId, text: text }; }
+    // the first failure stays: bytes were lost there, so the log is not the full output any more (see STREAMING SPILL)
+    function spillFailed(r, e) { if (!r.outputSpillError) r.outputSpillError = String((e && e.message) || e || 'output spill failed').slice(0, 300); }
     // make every staged chunk durable + verified (one fsync for the batch). Cheap no-op when nothing is staged.
     function commitSpill(r) {
       if (r.spillTimer) { clearTimeout(r.spillTimer); r.spillTimer = null; }
@@ -185,13 +190,22 @@
       r.spillDirty = false;
       try {
         const saved = spillWriter.commit(spillEntry(r));
-        if (saved && saved.path) {
-          r.outputPath = String(saved.path);
-          r.outputBytes = Math.max(0, Number(saved.bytes) || 0);
-          if (!r.spillCapped) r.outputSpillError = '';
-        }
-      } catch (e) { r.outputSpillError = String((e && e.message) || e || 'output spill failed').slice(0, 300); }
+        if (saved && saved.path) { r.outputPath = String(saved.path); r.outputBytes = Math.max(0, Number(saved.bytes) || 0); }
+      } catch (e) { spillFailed(r, e); }
       r.spillStaged = r.outputBytes;
+    }
+    /* The receipt facts view() and read() share. verified = the WHOLE output is durably saved at outputPath; capped =
+       only its first outputBytes are (the log hit its cap; nothing was lost before that); error = why the log is not the
+       full output. A capped log's error names the cap but no path, so a reader that knows nothing of `capped` still
+       reads the truth and never a path it cannot open. */
+    function spillFacts(r) {
+      const capped = !!r.spillCapped;
+      return {
+        outputPath: r.outputPath || null, outputBytes: r.outputBytes || 0,
+        outputSpillVerified: !!r.outputPath && !r.outputSpillError && !capped,
+        outputSpillError: r.outputSpillError || (capped ? 'the durable log stopped at its ' + MAX_SPILL_BYTES + '-byte cap (' + (r.outputBytes || 0) + ' bytes saved); later output is only in the memory ring' : null),
+        outputSpillCapped: capped && !!r.outputPath && !r.outputSpillError
+      };
     }
     function spillChunk(r, s) {
       if (!spillWriter) {
@@ -205,14 +219,12 @@
       if (r.spillStaged + Buffer.byteLength(s, 'utf8') > MAX_SPILL_BYTES) {
         commitSpill(r);
         r.spillCapped = true;
-        r.outputSpillError = 'the durable log stopped at its ' + MAX_SPILL_BYTES + '-byte cap (' + r.outputBytes + ' bytes saved'
-          + (r.outputPath ? ' at ' + r.outputPath : '') + '); later output is only in the memory ring';
         return;
       }
       try {
         const st = spillWriter.stage(spillEntry(r, s));
         if (st && st.path) { r.outputPath = String(st.path); r.spillStaged = Math.max(0, Number(st.bytes) || 0); r.spillDirty = true; }
-      } catch (e) { r.outputSpillError = String((e && e.message) || e || 'output spill failed').slice(0, 300); r.spillStaged = r.outputBytes; }
+      } catch (e) { spillFailed(r, e); }
       if (!r.spillDirty) return;
       if (r.spillStaged - r.outputBytes >= SPILL_COMMIT_BYTES) commitSpill(r);
       else if (!r.spillTimer) {
@@ -226,8 +238,7 @@
         bgId: r.bgId, pid: r.child && r.child.pid || null, cmd: r.cmd, running: r.running, exitCode: r.exitCode, killed: r.killed,
         killState: r.killState || null, survivors: r.survivors ? r.survivors.slice() : [],
         ms: Math.max(0, (r.endedAt != null ? r.endedAt : now()) - r.startedAt),
-        tail: r.out.slice(-2000), outputPath: r.outputPath || null, outputBytes: r.outputBytes || 0,
-        outputSpillVerified: !!r.outputPath && !r.outputSpillError, outputSpillError: r.outputSpillError || null
+        tail: r.out.slice(-2000), ...spillFacts(r)
       };
     }
 
@@ -418,9 +429,7 @@
         lines: page.map(x => x[1]), firstLineNo: page.length ? page[0][0] : 0, lineNos: page.map(x => x[0]),
         offset: off, returned: page.length,
         totalLines: all.length, matchedLines: needle ? numbered.length : null, grep: opts.grep || null,
-        droppedBytes: r.dropped, truncatedStart: r.dropped > 0,
-        outputPath: r.outputPath || null, outputBytes: r.outputBytes || 0,
-        outputSpillVerified: !!r.outputPath && !r.outputSpillError, outputSpillError: r.outputSpillError || null
+        droppedBytes: r.dropped, truncatedStart: r.dropped > 0, ...spillFacts(r)
       };
     }
 

@@ -1003,7 +1003,9 @@
         if (id) {
           const v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
           if (!v) return { content: 'No background process "' + id + '".', summary: 'not found' };
-          const saved = v.outputSpillVerified ? '\n[full output: ' + v.outputBytes + ' bytes durably appended to ' + spillPath(v.outputPath, ctx) + ']' : (v.outputSpillError ? '\n[full-output spill failed: ' + v.outputSpillError + ']' : '');
+          const saved = v.outputSpillVerified ? '\n[full output: ' + v.outputBytes + ' bytes durably appended to ' + spillPath(v.outputPath, ctx) + ']'
+            : v.outputSpillCapped ? '\n[output log: the first ' + v.outputBytes + ' bytes are durably appended to ' + spillPath(v.outputPath, ctx) + '; the log stopped at its cap, later output is only in the memory ring]'
+            : (v.outputSpillError ? '\n[full-output spill failed: ' + v.outputSpillError + ']' : '');
           const state = v.running ? 'RUNNING' + killNote(v) : v.lost ? 'LOST — ' + (v.remoteBoundary || 'remote process identity is unconfirmed') : 'exited ' + v.exitCode + (v.killed ? ' (killed)' : '') + killNote(v);
           return { content: '[' + v.bgId + '] ' + state + ' · ' + v.ms + 'ms · ' + v.cmd + saved + '\n--- output tail ---\n' + redact(v.tail || '(none)'), summary: v.running ? 'running' : v.lost ? 'lost' : 'exited ' + v.exitCode };
         }
@@ -1105,8 +1107,11 @@
         const note = r.truncatedStart
           ? (r.outputSpillVerified
               ? '\n(earlier output left the memory buffer; the full ' + r.outputBytes + '-byte log is saved once at ' + spillPath(r.outputPath, ctx) + ' and can be paged with fs.read)'
-              : '\n(earlier output was dropped from memory and durable spill is unverified' + (r.outputSpillError ? ': ' + r.outputSpillError : '') + ')')
-          : (r.outputSpillVerified ? '\n(full output is durably appended to ' + spillPath(r.outputPath, ctx) + '; ' + r.outputBytes + ' bytes so far)' : '');
+              : r.outputSpillCapped
+                ? '\n(earlier output left the memory buffer; the log stopped at its cap, so only the first ' + r.outputBytes + ' bytes are saved at ' + spillPath(r.outputPath, ctx) + ' and can be paged with fs.read)'
+                : '\n(earlier output was dropped from memory and durable spill is unverified' + (r.outputSpillError ? ': ' + r.outputSpillError : '') + ')')
+          : (r.outputSpillVerified ? '\n(full output is durably appended to ' + spillPath(r.outputPath, ctx) + '; ' + r.outputBytes + ' bytes so far)'
+            : r.outputSpillCapped ? '\n(the first ' + r.outputBytes + ' bytes are durably appended to ' + spillPath(r.outputPath, ctx) + '; the log stopped at its cap, later output is only in the memory ring)' : '');
         const body = r.returned
           ? r.lines.map(function (ln, i) { return String(r.lineNos[i]).padStart(6, ' ') + '  ' + ln; }).join('\n')
           : (r.grep ? '(no lines match)' : '(no output yet)');
