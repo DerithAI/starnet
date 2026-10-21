@@ -12248,7 +12248,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     wireCompactBeat();
     wireNotifyLive();
     tick();
-    if (!started) { started = true; tickTimer = setInterval(tick, 1000); }
+    /* the 1 s station tick runs through PollGate (idle CPU piece 3, 2026-10-20): 1 s while the station can be seen, a
+       30 s floor while the Commander is away, and one tick at once on return. The quest ledger and refresh syncs ride it. */
+    if (!started) { started = true; tickTimer = (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(tick, { ms: 1000, immediate: false }) : setInterval(tick, 1000); }
   }
 
   // update the live roster WITHOUT re-running enter's one-time setup (legacy-task import, timer) — used

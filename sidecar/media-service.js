@@ -494,7 +494,9 @@ function makeMediaService(options) {
         const buf = await localVoice.synthesize(text, { voice: localVoiceId, speed: localSpeed });
         try { const tmp = cachePath + '.' + randomUUID() + '.tmp'; await fsp.writeFile(tmp, buf); await fsp.rename(tmp, cachePath); } catch (_) {}
         res.writeHead(200, { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store', 'X-Voice-Provider': 'local-kokoro', 'X-Voice-Cache': 'miss' });
-        return res.end(buf);
+        // A Kokoro miss writes a clip to the same cache every other leg sweeps; skipping the sweep here let the
+        // offline voice grow the folder without bound (~120 MB a day at 500 sentences).
+        res.end(buf); sweepMaybe(); return;
       } catch (error) {
         const why = 'local voice engine: ' + ((error && error.message) || error);
         if (localEngine === 'local-kokoro') return fallback(why);

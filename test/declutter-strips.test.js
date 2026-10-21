@@ -76,7 +76,7 @@ for (const bad of ['../secrets.txt', '/etc/passwd', 'C:\\x.txt', '#top', 'javasc
   A.ok(!/md-file|md-img|href="(?!https?:)/.test(inline('[x](' + bad + ')')), 'no file link for an unsafe target: ' + bad);
 A.ok(!/<script|<b>|"onerror/.test(inline('[<script>](a"onerror=1.png)') + inline('![<b>](x.png)')), 'labels and paths are escaped into our markup');
 A.ok(/\|\\\]\\\(\/m;/.test(chat), 'the prose fast path no longer skips a reply whose only markup is a link');
-A.ok(/function hydrateFileRefs\(bodyEl\)/.test(chat) && /hydrateFileRefs\(bodyEl\);/.test(chat), 'renderProse hydrates file links and images');
+A.ok(/function hydrateFileRefs\(bodyEl[,)]/.test(chat) && /hydrateFileRefs\(bodyEl\);/.test(chat) && /hydrateFileRefs\(bodyEl, added\);/.test(chat), 'renderProse hydrates file links and images (a live frame: the blocks it drew)');
 A.ok(/new Blob\(\[b\], \{ type: 'image\/svg\+xml' \}\)/.test(chat), 'an .svg served as a download is retyped so the <img> decodes');
 A.ok(/\.md-img\[data-ready\]/.test(chat), 'a loaded image is carried across streaming re-renders (no per-frame rebuild)');
 A.ok(/userScrollHeld \|\| Date\.now\(\) - userScrollAt < 1200\) stick = false/.test(chat) && /else if \(stick\) log\.scrollTop = log\.scrollHeight/.test(chat),

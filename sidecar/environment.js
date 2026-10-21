@@ -424,6 +424,7 @@
     const cfg = deps.config || {};
     const sessions = new Map();
     const ready = new Set();
+    const revivals = new Map();  // agent → how many ensures had to start or create its container (read by reviveStale)
     const ensuring = new Map();
     const active = new Map();
     const lastUsed = new Map();
@@ -562,8 +563,8 @@
 
     /* Start one duplex MCP child INSIDE an already-probed per-agent container. This is deliberately
        synchronous because the stdio transport lazily asks for a ChildProcess when its first JSON-RPC
-       frame is sent; configureConnectorCfg performs the asynchronous ensureReady() before the manager
-       is allowed to build this transport.
+       frame is sent; the connector manager awaits the host's prepareConnect hook (index.js), which runs the
+       asynchronous ensureReady() — re-checking a cached cell — before EVERY connect builds this transport.
 
        No shell is involved. The connector command and every argument become exact docker-exec argv.
        Environment VALUES ride only in the docker client's environment; `docker exec -e NAME` forwards
@@ -650,6 +651,7 @@
       if (ensuring.has(aid)) return ensuring.get(aid);
       const promise = inspectContainer(aid).then(function (state) {
         if (state.exists && state.running) return { reused: true };
+        revivals.set(aid, (revivals.get(aid) || 0) + 1);   // this ensure is what brings the container up (starts or creates it)
         if (state.exists) {
           return dockerRun(['start', containerName(aid)], { timeoutMs: 30000 }).then(function (r) {
             if (r.exitCode !== 0) throw new Error('could not start persistent Docker environment: ' + String(r.out || '').trim());
@@ -680,6 +682,38 @@
         runtimeStatus.state = 'unavailable';
         runtimeStatus.error = String((e && e.message) || e || 'Docker environment unavailable').slice(0, 300);
         throw e;
+      });
+    }
+
+    /* THE READY CACHE GOES STALE. `ready` is set at the first good probe and every later exec trusts it, so after
+       a Docker daemon restart (or the container stopped/removed outside the station) every command failed with
+       docker's own refusal until the sidecar restarted, while describe() still said ready. A docker CLI refusal
+       that says the container or the daemon was not there drops the cache and re-runs the full ensure (inspect →
+       start → probe); a failed ensure marks the backend unavailable, as on first use.
+       The command is re-run ONCE, and only when an ensure since the exec reached docker had to START or CREATE the
+       container: then the refused exec cannot have run it. That is EVERY exec the same restart refused — the ones
+       joining the ensure the first refusal began, and one whose refusal arrives after the cell is already back —
+       not only the first. A container that was running all along (output that merely looks like the refusal)
+       keeps its original result: a command that ran is never run twice. Nor is one whose run was Stopped while the
+       revival waited (its abort signal fired): it keeps docker's refusal. */
+    const DOCKER_GONE_RE = /^\s*(?:Error response from daemon:\s*(?:No such container\b|[Cc]ontainer \S+ is not running)|Cannot connect to the Docker daemon|error during connect|failed to connect to the docker API)/;
+    function containerGone(r) {
+      return !!r && r.exitCode !== 0 && !r.timedOut && !r.aborted && DOCKER_GONE_RE.test(String(r.out || ''));
+    }
+    function reviveStale(aid, before) {
+      ready.delete(aid);
+      return ensureContainer(aid, false).then(function () { return (revivals.get(aid) || 0) > before; }, function () { return false; });
+    }
+    /* The paths with no refusal to read afterwards re-check a cached cell BEFORE use instead: ensureReady (connector
+       configure, Reload, and every stdio MCP connect — the docker exec -i child is spawned synchronously right after)
+       and a background start (its exec outlives the call). One `docker inspect`: a cell that is no longer running,
+       or a daemon that does not answer, drops the cache and the full ensure brings the cell back (or marks the
+       backend unavailable, as on first use). A foreground exec skips the inspect: it reads docker's refusal instead. */
+    function ensureFresh(aid) {
+      if (!ready.has(aid) || ensuring.has(aid)) return ensureContainer(aid, false);
+      return inspectContainer(aid).then(function (state) {
+        if (!(state.exists && state.running)) ready.delete(aid);
+        return ensureContainer(aid, false);
       });
     }
 
@@ -753,7 +787,7 @@
           }
         };
       },
-      ensureReady: function (agentId) { touch(safeAgentId(agentId || 'agent')); return ensureContainer(agentId, false); },
+      ensureReady: function (agentId) { const aid = safeAgentId(agentId || 'agent'); touch(aid); return ensureFresh(aid); },
       cleanupAgent: cleanupAgent,
       cleanupIdle: cleanupIdle,
       syncWorkspace: function (agentId) { return Promise.resolve({ ok: true, needed: false, agentId: safeAgentId(agentId || 'agent'), backend: 'docker' }); },
@@ -769,10 +803,18 @@
         // in a command line, and a container only ever receives keys the Commander connected.
         const svc = serviceEnvFor(opts.surface);
         const names = Object.keys(svc);
-        return withActivity(aid, function () { return ensureContainer(aid, false).then(function () {
+        const run = function () {
           return dockerRun(dockerExecArgs(aid, opts.cmd, cwd, names), {
             env: dockerClientEnv(svc), timeoutMs: opts.timeoutMs, maxTimeoutMs: opts.maxTimeoutMs,
             maxBytes: opts.maxBytes, signal: opts.signal, clock: opts.clock || clock
+          });
+        };
+        return withActivity(aid, function () { return ensureContainer(aid, false).then(function () {
+          const before = revivals.get(aid) || 0;   // the revivals before this exec reaches docker
+          return run().then(function (r) {
+            if (!containerGone(r)) return r;
+            // a Stop during the revival wait means no re-run: the caller keeps docker's refusal (the command never ran)
+            return reviveStale(aid, before).then(function (revivedSince) { return revivedSince && !(opts.signal && opts.signal.aborted) ? run() : r; });
           });
         }); });
       },
@@ -783,7 +825,7 @@
         const aid = safeAgentId(opts.agentId || 'agent');
         const svc = serviceEnvFor(opts.surface);
         touch(aid);
-        return ensureContainer(aid, false).then(function () {
+        return ensureFresh(aid).then(function () {
           return bg.start({
             agentId: aid, cmd: String(opts.cmd || ''), cwd: workspaceRoot(aid), isWin: WIN,
             file: cfg.dockerBin || 'docker', args: dockerExecArgs(aid, opts.cmd, opts.cwd || getCwd(aid), Object.keys(svc)),

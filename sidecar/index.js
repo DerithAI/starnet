@@ -120,6 +120,7 @@ const RunRecovery = require('./run-recovery.js');
 const { makeSegmentedTranscriptIo } = require('./transcript-history.js');
 const { makeRunTranscript, recoveryBase } = require('./transcript-run.js');   // H2: a run's transcript rows land at the loop's durable boundaries, not only at run end
 const { makeSkillStore } = require('./skillstore.js');             // H4: per-agent owned skill library (singleton)
+const { makeSkillsIo } = require('./skills-io.js');                // skills.jsonl: read whole, compacted, never rotated
 const { makeCredPool } = require('./credpool.js');
 const { resolveTools } = require('./capability/resolve.js');
 const { CAP_REGISTRY } = require('./capability/registry.js');
@@ -127,6 +128,7 @@ const { toolsetRows, toggleableCaps } = require('./capability/toolsets.js');   /
 const { makeCapCtx } = require('./capability/capGate.js');
 const { composeOffice, stationWithObject, stationWithConnectors } = require('./capability/office.js');   // THE MOAT: interactive office = compute freebie + placed caps
 const { summarizeCapabilities } = require('./capability/capsummary.js');   // truthful "what you can/can't do" so the agent stops over-promising
+const { scopeForRun, makeSavedFloor } = require('./capability/cap-scope.js');   // ...and WHICH room a room-scoped agent's missing gear must go in
 const { starnetManual, starnetManualIndex, starnetManualPointer } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
 const FinishLine = require('./finish-line.js');     // immutable "crawl to the finish line" task doctrine at the final prompt seam
 const { makeHarnessSnapshot } = require('./harness-snapshot.js');   // bounded secret-free build/scheduler/connectors/diagnostics truth for station.inspect
@@ -144,8 +146,10 @@ const {
   defaultReasoningEffortForProvider: registryDefaultReasoningEffort,
   providerRequiresKey,
   providerRequiresBaseUrl,
-  attachRateLimits
+  attachRateLimits,
+  attachCatalogCache
 } = require('./providers/factory.js');
+const { makeCatalogCache, runWindow: catalogRunWindow } = require('./providers/catalog-cache.js');
 /* RESTRICTED GOOGLE DATA NEVER RIDES THE STARNET RELAY (mcp/google-relay-guard.js). Every provider this process
    builds for StarNet Managed ('starnet' — the one StarNet-operated path model traffic can take) streams through
    the guard, so primary runs, fallbacks and auxiliary passes all send a copy with Gmail/Drive tool results
@@ -176,6 +180,11 @@ function selectProvider(opts) {
    "this meter is nearly spent" BEFORE the wall instead of after it. */
 const rateLimits = require('./providers/ratelimits.js').makeRateLimits({ clock: { now: () => Date.now() } });
 attachRateLimits(rateLimits);
+/* SHARED MODEL CATALOG (providers/catalog-cache.js). Every run builds a fresh adapter, and each adapter kept its /models
+   list to itself: a run was sized from a COLD catalog (131072 assumed for a 1M Gemini, for a 65536 Ollama) and every
+   fresh adapter re-fetched the list on its first stream. One process-wide cache (10-minute TTL, per provider + base
+   URL + credential fingerprint; reported windows per endpoint), attached at the same seam as the quota tracker. */
+attachCatalogCache(makeCatalogCache({ clock: { now: () => Date.now() } }));
 const { DEFAULT_MODEL: CODEX_DEFAULT_MODEL, liveDefaultModel: codexLiveDefaultModel, memoLiveModelIds: codexMemoLiveModelIds } = require('./providers/codex.js');
 const codexAuth = require('./providers/codex-auth.js');
 const codexTokenStore = require('./providers/codex-token-store.js');
@@ -1792,21 +1801,12 @@ function rewriteJsonlDurable(file, entries) {
   const body = (entries || []).map(e => JSON.stringify(e)).join('\n') + (entries && entries.length ? '\n' : '');
   writeFileDurable({ fs: fs, path: path }, file, body);
 }
-const skillsIo = {
-  // bounded boot-load (last LOG_MAX_BYTES of archive+live), same as ledger/runs — after compaction exists, so a
-  // bounded read never silently drops a still-live skill (compaction keeps newest-per-key; the tail read then
-  // covers far more than the compacted file). A missing file -> [].
-  readAll() {
-    try { return readBoundedJsonl(SKILLS_FILE); } catch (e) { return []; }
-  },
-  append(entry) {
-    // The skill store publishes to RAM only after this durable write returns.
-    // Never swallow a failure and claim a proposal, rejection, or promotion survived it.
-    appendJsonlDurable({ fs, note: failNote }, SKILLS_FILE, entry);
-    rotateJsonl(SKILLS_FILE);
-  },
-  rewrite(entries) { rewriteJsonlDurable(SKILLS_FILE, entries); }   // compaction full-replace
-};
+// skills.jsonl is a STATE log (newest record per skill wins), so it is never size-rotated or tail-read like the
+// ledger: rotation deleted the only copy of skills not used recently (skills-io.js). It is read whole and kept small
+// by compaction instead. The store publishes to RAM only after a durable append returns (a failure throws).
+const SKILLS_COMPACT_BYTES = Math.max(1 << 20, num(ENV('SKILLS_COMPACT_BYTES'), 4 * 1024 * 1024));
+const skillsIo = makeSkillsIo({ fs, file: SKILLS_FILE, note: failNote, compactBytes: SKILLS_COMPACT_BYTES,
+  writeDurable: (file, body) => writeFileDurable({ fs: fs, path: path }, file, body) });
 const SKILL_PACKAGES_DIR = path.join(WORKSPACES, 'skill-packages');
 const skillPackageStore = skillPackages.makePackageStore({ fs, pathMod: path, root: SKILL_PACKAGES_DIR, now: () => Date.now() });
 const skillStore = makeSkillStore({ io: skillsIo, clock: { now: () => Date.now() }, redact, packageStore: skillPackageStore, guard: skillGuard, digest: skillDigestOf,
@@ -1933,15 +1933,16 @@ const skillExchange = makeSkillExchange({
   hash: (text) => crypto.createHash('sha256').update(String(text), 'utf8').digest('hex'),
   now: () => Date.now(), makeId: () => crypto.randomBytes(16).toString('hex')
 });
-// BOOT COMPACTION: when skills.jsonl has grown past a threshold, rewrite it to one line per (agentId,name) so
-// view-bump churn + repeated edits can't grow it without bound. Runs AFTER the store loaded `latest`, so the
-// rewrite is exactly the current newest-per-skill set. Safe + idempotent; fail-open.
+// BOOT COMPACTION: when skills.jsonl has grown past a threshold, or a legacy rotated skills.jsonl.1 is still on disk
+// (an older StarNet rotated this file), rewrite it to one line per (agentId,name). Runs AFTER the store loaded
+// `latest` (archive + live, read whole), so the rewrite is exactly the current newest-per-skill set and folds the
+// archive back in. The store refuses when its load was incomplete. Safe + idempotent; fail-open.
 try {
-  const SKILLS_COMPACT_BYTES = Math.max(1 << 20, num(ENV('SKILLS_COMPACT_BYTES'), 4 * 1024 * 1024));
   let sz = 0; try { sz = fs.statSync(SKILLS_FILE).size; } catch (_) {}
-  if (sz > SKILLS_COMPACT_BYTES && typeof skillStore.compact === 'function') {
+  if (skillsIo.needsCompaction() && typeof skillStore.compact === 'function') {
     const r = skillStore.compact();
     if (r && r.ok) { try { console.warn('[skills] boot-compacted skills.jsonl (' + sz + 'B -> ' + r.kept + ' entries)'); } catch (_) {} }
+    else if (r) failNote('skills.boot-compact', new Error(r.reason || 'compaction refused'));
   }
 } catch (_) {}
 
@@ -2545,9 +2546,9 @@ const commanderGoals = {
     const milestones = goal && typeof goal === 'object' ? GoalAdvance.normMilestones(goal.milestones) : [];
     this._goal = this._fold((goal && typeof goal === 'object') ? {
       id: goal.id == null ? null : String(goal.id).slice(0, 64),
-      text: String(goal.text || '').slice(0, 280),
+      text: String(goal.text || '').slice(0, 280).replace(/[\uD800-\uDBFF]$/, ''),   // never half an emoji (a lone surrogate)
       done: Number(goal.done) | 0, total: Number(goal.total) | 0, pct: Number(goal.pct) | 0,
-      next: goal.next == null ? null : String(goal.next).slice(0, 200),
+      next: goal.next == null ? null : String(goal.next).slice(0, 200).replace(/[\uD800-\uDBFF]$/, ''),
       milestoneId: goal.milestoneId == null ? null : String(goal.milestoneId).slice(0, 80),
       milestones: milestones.length ? milestones : null
     } : null);
@@ -3006,6 +3007,9 @@ function engineCredentialError(provider, what) {
 // notebook: a sibling of the fs jail. Holds NO secret (the key/tokens live elsewhere). The frontend keeps
 // localStorage as a fast cache and writes through here on every persist; on boot it pulls the newer of the two.
 const saveStore = makeSaveStore({ fs, pathMod: path, root: WORKSPACES, clock: { now: () => Date.now() } });
+// the saved floor as a validated station model for the capability note's room scope (cap-scope.js): re-validated
+// (~11 ms on a 152-prop save) only when the save file's stamp moved, and only asked when a floor object is missing
+const savedFloor = makeSavedFloor({ stamp: () => saveStore.stamp('agent'), loadStamped: () => saveStore.loadStamped('agent') });
 
 /* ---- Cortex M-mem.5b: post-run reflection -> Keep/Edit/Discard turn-in ----
    After a substantive browser run COMPLETES, one cheap aux-model call (the same seam summarize() uses)
@@ -3246,7 +3250,8 @@ function embedderFor(run) {
    -> { vectors: {id->vec}, queryVec } | null. Backfills missing record vectors (capped) + embeds the query in
    ONE or two bounded calls, books the spend, persists the store. Fail-open: null on any failure. */
 async function hybridVectors(o) {
-  if (!personalizationStore.read().enabled) return null;   // the PAUSE is server authority: no provider call at all
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return null;   // the PAUSE is server authority: no provider call at all
   const embedder = embedderFor(o.run || {});
   if (!embedder) return null;
   const recs = Array.isArray(o.recs) ? o.recs : [];
@@ -3260,6 +3265,7 @@ async function hybridVectors(o) {
     if (plan.length) {
       const r = await embedder.embed(plan.map(p => p.text));
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;   // paused/forgotten mid-call: persist no vectors (the finally still books the spend)
       const rows = plan.map((p, i) => ({ id: p.id, h: p.h, v: r.vectors[i] }));
       await notebookStore.update('embed:' + o.agentId, (cur) => Embed.mergeVectors(cur, embedder.model, rows, recs.map(x => x.id)));
     }
@@ -3270,6 +3276,7 @@ async function hybridVectors(o) {
     if (!queryVec) {
       const r = await embedder.embed([query]);
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;
       queryVec = r.vectors[0];
       embedQueryCache.set(qKey, queryVec);
       while (embedQueryCache.size > EMBED_QUERY_CACHE_MAX) embedQueryCache.delete(embedQueryCache.keys().next().value);
@@ -3282,6 +3289,15 @@ async function hybridVectors(o) {
   } finally {
     if (usd || tokens) { try { ledger.record({ runId: o.runId, agentId: o.agentId, turns: 0, usd, tokens, model: embedder.model, unmetered: !!o.unmetered }); } catch (e) { failNote('embed.ledger.record', e); } }
   }
+}
+
+/* LEARNING RE-CHECK after an await (the scanDocumentSource rule). A learning pass checks the personalization PAUSE
+   at entry, then waits seconds on a model/embedder call; a pause or a forget (DELETE) that lands meanwhile must win,
+   or a memory/interest/draft is written after the Commander turned learning off. setEnabled and markForgotten both
+   bump `revision`, so an unchanged revision + still-enabled proves nothing moved since the pass started. */
+function learningUnchangedSince(start) {
+  const s = personalizationStore.read();
+  return !!(start && s.enabled && s.revision === start.revision);
 }
 
 /* PROJECT TIER (memory-compound lane): a belief formed inside a blessed project root is keyed to that root
@@ -3299,7 +3315,8 @@ async function runReflection(o) {
   // personalization PAUSE (memory-compound lane): reflection is the station learning about the Commander —
   // the same "learned-about-you" class the pause already silences for the scout, study packs and the failure
   // review. Server authority here too: a paused station extracts nothing and spends nothing, whatever the caller gated.
-  if (!personalizationStore.read().enabled) return;
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const origin = String((o && o.origin) || 'commander');   // which surface formed these beliefs (memcore.originOf)
@@ -3338,6 +3355,8 @@ async function runReflection(o) {
     const declined = notebookStore.get('declined:' + agentId);
     const declinedRecs = Array.isArray(declined) ? declined.map(t => ({ content: String(t) })) : [];
     const out = await reflect({ agentId, runId, messages }, { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: 5 });
+    // the Commander paused (or forgot) learning while the model was answering: remember nothing from this pass
+    if (!learningUnchangedSince(pz)) return;
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: reflect() already deduped THIS agent's own notebook declines; drop anything the Commander declined
     // in ANOTHER surface (a mined thread / a quest title / a study belief / a north star) so it isn't re-remembered.
@@ -3399,7 +3418,8 @@ async function runReflection(o) {
    memory.proposed for the confirm deck. PAUSE is server authority here exactly as in runScoutCycle: a paused
    station learns nothing new, whatever the caller gated. */
 async function runFailureReview(o) {
-  if (!personalizationStore.read().enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -3433,6 +3453,7 @@ async function runFailureReview(o) {
         toolTrace: o.toolTrace, recoveryAttempts: o.recoveryAttempts, uncertainMutations: o.uncertainMutations,
         messages },
       { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: Failreview.MAX_LESSONS });
+    if (!learningUnchangedSince(pz)) return;   // paused/forgotten during the review call: no lesson is written
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: any NEW proposal source routes through the shared declined-suppression index (NS-8 lite law).
     if (proposals.length) { const dIdx = buildDeclinedIndex(agentId); proposals = proposals.filter(p => p && !dIdx.has(p.content)); }
@@ -4239,7 +4260,7 @@ const pluginRuntime = makePluginRuntime({
   fork: stationChildProcess.fork, workerPath: path.join(__dirname, 'plugin-worker.js'), store: pluginStore,
   now: () => Date.now(), cwd: WORKSPACES,
   // the approval must still cover the exact code a process runs (before tool/window calls, restarts, and jobs)
-  verify: async (id, digest) => { const r = await pluginLoader.approvedRecord(id); return !!r && r.digest === digest; },
+  verify: async (id, digest, opts) => { const r = await pluginLoader.approvedRecord(id, opts && opts.quick ? { quick: true } : undefined); return !!r && r.digest === digest; },
   onLog: (id, line) => { for (const l of String(line || '').split(/\r?\n/)) if (l) console.log('[plugin:' + id + '] ' + l); }
 });
 /* A RE-APPROVAL MUST RUN THE NEW CODE. Node caches every require()d module forever, so after an edit + re-approve
@@ -4781,11 +4802,22 @@ async function forceRefreshCodexAccessToken(staleToken) {
   codexRefreshInFlight = refreshCodexTokensOnce().finally(() => { codexRefreshInFlight = null; });
   return codexRefreshInFlight;
 }
+/* A refresh belongs to the exact sign-in that started it — the same rule ensureConnectorOauthToken keeps for MCP
+   grants. A logout (or a brand-new sign-in) during the token-endpoint await wins: the late response, success or
+   failure, must never be merged over it or saved, or an explicit sign-out is silently undone (the refreshed grant is
+   written over the signed-out tombstone and survives a restart) and a new account gets the old account's tokens. */
+function oauthRefreshSuperseded(label, code, current) {
+  if (current && current.access_token) return current.access_token;   // a new sign-in replaced it: serve THAT one
+  const e = new Error('Signed out of ' + label + ' while the sign-in was refreshing — connect it again to continue.');
+  e.code = code; e.reloginRequired = true; throw e;
+}
 async function refreshCodexTokensOnce() {
+  const started = codexTokens;
   let next;
   try {
-    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: codexTokens.refresh_token, now: Date.now() });
+    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
     // Relogin-class failure (invalid_grant / refresh_token_reused / 401) => the stored refresh token is DEAD.
     // Record it durably (module state + persisted envelope) so the status endpoint — and Settings — stop
     // claiming "signed in", and a restart stays honest. Transient failures (quota/network) never mark dead.
@@ -4798,6 +4830,7 @@ async function refreshCodexTokensOnce() {
     }
     throw e;
   }
+  if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
   // a successful refresh proves the sign-in is alive again — clear any standing dead marker with the same write.
   codexTokens = codexAuthState.withoutDeadMarker(Object.assign({}, codexTokens, next));
   codexAuthDead = null;
@@ -4944,10 +4977,12 @@ async function ensureOAuthAccessToken(pid) {
   return entry.refreshInFlight;
 }
 async function refreshOAuthTokensOnce(id, entry) {
+  const started = entry.tokens;   // same superseded-grant rule as refreshCodexTokensOnce: a logout/new sign-in mid-await wins
   let next;
   try {
-    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
     const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
     if (marker) {
       entry.authDead = marker;
@@ -4957,6 +4992,7 @@ async function refreshOAuthTokensOnce(id, entry) {
     }
     throw e;
   }
+  if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
   entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
   entry.authDead = null;
   saveOAuthTokens(id, entry.tokens);
@@ -5011,16 +5047,24 @@ async function ensureAccountAccessToken(entry, force, staleToken) {
   if (!force && !expiring) return entry.tokens.access_token;
   if (entry.refreshInFlight) return entry.refreshInFlight;
   entry.refreshInFlight = (async () => {
+    // superseded-grant rule (refreshCodexTokensOnce): a re-sign-in or a REMOVE during the await wins. A removed
+    // account's folder was just deleted — a late save would write an orphaned tokens.json secret back into it.
+    const started = entry.tokens;
+    const superseded = () => entry.tokens !== started || oauthAccountEntries.get(entry.pid + ':' + entry.id) !== entry;
+    const gone = () => oauthRefreshSuperseded(oauthLabel(entry.pid) + ' account', entry.pid + '_not_connected',
+      oauthAccountEntries.get(entry.pid + ':' + entry.id) === entry ? entry.tokens : null);
     let next;
     try {
       next = entry.pid === 'codex'
-        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() })
-        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() })
+        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
     } catch (e) {
+      if (superseded()) return gone();
       const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
       if (marker) { entry.authDead = marker; entry.tokens = codexAuthState.withDeadMarker(entry.tokens, marker); saveAccountTokens(entry, entry.tokens); }
       throw e;
     }
+    if (superseded()) return gone();
     entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
     entry.authDead = null;
     saveAccountTokens(entry, entry.tokens);
@@ -5201,7 +5245,7 @@ const appendDurableProcessOutput = entry => outputArtifacts.append(entry);
    ended — an honest 409), or a full one: the COMMS line stays the only signal, exactly as before. The most recently
    started live run of that agent is the one told, so a note is never duplicated across runs (shellbg.js). */
 const wakeOwnerOnBgExit = makeBgExitWaker({ steer: steerBufs, runs: runs, runsMeta: runsMeta, log: (m) => console.log(m) });
-const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, processTable: osProcessTable });
+const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, spillWriter: outputArtifacts, processTable: osProcessTable });
 if (require.main === module) {
   // vouch every minute for bg children whose handle is still open, so a crash's orphan window covers children
   // they start late (procledger.touch). One small ledger write per minute, only while bg processes run.
@@ -5391,6 +5435,10 @@ const overseer = require('./overseer.js').makeOverseer({ fs, path, writeDurable:
   file: path.join(WORKSPACES, 'overseer.json'), now: () => Date.now(),
   newId: () => 'ws_' + crypto.randomUUID().replace(/-/g, ''),
   sessions: () => saveStore.load('agent') || {}, hasAgent: id => id === 'agent' || agentRoster.has(id),
+  // the same save read plus its stamp, so GET /api/overseer's thread list re-parses the save only when it changed
+  // (overseer.js listedThreads; savestore.js stamp: one stat, never a cached doc)
+  sessionsRead: () => { const r = saveStore.loadStamped('agent'); return { doc: r.doc || {}, stamp: r.stamp }; },
+  sessionsStamp: () => saveStore.stamp('agent'),
   isRunActive: id => runs.has(id),
   // how long one hand-off's report waits on a straggler before NOVA reports the finished part (env OVERSEER_REPORT_CEILING_MS)
   reportCeilingMs: Math.max(30000, Number(process.env.OVERSEER_REPORT_CEILING_MS) || 600000) });
@@ -5426,6 +5474,19 @@ function overseerStation(parentStreamId, parentRunId) {
 }
 
 let overseerTickRunning = false;
+/* A BUSY CONVERSATION NO LONGER HOLDS UP EVERY REPORT (idle-cpu piece 2, 2026-10-19). runOnce holds a conversation's
+   overseer lock for its whole turn (tool loops, consent waits up to 900 s), and the tick used to AWAIT that lock and then
+   the review run itself: one busy conversation froze every other conversation's report, collect() and the settling of
+   orphaned 'reviewing' rows, station-wide. Now each report is its own task, queued on its own conversation's lock (it
+   keeps its place in that conversation's line, so a turn sent later still sees it) and never awaited by the tick.
+   reviewTasks = review id -> { running }: a report queued on its conversation or running now. The tick never touches a
+   row that has a task (it would call a live report interrupted). At most REVIEW_RUNS_AT_ONCE reports RUN at once (one,
+   as before: never parallel paid review runs); a queued report whose turn comes while another runs stays pending and a
+   later tick queues it again. After a restart the map is empty, so a 'reviewing' row a dead process left still settles
+   by its proof. */
+const reviewTasks = new Map();
+const REVIEW_RUNS_AT_ONCE = 1;
+function runningReviews() { let n = 0; for (const t of reviewTasks.values()) if (t.running === true) n++; return n; }
 /* NOVA's ONE report on a hand-off (version B): the overall outcome, then one line per worker by name, then only what is
    still open. The workers' full answers are not pasted back — the Commander opens each on the delegation card. The
    opening words, the per-worker "status" and "commanderDirections" are what the overseer tests and providers key on. */
@@ -5451,11 +5512,13 @@ function delegatedReportPrompt(live, waiting, followUp) {
       stillWorking: waiting.map(w => ({ name: nameOf(w.agentId), agentId: w.agentId, objective: w.prompt, status: w.status })) });
 }
 async function tickOverseer() {
-  if (overseerTickRunning || workspaceDegraded || updateHolding() || overseer.snapshot().paused) return;
+  if (overseerTickRunning || workspaceDegraded || updateHolding() || overseer.paused()) return;
   overseerTickRunning = true;
   try {
     overseer.collect(subagents.list());
-    for (let review of overseer.snapshot().reviews) {
+    for (let review of overseer.reviews()) {
+      // a report queued on its conversation or running now belongs to its task: never settle its row here
+      if (reviewTasks.has(review.id)) continue;
       if (review.agentId !== 'agent') {
         if (review.status === 'pending' || review.status === 'reviewing') overseer.patchReview(review.id, {
           status: 'cancelled', error: 'Automatic coordination belongs to the station orchestrator.' });
@@ -5468,8 +5531,11 @@ async function tickOverseer() {
         continue;
       }
       if (review.status !== 'pending') continue;
+      if (runningReviews() >= REVIEW_RUNS_AT_ONCE) continue;
       let parent;
-      try { parent = overseer.resolve(review.parentStreamId); }
+      // existence + project only: the listed rows, re-read only when the save changed (a review waiting for a provider
+      // credential re-ran this every tick, one full save parse per pending review per 2 s). The lock re-resolves afresh.
+      try { parent = overseer.resolveListed(review.parentStreamId); }
       catch (_) { overseer.patchReview(review.id, { status: 'cancelled', error: 'Parent conversation is archived or deleted.' }); continue; }
       if (parent.projectRoot && !isBlessedRoot(parent.projectRoot)) {
         overseer.patchReview(review.id, { status: 'interrupted', error: 'The parent project is no longer trusted. Restore its project access before continuing.' }); continue;
@@ -5488,8 +5554,15 @@ async function tickOverseer() {
       if (!members.length) {
         overseer.patchReview(review.id, { status: 'superseded', error: 'Every worker in this request has a newer attempt.' }); continue;
       }
+      const reviewId = review.id, task = { running: false };
+      reviewTasks.set(reviewId, task);
+      // launched, never awaited: the tick goes on to every other conversation while this one waits for its turn
+      (async () => {
       await overseer.withThread(parent.id, async () => {
-        if (updateHolding() || overseer.snapshot().paused || !overseer.snapshot().reviews.some(r => r.id === review.id && r.status === 'pending')) return;
+        const row = overseer.review(review.id);
+        if (updateHolding() || overseer.paused() || !row || row.status !== 'pending') return;
+        // another report is running (this one's turn came while it ran): stay pending, a later tick queues it again
+        if (runningReviews() >= REVIEW_RUNS_AT_ONCE) return;
         try { parent = overseer.resolve(review.parentStreamId); }
         catch (_) { overseer.patchReview(review.id, { status: 'cancelled', error: 'Parent conversation is no longer available.' }); return; }
         review = overseer.refreshReview(review.id, subagents.list()) || review;
@@ -5502,9 +5575,10 @@ async function tickOverseer() {
         }
         const runId = crypto.randomUUID();
         const reviewAbort = new AbortController();
+        task.running = true;
         overseer.patchReview(review.id, { status: 'reviewing', reviewRunId: runId, error: '' });
         const settleReview = fields => {
-          const current = overseer.snapshot().reviews.find(r => r.id === review.id);
+          const current = overseer.review(review.id);
           if (current && current.status === 'reviewing' && current.reviewRunId === runId) overseer.patchReview(review.id, fields);
         };
         runs.set(runId, reviewAbort);
@@ -5527,8 +5601,9 @@ async function tickOverseer() {
           settleReview({ status: proof && proof.reason === 'done' ? 'done' : 'interrupted',
             error: proof && proof.reason === 'done' ? '' : 'Review did not finish; inspect the saved run.' });
         } catch (e) { settleReview({ status: 'interrupted', error: String(e.message).slice(0, 300) }); }
-        finally { runs.delete(runId); runsMeta.delete(runId); grantsSession.delete(runId); }
+        finally { runs.delete(runId); runsMeta.delete(runId); grantsSession.delete(runId); task.running = false; }
       });
+      })().catch(e => console.warn('[overseer]', e.message)).finally(() => { if (reviewTasks.get(reviewId) === task) reviewTasks.delete(reviewId); });
     }
   } catch (e) { console.warn('[overseer]', e.message); }
   finally { overseerTickRunning = false; }
@@ -6034,6 +6109,15 @@ const connectors = makeConnectorManager({
   clock: { now: () => Date.now() }, timeoutMs: MCP_CALL_TIMEOUT_MS,
   schemaCache: connectorSchemaCacheStore,
   validateConfig: cfg => cfg && cfg.transportKind === 'stdio' ? mcpStdioIsolationError(cfg) : '',
+  /* A Safe Cell stdio connector's container is readied before EVERY connect — configure, Reload, a lazy start and
+     each auto-reconnect — because the stdio transport spawns its docker exec synchronously. ensureReady re-checks a
+     cached cell, so a reconnect after a Docker restart starts the cell again instead of exec-ing into a stopped one
+     until the attempt cap. Readiness is swallowed so the transport records the honest "not ready" error. */
+  prepareConnect: async (cfg) => {
+    const aid = String((cfg && cfg.agentId) || '');
+    if (!cfg || cfg.transport !== 'stdio' || !/^[A-Za-z0-9_-]{1,40}$/.test(aid) || executionEnvironment.backendIdFor(aid) !== 'docker') return;
+    try { await executionEnvironment.ensureReady(aid); } catch (_) {}
+  },
   fingerprintConfig: cfg => mcpSchemaCache.fingerprint(cfg, value => crypto.createHash('sha256').update(value).digest('hex')),
   stdioIdleMs: Math.max(1000, Number(process.env.STARNET_MCP_STDIO_IDLE_MS) || 15 * 60 * 1000),
   stdioMaxLifetimeMs: Math.max(1000, Number(process.env.STARNET_MCP_STDIO_MAX_LIFETIME_MS) || 6 * 60 * 60 * 1000),
@@ -6223,16 +6307,7 @@ async function configureConnectorCfg(cfg, options) {
     await connectors.configure(cfg.id, Object.assign({}, cfg, { enabled: false, token: '', tokenProvider: null }), options);
     return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleDeferredMessage(cfg) };
   }
-  if (cfg && cfg.transport === 'stdio' && cfg.enabled !== false &&
-      !(Array.isArray(cfg.missingFields) && cfg.missingFields.length) && !(options && options.deferConnect)) {
-    const aid = String(cfg.agentId || '');
-    // Preparing a persistent cell is asynchronous; the stdio transport itself remains synchronous/lazy.
-    // Swallow readiness here only so the manager can record an honest connector error ("not ready") in
-    // its public status instead of leaving a saved connector with no runtime row at all.
-    if (/^[A-Za-z0-9_-]{1,40}$/.test(aid) && executionEnvironment.backendIdFor(aid) === 'docker') {
-      try { await executionEnvironment.ensureReady(aid); } catch (_) {}
-    }
-  }
+  // a Safe Cell stdio connector's cell is readied inside the manager's connect (prepareConnect), on every connect
   if (generation !== connectorResetGeneration) return { ok: false, state: 'down', toolCount: 0, superseded: true };
   if (cfg && cfg.oauth) {
     // Pass a tokenProvider (NOT a frozen token) so the manager fetches a FRESH bearer on every connect / auto-
@@ -7530,7 +7605,8 @@ function scoutDirectionBlock() {
 /* runScoutCycle — ONE post-run cycle (fire-and-forget; never throws to the caller). Mirrors runReflection's
    aux plumbing: its OWN abort+timeout, ONE streamed completion per pass, spend reconciled + booked. */
 async function runScoutCycle(o) {
-  if (!personalizationStore.read().enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
   const { runId, agentId, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -7562,6 +7638,8 @@ async function runScoutCycle(o) {
         'You extract the recurring, specific work topics a user\'s real activity shows. Reply ONLY in the requested tagged format.',
         Interests.buildDirective({ activityLines: activity, knownTopics: known })
       );
+      // a pause or forget that landed during the model call wins: fold, persist, and note nothing (spend is booked below)
+      if (!learningUnchangedSince(pz)) return;
       const cands = Interests.parse(reply, { activityLines: activity, requireExactEvidence: true });
       interestsState = Interests.fold(interestsState, cands, { now: Date.now(), trustedActivity: true });
       persistInterests();
@@ -7598,6 +7676,7 @@ async function runScoutCycle(o) {
         launchedOften: Scout.launchHints(scoutState, 5)   // lane B: names annotated "(rated well)" when the Commander's own verdicts earn it
       });
       const reply = await propose('You are the station\'s recipe author. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;   // no attempt stamp, no draft, no ledger row after a mid-call pause/forget
       // grounding = the same evidence the directive showed the model — the WHY must cite it (parseRecipe guard). The
       // direction block is part of that evidence, so a WHY that cites an open quest / the north star is grounded —
       // and so is the DOSSIER (it rides the directive at dossierBlock; excluding it here silently killed any WHY
@@ -7650,6 +7729,7 @@ async function runScoutCycle(o) {
         topRecommendation: cx.topRecommendation || ''
       });
       const reply = await propose('You are the station\'s recruiter. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;
       const parsed = ProspectGen.parse(reply, { allowedKit: SCOUT_CAP_KEYS, allowedSkills: skillSlugs, existingClasses: existing });
       scoutState = Scout.stampAttempt(scoutState, 'prospect', { now: Date.now() });
       // ProspectGen.parse has no denylist arm — enforce the dismissed-shape memory here (same 0.6 overlap rule).
@@ -7761,7 +7841,26 @@ const documentDiscovery = DiscoveryDocuments.makeDocumentDiscovery({ fsp, path, 
   hash: text => crypto.createHash('sha256').update(text).digest('hex') });
 const DISCOVERY_TICK_MS = Math.max(60 * 1000, Number(process.env.SKYNET_ENV_DISCOVERY_TICK_MS) || 15 * 60 * 1000);
 let discoveryState = (() => { try { const o = loadResilient(DISCOVERY_FILE, 'discovery'); return Discovery.normalize(o && o.state); } catch (_) { return Discovery.normalize(null); } })();
-function persistDiscovery() { try { saveResilient(DISCOVERY_FILE, { v: 1, state: discoveryState }); } catch (e) { console.warn('[discovery] state persist failed:', (e && e.message) || e); } }
+/* PERSIST-IF-CHANGED (2026-10-19, idle-CPU piece 2). Every 15-min discovery tick persisted, including the no-fire
+   path (no roots, cooldown, all fresh), and saveResilient is TWO durable writes (a .bak copy + the main file) plus a
+   read-back parse of the prior — 192 fsync'd writes a day of byte-identical content. The envelope text that last
+   reached disk is remembered; a persist whose text matches it writes nothing. The memo is cleared BEFORE each write
+   and set only AFTER the write returns, so a failed or half-done write (.bak landed, main did not) retries next
+   tick. RAM-only: the first persist after boot always writes once. Every writer of DISCOVERY_FILE goes through
+   writeDiscovery so the memo can never describe a file another writer replaced. */
+let discoveryPersistedJson = null;
+function writeDiscovery(state) {   // throws on failure (the sources route must not lie about a settings write)
+  const text = JSON.stringify({ v: 1, state: state });
+  discoveryPersistedJson = null;
+  saveResilient(DISCOVERY_FILE, { v: 1, state: state });
+  discoveryPersistedJson = text;
+}
+function persistDiscovery() {
+  try {
+    if (discoveryPersistedJson !== null && JSON.stringify({ v: 1, state: discoveryState }) === discoveryPersistedJson) return;
+    writeDiscovery(discoveryState);
+  } catch (e) { console.warn('[discovery] state persist failed:', (e && e.message) || e); }
+}
 let discoveringNow = false;
 let documentSourceRevision = 0;
 function activeDocumentSource() {
@@ -7958,7 +8057,7 @@ async function handleDiscoverySourcesPost(req, res) {
   // Save before publishing success; unlike best-effort tick persistence, a settings write must not lie.
   const next = Discovery.normalize({ ...discoveryState, sources });
   next.staged = next.staged.filter(f => f.kind !== 'client-update');
-  try { saveResilient(DISCOVERY_FILE, { v: 1, state: next }); } catch (_) { return json(500, { ok: false, error: 'could not persist source settings' }); }
+  try { writeDiscovery(next); } catch (_) { return json(500, { ok: false, error: 'could not persist source settings' }); }
   discoveryState = next;
   documentSourceRevision++;
   return json(200, { ok: true, sources: discoveryState.sources, grantsChanged: false });
@@ -8001,16 +8100,16 @@ function handleRecommendationsEval(req, res) {
    routine (routine.create stays consent-gated; nothing is created here). The impression is recorded like a card
    shown, so the takeover card and the agent never both pitch the same work the same day, and an offer the
    Commander ignores stops after MAX_OFFERS. Fails open to no notice. */
-function standingWorkNotice(brief, agentId, o) {
+function standingWorkNotice(brief, agentId, o, evidence) {
   try {
     if (!brief || brief.status === 'cancelled' || (o && o.recovery) || !['interactive', 'channel'].includes(brief.source) || TrustedLearning.quotedMaterial(brief.originalDirective)) return null;
     // a channel guest's request is not "the Commander asking again" (host-minted sender flags, as hostPowerWithheldFor)
     if (o && o.channelSender === true && o.channelSenderOwner !== true) return null;
     if (!personalizationStore.read().enabled) return null;
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
+    const ev = evidenceRows(evidence || {});   // one transcript + run snapshot for the brief proof AND the runs
     const n = WorkflowTakeover.notice({ directive: brief.originalDirective, agentId, projectRoot: (o && o.projectRoot) || '',
-      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()).filter(b => b.id !== brief.id), runs: runStore.all(), jobs: cronJobs,
+      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs).filter(b => b.id !== brief.id), runs: ev.runs, jobs: cronJobs,
       ratings: growthRatings.list({ limit: 500, epoch }), state: workflowTakeoverStore.read(), enabled: true, now: Date.now(), redact });
     if (!n) return null;
     workflowTakeoverStore.decide(n.id, 'shown', Date.now(), n.core).catch(e => console.warn('[workflow-takeover] notice impression not saved:', (e && e.message) || e));
@@ -8019,9 +8118,9 @@ function standingWorkNotice(brief, agentId, o) {
 }
 function workflowTakeoverCandidates(ignoreOffers) {
   const state = workflowTakeoverStore.read();
-  const saved = saveStore.load('agent') || null;
-  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
-  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()), runs: runStore.all(), jobs: cronJobs,
+  const epoch = stationEpoch();
+  const ev = evidenceRows({});
+  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs), runs: ev.runs, jobs: cronJobs,
     ratings: growthRatings.list({ limit: 500, epoch }),
     state: ignoreOffers ? Object.assign({}, state, { decisions: state.decisions.filter(d => d.never) }) : state,
     enabled: personalizationStore.read().enabled, now: Date.now(), redact });
@@ -8148,29 +8247,35 @@ function nightshiftBeliefMap() {
   return out;
 }
 
+// recent RUNS (newest-first already from runStore.list). We pass the whole recent window; the pure core windows
+// to ~7d + excludes internal streamIds (nightshift-/cron-/workshop-) + de-dupes. limit generous; core caps to 8.
+// `internal` rides through: the pure core's `!r.internal` filter was dead because this map dropped the flag, so the
+// station's own reason-only calls read as the Commander's recent work (USER-STUDY LOOP, 2026-09-28).
+// Filter provenance before projecting into the pure pack: otherwise attachment/quoted content becomes ambient
+// owner activity in a later, clean run. Run storage omits taintedBy on clean rows; legacy rows share that shape.
+// Internal titles are exclusion markers only: retain them even when a later tool taints their run, so its
+// initially clean directive cannot reappear as owner chat. The pure pack never renders an internal run title.
+// Shared by the context pack and the readiness count, so both always read the SAME projection.
+function nightshiftRecentRuns() {
+  try { return (runStore.list(null, { limit: 60 }) || []).filter(r => r && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { return []; }
+}
+
 /* NS-2: the CONTEXT-PACK io — the ambient half of contextpack.js. Gathers REAL recent activity from the durable
    stores (runs / transcript / goal arc / autonomy ledger for kept-vs-discarded / dossier beliefs / learn store) and
    hands the pure assembler already-fetched arrays (determinism-split: this side reads Date.now + the stores, the
    pure core is a transform over its inputs). Returns the assembled pack { sections, text, activityLines, counts }.
    The pack is what makes the propose step feel like magic — candidates grounded in what the Commander ACTUALLY did,
-   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty. */
-function nightshiftContextPack() {
+   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty.
+   `evidence` (optional, see evidenceRows): the caller's one transcript + run-history snapshot for this turn. */
+function nightshiftContextPack(evidence) {
   const now = Date.now();
-  // recent RUNS (newest-first already from runStore.list). We pass the whole recent window; the pure core windows
-  // to ~7d + excludes internal streamIds (nightshift-/cron-/workshop-) + de-dupes. limit generous; core caps to 8.
-  let runs = [];
-  // `internal` rides through: the pure core's `!r.internal` filter was dead because this map dropped the flag, so the
-  // station's own reason-only calls read as the Commander's recent work (USER-STUDY LOOP, 2026-09-28).
-  // Filter provenance before projecting into the pure pack: otherwise attachment/quoted content becomes ambient
-  // owner activity in a later, clean run. Run storage omits taintedBy on clean rows; legacy rows share that shape.
-  // Internal titles are exclusion markers only: retain them even when a later tool taints their run, so its
-  // initially clean directive cannot reappear as owner chat. The pure pack never renders an internal run title.
-  try { runs = (runStore.list(null, { limit: 60 }) || []).filter(r => r && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { runs = []; }
+  const runs = nightshiftRecentRuns();
+  const ev = evidence || {};   // without a caller snapshot, the two proofs below still share one copy of each store
   // Only host-recorded clean owner turns can ground activity. Check the full content before the pure core takes
   // its first line; a harmless heading cannot launder a quoted document below it. Bound the source window first.
   let cleanOwnerChats = [], chats = [];
   try {
-    cleanOwnerChats = TrustedLearning.cleanOwnerRows(transcriptStore.all(), runStore.all());
+    cleanOwnerChats = TrustedLearning.cleanOwnerRows(evidenceRows(ev).transcript, evidenceRows(ev).runs);
     chats = cleanOwnerChats.map(m => ({ role: m.role, content: m.content, ts: m.ts, streamId: m.streamId }));
   } catch (_) { cleanOwnerChats = []; chats = []; }
   // Briefs have no independent provenance stamp. Match their exact stored directive to a proven clean owner turn
@@ -8178,7 +8283,7 @@ function nightshiftContextPack() {
   // is looked up by original run id, not inside the chat tail above: a brief exists to carry work older than that tail.
   let briefs = [];
   try {
-    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), transcriptStore.all(), runStore.all())
+    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), evidenceRows(ev).transcript, evidenceRows(ev).runs)
       .map(b => ({ originalDirective: b.originalDirective, ts: b.completedAt || b.updatedAt }));
   } catch (_) { briefs = []; }
   // the active GOAL ARC (single object or null).
@@ -8209,6 +8314,7 @@ function nightshiftContextPack() {
   // from the proven transcript/brief projection; retain internal run markers solely to suppress self-talk.
   pack.trustedActivityLines = contextpack.assemble({ runs: runs.filter(r => r.internal), briefs, chats, redact }, { now }).activityLines || [];
   // the count of recent USER-INITIATED runs the pack recognized — the ACTIVITY-as-grounding evidence for readiness.
+  // (nightshiftUserRunCount computes exactly this without building the rest of the pack.)
   pack.userRunCount = (pack.counts && pack.counts.runs) || 0;
   // NS-6: the top OPEN threads (durable ideas the Commander raised but never acted on), recency-ranked. The propose
   // step draws from these FIRST (improv is the fallback); citing a thread's tag in GROUNDS is the preferred grounding.
@@ -8228,8 +8334,7 @@ let _trackRecordMemo = { at: 0, rec: null };
 function ratingVerdictMap() {
   const out = {};
   try {
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
     for (const r of growthRatings.list({ limit: 2000, epoch })) if (r && r.runId) out[r.runId] = r.verdict;
   } catch (e) { failNote('outcomes.verdicts', e); }
   return out;
@@ -8251,20 +8356,56 @@ function stationTrackRecord() {
 function stationTrackRecordLines() {
   try { const rec = stationTrackRecord(); return rec ? Outcomes.lines(rec) : []; } catch (_) { return []; }
 }
-function commanderEvidenceInputs() {
+function commanderEvidenceInputs(evidence) {
   let topics = [], threads = [], activity = [], worksignal = '';
   const learning = personalizationStore.read().enabled;
   try { topics = learning ? Interests.summary(interestsState, { trustedOnly: true, now: Date.now(), limit: 8 }) : []; } catch (_) {}
   try { threads = threadsStore.openThreads(6); } catch (_) {}
-  try { activity = (nightshiftContextPack().activityLines || []).slice(0, 8); } catch (_) {}
+  try { activity = (nightshiftContextPack(evidence).activityLines || []).slice(0, 8); } catch (_) {}
   try { worksignal = learning ? String((scoutState.context && scoutState.context.worksignalSummary) || '') : ''; } catch (_) {}
   let goal = null; try { goal = commanderGoals.get() || null; } catch (_) {}
   let verdicts = null; try { verdicts = learning ? recommendationLedger.summary() : null; } catch (_) {}
   const trackRecord = stationTrackRecordLines();
   return { dossier: commanderDossier.get(), goal, topics, threads, activity, worksignal, verdicts, trackRecord };
 }
-function commanderEvidenceContext(existingSystem, extra) {
-  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), extra || {}, { existingSystem: existingSystem || '' }));
+function commanderEvidenceContext(existingSystem, extra, evidence) {
+  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(evidence), extra || {}, { existingSystem: existingSystem || '' }));
+}
+/* evidenceRows(ev) — ONE snapshot of the transcript mirror and the run history for one evidence assembly (perf review
+   10-19). transcriptStore.all() and runStore.all() each copy every row; a briefed task turn copied the run history 4
+   times and the transcript 3 times (the repeat-work notice's brief proof + its runs, then the context pack's clean
+   owner chats + brief proof) — 22 / 40 / 115 ms at 1k / 5k / 10k runs. The copies are taken lazily on first use and
+   shared by every consumer of the same `ev` object, all of which only read them. Nothing awaits between the reads
+   and the uses, so the snapshot is exactly what the separate copies would have returned. */
+function evidenceRows(ev) {
+  if (!ev.transcript) ev.transcript = transcriptStore.all();
+  if (!ev.runs) ev.runs = runStore.all();
+  return ev;
+}
+/* stationEpoch() — the current station generation (agent.createdAt) for the ratings reads, without parsing the whole
+   save each time: the value is kept against saveStore.stamp('agent') (one stat; it moves on every save this process
+   makes and on any outside edit) and re-read the moment the stamp moves. A read with no clean stamp is never kept. */
+let _stationEpochMemo = { stamp: '', epoch: 1 };
+function stationEpoch() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _stationEpochMemo.stamp) return _stationEpochMemo.epoch;
+  const r = saveStore.loadStamped('agent');
+  const saved = r.doc || null;
+  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+  _stationEpochMemo = { stamp: r.stamp || '', epoch: epoch };
+  return epoch;
+}
+
+/* nightshiftUserRunCount() — the readiness evidence (pack.userRunCount) WITHOUT building the whole context pack
+   (2026-10-19, idle-CPU piece 2). The precheck runs every 60 s night-shift tick once the gates clear, and while
+   readiness stays cold it stands down every time — yet it built the full pack to read one number: two clones of the
+   whole transcript, two of the whole run history (provenance proofs), the briefs join, the ledger join, the track
+   record (whose verdict map parses agent.save.json) and two assemble passes. The pure core's counts.runs is a
+   function of the projected runs and `now` ALONE (internal heads only filter chats), so assembling just those runs
+   yields the identical number from one bounded 60-row read. */
+function nightshiftUserRunCount() {
+  const pack = contextpack.assemble({ runs: nightshiftRecentRuns(), redact }, { now: Date.now() });
+  return (pack.counts && pack.counts.runs) || 0;
 }
 
 // NS-2: the PURELY-LOCAL pre-spend readiness gate for the night-shift driver (the cold-leash fix). Answers, with NO
@@ -8298,7 +8439,7 @@ function nightshiftPrecheck() {
     const summary = { known: Array.isArray(snap.known) ? snap.known : Object.keys((snap.beliefs) || {}) };
     const beliefsByDim = (dim) => (snap.beliefs && snap.beliefs[dim]) || [];
     let activityCount = 0;
-    try { activityCount = nightshiftContextPack().userRunCount || 0; } catch (_) { activityCount = 0; }
+    try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
     const eligible = Autopilot.eligibleArchetypes(rd.usableDims, { activityGrounded: rd.groundedBy === 'activity' });
     if (rd.tier !== 'hot' || !eligible.length) return { ok: false, reason: 'readiness' };
@@ -8316,7 +8457,7 @@ function nightshiftReadinessView() {
     const summary = { known: Array.isArray(snap.known) ? snap.known : Object.keys((snap.beliefs) || {}) };
     const beliefsByDim = (dim) => (snap.beliefs && snap.beliefs[dim]) || [];
     let activityCount = 0;
-    try { activityCount = nightshiftContextPack().userRunCount || 0; } catch (_) { activityCount = 0; }
+    try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
     return {
       tier: rd.tier, goalsUsable: !!rd.goalsUsable, usableDims: rd.usableDims || [],
@@ -9905,12 +10046,16 @@ function advanceGoalFromQuests() {
 // A quest completion is durable before its journey fold. Recover a crash/write failure by replaying every done
 // quest; journey-store's lifetime source-key ledger makes this idempotent, and its reset epoch skips prior-Commander
 // completions. GET /api/journey awaits the same pass so the UI never outruns recoverable evidence.
+// IDLE CPU (2026-10-19): replay only the quests recordQuest would still WRITE (journeyStore.pendingQuestFolds —
+// recordQuest's own gate, epoch and source-key tests over one cached read). Replaying every done quest re-read and
+// re-normalized the whole journey once per quest to find it already folded: ~200 ms of unbroken event-loop block
+// on every 4 s journey poll at the caps. A fold that failed or was lost to a crash is still pending, so it is
+// still replayed on the next GET.
 let journeyQuestReconcile = null;
 function reconcileCompletedJourneyQuests() {
   if (journeyQuestReconcile) return journeyQuestReconcile;
   const task = (async () => {
-    for (const q of questStore.list()) {
-      if (!q || q.status !== 'done') continue;
+    for (const q of journeyStore.pendingQuestFolds(questStore.list())) {
       await journeyStore.recordQuest(q, commanderGoals.get(), q.completedAt || Date.now());
     }
   })();
@@ -11360,7 +11505,8 @@ async function handleGroups(req, res) {
       res.writeHead(200, { 'Content-Type': plain ? 'text/plain; charset=utf-8' : 'application/octet-stream', 'Content-Disposition': (plain ? 'inline' : 'attachment') + "; filename*=UTF-8''" + encodeURIComponent(file.name), 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.end(Buffer.from(file.content, 'base64'));
     }
-    if (req.method === 'GET') out = id ? await groupSessions.get(id) : await groupSessions.list();
+    // since: the open group chat's last stamp — an unchanged group answers { unchanged: true } (idle CPU piece 3, 2026-10-20)
+    if (req.method === 'GET') out = id ? await groupSessions.get(id, url.searchParams.get('since') || '') : await groupSessions.list();
     else {
       const b = JSON.parse(await readBody(req, 2 << 20, res));
       const handlers = { create: () => groupSessions.create(b), send: () => groupSessions.send(b.id, b),
@@ -11459,6 +11605,40 @@ const remotePush = require('./remote/push.js').makePush({ fs, path, file: path.j
   fetch: (url, o) => fetch(url, Object.assign({}, o, { signal: AbortSignal.timeout(15000) })),
   extraHosts: String(process.env.STARNET_REMOTE_PUSH_HOSTS || '').split(',') });   // tests only: a local fake push service
 const remotePortraits = require('./remote/portraits.js').makePortraits({ fs, path, frontend: FRONTEND });
+/* THE CREW'S LOOKS FOR A PHONE (perf review 10-19). Every status/activity poll (10 s per open phone), every portrait and
+   every 256 KB file chunk listed the agents, and each listing re-parsed the WHOLE station save to read a few skin and
+   colour strings: a 20 MB download did 80 parses. The tiny map is kept against saveStore.stamp('agent') (one stat that
+   moves on every save this process makes and on any outside edit) and rebuilt the moment the stamp moves; an unstamped
+   read (absent, locked or .bak-recovered save) is never kept. The desk sessions (deskSessions) still parse per request:
+   they ARE the bulk of the save, and keeping them would pin ~4x the file in heap (savestore.js never caches the doc). */
+let _remoteLooksMemo = { stamp: '', looks: null };
+function crewLooksOf(save) {
+  const out = {};
+  const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
+  add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
+  return out;
+}
+function remoteCrewLooks() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _remoteLooksMemo.stamp && _remoteLooksMemo.looks) return Object.assign({}, _remoteLooksMemo.looks);
+  const r = saveStore.loadStamped('agent');
+  const out = crewLooksOf(r.doc || {});
+  _remoteLooksMemo = { stamp: r.stamp || '', looks: out };
+  return Object.assign({}, out);
+}
+/* SEED THE SAVE-STAMP MEMOS FROM THE SAVE ITSELF (review of perf piece 6). The desk persists (debounced, cloudsave.js)
+   after every state change — the finished reply included — so a save lands between any two task turns and between most
+   phone polls, and memos refreshed only by READING re-parsed the whole save right after each one: stationEpoch saved
+   nothing on the real path. POST /api/save already holds the parsed doc it just stored, so it refreshes both memos from
+   that doc under the stamp of the file the write left (the reasoning savestore.save() keeps its own last-write memo on).
+   A write that did not land (stale, conflict, a throw) seeds nothing, and no stamp means nothing is kept. */
+function seedSaveMemos(agentId, doc) {
+  if (agentId !== 'agent' || !doc || typeof doc !== 'object') return;
+  const stamp = saveStore.stamp('agent');
+  if (!stamp) return;
+  _stationEpochMemo = { stamp: stamp, epoch: Math.max(1, Math.floor(Number(doc.agent && doc.agent.createdAt) || 1)) };
+  _remoteLooksMemo = { stamp: stamp, looks: crewLooksOf(doc) };
+}
 const remoteHost = require('./remote/host.js').makeRemoteHost({
   redact: (s) => redact(s),   // the desk save is raw: its turns are redacted before they merge or leave for the relay
   now: () => Date.now(), newId: () => crypto.randomUUID(), broadcast: remoteBroadcast,
@@ -11500,12 +11680,7 @@ const remoteHost = require('./remote/host.js').makeRemoteHost({
   view: remoteView,
   deskOpen: () => sse.size() > 1,   // a StarNet page is connected (the phones' own tee is always one listener)
   // how each agent looks (the skin the Commander picked), from the station save the page mirrors here
-  crewLooks: () => {
-    const save = saveStore.load('agent') || {}, out = {};
-    const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
-    add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
-    return out;
-  },
+  crewLooks: () => remoteCrewLooks(),
   portrait: (skin) => remotePortraits.forSkin(skin),
   spriteSet: (skin) => remotePortraits.setFor(skin),
   sprites: (key) => remotePortraits.framesFor(key),
@@ -19218,6 +19393,9 @@ function serveSkillGoldens(req, res) {
 }
 function serveAgentSkills(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  // broken is not empty: a skill library that failed to load is a failure, never "no skills yet"
+  const libState = typeof skillStore.loadState === 'function' ? skillStore.loadState() : { ok: true };
+  if (!libState.ok) return json(500, { error: 'skill library failed to load', code: 'SKILLS_LOAD_FAILED', detail: libState.error });
   try {
     const u = new URL(req.url, 'http://127.0.0.1');
     const agentId = u.searchParams.get('agent') || 'agent';
@@ -20405,6 +20583,11 @@ async function runOnceCore(o) {
   let taskContextInputs = null;
   let taskContextBlock = '';
   let taskQuestionAsked = false;
+  // ANSWER HOLD: this run's latest user text answered the brief's open question (prepare() stamped it and flipped
+  // the brief to 'ready'). Until the MODEL produces something (a token, a tool call, billed output) nothing has
+  // read that answer, so a run refused or failed before then hands the question back (reopenAnswer, outer
+  // finally) and the re-sent answer resumes the ORIGINAL task. A Commander cancel keeps the answer spent.
+  let briefAnswerHold = null;
   // Everything below is wrapped so the admission slot is ALWAYS released (early-return refusals above run
   // before tryEnter; every exit below — return, throw, or the normal finish — passes through leave()).
   try {
@@ -20492,6 +20675,7 @@ async function runOnceCore(o) {
       }, Date.now());
     } catch (e) { console.warn('[taskbrief] prepare failed:', (e && e.message) || e); taskBrief = null; }
   }
+  if (taskBrief && taskBrief.inputAction === 'answer' && taskBrief.answered && !o.recovery) briefAnswerHold = { id: taskBrief.id, answered: taskBrief.answered };
 
   if (taskBrief) taskBriefState = { brief: taskBrief };
   if (taskBrief && taskBrief.inputAction === 'cancel') {
@@ -20508,8 +20692,11 @@ async function runOnceCore(o) {
     // AUTOMATION ASK: the task's own words (or this turn's) ask for recurring/scheduled work -> the routine playbook rides this run
     let automationAsk = false;
     try { automationAsk = CommanderContext.automationIntent(taskBrief.originalDirective) || CommanderContext.automationIntent(latestUserText(messages)); } catch (_) { automationAsk = false; }
-    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o), automationAsk};
-    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs);
+    // ONE transcript + run-history snapshot for this turn's whole evidence assembly (evidenceRows): the repeat-work
+    // notice and the context pack used to copy the run history 4 times and the transcript 3 times per task turn
+    const turnEvidence = {};
+    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o, turnEvidence), automationAsk};
+    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs, turnEvidence);
   } else if (isTask) {
     // Channels and integrations may not carry a durable taskKey. They still receive the SAME bounded Commander
     // evidence as an interactive briefed run; only the task-specific brief section is absent.
@@ -20848,10 +21035,11 @@ async function runOnceCore(o) {
       const settled = taskBriefState ? commanderEvidenceContext(system || '', Object.assign({},taskContextInputs,{brief:taskBriefState.brief})) : taskContextBlock;
       const notes = notebookStore.get('notebook:' + agentId);
       // the Commander's taste rides into delegated work too: a worker writes the deliverable the Commander rates
-      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, otherAgentNotebooks(agentId), { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
+      const peers = (personalizationStore.read().enabled && !tasteWithheld) ? otherAgentNotebooks(agentId) : [];   // read once for taste + standing
+      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, peers, { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
       const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
       const pinned = Array.isArray(notes) ? notes.filter(r => r && r.pinned && !tasteIds.has(r.id) && !(tasteWithheld && r.origin === FeedbackMemory.ORIGIN) && !r.taintedBy) : [];
-      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, otherAgentNotebooks(agentId)).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
+      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, peers).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
       const recalled = renderRecall(rank(pinned.concat(standing), recentUserText(messages), { now: Date.now(), streamId, projectRoot: o.projectRoot || null }), { limit: 1500 });
       const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall);
       return settled + (recalled.text ? '\n\n' + redact(recalled.text) : '') + (taste.text ? '\n\n' + redact(taste.text) : '');
@@ -21829,9 +22017,13 @@ async function runOnceCore(o) {
   // small run — the ONLY way to live-prove compaction against a production model without a 130k-token prompt.
   // Never set in a packaged build; unset/invalid = the catalog's real window exactly as before.
   const CONTEXT_LIMIT_OVERRIDE = Math.max(0, parseInt(String(ENV('CONTEXT_LIMIT_OVERRIDE') || ''), 10) || 0);
+  // THE RUN'S WINDOW is the model's REAL one whenever this process has seen it reported (the shared catalog answers at
+  // once: providers/catalog-cache.js); an unknown one gives the adapter at most RUN_WINDOW_WAIT_MS (1.5s) to learn it,
+  // which happens at most once per endpoint per TTL. Still unknown = the cold guess above. Read after every provider swap.
+  const knownRunWindow = CONTEXT_LIMIT_OVERRIDE ? 0 : await catalogRunWindow(provider, model);
   // RUN_CONTEXT_DEFAULTS (context.js): fold at 65% of the window; the verbatim tail is a TOKEN budget (20% of the
   // window), not six turns — six turns of big results outweighed a 64k window and a fold freed nothing.
-  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
+  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || knownRunWindow || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
   // PER-RUN TOOL-OUTPUT CAP, scaled to the window. The flat 120KB cap (~30k tokens) sat far BELOW the compaction
   // threshold (0.65 × window — ~130k tokens on a 200k model), so the one event that resets the budget
   // (agent.compact, see loopEmit) could never fire: after ~120KB of reads the agent went blind — every later
@@ -21997,6 +22189,7 @@ async function runOnceCore(o) {
 
   // Per-run latches/counters/artifacts live in `execution`; policy and side effects remain in this host.
   const dispatch = async (c, ctx) => {
+    briefAnswerHold = null;   // the model asked for a tool (hidden brief_* calls emit no tool_call): the answer was read
     if (o.outputOnly) return {ok:false,isError:true,summary:'output-only',content:'Result repair cannot execute tools. Return only the corrected output.'};
     const realName = fromWire.get(c.name) || allWire.get(c.name) || c.name;
     const liveTool = registry.get(realName);
@@ -22911,7 +23104,15 @@ async function runOnceCore(o) {
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
-        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask }) + skillBlock;
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask,
+          // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied and the routine's own toolset list enforceEnabledToolsets
+          // applied (gear either one leaves out is no room fix), and the image route makeImageTools was built from (without one
+          // a STUDIO only analyzes images)
+          disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet(), enabledToolsets: unrestrictedHostNow() ? null : o.enabledToolsets,
+          mediaRoute: !!(studioRoute && studioRoute.ok),
+          // ROOM SCOPE: lazy (called only when a floor object is missing); the room it names is stable per agent, so the cached prefix holds.
+          // hasBay first: an agent crewing no dock on the router's plan (the bayless hero) never reads or validates the saved floor
+          scopeFn: () => { try { return scopeForRun({ loadStation: savedFloor, agentId, runStation: o.station, extraObjects: o.extraObjects, interactive: surface === 'interactive', floorless: !!o.floorless, hasBay: () => router.docksOf(agentId).length > 0 }); } catch (e) { failNote('capsummary.roomscope', e); return null; } } }) + skillBlock;
   /* CACHE-STABLE PREFIX (lean-prompt, 2026-10-12). Everything below that changes per MESSAGE — the run's skill index
      (ranked by this message), a /skill preload, the Task Brief (its id is the run's), the away briefing, a one-host
      check, the crew call, [RUNTIME] (run id, today) and the open quests — used to close the system prompt, so the
@@ -23070,7 +23271,10 @@ async function runOnceCore(o) {
     // decide whether it surfaces. Those records leave the ranked pool so they never take a recall slot twice.
     // station-wide: a correction given to ANY agent is about the Commander, so it shapes this agent's work too
     // (recovery runs inject nothing at all — see the note above msgs).
-    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, otherAgentNotebooks(agentId), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
+    // the other agents' notebooks are read ONCE per run, for both the taste and the standing block below
+    let peerNotebooks = null;
+    const peerBooks = () => peerNotebooks || (peerNotebooks = otherAgentNotebooks(agentId));
+    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, peerBooks(), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
     const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
     // withheld: EVERY feedback record leaves the recall pool, not just the selected taste — a verdict record carries the
     // Commander's past request ('(on: …)') and ordinary BM25 recall would hand it to a channel guest (QA 2026-10-02)
@@ -23082,7 +23286,7 @@ async function runOnceCore(o) {
     // withheld guest/group run (or a paused station) ranks the agent's own standing notes on relevance like any note,
     // instead of force-injecting 'I prefer to be called Andy' into a guest's prompt with zero relevance.
     const standingOn = !(o.recovery || tasteWithheld || !personalizationStore.read().enabled);
-    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, otherAgentNotebooks(agentId)).filter(r => r.foreign) : [];
+    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, peerBooks()).filter(r => r.foreign) : [];
     const ranked = rank(recs.concat(standingRecs), q, { now: Date.now(), streamId, projectRoot: o.projectRoot || null, vectors: hv && hv.vectors, queryVec: hv && hv.queryVec, standing: standingOn });   // M-mem.2b stream boost · project tier: only THIS project's lessons
     const recalled = renderRecall(ranked, { limit: 1500, priorityLimit: Math.min(4000, Math.max(800, Math.floor((provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS) * 0.12))) });
     const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall, { agentId });
@@ -23185,6 +23389,14 @@ async function runOnceCore(o) {
     // Only a fold that FREED >= 10% of the prompt re-arms it (foldFreedEnough, context.js): a 0.6% fold used to re-arm
     // the whole budget and let full-size results back into a prompt still at the window's edge (audit probe 09-22).
     if (name === 'agent.compact' && foldFreedEnough(payload)) execution.resetToolBytes();
+    // ANSWER HOLD release: the first sign the model READ the answer spends it for good (any streamed text, any
+    // visible tool call/result, or billed output tokens — a reasoning model that dies mid-think counts as read).
+    // A cancel also keeps it spent: whether a cancelled answer comes back is not this seam's call.
+    if (briefAnswerHold && payload && (payload.runId === undefined || payload.runId === runId)) {
+      if ((name === 'agent.token' && payload.delta) || name === 'agent.tool_call' || name === 'agent.tool_result'
+        || (name === 'agent.cost' && ((Number(payload.tokensOut) || 0) > 0 || (Number(payload.reasoningTokens) || 0) > 0))
+        || (name === 'agent.run.end' && payload.reason === 'cancelled')) briefAnswerHold = null;
+    }
     execution.observeToolEvent(name, payload);
     // LINE WATCH: the loop's own run.start is the normal path's — it must name the bay/crate like every early-exit
     // start above does, or the floor pairs a multi-bay agent's run with its OLDEST crate and lights the wrong bay.
@@ -23809,6 +24021,15 @@ async function runOnceCore(o) {
   return result;
 
   } finally {
+    // ANSWER HOLD still armed = this run ended (an early refusal return, a throw, a turn-0 provider error) before the
+    // model read the Commander's answer: give the question back so the re-sent answer resumes the ORIGINAL task.
+    // The store refuses if anything moved since (a newer brief, a proceed/ask/complete) — never a hijack.
+    if (briefAnswerHold) {
+      const hold = briefAnswerHold; briefAnswerHold = null;
+      if (!(signal && signal.aborted)) {
+        try { await taskBriefStore.reopenAnswer(hold.id, hold.answered, Date.now()); } catch (e) { failNote('taskbrief.reopen', e); }
+      }
+    }
     // safety net: if managed credit was reserved but a throw before the inner finally left it unsettled, settle it
     // now (full refund on usd=0). billing.js's finishRun is idempotent, so a normal settle above makes this a no-op.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: 0, reason: 'leak-guard' }); } catch (_) {} }
@@ -24608,18 +24829,28 @@ function openAskCount() {
 async function awayBriefingInputs(since, now, tzOffsetMin) {
   let runs = []; try { runs = runStore.list(null, { limit: 500, since: Math.max(0, since - 1) }) || []; } catch (_) { runs = []; }
   // the run row keeps deliveryText only for session-scoped runs; a routine/loop's own words live in its durable
-  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output
+  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output.
+  // Read ONCE per stream: every iteration of a loop shares its loop- stream, so 50 overnight iterations were 50 reads
+  // of the same last turn (perf review 2026-10-19, "Away briefing N+1").
+  const lastWords = new Map();   // streamId -> that stream's last assistant words ('' = none or unreadable)
+  const lastWordsOf = (streamId) => {
+    if (lastWords.has(streamId)) return lastWords.get(streamId);
+    let text = '';
+    try {
+      const turns = transcriptStore.reconstruct(streamId, { limit: 6 }) || [];
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const t = turns[i];
+        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) { text = t.content.trim().slice(0, 2000); break; }
+      }
+    } catch (e) { failNote('away-briefing.excerpt', e); }
+    lastWords.set(streamId, text);
+    return text;
+  };
   runs = runs.map(r => {
     const k = AwayBriefing.kindOf(r);
     if ((k !== 'routine' && k !== 'loop') || String(r.deliveryText || '').trim() || !r.streamId) return r;
-    try {
-      const turns = transcriptStore.reconstruct(String(r.streamId), { limit: 6 }) || [];
-      for (let i = turns.length - 1; i >= 0; i--) {
-        const t = turns[i];
-        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) return Object.assign({}, r, { deliveryText: t.content.trim().slice(0, 2000) });
-      }
-    } catch (e) { failNote('away-briefing.excerpt', e); }
-    return r;
+    const text = lastWordsOf(String(r.streamId));
+    return text ? Object.assign({}, r, { deliveryText: text }) : r;
   });
   const builds = [];
   for (const agentId of workshopAgentIds()) {
@@ -25060,7 +25291,7 @@ function haltStatus() {
     cron: { halted: !!cronHalted },
     nightshift: { halted: nightshift.isHalted(nightshiftState) },
     loops: { halted: !!loopsHalted },
-    overseer: { halted: overseer.snapshot().paused, error: overseer.snapshot().error || '' }
+    overseer: { halted: overseer.paused(), error: overseer.error() }
   };
   return { halted: Object.values(subsystems).some(s => s.halted), subsystems };
 }
@@ -26828,6 +27059,8 @@ async function handleSaveWrite(req, res) {
   if (latestRatingAt > ratingSyncAt) return json(200, { ok: false, stale: true, growthStale: true, latestRatingAt });
   try {
     const result = saveStore.save(agentId, body, { compareRevision: true });
+    // a memo seed is a cache refresh: it may never turn a landed save into an error reply
+    if (result && result.ok === true) { try { seedSaveMemos(agentId, body); } catch (e) { failNote('save.seed-memos', e); } }
     json(200, result);
   } catch (e) { json(400, { error: (e && e.message) || 'save failed' }); }
 }
@@ -27098,6 +27331,9 @@ function markRunRecoveryForensic(r) {
   // analyze() separates a lone torn final record (damage 'torn_tail': actionable, its `.torn-*` copy kept) from
   // real corruption (`forensic`). Only the latter — or a `.corrupt*` sibling from any earlier repair — is forensic.
   r.forensicOnly = !!r.forensic;
+  // run-journal's withEvidence already folded this file's `.corrupt*` sibling into `forensic` (the same prefix rule,
+  // over the same directory, moments ago): listing the whole directory again per row bought nothing (perf 10-19)
+  if (r.evidenceSeen === true) return r;
   try {
     const file = r.file || path.join(RUN_JOURNAL_DIR, runJournal._internals.runFileName(r.runId));
     const base = path.basename(file);
@@ -27203,7 +27439,9 @@ function scanInterruptedRuns(files) {
     // loop for more than that single file.
     const end = Math.min(list.length, at + 1);
     for (; at < end; at++) {
-      if (settledForensic.has(path.basename(list[at]))) continue;
+      // a settled forensic journal is not parsed again, but its begin-record head is read (bounded, one per tick) so the
+      // first recovery listing filtered to a conversation does not have to open every such journal itself
+      if (settledForensic.has(path.basename(list[at]))) { try { runJournal.warmHead(list[at]); } catch (e) { failNote('run-history.interrupted-head', e); } continue; }
       try {
         if (!fs.existsSync(list[at])) continue;   // settled/retired since boot by a route of this process
         const r = markRunRecoveryForensic(runJournal.recoverFile(list[at]));
@@ -27294,8 +27532,12 @@ function serveRunRecoveries(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');
   const offset = Math.max(0, Number(u.searchParams.get('offset')) || 0);
   const limit = Math.max(1, Math.min(500, Number(u.searchParams.get('limit')) || 100));
+  // additive filters (perf 10-19): a page asking for ITS conversation's interrupted run names it, so the run is found
+  // even behind hundreds of other journals, and only that conversation's journals are parsed. Absent = unchanged.
+  const filter = {};
+  for (const k of ['streamId', 'agentId']) { const v = u.searchParams.get(k); if (v != null && v.length <= 200) filter[k] = v; }
   let page;
-  try { page = runJournal.recoverPage({ offset, limit }); }
+  try { page = runJournal.recoverPage(Object.assign({ offset, limit }, filter)); }
   catch (e) { return respondJson(res, 500, { error: 'could not read run recoveries' }); }
   const rows = page.rows.map(markRunRecoveryForensic).filter(r => {
     if (!r) return false;
@@ -27540,6 +27782,21 @@ function conversationTranscript(stream, options) {
     transcriptStore.history(stream, { limit: limit + 500 }).filter(r => !transcriptLiveRuns.has(String(r.sourceRunId || ''))),
     id => runStore.latest(id), dispatchDeliveryDeps.hash).slice(-limit);
 }
+/* A run's rows cannot predate the run, so a runId read is bounded to the transcript segments written since it started
+   (the desk screen re-reads its agent's live run every 3 s; without a bound each read scanned the stream's whole
+   lifetime). The start comes from the live registry, else the run's durable row (dispatch-delivery's runSince rule);
+   0 = unknown, which reads every segment as before. */
+function transcriptRunSince(runId) {
+  const id = String(runId || '');
+  if (!id) return 0;
+  const live = runsMeta.get(id);
+  const liveAt = Number(live && live.startedAt);
+  if (Number.isFinite(liveAt) && liveAt > 0) return liveAt;
+  let row = null;
+  try { row = runStore.latest(id); } catch (e) { failNote('transcript.run-since', e); }
+  const at = [row && row.startedAt, row && row.ts].map(Number).filter(v => Number.isFinite(v) && v > 0);
+  return at.length ? Math.min.apply(null, at) : 0;
+}
 function serveTranscript(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);   // canonical helper (sidecar/respond.js)
   try {
@@ -27553,7 +27810,7 @@ function serveTranscript(req, res) {
     const hashText = text => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
     // Explicit delivery reads return only the full accepted projection. The ordinary exact-run view stays raw.
     const finalDelivery = sourceRunId && u.searchParams.get('delivery') === '1';
-    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined }) : [];
+    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined, since: transcriptRunSince(sourceRunId) }) : [];
     const turns = sourceRunId
       ? raw.filter(r => finalDelivery ? transcriptStoreModule.isFinalDeliveryRow(r, hashText, (runStore.latest(r.sourceRunId) || {}).dispatchDelivery) : r.dispatchState !== 'final').slice(-limit)
       : conversationTranscript(stream, { limit });
@@ -27804,8 +28061,11 @@ function skillNameFromReflection(content) {
 // (feedbackmemory.js). One record per rated run; a later correction updates that record instead of adding another.
 // User-confirmed by construction (the Commander's own verdict and words) and seeded with Keep-strength trust. Honors
 // the personalization pause like every learning pass. Returns a truthful summary for the route response; never throws.
-// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste block. Reads go through the
-// durable store's cache; an unreadable notebook contributes nothing and never fails the run.
+// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste + standing blocks. Reads go
+// through notebookStore.getShared: a notebook whose file is unchanged since the last read (bigint stat + this process's
+// write generation) is NOT re-read or re-parsed (perf review 10-19 — every run used to parse every notebook, twice).
+// The records are FROZEN and shared: read-only here and in every consumer. An unreadable notebook contributes nothing
+// and never fails the run.
 function otherAgentNotebooks(agentId) {
   const ids = new Set(['agent']);
   for (const id of agentRoster.keys()) ids.add(id);
@@ -27813,7 +28073,7 @@ function otherAgentNotebooks(agentId) {
   const out = [];
   for (const id of ids) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(String(id))) continue;
-    try { const l = notebookStore.get('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
+    try { const l = notebookStore.getShared('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
     catch (e) { failNote('feedback.taste.read', e); }
   }
   return out;

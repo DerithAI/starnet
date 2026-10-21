@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**46** open (open+claimed) of 377 total — 0 P0 · 6 P1 · 40 P2
+**46** open (open+claimed) of 378 total — 0 P0 · 6 P1 · 40 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -458,6 +458,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P2 | fixed | voice | [The /api/stt degrade reason is written to the status line then overwritten by endListening()'s restore in the same synchronous block, so it is never painted](bugs/562b14a5-the-api-stt-degrade-reason-is-written-to-the-sta.md) | sweep/voice | 50a8b07b |
 | P2 | fixed | voice | [The TTS failure classifier reads the whole ladder string: OpenAI insufficient_quota (HTTP 429) is retried on a 4s cold-off, and Gemini's per-minute 429 text pin](bugs/4dea1814-the-tts-failure-classifier-reads-the-whole-ladde.md) | sweep/voice | 4aa163337 |
 | P2 | fixed | world | [A COPY section inside a review loop stops the job on its second pass](bugs/45054e87-a-copy-section-inside-a-review-loop-stops-the-jo.md) | conveyor-final-runtime | d3bf4937d |
+| P2 | fixed | world | [A goal, step or quest label cut at its cap can end on half an emoji, drawn broken and saved into the station's goal and journey files](bugs/35ee13b3-a-goal-step-or-quest-label-cut-at-its-cap-can-en.md) | quest-fixes | a8f2cf422 |
 | P2 | fixed | world | [A hand-off the station's own fault stopped is blamed on E-STOP](bugs/de6f8dc7-a-hand-off-the-station-s-own-fault-stopped-is-bl.md) | conveyor-final-runtime | 20134a0af |
 | P2 | fixed | world | [A hand-off whose dispatch throws is dropped with only a console line](bugs/32df5ca7-a-hand-off-whose-dispatch-throws-is-dropped-with.md) | conveyor-final-runtime | 9ccd2ba42 |
 | P2 | fixed | world | [A refused hand-off card says not sent on three times](bugs/eb912c5a-a-refused-hand-off-card-says-not-sent-on-three-t.md) | conveyor-final-runtime | a49b5b96e |

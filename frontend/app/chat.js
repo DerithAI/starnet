@@ -676,7 +676,7 @@ const Chat = (() => {
       if (brief && brief.status === 'clarifying' && brief.questions.some(q => !q.answer)) return 'deferred';
     } catch (_) { return 'unavailable'; }
     let rows;
-    try { rows = await Harness.runRecoveries(); } catch (_) { return 'unavailable'; }
+    try { rows = await Harness.runRecoveries({ streamId: ws.id, agentId: ws.agentId || 'agent' }); } catch (_) { return 'unavailable'; }
     const owned = rows.filter(r => r && r.streamId === ws.id && r.agentId === (ws.agentId || 'agent'))
       .sort((a, b) => (+b.startedAt || 0) - (+a.startedAt || 0));
     const safe = owned.find(r => r.canAutoContinue && !recoveryClaims.has(r.runId));
@@ -957,13 +957,17 @@ const Chat = (() => {
     const root = activeWs && activeWs.projectRoot, at = Number(activeWs && activeWs.projectRootAt);
     return root && at > 0 && Number(t.ts) >= at ? root : '';
   }
-  function hydrateFileRefs(bodyEl) {
-    if (!bodyEl.querySelector || !bodyEl.querySelector('.md-file, .md-img')) return;
+  // roots (optional) = the nodes to hydrate instead of the whole body: a live reply's re-drawn blocks (renderProseLive) — its
+  // kept blocks were wired when they were drawn, and wiring a link twice would open it twice
+  function hydrateFileRefs(bodyEl, roots) {
+    const within = roots || [bodyEl];
+    if (!within.some(r => r.querySelector && r.querySelector('.md-file, .md-img'))) return;
     const bodyRefs = bodyEl.__fileRefs || (bodyEl.__fileRefs = workspaceFileRefs(null));
     // a ref read from the app's own /api/file address names its agent (and project): it resolves there, not in the body's
     const refsOf = n => n.hasAttribute('data-md-agent') ? workspaceFileRefs(n.getAttribute('data-md-agent'), null, n.getAttribute('data-md-project') || undefined) : bodyRefs;
-    bodyEl.querySelectorAll('a.md-file').forEach(a => { try { refsOf(a).wire(a, a.getAttribute('data-md-path')); } catch (_) {} });
-    bodyEl.querySelectorAll('.md-img:not([data-ready])').forEach(box => {
+    const all = sel => within.reduce((out, r) => (r.querySelectorAll ? out.concat(Array.from(r.querySelectorAll(sel))) : out), []);
+    all('a.md-file').forEach(a => { try { refsOf(a).wire(a, a.getAttribute('data-md-path')); } catch (_) {} });
+    all('.md-img:not([data-ready])').forEach(box => {
       const path = box.getAttribute('data-md-path'), alt = box.getAttribute('data-md-alt') || path, refs = refsOf(box);
       box.setAttribute('data-ready', 'loading');   // carry pending and failed slots across streaming re-renders too
       const link = document.createElement('a'); link.className = 'thumb md-thumb'; link.href = '#'; link.setAttribute('aria-label', 'Enlarge ' + alt);
@@ -1017,8 +1021,19 @@ const Chat = (() => {
     }
     return out+escapeHtml(raw.slice(last));
   }
-  function renderMarkdown(raw) {
-    const lines=String(raw).replace(/\r\n?/g,'\n').split('\n');
+  /* A STREAMING REPLY RE-PARSES ONLY ITS OPEN END (perf p5, 2026-10-20: "eats my PC's resources"). The live paragraph was
+     re-parsed whole and rebuilt through innerHTML on every frame — O(n) per frame, O(n²) per answer, and a 20 KB reply cost
+     ~2 ms of parsing alone each frame before the DOM rebuild. Every line the parse reads, and every "is there a line here?"
+     check, raises `seen`; at each top-level step with no paragraph open the parse leaves a mark {i, n: blocks so far, seen}.
+     Everything before a mark was decided by lines 0..seen alone, so on the next frame (live = { prev }) the parse resumes
+     from the last mark whose lines are unchanged and keeps the blocks before it: the same HTML, block for block, as a full
+     parse (locked by test/live-markdown-incremental.test.js). live.next carries this frame's parse, live.kept the number of
+     blocks that stayed. Without `live` this is the plain renderer it always was. */
+  function renderMarkdown(raw, live) {
+    const norm=String(raw).replace(/\r\n?/g,'\n'), lines=norm.split('\n');
+    let seen=-1;
+    const at=x=>{if(x>seen)seen=x;return lines[x];};
+    const has=(x,to)=>{if(x>seen)seen=x;return x<to;};
     // Older macOS WebKit cannot PARSE lookbehind, even in a function not yet called.
     // Consume escaped pipes before splitting; retain the existing immediate-backslash semantics.
     const cells = line => {
@@ -1033,33 +1048,36 @@ const Chat = (() => {
       return result;
     };
     const listMatch=line=>/^([ \t]*)([-*+][ \t]+|\d+[.)][ \t]+)(.*)$/.exec(line);
-    function blocks(from,to,depth) {
-      const parts=[],paragraph=[];let i=from;
+    // marks (top level of a live parse only): where the parse may resume; out: the blocks so far (a resumed parse's kept ones)
+    function blocks(from,to,depth,marks,out) {
+      const parts=out||[],paragraph=[];let i=from;
       const flushParagraph=()=>{
         if(paragraph.length)parts.push('<span class="md-p">'+paragraph.splice(0).join('\n')+'</span>');
       };
-      while(i<to) {
-        const ln=lines[i];
+      for(;;) {
+        if(marks && !paragraph.length)marks.push({i,n:parts.length,seen});
+        if(!has(i,to))break;
+        const ln=at(i);
         if(!ln.trim()){flushParagraph();i++;continue;}
         if(/^[ \t]*```/.test(ln)) {
           flushParagraph();
           const code=[];i++;
-          while(i<to && !/^[ \t]*```/.test(lines[i]))code.push(lines[i++]);
-          if(i<to)i++;parts.push(renderFence(code));continue;
+          while(has(i,to) && !/^[ \t]*```/.test(at(i)))code.push(at(i++));
+          if(has(i,to))i++;parts.push(renderFence(code));continue;
         }
         const h=/^(#{1,6})\s+(.*)$/.exec(ln);
         if(h){flushParagraph();parts.push('<span class="md-h" role="heading" aria-level="'+h[1].length+'">'+reportInline(h[2])+'</span>');i++;continue;}
         if(/^\s*>/.test(ln)) {
           flushParagraph();
           const quote=[];
-          while(i<to && /^\s*>/.test(lines[i]))quote.push(reportInline(lines[i++].replace(/^\s*> ?/,'')));
+          while(has(i,to) && /^\s*>/.test(at(i)))quote.push(reportInline(at(i++).replace(/^\s*> ?/,'')));
           parts.push('<blockquote class="md-quote">'+quote.join('<br>')+'</blockquote>');continue;
         }
-        if(i+1<to && ln.includes('|') && cells(lines[i+1]).length>1 && cells(lines[i+1]).every(c=>/^:?-{3,}:?$/.test(c))) {
+        if(has(i+1,to) && ln.includes('|') && cells(at(i+1)).length>1 && cells(at(i+1)).every(c=>/^:?-{3,}:?$/.test(c))) {
           flushParagraph();
           const headers=cells(ln);i+=2;
           let table='<div class="md-table-scroll" tabindex="0" role="region" aria-label="Report table"><table class="md-table"><thead><tr>'+headers.map(c=>'<th scope="col">'+reportInline(c)+'</th>').join('')+'</tr></thead><tbody>';
-          while(i<to && lines[i].includes('|') && lines[i].trim())table+='<tr>'+cells(lines[i++]).map(c=>'<td>'+reportInline(c)+'</td>').join('')+'</tr>';
+          while(has(i,to) && at(i).includes('|') && at(i).trim())table+='<tr>'+cells(at(i++)).map(c=>'<td>'+reportInline(c)+'</td>').join('')+'</tr>';
           parts.push(table+'</tbody></table></div>');continue;
         }
         const first=listMatch(ln);
@@ -1068,20 +1086,20 @@ const Chat = (() => {
           const indent=first[1].replace(/\t/g,'    ').length;
           const ordered=/\d/.test(first[2]),tag=ordered?'ol':'ul';
           let list='<'+tag+' class="md-list"'+(ordered?' start="'+parseInt(first[2],10)+'"':'')+'>';
-          while(i<to) {
+          while(has(i,to)) {
             // Loose Markdown lists remain one list; blank separators are not visible rows.
             let next=i;
-            while(next<to && !lines[next].trim())next++;
-            const following=next<to && listMatch(lines[next]);
+            while(has(next,to) && !at(next).trim())next++;
+            const following=has(next,to) && listMatch(at(next));
             if(following && following[1].replace(/\t/g,'    ').length===indent && /\d/.test(following[2])===ordered)i=next;
-            const item=listMatch(lines[i]);
+            const item=listMatch(at(i));
             if(!item || item[1].replace(/\t/g,'    ').length!==indent || /\d/.test(item[2])!==ordered)break;
             list+='<li>'+reportInline(item[3]);i++;
             const begin=i;
-            while(i<to) {
+            while(has(i,to)) {
               let continuation=i;
-              while(continuation<to && !lines[continuation].trim())continuation++;
-              if(continuation>=to || !/^[ \t]/.test(lines[continuation]) || lines[continuation].match(/^[ \t]*/)[0].replace(/\t/g,'    ').length<=indent)break;
+              while(has(continuation,to) && !at(continuation).trim())continuation++;
+              if(!has(continuation,to) || !/^[ \t]/.test(at(continuation)) || at(continuation).match(/^[ \t]*/)[0].replace(/\t/g,'    ').length<=indent)break;
               i=continuation+1;
             }
             if(i>begin)list+=blocks(begin,i,depth+1);
@@ -1094,7 +1112,19 @@ const Chat = (() => {
       flushParagraph();
       return parts.join('');
     }
-    return blocks(0,lines.length,0);
+    if(!live)return blocks(0,lines.length,0);
+    // the first line that differs from the previous frame's (a streamed token only ever touches the last one)
+    const prev=live.prev;let mark={i:0,n:0,seen:-1},marks=[],kept=[];
+    if(prev) {
+      let d=0;
+      if(norm.startsWith(prev.norm))d=(norm.length===prev.norm.length||norm.charCodeAt(prev.norm.length)===10)?prev.lines.length:prev.lines.length-1;
+      else{const end=Math.min(prev.lines.length,lines.length);while(d<end&&prev.lines[d]===lines[d])d++;}
+      for(let k=prev.marks.length-1;k>=0;k--)if(prev.marks[k].seen<d){mark=prev.marks[k];marks=prev.marks.slice(0,k);kept=prev.parts.slice(0,mark.n);break;}
+    }
+    seen=mark.seen;
+    const html=blocks(mark.i,lines.length,0,marks,kept);
+    live.next={norm,lines,marks,parts:kept};live.kept=mark.n;
+    return html;
   }
   // render agent prose into a body span. Fast textContent path when there's no URL AND no markdown marker (the
   // common streamed token) — no per-token HTML reparse; otherwise the escaped+linkified+markdown pipeline.
@@ -1103,7 +1133,9 @@ const Chat = (() => {
     raw = String(raw == null ? '' : raw);
     bodyEl.__proseSource = raw;
     if (opts && opts.files) bodyEl.__fileRefs = opts.files;   // where this body's relative file links resolve (kept across re-renders)
+    const prior = bodyEl.__mdLive; bodyEl.__mdLive = null;   // a streaming reply's previous frame (renderProseLive), kept only while it streams
     if (raw.indexOf('http') === -1 && !MD_MARKERS.test(raw)) { bodyEl.textContent = raw; return; }
+    if ((opts && opts.live) || prior) { renderProseLive(bodyEl, raw, prior, !!(opts && opts.live)); return; }
     // a streaming reply re-renders every frame: carry an image that already loaded into the new markup instead of
     // rebuilding it (a rebuilt <img> collapses and re-grows each frame — flicker, and the log jumps under the reader)
     const shown = new Map();
@@ -1111,6 +1143,30 @@ const Chat = (() => {
     bodyEl.innerHTML = renderMarkdown(raw);
     if (shown.size) bodyEl.querySelectorAll('.md-img:not([data-ready])').forEach(n => { const k = n.getAttribute('data-md-path'), old = shown.get(k); if (old) { n.replaceWith(old); shown.delete(k); } });
     hydrateFileRefs(bodyEl);
+  }
+  /* A LIVE REPLY'S FRAME (renderProse with opts.live — the streaming paragraph). The blocks renderMarkdown kept (live.kept) keep
+     their DOM nodes, so a link, a loaded picture or a selection in an earlier block survives the next token; only the blocks
+     after them are drawn again, from the same markup a full render makes. Every block is one element, so the body's children
+     map one to one onto the parse's blocks. prior = the previous frame's { md, nodes }, good only while the body still holds
+     exactly those nodes (anything else drew into it: draw it all). keep = hold this frame for the next (false on the closing
+     render, which frees it). */
+  function renderProseLive(bodyEl, raw, prior, keep) {
+    const kids = bodyEl.childNodes;
+    const ok = !!prior && prior.nodes.length === kids.length && prior.nodes.every((n, k) => n === kids[k]);
+    const live = { prev: ok ? prior.md : null };
+    renderMarkdown(raw, live);
+    const md = live.next, from = ok ? live.kept : 0;
+    const gone = ok ? prior.nodes.slice(from) : Array.from(kids);
+    // an image that already loaded keeps its node when its block is drawn again (the full render's carry-over, above)
+    const shown = new Map();
+    for (const r of (ok ? gone : [bodyEl])) if (r.querySelectorAll) r.querySelectorAll('.md-img[data-ready]').forEach(n => { const k = n.getAttribute('data-md-path'); if (!shown.has(k)) shown.set(k, n); });
+    for (const n of gone) bodyEl.removeChild(n);
+    const before = kids.length;
+    bodyEl.insertAdjacentHTML('beforeend', md.parts.slice(from).join(''));
+    const added = Array.from(kids).slice(before);
+    if (shown.size) for (const r of added) if (r.querySelectorAll) r.querySelectorAll('.md-img:not([data-ready])').forEach(n => { const k = n.getAttribute('data-md-path'), old = shown.get(k); if (old) { n.replaceWith(old); shown.delete(k); } });
+    hydrateFileRefs(bodyEl, added);
+    if (keep && added.length === md.parts.length - from) bodyEl.__mdLive = { md, nodes: (ok ? prior.nodes.slice(0, from) : []).concat(added) };
   }
 
   function messageCopyText(bodyEl) {
@@ -2400,9 +2456,33 @@ const Chat = (() => {
      raw ws.history) so the gauge estimates the same bytes the send path actually puts on the wire:
      local markers the model never sees must not inflate the reading. Returns null with no active
      stream, which the gauge reads as "nothing to measure yet". */
+  /* THE GAUGE READS A MEMO (idle CPU piece 3, 2026-10-20). The 1 s station tick asks for this every second, and
+     historyWindow re-serialized the whole conversation three or four times per call (JSON.stringify + TextEncoder per
+     message for the byte cap, again per message for the token fit, and again for the calibrated refit) — on a long chat,
+     every second, with nothing changed. Its answer can only move when one of these does: the conversation and its agent,
+     the history array (replaced, appended, popped or spliced — chat.js never edits a kept message's content in place, and a
+     streaming reply's growing content is in the key), the selected model or its catalog limit, or a context reading
+     (Harness.contextRevision, bumped on every write to the readings). A 15 s ceiling re-derives it anyway, so an edit none
+     of these can see is never stale for long. Without contextRevision (an older harness) nothing is memoized. */
+  const CTX_MEMO_TTL_MS = 15000;
+  let ctxMemo = null;
   function contextRef() {
     if (!activeWs) return null;
-    return { agentId: activeWs.agentId || 'agent', streamId: activeWs.id, messages: historyWindow(activeWs) };
+    let key = null;
+    try {
+      if (typeof Harness !== 'undefined' && Harness.contextRevision) {
+        const h = Array.isArray(activeWs.history) ? activeWs.history : null;
+        const last = h && h.length ? h[h.length - 1] : null;
+        const model = Harness.getModel ? (Harness.getModel() || '') : '';
+        key = [activeWs.id, activeWs.agentId, h, h ? h.length : -1, last, last ? String(last.content == null ? '' : last.content).length : -1,
+          model, Harness.contextLimitOf ? Harness.contextLimitOf(model) : 0, Harness.contextRevision()];
+      }
+    } catch (_) { key = null; }
+    const now = Date.now(), age = ctxMemo ? now - ctxMemo.at : -1;   // a negative age (the wall clock stepped back) cannot be measured: re-derive
+    if (key && ctxMemo && age >= 0 && age < CTX_MEMO_TTL_MS && ctxMemo.key.every((v, i) => v === key[i])) return ctxMemo.ref;
+    const ref = { agentId: activeWs.agentId || 'agent', streamId: activeWs.id, messages: historyWindow(activeWs) };
+    ctxMemo = key ? { key, at: now, ref } : null;
+    return ref;
   }
   // A streamed fragment is real assistant output even when the transport dies before a clean result envelope.
   // Persist it as its own turn before the failure marker so switch/reload cannot erase what was already visible.
@@ -3209,8 +3289,18 @@ const Chat = (() => {
     const stat = chip.querySelector('.tc-stat');
     if (/^browser\./.test(ev.name || '') && ev.runId) {
       stat.setAttribute('aria-live', 'polite');
+      /* AN ORPHANED CHIP STOPS ASKING (idle CPU piece 3, 2026-10-20). This loop read /api/connectors every second until
+         the chip resolved or left the DOM. A run that ended without this call's result (stopped, failed) leaves the chip
+         'pending' inside its folded but still connected .run-fold, so it polled once a second until the session was
+         switched. Once the conversation's run is over nothing can still be waiting on this call: the loop ends and the
+         chip keeps the look it has. */
+      const wsId = activeWs && activeWs.id;
+      const runOver = () => typeof Channels === 'undefined' || !Channels.isBusy || !wsId || !Channels.isBusy(wsId);
       const checkWait = async () => {
         if (!chip.isConnected || !chip.classList.contains('pending')) return;
+        if (runOver()) { stat.textContent = ''; return; }
+        // nobody is looking (PollGate): keep the beat, skip the read; the first beat back on screen reads again
+        if (typeof PollGate !== 'undefined' && PollGate.away && PollGate.away()) { setTimeout(checkWait, 1000); return; }
         try {
           const j = await Harness.api.get('/api/connectors');
           if (!chip.isConnected || !chip.classList.contains('pending')) return;
@@ -8342,7 +8432,8 @@ const Chat = (() => {
       return final ? (Fork.stripMarkers ? Fork.stripMarkers(raw) : raw) : (Fork.liveText ? Fork.liveText(raw) : raw);
     }
     let lastShown = null;   // the text the open paragraph last rendered (a close re-renders only when its final text differs)
-    function flushProse(final) { renderQueued = false; if (seg) { lastShown = shownProse(final); renderProse(seg.body, lastShown, { files }); } }
+    // a still-open paragraph redraws only its open end (renderProseLive); the closing render frees that state
+    function flushProse(final) { renderQueued = false; if (seg) { lastShown = shownProse(final); renderProse(seg.body, lastShown, { files, live: !final }); } }
     function queueProse() {
       if (renderQueued) return;
       if (typeof requestAnimationFrame !== 'function' || (typeof document !== 'undefined' && document.hidden)) { flushProse(); autoscroll(); return; }
@@ -8373,6 +8464,7 @@ const Chat = (() => {
     }
     function closeSeg() {   // drop the caret, discard an empty stub, and arm the next token to start fresh
       if (seg && (renderQueued || shownProse(true) !== lastShown)) flushProse(true);   // pending tokens land — and a line the live render held back shows — before the empty-stub check reads textContent
+      if (seg && seg.body) seg.body.__mdLive = null;   // a closed paragraph never redraws: free its live parse
       if (caret) { caret.remove(); caret = null; }
       if (seg && !seg.body.textContent.trim()) seg.d.remove();
       seg = null; raw = '';

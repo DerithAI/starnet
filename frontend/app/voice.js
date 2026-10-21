@@ -1358,10 +1358,16 @@ const Voice = (() => {
     let pcmProcessor = null, pcmSink = null, pcmFrames = [], pcmSamples = 0, pcmRate = 0, takeSttMode = 'cloud';
     let continuous = null, finalRecognizer = null;
     let previewPending = false, previewAbort = null, previewSeq = 0, previewLastAt = 0;
+    let previewDoneAt = 0, previewCostMs = 0;
     let cb = null, mime = '';
     let aborted = false, delivered = false, hardCapTimer = null;
     const LOCAL_PREVIEW_MIN_MS = 400;
     const LOCAL_PREVIEW_INTERVAL_MS = 650;
+    /* A preview re-transcribes the WHOLE take so far (Windows: a fresh PowerShell + System.Speech per call), so each one
+       costs more than the last. Started again the moment the previous one ended, they ran back to back for the whole
+       take - O(T^2) work and a core kept busy. The next preview now waits at least as long as the last one took: the
+       work stays at most half the wall time, however long the take runs. */
+    const LOCAL_PREVIEW_IDLE_FACTOR = 1;
 
     function pickMime() {
       const prefs = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
@@ -1449,6 +1455,7 @@ const Voice = (() => {
       const capturedMs = pcmSamples / Math.max(1, pcmRate || 48000) * 1000;
       const now = Date.now();
       if (capturedMs < LOCAL_PREVIEW_MIN_MS || (previewLastAt && now - previewLastAt < LOCAL_PREVIEW_INTERVAL_MS)) return;
+      if (previewDoneAt && now - previewDoneAt < previewCostMs * LOCAL_PREVIEW_IDLE_FACTOR) return;
       previewLastAt = now;
       previewPending = true;
       const seq = previewSeq;
@@ -1460,7 +1467,10 @@ const Voice = (() => {
       }).catch(error => {
         if (!error || error.name !== 'AbortError') console.warn('[voice] local preview failed:', (error && error.message) || error);
       }).finally(() => {
-        if (previewAbort === ac) { previewAbort = null; previewPending = false; }
+        if (previewAbort === ac) {
+          previewAbort = null; previewPending = false;
+          previewDoneAt = Date.now(); previewCostMs = Math.max(0, previewDoneAt - now);
+        }
       });
     }
     async function transcribe(blob) {
@@ -1533,24 +1543,28 @@ const Voice = (() => {
       if (continuous) continuous.cancel(); continuous = null;
       if (finalRecognizer) finalRecognizer.cancel(); finalRecognizer = null;
       cb = cbs; chunks = []; pcmFrames = []; pcmSamples = 0; pcmRate = 0; takeSttMode = classicSttMode;
-      previewSeq++; previewPending = false; previewAbort = null; previewLastAt = 0;
+      previewSeq++; previewPending = false; previewAbort = null; previewLastAt = 0; previewDoneAt = 0; previewCostMs = 0;
       aborted = false; delivered = false;
       // This take's identity. A click-stop-click during the permission prompt resets the shared flags above, so
       // the FIRST take's late getUserMedia used to pass the re-entry guard and build a second hot recorder (mic
       // left on, frames mixed, its prompt timeout firing 'mic-failed' into the new take).
       const take = previewSeq;
       if (takeSttMode === 'local' || classicPreviewMode === 'local') fetch('/api/local-voice/warm?tts=0', {method:'POST'}).catch(() => {});
-      let granted = null;
+      let granted = null, asked = null;
       try {
         // DEAD-BUTTON GUARD: getUserMedia can hang forever if the mic-permission prompt is DISMISSED (not
         // answered) — WebView2 and some browsers never settle the promise. Without a ceiling, `listening`
         // stays true and the mic button is wedged 'rec' until a page reload. Race the request against a
         // timeout so a stuck prompt degrades to a recoverable error instead of a permanently dead button.
+        asked = navigator.mediaDevices.getUserMedia({ audio: true });
         granted = await Promise.race([
-          navigator.mediaDevices.getUserMedia({ audio: true }),
+          asked,
           new Promise((_, rej) => setTimeout(() => { const e = new Error('mic prompt timed out'); e.name = 'TimeoutError'; rej(e); }, GUM_TIMEOUT_MS))
         ]);
       } catch (e) {
+        // A prompt answered AFTER the timeout still opens the microphone, and nothing would ever stop that stream:
+        // the mic stayed live (the OS recording light on) until a reload. Release a late grant the moment it lands.
+        if (asked) asked.then(late => { try { late.getTracks().forEach(t => t.stop()); } catch (_) {} }, () => {});
         if (take !== previewSeq) return;   // a newer take owns the callbacks now
         // NotAllowedError / SecurityError → the user (or policy) denied the mic. Map to the SR error string
         // so startListening()'s existing not-allowed branch (drop hands-free + clear copy) fires unchanged.
