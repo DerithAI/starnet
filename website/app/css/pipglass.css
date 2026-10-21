@@ -842,6 +842,7 @@ body.glass-demo .con-rail-glyph.has-ico { display: inline-grid; place-items: cen
 body.glass-demo .con-rail-glyph .rail-ico { display: block; width: 16px; height: 16px; }
 body.glass-demo .con-rail-item.con-toptab .con-rail-glyph.has-ico { width: 16px; margin-right: 2px; }
 
+/* ============================================================
    INBOX SESSION ROWS (Andrew 10-02: "they just look a bit cheap", then on the first pass: "the name is too
    small, and the box is too big", then "the name should be on top"). Two lines, like a mail inbox: the AGENT'S
    NAME on top in its own colour (as on its CREW card) with the time, the session title under it (two lines at
@@ -849,8 +850,10 @@ body.glass-demo .con-rail-item.con-toptab .con-rail-glyph.has-ico { width: 16px;
    railRowTip), never a sentence under the name. Rows rest quiet on hairlines; only the selected one is a
    card. The lamp stays the station's square glass lamp with every state glyph; a row that needs
    you says "Approval needed" / "Reply needed" in gold where the time sits.
+   The list keeps glass-demo.css's 6px row gap and 6px ends: from 10-03 to 10-21 this comment had lost its opener, so the
+   browser threw away the 1px-gap rule that stood here and the rows Andrew has looked at since were spaced by glass-demo.css.
+   Its edges are the rail gutter's (ONE RAIL GUTTER, below).
    ============================================================ */
-body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams { gap: 1px; padding: 4px 4px 8px; }
 body.glass-demo.rows-inbox:not(.hud-mode) #left #workstreams .ws-row {
   position: relative; margin: 0 6px; min-height: 0; padding: 7px 10px 8px;
   grid-template-columns: 12px minmax(0, 1fr) auto auto;
@@ -1055,14 +1058,16 @@ body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog::
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.asking .crew-prog { display: none; }
 @keyframes pip-meter { from { transform: translateX(-45px); } to { transform: translateX(297px); } }
 
-/* ---- SESSIONS / PROJECTS: the Pip-Boy tab strip. One rule runs across the rail (end ticks at both ends); the open tab is
-   boxed above it, open at the bottom; + NEW / + ADD is a key standing on the rule ---- */
+/* ---- SESSIONS / PROJECTS: the Pip-Boy tab strip. One rule runs across the rail on its gutter (end ticks at both ends); the
+   open tab is boxed above it, open at the bottom; + NEW / + ADD is a key the tabs' own height standing on the rule, its top
+   and bottom on theirs (Andrew 10-21 circled the old shorter key floating 6px above the line). The first tab and the key
+   sit on the rail's content line, 10px in from the rule's ends (ONE RAIL GUTTER, below) ---- */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head {
-  background: none; border: 0; box-shadow: none; padding: 14px 10px 0; gap: 0; align-items: flex-end; flex-wrap: nowrap;
+  background: none; border: 0; box-shadow: none; padding: 14px var(--rail-gut-u, 10px) 0; gap: 0; align-items: flex-end; flex-wrap: nowrap;
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view { display: flex; flex: 1 1 auto; gap: 0; align-items: flex-end; min-width: 0; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before {
-  content: ''; flex: 0 0 8px; align-self: stretch; border-bottom: 1px solid var(--pip-line);
+  content: ''; flex: 0 0 var(--rail-gut-u, 10px); align-self: stretch; border-bottom: 1px solid var(--pip-line);
   background: linear-gradient(var(--pip-line), var(--pip-line)) left bottom / 1px 7px no-repeat;
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::after { content: ''; flex: 1 1 auto; align-self: stretch; border-bottom: 1px solid var(--pip-line); }
@@ -1076,11 +1081,12 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab.on {
   background: linear-gradient(rgba(var(--ph-rgb), .13), rgba(var(--ph-rgb), .02)); text-shadow: 0 0 6px rgba(var(--ph-rgb), .45);
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts {
-  display: flex; align-items: center; align-self: stretch; gap: 6px; padding: 0 9px 5px 10px; border-bottom: 1px solid var(--pip-line);
+  display: flex; align-items: flex-end; align-self: stretch; gap: 6px; padding: 0 var(--rail-gut-u, 10px) 0 10px; border-bottom: 1px solid var(--pip-line);
   background: linear-gradient(var(--pip-line), var(--pip-line)) right bottom / 1px 7px no-repeat;
 }
+/* 32px like the tabs; the -1px lays the key's bottom edge ON the rule (the acts' border) instead of a second line above it */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject) {
-  min-height: 0; height: 26px; padding: 0 10px; border: 1px solid rgba(var(--ph-rgb), .45); border-radius: 2px;
+  min-height: 0; height: 32px; margin-bottom: -1px; padding: 0 10px; border: 1px solid rgba(var(--ph-rgb), .45); border-radius: 2px;
   background: rgba(var(--ph-rgb), .06); box-shadow: none; text-shadow: none; letter-spacing: 1.6px; color: var(--ph);
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject):is(:hover, :focus-visible) { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .12); }
@@ -1089,15 +1095,43 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addp
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs / inline-size; }
 @container pip-tabs (max-width: 330px) {
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 7px; letter-spacing: .6px; }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding: 0 5px 5px 6px; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding-left: 6px; }
+  /* letter-spacing 0: the hidden "+ NEW" label's 1.6px spacing still took 8px beside the drawn +, pushing it 4px off centre */
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject):not([hidden]) {
-    font-size: 0 !important; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0 !important; letter-spacing: 0; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
   }
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject)::before { content: '+'; font-size: 20px; line-height: 1; }
 }
+/* the narrowest strip has no room for the content line's 10px: the first tab and the key go flush to the rule's ends,
+   on the edge the cards below share */
 @container pip-tabs (max-width: 205px) {
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 5px; letter-spacing: .2px; }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { flex-basis: 4px; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { flex-basis: 0; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding-right: 0; }
+}
+/* a laptop window draws + NEW as the + key at every rail width (the 1440px rule above): its hidden label spaces nothing */
+@media (max-width: 1440px) {
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head #ws-new { letter-spacing: 0; }
+}
+
+/* ---- ONE RAIL GUTTER (Andrew 10-21: "my only complaint is that some of it is misaligned like this"). Every block in the
+   CREW rail spans one column, its edges 10px in from the rail's at every TEXT SIZE: the crew cards, the SESSIONS / PROJECTS
+   rule, NEEDS YOU, the search, the session rows (the cards ended 7px and the rows 10px short of the box above them). A list
+   that scrolls keeps its 8px scrollbar lane (the rail's own ::-webkit-scrollbar width) INSIDE that right gutter whether it
+   overflows or not, so an edge never moves with its scrollbar. The CREW head and the tab strip are counter-zoomed (app.css:
+   one size at every TEXT SIZE), so their 10px is converted back into the rail's zoomed px (--rail-gut-u). The CREW title
+   starts on the content line 20px in, where the crew portraits and the NEEDS YOU and session lamps start ---- */
+body.glass-demo:not(.hud-mode) #screen-game #left { --rail-gut-u: calc(10px / var(--sn-unzoom, 1)); }
+body.glass-demo:not(.hud-mode) #screen-game #crew { scrollbar-gutter: stable; }
+body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row { margin-right: 0; }
+body.glass-demo:not(.hud-mode) #screen-game #left :is(#workstreams, #projects) { padding-left: 4px; padding-right: 0; scrollbar-gutter: stable; }
+body.glass-demo:not(.hud-mode) #screen-game #left :is(#workstreams, #projects) > .ws-row { margin-right: 2px; }
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 {
+  padding-left: calc(20px / var(--sn-unzoom, 1)); padding-right: var(--rail-gut-u);
+  background:
+    linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / calc(100% - 2 * var(--rail-gut-u)) 1px no-repeat,
+    linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / 1px 8px no-repeat,
+    linear-gradient(var(--pg-line), var(--pg-line)) right var(--rail-gut-u) bottom 0 / 1px 8px no-repeat;
 }
 
 /* ---- the search field is a prompt: a typed > in front (no caret: the trimmed pass) ---- */
@@ -1858,3 +1892,45 @@ body.glass-demo:not(.hud-mode) #chat-panel .fnv-stage { font-size: var(--sn-type
   /* the dashboard's own one-line cuts — a crew row's step at a large text size, COMMS's model line — fade too */
   body.glass-demo:not(.hud-mode) :is(#left .crew-step, #chat-panel .comms-agent-model) { text-overflow: clip; animation: sn-cut-line 1s linear both; animation-timeline: scroll(self inline); }
 }
+
+/* ============================================================
+   ONE WINDOW GUTTER (Andrew 10-21: "my only complaint is that some of it is misaligned like this", the rail's floating
+   + key circled). Measured in every window at his settings: the title sat 10px in from the window's edge and the close
+   key 7px, the family tab strip 12px, a side menu's search 10px, its sections 8px, CONNECT's sections and capsule 0px (on
+   the window's frame), and the content under the strip 16-22px: each edge a few px off the one above it. Now one 10px
+   gutter for the title, the head keys, the tab strip, the side menu's search, capsule and sections, and the content of
+   the single-column windows that wear the strip. The window's scrollers run on the CREW rail's 8px bar (a hairline track,
+   a square thumb, no arrow buttons) instead of the OS's thin bar, a fixed width on every platform, so a side menu and a
+   stripped window keep that lane reserved inside the right gutter and their edges hold whether they scroll or not.
+   ============================================================ */
+body.glass-demo:not(.hud-mode) #terms .term-head { padding-right: 10px; }
+body.glass-demo:not(.hud-mode) #terms .fam-tabs { margin-left: 10px; margin-right: 10px; }
+body.glass-demo:not(.hud-mode) #terms .term :is(.term-body, .con-pane, .con-rail-list, .ag-list) { scrollbar-width: auto; scrollbar-color: auto; }
+body.glass-demo:not(.hud-mode) #terms .term :is(.term-body, .con-pane, .con-rail-list, .ag-list)::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+body.glass-demo:not(.hud-mode) #terms .term :is(.term-body, .con-pane, .con-rail-list, .ag-list)::-webkit-scrollbar-track { background: linear-gradient(rgba(var(--ph-rgb), .24), rgba(var(--ph-rgb), .24)) 50% 0 / 1px 100% no-repeat; }
+body.glass-demo:not(.hud-mode) #terms .term :is(.term-body, .con-pane, .con-rail-list, .ag-list)::-webkit-scrollbar-thumb { background-color: var(--ph); background-clip: padding-box; border: solid transparent; border-width: 0 2px; border-radius: 0; min-height: 26px; }
+body.glass-demo:not(.hud-mode) #terms .term :is(.term-body, .con-pane, .con-rail-list, .ag-list)::-webkit-scrollbar-thumb:hover { background-color: var(--ph-bright); }
+body.glass-demo:not(.hud-mode) #terms .term :is(.term-body, .con-pane, .con-rail-list, .ag-list)::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+body.glass-demo:not(.hud-mode) #terms .term :is(.term-body, .con-pane, .con-rail-list, .ag-list)::-webkit-scrollbar-corner { background: transparent; }
+/* a side menu: its search, capsule and sections on the gutter; the list's lane inside the right one (2px + the 8px bar) */
+body.glass-demo:not(.hud-mode) #terms .term.sn-menu .con-search { padding-left: 10px; padding-right: 10px; }
+body.glass-demo:not(.hud-mode) #terms .term.sn-menu .con-intents { margin-left: 10px; margin-right: 10px; }
+body.glass-demo:not(.hud-mode) #terms .term.sn-menu .con-rail-list { padding-left: 10px; padding-right: 2px; scrollbar-gutter: stable; }
+body.glass-demo:not(.hud-mode) #terms .term.sn-menu .con-rail-top { padding-left: 10px; padding-right: 10px; }
+body.glass-demo:not(.hud-mode) #terms .term.dossier .con-rail-top { padding-right: 0; }
+body.glass-demo:not(.hud-mode) #terms .term.dossier .ag-list { padding-right: 2px; scrollbar-gutter: stable; }
+/* the single-column windows that wear the strip (MY WORK › TASKS and DELIVERABLES, AUTOMATE › WORKFLOWS): their content
+   on the strip's edges */
+body.glass-demo:not(.hud-mode) #terms .term:is(.tasks-win, .dlv-win, .wfw-win) .term-body { padding-left: 10px; padding-right: 2px; scrollbar-gutter: stable; }
+body.glass-demo:not(.hud-mode) #terms .term.wfw-win .wfw { padding-left: 0; padding-right: 0; }
+/* the 24px the content gained would tip "Or pick one" from two tiles a row to three at his window size: the tile's
+   minimum grows by a third of it, so a row takes a third tile at the window width it did before */
+body.glass-demo:not(.hud-mode) #terms .term.wfw-win .wfw-tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+/* controls side by side share one height: SCHEDULES' RUN BY takes Name's 46px, DELIVERABLES' MORE its search's and
+   status's 37px (and, closed, sits on the row's right edge instead of the left of an empty stretch), the dossier's tabs
+   its search's 46px */
+body.glass-demo:not(.hud-mode) #terms .term.sn-menu .rt-identity select.key-input { padding-top: 10px; padding-bottom: 10px; line-height: 1.5; }
+body.glass-demo:not(.hud-mode) #terms .term.dlv-win .cfg.dlv .dlv-tools > summary { padding-top: 7px; padding-bottom: 7px; line-height: 1.3; }
+body.glass-demo:not(.hud-mode) #terms .term.dlv-win .cfg.dlv .dlv-tools:not([open]) { flex: 0 0 auto; gap: 0; }   /* closed, the hidden keys' box still took the flex gap */
+body.glass-demo:not(.hud-mode) #terms .term.dossier .con-toptab { padding-top: 10px; padding-bottom: 10px; }
+body.glass-demo:not(.hud-mode) #terms .term.dossier .con-toptab .con-rail-label { line-height: 24px; }
