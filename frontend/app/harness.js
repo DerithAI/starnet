@@ -1036,6 +1036,231 @@ const Harness = (() => {
     return t;
   }
 
+  /* ONE STREAM FOR EVERY RUN THIS PAGE WATCHES (2026-10-21; sidecar/run-streams.js is the station half).
+     A browser opens at most six HTTP/1.1 connections to one host — Chromium, WebView2 (the Windows app) and WebKit (the
+     Mac app) alike — and every run used to hold one for its whole life: POST /api/run answered with the run's own
+     stream, held open through each approval pause. Five paused conversations plus the station's SSE bridge filled the
+     pool, and everything else the page asked for queued behind them: the next conversation never started, Approve/Deny
+     never left the page, the NEEDS YOU feeds never loaded, and each paused run waited on an answer that was waiting on
+     it until the ask timed out to a denial.
+     Now the page holds ONE stream (GET /api/run/stream) for all of its runs, opened when a run starts and closed a few
+     seconds after the last one ends (an idle page holds no extra connection). A run names it on its POST
+     ({ stream: { id, key } }), the POST is answered at once, and the run's lines arrive on the stream tagged with the
+     key this page chose for it; chat() reads them through the same reader it always used. Leaving means what it meant:
+     the stream closing (a reload, a closed tab, a lost connection) stops every run on it, and a run whose fetch is
+     aborted is withdrawn, the station's half of closing that run's own response. A station without the route (404), a
+     stream that cannot open, or one held back before its first line (a buffering proxy) leaves runs on their own
+     response, as before. */
+  const runStream = (() => {
+    const IDLE_MS = 4000;     // the stream outlives its last run by this much, so back-to-back runs reuse it
+    const READY_MS = 10000;   // a stream whose first line has not arrived by then is being held back (a buffering proxy)
+    const SKIP_MS = 120000;   // …and runs keep their own response this long before the page tries a stream again
+    const END = ',"end":true}';   // a run's last line is exactly {"k":"<key>","end":true}
+    const enc = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+    let cur = null;           // the open (or opening) stream: { id, ready, sinks: Map(key -> sink), ac, dead }
+    let idleTimer = null;
+    let unsupported = false;  // the station answered 404: runs keep their own response
+    let skipUntil = 0;        // a stream that never said ready: runs keep their own response until then
+    function newKey() {
+      const b = new Uint8Array(16);
+      try { crypto.getRandomValues(b); } catch (_) { for (let i = 0; i < b.length; i++) b[i] = Math.floor(Math.random() * 256); }
+      return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    }
+    function abortReason(signal) {
+      if (signal && signal.reason !== undefined) return signal.reason;   // what fetch() rejects with for this signal
+      try { return new DOMException('The operation was aborted.', 'AbortError'); }
+      catch (_) { const e = new Error('The operation was aborted.'); e.name = 'AbortError'; return e; }
+    }
+    function clearIdle() { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } }
+    function idleCheck() {
+      if (idleTimer || !cur || cur.sinks.size) return;
+      const s = cur;
+      idleTimer = setTimeout(() => { idleTimer = null; if (cur === s && !s.sinks.size) lost(s, null); }, IDLE_MS);
+    }
+    // the stream is over: a loss errors every run on it (each chat() reads it as its own stream breaking), a clean end
+    // (or the idle close) ends them (a run without its own end line then reads as a reply cut short, as before)
+    function lost(s, err) {
+      if (s.dead) return;
+      s.dead = true;
+      if (s.readyTimer) { clearTimeout(s.readyTimer); s.readyTimer = null; }
+      if (cur === s) { cur = null; clearIdle(); }
+      try { s.reject(err || new Error('the station closed the run stream')); } catch (_) {}
+      const sinks = [...s.sinks.values()];
+      s.sinks.clear();
+      for (const sink of sinks) { if (err) sink.fail(err); else sink.close(); }
+      try { s.ac.abort(); } catch (_) {}
+    }
+    function route(s, line) {
+      if (line.charCodeAt(0) !== 123) return;   // not '{': the keepalive's blank line
+      if (line.startsWith('{"k":"')) {
+        const q = line.indexOf('"', 6);
+        const sink = q > 6 ? s.sinks.get(line.slice(6, q)) : null;
+        if (!sink) return;   // a run this page no longer reads: its lines go nowhere, as an unread response's did
+        if (line.length === q + 1 + END.length && line.endsWith(END)) { s.sinks.delete(sink.key); sink.close(); idleCheck(); }
+        else sink.push(line);
+        return;
+      }
+      let j = null;
+      try { j = JSON.parse(line); } catch (_) { return; }
+      if (j && j.stream === 'ready' && j.id && !s.id) {
+        s.id = String(j.id);
+        if (s.readyTimer) { clearTimeout(s.readyTimer); s.readyTimer = null; }
+        s.resolve(s.id);
+      }
+    }
+    async function pump(s, reader) {
+      const dec = new TextDecoder();
+      let buf = '';
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          buf += done ? dec.decode() : dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            if (line) route(s, line);
+          }
+          if (done) break;
+        }
+        lost(s, null);
+      } catch (e) { lost(s, e); }
+      try { reader.releaseLock(); } catch (_) {}
+    }
+    function open() {
+      const s = { id: '', sinks: new Map(), ac: new AbortController(), dead: false, resolve: null, reject: null, readyTimer: null };
+      s.ready = new Promise((resolve, reject) => { s.resolve = resolve; s.reject = reject; });
+      s.ready.catch(() => {});   // each run that joins reads it; a stream nobody waits on must not log an unhandled rejection
+      // a stream held back before its first line (a proxy that buffers it) must never hold the runs waiting on it
+      s.readyTimer = setTimeout(() => {
+        s.readyTimer = null;
+        if (s.id || s.dead) return;
+        skipUntil = Date.now() + SKIP_MS;
+        lost(s, new Error('the station\'s run stream did not open in time'));
+      }, READY_MS);
+      (async () => {
+        let res;
+        try { res = await fetch('/api/run/stream', { cache: 'no-store', signal: s.ac.signal }); }
+        catch (e) { return lost(s, e); }
+        if (res.status === 404) unsupported = true;
+        if (!res.ok || !res.body) return lost(s, new Error('sidecar HTTP ' + res.status));
+        pump(s, res.body.getReader());
+      })();
+      return s;
+    }
+    /* A run joins the page's stream: { key, ready: Promise<stream id>, stream: the run's own ReadableStream, release(),
+       drop(), abandon() }. null where the page cannot hold one (no ReadableStream, or a station without the route).
+       Aborting `signal` errors the run's stream with what fetch() rejects with and withdraws the run on the station.
+       release(): done reading — a run that ended already left; one this page stopped reading early stays (its lines go
+       nowhere) until its own end line, so the stream outlives it as that run's unread response would have.
+       drop(): the station never took this run (its POST was refused or answered on its own response).
+       abandon(): its POST failed on the way, so the station may hold it — withdraw it, as the lost connection did. */
+    function join(signal) {
+      if (unsupported || Date.now() < skipUntil || !enc || typeof ReadableStream === 'undefined' || typeof AbortController === 'undefined') return null;
+      clearIdle();
+      if (!cur || cur.dead) cur = open();
+      const s = cur, key = newKey();
+      let ctrl = null, state = 'open';
+      const stream = new ReadableStream({ start(c) { ctrl = c; } });
+      const sink = {
+        key,
+        push(line) { if (state === 'open') { try { ctrl.enqueue(enc.encode(line + '\n')); } catch (_) {} } },
+        close() { if (state === 'open') { state = 'closed'; try { ctrl.close(); } catch (_) {} } },
+        fail(e) { if (state === 'open') { state = 'failed'; try { ctrl.error(e); } catch (_) {} } },
+        detach() { if (state === 'open') state = 'detached'; }
+      };
+      s.sinks.set(key, sink);
+      let withdrawn = false;
+      const withdraw = () => {
+        if (withdrawn || !s.id || s.dead) return;   // no id yet: its POST was never sent, so nothing waits on the station
+        withdrawn = true;
+        fetch('/api/run/stream/withdraw', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s.id, key }) })
+          .catch(e => console.warn('[run-stream] could not withdraw a stopped run:', (e && e.message) || e));
+      };
+      const onAbort = () => { sink.fail(abortReason(signal)); if (s.sinks.get(key) === sink) s.sinks.delete(key); withdraw(); idleCheck(); };
+      const off = () => { if (signal) { try { signal.removeEventListener('abort', onAbort); } catch (_) {} } };
+      if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+      const drop = () => { off(); if (s.sinks.get(key) === sink) s.sinks.delete(key); sink.close(); idleCheck(); };
+      return {
+        key, stream, ready: s.ready, drop,
+        release() { off(); if (s.sinks.get(key) === sink) sink.detach(); idleCheck(); },
+        abandon() { drop(); withdraw(); }
+      };
+    }
+    // what the page holds right now (diagnostics and the live proof): one stream at most, and how many runs ride it
+    function state() { return { open: !!(cur && !cur.dead), id: (cur && cur.id) || '', runs: cur ? cur.sinks.size : 0, unsupported, heldBack: Date.now() < skipUntil }; }
+    return { join, state };
+  })();
+
+  /* A RUN A BUTTON STARTS — a routine's Run now / Retry, an app's refresh, a workshop build — rides the same ONE stream:
+     the POST names it and is answered at once, and the run's lines arrive on the stream (a station that answers with the
+     run's own NDJSON stream is read from that response instead). Resolves { ok, status, j, done }:
+       ok/status/j  the station's answer to the POST (j: its receipt, or the refusal it answered with)
+       done         settles when the run's last line arrives, with that last { name, payload } (a route's *.result line);
+                    rejects when the stream breaks first. Read to the end either way, so nothing piles up unread.
+     onEvent(name, payload) sees every line as it arrives. Never throws: an unreachable station is { ok:false, status:0 }. */
+  async function streamPost(path, body, opts) {
+    const o = opts || {}, signal = o.signal;
+    const payload = Object.assign({}, body || {});
+    let shared = runStream.join(signal);
+    if (shared) {
+      try { payload.stream = { id: await shared.ready, key: shared.key }; }
+      catch (_) { shared.drop(); shared = null; }
+    }
+    const post = () => fetch(path, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    let res;
+    try {
+      res = await post();
+      if (shared && res.status === 409) {   // the stream closed under this POST: refused before any work, so once more on its own response
+        let gone = false;
+        try { gone = /run_stream_gone/.test(await res.clone().text()); } catch (_) {}
+        if (gone) { shared.drop(); shared = null; delete payload.stream; res = await post(); }
+      }
+    } catch (e) {
+      if (shared) shared.abandon();   // the POST may have reached the station: withdraw it (an abort already did)
+      const failed = Promise.reject(e); failed.catch(() => {});
+      return { ok: false, status: 0, j: { error: 'the station could not be reached: ' + ((e && e.message) || e) }, done: failed };
+    }
+    if (!res.ok) {
+      if (shared) shared.drop();
+      let j = {};
+      try { j = (await res.json()) || {}; } catch (_) { j = {}; }
+      return { ok: false, status: res.status, j, done: Promise.resolve(null) };
+    }
+    let j = {}, source = res.body || null;
+    const type = String((res.headers && typeof res.headers.get === 'function' && res.headers.get('content-type')) || '');
+    if (shared && /json/i.test(type)) { try { j = (await res.json()) || {}; } catch (_) { j = {}; } source = shared.stream; }
+    else if (shared) { shared.drop(); shared = null; }
+    const done = (async () => {
+      if (!source) return null;
+      const reader = source.getReader(), dec = new TextDecoder();
+      let buf = '', last = null;
+      try {
+        for (;;) {
+          const { value, done: end } = await reader.read();
+          buf += end ? dec.decode() + '\n' : dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const s = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!s) continue;
+            let ev; try { ev = JSON.parse(s); } catch (_) { continue; }
+            if (!ev || typeof ev.name !== 'string') continue;
+            last = { name: ev.name, payload: ev.payload || {} };
+            if (o.onEvent) { try { o.onEvent(last.name, last.payload); } catch (e) { console.warn('[run-stream] a line handler failed:', (e && e.message) || e); } }
+          }
+          if (end) break;
+        }
+      } finally {
+        try { reader.releaseLock(); } catch (_) {}
+        if (shared) shared.release();
+      }
+      return last;
+    })();
+    done.catch(() => {});   // a caller that never awaits it (a fire-and-forget Retry) must not log an unhandled rejection
+    return { ok: true, status: res.status, j, done };
+  }
+
   /* Run an agent turn/task through the LOCAL SIDECAR (node sidecar/index.js), which holds the
      real agent loop + tools (web, files). We POST the request and read the response body as a
      stream of newline-delimited JSON events — the FROZEN agent.* U.bus events the harness emits.
@@ -1072,7 +1297,7 @@ const Harness = (() => {
     // a Stop (AbortController) is the Commander's own act, never a transport loss
     function isAbortError(e) { return !!e && e.name === 'AbortError'; }
 
-    let res;
+    let res, shared = null;   // shared: this run's place on the page's ONE run stream (runStream above), when it has one
     try {
       const reqBody = { model, provider, reasoningEffort, system, messages, agentId: agentId || 'agent', isTask: !!isTask, recurring: !!recurring };
       if (recovery && recovery.sourceRunId && recovery.continuationId && recovery.continuationToken) {
@@ -1120,12 +1345,30 @@ const Harness = (() => {
       if (!DESKTOP && !DEVMODE) {
         try { const pool = JSON.parse(readScoped(LS.keyPool, provider) || '[]'); if (Array.isArray(pool) && pool.length) reqBody.keyPool = pool; } catch (_) {}
       }
-      res = await fetch('/api/run', {
+      // ONE STREAM PER PAGE: the run's lines ride the page's shared stream, so this POST does not hold a connection for the
+      // run's life. A stream that cannot open leaves this run on its own response, exactly as before.
+      shared = (typeof runStream !== 'undefined' && runStream) ? runStream.join(signal) : null;
+      if (shared) {
+        try { reqBody.stream = { id: await shared.ready, key: shared.key }; }
+        catch (_) { shared.drop(); shared = null; }
+      }
+      const post = () => fetch('/api/run', {
         method: 'POST', signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(reqBody)
       });
+      res = await post();
+      // the stream closed between opening and this POST (a station restart, a dropped connection): the station refused the
+      // run before doing any work, so it goes once more on its own response
+      if (shared && res.status === 409) {
+        let gone = false;
+        try { gone = /run_stream_gone/.test(await res.clone().text()); } catch (_) {}
+        if (gone) { shared.drop(); shared = null; delete reqBody.stream; res = await post(); }
+      }
     } catch (e) {
+      // the POST may have reached the station before it failed: withdraw the run, as the lost connection used to stop it
+      // (an abort already withdrew it)
+      if (shared) { shared.abandon(); shared = null; }
       // a Stop while connecting keeps today's message, but only a real refused/failed fetch is a transport loss
       const refused = new Error('cannot reach the STARNET sidecar — start it with `npm start` (node sidecar/index.js)');
       throw isAbortError(e) ? refused : transportLoss(refused, 'fetch');
@@ -1136,12 +1379,21 @@ const Harness = (() => {
     // and the RECONNECT CHATGPT / reload doors were lost on this whole path (EL-10/EL-11). Read it (bounded)
     // and carry it in the thrown message.
     if (!res.ok || !res.body) {
+      if (shared) { shared.drop(); shared = null; }
       let detail = '';
       try { detail = sidecarErrorDetail(await res.text()); } catch (_) {}
       throw new Error('sidecar HTTP ' + res.status + (detail ? ' — ' + detail : ''));
     }
+    // the station took the run onto the page's stream (its answer is a small JSON receipt); a station that answered with
+    // the run's own NDJSON stream keeps it on this response
+    let source = res.body;
+    if (shared) {
+      const type = String((res.headers && typeof res.headers.get === 'function' && res.headers.get('content-type')) || '');
+      if (/json/i.test(type)) { try { await res.json(); } catch (_) {} source = shared.stream; }
+      else { shared.drop(); shared = null; }
+    }
 
-    const reader = res.body.getReader();
+    const reader = source.getReader();
     const dec = new TextDecoder();
     let buf = '', full = '', lastUsage = null, runId = null, errMsg = null, endReason = null, finishReason = null, completionVerdict = 'not_assessed', effectVerdict = 'no_observed_effects';
     let budgetScope = null, budgetCapUsd = null;   // additive: WHICH spend cap ended a 'budget' run (+ its $ cap)
@@ -1246,6 +1498,7 @@ const Harness = (() => {
     }
     } finally {
       reader.releaseLock();
+      if (shared) shared.release();
       if (runId) { delete runModels[runId]; internalRuns.delete(runId); }
     }
     totals.calls++;
@@ -1753,6 +2006,8 @@ const Harness = (() => {
     isDesktop: () => DESKTOP,   // lets the UI tell a desktop keychain-store failure (token saved locally) from a browser no-op
     getSelectionRevision, getKey, setKey, setKeyPool, validateAndSetKeyPool, keyPoolSize, storeChannelToken, getModel, setModel, getProv, setProv, getBaseUrl, setBaseUrl, getReasoningEffort, setReasoningEffort, clearLegacyReasoningOff, normalizeReasoningEffort, init, configured, refreshCreditsConfigured, creditsEpoch: () => creditsEpoch, hasStoredCredential, setDesktopConfigured,
     listModels, probeProvider, validateAndSetKey, priceOf, contextLimitOf, contextState, contextRevision: () => contextRev, chat, cancel, haltAll, consent, consentAck, consentArgs, consentAnswer, summonAck, notebook,
+    runStreamState: () => runStream.state(),   // the page's ONE run stream: { open, id, runs, unsupported, heldBack }
+    streamPost,   // a run a button starts (Run now / Retry / an app refresh / a workshop build), on the page's ONE run stream
     runRecoveries, prepareAutomaticRecovery, resolveRunRecovery, prepareReviewedRecovery,
     memoryProposals, memoryTurnin, memoryVeto, memoryReset, memoryRecords, memoryDeclined, memoryRestore, memoryPending, memoryPin, memoryEdit, memoryForget,
     studyProposals, studyPending,

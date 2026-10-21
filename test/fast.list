@@ -90,6 +90,8 @@ test/set-key-body.test.js
 test/file-response.test.js
 test/test-list-runner.test.js
 test/runroute.test.js
+test/run-streams.test.js
+test/run-stream-pool.test.js
 test/checkpoint.test.js
 test/checkpoint-default-on.test.js
 test/rewind-health.test.js
