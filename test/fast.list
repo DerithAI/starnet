@@ -18,6 +18,8 @@ test/clock-rng.test.js
 test/context.test.js
 test/redact.known-values.test.js
 test/redact.masked-keys.test.js
+test/redact.linear.test.js
+test/redact.known-cache.test.js
 test/runtimeinfo.test.js
 test/harness-snapshot.test.js
 test/harness-stream-completion.test.js
@@ -40,6 +42,7 @@ test/reflect.test.js
 test/memory-corrections.test.js
 test/project-memory-boundary.test.js
 test/memory-truth.test.js
+test/memory-rank.tokenize-once.test.js
 test/memcore.test.js
 test/cost.test.js
 test/spend.test.js
@@ -893,6 +896,7 @@ test/channels.group-allow.test.js
 test/channels.telegram.pairing-ux.test.js
 test/channels.telegram.test.js
 test/channels.telegram.format.test.js
+test/channels.telegram.linear.test.js
 test/channels.telegram.context.test.js
 test/channels.telegram.media.test.js
 test/channels.telegram.groups.test.js
