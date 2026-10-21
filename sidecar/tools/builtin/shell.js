@@ -412,6 +412,18 @@
     if (/\.(?:sh|bash)$/i.test(rel)) return { kind: 'shell', dialect: 'posix' };
     return { kind: 'code', dialect: null };
   }
+  /* The only lines of a CODE file that can yield a head the source rules follow: one that BEGINS with a package
+     runner, an interpreter, PowerShell, or a script path (a multi-line template literal that is a command list,
+     say). Lexing the whole file found its heads there anyway — a JavaScript statement never starts "node x.mjs" —
+     so only these lines are lexed, each on its own. */
+  const CODE_LAUNCH_LINE_RE = /^[ \t]*@?(?:(?:(?:npm|pnpm|yarn)(?:\.cmd)?|node(?:\.exe)?|python\d*(?:\.exe)?|py(?:\.exe)?|ruby|php|tsx|ts-node|bun|deno|bash|sh|powershell(?:\.exe)?|pwsh(?:\.exe)?)[ \t]|["']?[^\s"'&|;]+\.(?:[cm]?js|ts|tsx|jsx|ps1|py|rb|php|sh|bash|cmd|bat)(?:["'\s]|$))/i;
+  function codeLaunchHeads(text, dialect) {
+    const heads = [];
+    for (const line of String(text || '').split('\n')) {
+      if (CODE_LAUNCH_LINE_RE.test(line)) for (const h of commandHeads(line, dialect)) heads.push(h);
+    }
+    return heads;
+  }
   function commandSources(cmd, opts) { return commandSourceEntries(cmd, opts).map(e => e.text); }
   function commandSourceEntries(cmd, opts) {
     opts = opts || {};
@@ -436,7 +448,16 @@
       const seenKey = String(baseDir || '') + '\0' + text;
       if (!text || seen.has(seenKey)) continue;
       seen.add(seenKey); out.push({ text: text, kind: entry.kind || 'shell', dialect: entry.dialect || dialect });
-      for (const parsedHead of commandHeads(text, dialect)) {
+      /* CODE IS NOT SHELL (2026-10-20). Every queued source was lexed with commandHeads() as if it were a command,
+         a referenced .js/.mjs/.py file included, in the OUTER dialect: `node sidecar/tools/builtin/browser.js` lexed
+         5,731 fake heads out of JavaScript (~30 ms of synchronous regex work before the command even started). A
+         shell source (.cmd/.bat/.ps1/.sh, an npm script) is still lexed, in ITS own dialect. A code source keeps
+         its in-text launch checks (its consumers see it unchanged in `out`) and is scanned only for the launches
+         the head rules below can follow — `node x.mjs`, `npm run y`, `pwsh -File z.ps1` written anywhere in it
+         (codeLaunchHeads). That keeps what the lexing caught by accident (a line that began "node x.mjs") and adds
+         what it missed (execSync('node x.mjs') on one line), at the cost of one regex pass. */
+      const heads = (entry.kind || 'shell') === 'shell' ? commandHeads(text, entry.dialect || dialect) : codeLaunchHeads(text, dialect);
+      for (const parsedHead of heads) {
         const head = (parsedHead && parsedHead.text != null ? parsedHead.text : String(parsedHead || '')).replace(/^\s*@/, '');
         let m = head.match(/^(?:npm|npm\.cmd)\s+(?:--[A-Za-z0-9_-]+(?:=[^\s]+)?\s+)*(?:run\s+)?([A-Za-z0-9:_-]+)\b/i);
         if (m) {

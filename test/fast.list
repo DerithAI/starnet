@@ -214,6 +214,7 @@ test/shell-bg.test.js
 test/shell-bg-io.test.js
 test/shell-visible-window.test.js
 test/shell-input-isolation.test.js
+test/shell.source-scan.test.js
 test/shell-machine-state.test.js
 test/procledger.test.js
 test/inputguard.test.js
