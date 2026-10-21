@@ -31,14 +31,17 @@ function floorTypes(objs) {
   return out.sort();
 }
 
-// a room name rides the system prompt: the station's own label (renameRoom caps it at 24), never markup or a newline
-function cleanName(s) { return String(s || '').replace(/[^A-Za-z0-9 &'._-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 24); }
+// a room name rides the system prompt VERBATIM (accents, '/', '+', '#', any script): the note must name the room the
+// Commander sees. A name it cannot carry as-is -- a control or format character, a line break, '<' or '>' (they could
+// close the note's fence), or longer than renameRoom's 24 -- is never rewritten (that names a room that does not exist):
+// it is '' instead, so the scope names no room and the note stays the old one.
+function roomLabel(s) { const t = String(s == null ? '' : s).trim(); return (t.length > 24 || /[\p{C}\p{Zl}\p{Zp}<>]/u.test(t)) ? '' : t; }
 
 function capScope(station, agentId, dockId) {
   if (!station || !agentId || typeof station.agentRoomId !== 'function') return null;
   const roomId = station.agentRoomId(agentId, dockId);
   if (!roomId) return { scoped: false };
-  const nameOf = (id) => { const r = station.roomById(id); return cleanName(r && r.name); };
+  const nameOf = (id) => { const r = station.roomById(id); return roomLabel(r && r.name); };
   const props = station.props();
   // agentRoomId takes the desk's room when the agent has a desk (a workstation = a computer prop) in a room
   const desk = props.find(p => p && p.agentId === agentId && station.capForProp(p.t) === 'computer');

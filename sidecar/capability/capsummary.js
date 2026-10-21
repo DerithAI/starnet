@@ -58,9 +58,9 @@ const extraHave = (c) => c.id === 'memory' ? 'keep long-term memory' : c.have;
 
 const bare = (c) => c.object.replace(/^an? /, '');
 const listJoin = (xs, last) => xs.length > 1 ? xs.slice(0, -1).join(', ') + ' ' + (last || 'and') + ' ' + xs[xs.length - 1] : (xs[0] || '');
-// "(the DISH in HOME does not reach you)": the room each missing object already stands in, so the Commander does not
-// place a second one there. '' when none of them stands anywhere else.
-function elsewhereOf(fix, scope) {
+// "(the DISH in HOME does not reach you)", or `like` "(like the DISH in HOME)": the room each missing object already
+// stands in, so the Commander does not place a second one there. '' when none of them stands anywhere else.
+function elsewhereOf(fix, scope, like) {
   const groups = [];
   for (const c of fix) {
     const r = ((scope.gearElsewhere || {})[c.type] || [])[0];
@@ -73,7 +73,7 @@ function elsewhereOf(fix, scope) {
   if (!n) return '';
   const what = (groups.length === 1 && n === fix.length && n > 1) ? 'the ones in ' + groups[0].room
     : listJoin(groups.map(g => 'the ' + listJoin(g.names) + ' in ' + g.room));
-  return ' (' + what + (n > 1 ? ' do' : ' does') + ' not reach you)';
+  return like ? ' (like ' + what + ')' : ' (' + what + (n > 1 ? ' do' : ' does') + ' not reach you)';
 }
 
 function summarizeCapabilities(resolved, opts) {
@@ -152,7 +152,9 @@ function summarizeCapabilities(resolved, opts) {
       note += 'If the Commander asks for something you lack, do NOT claim, promise, or pretend to do it. Say plainly you can\'t yet, ' +
         (capIds.has('orchestrator') ? 'and offer to place it yourself (station builder add; they approve; works from their next message): ' : 'and name the object to place to grant it: ') +
         lackCore.map((c) => c.have + ' -> place ' + c.object).concat(roomExtra.map((c) => extraHave(c) + ' -> place ' + c.object)).join('; ') + '. ' +
-        (roomFix.length ? 'Place the ' + listJoin(roomFix.map(bare)) + ' in ' + roomIs + ': your tools come only from that room' + elsewhereOf(roomFix, scope) + '. ' : '') +
+        // only what is true of FLOOR gear: files + terminal come from a hire's execution profile and connectors are
+        // account-level, so "your tools come only from that room" was false for the very agents this names
+        (roomFix.length ? 'Place the ' + listJoin(roomFix.map(bare)) + ' in ' + roomIs + ': gear in any other room' + elsewhereOf(roomFix, scope, true) + ' does not reach you. ' : '') +
         'You can always think and reply; that needs nothing.\n';
     } else if (delegatedBy) {
       // A DELEGATED worker (issue #77) is not a routine and nobody set a per-routine grant: the "UNATTENDED ... per-routine

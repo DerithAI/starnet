@@ -66,7 +66,7 @@ const unattended = (res) => Object.assign({}, res, { tools: res.tools.filter(n =
   A.ok(desk && fx.removeProp(desk.id).ok, 'fixture: the WRITER loses its desk');
   const s2 = capScope(checkedStation({ station: fx.serialize() }), 'rq2');
   A.ok(s2 && s2.scoped && s2.via === 'bay' && s2.roomName === 'RESEARCH', 'a desk-less agent is scoped to its bay\'s room: ' + JSON.stringify(s2 && { r: s2.roomName, via: s2.via }));
-  A.ok(/Place the DISH in RESEARCH, the room your bay is in: your tools come only from that room \(the DISH in HOME does not reach you\)\./.test(
+  A.ok(/Place the DISH in RESEARCH, the room your bay is in: gear in any other room \(like the DISH in HOME\) does not reach you\./.test(
     summarizeCapabilities(interactiveRun('rq2', []), { surface: 'interactive', scopeFn: () => Object.assign({}, s2, { gearElsewhere: { dish: ['HOME'] } }) })), '...and the note names the bay\'s room');
 }
 
@@ -92,7 +92,7 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
   A.eq(summarizeCapabilities(resolvedI, { surface: 'interactive', scopeFn: () => { throw new Error('boom'); } }), BEFORE_I, 'a throwing scope fails open: byte-identical');
   const note = summarizeCapabilities(resolvedI, { surface: 'interactive', scopeFn: scopeI });
   A.ok(/search\/fetch the web and use the controlled browser -> place a DISH/.test(note), 'still names the DISH for web');
-  A.ok(note.indexOf('Place the DISH, SERVER CART and STUDIO in RESEARCH, the room your desk is in: your tools come only from that room (the ones in HOME do not reach you).') >= 0,
+  A.ok(note.indexOf('Place the DISH, SERVER CART and STUDIO in RESEARCH, the room your desk is in: gear in any other room (like the ones in HOME) does not reach you.') >= 0,
     'names RESEARCH, the room the desk is in, and the gear in HOME that does not reach it: ' + note.slice(note.indexOf('Place the'), note.indexOf('Place the') + 220));
   A.ok(/You do NOT have: search\/fetch the web and use the controlled browser, keep long-term memory, generate and analyze images\./.test(note),
     'memory and images are named missing too, since that gear stands in HOME where it cannot reach');
@@ -111,6 +111,10 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
   }
   A.ok(note.indexOf('NOTEBOOK') < 0 && /SERVER CART[^\n]*MEMORY/.test(require('../sidecar/manual.js').starnetManual()), 'no NOTEBOOK: the note and the manual name memory\'s gear alike');
   A.ok(note.indexOf('read and write files') < note.indexOf('You do NOT have') && !/place an INTEL CAB|place a WORKBENCH/.test(note), 'files + terminal come from the execution profile: never nagged');
+  // REVIEW FIX (10-21): RESEARCH holds NO gear, yet this agent CAN read/write files and run shell (its trusted-project
+  // profile), so "your tools come only from that room" was false: the note claims only what is true of floor gear
+  A.eq(scopeI().placedTypes, [], 'RESEARCH grants this agent nothing');
+  A.ok(!/tools come only from/.test(note) && /: gear in any other room \(like the ones in HOME\) does not reach you\./.test(note), 'the note never says the agent\'s tools come from its room');
   console.log('[room-scope] interactive note: ' + BEFORE_I.length + ' -> ' + note.length + ' chars (+' + (note.length - BEFORE_I.length) + ')');
 
   // the LEAD variant keeps its own opener
@@ -140,7 +144,7 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
   A.ok(res2.tools.indexOf('web_search') >= 0, 'web_search is granted');
   const note2 = summarizeCapabilities(res2, { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: () => saved2, agentId: 'rq1', extraObjects: extra2, interactive: true }) });
   A.ok(/You CAN: search\/fetch the web/.test(note2) && !/-> place a DISH/.test(note2), 'web is a power now, never asked for');
-  A.ok(/Place the SERVER CART and STUDIO in RESEARCH, the room your desk is in: your tools come only from that room \(the ones in HOME do not reach you\)\./.test(note2), 'still names the memory and image gear: ' + note2.slice(note2.indexOf('Place the'), note2.indexOf('Place the') + 160));
+  A.ok(/Place the SERVER CART and STUDIO in RESEARCH, the room your desk is in: gear in any other room \(like the ones in HOME\) does not reach you\./.test(note2), 'still names the memory and image gear: ' + note2.slice(note2.indexOf('Place the'), note2.indexOf('Place the') + 160));
 
   // a page that saw the DISH while the save has not caught up yet (debounce): no room is named at all
   const stale = summarizeCapabilities(res2, { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: () => saved, agentId: 'rq1', extraObjects: extra2, interactive: true }) });
@@ -251,6 +255,67 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
   const at = idx.indexOf('let station = o.station ||');
   A.ok(at > 0 && idx.indexOf('composeOffice({ surface: officeSurface, lead: o.lead || ownerTrusted, connectorIds: connectors.ids(), extraObjects: o.extraObjects })') > 0,
     'the office the scope compares against is composed from the same o.extraObjects');
+}
+
+/* 8. ROOM NAMES ride the note VERBATIM (review fix 10-21): the old allowlist [A-Za-z0-9 &'._-] rewrote 'BÜRO' to 'B RO'
+      and 'OPS / INTEL' to 'OPS INTEL', naming rooms that do not exist. A name the note cannot carry as-is ('<', '>',
+      a line break, a control/format character, over 24) is never rewritten: no room is named, the old note stays. */
+{
+  function builtIn(roomName) {   // the lead's station.build, exactly as the top fixture, into a room the lead names
+    const s = M.create(M.starterDoc()); s.ensureWorkstation('agent');
+    const ids = [];
+    const Rb = Object.assign({}, env, { canRecruit: true, recruit: role => { const id = 'rq' + (ids.length + 1); if (!s.ensureWorkstation(id).ok) return null; ids.push(id); return { id, name: role }; } });
+    const plan = SB.planBuild(s.serialize(), { rooms: [{ name: roomName, size: 'giant', lines: [{ line: 'research_line', staff: [{ step: 1, agent: 'new' }, { step: 2, agent: 'new' }] }] }] }, Rb);
+    A.ok(plan.ok && SB.apply(s, plan.plan, Rb).ok && ids[0] === 'rq1', 'fixture: built a research line in "' + roomName + '"');
+    return s;
+  }
+  function renamed(from, to) { const s = M.create(st.serialize()); A.ok(s.renameRoom(s.rooms().find(r => r.name === from).id, to).ok, 'fixture: ' + from + ' renamed'); return s; }
+  function noteOn(s) {
+    const sv = { station: s.serialize() }, fl = checkedStation(sv), ex = savedPlacement(sv, 'rq1'), res = interactiveRun('rq1', ex);
+    return { res, note: summarizeCapabilities(res, { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: () => fl, agentId: 'rq1', extraObjects: ex, interactive: true }) }),
+      plain: summarizeCapabilities(res, { surface: 'interactive' }), floor: fl };
+  }
+  const PLACE = (room) => 'Place the DISH, SERVER CART and STUDIO in ' + room + ', the room your desk is in: gear in any other room (like the ones in HOME) does not reach you.';
+  // the lead's own names (station.build keeps '/', accents and any script; roomCut uppercases)
+  for (const [asked, room] of [['Ops / Intel', 'OPS / INTEL'], ['Büro', 'BÜRO'], ['Laboratório 研究', 'LABORATÓRIO 研究']]) {
+    const s = builtIn(asked);
+    A.ok(s.rooms().some(r => r.name === room), 'the floor shows ' + room);
+    const n = noteOn(s).note;
+    A.ok(n.indexOf(PLACE(room)) >= 0, 'station.build "' + asked + '": the note names ' + room + ' exactly: ' + n.slice(n.indexOf('Place the'), n.indexOf('Place the') + 90));
+  }
+  // REFIT renames (renameRoom keeps any text up to 24)
+  for (const room of ['CAFÉ LAB', 'R+D/QA', 'LAB #2', '研究室']) {
+    const n = noteOn(renamed('RESEARCH', room)).note;
+    A.ok(n.indexOf(PLACE(room)) >= 0, 'RESEARCH renamed "' + room + '": the note names it exactly: ' + n.slice(n.indexOf('Place the'), n.indexOf('Place the') + 90));
+  }
+  // the gear's room, named verbatim too
+  A.ok(noteOn(renamed('HOME', 'CAFÉ')).note.indexOf('(like the ones in CAFÉ) does not reach you.') >= 0, 'the room the gear stands in is named verbatim');
+  // the unattended clause reads the same names
+  {
+    const s = builtIn('Büro'), rt = makeRouter();
+    A.ok(rt.setStation(s.serialize()).ok, 'fixture: the router takes the BÜRO station');
+    const rsB = rt.stationFor('rq1'), flB = checkedStation({ station: s.serialize() });
+    const u = summarizeCapabilities(unattended(resolveTools('rq1', withProfile(rsB, 'rq1'))), { surface: 'autonomous', scopeFn: () => scopeForRun({ loadStation: () => flB, agentId: 'rq1', runStation: rsB }) });
+    A.ok(u.indexOf('No web on this run: BÜRO, the room your desk is in, has no DISH;') >= 0, 'unattended: BÜRO named exactly: ' + u.slice(u.indexOf('No web'), u.indexOf('No web') + 80));
+  }
+  // names the note cannot carry as-is: FAIL CLOSED to the old note, byte-identical (never a rewritten name)
+  for (const bad of ['LAB <2>', 'R&D</capabilities', 'TWO\nLINES', 'TAB\tROOM', 'RTL' + String.fromCharCode(0x202e) + 'BAL', 'LS' + String.fromCharCode(0x2028) + 'LAB']) {
+    const o = noteOn(renamed('RESEARCH', bad));
+    A.eq((capScope(o.floor, 'rq1') || {}).roomName, '', JSON.stringify(bad) + ': the scope carries no room name');
+    A.eq(o.note, o.plain, JSON.stringify(bad) + ': no room is named, the note is the old one byte-for-byte');
+  }
+  {
+    // a hand-edited save past renameRoom's 24: never truncated into another name
+    const doc = st.serialize(), id = Object.keys(doc.rooms).find(k => doc.rooms[k].name === 'RESEARCH');
+    doc.rooms[id].name = 'RESEARCH AND DEVELOPMENT LAB';
+    const fl = checkedStation({ station: doc });
+    A.ok(!!fl && fl.roomById(id).name === 'RESEARCH AND DEVELOPMENT LAB', 'fixture: a 28-char name validates');
+    A.eq(consistentScope(fl, 'rq1', { grantedTypes: [] }), null, 'over 24: no scope, no truncated name');
+  }
+  // gear standing in a room whose name cannot be carried: that room is never named (nor rewritten)
+  const o = noteOn(renamed('HOME', 'HO<ME'));
+  A.ok(o.note.indexOf('Place the DISH in RESEARCH, the room your desk is in: gear in any other room does not reach you.') >= 0 && !/HO.?ME/.test(o.note),
+    'a lossy gear room is skipped: ' + o.note.slice(o.note.indexOf('Place the'), o.note.indexOf('Place the') + 120));
 }
 
 A.report('capsummary-room-scope.test');
