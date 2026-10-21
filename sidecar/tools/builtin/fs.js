@@ -960,8 +960,9 @@ const { note: failNote } = require('../../failopen');
         });
       });
     }
-    // Longest line handed to a MODEL-SUPPLIED regex, and the wall-clock ceiling for the whole content scan.
+    // Longest line handed to a MODEL-SUPPLIED regex, and the wall-clock ceiling for the whole search (walk included).
     const SEARCH_MATCH_CHARS = 2000, SEARCH_TIME_BUDGET_MS = 8000;
+    const SEARCH_BUDGET_MS = (deps.limits && Number(deps.limits.searchBudgetMs) > 0) ? Number(deps.limits.searchBudgetMs) : SEARCH_TIME_BUDGET_MS;
 
     /* CATASTROPHIC-BACKTRACKING FLOOR (measured 2026-07-26).
        `fs.search { regex: true }` compiles the MODEL's string and runs it synchronously over every line of
@@ -1108,9 +1109,19 @@ const { note: failNote } = require('../../failopen');
       const rules = parseGitignore(text);
       return rules.length ? { baseRel, rules } : null;
     }
+    /* THE WALK IS BUDGETED AND STOPPABLE (2026-10-20). The walker awaited one fsp.stat per file, in sequence, while
+       it built the list — 2.7-9.7 s for 6,000 files where the readdir-only walk took 21-67 ms — and the 8 s budget
+       timer was armed only AFTER the walk returned, so a 20k-file tree reached the 20 s tool timeout. Nothing
+       checked ctx.signal either: a search with an already-aborted signal still ran ~15 s and answered "(no
+       matches)". Now a plain file costs no stat here (readdir already says it is a file; size and mtime are
+       taken where they are needed: the content scan's own stat, or a target:"files" hit), the run's ONE clock
+       (stats.clock, see searchClock) is checked at every directory and entry, an expiry ends the walk as a
+       truncated, timed-out walk, and an abort throws. A FIFO / socket / device entry is skipped outright:
+       readFile on a FIFO blocks forever on POSIX. */
     async function collectFiles(absDir, prefix, acc, stats, baseReal, ignoreStack) {
       const maxFiles = stats.maxFiles || SEARCH_MAX_FILES;
       if (stats.files >= maxFiles) { stats.truncated = true; return; }
+      if (walkStopped(stats)) return;
       let entries;
       try { entries = await fsp.readdir(absDir, { withFileTypes: true }); }
       catch (e) { if (e && e.code === 'ENOENT') return; throw e; }
@@ -1122,22 +1133,78 @@ const { note: failNote } = require('../../failopen');
       }
       for (const ent of entries) {
         if (stats.files >= maxFiles) { stats.truncated = true; return; }
+        if (walkStopped(stats)) return;
         if (ent.name.charAt(0) === '.') continue;                 // hidden (matches ripgrep's default)
         const rel = prefix ? (prefix + '/' + ent.name) : ent.name;
         const abs = P.join(absDir, ent.name);
+        const isLink = typeof ent.isSymbolicLink === 'function' && ent.isSymbolicLink();
         // a link (or a Windows junction) must PROVE it still lands inside the jail before we read or descend
-        if (typeof ent.isSymbolicLink === 'function' && ent.isSymbolicLink()) {
+        if (isLink) {
           if (baseReal && !pathInside(await realpathOrSelf(abs), baseReal)) { stats.skippedLinks = (stats.skippedLinks || 0) + 1; continue; }
         }
         let isDir = ent.isDirectory(), st = null;
-        if (!isDir) {
+        const plainFile = !isLink && !isDir && typeof ent.isFile === 'function' && ent.isFile();
+        if (!isDir && !plainFile) {
+          if (!isLink && specialEntry(ent)) continue;                // FIFO / socket / device: never read
           try { st = await fsp.stat(abs); } catch (e) { continue; }
           isDir = !!(st.isDirectory && st.isDirectory());          // an in-jail symlinked DIRECTORY reads as a file in readdir
+          if (!isDir && specialEntry(st)) continue;                  // a link to a FIFO / socket / device
         }
         if (stack.length && gitignored(stack, rel, isDir)) { stats.ignored = (stats.ignored || 0) + 1; continue; }
         if (isDir) { if (ent.name !== 'node_modules') await collectFiles(abs, rel, acc, stats, baseReal, stack); continue; }
-        stats.files++; acc.push({ rel, abs, mtimeMs: st.mtimeMs || 0, size: Number(st.size) || 0 });
+        stats.files++;
+        acc.push(st ? { rel, abs, mtimeMs: st.mtimeMs || 0, size: Number(st.size) || 0 } : { rel, abs, mtimeMs: null, size: null });
       }
+    }
+    function specialEntry(x) {
+      return ['isFIFO', 'isSocket', 'isBlockDevice', 'isCharacterDevice'].some((m) => typeof x[m] === 'function' && x[m]());
+    }
+    function searchAbortError() { const e = new Error('fs.search aborted'); e.name = 'AbortError'; return e; }
+    function budgetNote(clock) {
+      return '\n\n[search stopped at the ' + Math.round(clock.budgetMs / 1000) +
+        's budget — these are the matches found so far; narrow with file_glob or a more specific query]';
+    }
+    // the walk's view of the run clock: an abort throws, an expiry marks the walk cut (truncated + timed out)
+    function walkStopped(stats) {
+      const clock = stats && stats.clock;
+      if (!clock) return false;
+      if (clock.aborted) throw searchAbortError();
+      if (clock.expired) { stats.truncated = true; stats.timedOut = true; return true; }
+      return false;
+    }
+    /* ONE DEADLINE PER SEARCH, armed before anything walks: a TIMER plus the run's abort signal, never a clock read
+       (the determinism law; see the content-scan note below). It covers the walk, the content scan and the
+       target:"files" stats. disarm() runs in the caller's finally. */
+    function searchClock(signal, budgetMs) {
+      const clock = { expired: false, aborted: false, budgetMs };
+      const timer = setTimeout(() => { clock.expired = true; }, budgetMs);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+      const onAbort = () => { clock.aborted = true; };
+      const listens = !!(signal && typeof signal.addEventListener === 'function');
+      if (signal && signal.aborted) clock.aborted = true;
+      else if (listens) signal.addEventListener('abort', onAbort, { once: true });
+      clock.disarm = () => {
+        clearTimeout(timer);
+        if (listens && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort);
+      };
+      return clock;
+    }
+    /* Run start(item) for items IN ORDER with at most `width` in flight, handing each result to each(item, result)
+       (awaited) in item order. stop() is asked before every launch and after every result (it throws on abort).
+       Returns true when it stopped with work left. start() must never reject. */
+    async function inOrderWindow(items, width, start, each, stop) {
+      const q = [];
+      let i = 0;
+      const top = () => { while (q.length < width && i < items.length && !stop()) { q.push([items[i], start(items[i])]); i++; } };
+      top();
+      while (q.length) {
+        const [item, p] = q.shift();
+        const result = await p;
+        await each(item, result);
+        if (stop()) return q.length > 0 || i < items.length;
+        top();
+      }
+      return i < items.length;
     }
     // `note` (optional) carries an honest reason the result set is partial for a reason OTHER than paging —
     // today, the scan hitting its wall-clock budget. Never silently truncate.
@@ -1159,6 +1226,11 @@ const { note: failNote } = require('../../failopen');
         gitignore: { type: 'boolean' }, max_files: { type: 'number' }
       } },
       run: async (args, ctx) => {
+        // ONE deadline for the whole search, armed before anything walks (see searchClock); always disarmed
+        const clock = searchClock(ctx && ctx.signal, SEARCH_BUDGET_MS);
+        try { return await searchRun(args, ctx, clock); } finally { clock.disarm(); }
+        // the historic run() body, unchanged in place except that it now reads the run's one clock
+        async function searchRun(args, ctx, clock) {
         args = args || {};
         const q = String(args.query != null ? args.query : '');
         if (!q) throw new Error('"query" must be a non-empty string');
@@ -1189,7 +1261,7 @@ const { note: failNote } = require('../../failopen');
         const target = ({ grep: 'content', find: 'files' })[args.target] || args.target || 'content';
         const cx = Math.max(0, Math.min(10, Number(args.context) || 0));
         const maxFiles = Math.max(1, Math.min(SEARCH_MAX_FILES_CEILING, Math.floor(Number(args.max_files)) || SEARCH_MAX_FILES));
-        const stats = { files: 0, truncated: false, maxFiles, gitignore: args.gitignore !== false && !onlyName, skippedLarge: [] };
+        const stats = { files: 0, truncated: false, maxFiles, gitignore: args.gitignore !== false && !onlyName, skippedLarge: [], clock };
         const maxBytes = onlyName ? SEARCH_NAMED_FILE_BYTES : SEARCH_MAX_FILE_BYTES;
         if (onlyName && startStat && startStat.size > maxBytes) stats.skippedLarge.push(P.relative(base, P.join(abs, onlyName)).split(P.sep).join('/'));
         const signal = ctx && ctx.signal;
@@ -1226,28 +1298,37 @@ const { note: failNote } = require('../../failopen');
           const re = globToRe((!hasSlash && q.charAt(0) !== '*') ? ('*' + q) : q, ic);   // bare name -> suffix match (rg --files -g *name)
           const nameOf = (rel) => hasSlash ? rel : rel.split('/').pop();
           const wanted = (rel) => (!onlyName || rel === onlyRel) && re.test(nameOf(rel));
+          /* newest-first needs an mtime, so only the glob HITS are stat'ed (the walk no longer stats every file), 16
+             at a time, in path order, under the run clock. A hit that cannot be stat'ed is dropped, as before. */
+          async function stampHits(list) {
+            const out = [];
+            const cut = await inOrderWindow(list, 16,
+              (f) => (f.mtimeMs != null ? Promise.resolve(f.mtimeMs) : fsp.stat(f.abs).then((st) => st.mtimeMs || 0, () => null)),
+              (f, m) => { if (m != null) out.push({ rel: f.rel, mtimeMs: m }); },
+              () => walkStopped(stats));
+            if (cut) { stats.truncated = true; stats.timedOut = true; }
+            return out;
+          }
           let hits = null;
           if (rg) {
             const rels = [];
-            const r = await runRg(rg, rgCommon.concat(['--files'], onlyName ? ['--', onlyName] : []), abs, (line) => { rels.push(line); if (!onlyName && rels.length >= maxFiles) { stats.truncated = true; return false; } }, SEARCH_TIME_BUDGET_MS, signal);
+            const r = await runRg(rg, rgCommon.concat(['--files'], onlyName ? ['--', onlyName] : []), abs, (line) => { rels.push(line); if (!onlyName && rels.length >= maxFiles) { stats.truncated = true; return false; } }, clock.budgetMs, signal);
             if (r.ok) {
               stats.files = rels.length; stats.engine = 'rg';
               if (r.timedOut) stats.truncated = true;
-              hits = [];
-              for (const p of rels) {
-                const rel = rgRel(p);
-                if (!wanted(rel)) continue;
-                let st; try { st = await fsp.stat(P.join(base, rel)); } catch (_) { continue; }
-                hits.push({ rel, mtimeMs: st.mtimeMs || 0 });
-              }
+              const wantedRels = [];
+              for (const p of rels) { const rel = rgRel(p); if (wanted(rel)) wantedRels.push({ rel, abs: P.join(base, rel), mtimeMs: null }); }
+              hits = await stampHits(wantedRels);
             }
           }
-          if (!hits) { const all = await walkAll(); stats.engine = 'walk'; hits = all.filter(f => wanted(f.rel)); }
+          if (!hits) { const all = await walkAll(); stats.engine = 'walk'; hits = await stampHits(all.filter(f => wanted(f.rel))); }
           hits.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));   // newest first; path tiebreak = determinism
           const total = hits.length, page = hits.slice(offset, offset + limit);
-          if (!page.length) return { content: '(no files matching ' + q + ')', summary: '0 files' };
+          // a listing the clock cut short says so; "(no files matching)" from a cut walk would be a false negative
+          const filesNote = stats.timedOut ? budgetNote(clock) : '';
+          if (!page.length) return { content: '(no files matching ' + q + ')' + filesNote, summary: '0 files' };
           const truncated = stats.truncated || total > offset + limit;
-          return { content: page.map(f => f.rel).join('\n') + searchHint(truncated, offset, limit, total),
+          return { content: page.map(f => f.rel).join('\n') + searchHint(truncated, offset, limit, total, filesNote || undefined),
                    summary: total + ' file' + (total === 1 ? '' : 's') + ' matched' + (truncated ? ' (showing ' + page.length + ')' : ''), engine: stats.engine };
         }
 
@@ -1312,7 +1393,8 @@ const { note: failNote } = require('../../failopen');
               h.idxs.push(idx); totalMatches++;
               if (totalMatches >= SEARCH_MAX_MATCHES) { stats.truncated = true; return false; }
             }
-          }, SEARCH_TIME_BUDGET_MS, signal);
+          }, clock.budgetMs, signal);
+          if (clock.aborted) throw searchAbortError();
           if (r.ok) {
             stats.engine = 'rg';
             fileHits = Array.from(byFile.values());
@@ -1335,24 +1417,40 @@ const { note: failNote } = require('../../failopen');
              reason the station stops answering. A TIMER, not a clock read — the determinism law bans ambient
              time in backend logic, and browser.js's waitForSettle already sets this precedent. It works here
              because the check sits between files, with an `await fsp.readFile` in between, so the loop turns
-             and the timer can fire. A partial answer that SAYS it is partial beats a frozen process. */
-          let expired = false;
-          const budgetTimer = setTimeout(() => { expired = true; }, SEARCH_TIME_BUDGET_MS);
-          if (budgetTimer && typeof budgetTimer.unref === 'function') budgetTimer.unref();
-          for (const f of candidates) {
-            if (expired) { timedOut = true; stats.truncated = true; break; }
-            if (f.size > maxBytes) { stats.skippedLarge.push(f.rel); continue; }   // named below, never a silent miss
-            let buf; try { buf = await fsp.readFile(f.abs); } catch (e) { continue; }
-            if (buf.length > maxBytes) { stats.skippedLarge.push(f.rel); continue; }
-            if (buf.indexOf(0) >= 0) continue;   // binary
+             and the timer can fire. A partial answer that SAYS it is partial beats a frozen process.
+             The timer is now the run's ONE clock (searchClock), armed before the walk, so a slow walk counts
+             against the same 8 s, and an abort stops the scan. Files are read through an ordered window of 16
+             (stat -> size cap -> readFile), consumed in path order: sequential stat+read of 6,000 small files took
+             33-68 s against 3-9 s windowed, with the same results in the same order. Only a file up to 1 MiB is
+             PREFETCHED; a bigger one is read when its turn comes, so the window holds at most ~16 MiB of file
+             bytes plus the one large file being searched. */
+          if (stats.timedOut) timedOut = true;   // the walk itself ran out of budget
+          const PREFETCH_MAX = 1024 * 1024;
+          const readOrSkip = (abs) => fsp.readFile(abs).then((buf) => ({ buf }), () => ({ skip: true }));
+          const cut = await inOrderWindow(candidates, 16, async (f) => {
+            let size = f.size;
+            if (size == null) {
+              try { size = Number((await fsp.stat(f.abs)).size) || 0; } catch (e) { return { skip: true }; }
+            }
+            if (size > maxBytes) return { large: true };
+            return size > PREFETCH_MAX ? { later: true } : readOrSkip(f.abs);
+          }, async (f, res) => {
+            if (res.large) { stats.skippedLarge.push(f.rel); return; }   // named below, never a silent miss
+            if (res.later) res = await readOrSkip(f.abs);
+            if (res.skip) return;
+            const buf = res.buf;
+            if (buf.length > maxBytes) { stats.skippedLarge.push(f.rel); return; }
+            if (buf.indexOf(0) >= 0) return;   // binary
             const lines = buf.toString('utf8').split(/\r?\n/), idxs = [];
             for (let i = 0; i < lines.length; i++) if (matcher(lines[i])) idxs.push(i);
             if (idxs.length) { fileHits.push({ rel: f.rel, idxs, lines, maxIdx: lines.length - 1 }); totalMatches += idxs.length; }
-          }
-          clearTimeout(budgetTimer);
+          }, () => {
+            if (clock.aborted) throw searchAbortError();
+            return clock.expired;
+          });
+          if (cut) { timedOut = true; stats.truncated = true; }
         }
-        if (timedOut) stats.timedOutNote = '\n\n[search stopped at the ' + Math.round(SEARCH_TIME_BUDGET_MS / 1000) +
-          's budget — these are the matches found so far; narrow with file_glob or a more specific query]';
+        if (timedOut) stats.timedOutNote = budgetNote(clock);
         if (stats.skippedLarge.length) stats.timedOutNote = (stats.timedOutNote || '') + '\n\n[NOT searched — over the '
           + Math.round(maxBytes / (1024 * 1024)) + ' MB per-file search limit: ' + stats.skippedLarge.slice(0, 10).join(', ')
           + (stats.skippedLarge.length > 10 ? ' and ' + (stats.skippedLarge.length - 10) + ' more' : '')
@@ -1409,6 +1507,7 @@ const { note: failNote } = require('../../failopen');
         }
         return { content: body + searchHint(truncated, offset, limit, total, stats.timedOutNote),
                  summary: total + ' match' + (total === 1 ? '' : 'es') + ' in ' + fileHits.length + ' file(s)' + (truncated ? ' (showing ' + pageRefs.length + ')' : ''), engine: stats.engine };
+        }   // searchRun
       }
     };
 
