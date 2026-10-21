@@ -1947,6 +1947,14 @@ const SpaceBG = (() => {
       tile2(ctx, st.cloudCv, w, h, parX(cam, SURF.cloud) + t * 4.5, parY(cam, SURF.cloud) + t * 1.3);
       ctx.globalAlpha = 1;
     },
+    /* the STILL readout (world.js STILL VERDICT; review 10-21): the cars are MOTION, never ambient. Each one is its own
+       object crossing the screen (0.010-0.032 of the canvas per second: ~20-65 device px/s on a 2100 px canvas), not drift,
+       twinkle, flicker or a glow, so a city sky with traffic driving is changing on every draw: `now`, and the floor keeps the
+       normal pace. Reduced motion holds every car still (draw's `still`), and a city with no arterials has none: then only the
+       ambient layers are left (the dome's breath, the beacons' blink, the cloud drift) and nothing is due. */
+    nextChange(now, st) {
+      return !reduceMotion() && st.traffic && st.traffic.length ? now : Infinity;
+    },
   };
 
   /* ---------------------------------------------------------------------- registry ---- */
@@ -2078,9 +2086,9 @@ const SpaceBG = (() => {
 
   /* THE STILL READOUT (world.js STILL VERDICT, 2026-10-21), allocation-free: when the drawn sky next changes in a way the
      still pace must not slow — `now` while it is changing right now (a meteor, the bolide, the belt's ember shower or
-     fireball crossing; the sky still baking or settling a resize), else when the next such change is due, else Infinity.
-     The slow layers (drift, twinkle, the gas breathing, ocean swell, a city's traffic and clouds) are ambient and never
-     reported. The clock is the caller's (the frame's own `now`, the same one draw() is given). */
+     fireball crossing, a city's cars driving; the sky still baking or settling a resize), else when the next such change is
+     due, else Infinity. The slow layers (drift, twinkle, the gas breathing, ocean swell, a city's clouds and beacons) are
+     ambient and never reported. The clock is the caller's (the frame's own `now`, the same one draw() is given). */
   function nextChange(now) {
     const id = resolve(curId);
     if (builtId !== id || !st || pendKey) return now;

@@ -1768,8 +1768,9 @@ const World = (() => {
      bolide had no sky readout (drawn at 30/s); a bubble or nameplate over a body walking OFF screen slides along the canvas
      edge (now motion); an off-screen body's decision clocks were never due, though an initiator past the edge decides for
      an on-screen partner (now due for every placed body); the voice and the async answers above never woke a still floor;
-     the SHIPPED pallet pop was not motion. And the planted breath was counted as motion, so a scene with a standing body
-     never went still — the breath is now drift (see AMBIENT in the STILL VERDICT: sub-pixel, drawn at its true phase). */
+     the SHIPPED pallet pop was not motion; NIGHT CITY's cars were classed as ambient, so a city floor drew them at 30/s
+     (they are motion now: a city sky with traffic driving never goes still). And the planted breath was counted as
+     motion, so a scene with a standing body never went still — the breath is now drift (see AMBIENT in the STILL VERDICT: sub-pixel, drawn at its true phase). */
   const PACE_VISIBLE_MS = 1000 / 60, PACE_MOTION_MS = 1000 / 144, PACE_MOTION_HOLD_MS = 1200;
   const PACE_STILL_MS = 1000 / 30, INPUT_HOLD_MS = 1200;   // still: 30 draws/s · input: a hand on the window holds the normal pace this long (hover tags, glances)
   const PACE_TIMER_MIN_MS = 100;   // pace intervals at/above this wait in a timer instead of spinning rAF (the still pace does too)
@@ -1909,13 +1910,14 @@ const World = (() => {
                   a drawn prop whose art moves on its own clock (PropSprites.clockNext: every native draw, an occupied
                   screen's sweep, fish, wax, steam, plasma, a ripple, a wall screen's scan line); a harness pulse decaying
                   (a tool-fire surge, a connector packet, a workbench flash: PropSprites.pulsing)
-         sky    — a meteor or the bolide crossing, the belt's ember shower or fireball, the sky still baking (SpaceBG)
+         sky    — a meteor or the bolide crossing, the belt's ember shower or fireball, a city's cars driving (review 10-21:
+                  separate objects crossing the screen, never drift), the sky still baking (SpaceBG)
          fx     — a canvas overlay animating: desk and dock flashes, the pin flourish, the FIRST SHIP pulse, a SHIPPED
                   pallet's newest crate popping in, the hero's wake ripple and level surge, the awakening, arrival, kindling
                   and flood, the dawn veil easing, a truth flare, the CRT roll bar sweeping
          belt   — an ENERGIZED belt tile in frame (its rollers march; a cold line's rollers are parked)
        AMBIENT — never motion, redrawn whole at the still pace: the sky's slow layers (star drift and twinkle, the gas
-         breathing, ocean swell, a city's traffic, clouds and beacons), light flicker (fixture and prop light modulation,
+         breathing, ocean swell, a city's clouds and beacons), light flicker (fixture and prop light modulation,
          and the dust motes drifting in the light pools, under a device px per still frame), and alpha-only glow pulses
          (the await tag and its caret, LINK DOWN, bay lamps, routing nags, a prop's lamp/heat/band/hologram/indicator
          glow). Andrew's words named the starfield drift and twinkle, light flicker and glow pulses; the other skies'
