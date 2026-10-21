@@ -10057,6 +10057,24 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // flip the dot to a distinct amber/warn state + explain it in the title. NO new window, NO nag — just
   // an honest dot state. Never asserts durability the harness can't prove (truthful-telemetry law).
   let degradedNotified = false;   // ONE persistent notice per session for the degraded workspace (the dot carries the ongoing state)
+  // PRESERVED SESSIONS AT BOOT (support report 2026-10-21): a window's refused save stays on the station after that window
+  // is gone. When the newest one still holds sessions this station lacks (the sidecar counts them), say so once and
+  // offer to bring them back. Nothing shows when the station cannot say, or when nothing would come back.
+  async function offerPreservedSaves() {
+    if (typeof CloudSave === 'undefined' || !CloudSave.conflicts || document.getElementById('save-conflict-notice')) return;
+    const offer = (await CloudSave.conflicts()).find(c => c && c.file && Number(c.restorable) > 0);
+    if (!offer || document.getElementById('save-conflict-notice') || document.getElementById('save-preserved-notice')) return;
+    const n = Number(offer.restorable);
+    const when = offer.savedAt ? new Date(offer.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'earlier';
+    const banner = document.createElement('div'); banner.id = 'save-preserved-notice'; banner.setAttribute('role', 'alert');
+    banner.style.cssText = 'position:fixed;top:8px;left:10%;right:10%;z-index:100000;padding:16px;background:#281e12;color:#fff;border:2px solid #e8b35c';
+    const label = document.createElement('p');
+    label.textContent = 'A window’s save preserved on the station (' + when + ') holds work in ' + n + (n === 1 ? ' session' : ' sessions') + ' that this station doesn’t have. Restoring brings it into the station; nothing in the station is removed, and the station file is copied aside first.';
+    const restore = document.createElement('button'); restore.className = 'bb'; restore.textContent = 'Restore ' + n + (n === 1 ? ' session' : ' sessions');
+    restore.onclick = async () => { restore.disabled = true; try { await CloudSave.restoreConflict(offer.file); } catch (e) { label.textContent = e.message; restore.disabled = false; } };
+    const later = document.createElement('button'); later.className = 'bb'; later.textContent = 'Not now'; later.onclick = () => banner.remove();
+    banner.append(label, restore, later); document.body.append(banner);
+  }
   function refreshSaveDurability(d) {
     d = d || $('#save-dot'); if (!d) return;
     let h = null;
@@ -10072,7 +10090,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         const exportButton = document.createElement('button'); exportButton.className = 'bb'; exportButton.textContent = 'Download this window’s save';
         exportButton.onclick = () => { const blob = new Blob([JSON.stringify(CloudSave.localSnapshot() || {})], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'starnet-conflicting-save.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
         const reload = document.createElement('button'); reload.className = 'bb'; reload.textContent = 'Reload current station'; reload.onclick = async () => { try { await CloudSave.reloadCurrent(); } catch (e) { label.textContent = e.message; } };
-        banner.append(label, exportButton, reload); document.body.append(banner);
+        // the preserved copy's sessions go INTO the station (added, never removing any), then this window reloads onto it
+        const file = h.conflict.recovery;
+        const restore = document.createElement('button'); restore.className = 'bb'; restore.textContent = 'Restore this window’s sessions';
+        restore.onclick = async () => { restore.disabled = true; try { await CloudSave.restoreConflict(file); } catch (e) { label.textContent = e.message; restore.disabled = false; } };
+        banner.append(label); if (file && CloudSave.restoreConflict) banner.append(restore); banner.append(exportButton, reload); document.body.append(banner);
       }
       return;
     }
@@ -12359,7 +12381,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // GROWTH Tier 3: repaint the Settings AUTONOMY panel's EARNED badge if it is open (no-op otherwise — the paint fn
   // queries its own (possibly detached) host nodes, so a closed panel costs nothing). Called after a trust accept.
   const repaintAutonomy = () => { try { if (repaintAutonomyDial) repaintAutonomyDial(); } catch (_) {} };
-  return { init, enter, setRoster, leave, clearRunning, runningCount: () => runningAgents.size, isAgentRunning: (id) => agentLive(id), notify, warnIfStationLacksKey, settleNotifs, waitingNotifKeys, seenSession, storedWaits, settleStoredWait, flashSave, refreshSave: () => refreshSaveDurability(), openAgent, refreshCrew: () => crewTick(), openArcade, toggleTerm, openTerm, focusProvider, showTerm, showAgent, notifsMarkRead, notifsClear, badges, openDesk, closeTerm, rerender, refreshBoard: refreshBoardLive, pokeQuests, setTheme, getTheme, setLook, lookNow, lookOptions, repaintAutonomy, initiativeLabel, refreshSystems, toggleFamily, familyOf, registerWindow, h, motionRestState, reseatToasts };
+  return { init, enter, setRoster, leave, clearRunning, runningCount: () => runningAgents.size, isAgentRunning: (id) => agentLive(id), notify, warnIfStationLacksKey, settleNotifs, waitingNotifKeys, seenSession, storedWaits, settleStoredWait, flashSave, refreshSave: () => refreshSaveDurability(), offerPreservedSaves, openAgent, refreshCrew: () => crewTick(), openArcade, toggleTerm, openTerm, focusProvider, showTerm, showAgent, notifsMarkRead, notifsClear, badges, openDesk, closeTerm, rerender, refreshBoard: refreshBoardLive, pokeQuests, setTheme, getTheme, setLook, lookNow, lookOptions, repaintAutonomy, initiativeLabel, refreshSystems, toggleFamily, familyOf, registerWindow, h, motionRestState, reseatToasts };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { visibleTerminalRect, clampTerminalSize };

@@ -12352,6 +12352,8 @@ const ROUTES = [
   { m: 'POST', exact: '/api/notebook/restore', h: handleNotebookRestore },
   { m: 'GET', prefix: '/api/notebook', h: serveNotebook },
   { m: 'POST', exact: '/api/save/recovery-ack', h: handleSaveRecoveryAck },
+  { m: 'GET', exact: '/api/save/conflicts', h: serveSaveConflicts },
+  { m: 'POST', exact: '/api/save/conflicts/restore', h: handleSaveConflictRestore },
   { m: 'GET', prefix: '/api/save', h: serveSaveLoad },
   { m: 'POST', qsplit: '/api/save', h: handleSaveWrite },   // qsplit, not exact: the unload beacon carries ?ticket= (apiauth.ticketOk)
   { m: 'GET', prefix: '/api/insights', h: serveInsights },
@@ -27031,6 +27033,47 @@ async function handleSaveRecoveryAck(req, res) {
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agent)) return json(400, { error: 'agentId must be 1-40 chars of [A-Za-z0-9_-]' });
   try { json(200, { ok: true, cleared: !!saveStore.clearRecoveryNotice(agent) }); }
   catch (e) { json(200, { ok: false, error: (e && e.message) || 'ack failed' }); }
+}
+// GET /api/save/conflicts — the window saves a refused write preserved beside the station file, newest first, each with
+// how many of its sessions a restore would bring back (support report 2026-10-21). Read-only; never the docs themselves.
+function serveSaveConflicts(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  try {
+    const state = saveStore.loadState('agent');
+    if (state.status === 'unreadable') return json(503, { error: 'Saved station is temporarily unreadable. Retry to recover it.', unreadable: true });
+    const restore = require('./save-restore.js');
+    const conflicts = saveStore.conflicts('agent').map(c => ({
+      file: c.name, savedAt: c.mtimeMs, sessions: Array.isArray(c.doc.workstreams) ? c.doc.workstreams.length : 0,
+      restorable: state.doc ? restore.restorable(state.doc, c.doc) : 0
+    }));
+    json(200, { conflicts });
+  } catch (e) { json(503, { error: 'Could not read the preserved saves. Retry.', unreadable: true }); }
+}
+// POST /api/save/conflicts/restore { file } — bring that preserved save's sessions into the station. Additive only
+// (save-restore.js): nothing the station holds is removed. The station file is copied aside first, and the merged save
+// is written as the station's next revision, so any open window's next save is refused and preserved, never lost.
+async function handleSaveConflictRestore(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
+  const file = String(body.file || '');
+  if (!/^agent\.save-conflict-[A-Za-z0-9_-]{1,80}\.json$/.test(file)) return json(400, { error: 'file must name a preserved save' });
+  if (workspaceDegraded) return json(200, { ok: false, error: 'workspace written by newer StarNet', degraded: true });
+  try {
+    const state = saveStore.loadState('agent');
+    if (state.status === 'unreadable') return json(200, { ok: false, error: 'the station file is unreadable right now', unreadable: true });
+    if (!state.doc) return json(200, { ok: false, error: 'there is no station file to restore into' });
+    const preserved = saveStore.conflicts('agent').find(c => c.name === file);
+    if (!preserved) return json(200, { ok: false, error: 'that preserved save is gone' });
+    const r = require('./save-restore.js').plan(state.doc, preserved.doc);
+    if (!r.added.length && !r.extended.length && !r.copied.length) return json(200, { ok: true, added: 0, extended: 0, copied: 0, revision: Number(state.doc._saveRevision) || 0 });
+    const at = Date.now();
+    const backup = saveStore.backup('agent', 'restore-' + at);
+    const doc = Object.assign(r.doc, { updatedAt: Math.max(at, (Number(state.doc.updatedAt) || 0) + 1), _saveClient: 'restore-' + at, _saveDirty: false });
+    const result = saveStore.save('agent', doc, { compareRevision: true });
+    if (!result || result.ok !== true) return json(200, { ok: false, error: result && result.conflict ? 'the station changed during the restore; try again' : 'the station refused the restore', backup });
+    try { seedSaveMemos('agent', doc); } catch (e) { failNote('save.restore.seed-memos', e); }
+    json(200, { ok: true, added: r.added.length, extended: r.extended.length, copied: r.copied.length, revision: result.revision, backup });
+  } catch (e) { json(200, { ok: false, error: (e && e.message) || 'restore failed' }); }
 }
 // POST /api/save { agent?, ...envelope } — write through the localStorage save to durable disk. The body IS the
 // save envelope (with its schema/version/updatedAt); `agent` selects the record (defaults to 'agent'). The

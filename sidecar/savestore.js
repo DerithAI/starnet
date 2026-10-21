@@ -389,6 +389,38 @@
         } catch (_) { return false; }
       },
 
+      // PRESERVED WINDOW SAVES (support report 2026-10-21): the snapshots a refused save leaves beside the station
+      // file, newest first, so their sessions can be brought back. Read-only: a snapshot that does not parse is
+      // skipped, never removed. `name` is a bare file name in the save root.
+      conflicts(agentId) {
+        saveFile(agentId);   // validates the id before the name is used as a prefix
+        const prefix = String(agentId) + '.save-conflict-';
+        let names = [];
+        try { names = fs.readdirSync(rootDir).filter(n => typeof n === 'string' && n.indexOf(prefix) === 0 && /\.json$/.test(n)); }
+        catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.conflicts.list', e); return []; }
+        const rows = [];
+        for (const name of names) {
+          let mtimeMs = 0, doc;
+          try { mtimeMs = Number(fs.statSync(pathMod.join(rootDir, name)).mtimeMs) || 0; } catch (e) { failNote('savestore.conflicts.stat', e); }
+          try { doc = JSON.parse(fs.readFileSync(pathMod.join(rootDir, name), 'utf8')); } catch (e) { failNote('savestore.conflicts.read', e); continue; }
+          if (doc && typeof doc === 'object' && !Array.isArray(doc)) rows.push({ name, mtimeMs, doc });
+        }
+        return rows.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+      },
+
+      // a durable copy of the current station file under <agentId>.save-before-<label>.json, taken before a restore
+      // rewrites it. Returns the copy's name, or null when there is no station file to copy.
+      backup(agentId, label) {
+        const file = saveFile(agentId);
+        if (!/^[A-Za-z0-9_-]{1,80}$/.test(String(label || ''))) throw new Error('backup: a label of [A-Za-z0-9_-] is required');
+        let raw;
+        try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { if (e && e.code === 'ENOENT') return null; throw e; }
+        const name = String(agentId) + '.save-before-' + label + '.json';
+        ensureRoot();
+        writeDurable(pathMod.join(rootDir, name), raw);
+        return name;
+      },
+
       _internals: { saveFile, AID_RE, num, readTagged, recoveryFile }
     };
   }
