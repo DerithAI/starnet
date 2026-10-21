@@ -34,7 +34,8 @@ const CAPS = [
   // NOT "control the desktop computer": computer.use/desktop.open carry no capability grant at all and are
   // stripped unconditionally by enforceSyntheticOnly, so claiming desktop control here was a standing lie.
   { id: 'workbench',    probe: 'shell.exec',      have: 'run shell commands and verify code', object: 'a WORKBENCH', type: 'workbench' },
-  { id: 'memory',       probe: 'notebook.write',  have: 'keep long-term memory, reusable skills, and recall conversation history', object: 'a NOTEBOOK', type: 'notebook' },   // task plans ride the computer now (taskplan freebie, 2026-08-17)
+  // memory's object is the SERVER CART: the word the build palette, the tutorial and manual.js use (no prop is labelled NOTEBOOK)
+  { id: 'memory',       probe: 'notebook.write',  have: 'keep long-term memory, reusable skills, and recall conversation history', object: 'a SERVER CART', type: 'notebook' },   // task plans ride the computer now (taskplan freebie, 2026-08-17)
   // `alt`: a narrower true claim when the headline tool is gone but a sibling survives (image generation deferred as
   // certainly unavailable -- no image connection -- while image_analyze still works). Never claim the headline then.
   { id: 'studio',       probe: 'image_generate',  have: 'generate and analyze images', object: 'a STUDIO', type: 'studio', alt: { probe: 'image_analyze', have: 'analyze images' } },
@@ -46,11 +47,13 @@ const CORE = ['web', 'cabinet', 'workbench'];
 // ROOM SCOPE (cap-scope.js, 2026-10-20): the floor gear a room-scoped agent is told to place IN ITS ROOM. Memory and
 // images join the core three only when that gear stands elsewhere on the station (the case the Commander can't see).
 const ROOM_GEAR = ['web', 'cabinet', 'workbench', 'memory', 'studio'];
-// ...and the ones an UNATTENDED run really gets from the floor (inputpolicy.project: web = external-service, the rest
-// impact none). Never the terminal: shell needs the routine's own grant on that surface, whatever is placed.
-const FLOOR_UNATTENDED = ['web', 'cabinet', 'memory', 'studio'];
-// short forms for the room advice: the power word, and memory's headline (its full phrase is 70 chars)
-const ROOM_WORD = { web: 'web', cabinet: 'files', workbench: 'terminal', memory: 'memory', studio: 'images' };
+// ...and the ones an UNATTENDED run's note offers as a floor fix: web (web_search/fetch need no consent) and the INTEL
+// CAB's READING (fs.write/edit stay default-denied there without an AWAY WORKSHOP grant). Never the terminal (the
+// routine's own grant), never images (image_generate needs the routine's ▣ ALLOW IMAGES; a line hop never has it).
+const FLOOR_UNATTENDED = ['web', 'cabinet'];
+// the unattended room advice's power words: what that gear really grants with nobody watching
+const ROOM_WORD = { web: 'web', cabinet: 'file reading' };
+// memory's headline is 70 chars; the room advice names its core
 const extraHave = (c) => c.id === 'memory' ? 'keep long-term memory' : c.have;
 
 const bare = (c) => c.object.replace(/^an? /, '');
@@ -130,7 +133,7 @@ function summarizeCapabilities(resolved, opts) {
      placement. A null scope (no scopeFn, an unscoped agent, a saved floor that is not this run's) = byte-identical. */
   let scope = null;
   if (typeof opts.scopeFn === 'function' && !unrestrictedHost && (interactive || (!delegatedBy && !ownerTrusted)) &&
-      CAPS.some((c) => ROOM_GEAR.indexOf(c.id) !== -1 && !capIds.has(c.id))) {
+      CAPS.some((c) => (interactive ? ROOM_GEAR : FLOOR_UNATTENDED).indexOf(c.id) !== -1 && !capIds.has(c.id))) {
     try { const s = opts.scopeFn(); scope = (s && s.scoped && s.roomName && Array.isArray(s.placedTypes)) ? s : null; } catch (_) { scope = null; }
   }
   // what placing gear in THAT room would grant: the object is absent from this run (not merely a stripped tool) and
@@ -174,8 +177,10 @@ function summarizeCapabilities(resolved, opts) {
       // that would be a fresh lie to the model on exactly the granted runs the grant exists to enable. Only
       // the capabilities genuinely absent from THIS run's resolved set (lackCore, plus connectors when none
       // survived) are named; desktop control is unconditional because it carries no grant on any surface.
-      // A BAY-ROUTED run's web/files/memory/images DO come from the floor here (scope = this run's own routed room):
+      // A BAY-ROUTED run's web and file reading DO come from the floor here (scope = this run's own routed room):
       // "placing objects cannot change that" was false for them, so they get the room fix and leave that sentence.
+      // The fix is named only when the job needed it: an order on every line hop put the same gear advice into every
+      // delivered output and channel reply (and a toolless turn has no job that could have needed it).
       const rest = lackAutonomous.filter((h) => !roomFix.some((c) => c.have === h));
       note += 'This is an UNATTENDED run: no Commander is watching, so ' + (rest.length || !roomFix.length
         ? rest.join(', ') + ' and desktop control ' +
@@ -183,7 +188,8 @@ function summarizeCapabilities(resolved, opts) {
           'Commander sets on the routine itself. Placing objects cannot change that here. '
         : 'desktop control is unavailable on this run. ') +
         (roomFix.length ? 'No ' + listJoin(roomFix.map((c) => ROOM_WORD[c.id]), 'or') + ' on this run: ' + roomIs + ', has no ' + listJoin(roomFix.map(bare), 'or') +
-          '; the Commander can place ' + (roomFix.length > 1 ? 'them' : 'one') + ' there for your next job' + elsewhereOf(roomFix, scope) + '. Name that fix in your closing clause. ' : '') +
+          '; the Commander can place ' + (roomFix.length > 1 ? 'them' : 'one') + ' there for your next job' + elsewhereOf(roomFix, scope) + '. ' +
+          (toolless ? '' : 'If the job needed ' + (roomFix.length > 1 ? 'them' : 'it') + ', name that fix in your closing clause. ') : '') +
         'Do NOT claim, promise, or pretend to do what you lack, and do NOT blame missing credentials for a power you were never granted. ' +
         'Do everything you genuinely can, then state plainly what you could not do and why, so the Commander can finish it in a watched session. ' +
         'Say it in the Commander\'s terms, in one short closing clause (e.g. "Not saved as a file — copy it from here."), and never open with or explain approval rules, run modes or station policy; ' +
