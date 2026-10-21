@@ -89,6 +89,33 @@ async function rejection(p) {
     A.eq(bothLines, 10, 'concurrent fs.append from two runs keeps both lines every time (trunk lost one 9-10/10)');
   }
 
+  // ---- 2b. two runs that never READ the file take turns appending: A, B, A, B all land ----
+  // Each run's append stamped the merged file as bytes it had seen, so its next append (after the other run's line)
+  // was refused by the read-version check as "changed since you last read or wrote it": a run that never read the
+  // file could not keep appending to a shared log. Only a run that READ the file is refused; the rest append onto the
+  // current bytes as trunk did, and their whole-file guards still hold.
+  for (const start of ['existing', 'missing']) {
+    const proj = await project(start === 'existing' ? { 'log.md': '# log\n' } : {});
+    const a = run(proj), b = run(proj);
+    const ca = { agentId: 'lead', projectRoot: proj }, cb = { agentId: 'worker', projectRoot: proj };
+    const outcome = [];
+    for (const [t, c, line] of [[a, ca, 'A1\n'], [b, cb, 'B1\n'], [a, ca, 'A2\n'], [b, cb, 'B2\n'], [a, ca, 'A3\n'], [b, cb, 'B3\n']]) {
+      try { outcome.push((await t.appendTool.run({ path: 'log.md', content: line }, c)).mutationReceipt.state); }
+      catch (e) { outcome.push('refused: ' + e.message); }
+    }
+    const want = (start === 'existing' ? '# log\n' : '') + 'A1\nB1\nA2\nB2\nA3\nB3\n';
+    A.eq(outcome, Array(6).fill('read-back-verified'), start + ' file: two rounds of alternating appends from two runs that never read it all land verified');
+    A.eq(await fsp.readFile(path.join(proj, 'log.md'), 'utf8'), want, start + ' file: every line, in order');
+    // the lost-update guards are kept: the file holds the other run's lines, which run A has never seen
+    const ed = await rejection(a.editTool.run({ path: 'log.md', find: 'A1\n', replace: 'A1 (edited)\n' }, ca));
+    A.eq(ed && ed.message, "edit refused: log.md holds another writer's changes that you have not read: they landed before an earlier fs.append of yours on it, and that fs.append went on after them — nothing was written. fs.read it again and redo your change against the current content.",
+      start + ' file: an fs.edit from the appending run is refused, and says truthfully why (it did write the file last)');
+    const wr = await rejection(a.writeTool.run({ path: 'log.md', content: 'A1\nA2\nA3\n' }, ca));
+    A.eq(wr && wr.message, "stale write refused: log.md holds another writer's changes that you have not read: they landed before an earlier fs.append of yours on it, and that fs.append went on after them. This write would erase them, so nothing was written. fs.read it again and re-apply your change on top of the current content.",
+      start + " file: a whole-file fs.write from the appending run would erase the other run's lines and is refused");
+    A.eq(await fsp.readFile(path.join(proj, 'log.md'), 'utf8'), want, start + " file: the other run's lines survived both");
+  }
+
   // ---- 3. fs.write over a file this run READ refuses when another run wrote it during the baseline ----
   {
     const proj = await project({ 'c.js': 'v1\n' });
@@ -155,11 +182,56 @@ async function rejection(p) {
     const merged = await fsp.readFile(path.join(proj, 'a.js'), 'utf8');
     A.ok(/const B = 200;/.test(merged), tool + ": it landed on top of the worker's edit: " + JSON.stringify(merged));
     const e = await rejection(lead.writeTool.run({ path: 'a.js', content: 'const A = 100;\nconst B = 2;\nconst C = 3;\n' }, c1));
-    A.ok(e && /^stale write refused: a\.js changed on disk after you read it/.test(e.message), tool + ": the lead's next whole-file write from its stale view is refused" + (e ? '' : ' (it was NOT refused: ' + JSON.stringify(await fsp.readFile(path.join(proj, 'a.js'), 'utf8')) + ')'));
+    A.ok(e && /^stale write refused: a\.js holds another writer's changes that you have not read: they landed while an earlier fs\.(edit|append) of yours on it was in flight/.test(e.message), tool + ": the lead's next whole-file write from its stale view is refused, naming the in-flight drift" + (e ? ' (got: ' + e.message + ')' : ' (it was NOT refused: ' + JSON.stringify(await fsp.readFile(path.join(proj, 'a.js'), 'utf8')) + ')'));
     A.eq(await fsp.readFile(path.join(proj, 'a.js'), 'utf8'), merged, tool + ": the worker's B = 200 survived");
     await lead.readTool.run({ path: 'a.js' }, c1);
     const again = await lead.writeTool.run({ path: 'a.js', content: merged + 'const C = 3;\n' }, c1);
     A.ok(/^Wrote a\.js /.test(again.content), tool + ': after a re-read the write lands');
+  }
+
+  // ---- 3d. an in-flight drift with NO language server: the drifted call says so, and so does the next refusal ----
+  // The drift was reported only through the LSP line, so without a language server the drifted receipt read as an
+  // ordinary edit; and the next refusal said the file "changed on disk since you last read or wrote it", which was
+  // false: this run's own edit/append was the last write. Another writer (a shell command, say) lands right after
+  // the call's first read of the file, while the call is in flight.
+  for (const tool of ['edit', 'append']) {
+    const proj = await project({ 'n.txt': 'one\ntwo\n' });
+    const target = path.resolve(proj, 'n.txt').toLowerCase();
+    let theirs = null;   // when set: written to disk right after this run's next read of the file returns
+    const raceFsp = new Proxy(fsp, { get(tg, p) {
+      if (p === 'readFile') return async (...args) => {
+        const out = await tg.readFile(...args);
+        if (theirs != null && path.resolve(String(args[0])).toLowerCase() === target) { const t = theirs; theirs = null; await tg.writeFile(args[0], t); }
+        return out;
+      };
+      return tg[p];
+    } });
+    const t = makeFsTools({ fsp: raceFsp, pathMod: path, root: ROOT, pathTrust: async (abs) => ({ base: proj, abs }) });
+    const c = { agentId: 'lead', projectRoot: proj };
+    await t.readTool.run({ path: 'n.txt' }, c);
+    theirs = 'one\ntwo\nTHEIRS\n';
+    const r = tool === 'edit'
+      ? await t.editTool.run({ path: 'n.txt', find: 'one', replace: 'ONE' }, c)
+      : await t.appendTool.run({ path: 'n.txt', content: 'mine\n' }, c);
+    const merged = await fsp.readFile(path.join(proj, 'n.txt'), 'utf8');
+    A.eq(merged, tool === 'edit' ? 'ONE\ntwo\nTHEIRS\n' : 'one\ntwo\nTHEIRS\nmine\n', tool + ": the drifted change landed on the other writer's bytes");
+    const note = tool === 'edit'
+      ? '\n[another writer changed n.txt while this fs.edit was in flight: your replacement was applied to their version, which you have not read. fs.read it before you rewrite or edit it.]'
+      : '\n[another writer changed n.txt while this fs.append was in flight: your text went on after their changes, which you have not read. fs.read it before you rewrite or edit it.]';
+    A.ok(r.content.endsWith(note) && /\[mutation receipt: read-back-verified;/.test(r.content) && !/LSP/.test(r.content), tool + ': with no language server the drifted result itself names the drift: ' + JSON.stringify(r.content));
+    const when = "n.txt holds another writer's changes that you have not read: they landed while an earlier fs." + tool + ' of yours on it was in flight, and that fs.' + tool + ' was applied on top of them';
+    const again = await rejection(tool === 'edit'
+      ? t.editTool.run({ path: 'n.txt', find: 'two', replace: 'TWO' }, c)
+      : t.appendTool.run({ path: 'n.txt', content: 'more\n' }, c));
+    A.eq(again && again.message, tool + ' refused: ' + when + ' — nothing was written. fs.read it again and redo your change against the current content.', tool + ': the next ' + tool + ' is refused and says what really happened');
+    const p = await rejection(t.patchTool.run({ patch: '*** Begin Patch\n*** Update File: n.txt\n@@\n-two\n+TWO\n*** End Patch' }, c));
+    A.eq(p && p.message, 'fs.patch refused: ' + when + ' — nothing was written. fs.read it again and redo your change against the current content.', tool + ': so is an fs.patch');
+    const w = await rejection(t.writeTool.run({ path: 'n.txt', content: 'composed from the old read\n' }, c));
+    A.eq(w && w.message, 'stale write refused: ' + when + '. This write would erase them, so nothing was written. fs.read it again and re-apply your change on top of the current content.', tool + ': and a whole-file fs.write');
+    A.eq(await fsp.readFile(path.join(proj, 'n.txt'), 'utf8'), merged, tool + ': nothing was written by any of them');
+    await t.readTool.run({ path: 'n.txt' }, c);
+    const ok = await t.editTool.run({ path: 'n.txt', find: 'two', replace: 'TWO' }, c);
+    A.ok(/^Edited n\.txt \(1 replacement\)\.\n\[mutation receipt: read-back-verified;[^\]]*\]$/.test(ok.content), tool + ': after a re-read the edit lands with the ordinary receipt: ' + JSON.stringify(ok.content));
   }
 
   // ---- 4. fs.patch whose source moved during the baseline refuses before writing anything ----

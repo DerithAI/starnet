@@ -74,6 +74,11 @@ const disk = (rel) => fsp.readFile(absOf(rel), 'utf8');
     await readTool.run({ path: 'log.md' }, CTX);
     const ok = await appendTool.run({ path: 'log.md', content: 'my line\n' }, CTX);
     A.ok(/^Appended to log\.md \(\+8 bytes, now 25\)\.\n\[mutation receipt: read-back-verified;/.test(ok.content), 'after a re-read the append lands');
+    // the run's own append keeps it a run that READ the file: a change after that append is still refused
+    await externalChange('log.md', '# log\ntheir line\nmy line\ntheir second line\n');
+    const e2 = await rejection(appendTool.run({ path: 'log.md', content: 'my second line\n' }, CTX));
+    A.ok(e2 && /^append refused: log\.md changed on disk since you last read or wrote it/.test(e2.message), 'a run that read the file and then appended still refuses an append over a later change' + (e2 ? '' : ' (it landed)'));
+    A.eq(await disk('log.md'), '# log\ntheir line\nmy line\ntheir second line\n', 'nothing was appended');
   }
 
   // ---- 3. fs.patch after a file it touches changed since the read ----
