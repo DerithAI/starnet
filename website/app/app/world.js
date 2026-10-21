@@ -1306,7 +1306,8 @@ const World = (() => {
   // proposal). Gated to a free, idle hero (never interrupts a task/talk/await/leisure walk) — the pin is a
   // projection, not a gate: if the agent is busy the card still shows on the board; the WALK just plays later.
   function maybePinProposal(now, count) {
-    if (now - pinCheckAt < 400) return; pinCheckAt = now;
+    if (now - pinCheckAt < 400) { if ((count | 0) > pinnedCount) noteDue(pinCheckAt + 400, now); return; }   // STILL: a waiting pin walk re-checks on its own vsync
+    pinCheckAt = now;
     if (!agent || agent.unplaced) return;
     if ((count | 0) <= pinnedCount) { if ((count | 0) < pinnedCount) pinnedCount = count | 0; return; }   // count dropped (accepted/declined) → lower the mark so a later re-propose re-pins
     // only launch the walk when the hero is genuinely free (idle, not seized, not already pinning)
@@ -1747,15 +1748,18 @@ const World = (() => {
      240 Hz loop #69 measured, and the FRAME BUDGET below keeps a slow machine's UI alive either way.) A caller cap
      (setFrameCap — the HUD widget's 48 ms) is that caller's stated intent and wins over the visible pace.
      STILL (Andrew, 2026-10-21, approved: "draw 30/s while nothing on screen moves, snap back to 60 the instant anything
-     moves (144 while panning)"). The installed 0.13.5 idled at 178% of a core and 96% of it was DRAWING an unchanged
-     station 60 times a second. A frame whose verdict (stillVerdict, below renderPace) finds nothing on screen changed
-     but ambient effects — the starfield, light flicker, glow pulses, idle decor clocks — is redrawn at PACE_STILL_MS
-     (30/s), waiting in a TIMER (no per-vsync rAF spin). It is only how often a still scene is REDRAWN: nothing drawn
-     changes, nothing that moves is slowed, a caller cap and a hidden page are untouched. Motion never waits on it:
+     moves (144 while panning)"). What he was asked: a tier that applies only when nothing but background effects changed —
+     no body moved, no camera, crate, hover, input or run event — so the starfield drift, twinkle and light flicker step
+     half as often. The installed 0.13.5 idled at 178% of a core and 96% of it was DRAWING an unchanged station 60 times a
+     second. A frame whose verdict (stillVerdict, below renderPace) finds nothing on screen changed but those ambient
+     effects is redrawn at PACE_STILL_MS (30/s), waiting in a TIMER (no per-vsync rAF spin). It is only how often a still
+     scene is REDRAWN: nothing drawn changes, nothing that moves is slowed, a caller cap and a hidden page are untouched.
+     The verdict's own rule is "unsure is motion": a prop whose art moves on its clock, a breathing body, a meteor all keep
+     the normal pace (its MOTION / AMBIENT lists name every source). Motion never waits on it:
        · every source that starts motion from outside the frame wakes it (motionWake → paceWake): any input on the
          window, a camera move, a harness event on U.bus, a World API call that changes a body, a bubble or the camera;
-       · a change the frame can see coming lands on its own vsync: stillDue is the earliest body clock (an idle body's
-         next decision, a blink, the next frame of a clock-driven pose), a cinecam cut or a ghost spawn;
+       · a change the frame can see coming lands on its own vsync: stillDue is the earliest one (an idle body's next
+         decision, a blink, the next frame of a clock-driven pose or prop, a talk turn, the next meteor, a cinecam cut);
      and the frame that shows any motion is followed at the normal pace (60, or 144 while the hand moves the camera). */
   const PACE_VISIBLE_MS = 1000 / 60, PACE_MOTION_MS = 1000 / 144, PACE_MOTION_HOLD_MS = 1200;
   const PACE_STILL_MS = 1000 / 30, INPUT_HOLD_MS = 1200;   // still: 30 draws/s · input: a hand on the window holds the normal pace this long (hover tags, glances)
@@ -1868,33 +1872,48 @@ const World = (() => {
       mode: !running ? 'stopped' : frameCapMs ? 'capped' : pace < PACE_VISIBLE_MS - 0.5 ? 'motion' : still && pace < PACE_STILL_MS + 0.5 ? 'still'
         : pace > PACE_VISIBLE_MS + 0.5 ? 'budget' : 'visible',
       still: stillNow, stillWhy: stillWhy || null, stillDueMs: stillDue < Infinity ? Math.max(0, Math.round(stillDue - now)) : null,
+      stillFrames, stillWhyCounts: Object.assign({}, stillWhyN),   // cumulative: a bench window's still share and what kept it moving
       drawCostMs: +drawCostMs.toFixed(2), budgetMs: +budgetMs().toFixed(1), strained, strainProbeMs: +strainProbeMs.toFixed(1),
       draws: pacedDraws, simMs: Math.round(simMs), timerWait: !!paceTimer };
   }
-  /* STILL VERDICT (Andrew 2026-10-21, see RENDER PACING). Runs once at the end of every drawn frame (frameBody), on state
-     that frame already computed — no extra scene pass, no allocation. A frame is STILL only when nothing but ambient effects
-     changed on screen; the first motion source found is kept as stillWhy (the renderPace readout the bench proves it by).
+  /* STILL VERDICT (the tier Andrew approved 2026-10-21 — see RENDER PACING). Runs once at the end of every drawn frame
+     (frameBody), on state that frame already computed — no extra scene pass, no allocation. A frame is STILL only when
+     nothing on screen changed but ambient effects; the first motion source found is kept as stillWhy (the renderPace
+     readout the bench proves it by). The rule it is written to: never slow or delay anything that moves — unsure is motion.
        MOTION — the next frame keeps the normal pace:
          wake   — motionWake ran during the frame (a harness event on U.bus, a World API call)
          camera — pan or zoom moved since the last frame, a scripted move or a focus ease is running, the hand hold
          input  — a hand on the window within INPUT_HOLD_MS (hover tags, nameplates, the gaze that follows the cursor),
                   the hero's mic listening
-         body   — an on-screen body moved, turned, changed pose or drawn frame, is walking, pivoting or dissolving a pose,
-                  working (typing — its desk shows the run), speaking, or wears a wake ripple, level-up or working glow
+         body   — an on-screen body moved, turned, or changed pose, drawn frame, goal or state; is walking, holds a walk
+                  target, pivots or dissolves a pose; is working, speaking or talking; wears a wake ripple, level-up or
+                  working glow; or its drawn geometry moves on the clock (SPRITES.drawBody's _renderLive: the idle bob, a
+                  planted body's breath, the speech accent). Also a decision the very next tick acts on: a social or gather
+                  plan still to walk, a chase due to repath, the hero's glance roll pending (maybeGlance rolls every tick)
          speech — a peer-chatter line is up (it rides a talking mouth and fades), or the hero's voice is speaking (a plain
                   speech bubble is static while it is up: its vanishing is a due change, below)
          crate  — a real or ghost crate riding or sinking, a queue jam bobbing, a hand-off or SEND TO crate in flight
-         prop   — an on-screen prop with live content: a worked or lit prop (run output, progress strip, heat), a filter
-                  scanning, the OUTBOX flare, a lit bay, an arcade/TV/jukebox in use (a body resting on a couch is not)
+         prop   — an on-screen prop with live content (a worked or lit prop: run output, a progress strip, heat; a filter
+                  scanning; the OUTBOX flare; a lit bay; an arcade/TV/jukebox in use — a body resting on a couch is not);
+                  a drawn prop whose art moves on its own clock (PropSprites.clockNext: every native draw, an occupied
+                  screen's sweep, fish, wax, steam, plasma, a ripple, a wall screen's scan line); a harness pulse decaying
+                  (a tool-fire surge, a connector packet, a workbench flash: PropSprites.pulsing)
+         sky    — a meteor or the bolide crossing, the belt's ember shower or fireball, the sky still baking (SpaceBG)
          fx     — a canvas overlay animating: desk and dock flashes, the pin flourish, the FIRST SHIP pulse, the hero's wake
-                  ripple and level surge, the awakening, arrival, kindling and flood, the dawn veil easing, a truth flare
+                  ripple and level surge, the awakening, arrival, kindling and flood, the dawn veil easing, a truth flare,
+                  the CRT roll bar sweeping
          belt   — an ENERGIZED belt tile in frame (its rollers march; a cold line's rollers are parked)
-       AMBIENT — never motion: the backdrop's drift and twinkle, light flicker and glows, dust motes, nav lights, glow pulses
-         (await tag, LINK DOWN, bay lamps, the mission board), idle decor clocks (fish tank, lava lamp, LED blinks, a ticker's
-         crawl, a punch bag's sway) and a standing body's breath — sub-pixel or pixel-stepped at a few Hz, drawn whole at 30.
-     stillDue = the earliest change the frame can see coming (an on-screen body's inner-life clock or its next drawn-frame
-     edge, a speech bubble vanishing, a cinecam cut, an encounter ending, a ghost spawn): the pacer draws that vsync instead
-     of waiting out the tick. */
+       AMBIENT — never motion, redrawn whole at the still pace: the sky's slow layers (star drift and twinkle, the gas
+         breathing, ocean swell, a city's traffic, clouds and beacons), light flicker (fixture and prop light modulation,
+         and the dust motes drifting in the light pools, under a device px per still frame), and alpha-only glow pulses
+         (the await tag and its caret, LINK DOWN, bay lamps, routing nags, a prop's lamp/heat/band/hologram/indicator
+         glow). Andrew's words named the starfield drift and twinkle, light flicker and glow pulses; the other skies'
+         slow layers and the light-pool dust motes are classed with them HERE, by this code, as the same kind of drift.
+     stillDue = the earliest change the frame can see coming: an on-screen body's inner-life clock (BODY_CLOCKS, a glance,
+     meeting, talk turn, hold, chase or mimic beat ending, its next drawn-frame edge), a speech bubble vanishing, a prop's
+     next stepped frame, the next meteor or fireball, the CRT grain's next step, a cinecam cut, an encounter or assembly
+     beat (its hold, the overseer's next line, the next gathering roll), a ghost spawn: the pacer draws that vsync instead
+     of waiting out the tick. Draw passes add to it too (noteDue); stillBegin clears it at the top of the frame. */
   const STILL_BODY_PAD = 48;      // world px past the canvas edge a body still counts as on screen (a walker is caught well before it shows)
   const STILL_MOVE_EPS = 0.01;    // world px: a body nudged less than this has not moved (float dust from the separation pass)
   // every timestamp the inner life re-decides at (the tick ladder's `now >= x` gates, *Until and *Cd): the earliest future one is due
@@ -1902,12 +1921,20 @@ const World = (() => {
     'workUntil', 'workRetryAt', 'spokeUntil', 'chatTrackUntil', 'driveUntil', 'barJoinUntil', 'lastFunUntil', 'hardUntil', 'convergeUntil',
     'glanceCd', 'lookCd', 'noticeCd', 'chatTrackCd', 'neighborGlanceCd', 'mimicCd', 'exploreCd', 'quirkCd', 'offbeatCd', 'ackCd',
     'revisitCd', 'pauseCd', 'beltWatchCd', 'yieldCd', 'summonGlanceCd', 'roundsCd', 'napCd', 'lookBackCd', 'deskVisitCd',
-    'cursorGazeCd', 'barJoinCd']);
+    'cursorGazeCd', 'barJoinCd', 'nextFidget']);
   const REST_USE = Object.freeze({ couch: 1, seat: 1, bench: 1, bag: 1 });   // a body resting on these leaves the prop's art as it was
+  // the hero's maybeGlance, by goal (see heroGlanceAt): the idle TAIL re-rolls its glance on every tick until one fires; a
+  // BRANCH goal rolls once and re-arms glanceCd either way; NONE never glances
+  const GLANCE_TAIL = Object.freeze({ inspect: 1, tend: 1, gaze: 1, rounds: 1 });
+  const GLANCE_BRANCH = Object.freeze({ lounge: 1, stare: 1, mourn: 1, quirk: 1 });
+  const GLANCE_NONE = Object.freeze({ sleep: 1, firstwake: 1, mimic: 1, chase: 1 });
   let stillMark = '', stillCamS = NaN, stillCamX = NaN, stillCamY = NaN, stillDueAcc = Infinity;
+  let stillFrames = 0;                         // drawn frames judged still (renderPace readout: a bench window's still share)
+  const stillWhyN = {};                        // drawn frames judged moving, by stillWhy (a dozen fixed keys: no growth)
   let liveBeltOf = null, liveBeltFor = null, liveBeltBox = null;   // the energized tiles' bounding box (tile units), re-measured on a new layout or plan
-  function stillBegin() { stillNow = false; stillKick = false; stillMark = ''; }   // frameBody's first act: this frame judges itself
-  function stillMove(why) { if (!stillMark) stillMark = why; }                     // an in-draw motion source (the prop pass, the queue jam)
+  // frameBody's first act: this frame judges itself, and its draw passes may add due changes (noteDue) from here on
+  function stillBegin() { stillNow = false; stillKick = false; stillMark = ''; stillDueAcc = Infinity; }
+  function stillMove(why) { if (!stillMark) stillMark = why; }                     // an in-draw motion source (the prop pass, the queue jam, the roll bar)
   function noteDue(t, now) { if (t > now && t < stillDueAcc) stillDueAcc = t; }
   function restingOn(p) { const u = propUse(p); return !u || !!REST_USE[u.kind]; }
   function bodyOnScreen(b) {
@@ -1915,12 +1942,28 @@ const World = (() => {
     const m = STILL_BODY_PAD * scale, x = bodyPosX(b) * scale + panX, y = bodyPosY(b) * scale + panY;
     return x > -m && y > -m && x < cv.width + m && y < cv.height + m;
   }
-  // '' or why this body is motion; its baseline (position, facing, pose, drawn frame) is refreshed whenever it changed
+  /* when the hero's maybeGlance (run every tick) next acts. <= now: it rolls on this very tick — and the idle tail rolls
+     again on every tick until a glance fires — so the next frame must come at the tick rate, or every failed roll would
+     wait out a still interval. Mirrors maybeGlance's own gates, in its order. */
+  function heroGlanceAt(b, now) {
+    if (activity === 'talk' || b.state === 'walk' || GLANCE_NONE[b.goal]) return Infinity;   // talk: listening glances ride the mic (input)
+    const t = Math.max(b.glance ? b.glance.until : 0, b.glanceCd || 0);
+    if (b.goal === 'use' || b.working) return Math.max(t, b.nextFidget || 0);
+    if (b.goal == null || GLANCE_TAIL[b.goal] || GLANCE_BRANCH[b.goal] || b.stilling) return t;
+    // any other goal: only THE LOOK-UP can act (revisit / watch, off task); a box to track is a crate, motion already
+    if ((b.goal === 'revisit' || b.goal === 'watch') && activity !== 'task' && !b.working) return Math.max(t, b.lookCd || 0);
+    return Infinity;
+  }
+  // '' or why this body is motion; its baseline (position, facing, pose, drawn frame, goal, state) is refreshed whenever it changed
   function bodyStillWhy(b, now) {
     if (!b || b.unplaced) return '';
     const moved = !(Math.abs(b.px - b._stillX) <= STILL_MOVE_EPS && Math.abs(b.py - b._stillY) <= STILL_MOVE_EPS)
-      || b.dir !== b._stillDir || b._pose !== b._stillPose || b._renderFrame !== b._stillFrame;
-    if (moved) { b._stillX = b.px; b._stillY = b.py; b._stillDir = b.dir; b._stillPose = b._pose; b._stillFrame = b._renderFrame; }
+      || b.dir !== b._stillDir || b._pose !== b._stillPose || b._renderFrame !== b._stillFrame
+      || b.goal !== b._stillGoal || b.state !== b._stillState;   // a decision: what it starts shows on the very next tick
+    if (moved) {
+      b._stillX = b.px; b._stillY = b.py; b._stillDir = b.dir; b._stillPose = b._pose; b._stillFrame = b._renderFrame;
+      b._stillGoal = b.goal; b._stillState = b.state;
+    }
     // bubbles are clamped to the canvas, so they count even for a body off screen: a speech bubble is static while up (its
     // vanishing is a due change); a peer-chatter line rides a talking mouth and fades in and out
     if (b.say && b.say.text) noteDue(b.say.until, now);
@@ -1930,8 +1973,30 @@ const World = (() => {
     if (b.glance) noteDue(b.glance.until, now);
     if (b.meet) noteDue(b.meet.until, now);
     noteDue(b._renderNextAt, now);   // the next blink edge / clock-driven pose frame (SPRITES.drawBody)
-    if (moved || b.state === 'walk' || b.working || b.speaking || b.talking || (b._rW || 0) > 0.05 || b._renderPoseFade != null) return 'body';
+    if (moved || b.state === 'walk' || b.target || b.working || b.speaking || b.talking || b._renderLive
+      || (b._rW || 0) > 0.05 || b._renderPoseFade != null) return 'body';
     if ((b.wakeAt && now - b.wakeAt < 1500) || (b.levelUpAt && now - b.levelUpAt < 1200) || (b.workUntil && now < b.workUntil)) return 'body';
+    // the inner life's beats: one the next tick acts on is motion now; one that holds is due at its next edge
+    const pl = b.social;
+    if (pl) {
+      if (pl.phase === 'walk') return 'body';                    // stepSocial paths it (or settles it) on the next tick
+      if (pl.phase === 'hold') {
+        noteDue(((socialBeat && socialBeat.lastArrivalAt) || pl.holdAt || 0) + (pl.holdLen || 0), now);   // the hold ends
+        if (isTalkKind(pl.kind) && socialBeat && socialBeat.startedAt) {   // a talk turn opens or closes (talkTurn's slots)
+          const s0 = socialBeat.startedAt, k = Math.floor((now - s0) / TALK_SLOT_MS);
+          noteDue(s0 + k * TALK_SLOT_MS + TALK_SPEAK_MS, now); noteDue(s0 + (k + 1) * TALK_SLOT_MS, now);
+        }
+      }
+    }
+    if (b.gather && !b.gather.arrived) return 'body';           // stepGather paths it to its assembly tile on the next tick
+    const ch = b.chase;
+    if (ch) {
+      if (ch.phase === 'pursue' && !(ch.repathAt > now)) return 'body';   // stepChase repaths toward the cursor on this tick
+      noteDue(ch.until, now); noteDue(ch.endAt, now); noteDue(ch.hardUntil, now); noteDue(ch.repathAt, now);
+      noteDue(lastCursor.t + CURSOR_FRESH_MS, now);              // the cursor goes stale: stop and stare
+    }
+    if (b.mimic) { noteDue(b.mimic.until, now); noteDue(lastCursor.t + CURSOR_FRESH_MS, now); }
+    if (b === agent) { const g = heroGlanceAt(b, now); if (g <= now) return 'body'; noteDue(g, now); }
     return '';
   }
   // an energized belt in frame: its rollers march. No plan = every tile draws live (Conveyor's legacy default)
@@ -1957,6 +2022,14 @@ const World = (() => {
       noteDue(c.born + HANDOFF_GRACE_MS, now);
     }
     if (ghost && ghost.nextChange && geo && geo.belts) { const g = ghost.nextChange(now); if (g <= now) return 'crate'; noteDue(g, now); }   // ticked only where belts are (drawScene)
+    if (typeof PropSprites !== 'undefined') {
+      if (PropSprites.pulsing && PropSprites.pulsing(now)) return 'prop';   // a tool-fire surge / connector packet / workbench flash decaying
+      if (PropSprites.clockNext) { const c = PropSprites.clockNext(); if (c <= now) return 'prop'; noteDue(c, now); }   // this frame's drawn props
+    }
+    // the sky this frame drew (a landed station draws ground, a still render none): a meteor, the bolide, the belt's shower
+    if (!stillPass && typeof SpaceBG !== 'undefined' && SpaceBG.nextChange && !(typeof Terrain !== 'undefined' && Terrain.active())) {
+      const s = SpaceBG.nextChange(now); if (s <= now) return 'sky'; noteDue(s, now);
+    }
     if (deskFlash.size) for (const f of deskFlash.values()) if (now - f.at < FLASH_MS) return 'fx';
     if (dockFlashes.size) for (const t0 of dockFlashes.values()) if (now - t0 < 1100) return 'fx';
     if (now - pinFlourishAt <= 900 || (firstShipPulse && now - firstShipPulse.at < 1500)) return 'fx';
@@ -1966,7 +2039,6 @@ const World = (() => {
     return '';
   }
   function stillVerdict(now) {
-    stillDueAcc = Infinity;
     let why = stillKick ? 'wake' : stillMark;
     const camMoved = scale !== stillCamS || panX !== stillCamX || panY !== stillCamY;
     stillCamS = scale; stillCamX = panX; stillCamY = panY;
@@ -1981,12 +2053,25 @@ const World = (() => {
     for (let i = 0; i < crew.length; i++) { const w = bodyStillWhy(crew[i], now); if (!why) why = w; }
     if (!why) why = fxStillWhy(now);
     if (!why && liveBeltsInFrame()) why = 'belt';
-    // the cinecam's next cut (a hold ending, a still subject's 3 s grace, the hands-off takeover), an encounter or assembly ending
+    // the cinecam's next cut (a hold ending, a still subject's 3 s grace, the hands-off takeover), an encounter or assembly beat
     if (camLock && camLock.source === 'cine') noteDue(cineHoldUntil, now);
     noteDue(cineWalkAt + 3000, now); noteDue(camUserAt + cineIdleMs, now);
     if (socialBeat) noteDue(socialBeat.until, now);
-    if (gathering) noteDue(gathering.until, now);
+    if (gathering) {
+      noteDue(gathering.until, now);
+      if (gathering.phase === 'converge') noteDue(gathering.convergeUntil, now);
+      else if (gathering.phase === 'hold') {
+        const h0 = gathering.holdFrom, cyc = GATHER_SPEAK_MS + GATHER_GAP_MS, k = Math.floor((now - h0) / cyc);
+        noteDue(h0 + (gathering.holdLen || 0), now);                              // the assembly breaks
+        noteDue(h0 + k * cyc + GATHER_SPEAK_MS, now); noteDue(h0 + (k + 1) * cyc, now);   // the overseer's line ends / the next begins
+      } else if (gathering.phase === 'breaking') noteDue(gathering.scatterAt + OVERSEER_BREAK_MS, now);
+    } else if (!reduceMotion()) {   // maybeGather runs every tick: the roll comes the tick its last gate lapses
+      noteDue(gatherGateUntil, now); noteDue(stationBusyAt + GATHER_QUIET_MS, now); noteDue(gatherRollAt, now);
+    }
+    if (chatFocusId != null) noteDue(chatWarmUntil, now);   // the COMMS stare goes cold (chatStareHold)
+    if (!linkStaleDim && lastSseEventAt) noteDue(lastSseEventAt + LINK_STALE_MS, now);   // the link goes stale: LINK DOWN, telemetry dims
     stillWhy = why; stillNow = !why; stillDue = stillDueAcc;
+    if (stillNow) stillFrames++; else stillWhyN[why] = (stillWhyN[why] || 0) + 1;
     // the next frame was booked before this one ran: a STILL wait that must not stand (motion, or an earlier change) re-books
     if (paceTimer && paceTimerAt && (!stillNow || stillDue < paceTimerAt)) paceWake();   // (a budget-floor timer is left to the budget)
   }
@@ -6946,6 +7031,7 @@ const World = (() => {
      readout) is skipped for a still. */
   function drawScene(now, dt, slices) {
     if (!slices) slices = [[dt, now]];
+    if (typeof PropSprites !== 'undefined' && PropSprites.clockBegin) PropSprites.clockBegin();   // STILL: this pass's props report their clocks afresh
     if (stillPass) { ctx.fillStyle = stillPass.fill; ctx.fillRect(0, 0, cv.width, cv.height); }
     else drawBackdrop(now, { panX, panY, scale });
 
@@ -7434,6 +7520,7 @@ const World = (() => {
        phase is derived from the clock so it needs no state. Steady under reduced motion. CRT.roll = strength. */
     if (CRT.roll > 0.001 && !reduceMotion()) {
       const PER = 16800, SWEEP = 2600, t = now % PER;
+      if (t < SWEEP) stillMove('fx'); else noteDue(now - t + PER, now);   // STILL: a sweeping band is motion; the next sweep is due
       if (t < SWEEP) {
         const y = (t / SWEEP) * (H + 80) - 40, hh = 34 * dpr;
         const g = ctx.createLinearGradient(0, y - hh, 0, y + hh);
@@ -7465,6 +7552,7 @@ const World = (() => {
       // almost nothing on this dark feed. Keep speckles at one CSS pixel so a
       // high-DPI display does not average them away into an invisible finish.
       const fi = reduceMotion() ? 0 : Math.floor(now / 66);
+      if (!reduceMotion()) noteDue((fi + 1) * 66, now);   // STILL: the static steps every 66 ms — each step lands on its own vsync
       const jx = (fi * 53) % GRAIN_S, jy = (fi * 97) % GRAIN_S;
       ctx.globalCompositeOperation = 'overlay';
       ctx.globalAlpha = Math.min(.65, grain);
@@ -8064,6 +8152,7 @@ const World = (() => {
       // Do not flash the cyan procedural body while the real default skin is actively loading.
       // A genuine load failure still clears `loading` and gets the honest fallback on the next frame.
       if (!geom && !(typeof SPRITES !== 'undefined' && SPRITES.loading)) drawFallback(now, who);
+      if (!geom) who._renderLive = !who.sitting;   // STILL: the procedural fallback body bobs while it stands (drawFallback)
       // remember the visible head-top (world px) so overlays (nameplate, speech bubble) anchor
       // above the ACTUAL drawn sprite — skins are taller than the old 15px assumption, which
       // parked bubbles over the face. Fallback bodies keep the legacy 15px estimate (null).

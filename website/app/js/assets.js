@@ -726,6 +726,10 @@ const SPRITES = (() => {
     const speech=planted&&!reduced?(b._speechEase||0)*accent:0;
     b._renderSpeechAccent=speech;
     const breath = planted && !reduced ? Math.sin(nowMs / 1050 + aph) * 0.12 - speech*.18 : 0;
+    // STILL PACER readout (world.js, 2026-10-21): this body's drawn geometry moves on the clock between frames — the idle bob
+    // (a standing body that is not planted, a glance), a planted body's breath, the speech accent. A body that moves is never
+    // drawn at the still pace, however small the move. Never drawn from.
+    b._renderLive = bob !== 0 || breath !== 0 || speech !== 0;
     const breathScale = 1 + breath / Math.max(12, dh - pad);
     const drawHeight = dh * breathScale;
     const y = planted ? snap(b.py + GROUND_BITE - seatLift) - (dh - pad) * breathScale
