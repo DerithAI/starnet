@@ -17,6 +17,8 @@
        loadInbox(channel?)             -> [{id,channel,message,ts}] // admitted work not yet completed/queued
        pushInbox(entry)                -> item                   // idempotent durable intake receipt
        removeInbox(id)                 -> bool                   // completed (or durably queued)
+       liveInbox(id)                   -> promise | null         // the run processing this receipt in THIS process
+       holdInbox(id, promise)          -> promise                // claim a receipt live until the promise settles
      }
 
    Files live under WORKSPACES/channels/ — SIBLINGS of the notebook store, OUTSIDE the agent's fs jail
@@ -120,6 +122,11 @@
     const inboxFile = () => pathMod.join(root, 'inbox.json');
     const outboxLimits = Object.assign({}, OUTBOX_DEFAULTS, d.outboxLimits || {});
     const inboxLimits = Object.assign({}, INBOX_DEFAULTS, d.inboxLimits || {});
+    /* THE LIVE CLAIM BELONGS TO THE STORE, not to a hub. A reconnect (startTelegram) closes the old hub and builds a
+       new one over this same store while the old hub's run is still going; each hub's own in-flight map could not
+       see the other's, so the new hub's first 'up' replayed the running message — a second paid run and a second
+       reply. In memory on purpose: a receipt with no live claim after a crash is exactly what recovery replays. */
+    const liveClaims = new Map();   // inbox id -> the one processing promise in this process, whichever hub owns it
     let outboxSeq = 0;   // deterministic per-process id tail (clock.now() alone can collide within one ms)
 
     /* PARSED-FILE CACHE (perf review 10-19: ~10 fsyncs + 14 whole-file parses per inbound DM). This store is its files'
@@ -381,7 +388,17 @@
         return true;
       },
 
-      _internals: { trimTail, historyFile, chatMapFile, outboxFile, inboxFile, AID_RE, limits, outboxLimits, inboxLimits }
+      liveInbox(id) { return liveClaims.get(String(id)) || null; },
+
+      holdInbox(id, promise) {
+        const key = String(id);
+        liveClaims.set(key, promise);
+        const release = () => { if (liveClaims.get(key) === promise) liveClaims.delete(key); };
+        Promise.resolve(promise).then(release, release);
+        return promise;
+      },
+
+      _internals: { trimTail, historyFile, chatMapFile, outboxFile, inboxFile, AID_RE, limits, outboxLimits, inboxLimits, liveClaims }
     };
   }
 

@@ -360,5 +360,53 @@ function mkHub(store, sendImpl, events) {
     hub.close();
   }
 
+  // ---- J. a RECONNECTED hub never replays the old hub's in-flight message ----
+  // startTelegram() closes the old hub and builds a new one over the SAME store while the old hub's run is still
+  // going (it finishes and replies on its own). The new adapter's first 'up' ran recoverInbox, found that run's
+  // receipt still pending, and — its in-flight map being its own — started the same message again: a second paid
+  // run and a second reply. The live claim belongs to the store both hubs share.
+  {
+    const events = [], sends = [], runs = [];
+    const store = mkStore(memFs());
+    let release; const gate = new Promise(r => { release = r; });
+    const mk = (tag) => makeChannelHub({
+      channel: 'telegram',
+      runOnce: async (o) => {
+        runs.push(tag);
+        o.emit('agent.run.start', { runId: o.runId });
+        o.emit('agent.token', { delta: 'answer from ' + tag });
+        await gate;
+        o.emit('agent.run.end', { reason: 'done' });
+      },
+      store,
+      send: async (chatId, text) => { sends.push(text); return { ok: true }; },
+      secrets: () => ({ key: 'k', model: 'm', configured: true }),
+      emit: (name, payload) => events.push([name, payload]),
+      newId: (() => { let n = 0; return () => tag + '-run-' + (++n); })(),
+      sleep: () => Promise.resolve(), outboxRetryMs: 5
+    });
+    const tick = () => new Promise(r => setTimeout(r, 0));
+    const oldHub = mk('old');
+    const work = oldHub.onInbound({ chatId: '94', chatType: 'dm', userId: 'u1', text: 'research this', messageId: 'r1', ts: 1 });
+    for (let i = 0; i < 20 && !runs.length; i++) await tick();
+    A.eq(runs, ['old'], 'fixture: the old hub\'s run is in flight');
+    oldHub.close();                                   // reconnect: stopTelegram() then a fresh hub
+    const newHub = mk('new');
+    newHub.onStatus({ state: 'up' });                 // the new adapter's first poll
+    for (let i = 0; i < 20; i++) await tick();
+    A.eq(runs, ['old'], 'the new hub does not start a second run of the in-flight message');
+    release(); await work;
+    for (let i = 0; i < 20; i++) await tick();
+    A.eq(runs, ['old'], 'still exactly one run once the old one finishes');
+    A.eq(sends.filter(s => /answer from/.test(s)).length, 1, 'the chat hears exactly one reply');
+    A.eq(store.loadInbox('telegram'), [], 'the receipt is cleared by the run that owned it');
+    // a genuine crash survivor (no live owner in this process) still replays on the next up
+    store.pushInbox({ id: 'telegram|94|r2', channel: 'telegram', message: { chatId: '94', chatType: 'dm', userId: 'u1', text: 'left over', messageId: 'r2', ts: 2 } });
+    newHub.onStatus({ state: 'up' });
+    for (let i = 0; i < 40 && store.loadInbox('telegram').length; i++) await tick();
+    A.eq(runs, ['old', 'new'], 'an ownerless pending receipt is still recovered');
+    newHub.close();
+  }
+
   A.report('channels.outbox.test');
 })().catch(e => { console.error(e); process.exit(1); });

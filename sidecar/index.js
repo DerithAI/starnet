@@ -6109,6 +6109,15 @@ const connectors = makeConnectorManager({
   clock: { now: () => Date.now() }, timeoutMs: MCP_CALL_TIMEOUT_MS,
   schemaCache: connectorSchemaCacheStore,
   validateConfig: cfg => cfg && cfg.transportKind === 'stdio' ? mcpStdioIsolationError(cfg) : '',
+  /* A Safe Cell stdio connector's container is readied before EVERY connect — configure, Reload, a lazy start and
+     each auto-reconnect — because the stdio transport spawns its docker exec synchronously. ensureReady re-checks a
+     cached cell, so a reconnect after a Docker restart starts the cell again instead of exec-ing into a stopped one
+     until the attempt cap. Readiness is swallowed so the transport records the honest "not ready" error. */
+  prepareConnect: async (cfg) => {
+    const aid = String((cfg && cfg.agentId) || '');
+    if (!cfg || cfg.transport !== 'stdio' || !/^[A-Za-z0-9_-]{1,40}$/.test(aid) || executionEnvironment.backendIdFor(aid) !== 'docker') return;
+    try { await executionEnvironment.ensureReady(aid); } catch (_) {}
+  },
   fingerprintConfig: cfg => mcpSchemaCache.fingerprint(cfg, value => crypto.createHash('sha256').update(value).digest('hex')),
   stdioIdleMs: Math.max(1000, Number(process.env.STARNET_MCP_STDIO_IDLE_MS) || 15 * 60 * 1000),
   stdioMaxLifetimeMs: Math.max(1000, Number(process.env.STARNET_MCP_STDIO_MAX_LIFETIME_MS) || 6 * 60 * 60 * 1000),
@@ -6298,16 +6307,7 @@ async function configureConnectorCfg(cfg, options) {
     await connectors.configure(cfg.id, Object.assign({}, cfg, { enabled: false, token: '', tokenProvider: null }), options);
     return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleDeferredMessage(cfg) };
   }
-  if (cfg && cfg.transport === 'stdio' && cfg.enabled !== false &&
-      !(Array.isArray(cfg.missingFields) && cfg.missingFields.length) && !(options && options.deferConnect)) {
-    const aid = String(cfg.agentId || '');
-    // Preparing a persistent cell is asynchronous; the stdio transport itself remains synchronous/lazy.
-    // Swallow readiness here only so the manager can record an honest connector error ("not ready") in
-    // its public status instead of leaving a saved connector with no runtime row at all.
-    if (/^[A-Za-z0-9_-]{1,40}$/.test(aid) && executionEnvironment.backendIdFor(aid) === 'docker') {
-      try { await executionEnvironment.ensureReady(aid); } catch (_) {}
-    }
-  }
+  // a Safe Cell stdio connector's cell is readied inside the manager's connect (prepareConnect), on every connect
   if (generation !== connectorResetGeneration) return { ok: false, state: 'down', toolCount: 0, superseded: true };
   if (cfg && cfg.oauth) {
     // Pass a tokenProvider (NOT a frozen token) so the manager fetches a FRESH bearer on every connect / auto-

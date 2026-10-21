@@ -1491,7 +1491,9 @@
       // Older/test stores retain the original behavior. Production's store claim is synchronous and durable,
       // so returning from this function is the exact point the adapter may safely advance Telegram's offset.
       if (!id || typeof store.pushInbox !== 'function' || typeof store.removeInbox !== 'function') return routeInbound(msg, intake);
-      const live = activeInbox.get(id);
+      // this hub's own claim first, then the store's: a hub this one REPLACED (a reconnect) may still be running it
+      const shared = typeof store.liveInbox === 'function' && typeof store.holdInbox === 'function';
+      const live = activeInbox.get(id) || (shared ? store.liveInbox(id) : null);
       if (live) {
         if (intake && typeof intake.onAccepted === 'function') { try { intake.onAccepted({ id, durable: true, duplicate: true }); } catch (_) {} }
         return live;
@@ -1503,6 +1505,7 @@
         return value;
       }).finally(() => { activeInbox.delete(id); });
       activeInbox.set(id, running);
+      if (shared) store.holdInbox(id, running);
       return running;
     }
 
