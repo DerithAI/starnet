@@ -412,15 +412,18 @@
     if (/\.(?:sh|bash)$/i.test(rel)) return { kind: 'shell', dialect: 'posix' };
     return { kind: 'code', dialect: null };
   }
-  /* The only lines of a CODE file that can yield a head the source rules follow: one that BEGINS with a package
-     runner, an interpreter, PowerShell, or a script path (a multi-line template literal that is a command list,
-     say). Lexing the whole file found its heads there anyway — a JavaScript statement never starts "node x.mjs" —
-     so only these lines are lexed, each on its own. */
-  const CODE_LAUNCH_LINE_RE = /^[ \t]*@?(?:(?:(?:npm|pnpm|yarn)(?:\.cmd)?|node(?:\.exe)?|python\d*(?:\.exe)?|py(?:\.exe)?|ruby|php|tsx|ts-node|bun|deno|bash|sh|powershell(?:\.exe)?|pwsh(?:\.exe)?)[ \t]|["']?[^\s"'&|;]+\.(?:[cm]?js|ts|tsx|jsx|ps1|py|rb|php|sh|bash|cmd|bat)(?:["'\s]|$))/i;
+  /* The only lines of a CODE file that can yield a head the source rules below follow: one that names a package
+     runner, an interpreter or PowerShell ANYWHERE as a word (`execSync('npm ci && node x.mjs')` included — in the
+     cmd dialect `'` is no quote, so the && splits it and `node x.mjs` is a head), or that has a script path at
+     its start or right after a separator. Every head the whole-file lexing could follow begins with one of
+     those, so lexing just these lines, each whole and in the outer dialect exactly as the file used to be,
+     keeps those verdicts without lexing every line of the file. */
+  const CODE_LAUNCH_WORD_RE = /(?:^|[^A-Za-z0-9_.\-\\/$])(?:npm|pnpm|yarn|node|python\d*|py|ruby|php|tsx|ts-node|bun|deno|bash|sh|powershell|pwsh)(?:\.exe|\.cmd)?(?![A-Za-z0-9_\-])/i;
+  const CODE_LAUNCH_PATH_RE = /(?:^[ \t]*@?|[&|;(][ \t]*)["']?[^\s"'&|;()]+\.(?:[cm]?js|ts|tsx|jsx|ps1|py|rb|php|sh|bash|cmd|bat)(?:["'\s)]|$)/i;
   function codeLaunchHeads(text, dialect) {
     const heads = [];
     for (const line of String(text || '').split('\n')) {
-      if (CODE_LAUNCH_LINE_RE.test(line)) for (const h of commandHeads(line, dialect)) heads.push(h);
+      if (CODE_LAUNCH_WORD_RE.test(line) || CODE_LAUNCH_PATH_RE.test(line)) for (const h of commandHeads(line, dialect)) heads.push(h);
     }
     return heads;
   }
@@ -452,10 +455,12 @@
          a referenced .js/.mjs/.py file included, in the OUTER dialect: `node sidecar/tools/builtin/browser.js` lexed
          5,731 fake heads out of JavaScript (~30 ms of synchronous regex work before the command even started). A
          shell source (.cmd/.bat/.ps1/.sh, an npm script) is still lexed, in ITS own dialect. A code source keeps
-         its in-text launch checks (its consumers see it unchanged in `out`) and is scanned only for the launches
-         the head rules below can follow — `node x.mjs`, `npm run y`, `pwsh -File z.ps1` written anywhere in it
-         (codeLaunchHeads). That keeps what the lexing caught by accident (a line that began "node x.mjs") and adds
-         what it missed (execSync('node x.mjs') on one line), at the cost of one regex pass. */
+         its in-text launch checks (its consumers see it unchanged in `out`), and only its lines that name a launcher
+         or start a script path are lexed (codeLaunchHeads), each alone, in the outer dialect as before: the heads
+         the rules below follow (`node x.mjs`, `npm run y`, `pwsh -File z.ps1`) come from those lines, at the cost
+         of one regex pass. Lexing each line alone also means an apostrophe in an earlier comment no longer opens a
+         POSIX quote that hides later lines. It finds no MORE than lexing the line does: `execSync('node x.mjs')` on
+         its own lexes as one head that starts "require(" or "execSync(", not "node", so it is not followed, as before. */
       const heads = (entry.kind || 'shell') === 'shell' ? commandHeads(text, entry.dialect || dialect) : codeLaunchHeads(text, dialect);
       for (const parsedHead of heads) {
         const head = (parsedHead && parsedHead.text != null ? parsedHead.text : String(parsedHead || '')).replace(/^\s*@/, '');
