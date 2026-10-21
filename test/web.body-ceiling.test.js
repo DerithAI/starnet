@@ -53,10 +53,20 @@ function chunked(buf, ct) {
     const web = makeWebTools({ fetchImpl: async () => { st = bigResponse(32 * MiB, 0x62, 'application/json'); return st.response; }, lookup: null, politeness: passThrough });
     const plain = await web.requestTool.run({ url: 'https://api.example.com/v1/everything' }, {});
     A.ok(st.pulled <= 6 * MiB + 4 * CHUNK, 'web_request pulled ' + st.pulled + ' bytes, not 33,554,432');
-    A.ok(plain.content.indexOf('[response body cut at its first 2,097,152 characters (raw-body ceiling); the rest was not downloaded]\n') === 0, 'the host note rides first, outside the fence');
+    A.ok(plain.content.indexOf('[response body cut at its first 2,097,152 characters (raw-body ceiling); the rest was not kept, and the download stopped at 6,291,456 bytes]\n') === 0, 'the host note rides first, outside the fence, and says the download stopped: ' + JSON.stringify(plain.content.slice(0, 160)));
     const sel = await web.requestTool.run({ url: 'https://api.example.com/v1/everything', select: ['items'] }, {});
     A.ok(sel.content.indexOf('[response body cut at its first 2,097,152 characters') === 0, 'a select over a cut body carries the same note');
     A.ok(!/whole|complete response/i.test(sel.content.slice(0, 2000)), 'a cut body is never called "whole" or "complete": ' + JSON.stringify(sel.content.slice(0, 300)));
+  }
+
+  // ---- 2b. a 3 MiB ASCII answer is downloaded WHOLE and only its text is cut: the note never says "not downloaded" ----
+  {
+    let st = null;
+    const web = makeWebTools({ fetchImpl: async () => { st = bigResponse(3 * MiB, 0x64, 'application/json'); return st.response; }, lookup: null, politeness: passThrough });
+    const r = await web.requestTool.run({ url: 'https://api.example.com/v1/mid' }, {});
+    A.eq(st.pulled, 3 * MiB, 'the whole 3 MiB body was pulled (it is under the 6 MiB byte cap)');
+    A.ok(r.content.indexOf('[response body cut at its first 2,097,152 characters (raw-body ceiling); the rest was not kept]\n') === 0, 'the note says the rest was not KEPT: ' + JSON.stringify(r.content.slice(0, 160)));
+    A.ok(!/not downloaded|download stopped/.test(r.content.slice(0, 300)), 'and never that it was not downloaded (it was: the note once said "the rest was not downloaded")');
   }
 
   // ---- 3. under the ceiling, streaming decodes exactly as Response.text() did (BOM, invalid bytes, split chars) ----

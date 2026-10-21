@@ -57,7 +57,9 @@
      the kept bytes decodes exactly as Response.text() does (BOM stripped, invalid bytes -> U+FFFD).
      Content-Length is never trusted to refuse a body: under gzip it is the compressed wire size. A response
      without a stream (test doubles that only implement text()) keeps the historic path. `truncated` lets a
-     caller say the body was cut instead of calling it whole. */
+     caller say the body was cut instead of calling it whole; `downloadStopped` says the READ stopped at the
+     byte cap with more pending. They differ: a 2-6 MiB ASCII body is read whole and only its decoded text is
+     cut, so calling that "not downloaded" would be false. */
   const RAW_BODY_MAX_BYTES = RAW_BODY_MAX_CHARS * 3;
   const { note: failNote } = require('../../failopen');
   async function readBodyInfo(r) {
@@ -65,7 +67,7 @@
     if (!body || typeof body.getReader !== 'function') {
       const t = await r.text();
       const s = String(t == null ? '' : t);
-      return s.length > RAW_BODY_MAX_CHARS ? { text: s.slice(0, RAW_BODY_MAX_CHARS), truncated: true } : { text: s, truncated: false };
+      return s.length > RAW_BODY_MAX_CHARS ? { text: s.slice(0, RAW_BODY_MAX_CHARS), truncated: true, downloadStopped: false } : { text: s, truncated: false, downloadStopped: false };
     }
     const reader = body.getReader();
     const chunks = [];
@@ -91,15 +93,17 @@
         try { reader.releaseLock(); } catch (e) { failNote('web.body.release', e); }
       }
     }
+    const downloadStopped = truncated;   // the read stopped at the byte cap and cancelled the rest
     let s = new TextDecoder('utf-8').decode(Buffer.concat(chunks.map(c => Buffer.from(c.buffer, c.byteOffset, c.byteLength))));
     if (s.length > RAW_BODY_MAX_CHARS) { s = s.slice(0, RAW_BODY_MAX_CHARS); truncated = true; }
-    return { text: s, truncated };
+    return { text: s, truncated, downloadStopped };
   }
   function readBodyBounded(r) {
     return readBodyInfo(r).then(info => info.text);
   }
   const RAW_BODY_MAX_LABEL = String(RAW_BODY_MAX_CHARS).replace(/\B(?=(\d{3})+(?!\d))/g, ',');   // "2,097,152"
-  const RAW_BODY_CUT_NOTE = 'response body cut at its first ' + RAW_BODY_MAX_LABEL + ' characters (raw-body ceiling); the rest was not downloaded';
+  const RAW_BODY_CUT_NOTE = 'response body cut at its first ' + RAW_BODY_MAX_LABEL + ' characters (raw-body ceiling); the rest was not kept';
+  const RAW_BODY_STOP_NOTE = RAW_BODY_CUT_NOTE + ', and the download stopped at ' + String(RAW_BODY_MAX_BYTES).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' bytes';   // "6,291,456"
   const SNIPPET_MAX_CHARS = 320;
   const SEARCH_TIMEOUT_MS = 12000;
   const FETCH_TIMEOUT_MS  = 15000;
@@ -547,7 +551,7 @@
       try {
         const r = await doFetch(u.href, dispatcher ? Object.assign({}, init, { dispatcher }) : init);
         const info = await readBodyInfo(r);
-        return { status: r.status, ct: r.headers.get('content-type') || '', loc: r.headers.get('location') || '', body: info.text, bodyTruncated: info.truncated };
+        return { status: r.status, ct: r.headers.get('content-type') || '', loc: r.headers.get('location') || '', body: info.text, bodyTruncated: info.truncated, bodyDownloadStopped: info.downloadStopped };
       } catch (e) {
         // name the cause code + host (nameTransport). Cause host/IP FIRST, the requested hostname only as the
         // fallback — never reorder: the pinned-dispatcher test expects the IP when the cause carries one.
@@ -1343,7 +1347,8 @@
            complete. A cut body gets the host's own note, and every "whole"/"complete" claim speaks of the
            received part instead. */
         const cutBody = !!res.bodyTruncated;
-        const cutLine = cutBody ? '[' + RAW_BODY_CUT_NOTE + ']\n' : '';
+        // "not downloaded" only when the read really stopped at the byte cap; a body read whole was only not KEPT
+        const cutLine = cutBody ? '[' + (res.bodyDownloadStopped ? RAW_BODY_STOP_NOTE : RAW_BODY_CUT_NOTE) + ']\n' : '';
         let shown = bodyText, note = '';
         if (!paths.length && res.status >= 200 && res.status < 300) {
           let budget = ctx ? ctx.outputMax : null;
