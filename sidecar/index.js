@@ -16569,9 +16569,10 @@ async function handleCronRun(req, res) {
   // window that asked for it must not cancel it (it stays stoppable through its lease, like a scheduled fire).
   // Without detach:true, Run Now keeps its law: the watcher leaving cancels the run.
   const detached = body.detach === true;
-  const watcherGone = () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); };
-  // (on a page's shared stream the watcher leaving is that stream closing, or this run withdrawn)
-  if (!detached) { if (sink) sink.onGone(watcherGone); else res.on('close', watcherGone); }
+  // on the page's shared stream (run-streams.js) the watcher leaving is that stream closing, or this run withdrawn — never
+  // this POST's own response, which closes as soon as its receipt is sent
+  if (!detached && sink) sink.onGone(() => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
+  else if (!detached) res.on('close', () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
   // detached: the watcher leaving changes nothing — the run stays in runs/runsMeta (live in the snapshot, busy, and
   // stoppable on its own) until its own finally below removes it
   const bus = { emit: (name, payload) => { try { lines.write(name, redact(payload)); } catch (_) {} } };
@@ -19841,13 +19842,15 @@ async function handleRun(req, res) {
   // the approvals it was still waiting on — the abort below denies them, and the conversation must say so after a reload.
   // Registered FIRST: listeners run in order, so it reads the signal before the disconnect law aborts it.
   let leadOver = false;   // this run's own finally ran: a close after it is just the stream's normal end
-  const pageGone = [
-    () => { if (!leadOver && !ac.signal.aborted && !internal) { try { notePageClosed(runId, pending); } catch (e) { failNote('run.pageClosed.note', e); } } },
-    () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); }
-  ];
-  // the page leaving: its shared stream closing or this run withdrawn (run-streams.js), else this response closing
-  if (sink) sink.onGone(() => { for (const f of pageGone) f(); });
-  else for (const f of pageGone) res.on('close', f);
+  if (!sink) {
+    res.on('close', () => { if (!leadOver && !ac.signal.aborted && !internal) { try { notePageClosed(runId, pending); } catch (e) { failNote('run.pageClosed.note', e); } } });
+    res.on('close', () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
+  } else sink.onGone(() => {
+    // on the page's shared stream (run-streams.js) the page leaving is that stream closing, or this run withdrawn: the same two
+    // steps in the same order. Never this POST's own response, which closes as soon as its receipt is sent.
+    if (!leadOver && !ac.signal.aborted && !internal) { try { notePageClosed(runId, pending); } catch (e) { failNote('run.pageClosed.note', e); } }
+    ac.abort(); runs.delete(runId); runsMeta.delete(runId);
+  });
 
   // the "bus" writes one validated, REDACTED NDJSON line per event (key-shaped secrets are scrubbed even
   // if a tool ever echoes one back); makeEmitter validates against the frozen registry first.
