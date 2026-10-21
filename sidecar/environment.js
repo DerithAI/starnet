@@ -563,8 +563,8 @@
 
     /* Start one duplex MCP child INSIDE an already-probed per-agent container. This is deliberately
        synchronous because the stdio transport lazily asks for a ChildProcess when its first JSON-RPC
-       frame is sent; configureConnectorCfg performs the asynchronous ensureReady() before the manager
-       is allowed to build this transport.
+       frame is sent; the connector manager awaits the host's prepareConnect hook (index.js), which runs the
+       asynchronous ensureReady() — re-checking a cached cell — before EVERY connect builds this transport.
 
        No shell is involved. The connector command and every argument become exact docker-exec argv.
        Environment VALUES ride only in the docker client's environment; `docker exec -e NAME` forwards
