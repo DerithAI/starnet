@@ -344,6 +344,7 @@ test/voice-live-ui.test.js
 test/voice-flow.test.js
 test/voice-stream.test.js
 test/voice.draftguard.test.js
+test/voice.mic-release.test.js
 test/save.test.js
 test/saveversion.test.js
 test/backup-secrets.test.js
