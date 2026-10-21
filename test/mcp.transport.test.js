@@ -359,6 +359,37 @@ const rpc = (id, result) => JSON.stringify({ jsonrpc: '2.0', id, result });
     A.eq(got[1].result.ok, true, 'the reply split mid-JSON across reads reassembled');
   }
 
+  // INCREMENTAL EVENT SCAN. drainComplete ran /\r?\n\r?\n/ over the whole open buffer from index 0 on every
+  // chunk, so a big event cost quadratic CPU: a 16 MB reply in 16 KB reads (a TLS record) took seconds. Only the
+  // new chunk is searched now; the same blank line ends the same event.
+  {
+    const big = 'data: ' + rpc(21, { content: [{ type: 'text', text: 'q'.repeat(16 * 1024 * 1024) }] }) + '\n\n';
+    const chunks = []; for (let i = 0; i < big.length; i += 16384) chunks.push(big.slice(i, i + 16384));
+    const stream = streamBody(chunks, { hang: true });
+    const tp = makeHttpTransport({ url: 'https://mcp.big.example/mcp', fetchImpl: sseFetch(stream), timeoutMs: 60000 });
+    const got = []; tp.onMessage(m => got.push(m));
+    const t0 = Date.now();
+    await tp.send({ jsonrpc: '2.0', id: 21, method: 'tools/call', params: {} });
+    const ms = Date.now() - t0;
+    A.eq(got.length === 1 && got[0].result.content[0].text.length, 16 * 1024 * 1024, 'a 16 MB SSE event in 16 KB reads arrives whole');
+    A.ok(ms < 1500, 'a 16 MB SSE event parses in linear time (' + ms + ' ms; the rescanning parser took ~7 s)');
+  }
+  // the same events end in the same places: CRLF blank lines split across reads, a multi-line data field, a
+  // keepalive comment, and an unterminated final event flushed at stream end.
+  {
+    const stream = streamBody([
+      ': keepalive\r\n\r', '\n',
+      'data: {"jsonrpc":"2.0",\r\ndata: "method":"notifications/a"}\r', '\n\r\n',
+      'data: {"jsonrpc":"2.0","method":"notifications/b"}\n', '\n',
+      'event: message\ndata: ' + rpc(22, { last: true })
+    ]);
+    const tp = makeHttpTransport({ url: 'https://mcp.big.example/mcp', fetchImpl: sseFetch(stream), timeoutMs: 5000 });
+    const got = []; tp.onMessage(m => got.push(m));
+    await tp.send({ jsonrpc: '2.0', id: 22, method: 'tools/call', params: {} });
+    A.eq(got.map(m => m.method || (m.result && m.result.last && 'reply')), ['notifications/a', 'notifications/b', 'reply'], 'CRLF and LF framing split across reads deliver the same events in order');
+    A.ok(!got.some(m => m.error), 'an unterminated final event still answers the request');
+  }
+
   // a stream that ENDS without answering the request synthesizes a prompt JSON-RPC error (no hang, no silence).
   {
     const stream = streamBody(['data: {"jsonrpc":"2.0","method":"notifications/x"}\n\n']);

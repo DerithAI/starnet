@@ -164,20 +164,34 @@
         for (const m of parseSse(body)) deliver(m);
         return;
       }
-      let answered = false, buf = '';
+      let answered = false;
       const route = (m) => {
         if (id != null && m && m.id != null && String(m.id) === String(id) && (('result' in m) || ('error' in m))) answered = true;
         deliver(m);
       };
-      const drainComplete = () => {       // deliver every COMPLETE (blank-line-terminated) event in the buffer
+      /* Events are found INCREMENTALLY, line by line: only the NEW chunk is searched for '\n'; the open line is
+         kept as its chunks and the open event as its finished lines. A blank line (CR stripped) ends an event —
+         exactly where /\r?\n\r?\n/ matched before. That regex ran over the whole open buffer from index 0 on
+         every chunk, so one 20 MB event cost over a second of CPU (quadratic in the event's size). */
+      let evLines = [], lineParts = [];
+      const takeText = (s) => {           // deliver every COMPLETE (blank-line-terminated) event this text finishes
+        let from = 0;
         for (;;) {
-          const b = buf.match(/\r?\n\r?\n/);
-          if (!b) return;
-          const ev = buf.slice(0, b.index);
-          buf = buf.slice(b.index + b[0].length);
+          const nl = s.indexOf('\n', from);
+          if (nl < 0) break;
+          let line = s.slice(from, nl);
+          if (lineParts.length) { lineParts.push(line); line = lineParts.join(''); lineParts = []; }
+          if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+          from = nl + 1;
+          if (line) { evLines.push(line); continue; }
+          if (!evLines.length) continue;
+          const ev = evLines.join('\n');
+          evLines = [];
           for (const m of parseSse(ev + '\n\n')) route(m);
         }
+        if (from < s.length) lineParts.push(from ? s.slice(from) : s);
       };
+      const openText = () => evLines.join('\n') + (evLines.length && lineParts.length ? '\n' : '') + lineParts.join('');
       // best-effort cancel: a cancel failure only means the already-answered (or already-dead) stream keeps
       // draining until the server drops it; the failure is handed back as a value for any caller that cares.
       const tryCancel = () => { try { return reader.cancel(); } catch (e) { return e; } };
@@ -191,11 +205,10 @@
           let step;
           try { step = await reader.read(); } catch (e) { break; }     // cancelled / network drop -> treat as end
           if (step.done) break;
-          buf += dec.decode(step.value, { stream: true });
-          drainComplete();
+          takeText(dec.decode(step.value, { stream: true }));
           if (answered) { tryCancel(); break; }                        // reply routed — the rest is keepalive
         }
-        if (!answered && buf.trim()) { for (const m of parseSse(buf)) route(m); buf = ''; }   // unterminated final event
+        if (!answered) { const rest = openText(); evLines = []; lineParts = []; if (rest.trim()) for (const m of parseSse(rest)) route(m); }   // unterminated final event
       } finally { clearTimeout(t); }
       if (id != null && !answered) failTo(id, 'connector response stream ended without a reply');
     }
