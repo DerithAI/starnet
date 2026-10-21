@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "c1fb27df34e5cfed989d03ba1030320cc1d4412d",
+    "sourceCommit": "a20a170464ada1b3049c684d8881eea8873d2bd6",
     "pathSetSha256": "4c409160df09a2f14bf676c5aa98c72a119e0cc20e654e285ce10911e769dcad",
     "files": [
       {
@@ -1153,8 +1153,8 @@
       },
       {
         "path": "frontend/app/spacebg.js",
-        "bytes": 134398,
-        "sha256": "0a17ecd5835c4c4326bdd1f064c92982cf9c58837b32a8888c430b4d1f614de6"
+        "bytes": 135157,
+        "sha256": "2b81d3d1de58735713d8a6233ccd557298da63ae5094c8d975299910f3e02bba"
       },
       {
         "path": "frontend/app/specialties.js",
@@ -1468,8 +1468,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 926604,
-        "sha256": "37f6b4c88f853e7e90a40074135e93c5244313bf1af5c04f53c10aa68ecf56b5"
+        "bytes": 926857,
+        "sha256": "1eed1b76f00078f7abe017c1fd4881bb78f92b14c75ea5310343ba654881a9d7"
       },
       {
         "path": "frontend/app/worldlab.js",
