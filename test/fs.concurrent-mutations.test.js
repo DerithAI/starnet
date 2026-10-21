@@ -176,7 +176,55 @@ async function rejection(p) {
     held.release();
     const e = await pending;
     A.ok(e && /^fs\.patch refused: p\.txt changed on disk while this patch was being prepared \(another agent or process wrote it\) — nothing was written\./.test(e.message), 'a patch built from a moved file refuses' + (e ? '' : ' (it was NOT refused)'));
+    A.ok(e && / nothing was written\. Re-run the same fs\.patch; its hunks match by context\.$/.test(e.message), 'a run that never read the file is told to re-run the same patch: ' + (e && e.message));
     A.eq(await fsp.readFile(path.join(proj, 'p.txt'), 'utf8'), 'alpha\nBETA (worker)\n', "the file is exactly the other run's version");
+  }
+
+  // ---- 4b. the same race when the patching run HAD read the file: its advice must be one that works ----
+  // (it said "Re-run the same fs.patch", and that re-run was refused by the read-version check: the run's read
+  // stamp still held the pre-drift bytes)
+  {
+    const proj = await project({ 'q.txt': 'line1\nline2\nline3\nline4\nline5\n' });
+    const held = heldBaseline();
+    const a = run(proj, held.wait), b = run(proj);
+    const ca = { agentId: 'lead', projectRoot: proj }, cb = { agentId: 'worker', projectRoot: proj };
+    await a.readTool.run({ path: 'q.txt' }, ca);
+    await b.readTool.run({ path: 'q.txt' }, cb);
+    const patch = '*** Begin Patch\n*** Update File: q.txt\n@@\n line1\n-line2\n+LINE2\n line3\n*** End Patch';
+    const pending = rejection(a.patchTool.run({ patch }, ca));
+    await held.reached;
+    await b.editTool.run({ path: 'q.txt', find: 'line5', replace: 'LINE5' }, cb);
+    held.release();
+    const e = await pending;
+    A.eq(e && e.message, 'fs.patch refused: q.txt changed on disk while this patch was being prepared (another agent or process wrote it) — nothing was written. fs.read q.txt again, then re-run the fs.patch; its hunks match by context.',
+      'a run that read the file is told to fs.read it before the re-run');
+    const blind = await rejection(a.patchTool.run({ patch }, ca));
+    A.ok(blind && /^fs\.patch refused: q\.txt changed on disk since you last read or wrote it/.test(blind.message), 'why: a blind re-run IS refused by the read-version check' + (blind ? '' : ' (it applied)'));
+    await a.readTool.run({ path: 'q.txt' }, ca);
+    const landed = await a.patchTool.run({ patch }, ca);
+    A.ok(/^Applied patch: 1 file changed\./.test(landed.content), 'the advised re-run applies: ' + JSON.stringify(landed.content.split('\n')[0]));
+    A.eq(await fsp.readFile(path.join(proj, 'q.txt'), 'utf8'), 'line1\nLINE2\nline3\nline4\nLINE5\n', 'following the advice (fs.read, then the same fs.patch) lands the patch on top of the other run\'s edit');
+  }
+  // two files moved in flight, only one of them read by the patching run: both named, the read one is the one to re-read
+  {
+    const proj = await project({ 'm1.txt': 'a1\nb1\nc1\n', 'm2.txt': 'a2\nb2\nc2\n' });
+    const held = heldBaseline();
+    const a = run(proj, held.wait), b = run(proj);
+    const ca = { agentId: 'lead', projectRoot: proj }, cb = { agentId: 'worker', projectRoot: proj };
+    await a.readTool.run({ path: 'm1.txt' }, ca);
+    const patch = '*** Begin Patch\n*** Update File: m1.txt\n@@\n-a1\n+A1\n b1\n*** Update File: m2.txt\n@@\n-a2\n+A2\n b2\n*** End Patch';
+    const pending = rejection(a.patchTool.run({ patch }, ca));
+    await held.reached;
+    await b.appendTool.run({ path: 'm1.txt', content: 'd1\n' }, cb);
+    await b.appendTool.run({ path: 'm2.txt', content: 'd2\n' }, cb);
+    held.release();
+    const e = await pending;
+    A.eq(e && e.message, 'fs.patch refused: m1.txt, m2.txt changed on disk while this patch was being prepared (another agent or process wrote them) — nothing was written. fs.read m1.txt again, then re-run the fs.patch; its hunks match by context.',
+      'every moved file is named, and the advice re-reads the one this run has a read stamp for');
+    await a.readTool.run({ path: 'm1.txt' }, ca);
+    const landed = await a.patchTool.run({ patch }, ca);
+    A.ok(/^Applied patch: 2 files changed\./.test(landed.content), 'the advised re-run applies: ' + JSON.stringify(landed.content.split('\n')[0]));
+    A.eq([await fsp.readFile(path.join(proj, 'm1.txt'), 'utf8'), await fsp.readFile(path.join(proj, 'm2.txt'), 'utf8')], ['A1\nb1\nc1\nd1\n', 'A2\nb2\nc2\nd2\n'], 'on top of both of the other run\'s appends');
   }
 
   // ---- 5. an edit whose "find" the other run removed refuses honestly instead of resurrecting the old text ----

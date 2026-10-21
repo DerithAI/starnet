@@ -1023,12 +1023,18 @@ const { note: failNote } = require('../../failopen');
         const patchReceipt = await withFileLocks(touched.map(plan => lockKey(plan.abs)), ctx && ctx.signal, async () => {
           /* The hunks were matched against the reads above; the baseline then waited, and another run may have
              written one of these files since. Writing now would rebuild it from the old read and erase that change,
-             so a moved source refuses BEFORE any byte is written. Re-running the same patch re-matches by context. */
+             so a moved source refuses BEFORE any byte is written. Re-running the same patch re-matches by context,
+             but a re-run over a file this agent has a read stamp for is refused by the read-version check (the stamp
+             still holds the pre-drift bytes) until fs.read re-arms it, so the advice names those files to read first. */
+          const drifted = [];
           for (const plan of touched) {
-            const now = await readUtf8OrMissing(plan.abs);
-            if (now !== plan.initialContent) {
-              throw new Error('fs.patch refused: ' + plan.rel + ' changed on disk while this patch was being prepared (another agent or process wrote it) — nothing was written. Re-run the same fs.patch; its hunks match by context.');
-            }
+            if (await readUtf8OrMissing(plan.abs) !== plan.initialContent) drifted.push(plan);
+          }
+          if (drifted.length) {
+            const stamped = drifted.filter(plan => readStamps.has(stampKey(aid, plan.abs)));
+            const next = stamped.length ? 'fs.read ' + stamped.map(plan => plan.rel).join(', ') + ' again, then re-run the fs.patch' : 'Re-run the same fs.patch';
+            throw new Error('fs.patch refused: ' + drifted.map(plan => plan.rel).join(', ') + ' changed on disk while this patch was being prepared (another agent or process wrote '
+              + (drifted.length === 1 ? 'it' : 'them') + ') — nothing was written. ' + next + '; its hunks match by context.');
           }
           const patchReceipt = {
             operation: 'patch', path: touched.map(p => p.rel).join(', '), state: 'attempted', phases: ['attempted'],
