@@ -676,7 +676,7 @@ const Chat = (() => {
       if (brief && brief.status === 'clarifying' && brief.questions.some(q => !q.answer)) return 'deferred';
     } catch (_) { return 'unavailable'; }
     let rows;
-    try { rows = await Harness.runRecoveries(); } catch (_) { return 'unavailable'; }
+    try { rows = await Harness.runRecoveries({ streamId: ws.id, agentId: ws.agentId || 'agent' }); } catch (_) { return 'unavailable'; }
     const owned = rows.filter(r => r && r.streamId === ws.id && r.agentId === (ws.agentId || 'agent'))
       .sort((a, b) => (+b.startedAt || 0) - (+a.startedAt || 0));
     const safe = owned.find(r => r.canAutoContinue && !recoveryClaims.has(r.runId));

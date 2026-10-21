@@ -137,7 +137,7 @@ const SYNC_BASELINE = {
   'channels/sse.js': 2,
   'channels/store.js': 2,   // AUDITED — 2 left: ensureRoot mkdir, onRecover observer
   'channels/telegram.transport.js': 4,
-  'checkpoint-store.js': 10,   // AUDITED — GC failures now report; the sync size walk is gone (async repoBytes counts unreadable entries); remaining realpath/stat/readdir defaults, .bak staging and dw loader fallback
+  'checkpoint-store.js': 9,    // AUDITED — GC failures now report; the sync size walk is gone (async repoBytes counts unreadable entries; measure() sizes from git ls-tree, no per-file stat swallow); remaining realpath/stat/readdir defaults, .bak staging and dw loader fallback
   'configexport.js': 0,
   'consentwait.js': 1,
   'credits-link.js': 2,
@@ -146,7 +146,7 @@ const SYNC_BASELINE = {
   'cron-lock.js': 4,   // AUDITED — 4 left: fd close / unlink / release teardown
   'deliverable-store.js': 3,   // AUDITED — 3 left: journal absent on first load, fd close in finally, stat size default
   'domain-store.js': 1,
-  'durable-store.js': 3,   // AUDITED — corrupt-primary parse probe / mkdir before a write that fails loudly itself (x2); backup failures now propagate
+  'durable-store.js': 2,   // AUDITED — mkdir before a write that fails loudly itself (x2); backup failures now propagate; the main is parsed once (readOne) so the separate corrupt-primary probe is gone
   'durable-write.js': 3,
   'edgetts.js': 3,
   'environment.js': 15,

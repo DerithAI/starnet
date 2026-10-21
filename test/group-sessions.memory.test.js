@@ -80,7 +80,8 @@ async function waitFor(fn) { for (let n = 0; n < 200; n++) { if (await fn()) ret
     const done = await api.get(g.id);
     assert.deepEqual(done.turns.map(t => [t.agentId, t.state]), [['research', 'completed'], ['engineer', 'completed']]);
     assert.ok(io.writes >= 8, 'the turn committed its claim, run start, approval, question, answer, handoff, publish and result (' + io.writes + ')');
-    assert.equal(io.reads, 2 * io.writes, 'every read of the file was a durable write\'s own pre-image check, never pump/ask/tools state');
+    // one pre-image read per durable write (writeJsonResilient reads the current main once since perf 10-19; it was two)
+    assert.equal(io.reads, io.writes, 'every read of the file was a durable write\'s own pre-image check, never pump/ask/tools state');
 
     /* ---- B. the snapshot a turn started from is never touched by a later commit ---- */
     assert.ok(seen.length >= 2);

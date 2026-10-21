@@ -1325,3 +1325,11 @@ test/provider-403-truth.test.js
 test/oauth-refresh-throttle-copy.test.js
 test/proc-footprint.test.js
 test/skills-io.test.js
+test/checkpoint-measure-nostat.test.js
+test/shellbg-spill-batched.test.js
+test/channels.store-cache.test.js
+test/notebook-peer-reads.test.js
+test/task-turn-evidence.test.js
+test/remote-crew-looks.test.js
+test/save-persist-cost.test.js
+test/run-recoveries-page.test.js

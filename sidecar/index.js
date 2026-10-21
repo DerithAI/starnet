@@ -5241,7 +5241,7 @@ const appendDurableProcessOutput = entry => outputArtifacts.append(entry);
    ended — an honest 409), or a full one: the COMMS line stays the only signal, exactly as before. The most recently
    started live run of that agent is the one told, so a note is never duplicated across runs (shellbg.js). */
 const wakeOwnerOnBgExit = makeBgExitWaker({ steer: steerBufs, runs: runs, runsMeta: runsMeta, log: (m) => console.log(m) });
-const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, processTable: osProcessTable });
+const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, spillWriter: outputArtifacts, processTable: osProcessTable });
 if (require.main === module) {
   // vouch every minute for bg children whose handle is still open, so a crash's orphan window covers children
   // they start late (procledger.touch). One small ledger write per minute, only while bg processes run.
@@ -8096,16 +8096,16 @@ function handleRecommendationsEval(req, res) {
    routine (routine.create stays consent-gated; nothing is created here). The impression is recorded like a card
    shown, so the takeover card and the agent never both pitch the same work the same day, and an offer the
    Commander ignores stops after MAX_OFFERS. Fails open to no notice. */
-function standingWorkNotice(brief, agentId, o) {
+function standingWorkNotice(brief, agentId, o, evidence) {
   try {
     if (!brief || brief.status === 'cancelled' || (o && o.recovery) || !['interactive', 'channel'].includes(brief.source) || TrustedLearning.quotedMaterial(brief.originalDirective)) return null;
     // a channel guest's request is not "the Commander asking again" (host-minted sender flags, as hostPowerWithheldFor)
     if (o && o.channelSender === true && o.channelSenderOwner !== true) return null;
     if (!personalizationStore.read().enabled) return null;
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
+    const ev = evidenceRows(evidence || {});   // one transcript + run snapshot for the brief proof AND the runs
     const n = WorkflowTakeover.notice({ directive: brief.originalDirective, agentId, projectRoot: (o && o.projectRoot) || '',
-      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()).filter(b => b.id !== brief.id), runs: runStore.all(), jobs: cronJobs,
+      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs).filter(b => b.id !== brief.id), runs: ev.runs, jobs: cronJobs,
       ratings: growthRatings.list({ limit: 500, epoch }), state: workflowTakeoverStore.read(), enabled: true, now: Date.now(), redact });
     if (!n) return null;
     workflowTakeoverStore.decide(n.id, 'shown', Date.now(), n.core).catch(e => console.warn('[workflow-takeover] notice impression not saved:', (e && e.message) || e));
@@ -8114,9 +8114,9 @@ function standingWorkNotice(brief, agentId, o) {
 }
 function workflowTakeoverCandidates(ignoreOffers) {
   const state = workflowTakeoverStore.read();
-  const saved = saveStore.load('agent') || null;
-  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
-  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()), runs: runStore.all(), jobs: cronJobs,
+  const epoch = stationEpoch();
+  const ev = evidenceRows({});
+  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs), runs: ev.runs, jobs: cronJobs,
     ratings: growthRatings.list({ limit: 500, epoch }),
     state: ignoreOffers ? Object.assign({}, state, { decisions: state.decisions.filter(d => d.never) }) : state,
     enabled: personalizationStore.read().enabled, now: Date.now(), redact });
@@ -8261,15 +8261,17 @@ function nightshiftRecentRuns() {
    hands the pure assembler already-fetched arrays (determinism-split: this side reads Date.now + the stores, the
    pure core is a transform over its inputs). Returns the assembled pack { sections, text, activityLines, counts }.
    The pack is what makes the propose step feel like magic — candidates grounded in what the Commander ACTUALLY did,
-   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty. */
-function nightshiftContextPack() {
+   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty.
+   `evidence` (optional, see evidenceRows): the caller's one transcript + run-history snapshot for this turn. */
+function nightshiftContextPack(evidence) {
   const now = Date.now();
   const runs = nightshiftRecentRuns();
+  const ev = evidence || {};   // without a caller snapshot, the two proofs below still share one copy of each store
   // Only host-recorded clean owner turns can ground activity. Check the full content before the pure core takes
   // its first line; a harmless heading cannot launder a quoted document below it. Bound the source window first.
   let cleanOwnerChats = [], chats = [];
   try {
-    cleanOwnerChats = TrustedLearning.cleanOwnerRows(transcriptStore.all(), runStore.all());
+    cleanOwnerChats = TrustedLearning.cleanOwnerRows(evidenceRows(ev).transcript, evidenceRows(ev).runs);
     chats = cleanOwnerChats.map(m => ({ role: m.role, content: m.content, ts: m.ts, streamId: m.streamId }));
   } catch (_) { cleanOwnerChats = []; chats = []; }
   // Briefs have no independent provenance stamp. Match their exact stored directive to a proven clean owner turn
@@ -8277,7 +8279,7 @@ function nightshiftContextPack() {
   // is looked up by original run id, not inside the chat tail above: a brief exists to carry work older than that tail.
   let briefs = [];
   try {
-    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), transcriptStore.all(), runStore.all())
+    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), evidenceRows(ev).transcript, evidenceRows(ev).runs)
       .map(b => ({ originalDirective: b.originalDirective, ts: b.completedAt || b.updatedAt }));
   } catch (_) { briefs = []; }
   // the active GOAL ARC (single object or null).
@@ -8328,8 +8330,7 @@ let _trackRecordMemo = { at: 0, rec: null };
 function ratingVerdictMap() {
   const out = {};
   try {
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
     for (const r of growthRatings.list({ limit: 2000, epoch })) if (r && r.runId) out[r.runId] = r.verdict;
   } catch (e) { failNote('outcomes.verdicts', e); }
   return out;
@@ -8351,20 +8352,44 @@ function stationTrackRecord() {
 function stationTrackRecordLines() {
   try { const rec = stationTrackRecord(); return rec ? Outcomes.lines(rec) : []; } catch (_) { return []; }
 }
-function commanderEvidenceInputs() {
+function commanderEvidenceInputs(evidence) {
   let topics = [], threads = [], activity = [], worksignal = '';
   const learning = personalizationStore.read().enabled;
   try { topics = learning ? Interests.summary(interestsState, { trustedOnly: true, now: Date.now(), limit: 8 }) : []; } catch (_) {}
   try { threads = threadsStore.openThreads(6); } catch (_) {}
-  try { activity = (nightshiftContextPack().activityLines || []).slice(0, 8); } catch (_) {}
+  try { activity = (nightshiftContextPack(evidence).activityLines || []).slice(0, 8); } catch (_) {}
   try { worksignal = learning ? String((scoutState.context && scoutState.context.worksignalSummary) || '') : ''; } catch (_) {}
   let goal = null; try { goal = commanderGoals.get() || null; } catch (_) {}
   let verdicts = null; try { verdicts = learning ? recommendationLedger.summary() : null; } catch (_) {}
   const trackRecord = stationTrackRecordLines();
   return { dossier: commanderDossier.get(), goal, topics, threads, activity, worksignal, verdicts, trackRecord };
 }
-function commanderEvidenceContext(existingSystem, extra) {
-  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), extra || {}, { existingSystem: existingSystem || '' }));
+function commanderEvidenceContext(existingSystem, extra, evidence) {
+  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(evidence), extra || {}, { existingSystem: existingSystem || '' }));
+}
+/* evidenceRows(ev) — ONE snapshot of the transcript mirror and the run history for one evidence assembly (perf review
+   10-19). transcriptStore.all() and runStore.all() each copy every row; a briefed task turn copied the run history 4
+   times and the transcript 3 times (the repeat-work notice's brief proof + its runs, then the context pack's clean
+   owner chats + brief proof) — 22 / 40 / 115 ms at 1k / 5k / 10k runs. The copies are taken lazily on first use and
+   shared by every consumer of the same `ev` object, all of which only read them. Nothing awaits between the reads
+   and the uses, so the snapshot is exactly what the separate copies would have returned. */
+function evidenceRows(ev) {
+  if (!ev.transcript) ev.transcript = transcriptStore.all();
+  if (!ev.runs) ev.runs = runStore.all();
+  return ev;
+}
+/* stationEpoch() — the current station generation (agent.createdAt) for the ratings reads, without parsing the whole
+   save each time: the value is kept against saveStore.stamp('agent') (one stat; it moves on every save this process
+   makes and on any outside edit) and re-read the moment the stamp moves. A read with no clean stamp is never kept. */
+let _stationEpochMemo = { stamp: '', epoch: 1 };
+function stationEpoch() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _stationEpochMemo.stamp) return _stationEpochMemo.epoch;
+  const r = saveStore.loadStamped('agent');
+  const saved = r.doc || null;
+  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+  _stationEpochMemo = { stamp: r.stamp || '', epoch: epoch };
+  return epoch;
 }
 
 /* nightshiftUserRunCount() — the readiness evidence (pack.userRunCount) WITHOUT building the whole context pack
@@ -11576,6 +11601,40 @@ const remotePush = require('./remote/push.js').makePush({ fs, path, file: path.j
   fetch: (url, o) => fetch(url, Object.assign({}, o, { signal: AbortSignal.timeout(15000) })),
   extraHosts: String(process.env.STARNET_REMOTE_PUSH_HOSTS || '').split(',') });   // tests only: a local fake push service
 const remotePortraits = require('./remote/portraits.js').makePortraits({ fs, path, frontend: FRONTEND });
+/* THE CREW'S LOOKS FOR A PHONE (perf review 10-19). Every status/activity poll (10 s per open phone), every portrait and
+   every 256 KB file chunk listed the agents, and each listing re-parsed the WHOLE station save to read a few skin and
+   colour strings: a 20 MB download did 80 parses. The tiny map is kept against saveStore.stamp('agent') (one stat that
+   moves on every save this process makes and on any outside edit) and rebuilt the moment the stamp moves; an unstamped
+   read (absent, locked or .bak-recovered save) is never kept. The desk sessions (deskSessions) still parse per request:
+   they ARE the bulk of the save, and keeping them would pin ~4x the file in heap (savestore.js never caches the doc). */
+let _remoteLooksMemo = { stamp: '', looks: null };
+function crewLooksOf(save) {
+  const out = {};
+  const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
+  add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
+  return out;
+}
+function remoteCrewLooks() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _remoteLooksMemo.stamp && _remoteLooksMemo.looks) return Object.assign({}, _remoteLooksMemo.looks);
+  const r = saveStore.loadStamped('agent');
+  const out = crewLooksOf(r.doc || {});
+  _remoteLooksMemo = { stamp: r.stamp || '', looks: out };
+  return Object.assign({}, out);
+}
+/* SEED THE SAVE-STAMP MEMOS FROM THE SAVE ITSELF (review of perf piece 6). The desk persists (debounced, cloudsave.js)
+   after every state change — the finished reply included — so a save lands between any two task turns and between most
+   phone polls, and memos refreshed only by READING re-parsed the whole save right after each one: stationEpoch saved
+   nothing on the real path. POST /api/save already holds the parsed doc it just stored, so it refreshes both memos from
+   that doc under the stamp of the file the write left (the reasoning savestore.save() keeps its own last-write memo on).
+   A write that did not land (stale, conflict, a throw) seeds nothing, and no stamp means nothing is kept. */
+function seedSaveMemos(agentId, doc) {
+  if (agentId !== 'agent' || !doc || typeof doc !== 'object') return;
+  const stamp = saveStore.stamp('agent');
+  if (!stamp) return;
+  _stationEpochMemo = { stamp: stamp, epoch: Math.max(1, Math.floor(Number(doc.agent && doc.agent.createdAt) || 1)) };
+  _remoteLooksMemo = { stamp: stamp, looks: crewLooksOf(doc) };
+}
 const remoteHost = require('./remote/host.js').makeRemoteHost({
   redact: (s) => redact(s),   // the desk save is raw: its turns are redacted before they merge or leave for the relay
   now: () => Date.now(), newId: () => crypto.randomUUID(), broadcast: remoteBroadcast,
@@ -11617,12 +11676,7 @@ const remoteHost = require('./remote/host.js').makeRemoteHost({
   view: remoteView,
   deskOpen: () => sse.size() > 1,   // a StarNet page is connected (the phones' own tee is always one listener)
   // how each agent looks (the skin the Commander picked), from the station save the page mirrors here
-  crewLooks: () => {
-    const save = saveStore.load('agent') || {}, out = {};
-    const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
-    add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
-    return out;
-  },
+  crewLooks: () => remoteCrewLooks(),
   portrait: (skin) => remotePortraits.forSkin(skin),
   spriteSet: (skin) => remotePortraits.setFor(skin),
   sprites: (key) => remotePortraits.framesFor(key),
@@ -20634,8 +20688,11 @@ async function runOnceCore(o) {
     // AUTOMATION ASK: the task's own words (or this turn's) ask for recurring/scheduled work -> the routine playbook rides this run
     let automationAsk = false;
     try { automationAsk = CommanderContext.automationIntent(taskBrief.originalDirective) || CommanderContext.automationIntent(latestUserText(messages)); } catch (_) { automationAsk = false; }
-    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o), automationAsk};
-    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs);
+    // ONE transcript + run-history snapshot for this turn's whole evidence assembly (evidenceRows): the repeat-work
+    // notice and the context pack used to copy the run history 4 times and the transcript 3 times per task turn
+    const turnEvidence = {};
+    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o, turnEvidence), automationAsk};
+    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs, turnEvidence);
   } else if (isTask) {
     // Channels and integrations may not carry a durable taskKey. They still receive the SAME bounded Commander
     // evidence as an interactive briefed run; only the task-specific brief section is absent.
@@ -20974,10 +21031,11 @@ async function runOnceCore(o) {
       const settled = taskBriefState ? commanderEvidenceContext(system || '', Object.assign({},taskContextInputs,{brief:taskBriefState.brief})) : taskContextBlock;
       const notes = notebookStore.get('notebook:' + agentId);
       // the Commander's taste rides into delegated work too: a worker writes the deliverable the Commander rates
-      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, otherAgentNotebooks(agentId), { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
+      const peers = (personalizationStore.read().enabled && !tasteWithheld) ? otherAgentNotebooks(agentId) : [];   // read once for taste + standing
+      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, peers, { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
       const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
       const pinned = Array.isArray(notes) ? notes.filter(r => r && r.pinned && !tasteIds.has(r.id) && !(tasteWithheld && r.origin === FeedbackMemory.ORIGIN) && !r.taintedBy) : [];
-      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, otherAgentNotebooks(agentId)).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
+      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, peers).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
       const recalled = renderRecall(rank(pinned.concat(standing), recentUserText(messages), { now: Date.now(), streamId, projectRoot: o.projectRoot || null }), { limit: 1500 });
       const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall);
       return settled + (recalled.text ? '\n\n' + redact(recalled.text) : '') + (taste.text ? '\n\n' + redact(taste.text) : '');
@@ -23201,7 +23259,10 @@ async function runOnceCore(o) {
     // decide whether it surfaces. Those records leave the ranked pool so they never take a recall slot twice.
     // station-wide: a correction given to ANY agent is about the Commander, so it shapes this agent's work too
     // (recovery runs inject nothing at all — see the note above msgs).
-    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, otherAgentNotebooks(agentId), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
+    // the other agents' notebooks are read ONCE per run, for both the taste and the standing block below
+    let peerNotebooks = null;
+    const peerBooks = () => peerNotebooks || (peerNotebooks = otherAgentNotebooks(agentId));
+    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, peerBooks(), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
     const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
     // withheld: EVERY feedback record leaves the recall pool, not just the selected taste — a verdict record carries the
     // Commander's past request ('(on: …)') and ordinary BM25 recall would hand it to a channel guest (QA 2026-10-02)
@@ -23213,7 +23274,7 @@ async function runOnceCore(o) {
     // withheld guest/group run (or a paused station) ranks the agent's own standing notes on relevance like any note,
     // instead of force-injecting 'I prefer to be called Andy' into a guest's prompt with zero relevance.
     const standingOn = !(o.recovery || tasteWithheld || !personalizationStore.read().enabled);
-    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, otherAgentNotebooks(agentId)).filter(r => r.foreign) : [];
+    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, peerBooks()).filter(r => r.foreign) : [];
     const ranked = rank(recs.concat(standingRecs), q, { now: Date.now(), streamId, projectRoot: o.projectRoot || null, vectors: hv && hv.vectors, queryVec: hv && hv.queryVec, standing: standingOn });   // M-mem.2b stream boost · project tier: only THIS project's lessons
     const recalled = renderRecall(ranked, { limit: 1500, priorityLimit: Math.min(4000, Math.max(800, Math.floor((provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS) * 0.12))) });
     const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall, { agentId });
@@ -26976,6 +27037,8 @@ async function handleSaveWrite(req, res) {
   if (latestRatingAt > ratingSyncAt) return json(200, { ok: false, stale: true, growthStale: true, latestRatingAt });
   try {
     const result = saveStore.save(agentId, body, { compareRevision: true });
+    // a memo seed is a cache refresh: it may never turn a landed save into an error reply
+    if (result && result.ok === true) { try { seedSaveMemos(agentId, body); } catch (e) { failNote('save.seed-memos', e); } }
     json(200, result);
   } catch (e) { json(400, { error: (e && e.message) || 'save failed' }); }
 }
@@ -27246,6 +27309,9 @@ function markRunRecoveryForensic(r) {
   // analyze() separates a lone torn final record (damage 'torn_tail': actionable, its `.torn-*` copy kept) from
   // real corruption (`forensic`). Only the latter — or a `.corrupt*` sibling from any earlier repair — is forensic.
   r.forensicOnly = !!r.forensic;
+  // run-journal's withEvidence already folded this file's `.corrupt*` sibling into `forensic` (the same prefix rule,
+  // over the same directory, moments ago): listing the whole directory again per row bought nothing (perf 10-19)
+  if (r.evidenceSeen === true) return r;
   try {
     const file = r.file || path.join(RUN_JOURNAL_DIR, runJournal._internals.runFileName(r.runId));
     const base = path.basename(file);
@@ -27351,7 +27417,9 @@ function scanInterruptedRuns(files) {
     // loop for more than that single file.
     const end = Math.min(list.length, at + 1);
     for (; at < end; at++) {
-      if (settledForensic.has(path.basename(list[at]))) continue;
+      // a settled forensic journal is not parsed again, but its begin-record head is read (bounded, one per tick) so the
+      // first recovery listing filtered to a conversation does not have to open every such journal itself
+      if (settledForensic.has(path.basename(list[at]))) { try { runJournal.warmHead(list[at]); } catch (e) { failNote('run-history.interrupted-head', e); } continue; }
       try {
         if (!fs.existsSync(list[at])) continue;   // settled/retired since boot by a route of this process
         const r = markRunRecoveryForensic(runJournal.recoverFile(list[at]));
@@ -27442,8 +27510,12 @@ function serveRunRecoveries(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');
   const offset = Math.max(0, Number(u.searchParams.get('offset')) || 0);
   const limit = Math.max(1, Math.min(500, Number(u.searchParams.get('limit')) || 100));
+  // additive filters (perf 10-19): a page asking for ITS conversation's interrupted run names it, so the run is found
+  // even behind hundreds of other journals, and only that conversation's journals are parsed. Absent = unchanged.
+  const filter = {};
+  for (const k of ['streamId', 'agentId']) { const v = u.searchParams.get(k); if (v != null && v.length <= 200) filter[k] = v; }
   let page;
-  try { page = runJournal.recoverPage({ offset, limit }); }
+  try { page = runJournal.recoverPage(Object.assign({ offset, limit }, filter)); }
   catch (e) { return respondJson(res, 500, { error: 'could not read run recoveries' }); }
   const rows = page.rows.map(markRunRecoveryForensic).filter(r => {
     if (!r) return false;
@@ -27952,8 +28024,11 @@ function skillNameFromReflection(content) {
 // (feedbackmemory.js). One record per rated run; a later correction updates that record instead of adding another.
 // User-confirmed by construction (the Commander's own verdict and words) and seeded with Keep-strength trust. Honors
 // the personalization pause like every learning pass. Returns a truthful summary for the route response; never throws.
-// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste block. Reads go through the
-// durable store's cache; an unreadable notebook contributes nothing and never fails the run.
+// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste + standing blocks. Reads go
+// through notebookStore.getShared: a notebook whose file is unchanged since the last read (bigint stat + this process's
+// write generation) is NOT re-read or re-parsed (perf review 10-19 — every run used to parse every notebook, twice).
+// The records are FROZEN and shared: read-only here and in every consumer. An unreadable notebook contributes nothing
+// and never fails the run.
 function otherAgentNotebooks(agentId) {
   const ids = new Set(['agent']);
   for (const id of agentRoster.keys()) ids.add(id);
@@ -27961,7 +28036,7 @@ function otherAgentNotebooks(agentId) {
   const out = [];
   for (const id of ids) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(String(id))) continue;
-    try { const l = notebookStore.get('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
+    try { const l = notebookStore.getShared('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
     catch (e) { failNote('feedback.taste.read', e); }
   }
   return out;
