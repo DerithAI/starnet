@@ -889,15 +889,30 @@ const Chat = (() => {
      a resolver (the jailed /api/file seams by default — the server refuses any escape). A target that is neither a web
      address nor a plain relative path (an anchor, an absolute or '..' path, a scheme) keeps just its readable label. */
   const REL_PATH = /^(?![\/\\#])(?!.*\.\.)[^\s:<>"'()]+$/;
+  /* THE APP'S OWN FILE ADDRESS (user report 10-20: asked twice for the design boards, saw raw markdown, then bare labels).
+     image_generate and the browser tools hand the agent its viewer address, '/api/file?agent=<id>&path=<rel>[&project=<root>]',
+     so a model showing the picture writes ![…](/api/file?…): an absolute target, which kept only its label. Read it back into
+     the same jailed seam — the path inside must still be a plain relative path, and the server's jail refuses the rest. */
+  function appFileRef(target) {
+    const m = /^\/api\/file\?([^#\s]*)$/.exec(target);
+    if (!m) return null;
+    const q = new URLSearchParams(m[1].replace(/&amp;/g, '&')), path = q.get('path') || '', agent = q.get('agent') || '';
+    if (!REL_PATH.test(path) || !/^[\w.-]{1,80}$/.test(agent)) return null;
+    return { path, attrs: ' data-md-agent="' + escapeHtml(agent) + '"' + (q.get('project') ? ' data-md-project="' + escapeHtml(q.get('project')) + '"' : '') };
+  }
   function fileRefLink(label, target) {
-    if (!REL_PATH.test(target)) return escapeHtml(label);
-    return '<a class="md-file" href="#" data-md-path="' + escapeHtml(target) + '">' + escapeHtml(label) + '</a>';
+    const app = appFileRef(target);
+    if (!app && !REL_PATH.test(target)) return escapeHtml(label);
+    // a link to a picture IS the picture (user reports 10-20: "my agent can't show me the slides" — it linked its JPGs, and a
+    // link only opened a tab; the model had no way to know an image needs the '!'), still a click away from the lightbox
+    if (/\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i.test(app ? app.path : target)) return fileRefImage(label, target);
+    return '<a class="md-file" href="#" data-md-path="' + escapeHtml(app ? app.path : target) + '"' + (app ? app.attrs : '') + '>' + escapeHtml(label) + '</a>';
   }
   function fileRefImage(alt, target) {
-    const name = alt || target.split('/').pop();
-    if (/^https?:\/\//i.test(target)) return '<a href="' + escapeHtml(target) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(name) + '</a>' + linkHostNote(name, target);
-    if (!REL_PATH.test(target)) return escapeHtml(name);
-    return '<span class="md-img" data-md-path="' + escapeHtml(target) + '" data-md-alt="' + escapeHtml(name) + '"><span class="md-img-alt">' + escapeHtml(name) + '</span></span>';
+    if (/^https?:\/\//i.test(target)) { const name = alt || target.split('/').pop(); return '<a href="' + escapeHtml(target) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(name) + '</a>' + linkHostNote(name, target); }
+    const app = appFileRef(target), path = app ? app.path : target, name = alt || path.split('/').pop();
+    if (!app && !REL_PATH.test(target)) return escapeHtml(name);
+    return '<span class="md-img" data-md-path="' + escapeHtml(path) + '" data-md-alt="' + escapeHtml(name) + '"' + (app ? app.attrs : '') + '><span class="md-img-alt">' + escapeHtml(name) + '</span></span>';
   }
   // the default resolver: the speaking agent's workspace, through the same open/preview/lightbox seams as every deliverable
   const fileRefCache = new Map();   // message|agent|path -> Promise<blob url>; failures stay cached for that message too
@@ -947,11 +962,13 @@ const Chat = (() => {
   function hydrateFileRefs(bodyEl, roots) {
     const within = roots || [bodyEl];
     if (!within.some(r => r.querySelector && r.querySelector('.md-file, .md-img'))) return;
-    const refs = bodyEl.__fileRefs || (bodyEl.__fileRefs = workspaceFileRefs(null));
+    const bodyRefs = bodyEl.__fileRefs || (bodyEl.__fileRefs = workspaceFileRefs(null));
+    // a ref read from the app's own /api/file address names its agent (and project): it resolves there, not in the body's
+    const refsOf = n => n.hasAttribute('data-md-agent') ? workspaceFileRefs(n.getAttribute('data-md-agent'), null, n.getAttribute('data-md-project') || undefined) : bodyRefs;
     const all = sel => within.reduce((out, r) => (r.querySelectorAll ? out.concat(Array.from(r.querySelectorAll(sel))) : out), []);
-    all('a.md-file').forEach(a => { try { refs.wire(a, a.getAttribute('data-md-path')); } catch (_) {} });
+    all('a.md-file').forEach(a => { try { refsOf(a).wire(a, a.getAttribute('data-md-path')); } catch (_) {} });
     all('.md-img:not([data-ready])').forEach(box => {
-      const path = box.getAttribute('data-md-path'), alt = box.getAttribute('data-md-alt') || path;
+      const path = box.getAttribute('data-md-path'), alt = box.getAttribute('data-md-alt') || path, refs = refsOf(box);
       box.setAttribute('data-ready', 'loading');   // carry pending and failed slots across streaming re-renders too
       const link = document.createElement('a'); link.className = 'thumb md-thumb'; link.href = '#'; link.setAttribute('aria-label', 'Enlarge ' + alt);
       const img = document.createElement('img'); img.alt = alt; img.decoding = 'async';
@@ -10988,6 +11005,8 @@ const Chat = (() => {
     // wins on format; it's never baked into the saved prompt.
     const sys = system
       + (isTask ? ' If this needs real work — searching the web, reading or writing files, running a tool — do it and report the result clearly. If you can answer it directly from what you already know, just answer; don\'t reach for tools you don\'t need.' : '')
+      // agents told users "this chat can't show my workspace images" and linked them instead (user reports 10-20): say how
+      + (willSpeak ? '' : ' To show the Commander an image file (a PNG, JPG, GIF, WebP or SVG you saved), put ![short caption](path) in your reply, using the relative path you saved it under — this chat shows it as the picture.')
       + (willSpeak ? voiceModeRules() : '');
 
     const before = Object.assign({}, Harness.totals());   // COPY (totals is a mutated singleton) so the per-stream diff is real

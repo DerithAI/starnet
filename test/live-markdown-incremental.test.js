@@ -24,7 +24,7 @@ function extract(name) {
 // eslint-disable-next-line no-new-func
 const renderMarkdown = new Function(
   /const HTML_ESC = \{[^}]*\};/.exec(chat)[0] + '\n' + /  const REL_PATH = [^\n]*;/.exec(chat)[0] + '\n' +
-  ['escapeHtml', 'linkify', 'mdInline', 'hostOf', 'linkHostNote', 'fileRefLink', 'fileRefImage', 'reportInline', 'renderFence', 'renderMarkdown'].map(extract).join('\n') +
+  ['escapeHtml', 'linkify', 'mdInline', 'hostOf', 'linkHostNote', 'appFileRef', 'fileRefLink', 'fileRefImage', 'reportInline', 'renderFence', 'renderMarkdown'].map(extract).join('\n') +
   '\nreturn renderMarkdown;')();
 
 let seed = 7;
