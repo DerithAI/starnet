@@ -9,8 +9,9 @@
         turn comes due mid-interval, a decision whose first step lands on the next tick, and a wake from outside the
         frame (input, a harness event, a World API call) all land on the next vsync;
      4. every motion source the frame knows about flips the still flag (unsure is motion: a prop whose art moves on its
-        clock, a breathing body, a meteor), the ambient ones (off-screen bodies, float dust, a static speech bubble, a
-        cold belt) do not, and every clock the inner life gates on is either due in the verdict or exempt for a reason.
+        clock, a bobbing body, a meteor, a bubble sliding with its body even off screen), the ambient ones (an off-screen
+        body with nothing over it, float dust, a static speech bubble, a planted body's sub-pixel breath, a cold belt) do
+        not, and every clock the inner life gates on is either due in the verdict or exempt for a reason.
    The world is a browser IIFE: the pacer block, the verdict block and frame() are lifted out of the source and run in a vm
    sandbox on a fake vsync clock — behaviour, not prose. The prop / sky / sprite readouts the verdict reads are proven by
    test/render-still-readouts.test.js. */
@@ -60,6 +61,7 @@ var cineHoldUntil = 0, cineWalkAt = -1e9, cineIdleMs = 120000, socialBeat = null
 var FLASH_MS = 950, HANDOFF_GRACE_MS = 8000;
 var activity = 'idle', lastCursor = { wx: 0, wy: 0, t: -1e9 }, gatherGateUntil = -1e9, stationBusyAt = -1e9, gatherRollAt = -1e9;
 var chatFocusId = null, chatWarmUntil = -1e9, stillPass = null, linkStaleDim = false, lastSseEventAt = 0, rmOn = false;
+var overlaysOn = true, hoverAgent = null, palletPopAt = -1e9;
 ${Object.entries(K).map(([k, v]) => 'var ' + k + ' = ' + v + ';').join(' ')}
 function reduceMotion() { return rmOn; }
 ${isTalkKindSrc}
@@ -274,6 +276,79 @@ function walkerScene(w, b) {
   A.ok(b.px > x0, '(the body really walked)');
 }
 
+// ---- 4c. what the 10-21 review found the tier slowing or delaying ------------------------------------------------------
+{
+  // (a) a crew body walking OFF screen with its speech bubble up: drawBubble clamps the bubble to the canvas edge and it slides
+  // with the body (setActivityFor's 'working…' lasts 4.2 s while a summoned body walks to an off-camera desk) → normal pace
+  const w = makeWorld(60), mate = body({ id: 'm', px: -400, py: 100, state: 'walk', say: { text: 'working…', until: 1e9 } });
+  w.sb.crew = [mate];
+  let last = 0;
+  w.sb.scene = { step(now) { w.env.draws.push(now); const dt = last ? now - last : 0; last = now; mate.py += 0.03 * dt; } };
+  w.W.frame(0); w.runUntil(1000); w.runUntil(2000);
+  const n = count(w.env.draws, 1000, 2000);
+  A.ok(n >= 59 && n <= 61 && w.W.st().stillWhy === 'speech', 'a body walking off screen with its bubble up is drawn 60x a second (' + n + ', ' + w.W.st().stillWhy + '): the clamped bubble slides along the edge');
+  mate.say = { text: '', until: 0 };
+  w.runUntil(3000);
+  A.eq(w.W.renderPace().mode, 'still', '...and once the bubble is gone the off-screen walker changes nothing you can see: still');
+}
+{
+  // (b) an OFF-SCREEN initiator's decision starts an ON-SCREEN partner walking (planHuddle / a border meeting write the
+  // partner's plan): its clock comes due mid-interval, and the partner's first step is drawn on the first vsync after it
+  const w = makeWorld(60);
+  const init = body({ id: 'off', px: -60, py: 150 });   // 60 world px past the left edge (the pad is 48), inside SOCIAL_NEAR_RADIUS
+  const partner = body({ id: 'on', px: 20, py: 150 });
+  w.sb.crew = [init, partner];
+  let last = 0, decidedAt = null;
+  w.sb.scene = { step(now) {
+    w.env.draws.push(now);
+    const dt = last ? now - last : 0; last = now;
+    if (now >= init.idleUntil && decidedAt == null) { decidedAt = now; init.idleUntil = Infinity; partner.state = 'walk'; partner.walkFrom = now; }
+    if (partner.state === 'walk') partner.px += 0.03 * dt;
+  } };
+  w.W.frame(0); w.runUntil(1000);
+  A.ok(w.W.st().stillNow, 'an off-screen initiator and its idle on-screen partner are still');
+  const L = w.toNextDraw();
+  init.idleUntil = L + 45;   // still ticks: L+33.3, L+66.7; the first vsync at/after the clock is L+50
+  w.runUntil(L + 200);
+  A.ok(Math.abs(decidedAt - (L + 50)) < 0.01, "the off-screen initiator's decision lands on the first vsync after its clock (+" + (decidedAt - L).toFixed(1) + ' ms, not +66.7)');
+  A.ok(partner.walkFrom === decidedAt && w.env.draws.includes(decidedAt), '...and that draw shows the on-screen partner starting to walk');
+}
+{
+  // (c) the hero's voice starts 3 ms after a still draw: voice.js flips isSpeaking from the audio element's 'play' callback and
+  // calls World.voiceChanged (→ motionWake), so the talk track is drawn on the next vsync, not the next still tick
+  const w = makeWorld(60), hero = body({ id: 'hero' });
+  let speaking = false, mouthAt = null;
+  w.sb.agent = hero; w.sb.Voice = { isListening: () => false, isSpeaking: () => speaking };
+  w.sb.scene = { step(now) { w.env.draws.push(now); if (speaking && mouthAt == null) mouthAt = now; } };
+  w.W.frame(0); w.runUntil(1000);
+  A.ok(w.W.st().stillNow, 'a quiet hero is still');
+  const L = w.toNextDraw();
+  w.at(L + 3, () => { speaking = true; w.W.motionWake(); });   // Voice.onSpeakStart → setSpeaking → World.voiceChanged()
+  w.runUntil(L + 200);
+  A.ok(Math.abs(mouthAt - (L + 1000 / 60)) < 0.01, 'the voice starting between frames is drawn on the next vsync (+' + (mouthAt - L).toFixed(1) + ' ms; the still tick is +33.3)');
+  const L2 = w.toNextDraw();
+  A.eq(w.W.st().stillWhy, 'speech', '...and the floor keeps the normal pace while it speaks');
+  w.at(L2 + 4, () => { speaking = false; w.W.motionWake(); });   // onSpeakEnd: the mouth stops and a voice-held bubble vanishes
+  w.runUntil(L2 + 100);
+  const after = w.env.draws.find(t => t > L2 + 4);
+  A.ok(Math.abs(after - (L2 + 1000 / 60)) < 0.01, '...and its end is drawn on the next vsync too (+' + (after - L2).toFixed(1) + ' ms)');
+  const wcode = strip(world);
+  A.ok(/voiceChanged: \(\) => \{ motionWake\(\); \}/.test(wcode), 'World.voiceChanged is the wake voice.js calls (test/render-still-wakes.test.js boots the real voice.js)');
+}
+{
+  // (d) a planted body breathing (the hero standing idle in the default view): the sub-pixel breath is _renderDrift, not
+  // motion — the scene is still at 30/s, and every one of those frames draws the breath at its true phase
+  const w = makeWorld(60), hero = body({ id: 'hero', _renderDrift: true, _renderLive: false });
+  w.sb.agent = hero; walkerScene(w, hero);
+  w.W.frame(0); w.runUntil(1000); w.runUntil(2000);
+  const n = count(w.env.draws, 1000, 2000);
+  A.ok(n >= 29 && n <= 31 && w.W.renderPace().mode === 'still', 'a hero standing and breathing is drawn 30x a second (' + n + ') — it was 60, so the tier never engaged with a body on screen');
+  hero.say = { text: 'hello', until: 2600 };
+  w.runUntil(2500);
+  const m = count(w.env.draws, 2050, 2500);
+  A.ok(m >= 26 && w.W.st().stillWhy === 'speech', '...but with a bubble over its head (which rounds to whole px as the head swells) it keeps the normal pace (' + m + ' draws in 450 ms)');
+}
+
 // ---- 5. a wake from outside the frame (input, a harness event, a World API call) lands on the next vsync ------------
 {
   const w = makeWorld(60), b = body();
@@ -365,7 +440,7 @@ function walkerScene(w, b) {
   flip('body', 'a wake ripple', () => { mate.wakeAt = now; });
   flip('body', 'a level-up surge', () => { mate.levelUpAt = now; });
   flip('body', 'a summoned worker glowing', () => { mate.workUntil = now + 900; });
-  flip('body', "a body's drawn geometry moving on the clock (the idle bob, a planted body's breath: _renderLive)", () => { mate._renderLive = true; }, () => { mate._renderLive = false; });
+  flip('body', "a body's drawn geometry moving on the clock (the idle bob, the speech accent easing out: _renderLive)", () => { mate._renderLive = true; }, () => { mate._renderLive = false; });
   flip('body', 'a decision: the goal changed (what it starts shows next tick)', () => { mate.goal = 'inspect'; });
   flip('body', 'a decision: the state changed', () => { hero.state = 'social'; }, () => { hero.state = 'idle'; });
   flip('body', 'a body holding a walk target (about to step)', () => { mate.target = { x: 1, y: 1 }; }, () => { mate.target = null; });
@@ -375,6 +450,17 @@ function walkerScene(w, b) {
   flip('body', "the hero's glance roll pending (maybeGlance rolls every tick once glanceCd lapses)", () => { hero.glanceCd = now - 1; }, () => { hero.glanceCd = Infinity; });
   flip('body', "the hero at a prop with its fidget lapsed", () => { hero.goal = 'use'; hero.glanceCd = 0; hero.nextFidget = now - 1; }, () => { hero.goal = null; hero.glanceCd = Infinity; hero.nextFidget = 0; });
   flip('speech', 'a peer-chatter line', () => { mate.chatter = { until: now + 800 }; }, () => { mate.chatter = null; });
+  // a canvas-clamped overlay follows its body (review 10-21): drawBubble / drawNameplate clamp to the canvas and track the head
+  const offWalk = (over) => () => { Object.assign(mate, { px: -400, py: 100 }, over); mate.px -= 3; };   // off the left edge, and it moved this frame
+  const homeMate = () => { Object.assign(mate, { px: 300, py: 150, say: null, state: 'idle' }); sb.hoverAgent = null; };
+  flip('speech', 'a body walking OFF screen with its speech bubble up (the bubble slides along the canvas edge)', offWalk({ state: 'walk', say: { text: 'working…', until: now + 4200 } }), homeMate);
+  flip('speech', 'the hero walking off screen with its bubble up', () => {
+    Object.assign(hero, { px: -400, py: 100, say: { text: 'on my way', until: now + 3000 } }); hero.px -= 3;
+  }, () => { Object.assign(hero, { px: 200, py: 150, say: null }); });
+  flip('speech', 'the hovered body walking off screen (its nameplate is clamped to the canvas too)', () => { offWalk({ state: 'walk' })(); sb.hoverAgent = mate; }, homeMate);
+  flip('speech', 'an off-screen body with its bubble up whose drawn geometry bobs (_renderLive)', () => { Object.assign(mate, { px: -400, py: 100, say: { text: 'hm', until: now + 3000 }, _renderLive: true }); verdict(); }, () => { mate._renderLive = false; homeMate(); });
+  flip('speech', "a planted body breathing under its bubble (the bubble rounds to whole px: _renderDrift)", () => { mate.say = { text: 'ok', until: now + 3000 }; mate._renderDrift = true; }, () => { mate._renderDrift = false; mate.say = null; });
+  flip('speech', 'the hovered body breathing under its nameplate', () => { sb.hoverAgent = mate; mate._renderDrift = true; }, () => { mate._renderDrift = false; sb.hoverAgent = null; });
   // the floor's movers
   flip('crate', 'a crate riding', () => { sb.convey = { boxCount: () => 1 }; }, () => { sb.convey = null; });
   flip('crate', 'a ghost projection riding', () => { sb.geo = { belts: [] }; sb.ghost = { nextChange: n => n }; }, () => { sb.ghost = null; sb.geo = null; });
@@ -393,6 +479,7 @@ function walkerScene(w, b) {
   flip('fx', 'a dock flash', () => { sb.dockFlashes.set('p', now); }, () => sb.dockFlashes.clear());
   flip('fx', 'the pin flourish', () => { sb.pinFlourishAt = now; });
   flip('fx', 'the FIRST SHIP pulse', () => { sb.firstShipPulse = { at: now }; }, () => { sb.firstShipPulse = null; });
+  flip('fx', "a SHIPPED pallet's newest crate popping in (drawPallet's 900 ms lift and glint)", () => { sb.palletPopAt = now - 850; });
   flip('fx', 'the awakening', () => { sb.awakeFrozen = true; }, () => { sb.awakeFrozen = false; });
   flip('fx', 'the arrival', () => { sb.arrivalScene = {}; }, () => { sb.arrivalScene = null; });
   flip('fx', 'the kindling', () => { sb.kindleArmed = true; }, () => { sb.kindleArmed = false; });
@@ -412,6 +499,11 @@ function walkerScene(w, b) {
   calm('a ghost waiting to spawn', () => { sb.geo = { belts: [] }; sb.ghost = { nextChange: () => now + 2500 }; }, () => { sb.ghost = null; sb.geo = null; });
   calm('a desk flash that has run its course (its pass skipped: overlays off)', () => { sb.deskFlash.set('a', { at: now - 5000 }); sb.dockFlashes.set('p', now - 5000); sb.firstShipPulse = { at: now - 5000 }; }, () => { sb.deskFlash.clear(); sb.dockFlashes.clear(); sb.firstShipPulse = null; });
   calm('a static speech bubble', () => { hero.say = { text: 'hello', until: now + 3000 }; }, () => { hero.say = null; });
+  calm("a planted body's breath (_renderDrift: a sub-pixel swell every still frame draws at its true phase)", () => { hero._renderDrift = true; mate._renderDrift = true; }, () => { hero._renderDrift = false; mate._renderDrift = false; });
+  calm('a static speech bubble over a body standing off screen (clamped, but nothing moves it)', () => { Object.assign(mate, { px: -400, py: 100, say: { text: 'hm', until: now + 3000 } }); }, () => { Object.assign(mate, { px: 300, py: 150, say: null }); });
+  calm('a body walking off screen whose bubble has run its time', () => { Object.assign(mate, { px: -5000, state: 'walk', say: { text: 'bye', until: now - 10 } }); }, () => { Object.assign(mate, { px: 300, state: 'idle', say: null }); });
+  calm('a bubble over a walker off screen with overlays off (the HUD widget shows only the world)', () => { sb.overlaysOn = false; Object.assign(mate, { px: -5000, state: 'walk', say: { text: 'hm', until: now + 3000 } }); }, () => { sb.overlaysOn = true; Object.assign(mate, { px: 300, state: 'idle', say: null }); });
+  calm('a pallet pop that has run its course', () => { sb.palletPopAt = now - 5000; }, () => { sb.palletPopAt = -1e9; });
   calm('every drawn prop static, alpha-only glow or frozen (clockNext Infinity, no pulse)', () => { sb.PropSprites = { clockNext: () => Infinity, pulsing: () => false }; }, () => { delete sb.PropSprites; });
   calm('a sky with nothing crossing (drift and twinkle are ambient)', () => { sb.SpaceBG = { nextChange: () => Infinity }; }, () => { delete sb.SpaceBG; });
   calm('a meteor on a LANDED station (no sky is drawn there)', () => { sb.SpaceBG = { nextChange: n => n }; sb.Terrain = { active: () => true }; }, () => { delete sb.SpaceBG; delete sb.Terrain; });
@@ -469,7 +561,17 @@ function walkerScene(w, b) {
   due('the station going quiet long enough to gather', () => { sb.stationBusyAt = now - K.GATHER_QUIET_MS + 500; }, now + 500, () => { sb.stationBusyAt = -1e9; });
   due('the COMMS stare going cold', () => { sb.chatFocusId = 'hero'; sb.chatWarmUntil = now + 1500; }, now + 1500, () => { sb.chatFocusId = null; sb.chatWarmUntil = -1e9; });
   due('the link going stale (LINK DOWN)', () => { sb.lastSseEventAt = now - K.LINK_STALE_MS + 777; }, now + 777, () => { sb.lastSseEventAt = 0; });
-  calm('an off-screen body\'s clock (invisible: it re-enters through the pad)', () => { mate.px = -5000; mate.idleUntil = now + 300; }, () => { mate.px = 300; mate.idleUntil = Infinity; });
+  // an off-screen body's DECISION clock is due too (review 10-21): it can decide for an on-screen partner (a huddle within
+  // SOCIAL_NEAR_RADIUS, a border meeting in the next room, a mutual glance) — its own drawn-frame and blink edges are not
+  due("an off-screen body's next decision (an initiator past the edge decides for an on-screen partner too)", () => { mate.px = -5000; mate.idleUntil = now + 300; }, now + 300, () => { mate.px = 300; mate.idleUntil = Infinity; });
+  due("an off-screen body's cooldown lapsing (neighborGlanceCd: a mutual glance turns an on-screen neighbour)", () => { mate.px = -5000; mate.neighborGlanceCd = now + 410; }, now + 410, () => { mate.px = 300; mate.neighborGlanceCd = 0; });
+  calm("an off-screen body's drawn-frame edge (a blink nobody can see)", () => { mate.px = -5000; mate._renderNextAt = now + 120; }, () => { mate.px = 300; mate._renderNextAt = 0; });
+  {
+    mate.px = -5000; mate._renderNextAt = now + 120; settle();
+    const s = settle();
+    A.ok(s.stillNow && Math.abs(s.stillDue - (now + 120)) > 1e-6, "...it books nothing: an off-screen body's blink / pose frame is never due");
+    mate.px = 300; mate._renderNextAt = 0; settle();
+  }
   calm('gathering gates under reduced motion (no assembly ever rolls)', () => { sb.rmOn = true; sb.gatherRollAt = now + 50; }, () => { sb.rmOn = false; sb.gatherRollAt = -1e9; });
   A.ok(settle().stillDue === Infinity || settle().stillDue > now, 'past clocks are never due');
 }
@@ -589,10 +691,24 @@ A.ok(/const q = nowMs \/ \(1000 \/ fps\) \+ aph;\s*clockNext = Math\.min\(clockN
   '...and the next frame of a clock-driven track, from the same phase the frame index uses');
 A.ok(/idx = fixedIdx != null[\s\S]{0,500}: Math\.floor\(nowMs \/ \(1000 \/ fps\) \+ aph\);/.test(assets), '(the frame index really is floor(now / (1000 / fps) + aph))');
 {
-  // _renderLive: published right after the bob, the breath and the speech accent are final, from exactly those three
-  const i = assets.indexOf('b._renderLive = bob !== 0 || breath !== 0 || speech !== 0;');
+  // _renderLive: published right after the bob, the breath and the speech accent are final — the bob and the accent's ease are
+  // motion; the planted breath is _renderDrift (sub-pixel, drawn at its true phase every still frame: review 10-21, option b)
+  const i = assets.indexOf('b._renderLive = bob !== 0 || (planted && !reduced && (b._speechEase || 0) > 1e-3);');
+  const j = assets.indexOf('b._renderDrift = breath !== 0 || speech !== 0;');
   A.ok(i > 0 && i > assets.indexOf('if (reduced || planted) bob = 0;') && i > assets.indexOf('const breath = planted && !reduced'),
-    "SPRITES.drawBody publishes _renderLive from the final bob, breath and speech accent (a breathing body is motion)");
+    "SPRITES.drawBody publishes _renderLive from the final bob and the speech accent's ease (a bobbing or still-mouthing body is motion)");
+  A.ok(j > i, '...and _renderDrift from the breath and the accent (an overlay over that head rounds to whole px: motion only under one)');
+  A.ok(/const breath = planted && !reduced \? Math\.sin\(nowMs \/ 1050 \+ aph\) \* 0\.12 - speech\*\.18 : 0;/.test(assets),
+    '(the breath really is a 0.12 world px sine of period 2π·1050 ms: under 0.004 x zoom device px per 33 ms still interval)');
+  const wcode = strip(world), vb = A.fnBody(wcode, 'function bodyStillWhy(b, now)');
+  A.ok(/if \(overlaysOn && \(moved \|\| b\._renderLive \|\| b\._renderDrift\) && \(b === hoverAgent \|\| bubbleShown\(b, now\)\)\) return 'speech';\s*if \(!bodyOnScreen\(b\)\) return '';/.test(vb),
+    'bodyStillWhy judges a body-anchored overlay BEFORE it drops an off-screen body (the bubble is clamped to the canvas)');
+  A.ok(vb.indexOf('noteDue(b[BODY_CLOCKS[i]], now)') < vb.indexOf('if (!bodyOnScreen(b))') && vb.indexOf('noteDue(b._renderNextAt, now)') > vb.indexOf('if (!bodyOnScreen(b))'),
+    "...books every placed body's decision clocks before it, and only an on-screen body's drawn-frame edge after it");
+  const bub = A.fnBody(wcode, 'function drawBubble(now, who)');
+  A.ok(/if \(!s\.text \|\| \(s\.until < now && !speakingNow\)\) \{ drawChatterBubble\(now, who\); return; \}/.test(bub)
+    && /const speakingNow = \(who === agent\) && typeof Voice !== 'undefined' && Voice\.isSpeaking && Voice\.isSpeaking\(\);/.test(bub),
+    "bubbleShown mirrors drawBubble's own test (a line, until its time, or past it while the hero's voice speaks)");
 }
 {
   // ghostline.nextChange: the projection's motion and its next spawn, from its own clock

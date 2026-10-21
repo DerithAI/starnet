@@ -726,10 +726,16 @@ const SPRITES = (() => {
     const speech=planted&&!reduced?(b._speechEase||0)*accent:0;
     b._renderSpeechAccent=speech;
     const breath = planted && !reduced ? Math.sin(nowMs / 1050 + aph) * 0.12 - speech*.18 : 0;
-    // STILL PACER readout (world.js, 2026-10-21): this body's drawn geometry moves on the clock between frames — the idle bob
-    // (a standing body that is not planted, a glance), a planted body's breath, the speech accent. A body that moves is never
-    // drawn at the still pace, however small the move. Never drawn from.
-    b._renderLive = bob !== 0 || breath !== 0 || speech !== 0;
+    // STILL PACER readouts (world.js, 2026-10-21), never drawn from. _renderLive: this body's drawn geometry moves on the clock
+    // between frames — the idle bob (a standing body that is not planted, a glance; snapped to whole device px, and the shadow
+    // under it lifts) or the speech accent while its ease can still show it (the accent rests flat between its lobes and rises
+    // again on the clock, so it is judged by the ease, its ceiling: past 0.001, ~1.2 s after the line, the skew is under 0.002
+    // device px at MAXZ). A body that moves is never drawn at the still pace. _renderDrift: the planted breath (and the accent's
+    // dying tail) — a sub-pixel swell of the smooth-sampled drawn height, under 0.004 x zoom device px between two still
+    // frames, which every still frame draws at its true phase, so it is not motion (review 10-21, option b); an overlay that
+    // rounds to whole px over its head (a bubble, a nameplate) still is, and world.js reads this flag for that.
+    b._renderLive = bob !== 0 || (planted && !reduced && (b._speechEase || 0) > 1e-3);
+    b._renderDrift = breath !== 0 || speech !== 0;
     const breathScale = 1 + breath / Math.max(12, dh - pad);
     const drawHeight = dh * breathScale;
     const y = planted ? snap(b.py + GROUND_BITE - seatLift) - (dh - pad) * breathScale

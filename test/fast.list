@@ -810,6 +810,7 @@ test/canvas-loss-recovery.test.js
 test/render-pacing.test.js
 test/render-still.test.js
 test/render-still-readouts.test.js
+test/render-still-wakes.test.js
 test/static-bake-guard.test.js
 test/stage-context-loss.test.js
 test/conveyor.test.js

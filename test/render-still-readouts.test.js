@@ -64,13 +64,52 @@ seeded(() => {
   A.eq(s.SpaceBG.nextChange(t + 10), t + 10, 'a backdrop switch not yet built (or still baking off-thread) is a change in progress');
   s.draw('nursery', t + 20);
   A.ok(s.SpaceBG.nextChange(t + 20) > t + 20, 'THE NURSERY carries the same weather (a meteor is due)');
-  for (const id of ['galaxy', 'ocean', 'city']) {
+  for (const id of ['ocean', 'city']) {
     s.draw(id, t + 30); s.draw(id, t + 40);
-    A.eq(s.SpaceBG.nextChange(t + 40), Infinity, id + ': only slow layers (drift, twinkle, swell, traffic) — nothing the still pace must not slow');
+    A.eq(s.SpaceBG.nextChange(t + 40), Infinity, id + ': only slow layers (swell, traffic, clouds) and no weather — nothing the still pace must not slow');
   }
   s.draw('belt', t + 50); s.draw('belt', t + 60);
   A.eq(s.SpaceBG.nextChange(t + 60), t + 60, "THE BELT's ember shower is always crossing (300-780 px/s): motion");
 });
+// ANDROMEDA (the 2nd pick in the menu) draws the same meteor and bolide: the same lifecycle as THE VOID (review 10-21: it
+// had no readout, so a meteor crossing it was drawn at the still pace and the next one was never due)
+seeded(() => {
+  const s = sky();
+  const t0 = 200000;
+  s.draw('galaxy', t0);
+  const due = s.SpaceBG.nextChange(t0);
+  A.ok(due >= t0 + 20000 && due <= t0 + 60000, 'ANDROMEDA with no meteor live: the next meteor is due (+' + Math.round((due - t0) / 1000) + ' s)');
+  const r = s.draw('galaxy', due);
+  A.ok(r.some(([f]) => /^rgba\(220,230,255,/.test(f)), '(the meteor spawned and drew on the draw at its clock)');
+  A.eq(s.SpaceBG.nextChange(due), due, '...a meteor crossing ANDROMEDA is motion');
+  let t = due, guard = 0;
+  while (s.SpaceBG.nextChange(t) <= t && guard++ < 200) { t += 1000 / 60; s.draw('galaxy', t); }
+  const after = s.SpaceBG.nextChange(t);
+  A.ok(guard < 200 && t - due >= 900 && t - due <= 1450, '...for its whole life (' + Math.round(t - due) + ' ms)');
+  A.ok(after >= t + 45000 && after < Infinity, '...and then the next one is due (+' + Math.round((after - t) / 1000) + ' s)');
+});
+// RATCHET: a backdrop that draws the weather must report it. (a) source: every *_BG whose draw calls drawMeteor/drawBolide
+// defines nextChange; (b) live: on every backdrop in the menu, a draw that painted a meteor or the bolide reports `now`.
+{
+  const starts = [...skySrc.matchAll(/const (\w+_BG) = \{/g)];
+  A.ok(starts.length >= 6, '(found ' + starts.length + ' backdrop blocks)');
+  for (let i = 0; i < starts.length; i++) {
+    const end = i + 1 < starts.length ? starts[i + 1].index : skySrc.indexOf('const BACKDROPS = {');
+    const block = skySrc.slice(starts[i].index, end);
+    if (/draw(Meteor|Bolide)\(ctx/.test(block)) A.ok(/\n {4}nextChange[:(]/.test(block), starts[i][1] + ' draws the meteor/bolide, so it defines nextChange (the STILL readout)');
+  }
+  const ids = sky().SpaceBG.list().map(b => b.id);
+  A.ok(ids.length >= 6, '(the menu lists ' + ids.length + ' backdrops)');
+  for (const id of ids) seeded(() => {
+    const s = sky(), t0 = 300000, weather = r => r.some(([f]) => /^rgba\((220,230,255|240,255,250),/.test(f));
+    s.draw(id, t0);                                    // arms the meteor (20-60 s) and bolide (30 min-3 h) clocks
+    const tm = t0 + 61000, tb = t0 + 181 * 60000;
+    const m = s.draw(id, tm), mNext = s.SpaceBG.nextChange(tm);
+    const b = s.draw(id, tb), bNext = s.SpaceBG.nextChange(tb);
+    A.ok((!weather(m) || mNext === tm) && (!weather(b) || bNext === tb),
+      id + ': a draw that painted a meteor or the bolide reports motion (' + (weather(m) || weather(b) ? 'weather drawn' : 'no weather') + ')');
+  });
+}
 seeded(() => {
   const s = sky({ reduced: true });
   s.draw('belt', 5000); s.draw('belt', 5017);
