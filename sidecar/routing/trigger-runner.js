@@ -366,7 +366,10 @@ function makeTriggerRunner(deps) {
      last moment (its newest stamp — the arming or the latest fire — or the trigger's last edit) is recorded as seen
      and never fires; a file changed after it settles and fires. By time, not by position: positions move when files
      are deleted (the over-cap message asks for exactly that), which let old files slide into the old window and fire.
-     Cost of the rule: a file that was waiting its turn (rate limit, a paused line) when the old station stopped is
+     ONLY A FOLDER OVER THE OLD 500 adopts (review 2026-10-21; the watcher decides — trigger-folder LEGACY_WINDOW):
+     the old watcher listed a smaller folder whole, so its record is complete and nothing is adopted; a file waiting
+     there (rate limit, $ cap, E-STOP, a paused line, a read backoff) fires as it would have on the old station.
+     Cost of the rule, in a folder over 500 only: a file that was waiting its turn when the old station stopped is
      recorded too, and does not fire. Then the record is marked, once.
      false = the adoption could not be written: nothing fires this pass, and the next scan tries again. */
   function legacyCutoff(t, mine) {
@@ -374,7 +377,7 @@ function makeTriggerRunner(deps) {
     for (const k of Object.keys(mine)) if (mine[k] > at) at = mine[k];
     return at;
   }
-  function adoptLegacy(t, s, mine, keys) {
+  function adoptLegacy(t, s, mine, keys, listed) {
     const at = now(), added = [];
     for (const k of keys) if (!Object.prototype.hasOwnProperty.call(mine, k)) { mine[k] = at; added.push(k); }
     if (added.length && !saveSeen()) {
@@ -384,7 +387,7 @@ function makeTriggerRunner(deps) {
     }
     s.adopted = true;   // this process never adopts twice, even if the marker below cannot be written
     if (!patch(t.id, () => ({ seenV: T.FOLDER_SEEN_V }))) warn('[triggers] ' + t.id + ': the upgraded fired-file record could not be marked; it is adopted again on the next start');
-    if (added.length) warn('[triggers] ' + t.id + ': ' + added.length + ' file' + (added.length === 1 ? '' : 's') + ' already in the folder past the old 500-file watch recorded as seen (never fired)');
+    if (added.length) warn('[triggers] ' + t.id + ': the folder holds ' + listed + ' files, more than the old 500-file watch listed: ' + added.length + ' of them not on record and last changed no later than the record\'s last moment ' + (added.length === 1 ? 'was' : 'were') + ' recorded as seen (never fired)');
     return true;
   }
 
@@ -403,7 +406,7 @@ function makeTriggerRunner(deps) {
         const res = await d.watcher.scan(t.config.path, mine, s.pending, now(), upgrade ? { adoptUpTo: legacyCutoff(t, mine) } : undefined);
         if (!res.ok) { s.scanError = res.error; recordError(t.id, res.error); s.pending = new Map(); continue; }
         if (Array.isArray(res.present)) s.present = new Set(res.present);   // read by saveSeen's trim (set before any save below)
-        if (upgrade && !adoptLegacy(t, s, mine, res.legacy || [])) continue;   // nothing fires until the old record is adopted
+        if (upgrade && !adoptLegacy(t, s, mine, res.legacy || [], Array.isArray(res.present) ? res.present.length : 0)) continue;   // nothing fires until the old record is adopted
         // the folder is readable again: a scan failure on record is no longer true — clear it (a fire error stays)
         if (s.scanError || /^(the folder no longer exists|cannot read the folder|the folder holds \d+ files|could not record the folder's existing files)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
         s.pending = res.pending;

@@ -165,6 +165,13 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
     A.ok(!cb.ok && /^the folder holds 520 files — a folder trigger watches at most 500/.test(cb.error), 'arming a folder over the ceiling is refused with the reason: ' + cb.error);
     const cs = await CW.scan(big, {}, new Map(), t0);
     A.ok(!cs.ok && cs.ready.length === 0 && /holds 520 files/.test(cs.error), 'a scan over the ceiling fires nothing and says why');
+    // the UPGRADE adopts only where the old 500-file window could have hidden a file: 501 listed adopts, 500 does not
+    for (const nm of fs.readdirSync(big).sort().slice(0, fs.readdirSync(big).length - 501)) fs.unlinkSync(path.join(big, nm));
+    const a501 = await BW.scan(big, {}, new Map(), t0 + 200, { adoptUpTo: t0 });
+    fs.unlinkSync(path.join(big, fs.readdirSync(big).sort()[0]));
+    const a500 = await BW.scan(big, {}, new Map(), t0 + 210, { adoptUpTo: t0 });
+    A.ok(a501.ok && a501.legacy.length === 501 && a501.pending.size === 0, 'a 501-file folder hands its old unrecorded files back for adoption (' + (a501.legacy && a501.legacy.length) + ')');
+    A.ok(a500.ok && !('legacy' in a500) && a500.pending.size === 500, 'a 500-file folder (the old window held it whole) adopts nothing: every unrecorded file settles as ever (' + a500.pending.size + ' pending)');
   }
 
   /* ---- 7. the folder jail ---- */
@@ -355,13 +362,14 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
     // a file that landed after arming (it sorts first, inside the old window): the old watcher would have fired it — so must this
     fs.writeFileSync(path.join(ldir, 'a-early.txt'), 'landed after arming'); fs.utimesSync(path.join(ldir, 'a-early.txt'), (armedAt + 500) / 1000, (armedAt + 500) / 1000);
     let seenSaveFails = false;
+    const legacyWarns = [];
     const mkL = () => makeTriggerRunner({
       load: () => JSON.parse(JSON.stringify(disk.triggers)), save: v => { disk.triggers = JSON.parse(JSON.stringify(v)); },
       seen: { load: () => JSON.parse(JSON.stringify(disk.seen)), save: v => { if (seenSaveFails) throw new Error('disk full'); disk.seen = JSON.parse(JSON.stringify(v)); } },
       makeHub: fakeHub, plan: () => plan, shipsToOutbox: (a) => a === 'agent-b', dayCap: () => ({ cap: null, spent: 0 }),
       runsFor: sid => runsByStream[sid] || [], emit: () => {},
       watcher: makeFolderWatcher({ fsp: sortedFsp, pathMod: path, settleMs: 0 }),
-      now: () => clock, newId: () => 'id' + (++n) + 'abcdef0123456789'
+      now: () => clock, newId: () => 'id' + (++n) + 'abcdef0123456789', warn: m => legacyWarns.push(m)
     });
     const firedNames = (from, id) => hubCalls.slice(from).filter(c => c.chatId === 'trg-' + id).map(c => (c.text.match(/[a-z]+-?[a-z0-9]*\.txt/) || [''])[0]);
     const tick = async (r, k) => { for (let i = 0; i < k; i++) { clock += 3000; await r.tickFolders(); await new Promise(res => setTimeout(res, 20)); } };
@@ -372,6 +380,8 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
     A.eq(firedNames(from0, lid), ['a-early.txt'], 'after the upgrade NO old file past the old 500 fires; the one file that landed after arming still does (the 300 old files past it fired as new)');
     A.eq(disk.triggers.triggers.find(x => x.id === lid).seenV, T.FOLDER_SEEN_V, 'the record is marked as baselined over the whole folder');
     A.eq(Object.keys(disk.seen[lid]).length, 801, 'the record now holds every file: 500 old + 300 adopted + the 1 fired');
+    A.eq(legacyWarns.filter(m => m.indexOf(lid) >= 0), ['[triggers] ' + lid + ': the folder holds 801 files, more than the old 500-file watch listed: 300 of them not on record and last changed no later than the record\'s last moment were recorded as seen (never fired)'],
+      'the adoption is logged with the real reason and count');
     // a file that lands after the upgrade fires, even sorted past #500
     fs.writeFileSync(path.join(ldir, 'zz-late.txt'), 'new'); fs.utimesSync(path.join(ldir, 'zz-late.txt'), old / 1000, old / 1000);
     await tick(RL, 3);
@@ -382,6 +392,35 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
     await tick(RL2, 3);
     A.eq(firedNames(from0, lid), ['a-early.txt', 'zz-late.txt', 'zz-later.txt'], 'after a restart the upgrade is not redone: a new file past #500 still fires');
     RL2.remove(lid);
+
+    /* A SMALL OLD FOLDER IS NOT ADOPTED (review 2026-10-21). The old watcher listed a folder of 500 files or fewer
+       whole, so its record is complete. A file waiting there when the old station stopped — queued behind the fire
+       in flight, held by the rate limit, the day's $ cap, E-STOP or a paused line — is unmarked and older than the
+       last fire's stamp; adopting every such file swallowed that backlog silently ("past the old 500-file watch",
+       in a 7-file folder). The old station would have fired them, so the upgraded one must. */
+    {
+      const sdir = path.join(root, 'smalllegacy'); fs.mkdirSync(sdir);
+      const sid = 'trg_legacy0006', sArmed = clock - 3600 * 1000, sLast = clock - 600 * 1000, sSeen = {};
+      for (let i = 0; i < 5; i++) { const p = path.join(sdir, 'base' + i + '.txt'); fs.writeFileSync(p, 'b' + i); fs.utimesSync(p, (sArmed - 1000) / 1000, (sArmed - 1000) / 1000); sSeen[T.fileKey('base' + i + '.txt', fs.statSync(p))] = sArmed; }
+      // the old station's last two fires (those files have since moved out) used up its 2-per-hour limit
+      sSeen['fired1.txt|' + (sLast - 5000) + '|3'] = sLast - 1000;
+      sSeen['fired2.txt|' + (sLast - 5000) + '|3'] = sLast;
+      for (const nm of ['wait-a.txt', 'wait-b.txt']) { const p = path.join(sdir, nm); fs.writeFileSync(p, 'pending work'); fs.utimesSync(p, (sLast - 5000) / 1000, (sLast - 5000) / 1000); }   // dropped with them, held
+      disk.triggers.triggers.push({ id: sid, lineId: 'L1', kind: 'folder', name: 'small', enabled: true, config: { path: sdir, task: 'file it' },
+        maxPerHour: 2, createdAt: sArmed, updatedAt: sArmed, fires: 2, recent: [sLast - 1000, sLast], lastError: null });
+      disk.seen[sid] = sSeen;
+      const fromS = hubCalls.length, warnsS = legacyWarns.length;
+      const RS = mkL();
+      await tick(RS, 3);
+      const waitKeys = ['wait-a.txt', 'wait-b.txt'].map(nm => T.fileKey(nm, fs.statSync(path.join(sdir, nm))));
+      A.ok(firedNames(fromS, sid).length === 0 && waitKeys.every(k => !(k in disk.seen[sid])), 'inside the full hour the backlog waits in the folder, unmarked');
+      clock += 3600 * 1000;   // the hour frees up
+      await tick(RS, 3);
+      A.eq(firedNames(fromS, sid).sort(), ['wait-a.txt', 'wait-b.txt'], 'a small old folder\'s rate-limited backlog fires once the hour frees (it was recorded as seen and never fired)');
+      A.eq(disk.triggers.triggers.find(x => x.id === sid).seenV, T.FOLDER_SEEN_V, 'the small record is marked as upgraded');
+      A.eq(legacyWarns.slice(warnsS).filter(m => m.indexOf(sid) >= 0), [], 'and nothing claims files "past the old 500-file watch" in a 7-file folder');
+      RS.remove(sid);
+    }
     // an old record whose adoption cannot be written: nothing fires, the reason is on the trigger, the record stays as it was
     const lid2 = 'trg_legacy0002', names = fs.readdirSync(ldir).sort().slice(0, 500), oldSeen2 = {};
     for (const nm of names) oldSeen2[T.fileKey(nm, fs.statSync(path.join(ldir, nm)))] = armedAt;

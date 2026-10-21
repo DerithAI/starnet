@@ -27,7 +27,11 @@
    its other files that were already there would all fire as new. scan(…, { adoptUpTo: ms }) hands back, instead of
    settling them, the unrecorded files last changed at or before that moment (`legacy`): the runner records them as
    seen once (trigger-runner adoptLegacy). By TIME, never by listing position: deleting files moves positions, so a
-   position rule let old files slide into the old window and fire as new.
+   position rule let old files slide into the old window and fire as new. ONLY OVER THE OLD WINDOW (review
+   2026-10-21): a folder listing LEGACY_WINDOW files or fewer was listed whole by the old watcher, so its record is
+   complete and nothing is adopted — a file waiting there (rate limit, $ cap, E-STOP, a paused line, a read
+   backoff) settles and fires exactly as the old station would have fired it. Adopting in every folder swallowed
+   that waiting backlog silently.
 
    makeFolderWatcher({ fsp, pathMod, settleMs?, maxEntries?, statBudget?, readCap? })
      baseline(dir)                         -> Promise<{ ok, keys[], error? }>
@@ -40,6 +44,7 @@ const { note: failNote } = require('../failopen.js');
 const MAX_WATCHED = Math.floor(T.SEEN_MAX / 2);   // the most files one folder trigger tracks (see EVERY FILE COUNTS)
 const STAT_BUDGET = 500;                          // known files re-statted per scan (the old listing's whole cost)
 const DIR_CACHE_MAX = 64;                         // folders whose last-known stats are kept
+const LEGACY_WINDOW = 500;                        // the old listing: the first 500 files in readdir order (UPGRADE)
 
 function makeFolderWatcher(deps) {
   const d = deps || {};
@@ -108,8 +113,9 @@ function makeFolderWatcher(deps) {
 
   /* scan — `seen` is a key->firedAt map (read-only here), `pending` the previous scan's name->{size,mtimeMs,since}.
      Returns the files that have SETTLED and were never seen, the next pending map to carry forward, and `present`:
-     the key of every file listed. opts.adoptUpTo (the UPGRADE above): an unseen file whose mtime is at or before it
-     is returned in `legacy` (its key) and is neither pending nor ready. */
+     the key of every file listed. opts.adoptUpTo (the UPGRADE above): in a folder of more than LEGACY_WINDOW files,
+     an unseen file whose mtime is at or before it is returned in `legacy` (its key) and is neither pending nor
+     ready; a smaller folder returns no `legacy` and scans exactly as without it. */
   async function scan(dir, seen, pending, nowMs, opts) {
     const prev = pending instanceof Map ? pending : new Map();
     const isSeen = key => !!(seen && Object.prototype.hasOwnProperty.call(seen, key));
@@ -117,7 +123,8 @@ function makeFolderWatcher(deps) {
     // a file still settling, or one not fired yet, is always freshly statted — exactly as every file used to be
     try { files = await listFiles(dir, (name, st) => prev.has(name) || !isSeen(T.fileKey(name, st))); }
     catch (e) { return { ok: false, ready: [], pending: new Map(), error: readError(dir, e) }; }
-    const adoptUpTo = (opts && typeof opts.adoptUpTo === 'number' && isFinite(opts.adoptUpTo)) ? opts.adoptUpTo : null;
+    // a folder the old window held whole has nothing hidden to adopt (the UPGRADE above): it scans as ever
+    const adoptUpTo = (opts && typeof opts.adoptUpTo === 'number' && isFinite(opts.adoptUpTo) && files.length > LEGACY_WINDOW) ? opts.adoptUpTo : null;
     const next = new Map(), ready = [], legacy = [], present = [];
     for (const f of files) {
       const key = T.fileKey(f.name, f);
@@ -222,4 +229,4 @@ function makeFolderPolicy(deps) {
   return { check, inside };
 }
 
-module.exports = { makeFolderWatcher, makeFolderPolicy, lineOutputError, MAX_WATCHED, STAT_BUDGET };
+module.exports = { makeFolderWatcher, makeFolderPolicy, lineOutputError, MAX_WATCHED, STAT_BUDGET, LEGACY_WINDOW };
