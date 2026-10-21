@@ -49,12 +49,57 @@
      2MB leaves the extractor far more material than the 6k it will keep, while bounding the worst case to
      well under a second. */
   const RAW_BODY_MAX_CHARS = 2 * 1024 * 1024;
-  function readBodyBounded(r) {
-    return Promise.resolve(r.text()).then(t => {
+  /* THE CEILING IS ENFORCED WHILE READING, NOT AFTER (2026-10-20). The cut above ran on r.text(), which had
+     already pulled, decompressed and decoded the WHOLE body: a 32 MiB file pulled 33,554,432 bytes to keep
+     2 Mi characters (station RSS 61 -> 164 MB), an endless stream never finished, and a gzip/br bomb inflated
+     in full. Now the body streams in and the read stops at RAW_BODY_MAX_BYTES (3 bytes per UTF-16 unit, so the
+     kept text is still the full 2 Mi characters for any UTF-8) and cancels the rest. One TextDecoder pass over
+     the kept bytes decodes exactly as Response.text() does (BOM stripped, invalid bytes -> U+FFFD).
+     Content-Length is never trusted to refuse a body: under gzip it is the compressed wire size. A response
+     without a stream (test doubles that only implement text()) keeps the historic path. `truncated` lets a
+     caller say the body was cut instead of calling it whole. */
+  const RAW_BODY_MAX_BYTES = RAW_BODY_MAX_CHARS * 3;
+  const { note: failNote } = require('../../failopen');
+  async function readBodyInfo(r) {
+    const body = r && r.body;
+    if (!body || typeof body.getReader !== 'function') {
+      const t = await r.text();
       const s = String(t == null ? '' : t);
-      return s.length > RAW_BODY_MAX_CHARS ? s.slice(0, RAW_BODY_MAX_CHARS) : s;
-    });
+      return s.length > RAW_BODY_MAX_CHARS ? { text: s.slice(0, RAW_BODY_MAX_CHARS), truncated: true } : { text: s, truncated: false };
+    }
+    const reader = body.getReader();
+    const chunks = [];
+    let bytes = 0, truncated = false;
+    try {
+      for (;;) {
+        const step = await reader.read();
+        if (step.done) break;
+        const value = step.value instanceof Uint8Array ? step.value : new Uint8Array(step.value || []);
+        const room = RAW_BODY_MAX_BYTES - bytes;
+        if (value.byteLength >= room) {
+          chunks.push(value.subarray(0, room)); bytes += room;
+          truncated = value.byteLength > room;
+          break;
+        }
+        chunks.push(value); bytes += value.byteLength;
+      }
+      if (bytes >= RAW_BODY_MAX_BYTES && !truncated) truncated = !(await reader.read()).done;   // exactly at the cap: is there more?
+    } finally {
+      if (truncated) {
+        try { await reader.cancel(); } catch (e) { failNote('web.body.cancel', e); }
+      } else {
+        try { reader.releaseLock(); } catch (e) { failNote('web.body.release', e); }
+      }
+    }
+    let s = new TextDecoder('utf-8').decode(Buffer.concat(chunks.map(c => Buffer.from(c.buffer, c.byteOffset, c.byteLength))));
+    if (s.length > RAW_BODY_MAX_CHARS) { s = s.slice(0, RAW_BODY_MAX_CHARS); truncated = true; }
+    return { text: s, truncated };
   }
+  function readBodyBounded(r) {
+    return readBodyInfo(r).then(info => info.text);
+  }
+  const RAW_BODY_MAX_LABEL = String(RAW_BODY_MAX_CHARS).replace(/\B(?=(\d{3})+(?!\d))/g, ',');   // "2,097,152"
+  const RAW_BODY_CUT_NOTE = 'response body cut at its first ' + RAW_BODY_MAX_LABEL + ' characters (raw-body ceiling); the rest was not downloaded';
   const SNIPPET_MAX_CHARS = 320;
   const SEARCH_TIMEOUT_MS = 12000;
   const FETCH_TIMEOUT_MS  = 15000;
@@ -501,7 +546,8 @@
       } }) : null;
       try {
         const r = await doFetch(u.href, dispatcher ? Object.assign({}, init, { dispatcher }) : init);
-        return { status: r.status, ct: r.headers.get('content-type') || '', loc: r.headers.get('location') || '', body: await readBodyBounded(r) };
+        const info = await readBodyInfo(r);
+        return { status: r.status, ct: r.headers.get('content-type') || '', loc: r.headers.get('location') || '', body: info.text, bodyTruncated: info.truncated };
       } catch (e) {
         // name the cause code + host (nameTransport). Cause host/IP FIRST, the requested hostname only as the
         // fallback — never reorder: the pinned-dispatcher test expects the IP when the cause carries one.
@@ -734,8 +780,10 @@
           u = next; continue;
         }
         if (res.status >= 400) throw new Error('http ' + res.status);
-        if (/application\/(json|xml)|text\/(plain|csv)/i.test(res.ct)) return res.body.trim();
-        return htmlToText(res.body);
+        // `cut`: the page body hit the raw-body ceiling, so this text comes from its first part only
+        const cut = !!res.bodyTruncated;
+        if (/application\/(json|xml)|text\/(plain|csv)/i.test(res.ct)) return { text: res.body.trim(), cut };
+        return { text: htmlToText(res.body), cut };
       }
       throw new Error('too many redirects');
     }
@@ -746,15 +794,18 @@
       await assertResolvedSafe(u, doLookup);   // refuse names that RESOLVE to private addresses (rebinding)
       const max = (opts && opts.maxChars) || FETCH_MAX_CHARS;
       const parent = opts && opts.signal;   // run/tool-timeout signal, threaded down so a cancel drops the fetch
-      let text, source, jErr;
+      let text, source, jErr, cut = false;
+      const direct = async () => { const d = await directFetch(u, parent); cut = d.cut; source = 'direct'; return d.text; };
       try { text = await jinaFetch(u.href, parent); source = 'jina'; }
-      catch (e) { jErr = e; text = await directFetch(u, parent); source = 'direct'; }
+      catch (e) { jErr = e; text = await direct(); }
       if (!text || !text.trim()) {
-        if (source === 'jina') { text = await directFetch(u, parent); source = 'direct'; }
+        if (source === 'jina') text = await direct();
         if (!text || !text.trim()) throw new Error('web_fetch got empty content' + (jErr ? ' (jina: ' + jErr.message + ')' : ''));
       }
       const bounded = clamp(text, max);
-      return { text: bounded, fullText: bounded === text ? null : text, url: u.href, source };
+      const out = { text: bounded, fullText: bounded === text ? null : text, url: u.href, source };
+      if (cut) out.cut = true;   // only when it happened: the result object is otherwise unchanged
+      return out;
     }
 
     // ====================================================================
@@ -919,7 +970,9 @@
           if (soft) return soft;
           throw e;                                     // genuine fault (timeout/abort/SSRF/bad URL) → isError
         }
-        return { content: fenceExternal(out.text, 'page text from ' + out.url), fullContent: out.fullText ? fenceExternal(out.fullText, 'page text from ' + out.url) : undefined, summary: out.text.length + ' chars via ' + out.source };
+        // a page cut at the raw-body ceiling says so in its label instead of reading as the whole page
+        const pageLabel = 'page text from ' + out.url + (out.cut ? ' (first ' + RAW_BODY_MAX_LABEL + ' characters of a longer page)' : '');
+        return { content: fenceExternal(out.text, pageLabel), fullContent: out.fullText ? fenceExternal(out.fullText, pageLabel) : undefined, summary: out.text.length + ' chars via ' + out.source };
       }
     };
 
@@ -1284,6 +1337,13 @@
         // The host's note rides OUTSIDE the fence (it is ours, not the third party's) and BEFORE it, so a head+tail
         // cut of a large selection can never eat it.
         const paths = selectPaths(args && args.select);
+        /* A BODY CUT AT THE RAW-BODY CEILING IS NEVER CALLED WHOLE (2026-10-20). The cut used to be silent, and the
+           notes below then described a >2 MB answer as "the whole N-character response" / "The complete response
+           is saved" — so select failed on the cut JSON or the agent reasoned from partial data it was told was
+           complete. A cut body gets the host's own note, and every "whole"/"complete" claim speaks of the
+           received part instead. */
+        const cutBody = !!res.bodyTruncated;
+        const cutLine = cutBody ? '[' + RAW_BODY_CUT_NOTE + ']\n' : '';
         let shown = bodyText, note = '';
         if (!paths.length && res.status >= 200 && res.status < 300) {
           let budget = ctx ? ctx.outputMax : null;
@@ -1292,23 +1352,24 @@
           note = jsonShapeHint(bodyText, budget);
         } else if (paths.length) {
           if (res.status < 200 || res.status >= 300) {
-            note = 'select was not applied: the call failed with HTTP ' + res.status + ', so the whole error body follows.';
+            note = 'select was not applied: the call failed with HTTP ' + res.status + (cutBody ? ', so the received part of the error body follows.' : ', so the whole error body follows.');
           } else {
             const p = projectJson(bodyText, paths);
             if (p.ok) {
               shown = p.text;
-              note = 'selected ' + (paths.length - p.missed.length) + ' of ' + paths.length + ' field path(s) from the whole '
-                + bodyText.length + '-character response' + (p.missed.length ? '; not present: ' + p.missed.join(', ') : '')
-                + '. The complete response is saved too; its file is named below.';
+              note = 'selected ' + (paths.length - p.missed.length) + ' of ' + paths.length + ' field path(s) from '
+                + (cutBody ? 'the first ' + bodyText.length + ' characters of a longer response' : 'the whole ' + bodyText.length + '-character response')
+                + (p.missed.length ? '; not present: ' + p.missed.join(', ') : '')
+                + (cutBody ? '. The received part is saved too; its file is named below.' : '. The complete response is saved too; its file is named below.');
             } else {
-              note = 'select was not applied: ' + p.why + '. The whole response follows.';
+              note = 'select was not applied: ' + p.why + (cutBody ? '. The received part of the response follows.' : '. The whole response follows.');
             }
           }
         }
         const fenced = fenceExternal(bodyText || '(empty response body)', label);
-        if (shown === bodyText) return responseProvenance.stamp({ content: (note ? '[' + note + ']\n' : '') + fenced, summary: method + ' ' + hostOf(u) + ' ' + res.status }, responseUrl);
+        if (shown === bodyText) return responseProvenance.stamp({ content: cutLine + (note ? '[' + note + ']\n' : '') + fenced, summary: method + ' ' + hostOf(u) + ' ' + res.status }, responseUrl);
         return responseProvenance.stamp({
-          content: '[' + note + ']\n' + fenceExternal(shown, label + ' (selected fields)'),
+          content: cutLine + '[' + note + ']\n' + fenceExternal(shown, label + ' (selected fields)'),
           fullContent: fenced,   // the registry parks this whole body and names the file in the result
           summary: method + ' ' + hostOf(u) + ' ' + res.status + ' (select)'
         }, responseUrl);
