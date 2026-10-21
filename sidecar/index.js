@@ -20477,6 +20477,11 @@ async function runOnceCore(o) {
   let taskContextInputs = null;
   let taskContextBlock = '';
   let taskQuestionAsked = false;
+  // ANSWER HOLD: this run's latest user text answered the brief's open question (prepare() stamped it and flipped
+  // the brief to 'ready'). Until the MODEL produces something (a token, a tool call, billed output) nothing has
+  // read that answer, so a run refused or failed before then hands the question back (reopenAnswer, outer
+  // finally) and the re-sent answer resumes the ORIGINAL task. A Commander cancel keeps the answer spent.
+  let briefAnswerHold = null;
   // Everything below is wrapped so the admission slot is ALWAYS released (early-return refusals above run
   // before tryEnter; every exit below — return, throw, or the normal finish — passes through leave()).
   try {
@@ -20564,6 +20569,7 @@ async function runOnceCore(o) {
       }, Date.now());
     } catch (e) { console.warn('[taskbrief] prepare failed:', (e && e.message) || e); taskBrief = null; }
   }
+  if (taskBrief && taskBrief.inputAction === 'answer' && taskBrief.answered && !o.recovery) briefAnswerHold = { id: taskBrief.id, answered: taskBrief.answered };
 
   if (taskBrief) taskBriefState = { brief: taskBrief };
   if (taskBrief && taskBrief.inputAction === 'cancel') {
@@ -22069,6 +22075,7 @@ async function runOnceCore(o) {
 
   // Per-run latches/counters/artifacts live in `execution`; policy and side effects remain in this host.
   const dispatch = async (c, ctx) => {
+    briefAnswerHold = null;   // the model asked for a tool (hidden brief_* calls emit no tool_call): the answer was read
     if (o.outputOnly) return {ok:false,isError:true,summary:'output-only',content:'Result repair cannot execute tools. Return only the corrected output.'};
     const realName = fromWire.get(c.name) || allWire.get(c.name) || c.name;
     const liveTool = registry.get(realName);
@@ -23257,6 +23264,14 @@ async function runOnceCore(o) {
     // Only a fold that FREED >= 10% of the prompt re-arms it (foldFreedEnough, context.js): a 0.6% fold used to re-arm
     // the whole budget and let full-size results back into a prompt still at the window's edge (audit probe 09-22).
     if (name === 'agent.compact' && foldFreedEnough(payload)) execution.resetToolBytes();
+    // ANSWER HOLD release: the first sign the model READ the answer spends it for good (any streamed text, any
+    // visible tool call/result, or billed output tokens — a reasoning model that dies mid-think counts as read).
+    // A cancel also keeps it spent: whether a cancelled answer comes back is not this seam's call.
+    if (briefAnswerHold && payload && (payload.runId === undefined || payload.runId === runId)) {
+      if ((name === 'agent.token' && payload.delta) || name === 'agent.tool_call' || name === 'agent.tool_result'
+        || (name === 'agent.cost' && ((Number(payload.tokensOut) || 0) > 0 || (Number(payload.reasoningTokens) || 0) > 0))
+        || (name === 'agent.run.end' && payload.reason === 'cancelled')) briefAnswerHold = null;
+    }
     execution.observeToolEvent(name, payload);
     // LINE WATCH: the loop's own run.start is the normal path's — it must name the bay/crate like every early-exit
     // start above does, or the floor pairs a multi-bay agent's run with its OLDEST crate and lights the wrong bay.
@@ -23881,6 +23896,15 @@ async function runOnceCore(o) {
   return result;
 
   } finally {
+    // ANSWER HOLD still armed = this run ended (an early refusal return, a throw, a turn-0 provider error) before the
+    // model read the Commander's answer: give the question back so the re-sent answer resumes the ORIGINAL task.
+    // The store refuses if anything moved since (a newer brief, a proceed/ask/complete) — never a hijack.
+    if (briefAnswerHold) {
+      const hold = briefAnswerHold; briefAnswerHold = null;
+      if (!(signal && signal.aborted)) {
+        try { await taskBriefStore.reopenAnswer(hold.id, hold.answered, Date.now()); } catch (e) { failNote('taskbrief.reopen', e); }
+      }
+    }
     // safety net: if managed credit was reserved but a throw before the inner finally left it unsettled, settle it
     // now (full refund on usd=0). billing.js's finishRun is idempotent, so a normal settle above makes this a no-op.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: 0, reason: 'leak-guard' }); } catch (_) {} }
