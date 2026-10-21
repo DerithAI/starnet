@@ -18,8 +18,8 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "f9c87ac6760792de73b2f14656d530ced390bf00",
-    "pathSetSha256": "4c409160df09a2f14bf676c5aa98c72a119e0cc20e654e285ce10911e769dcad",
+    "sourceCommit": "64667daa5c1c8ee79ee53b209527e57478bbcfdd",
+    "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
         "path": "INSTALL.md",
@@ -353,8 +353,8 @@
       },
       {
         "path": "frontend/app/chat.js",
-        "bytes": 888405,
-        "sha256": "df8e75a9e9277c52327346e3641abd408025695aa8d6a27d87f63e569388f7f4"
+        "bytes": 889376,
+        "sha256": "a3577204dbc8e0e39033f8a2f575a1c24646299e81bd31869a4bb7588247e4bb"
       },
       {
         "path": "frontend/app/chatresize.js",
@@ -723,8 +723,8 @@
       },
       {
         "path": "frontend/app/needsyou.js",
-        "bytes": 48481,
-        "sha256": "d493059ae43a66a950a4d617ef7f1b44bd73b10135b276366934cde9990551ca"
+        "bytes": 47016,
+        "sha256": "b0bf9ce5896a84056247f91d24d10e35aa5f2db5a406bc604b8e86e72593b8ff"
       },
       {
         "path": "frontend/app/nightnudge.js",
@@ -1263,8 +1263,8 @@
       },
       {
         "path": "frontend/app/tooltip.js",
-        "bytes": 10464,
-        "sha256": "afecac6f5baf6f01512eacfd7b468b0e6fcb59979d2f315102388c7497a93438"
+        "bytes": 10632,
+        "sha256": "431f7096df9adadf61a475b7965036a3fcab9e149634525a52e80ee5535a225c"
       },
       {
         "path": "frontend/app/topbar.js",
@@ -1295,6 +1295,11 @@
         "path": "frontend/app/tutorial.js",
         "bytes": 106803,
         "sha256": "c084649fa54f86fad241fe4897e96a3514bd0c5c93f41749614ecc56fbe35583"
+      },
+      {
+        "path": "frontend/app/typefloor.js",
+        "bytes": 11360,
+        "sha256": "21287633e34cc941677e32b3ef4852481b85b25c8bfcd749ffbc63c094b9dc3e"
       },
       {
         "path": "frontend/app/understanding.js",
@@ -1663,8 +1668,8 @@
       },
       {
         "path": "frontend/css/pipglass.css",
-        "bytes": 77708,
-        "sha256": "71aae210720a7680df36fc6a54d9245bc0e802506e01bb7cb5e5e6c7d48810c7"
+        "bytes": 176058,
+        "sha256": "f007a47cf07a4379ea7cc4cbeb43b722321d7b41861b7acddc77fad24a40daa5"
       },
       {
         "path": "frontend/css/plugins.css",
@@ -1713,8 +1718,8 @@
       },
       {
         "path": "frontend/css/settings.css",
-        "bytes": 21932,
-        "sha256": "63088ff1bbf272c976d9c35a8f210a78a7168eb3d000b30ee349455d07a5ad47"
+        "bytes": 22152,
+        "sha256": "490b56bb4c3855824f4b345a488614387136e37b4bca491e4b56814e8c7a58a7"
       },
       {
         "path": "frontend/css/stepin.css",
@@ -1828,8 +1833,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 99537,
-        "sha256": "4ca90779dab4ad12a0893fa26c3cffcb6360a8d2a253ae2c1730793441e3d407"
+        "bytes": 99698,
+        "sha256": "0e69847ae804e006544510a9c6904c2187e72d87693d1f1ea6da4a924c923a43"
       },
       {
         "path": "frontend/js/arcade.js",

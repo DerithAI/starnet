@@ -3756,7 +3756,10 @@ const Chat = (() => {
       r.body.appendChild(more);
     }
     const foot = document.createElement('div'); foot.className = 'recap-line recap-foot';
-    foot.textContent = [fmtRecapCost(entry), durMs > 0 ? fmtMs(durMs) : '', (entry.model && entry.model !== '(unknown)') ? entry.model : ''].filter(Boolean).join(' · ');
+    // SAY IT ONCE (10-19): the RUN COMPLETE footer right above already tells this run's honest time and its model (its
+    // telemetry hydrates before this card): the foot keeps what the footer does not say, the cost ("907ms" over "922ms")
+    const said = !!(log && Array.from(log.querySelectorAll('.comms-presence.resolved[data-run-id]')).some(c => c.dataset.runId === runId && c.dataset.telemetry === '1'));
+    foot.textContent = [fmtRecapCost(entry), !said && durMs > 0 ? fmtMs(durMs) : '', !said && entry.model && entry.model !== '(unknown)' ? entry.model : ''].filter(Boolean).join(' · ');
     if (foot.textContent) r.body.appendChild(foot);
     autoscroll();
   }
@@ -3775,11 +3778,13 @@ const Chat = (() => {
      always the duplicate — but a fold without chips still gets the full listing rather than losing the
      record. (Do not read this as a reload guarantee: the fold and its telemetry are DOM-only and do not
      survive a reload or a stream switch at all — replayChannel rebuilds the chips, nothing rebuilds these.) */
+  // who ran a recorded run, by NAME (the record holds the id: the hero's is "agent")
+  const runWho = id => (id && typeof App !== 'undefined' && App.agentName && App.agentName(id)) || id || '';
   function telemetryRun(entry, role, skipTools) {
     const wrap = document.createElement('div'); wrap.className = 'rt-run';
     const calls = runCallCount(entry);
     const head = document.createElement('div'); head.className = 'rt-run-head';
-    head.textContent = [role, entry.agentId || '', entry.model && entry.model !== '(unknown)' ? entry.model : '', (entry.reasoningEffort && entry.reasoningEffort !== 'none') ? entry.reasoningEffort : '', Number(entry.durationMs) > 0 ? fmtMs(Number(entry.durationMs)) : '', calls + (calls === 1 ? ' call' : ' calls')].filter(Boolean).join(' · ');
+    head.textContent = [role, runWho(entry.agentId), entry.model && entry.model !== '(unknown)' ? entry.model : '', (entry.reasoningEffort && entry.reasoningEffort !== 'none') ? entry.reasoningEffort : '', Number(entry.durationMs) > 0 ? fmtMs(Number(entry.durationMs)) : '', Number(entry.waitedMs) > 0 ? fmtMs(Number(entry.waitedMs)) + ' waiting on you' : '', calls + (calls === 1 ? ' call' : ' calls')].filter(Boolean).join(' · ');
     wrap.appendChild(head);
     for (const t of (skipTools ? [] : (Array.isArray(entry.toolTrace) ? entry.toolTrace : []))) {
       // a call the Task Brief held did not run: "not run yet", never "failed" (TaskIntent.GATE_HELD on its record)
@@ -3800,12 +3805,12 @@ const Chat = (() => {
     const leadCalls = runCallCount(entry);
     const workerCalls = children.reduce((n, child) => n + runCallCount(child), 0);
     const sum = card.querySelector('.cp-sum');
+    // ONE run, ONE duration (live walkthrough 2026-10-13: "RUN COMPLETE · 89.1s" above a receipt reading 49.3s). The
+    // card shows machine time — approval waits excluded, the same number as the receipt — and names the wait apart.
+    const honest = Number(card.dataset.ms) || 0, wall = Number(entry.durationMs) || 0;
     if (sum) {
       const label = String(sum.textContent || '').split(' · ')[0];
       const bits = [];
-      // ONE run, ONE duration (live walkthrough 2026-10-13: "RUN COMPLETE · 89.1s" above a receipt reading 49.3s). The
-      // card shows machine time — approval waits excluded, the same number as the receipt — and names the wait apart.
-      const honest = Number(card.dataset.ms) || 0, wall = Number(entry.durationMs) || 0;
       if (honest > 0) {
         bits.push(fmtMs(honest));
         if (wall - honest > 1500) bits.push(fmtMs(wall - honest) + ' waiting on you');
@@ -3825,7 +3830,9 @@ const Chat = (() => {
     const detail = document.createElement('div'); detail.className = 'run-telemetry';
     // chips for THIS run already in the fold? then the lead's per-tool rows would just repeat them.
     const hasChips = !!fold.querySelector('.tool-chip');
-    detail.appendChild(telemetryRun(entry, 'lead', hasChips));
+    // the lead's line tells the footer's time (its record's durationMs is the wall clock, the approval waits inside it)
+    const leadRow = honest > 0 ? Object.assign({}, entry, { durationMs: honest, waitedMs: wall - honest > 1500 ? wall - honest : 0 }) : entry;
+    detail.appendChild(telemetryRun(leadRow, 'lead', hasChips));
     children.forEach(child => detail.appendChild(telemetryRun(child, 'worker')));
     fold.appendChild(detail);
     if (!card.querySelector('.cp-chev')) {
