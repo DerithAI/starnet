@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "436caafb1d965f485c2f0e6d8679390a43c961e3",
+    "sourceCommit": "ac33baf25154422c1fd76136457755f902185911",
     "pathSetSha256": "4c409160df09a2f14bf676c5aa98c72a119e0cc20e654e285ce10911e769dcad",
     "files": [
       {
@@ -533,8 +533,8 @@
       },
       {
         "path": "frontend/app/ghostline.js",
-        "bytes": 23623,
-        "sha256": "50595bae568072e1f41ab6821ce5dcc5aa2cc5472ada6d46be6510edca2e9768"
+        "bytes": 24167,
+        "sha256": "1c1a48fa370252f5d935b8b6659021e204e8d5612741c009db623dd184566bf0"
       },
       {
         "path": "frontend/app/glass-boot.js",
@@ -1468,8 +1468,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 896914,
-        "sha256": "e58a5245782595202f8b46031bf5307e66bf5eb7b7bec91d28cc0ff61bf81f36"
+        "bytes": 913014,
+        "sha256": "ebbc105d5f5e49ba0ea7bc4d2679bfa19bc6928874b0d7aa6ed05bbbb428a9bf"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1838,8 +1838,8 @@
       },
       {
         "path": "frontend/js/assets.js",
-        "bytes": 54346,
-        "sha256": "aa93be55c04d712cab9146492f1542da489dbeba06493847d49d725dc6a0a17c"
+        "bytes": 55466,
+        "sha256": "a27ad28eedfcfdffce92f58d728d9b7d6bd508e09bfe090a3cbe3ada9c7af577"
       },
       {
         "path": "frontend/js/audio.js",
@@ -1853,8 +1853,8 @@
       },
       {
         "path": "frontend/js/util.js",
-        "bytes": 32434,
-        "sha256": "ca775a1a855517e248df8404b77b728daaad26893e28c48fb32aa17c08c1ebe3"
+        "bytes": 32848,
+        "sha256": "9bde3bc78b9f8ee2652483e4c8fd2e35eaf77ef9e8143501d28d3d8d0ed5ffdf"
       },
       {
         "path": "frontend/plugin-kit/kit.css",
