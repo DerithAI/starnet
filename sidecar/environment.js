@@ -424,6 +424,7 @@
     const cfg = deps.config || {};
     const sessions = new Map();
     const ready = new Set();
+    const revived = new Set();   // agents whose LAST ensure had to start or create the container (read by reviveStale)
     const ensuring = new Map();
     const active = new Map();
     const lastUsed = new Map();
@@ -648,8 +649,10 @@
       ensureWorkspace(aid);
       if (!force && ready.has(aid)) return Promise.resolve({ ok: true, reused: true, container: containerName(aid) });
       if (ensuring.has(aid)) return ensuring.get(aid);
+      revived.delete(aid);
       const promise = inspectContainer(aid).then(function (state) {
         if (state.exists && state.running) return { reused: true };
+        revived.add(aid);   // this ensure is what brought the container up (started or created it)
         if (state.exists) {
           return dockerRun(['start', containerName(aid)], { timeoutMs: 30000 }).then(function (r) {
             if (r.exitCode !== 0) throw new Error('could not start persistent Docker environment: ' + String(r.out || '').trim());
@@ -681,6 +684,23 @@
         runtimeStatus.error = String((e && e.message) || e || 'Docker environment unavailable').slice(0, 300);
         throw e;
       });
+    }
+
+    /* THE READY CACHE GOES STALE. `ready` is set at the first good probe and every later exec trusts it, so after
+       a Docker daemon restart (or the container stopped/removed outside the station) every command failed with
+       docker's own refusal until the sidecar restarted, while describe() still said ready. A docker CLI refusal
+       that says the container or the daemon was not there drops the cache and re-runs the full ensure (inspect →
+       start → probe); a failed ensure marks the backend unavailable, as on first use.
+       The command is re-run ONCE, and only when that ensure had to START or CREATE the container: then the
+       refused exec cannot have run it. A container that was running all along (output that merely looks like the
+       refusal) keeps its original result: a command that ran is never run twice. */
+    const DOCKER_GONE_RE = /^\s*(?:Error response from daemon:\s*(?:No such container\b|[Cc]ontainer \S+ is not running)|Cannot connect to the Docker daemon|error during connect|failed to connect to the docker API)/;
+    function containerGone(r) {
+      return !!r && r.exitCode !== 0 && !r.timedOut && !r.aborted && DOCKER_GONE_RE.test(String(r.out || ''));
+    }
+    function reviveStale(aid) {
+      ready.delete(aid);
+      return ensureContainer(aid, false).then(function () { return revived.delete(aid); }, function () { return false; });
     }
 
     function cleanupAgent(agentId, opts) {
@@ -769,11 +789,15 @@
         // in a command line, and a container only ever receives keys the Commander connected.
         const svc = serviceEnvFor(opts.surface);
         const names = Object.keys(svc);
-        return withActivity(aid, function () { return ensureContainer(aid, false).then(function () {
+        const run = function () {
           return dockerRun(dockerExecArgs(aid, opts.cmd, cwd, names), {
             env: dockerClientEnv(svc), timeoutMs: opts.timeoutMs, maxTimeoutMs: opts.maxTimeoutMs,
             maxBytes: opts.maxBytes, signal: opts.signal, clock: opts.clock || clock
           });
+        };
+        return withActivity(aid, function () { return ensureContainer(aid, false).then(run).then(function (r) {
+          if (!containerGone(r)) return r;
+          return reviveStale(aid).then(function (revivedNow) { return revivedNow ? run() : r; });
         }); });
       },
       startBackground: function (opts) {

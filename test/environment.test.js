@@ -362,6 +362,62 @@ function makeFakeSpawn() {
       A.eq(calls, 2, 'both configured hosts were attempted');
     }
 
+    // ---- a STALE ready cache: the container (or the daemon) went away after the first probe ----
+    // `ready` was set once and never dropped by a failure, so after a Docker Desktop restart (or a `docker stop`
+    // outside the station) every exec answered docker's own "is not running" until the sidecar restarted, and the
+    // descriptor kept saying ready. Through the real execute path, with a scripted docker client.
+    {
+      const spawn = makeFakeSpawn();
+      const env = makeEnvironmentManager({ spawn, fs, pathMod: path, root, clock, config: { backend: 'docker', dockerBin: 'dockerx', dockerImage: 'starnet-node:test' } });
+      const execs = () => spawn.calls.filter(x => x.args && x.args[0] === 'exec' && x.args[x.args.length - 1] !== 'test -d . && printf starnet-ready');
+      const inspects = () => spawn.calls.filter(x => x.args && x.args[0] === 'inspect').length;
+      spawn.setNext('missing\n', 1); spawn.setNext('id\n', 0); spawn.setNext('name\n', 0); spawn.setNext('starnet-ready', 0);
+      spawn.setNext('first\n', 0);
+      const first = await env.execute({ agentId: 's1', cmd: 'echo first', timeoutMs: 1000 });
+      A.eq(first.exitCode, 0, 'fixture: the cell is created, probed and runs a command');
+      const label = spawn.calls.find(x => x.args && x.args[0] === 'create').args.find(x => /^ai\.starnet\.workspace=/.test(x)).split('=')[1];
+
+      // the container was stopped behind our back: the exec is refused BEFORE the command starts
+      spawn.setNext('Error response from daemon: container 3f2a9c is not running\n', 1);
+      spawn.setNext('false\t' + label + '\ts1\n', 0);   // re-inspect: exists, stopped
+      spawn.setNext('started\n', 0);                    // start
+      spawn.setNext('starnet-ready', 0);                // re-probe
+      spawn.setNext('second\n', 0);                     // the SAME command, once more
+      const inspectsBefore = inspects();
+      const second = await env.execute({ agentId: 's1', cmd: 'echo second', timeoutMs: 1000 });
+      A.eq(inspects(), inspectsBefore + 1, 'a "container is not running" exec re-inspects instead of trusting the cache');
+      A.ok(spawn.calls.some(x => x.args && x.args[0] === 'start'), 'the stopped container is started again');
+      A.eq(second.exitCode, 0, 'the refused command runs once the container is back (' + JSON.stringify(second.out) + ')');
+      A.eq(second.out, 'second\n', 'the caller gets the real command output, not the docker refusal');
+      A.eq(execs().filter(x => x.args[x.args.length - 1] === 'echo second').length, 2, 'the command was attempted exactly twice: refused, then run');
+
+      // the daemon itself is gone: the failure stays honest, and the descriptor stops claiming ready
+      spawn.setNext('error during connect: this error may indicate that the docker daemon is not running: open //./pipe/docker_engine: The system cannot find the file specified.\n', 1);
+      spawn.setNext('error during connect\n', 1);       // re-inspect fails (no daemon)
+      spawn.setNext('error during connect\n', 1);       // create fails (no daemon)
+      const third = await env.execute({ agentId: 's1', cmd: 'echo third', timeoutMs: 1000 });
+      A.eq(third.exitCode, 1, 'with no daemon the command fails with docker\'s own reason');
+      A.ok(/docker daemon is not running/.test(third.out), 'the caller sees why');
+      A.eq(execs().filter(x => x.args[x.args.length - 1] === 'echo third').length, 1, 'a command is never re-run while the daemon is down');
+      A.eq(env.describe().availability.state, 'unavailable', 'the descriptor no longer claims a ready cell');
+
+      // the daemon is back: the next command re-ensures instead of failing forever
+      spawn.setNext('true\t' + label + '\ts1\n', 0);    // inspect: running again
+      spawn.setNext('starnet-ready', 0);
+      spawn.setNext('fourth\n', 0);
+      const fourth = await env.execute({ agentId: 's1', cmd: 'echo fourth', timeoutMs: 1000 });
+      A.eq(fourth.out, 'fourth\n', 'the next command after the daemon returns runs normally');
+      A.eq(env.describe().availability.state, 'ready', 'and the descriptor is ready again');
+
+      // output that merely LOOKS like the refusal, from a container that is running: never re-run
+      spawn.setNext('Error response from daemon: container x is not running\n', 1);
+      spawn.setNext('true\t' + label + '\ts1\n', 0);    // re-inspect: it was running all along
+      spawn.setNext('starnet-ready', 0);
+      const mimic = await env.execute({ agentId: 's1', cmd: 'cat notes.txt; exit 1', timeoutMs: 1000 });
+      A.eq(mimic.exitCode, 1, 'a running container\'s failed command keeps its own result');
+      A.eq(execs().filter(x => x.args[x.args.length - 1] === 'cat notes.txt; exit 1').length, 1, 'a command that ran is never run twice');
+    }
+
     // ---- unavailable Docker is reported as checked failure, never as a ready Safe Cell ----
     {
       const missing = makeEnvironmentManager({
