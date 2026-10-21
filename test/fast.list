@@ -476,6 +476,7 @@ test/understanding.test.js
 test/fork.test.js
 test/fork-marker-perf.test.js
 test/live-markdown-incremental.test.js
+test/world-say-head.test.js
 test/taskintent.test.js
 test/taskbrief.clarify.test.js
 test/understandingstore.test.js
