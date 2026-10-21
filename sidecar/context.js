@@ -266,24 +266,38 @@
      exact strings first, so `echo $MY_SERVICE_KEY` in a shell, a server echoing a key in an error body, or a
      token in a log line can never reach the model, the bus, a transcript or diagnostics — whatever its shape.
      The source is read once per top-level redact() call; values shorter than KNOWN_MIN are ignored (too likely
-     to collide with ordinary text). A throwing source degrades to shape-only redaction, never to a crash. */
+     to collide with ordinary text). A throwing source degrades to shape-only redaction, never to a crash.
+     REVISION CACHE (perf lane, 2026-10-20): redact() runs on every token frame, and rebuilding + sorting the whole
+     held list each time was pure repeat work. The source is STILL read on every call, so a rotated or added key is
+     covered by the very next redact(). Only the derived list is reused, and only while the source hands back the
+     exact same strings in the same order as last time. Its revision is a private copy of that output, so a source
+     that edits its own array in place still forces a rebuild. */
   const KNOWN_MIN = 8;
   let knownSecretSource = null;
-  function setKnownSecretSource(fn) { knownSecretSource = typeof fn === 'function' ? fn : null; }
+  let knownCache = null;   // { raw: copy of the source's last output, list: the derived list (or null) }
+  function setKnownSecretSource(fn) { knownSecretSource = typeof fn === 'function' ? fn : null; knownCache = null; }
   function knownSecrets() {
     if (!knownSecretSource) return null;
     let raw;
     try { raw = knownSecretSource(); } catch (_) { return null; }
     if (!raw || typeof raw[Symbol.iterator] !== 'function') return null;
+    const vals = Array.from(raw);
+    const c = knownCache;
+    if (c && c.raw.length === vals.length) {
+      let same = true;
+      for (let i = 0; i < vals.length; i++) if (vals[i] !== c.raw[i]) { same = false; break; }
+      if (same) return c.list;
+    }
     const seen = new Set();
-    for (const v of raw) {
+    for (const v of vals) {
       if (typeof v !== 'string') continue;
       const t = v.trim();
       if (t.length >= KNOWN_MIN && t.indexOf('[redacted-') < 0) seen.add(t);
     }
-    if (!seen.size) return null;
     // longest first: a key that contains another known key is scrubbed whole, never left as a partial tail
-    return Array.from(seen).sort((a, b) => b.length - a.length);
+    const list = seen.size ? Array.from(seen).sort((a, b) => b.length - a.length) : null;
+    knownCache = { raw: vals, list: list };
+    return list;
   }
   function redactStr(s, known) {
     if (known) for (let i = 0; i < known.length; i++) if (s.indexOf(known[i]) >= 0) s = s.split(known[i]).join('[redacted-secret]');
