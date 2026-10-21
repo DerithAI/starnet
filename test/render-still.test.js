@@ -33,7 +33,7 @@ const code = strip(world);
 const pFrom = world.indexOf('  const PACE_VISIBLE_MS'), pTo = world.indexOf('  function renderPace()');
 const vFrom = world.indexOf('  /* STILL VERDICT'), vTo = world.indexOf('  // ---- end STILL VERDICT');
 A.ok(pFrom > 0 && pTo > pFrom && pTo - pFrom < 12000, 'world.js carries the RENDER PACING block before renderPace()');
-A.ok(vFrom > pTo && vTo > vFrom && vTo - vFrom < 20000, 'world.js carries the STILL VERDICT block after renderPace()');
+A.ok(vFrom > pTo && vTo > vFrom && vTo - vFrom < 24000, 'world.js carries the STILL VERDICT block after renderPace()');
 const renderPaceSrc = A.fnBody(world, '  function renderPace()');
 const frameSrc = A.fnBody(code, 'function frame(now, force)');
 const isTalkKindSrc = A.fnBody(code, 'function isTalkKind(kind)');

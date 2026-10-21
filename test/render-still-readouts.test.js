@@ -5,8 +5,8 @@
    something which moves on its own clock reports it, allocation-free, in one shape: the next time what it last drew
    changes — the draw's own clock while it is moving now, a later edge for a stepped animation, Infinity for static art,
    alpha-only glow and a frozen (reduced-motion) draw. "Unsure is motion" is the rule every one of them is written to.
-     1. SpaceBG.nextChange — a meteor, the bolide, the belt's ember shower and fireball are motion; the next one is due;
-        and CITY traffic covers the same ground per wall second at any draw rate (it used to move 16 ms per DRAW).
+     1. SpaceBG.nextChange — a meteor, the bolide, the belt's ember shower and fireball, a city's cars are motion; the next
+        one is due; and CITY traffic covers the same ground per wall second at any draw rate (it used to move 16 ms per DRAW).
      2. PropSprites.clockNext / pulsing — every native prop draw is motion; the remaster's report is folded in; a live
         native layer and a tool-fire surge are motion; a frozen draw never counts; a sleeper's quilt breathes on an edge.
      3. ProjectionPropEffects / ApprovedSheetEffects / PropRemaster lastChange — per effect kind, on the real modules. */
@@ -64,10 +64,16 @@ seeded(() => {
   A.eq(s.SpaceBG.nextChange(t + 10), t + 10, 'a backdrop switch not yet built (or still baking off-thread) is a change in progress');
   s.draw('nursery', t + 20);
   A.ok(s.SpaceBG.nextChange(t + 20) > t + 20, 'THE NURSERY carries the same weather (a meteor is due)');
-  for (const id of ['ocean', 'city']) {
-    s.draw(id, t + 30); s.draw(id, t + 40);
-    A.eq(s.SpaceBG.nextChange(t + 40), Infinity, id + ': only slow layers (swell, traffic, clouds) and no weather — nothing the still pace must not slow');
-  }
+  s.draw('ocean', t + 30); s.draw('ocean', t + 40);
+  A.eq(s.SpaceBG.nextChange(t + 40), Infinity, 'ocean: only slow layers (swell, glitter, clouds) and no weather — nothing the still pace must not slow');
+  // NIGHT CITY's cars are separate objects crossing the screen, never drift (review 10-21: they were classed as ambient, so a
+  // city floor drew them at 30/s): a city sky with traffic driving is changing on every draw
+  s.draw('city', t + 30); s.draw('city', t + 40);
+  A.eq(s.SpaceBG.nextChange(t + 40), t + 40, 'city: the cars driving the arterials are motion (now), so the city sky never goes still');
+  A.eq(s.SpaceBG.nextChange(t + 40 + 3600000), t + 40 + 3600000, '...on every frame, however long the floor has stood still');
+  s.mql.matches = true;
+  A.eq(s.SpaceBG.nextChange(t + 50), Infinity, '...while reduced motion holds every car still, only the ambient layers are left: nothing due');
+  s.mql.matches = false;
   s.draw('belt', t + 50); s.draw('belt', t + 60);
   A.eq(s.SpaceBG.nextChange(t + 60), t + 60, "THE BELT's ember shower is always crossing (300-780 px/s): motion");
 });
