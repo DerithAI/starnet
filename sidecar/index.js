@@ -24680,18 +24680,28 @@ function openAskCount() {
 async function awayBriefingInputs(since, now, tzOffsetMin) {
   let runs = []; try { runs = runStore.list(null, { limit: 500, since: Math.max(0, since - 1) }) || []; } catch (_) { runs = []; }
   // the run row keeps deliveryText only for session-scoped runs; a routine/loop's own words live in its durable
-  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output
+  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output.
+  // Read ONCE per stream: every iteration of a loop shares its loop- stream, so 50 overnight iterations were 50 reads
+  // of the same last turn (perf review 2026-10-19, "Away briefing N+1").
+  const lastWords = new Map();   // streamId -> that stream's last assistant words ('' = none or unreadable)
+  const lastWordsOf = (streamId) => {
+    if (lastWords.has(streamId)) return lastWords.get(streamId);
+    let text = '';
+    try {
+      const turns = transcriptStore.reconstruct(streamId, { limit: 6 }) || [];
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const t = turns[i];
+        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) { text = t.content.trim().slice(0, 2000); break; }
+      }
+    } catch (e) { failNote('away-briefing.excerpt', e); }
+    lastWords.set(streamId, text);
+    return text;
+  };
   runs = runs.map(r => {
     const k = AwayBriefing.kindOf(r);
     if ((k !== 'routine' && k !== 'loop') || String(r.deliveryText || '').trim() || !r.streamId) return r;
-    try {
-      const turns = transcriptStore.reconstruct(String(r.streamId), { limit: 6 }) || [];
-      for (let i = turns.length - 1; i >= 0; i--) {
-        const t = turns[i];
-        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) return Object.assign({}, r, { deliveryText: t.content.trim().slice(0, 2000) });
-      }
-    } catch (e) { failNote('away-briefing.excerpt', e); }
-    return r;
+    const text = lastWordsOf(String(r.streamId));
+    return text ? Object.assign({}, r, { deliveryText: text }) : r;
   });
   const builds = [];
   for (const agentId of workshopAgentIds()) {
@@ -27612,6 +27622,21 @@ function conversationTranscript(stream, options) {
     transcriptStore.history(stream, { limit: limit + 500 }).filter(r => !transcriptLiveRuns.has(String(r.sourceRunId || ''))),
     id => runStore.latest(id), dispatchDeliveryDeps.hash).slice(-limit);
 }
+/* A run's rows cannot predate the run, so a runId read is bounded to the transcript segments written since it started
+   (the desk screen re-reads its agent's live run every 3 s; without a bound each read scanned the stream's whole
+   lifetime). The start comes from the live registry, else the run's durable row (dispatch-delivery's runSince rule);
+   0 = unknown, which reads every segment as before. */
+function transcriptRunSince(runId) {
+  const id = String(runId || '');
+  if (!id) return 0;
+  const live = runsMeta.get(id);
+  const liveAt = Number(live && live.startedAt);
+  if (Number.isFinite(liveAt) && liveAt > 0) return liveAt;
+  let row = null;
+  try { row = runStore.latest(id); } catch (e) { failNote('transcript.run-since', e); }
+  const at = [row && row.startedAt, row && row.ts].map(Number).filter(v => Number.isFinite(v) && v > 0);
+  return at.length ? Math.min.apply(null, at) : 0;
+}
 function serveTranscript(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);   // canonical helper (sidecar/respond.js)
   try {
@@ -27625,7 +27650,7 @@ function serveTranscript(req, res) {
     const hashText = text => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
     // Explicit delivery reads return only the full accepted projection. The ordinary exact-run view stays raw.
     const finalDelivery = sourceRunId && u.searchParams.get('delivery') === '1';
-    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined }) : [];
+    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined, since: transcriptRunSince(sourceRunId) }) : [];
     const turns = sourceRunId
       ? raw.filter(r => finalDelivery ? transcriptStoreModule.isFinalDeliveryRow(r, hashText, (runStore.latest(r.sourceRunId) || {}).dispatchDelivery) : r.dispatchState !== 'final').slice(-limit)
       : conversationTranscript(stream, { limit });
