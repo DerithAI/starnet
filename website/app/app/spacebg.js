@@ -1071,6 +1071,7 @@ const SpaceBG = (() => {
       drawMeteor(ctx, w, h, now);
       drawBolide(ctx, w, h, now);
     },
+    nextChange: weatherNext,   // the STILL readout (see weatherNext): ANDROMEDA's sky carries the meteor and the bolide too
   };
 
   /* ------------------------------------------------ shared: the BLUE PIXEL space family ---- */
