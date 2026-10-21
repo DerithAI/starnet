@@ -495,6 +495,7 @@ const App = (() => {
     if (agent && a.id === agent.id) {   // focused agent — apply live so the next run reflects the pin at once
       if (m) {
         if (typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(m);
+        noteWirePin(a);
         if (p && typeof Harness !== 'undefined' && Harness.setProv) Harness.setProv(p);
         if (hasEffort && a.reasoningEffort && typeof Harness !== 'undefined' && Harness.setReasoningEffort) Harness.setReasoningEffort(a.reasoningEffort);
       } else {
@@ -775,8 +776,14 @@ const App = (() => {
   function focusWire(a) {
     const station = stationDefaultWire();
     if (!(a && a.model)) return station;
-    return { model: a.model, provider: a.provider || station.provider, effort: a.reasoningEffort || '' };
+    return { model: a.model, provider: a.provider || station.provider, effort: a.reasoningEffort || '', owner: a.id };
   }
+  // The crew agent whose OWN pin the global model wire holds ('' = the station's model). With an Overseer that has no
+  // model, an unpinned agent used to keep that pin, e.g. a StarNet slug that then ran on managed credits or reconciled
+  // to "no model selected" under CLAUDE CODE (2026-10-21 user report). Only a crew pin is cleared: an older station whose
+  // model lives in the wire alone (no hero model) keeps it.
+  let wirePinOwner = '';
+  function noteWirePin(a) { wirePinOwner = (a && a.id !== 'agent' && a.model) ? String(a.id) : ''; }
   // SETTINGS -> PROVIDERS picks the STATION's provider, and the station default IS the Overseer's pin
   // (stationDefaultWire). The card used to move only the global wire, so the Overseer kept the provider the station
   // had just left: unpinned agents, their roster rows and a restore all followed it (the #24 "Out of managed credit"
@@ -794,6 +801,8 @@ const App = (() => {
   function applyWire(w) {
     if (typeof Harness === 'undefined') return;
     if (w.model && Harness.setModel) Harness.setModel(w.model);
+    else if (wirePinOwner && Harness.setModel) Harness.setModel('');
+    wirePinOwner = (w.model && w.owner && w.owner !== 'agent') ? String(w.owner) : '';
     if (w.provider && Harness.setProv) Harness.setProv(w.provider);
     if (w.effort && Harness.setReasoningEffort) Harness.setReasoningEffort(w.effort);
   }
@@ -956,6 +965,7 @@ const App = (() => {
       if (typeof Harness !== 'undefined' && Harness.setProv) Harness.setProv(provider);
       if (typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(model);
       agent.model = model; agent.provider = provider; agent.reasoningEffort = effort;   // #4: keep model+provider+effort TOGETHER on the agent
+      noteWirePin(agent);
       const stored = agents.get(agent.id);
       if (stored) { stored.model = model; stored.provider = provider; stored.reasoningEffort = effort; }
       const gtM = el('gt-model'); if (gtM) gtM.textContent = model;
