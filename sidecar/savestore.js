@@ -74,6 +74,8 @@
       let removed = 0;
       for (const r of rows.slice(CONFLICT_KEEP)) {
         try { fs.unlinkSync(pathMod.join(rootDir, r.n)); removed++; } catch (e) { failNote('savestore.conflict-prune.unlink', e); }
+        // a window that conflicts again overwrites its snapshot, and the atomic write leaves the prior one as .bak
+        try { fs.unlinkSync(pathMod.join(rootDir, r.n + '.bak')); } catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.conflict-prune.unlink-bak', e); }
       }
       return removed;
     }
@@ -336,7 +338,16 @@
           const same = !known && prev && JSON.stringify(doc.updatedAt) === JSON.stringify(replayAt)
             && JSON.stringify(Object.assign({}, prev.doc, { updatedAt: replayAt, _saveRevision: expected, _saveDirty: false })) === JSON.stringify(Object.assign({}, doc, { _saveDirty: false }));
           if (same) return { ok: true, updatedAt: prevUpdated, revision };
-          if (expected !== revision) {
+          /* THIS WINDOW'S OWN UNACKNOWLEDGED WRITE (support report 2026-10-21). A window gives up on a save after its
+             acknowledgement deadline, but a busy station may still write it. The window keeps the old revision, so
+             its next save arrives "behind" a head it wrote itself and was refused as another window's change. A
+             window's id (_saveClient) is minted per page load, and a window only learns revisions from its own ACKs,
+             so when the head carries this same id every revision since `expected` is this window's own. Accept the
+             save when it is also NEWER than the head's request (a delayed older request never replaces a newer one). */
+          const headClient = known ? known.client : (prev && prev.doc ? prev.doc._saveClient : undefined);
+          const ownHead = expected < revision && /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || ''))
+            && doc._saveClient === headClient && num(requestUpdatedAt) > num(known ? known.replayAt : replayAt);
+          if (expected !== revision && !ownHead) {
             // Keep the rejected snapshot durably as well as the current station. Never silently
             // merge whole envelopes: removals and roster/config edits have conflicting semantics.
             const client = /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || '')) ? doc._saveClient : clock.now() + '-' + (++tmpSeq);
@@ -356,7 +367,7 @@
         writes++;
         recoveredMissing.delete(file);   // the main exists again and is this write
         const after = stamp(agentId);
-        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated });
+        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated, client: doc._saveClient });
         return { ok: true, updatedAt: incomingUpdated, ...(options.compareRevision ? { revision: doc._saveRevision } : {}) };
       },
 
