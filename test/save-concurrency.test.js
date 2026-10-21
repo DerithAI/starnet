@@ -32,11 +32,13 @@ try {
   assert.deepEqual(store.load('agent').workstreams.map(w => w.id), ['late', 'next']);
   assert.equal(save(win('window-a', 150, { workstreams: [{ id: 'older' }] })).conflict, true, 'a delayed older request from that window never replaces its newer save');
   assert.equal(save(win('window-b', 900, { workstreams: [] })).conflict, true, 'another window on the old revision is still a conflict');
-  store = makeSaveStore(deps);
-  assert.equal(save(win('window-a', 300, { workstreams: [{ id: 'late' }, { id: 'next' }, { id: 'after-restart' }] })).revision, 6, 'the rule holds without the in-process write memo');
-  assert.equal(save(win('window-c', 400, { _saveRevision: 6 })).revision, 7);
+  assert.equal(save(win('window-c', 400, { _saveRevision: 5 })).revision, 6);
   assert.equal(save(win('window-a', 500)).conflict, true, 'once another window has written, the first window is behind for real');
   assert.deepEqual(store.load('agent').workstreams.map(w => w.id), ['a', 'c'], 'window-c\'s save stands');
+  assert.equal(save(win('window-c', 600, { _saveRevision: 6, workstreams: [{ id: 'c-late' }] })).revision, 7);
+  store = makeSaveStore(deps);
+  assert.equal(save(win('window-c', 700, { _saveRevision: 6 })).conflict, true, 'after a restart the store cannot vouch for the head: preserved, never accepted');
+  assert.deepEqual(store.load('agent').workstreams.map(w => w.id), ['c-late']);
   // conflict snapshots are bounded (audit 2026-09-25 #18): the newest N per agent survive, the rest are pruned
   const small = makeSaveStore({ ...deps, conflictKeep: 3 });
   const conflictsFor = id => fs.readdirSync(root).filter(n => n.indexOf(id + '.save-conflict-') === 0);

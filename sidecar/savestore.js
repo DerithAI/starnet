@@ -342,11 +342,12 @@
              acknowledgement deadline, but a busy station may still write it. The window keeps the old revision, so
              its next save arrives "behind" a head it wrote itself and was refused as another window's change. A
              window's id (_saveClient) is minted per page load, and a window only learns revisions from its own ACKs,
-             so when the head carries this same id every revision since `expected` is this window's own. Accept the
-             save when it is also NEWER than the head's request (a delayed older request never replaces a newer one). */
-          const headClient = known ? known.client : (prev && prev.doc ? prev.doc._saveClient : undefined);
-          const ownHead = expected < revision && /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || ''))
-            && doc._saveClient === headClient && num(requestUpdatedAt) > num(known ? known.replayAt : replayAt);
+             so when the head is the write THIS process made for this same id (`known`: nothing moved the file since),
+             every revision since `expected` is this window's own. Accept the save when it is also NEWER than that
+             write's request (a delayed older request never replaces a newer one). A head this process cannot vouch
+             for — an outside edit, a restart — stays a conflict: preserved, and restorable from the station. */
+          const ownHead = !!known && expected < revision && /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || ''))
+            && doc._saveClient === known.client && num(requestUpdatedAt) > num(known.replayAt);
           if (expected !== revision && !ownHead) {
             // Keep the rejected snapshot durably as well as the current station. Never silently
             // merge whole envelopes: removals and roster/config edits have conflicting semantics.
