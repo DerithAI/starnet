@@ -550,24 +550,38 @@
   function bm25(records, query) {
     const recs = Array.isArray(records) ? records : [];
     const qTerms = tokenize(query);
-    const scores = new Array(recs.length).fill(0);
-    if (!recs.length || !qTerms.length) return { scores, queried: qTerms.length > 0 };
-    const K1 = 1.2;
-    const docs = recs.map(r => tokenize(recordText(r)));
+    if (!recs.length || !qTerms.length) return { scores: new Array(recs.length).fill(0), queried: qTerms.length > 0 };
+    return { scores: bm25Scores(bm25Corpus(recs.map(r => tokenize(recordText(r)))), qTerms), queried: true };
+  }
+  /* The BM25 core over PRE-TOKENIZED docs, split in two so one corpus (its document frequencies and per-doc term
+     counts) scores several queries. lexicalScores() runs the exact query plus up to four lexical ones over the same
+     records, and used to re-tokenize and re-count every record for each of them (perf lane, 2026-10-20: ~75 ms per
+     recall at 2,000 notes). Same arithmetic in the same order, so the scores are bit-identical. */
+  const BM25_K1 = 1.2;
+  function bm25Corpus(docs) {
     const df = Object.create(null);
-    for (const toks of docs) { const seen = Object.create(null); for (const t of toks) { if (!seen[t]) { seen[t] = 1; df[t] = (df[t] || 0) + 1; } } }
-    const N = recs.length;
-    for (let i = 0; i < recs.length; i++) {
-      const tf = Object.create(null); for (const t of docs[i]) tf[t] = (tf[t] || 0) + 1;
+    const tfs = new Array(docs.length);
+    for (let i = 0; i < docs.length; i++) {
+      const tf = Object.create(null);
+      for (const t of docs[i]) { if (tf[t]) tf[t]++; else { tf[t] = 1; df[t] = (df[t] || 0) + 1; } }
+      tfs[i] = tf;
+    }
+    return { N: docs.length, df: df, tfs: tfs };
+  }
+  function bm25Scores(corpus, qTerms) {
+    const N = corpus.N, df = corpus.df, tfs = corpus.tfs;
+    const scores = new Array(N).fill(0);
+    for (let i = 0; i < N; i++) {
+      const tf = tfs[i];
       let relevance = 0;
       for (const qt of qTerms) {
         const f = tf[qt]; if (!f) continue;
         const idf = Math.log(1 + (N - df[qt] + 0.5) / (df[qt] + 0.5));
-        relevance += idf * (f * (K1 + 1)) / (f + K1);     // BM25 tf-saturation (no length norm — notes are short)
+        relevance += idf * (f * (BM25_K1 + 1)) / (f + BM25_K1);     // BM25 tf-saturation (no length norm — notes are short)
       }
       scores[i] = relevance;
     }
-    return { scores, queried: true };
+    return scores;
   }
   // Bounded lexical expansion, NOT a semantic model. Exact vocabulary retains full weight;
   // inflections and a small explicit alias lexicon add a weaker retrieval lane. Embeddings remain
@@ -588,11 +602,26 @@
     if (t.length > 3 && /[^s]s$/.test(t)) return t.slice(0, -1);
     return t;
   }
+  // token -> the canonical word of the FIRST group listing it (what LEXICAL_GROUPS.find picked), one lookup per token
+  const LEXICAL_CANON = new Map();
+  for (const g of LEXICAL_GROUPS) for (const w of g) if (!LEXICAL_CANON.has(w)) LEXICAL_CANON.set(w, g[0]);
+  function lexicalTokens(tokens) {
+    return tokens.map(t => { const c = LEXICAL_CANON.get(t); return c !== undefined ? c : lexicalStem(t); });
+  }
   function lexicalText(text) {
-    return tokenize(lexicalForm(text)).map(t => {
-      const group = LEXICAL_GROUPS.find(g => g.indexOf(t) >= 0);
-      return group ? group[0] : lexicalStem(t);
-    }).join(' ');
+    return lexicalTokens(tokenize(lexicalForm(text))).join(' ');
+  }
+  // A record's lexical doc: exactly tokenize(recordText({ content: lexicalText(text), kind: 'fact' })), the shim the
+  // lexical lane scores. Two shortcuts, both exact: when lexicalForm leaves the text unchanged its tokens are the exact
+  // tokens already in hand, and plain [a-z0-9] tokens pass NFKC, lowercasing and the split untouched, so re-tokenizing
+  // them is only the length + stop-word filter.
+  const PLAIN_TOKENS = /^[a-z0-9 ]*$/;
+  function lexicalDoc(text, exactTokens) {
+    const form = lexicalForm(text);
+    const mapped = lexicalTokens(form === text && exactTokens ? exactTokens : tokenize(form));
+    const joined = mapped.join(' ');
+    if (PLAIN_TOKENS.test(joined)) return mapped.filter(t => t.length >= 2 && !STOP.has(t));
+    return tokenize(recordText({ content: joined, kind: 'fact' }));
   }
   function expandRecallQuery(query) {
     const terms = tokenize(lexicalForm(String(query || '').slice(0, 2000))).slice(0, 32);
@@ -606,14 +635,23 @@
     if (out.has('throttle') || out.has('ratelimit')) { out.add('rate'); out.add('limits'); }
     return Array.from(out).slice(0, 96).join(' ');
   }
+  // Every record is tokenized ONCE per call: its exact tokens feed the exact query and, in the common case, its lexical
+  // doc too; the lexical corpus is counted once and scores the expanded query and every variant.
   function lexicalScores(records, query, opts) {
     const list = Array.isArray(records) ? records : [];
-    const exact = bm25(list, query);
-    const normalized = list.map(r => ({ content: lexicalText(recordText(r)), kind: 'fact' }));
-    const expanded = bm25(normalized, lexicalText(query));
     const variants = opts && Array.isArray(opts.queryVariants) ? opts.queryVariants.slice(0, 3).filter(q => typeof q === 'string').map(q => q.slice(0, 1000)) : [];
-    const extra = variants.map(q => bm25(normalized, lexicalText(q)).scores);
-    return { queried: exact.queried, scores: exact.scores.map((s, i) => Math.max(s, 0.65 * expanded.scores[i], ...extra.map(a => 0.5 * a[i]))) };
+    const qExact = tokenize(query);
+    const qLex = tokenize(lexicalText(query));
+    const qVar = variants.map(q => tokenize(lexicalText(q)));
+    const zeros = () => new Array(list.length).fill(0);
+    const texts = list.length ? list.map(recordText) : [];
+    const exactDocs = list.length && qExact.length ? texts.map(t => tokenize(t)) : null;
+    const lexCorpus = list.length && (qLex.length || qVar.some(q => q.length))
+      ? bm25Corpus(texts.map((t, i) => lexicalDoc(t, exactDocs ? exactDocs[i] : null))) : null;
+    const exact = exactDocs ? bm25Scores(bm25Corpus(exactDocs), qExact) : zeros();
+    const expanded = lexCorpus && qLex.length ? bm25Scores(lexCorpus, qLex) : zeros();
+    const extra = qVar.map(q => (lexCorpus && q.length ? bm25Scores(lexCorpus, q) : zeros()));
+    return { queried: qExact.length > 0, scores: exact.map((s, i) => Math.max(s, 0.65 * expanded[i], ...extra.map(a => 0.5 * a[i]))) };
   }
 
   // PROJECT SCOPE (memory-compound lane): the comparable key for a run's project root. Paths are compared
@@ -977,6 +1015,8 @@
   }
 
   // test surface only: fresh regex copies (no shared lastIndex), in order, and whether each runs through a driver
-  const _internals = { secretPatterns: () => SECRET_RULES.map(r => ({ re: new RegExp(r[0].source, r[0].flags), rep: r[1], driven: !!r[2], run: r[2] })) };
+  const _internals = { secretPatterns: () => SECRET_RULES.map(r => ({ re: new RegExp(r[0].source, r[0].flags), rep: r[1], driven: !!r[2], run: r[2] })),
+    // the lexical primitives, so a test can rebuild the naive single-pass ranking from the module's CURRENT rules
+    tokenize, recordText, lexicalForm, lexicalStem, LEXICAL_GROUPS };
   return { _internals, makeContext, redact, setKnownSecretSource, renderRecall, injectRecall, rank, bm25, lexicalScores, expandRecallQuery, isStandingMemory, activeMemoryRecords, projectKey, memoryProjectKey, memoryAllowedInProject, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens, RUN_CONTEXT_DEFAULTS, REARM_MIN_FREED, foldFreedEnough };
 });
