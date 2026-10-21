@@ -121,9 +121,17 @@ const U = {
     // off(ev, fn): remove a single subscription (Lane E5). Splices the exact fn so a panel that subscribes inside a
     // render/open path can release its listener on close instead of leaking one more handler every time it reopens.
     off(ev, fn) { const a = U.bus._h[ev]; if (!a) return; const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); },
+    // tap(fn): fn(ev) runs after every emit that reached a listener, whatever its name — the world's STILL pacer
+    // (world.js, 2026-10-21) wakes on any harness event this way instead of subscribing to each one.
+    _t: [],
+    tap(fn) { if (typeof fn === 'function') U.bus._t.push(fn); },
     // emit over a COPY of the handler list so a listener that calls off() (self-unsubscribe / one-shot) during
     // dispatch never corrupts the in-flight iteration.
-    emit(ev, data) { const a = U.bus._h[ev]; if (!a || !a.length) return; a.slice().forEach(fn => { try { fn(data); } catch (e) { console.error('[bus]', ev, e); } }); }
+    emit(ev, data) {
+      const a = U.bus._h[ev]; if (!a || !a.length) return;
+      a.slice().forEach(fn => { try { fn(data); } catch (e) { console.error('[bus]', ev, e); } });
+      for (const fn of U.bus._t) { try { fn(ev); } catch (e) { console.error('[bus tap]', ev, e); } }
+    }
   }
 };
 

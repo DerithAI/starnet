@@ -1745,12 +1745,27 @@ const World = (() => {
      screen this should not happen", and the 30 fps cap made every camera move judder on his 239 Hz panel next to
      0.13.1's ~200 draws/s. The 5 fps unfocused tier is gone and the visible pace is 60: still ~4x under the uncapped
      240 Hz loop #69 measured, and the FRAME BUDGET below keeps a slow machine's UI alive either way.) A caller cap
-     (setFrameCap — the HUD widget's 48 ms) is that caller's stated intent and wins over the visible pace. */
+     (setFrameCap — the HUD widget's 48 ms) is that caller's stated intent and wins over the visible pace.
+     STILL (Andrew, 2026-10-21, approved: "draw 30/s while nothing on screen moves, snap back to 60 the instant anything
+     moves (144 while panning)"). The installed 0.13.5 idled at 178% of a core and 96% of it was DRAWING an unchanged
+     station 60 times a second. A frame whose verdict (stillVerdict, below renderPace) finds nothing on screen changed
+     but ambient effects — the starfield, light flicker, glow pulses, idle decor clocks — is redrawn at PACE_STILL_MS
+     (30/s), waiting in a TIMER (no per-vsync rAF spin). It is only how often a still scene is REDRAWN: nothing drawn
+     changes, nothing that moves is slowed, a caller cap and a hidden page are untouched. Motion never waits on it:
+       · every source that starts motion from outside the frame wakes it (motionWake → paceWake): any input on the
+         window, a camera move, a harness event on U.bus, a World API call that changes a body, a bubble or the camera;
+       · a change the frame can see coming lands on its own vsync: stillDue is the earliest body clock (an idle body's
+         next decision, a blink, the next frame of a clock-driven pose), a cinecam cut or a ghost spawn;
+     and the frame that shows any motion is followed at the normal pace (60, or 144 while the hand moves the camera). */
   const PACE_VISIBLE_MS = 1000 / 60, PACE_MOTION_MS = 1000 / 144, PACE_MOTION_HOLD_MS = 1200;
-  const PACE_TIMER_MIN_MS = 100;   // pace intervals at/above this wait in a timer instead of spinning rAF
+  const PACE_STILL_MS = 1000 / 30, INPUT_HOLD_MS = 1200;   // still: 30 draws/s · input: a hand on the window holds the normal pace this long (hover tags, glances)
+  const PACE_TIMER_MIN_MS = 100;   // pace intervals at/above this wait in a timer instead of spinning rAF (the still pace does too)
   const SIM_SLICE_MS = 48, SIM_CATCHUP_MAX_MS = 1000;   // a slice stays under frameBody's 64 ms step clamp; past 1 s (a hidden page) the old freeze stands
   let paceTimer = 0, paceLowRate = false, motionUntil = 0, pacedDraws = 0, simMs = 0;   // simMs: total simulated time advanced (renderPace readout)
   let vsyncMs = 0, lastRafAt = 0;   // the display's own frame interval, learned from back-to-back rAF callbacks (rounds the pace to whole vsyncs)
+  // STILL state: the last verdict (still?), why not (the first motion source it found), the next known change, input stamp,
+  // and when a booked still timer fires (a verdict that finds an earlier change re-books)
+  let stillNow = false, stillWhy = 'boot', stillDue = Infinity, inputAt = -Infinity, paceTimerAt = 0, stillKick = false;
   function pageFocused() {
     try { return typeof document === 'undefined' || typeof document.hasFocus !== 'function' || document.hasFocus(); } catch (_) { return true; }
   }
@@ -1802,19 +1817,24 @@ const World = (() => {
     }
     if (strainDraws % STRAIN_PROBE_DRAWS === 0) strainProbe = true;   // the next draw measures full detail again
   }
+  // the still pace applies: the last verdict was still, no caller cap, no hand on the camera, and no known change is due yet
+  function stillPaced(now) { return stillNow && !frameCapMs && now >= motionUntil && now < stillDue; }
   function paceMs(now) {
-    const base = frameCapMs ? Math.max(frameCapMs, PACE_VISIBLE_MS) : now < motionUntil ? PACE_MOTION_MS : PACE_VISIBLE_MS;
+    const base = frameCapMs ? Math.max(frameCapMs, PACE_VISIBLE_MS) : now < motionUntil ? PACE_MOTION_MS : stillPaced(now) ? PACE_STILL_MS : PACE_VISIBLE_MS;
     return Math.max(base, budgetMs());
   }
   function cancelScheduled() {
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
     if (paceTimer) { clearTimeout(paceTimer); paceTimer = 0; }
   }
-  // the ONE place the next frame is booked: rAF at a draw-rate pace, a timer then rAF at a low one
+  // the ONE place the next frame is booked: rAF at a draw-rate pace, a timer then rAF at a low one or the still pace (the
+  // still wait ends early at stillDue). A timer-booked callback is not a vsync sample: lastRafAt is cleared so a 33 ms gap
+  // can never be learned as the display's frame interval.
   function scheduleFrame(pace) {
     if (!running) return;
-    const wait = pace >= PACE_TIMER_MIN_MS ? lastDrawnAt + pace - performance.now() - 2 : 0;
-    if (wait > 0) paceTimer = setTimeout(() => { paceTimer = 0; if (running && !raf) raf = requestAnimationFrame(frame); }, wait);
+    const now = performance.now(), still = pace < PACE_TIMER_MIN_MS && stillPaced(now);
+    const wait = pace >= PACE_TIMER_MIN_MS ? lastDrawnAt + pace - now - 2 : still ? Math.min(lastDrawnAt + pace, stillDue) - now - 2 : 0;
+    if (wait > 0) { lastRafAt = 0; paceTimerAt = still ? now + wait : 0; paceTimer = setTimeout(() => { paceTimer = 0; if (running && !raf) raf = requestAnimationFrame(frame); }, wait); }
     else raf = requestAnimationFrame(frame);
   }
   // focus / input / visible again: drop a pending low-rate wait and draw on the very next vsync
@@ -1823,11 +1843,14 @@ const World = (() => {
     clearTimeout(paceTimer); paceTimer = 0;
     if (!raf) raf = requestAnimationFrame(frame);
   }
+  // something started moving between frames: the scene is no longer known still, and a pending still wait is dropped, so the
+  // next vsync is drawn at the normal pace (that frame then judges itself). Called inside a frame it marks that frame moving.
+  function motionWake() { stillNow = false; stillKick = true; if (stillWhy === '') stillWhy = 'wake'; paceWake(); }
   // any hand on the window: you are here, so the idle auto-director stands down (it is for when you are AWAY, not while you
-  // type in COMMS) and a budget-throttled floor redraws now
-  function userActive() { camUserAt = performance.now(); paceWake(); }
+  // type in COMMS), a still or budget-throttled floor redraws now, and INPUT_HOLD_MS of normal pace follows (hover glances)
+  function userActive() { camUserAt = inputAt = performance.now(); motionWake(); }
   // you are moving the camera: draw up to PACE_MOTION_MS for a moment so a pan or zoom tracks the hand
-  function cameraMoved() { motionUntil = performance.now() + PACE_MOTION_HOLD_MS; paceWake(); }
+  function cameraMoved() { motionUntil = performance.now() + PACE_MOTION_HOLD_MS; motionWake(); }
   /* The simulation's step list for one drawn frame. At draw rate it is the old single step (dt clamped to 64 ms, so a
      long stall never teleports anyone). While the pacer holds a low rate it is the real elapsed time cut into
      <= SIM_SLICE_MS slices, so bodies and crates cover the same ground per wall-second as at 30 fps. */
@@ -1840,12 +1863,134 @@ const World = (() => {
   // a per-frame ease tuned at 60 Hz, held to the same WALL-CLOCK speed at any draw rate (the 30 fps pace, a 240 Hz panel)
   function easeK(k60, dt) { return dt > 0 ? 1 - Math.pow(1 - k60, dt / (1000 / 60)) : 0; }
   function renderPace() {
-    const now = performance.now(), pace = running ? paceMs(now) : 0;
+    const now = performance.now(), pace = running ? paceMs(now) : 0, still = running && stillPaced(now);
     return { running, focused: pageFocused(), motion: now < motionUntil, paceMs: +pace.toFixed(1), vsyncMs: +vsyncMs.toFixed(2),
-      mode: !running ? 'stopped' : frameCapMs ? 'capped' : pace > PACE_VISIBLE_MS + 0.5 ? 'budget' : pace < PACE_VISIBLE_MS - 0.5 ? 'motion' : 'visible',
+      mode: !running ? 'stopped' : frameCapMs ? 'capped' : pace < PACE_VISIBLE_MS - 0.5 ? 'motion' : still && pace < PACE_STILL_MS + 0.5 ? 'still'
+        : pace > PACE_VISIBLE_MS + 0.5 ? 'budget' : 'visible',
+      still: stillNow, stillWhy: stillWhy || null, stillDueMs: stillDue < Infinity ? Math.max(0, Math.round(stillDue - now)) : null,
       drawCostMs: +drawCostMs.toFixed(2), budgetMs: +budgetMs().toFixed(1), strained, strainProbeMs: +strainProbeMs.toFixed(1),
       draws: pacedDraws, simMs: Math.round(simMs), timerWait: !!paceTimer };
   }
+  /* STILL VERDICT (Andrew 2026-10-21, see RENDER PACING). Runs once at the end of every drawn frame (frameBody), on state
+     that frame already computed — no extra scene pass, no allocation. A frame is STILL only when nothing but ambient effects
+     changed on screen; the first motion source found is kept as stillWhy (the renderPace readout the bench proves it by).
+       MOTION — the next frame keeps the normal pace:
+         wake   — motionWake ran during the frame (a harness event on U.bus, a World API call)
+         camera — pan or zoom moved since the last frame, a scripted move or a focus ease is running, the hand hold
+         input  — a hand on the window within INPUT_HOLD_MS (hover tags, nameplates, the gaze that follows the cursor),
+                  the hero's mic listening
+         body   — an on-screen body moved, turned, changed pose or drawn frame, is walking, pivoting or dissolving a pose,
+                  working (typing — its desk shows the run), speaking, or wears a wake ripple, level-up or working glow
+         speech — a peer-chatter line is up (it rides a talking mouth and fades), or the hero's voice is speaking (a plain
+                  speech bubble is static while it is up: its vanishing is a due change, below)
+         crate  — a real or ghost crate riding or sinking, a queue jam bobbing, a hand-off or SEND TO crate in flight
+         prop   — an on-screen prop with live content: a worked or lit prop (run output, progress strip, heat), a filter
+                  scanning, the OUTBOX flare, a lit bay, an arcade/TV/jukebox in use (a body resting on a couch is not)
+         fx     — a canvas overlay animating: desk and dock flashes, the pin flourish, the FIRST SHIP pulse, the hero's wake
+                  ripple and level surge, the awakening, arrival, kindling and flood, the dawn veil easing, a truth flare
+         belt   — an ENERGIZED belt tile in frame (its rollers march; a cold line's rollers are parked)
+       AMBIENT — never motion: the backdrop's drift and twinkle, light flicker and glows, dust motes, nav lights, glow pulses
+         (await tag, LINK DOWN, bay lamps, the mission board), idle decor clocks (fish tank, lava lamp, LED blinks, a ticker's
+         crawl, a punch bag's sway) and a standing body's breath — sub-pixel or pixel-stepped at a few Hz, drawn whole at 30.
+     stillDue = the earliest change the frame can see coming (an on-screen body's inner-life clock or its next drawn-frame
+     edge, a speech bubble vanishing, a cinecam cut, an encounter ending, a ghost spawn): the pacer draws that vsync instead
+     of waiting out the tick. */
+  const STILL_BODY_PAD = 48;      // world px past the canvas edge a body still counts as on screen (a walker is caught well before it shows)
+  const STILL_MOVE_EPS = 0.01;    // world px: a body nudged less than this has not moved (float dust from the separation pass)
+  // every timestamp the inner life re-decides at (the tick ladder's `now >= x` gates, *Until and *Cd): the earliest future one is due
+  const BODY_CLOCKS = Object.freeze(['idleUntil', 'thinkUntil', 'settleUntil', 'useUntil', 'studyUntil', 'pauseUntil', 'trackUntil',
+    'workUntil', 'workRetryAt', 'spokeUntil', 'chatTrackUntil', 'driveUntil', 'barJoinUntil', 'lastFunUntil', 'hardUntil', 'convergeUntil',
+    'glanceCd', 'lookCd', 'noticeCd', 'chatTrackCd', 'neighborGlanceCd', 'mimicCd', 'exploreCd', 'quirkCd', 'offbeatCd', 'ackCd',
+    'revisitCd', 'pauseCd', 'beltWatchCd', 'yieldCd', 'summonGlanceCd', 'roundsCd', 'napCd', 'lookBackCd', 'deskVisitCd',
+    'cursorGazeCd', 'barJoinCd']);
+  const REST_USE = Object.freeze({ couch: 1, seat: 1, bench: 1, bag: 1 });   // a body resting on these leaves the prop's art as it was
+  let stillMark = '', stillCamS = NaN, stillCamX = NaN, stillCamY = NaN, stillDueAcc = Infinity;
+  let liveBeltOf = null, liveBeltFor = null, liveBeltBox = null;   // the energized tiles' bounding box (tile units), re-measured on a new layout or plan
+  function stillBegin() { stillNow = false; stillKick = false; stillMark = ''; }   // frameBody's first act: this frame judges itself
+  function stillMove(why) { if (!stillMark) stillMark = why; }                     // an in-draw motion source (the prop pass, the queue jam)
+  function noteDue(t, now) { if (t > now && t < stillDueAcc) stillDueAcc = t; }
+  function restingOn(p) { const u = propUse(p); return !u || !!REST_USE[u.kind]; }
+  function bodyOnScreen(b) {
+    if (!cv) return true;
+    const m = STILL_BODY_PAD * scale, x = bodyPosX(b) * scale + panX, y = bodyPosY(b) * scale + panY;
+    return x > -m && y > -m && x < cv.width + m && y < cv.height + m;
+  }
+  // '' or why this body is motion; its baseline (position, facing, pose, drawn frame) is refreshed whenever it changed
+  function bodyStillWhy(b, now) {
+    if (!b || b.unplaced) return '';
+    const moved = !(Math.abs(b.px - b._stillX) <= STILL_MOVE_EPS && Math.abs(b.py - b._stillY) <= STILL_MOVE_EPS)
+      || b.dir !== b._stillDir || b._pose !== b._stillPose || b._renderFrame !== b._stillFrame;
+    if (moved) { b._stillX = b.px; b._stillY = b.py; b._stillDir = b.dir; b._stillPose = b._pose; b._stillFrame = b._renderFrame; }
+    // bubbles are clamped to the canvas, so they count even for a body off screen: a speech bubble is static while up (its
+    // vanishing is a due change); a peer-chatter line rides a talking mouth and fades in and out
+    if (b.say && b.say.text) noteDue(b.say.until, now);
+    if (b.chatter && now <= b.chatter.until) return 'speech';
+    if (!bodyOnScreen(b)) return '';   // off screen it changes nothing you can see; a walker re-enters through the pad
+    for (let i = 0; i < BODY_CLOCKS.length; i++) noteDue(b[BODY_CLOCKS[i]], now);
+    if (b.glance) noteDue(b.glance.until, now);
+    if (b.meet) noteDue(b.meet.until, now);
+    noteDue(b._renderNextAt, now);   // the next blink edge / clock-driven pose frame (SPRITES.drawBody)
+    if (moved || b.state === 'walk' || b.working || b.speaking || b.talking || (b._rW || 0) > 0.05 || b._renderPoseFade != null) return 'body';
+    if ((b.wakeAt && now - b.wakeAt < 1500) || (b.levelUpAt && now - b.levelUpAt < 1200) || (b.workUntil && now < b.workUntil)) return 'body';
+    return '';
+  }
+  // an energized belt in frame: its rollers march. No plan = every tile draws live (Conveyor's legacy default)
+  function liveBeltsInFrame() {
+    const belts = geo && geo.belts;
+    if (!belts || !belts.length || !cv) return false;
+    if (belts !== liveBeltOf || beltLiveSet !== liveBeltFor) {
+      liveBeltOf = belts; liveBeltFor = beltLiveSet;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const b of belts) if (!beltLiveSet || beltLiveSet[b.x + ',' + b.y]) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x); y1 = Math.max(y1, b.y); }
+      liveBeltBox = x0 <= x1 ? [x0, y0, x1 + 1, y1 + 1] : null;
+    }
+    const bb = liveBeltBox, k = T * scale;
+    return !!bb && bb[2] * k + panX >= 0 && bb[0] * k + panX <= cv.width && bb[3] * k + panY >= 0 && bb[1] * k + panY <= cv.height;
+  }
+  // the floor's own movers and canvas overlays (module state, no per-prop walk). Each is judged on its OWN clock, never on
+  // whether its draw pass has pruned it yet (a pass the overlays toggle skips would otherwise read as motion forever).
+  function fxStillWhy(now) {
+    if ((convey && convey.boxCount() > 0) || handoffBoxes.length) return 'crate';
+    for (let i = 0; i < sendCrates.length; i++) {   // a SEND TO crate flies once released; a held one waits (static) for its grace
+      const c = sendCrates[i];
+      if (c.t0) return 'crate';
+      noteDue(c.born + HANDOFF_GRACE_MS, now);
+    }
+    if (ghost && ghost.nextChange && geo && geo.belts) { const g = ghost.nextChange(now); if (g <= now) return 'crate'; noteDue(g, now); }   // ticked only where belts are (drawScene)
+    if (deskFlash.size) for (const f of deskFlash.values()) if (now - f.at < FLASH_MS) return 'fx';
+    if (dockFlashes.size) for (const t0 of dockFlashes.values()) if (now - t0 < 1100) return 'fx';
+    if (now - pinFlourishAt <= 900 || (firstShipPulse && now - firstShipPulse.at < 1500)) return 'fx';
+    if (camAnim || awakeFrozen || arrivalScene || kindleArmed || kindleP > 0 || floodAt || wakeDark !== wakeDarkTarget) return 'fx';
+    if ((dawnAt && now - dawnAt < 1300) || (sparkAt && now - sparkAt < 1200) || (bornAt && now - bornAt < 1000)
+      || (truthPulseAt && now - truthPulseAt < 360) || (wakeAt && now - wakeAt < 1500) || (levelUpAt && now - levelUpAt < 1200)) return 'fx';
+    return '';
+  }
+  function stillVerdict(now) {
+    stillDueAcc = Infinity;
+    let why = stillKick ? 'wake' : stillMark;
+    const camMoved = scale !== stillCamS || panX !== stillCamX || panY !== stillCamY;
+    stillCamS = scale; stillCamX = panX; stillCamY = panY;
+    if (!why && (camMoved || camAnim || camLerp || now < motionUntil)) why = 'camera';
+    if (!why && now - inputAt < INPUT_HOLD_MS) why = 'input';
+    if (!why && typeof Voice !== 'undefined') {
+      if (Voice.isListening && Voice.isListening()) why = 'input';
+      else if (Voice.isSpeaking && Voice.isSpeaking()) why = 'speech';
+    }
+    // every body every frame, even once a source has decided: a baseline left stale reads as motion later (never as stillness)
+    if (agent) { const w = bodyStillWhy(agent, now); if (!why) why = w; }
+    for (let i = 0; i < crew.length; i++) { const w = bodyStillWhy(crew[i], now); if (!why) why = w; }
+    if (!why) why = fxStillWhy(now);
+    if (!why && liveBeltsInFrame()) why = 'belt';
+    // the cinecam's next cut (a hold ending, a still subject's 3 s grace, the hands-off takeover), an encounter or assembly ending
+    if (camLock && camLock.source === 'cine') noteDue(cineHoldUntil, now);
+    noteDue(cineWalkAt + 3000, now); noteDue(camUserAt + cineIdleMs, now);
+    if (socialBeat) noteDue(socialBeat.until, now);
+    if (gathering) noteDue(gathering.until, now);
+    stillWhy = why; stillNow = !why; stillDue = stillDueAcc;
+    // the next frame was booked before this one ran: a STILL wait that must not stand (motion, or an earlier change) re-books
+    if (paceTimer && paceTimerAt && (!stillNow || stillDue < paceTimerAt)) paceWake();   // (a budget-floor timer is left to the budget)
+  }
+  // ---- end STILL VERDICT
   /* OVERLAYS (HUD widget, 2026-09-30): the station's in-world readouts — run clocks, tool tickers, await tags,
      routing callouts, bay names/lamps/plates, hover glances, dock flashes, speech bubbles, nameplates and the
      working pulse at a worker's feet. A surface that says all of that itself (the HUD widget's rows) turns
@@ -6717,6 +6862,7 @@ const World = (() => {
     if(n.root.getAttribute('data-feed')!==readout.state)n.root.setAttribute('data-feed',readout.state);
   }
   function frameBody(now) {
+    stillBegin();   // STILL: this frame judges itself (stillVerdict, after the scene) — a throw below leaves it not-still
     const gap = now - last, dt = Math.min(64, gap); last = now; fnow = now;
     const slices = simSlices(gap, now);   // RENDER PACING: one step at draw rate; real-time slices while the pacer holds a low rate
     linkStaleDim = linkDown(now);   // recompute the honest link state before any telemetry is drawn this frame
@@ -6791,6 +6937,7 @@ const World = (() => {
        exactly the "picture behind a picture" tell the parallax exists to kill. Still screen
        space, still under the identity transform, still first — nothing has drawn yet. */
     drawScene(now, dt, slices);
+    stillVerdict(now);   // STILL: did anything but ambient effects change? (sets the next frame's pace — see RENDER PACING)
   }
 
   /* THE SCENE PASS — the station drawn once onto whatever {cv, ctx, scale, panX, panY} currently are. The frame
@@ -6885,6 +7032,10 @@ const World = (() => {
           occupied: workstationOccupied(p), still: reduceMotion()
         });
         if (p.t === 'filter') live = Object.assign({}, live, { scanning: scanningTiles.has(p.x + ':' + p.y), still: reduceMotion() });
+        // STILL: live content on screen — run output, a progress strip, heat, a scan, a flare, a cabinet in use — is motion
+        // (a body resting on a couch leaves the couch as drawn)
+        if (!stillMark && ((work && !(leisureProps.has(p.id) && restingOn(p))) || (live && (live.heat > 0 || live.prog != null || live.scanning)))
+          && propOnScreen(p)) stillMove('prop');
         // A stool/chair sorts just BEHIND its sitter; a couch sorts just IN FRONT so the tall sofa back
         // occludes the sitter's lower body. Beds/beanbags never set `seated` and never enter this branch.
         // A BODY IS IN THIS BED (lyingBed): the bed paints in TWO passes around it — frame + pillow under
@@ -10626,6 +10777,7 @@ const World = (() => {
   // per-agent activity: the HERO routes to setActivity (byte-identical single-agent path); a summoned crew
   // body lights + takes the working pose while its run is live, and extinguishes when it ends.
   function setActivityFor(agentId, kind) {
+    motionWake();   // STILL: a body summoned or released (a poll's reconcile, the TTL sweep, a bus handler) moves on the next vsync
     const now0 = (typeof performance !== 'undefined') ? performance.now() : fnow;
     if (!agentId || (agent && agentId === agent.id)) {
       setActivity(kind);                                                  // HERO: byte-identical single-agent path (the seize itself is in tick)
@@ -10840,6 +10992,9 @@ const World = (() => {
   function connectChannelBridge() {
     if (bridged || typeof U === 'undefined' || !U.bus) return;
     bridged = true;
+    // STILL: every harness event that reaches a listener (SSE-bridged or the in-app run stream) wakes a still floor, so what
+    // it starts — a body summoned, a crate placed, a desk lighting — is drawn on the next vsync
+    if (typeof U.bus.tap === 'function') U.bus.tap(motionWake);
     setupTicker();   // join the .cam-hud overlay (starts empty — no fake backfill)
     // ── CAM-HUD ACTIVITY TICKER: narrate the latest REAL harness event as one diegetic camera line. ──
     U.bus.on('agent.run.start', p => {
@@ -11393,6 +11548,7 @@ const World = (() => {
     const top = intake.y * T - 3;                          // crates climb upward off the intake's top edge
     ctx.save();
     if (linkStaleDim) ctx.globalAlpha = 0.3;   // E1: link down → this jam length is last-known, not live; dim it
+    stillMove('crate');   // STILL: waiting crates bob — the backlog is motion while it stands
     for (let i = 0; i < shown; i++) drawWaitCrate(cx, top - i * 6 + Math.sin(now / 360 + i * 0.7) * 0.6);   // gentle idle bob
     if (depth > MAXVIS) {
       ctx.fillStyle = '#e8c860'; ctx.font = "7px 'VT323','Courier New',monospace"; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -11654,7 +11810,25 @@ const World = (() => {
     pollFeed: () => pollFeedState(),
     pollShip: () => pollShipStats()
   });
-  return { init, rebake, invalidatePropShadows, frameReviewRoom, renderStill, renderStillOfTiles, crewFrames, crt: CRT, renderPace, slagLog: () => (slaglog ? slaglog.recent() : []),
+  /* STILL WAKE (2026-10-21): a call from outside that changes what the floor shows — a body's activity or skin, a bubble, a
+     camera move, a spawn, a ceremony beat, a debug drive — wakes a still floor after it runs, so it lands on the next vsync and
+     never waits out a 33 ms still interval. Reads (renderPace, cameraState, dbg, ...) stay unwrapped: a poll must not keep a
+     still floor at full pace. Every `_dbg*` hook is wrapped (dev only; a wake costs one draw). */
+  const WAKE_API = new Set(['loadStation', 'spawn', 'spawnAgent', 'despawnAgent', 'setSkin', 'relabel', 'setActivityFor', 'dropRun',
+    'focusBody', 'lockBody', 'restoreCamera', 'setOverlays', 'setChatFocus', 'chatFocusPing', 'setActivity', 'wakeIn',
+    'beginAwakening', 'playArrival', 'cancelArrival', 'setWakeProgress', 'igniteSpark', 'armKindle', 'kindleHold', 'camPushIn',
+    'camCreep', 'camPunch', 'camPullBack', 'awakenTurn', 'truthPulse', 'beginFlood', 'collapseFlood', 'endAwakening',
+    'releaseAwakening', 'say', 'focusAgent', 'refit', 'resumeBridge', 'rebake', 'invalidatePropShadows', 'setXp', 'pulseLevelUp',
+    'noteStepTest']);
+  function wakeOnCall(api) {
+    for (const k of Object.keys(api)) {
+      const f = api[k];
+      if (typeof f !== 'function' || !(WAKE_API.has(k) || k.startsWith('_dbg'))) continue;
+      api[k] = function () { try { return f.apply(this, arguments); } finally { motionWake(); } };
+    }
+    return api;
+  }
+  return wakeOnCall({ init, rebake, invalidatePropShadows, frameReviewRoom, renderStill, renderStillOfTiles, crewFrames, crt: CRT, renderPace, slagLog: () => (slaglog ? slaglog.recent() : []),
     // LINE WATCH: the Workflow panel pushes the step-test session it polls; reads today's numbers for a line
     noteStepTest, lineStatsFor: id => (lineStats.known ? (lineStats.byLine[id] || null) : null), pollLineStats,
     // a bay's live state — the lamp's own fold (WORKING only once the sidecar confirmed the run), with how long it has held
@@ -12114,5 +12288,5 @@ const World = (() => {
       }
       return out;
     }
-  };
+  });
 })();

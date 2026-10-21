@@ -67,7 +67,7 @@ A.ok(plan(g1) === plan0 && fixtureAnchorKey(g1) === key0, 'undo restores the pla
 const propsSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'frontend', 'app', 'propsprites.js'), 'utf8');
 const inval = A.fnBody(world, 'function invalidatePropShadows()');
 A.ok(inval && /propShadowLayer\.stamp\s*=\s*null/.test(inval) && !/rebake|StationBake/.test(inval), 'World.invalidatePropShadows only clears the shadow layer stamp (no bake)');
-A.ok(/return \{ init, rebake, invalidatePropShadows,/.test(world), 'World exports invalidatePropShadows');
+A.ok(/return (?:wakeOnCall\()?\{ init, rebake, invalidatePropShadows,/.test(world), 'World exports invalidatePropShadows');   // (through the STILL WAKE wrapper, 2026-10-21)
 const artLine = (propsSrc.match(/userArtChanged\(\) \{[^\n]*/) || [''])[0];
 A.ok(/World\.invalidatePropShadows\(\)/.test(artLine), 'userArtChanged repaints the shadow layer instead of baking: ' + artLine.slice(0, 160));
 A.ok(!/World\.rebake\(\)/.test(artLine.replace(/else if \(typeof World\.rebake === 'function'\) World\.rebake\(\);/, '')), 'userArtChanged rebakes only on a World without the cheap invalidation');
