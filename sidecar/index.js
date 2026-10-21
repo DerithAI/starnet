@@ -3253,7 +3253,8 @@ function embedderFor(run) {
    -> { vectors: {id->vec}, queryVec } | null. Backfills missing record vectors (capped) + embeds the query in
    ONE or two bounded calls, books the spend, persists the store. Fail-open: null on any failure. */
 async function hybridVectors(o) {
-  if (!personalizationStore.read().enabled) return null;   // the PAUSE is server authority: no provider call at all
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return null;   // the PAUSE is server authority: no provider call at all
   const embedder = embedderFor(o.run || {});
   if (!embedder) return null;
   const recs = Array.isArray(o.recs) ? o.recs : [];
@@ -3267,6 +3268,7 @@ async function hybridVectors(o) {
     if (plan.length) {
       const r = await embedder.embed(plan.map(p => p.text));
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;   // paused/forgotten mid-call: persist no vectors (the finally still books the spend)
       const rows = plan.map((p, i) => ({ id: p.id, h: p.h, v: r.vectors[i] }));
       await notebookStore.update('embed:' + o.agentId, (cur) => Embed.mergeVectors(cur, embedder.model, rows, recs.map(x => x.id)));
     }
@@ -3277,6 +3279,7 @@ async function hybridVectors(o) {
     if (!queryVec) {
       const r = await embedder.embed([query]);
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;
       queryVec = r.vectors[0];
       embedQueryCache.set(qKey, queryVec);
       while (embedQueryCache.size > EMBED_QUERY_CACHE_MAX) embedQueryCache.delete(embedQueryCache.keys().next().value);
@@ -3289,6 +3292,15 @@ async function hybridVectors(o) {
   } finally {
     if (usd || tokens) { try { ledger.record({ runId: o.runId, agentId: o.agentId, turns: 0, usd, tokens, model: embedder.model, unmetered: !!o.unmetered }); } catch (e) { failNote('embed.ledger.record', e); } }
   }
+}
+
+/* LEARNING RE-CHECK after an await (the scanDocumentSource rule). A learning pass checks the personalization PAUSE
+   at entry, then waits seconds on a model/embedder call; a pause or a forget (DELETE) that lands meanwhile must win,
+   or a memory/interest/draft is written after the Commander turned learning off. setEnabled and markForgotten both
+   bump `revision`, so an unchanged revision + still-enabled proves nothing moved since the pass started. */
+function learningUnchangedSince(start) {
+  const s = personalizationStore.read();
+  return !!(start && s.enabled && s.revision === start.revision);
 }
 
 /* PROJECT TIER (memory-compound lane): a belief formed inside a blessed project root is keyed to that root
@@ -3306,7 +3318,8 @@ async function runReflection(o) {
   // personalization PAUSE (memory-compound lane): reflection is the station learning about the Commander —
   // the same "learned-about-you" class the pause already silences for the scout, study packs and the failure
   // review. Server authority here too: a paused station extracts nothing and spends nothing, whatever the caller gated.
-  if (!personalizationStore.read().enabled) return;
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const origin = String((o && o.origin) || 'commander');   // which surface formed these beliefs (memcore.originOf)
@@ -3345,6 +3358,8 @@ async function runReflection(o) {
     const declined = notebookStore.get('declined:' + agentId);
     const declinedRecs = Array.isArray(declined) ? declined.map(t => ({ content: String(t) })) : [];
     const out = await reflect({ agentId, runId, messages }, { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: 5 });
+    // the Commander paused (or forgot) learning while the model was answering: remember nothing from this pass
+    if (!learningUnchangedSince(pz)) return;
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: reflect() already deduped THIS agent's own notebook declines; drop anything the Commander declined
     // in ANOTHER surface (a mined thread / a quest title / a study belief / a north star) so it isn't re-remembered.
@@ -3406,7 +3421,8 @@ async function runReflection(o) {
    memory.proposed for the confirm deck. PAUSE is server authority here exactly as in runScoutCycle: a paused
    station learns nothing new, whatever the caller gated. */
 async function runFailureReview(o) {
-  if (!personalizationStore.read().enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -3440,6 +3456,7 @@ async function runFailureReview(o) {
         toolTrace: o.toolTrace, recoveryAttempts: o.recoveryAttempts, uncertainMutations: o.uncertainMutations,
         messages },
       { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: Failreview.MAX_LESSONS });
+    if (!learningUnchangedSince(pz)) return;   // paused/forgotten during the review call: no lesson is written
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: any NEW proposal source routes through the shared declined-suppression index (NS-8 lite law).
     if (proposals.length) { const dIdx = buildDeclinedIndex(agentId); proposals = proposals.filter(p => p && !dIdx.has(p.content)); }
@@ -4788,11 +4805,22 @@ async function forceRefreshCodexAccessToken(staleToken) {
   codexRefreshInFlight = refreshCodexTokensOnce().finally(() => { codexRefreshInFlight = null; });
   return codexRefreshInFlight;
 }
+/* A refresh belongs to the exact sign-in that started it — the same rule ensureConnectorOauthToken keeps for MCP
+   grants. A logout (or a brand-new sign-in) during the token-endpoint await wins: the late response, success or
+   failure, must never be merged over it or saved, or an explicit sign-out is silently undone (the refreshed grant is
+   written over the signed-out tombstone and survives a restart) and a new account gets the old account's tokens. */
+function oauthRefreshSuperseded(label, code, current) {
+  if (current && current.access_token) return current.access_token;   // a new sign-in replaced it: serve THAT one
+  const e = new Error('Signed out of ' + label + ' while the sign-in was refreshing — connect it again to continue.');
+  e.code = code; e.reloginRequired = true; throw e;
+}
 async function refreshCodexTokensOnce() {
+  const started = codexTokens;
   let next;
   try {
-    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: codexTokens.refresh_token, now: Date.now() });
+    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
     // Relogin-class failure (invalid_grant / refresh_token_reused / 401) => the stored refresh token is DEAD.
     // Record it durably (module state + persisted envelope) so the status endpoint — and Settings — stop
     // claiming "signed in", and a restart stays honest. Transient failures (quota/network) never mark dead.
@@ -4805,6 +4833,7 @@ async function refreshCodexTokensOnce() {
     }
     throw e;
   }
+  if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
   // a successful refresh proves the sign-in is alive again — clear any standing dead marker with the same write.
   codexTokens = codexAuthState.withoutDeadMarker(Object.assign({}, codexTokens, next));
   codexAuthDead = null;
@@ -4951,10 +4980,12 @@ async function ensureOAuthAccessToken(pid) {
   return entry.refreshInFlight;
 }
 async function refreshOAuthTokensOnce(id, entry) {
+  const started = entry.tokens;   // same superseded-grant rule as refreshCodexTokensOnce: a logout/new sign-in mid-await wins
   let next;
   try {
-    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
     const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
     if (marker) {
       entry.authDead = marker;
@@ -4964,6 +4995,7 @@ async function refreshOAuthTokensOnce(id, entry) {
     }
     throw e;
   }
+  if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
   entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
   entry.authDead = null;
   saveOAuthTokens(id, entry.tokens);
@@ -5018,16 +5050,24 @@ async function ensureAccountAccessToken(entry, force, staleToken) {
   if (!force && !expiring) return entry.tokens.access_token;
   if (entry.refreshInFlight) return entry.refreshInFlight;
   entry.refreshInFlight = (async () => {
+    // superseded-grant rule (refreshCodexTokensOnce): a re-sign-in or a REMOVE during the await wins. A removed
+    // account's folder was just deleted — a late save would write an orphaned tokens.json secret back into it.
+    const started = entry.tokens;
+    const superseded = () => entry.tokens !== started || oauthAccountEntries.get(entry.pid + ':' + entry.id) !== entry;
+    const gone = () => oauthRefreshSuperseded(oauthLabel(entry.pid) + ' account', entry.pid + '_not_connected',
+      oauthAccountEntries.get(entry.pid + ':' + entry.id) === entry ? entry.tokens : null);
     let next;
     try {
       next = entry.pid === 'codex'
-        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() })
-        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() })
+        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
     } catch (e) {
+      if (superseded()) return gone();
       const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
       if (marker) { entry.authDead = marker; entry.tokens = codexAuthState.withDeadMarker(entry.tokens, marker); saveAccountTokens(entry, entry.tokens); }
       throw e;
     }
+    if (superseded()) return gone();
     entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
     entry.authDead = null;
     saveAccountTokens(entry, entry.tokens);
@@ -7568,7 +7608,8 @@ function scoutDirectionBlock() {
 /* runScoutCycle — ONE post-run cycle (fire-and-forget; never throws to the caller). Mirrors runReflection's
    aux plumbing: its OWN abort+timeout, ONE streamed completion per pass, spend reconciled + booked. */
 async function runScoutCycle(o) {
-  if (!personalizationStore.read().enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
   const { runId, agentId, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -7600,6 +7641,8 @@ async function runScoutCycle(o) {
         'You extract the recurring, specific work topics a user\'s real activity shows. Reply ONLY in the requested tagged format.',
         Interests.buildDirective({ activityLines: activity, knownTopics: known })
       );
+      // a pause or forget that landed during the model call wins: fold, persist, and note nothing (spend is booked below)
+      if (!learningUnchangedSince(pz)) return;
       const cands = Interests.parse(reply, { activityLines: activity, requireExactEvidence: true });
       interestsState = Interests.fold(interestsState, cands, { now: Date.now(), trustedActivity: true });
       persistInterests();
@@ -7636,6 +7679,7 @@ async function runScoutCycle(o) {
         launchedOften: Scout.launchHints(scoutState, 5)   // lane B: names annotated "(rated well)" when the Commander's own verdicts earn it
       });
       const reply = await propose('You are the station\'s recipe author. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;   // no attempt stamp, no draft, no ledger row after a mid-call pause/forget
       // grounding = the same evidence the directive showed the model — the WHY must cite it (parseRecipe guard). The
       // direction block is part of that evidence, so a WHY that cites an open quest / the north star is grounded —
       // and so is the DOSSIER (it rides the directive at dossierBlock; excluding it here silently killed any WHY
@@ -7688,6 +7732,7 @@ async function runScoutCycle(o) {
         topRecommendation: cx.topRecommendation || ''
       });
       const reply = await propose('You are the station\'s recruiter. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;
       const parsed = ProspectGen.parse(reply, { allowedKit: SCOUT_CAP_KEYS, allowedSkills: skillSlugs, existingClasses: existing });
       scoutState = Scout.stampAttempt(scoutState, 'prospect', { now: Date.now() });
       // ProspectGen.parse has no denylist arm — enforce the dismissed-shape memory here (same 0.6 overlap rule).
@@ -20484,6 +20529,11 @@ async function runOnceCore(o) {
   let taskContextInputs = null;
   let taskContextBlock = '';
   let taskQuestionAsked = false;
+  // ANSWER HOLD: this run's latest user text answered the brief's open question (prepare() stamped it and flipped
+  // the brief to 'ready'). Until the MODEL produces something (a token, a tool call, billed output) nothing has
+  // read that answer, so a run refused or failed before then hands the question back (reopenAnswer, outer
+  // finally) and the re-sent answer resumes the ORIGINAL task. A Commander cancel keeps the answer spent.
+  let briefAnswerHold = null;
   // Everything below is wrapped so the admission slot is ALWAYS released (early-return refusals above run
   // before tryEnter; every exit below — return, throw, or the normal finish — passes through leave()).
   try {
@@ -20571,6 +20621,7 @@ async function runOnceCore(o) {
       }, Date.now());
     } catch (e) { console.warn('[taskbrief] prepare failed:', (e && e.message) || e); taskBrief = null; }
   }
+  if (taskBrief && taskBrief.inputAction === 'answer' && taskBrief.answered && !o.recovery) briefAnswerHold = { id: taskBrief.id, answered: taskBrief.answered };
 
   if (taskBrief) taskBriefState = { brief: taskBrief };
   if (taskBrief && taskBrief.inputAction === 'cancel') {
@@ -22080,6 +22131,7 @@ async function runOnceCore(o) {
 
   // Per-run latches/counters/artifacts live in `execution`; policy and side effects remain in this host.
   const dispatch = async (c, ctx) => {
+    briefAnswerHold = null;   // the model asked for a tool (hidden brief_* calls emit no tool_call): the answer was read
     if (o.outputOnly) return {ok:false,isError:true,summary:'output-only',content:'Result repair cannot execute tools. Return only the corrected output.'};
     const realName = fromWire.get(c.name) || allWire.get(c.name) || c.name;
     const liveTool = registry.get(realName);
@@ -23268,6 +23320,14 @@ async function runOnceCore(o) {
     // Only a fold that FREED >= 10% of the prompt re-arms it (foldFreedEnough, context.js): a 0.6% fold used to re-arm
     // the whole budget and let full-size results back into a prompt still at the window's edge (audit probe 09-22).
     if (name === 'agent.compact' && foldFreedEnough(payload)) execution.resetToolBytes();
+    // ANSWER HOLD release: the first sign the model READ the answer spends it for good (any streamed text, any
+    // visible tool call/result, or billed output tokens — a reasoning model that dies mid-think counts as read).
+    // A cancel also keeps it spent: whether a cancelled answer comes back is not this seam's call.
+    if (briefAnswerHold && payload && (payload.runId === undefined || payload.runId === runId)) {
+      if ((name === 'agent.token' && payload.delta) || name === 'agent.tool_call' || name === 'agent.tool_result'
+        || (name === 'agent.cost' && ((Number(payload.tokensOut) || 0) > 0 || (Number(payload.reasoningTokens) || 0) > 0))
+        || (name === 'agent.run.end' && payload.reason === 'cancelled')) briefAnswerHold = null;
+    }
     execution.observeToolEvent(name, payload);
     // LINE WATCH: the loop's own run.start is the normal path's — it must name the bay/crate like every early-exit
     // start above does, or the floor pairs a multi-bay agent's run with its OLDEST crate and lights the wrong bay.
@@ -23892,6 +23952,15 @@ async function runOnceCore(o) {
   return result;
 
   } finally {
+    // ANSWER HOLD still armed = this run ended (an early refusal return, a throw, a turn-0 provider error) before the
+    // model read the Commander's answer: give the question back so the re-sent answer resumes the ORIGINAL task.
+    // The store refuses if anything moved since (a newer brief, a proceed/ask/complete) — never a hijack.
+    if (briefAnswerHold) {
+      const hold = briefAnswerHold; briefAnswerHold = null;
+      if (!(signal && signal.aborted)) {
+        try { await taskBriefStore.reopenAnswer(hold.id, hold.answered, Date.now()); } catch (e) { failNote('taskbrief.reopen', e); }
+      }
+    }
     // safety net: if managed credit was reserved but a throw before the inner finally left it unsettled, settle it
     // now (full refund on usd=0). billing.js's finishRun is idempotent, so a normal settle above makes this a no-op.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: 0, reason: 'leak-guard' }); } catch (_) {} }
