@@ -5,7 +5,10 @@
      · every call has a deadline — a hung plugin costs its caller a timeout, never a stuck run;
      · a crash rejects everything in flight, marks the plugin crashed, and the NEXT use restarts it — at most
        MAX_RESTARTS times per RESTART_WINDOW_MS, after which it stays down until it is reloaded (re-approve, restart);
-     · stop() and a revoke end the process; nothing outlives its approval.
+     · stop() and a revoke end the process; nothing outlives its approval;
+     · a call that times out is followed by a liveness ping: a process that cannot answer it (its event loop is
+       wedged) is killed, so the next use restarts it (bounded as above) instead of every later hook paying its
+       full timeout.
 
    makePluginRuntime({ fork, workerPath, store, now?, onLog?, timeouts? }) -> {
      start(plugin) -> { ok, subs, tools, handlers, jobs } | { ok:false, error }
@@ -16,7 +19,7 @@
 'use strict';
 const { note } = require('./failopen.js');   // a failed IPC/kill is noted, never silently dropped
 
-const DEFAULTS = { startMs: 8000, hookMs: 5000, toolMs: 120000, callMs: 30000 };
+const DEFAULTS = { startMs: 8000, hookMs: 5000, toolMs: 120000, callMs: 30000, pingMs: 5000 };
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 5 * 60 * 1000;
 
@@ -72,6 +75,8 @@ function makePluginRuntime(deps) {
     rec.state = 'starting';
     rec.error = '';
     rec.ready = null;
+    if (rec.ping) { clearTimeout(rec.ping.timer); rec.ping = null; }   // a probe of the previous process is moot
+    rec.hungReason = '';
     let child;
     try {
       child = fork(workerPath, [], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true, cwd: workerCwd });
@@ -88,7 +93,9 @@ function makePluginRuntime(deps) {
       if (rec.child !== child) return;
       const planned = rec.state === 'stopping' || rec.state === 'stopped';
       rec.state = planned ? 'stopped' : 'crashed';
-      if (!planned) rec.error = 'its process exited (' + (signal || ('code ' + code)) + ')';
+      if (!planned) rec.error = rec.hungReason || ('its process exited (' + (signal || ('code ' + code)) + ')');
+      rec.hungReason = '';
+      if (rec.ping) { clearTimeout(rec.ping.timer); rec.ping = null; }
       rejectAll(rec, planned ? 'the plugin was stopped' : 'the plugin crashed: ' + rec.error);
       if (rec.readyResolve) { rec.readyResolve({ ok: false, error: rec.error || 'the plugin stopped' }); rec.readyResolve = null; }
       rec.child = null;
@@ -150,6 +157,10 @@ function makePluginRuntime(deps) {
       return resolve(Object.assign({ ok: true }, rec.surface));
     }
     if (m.t === 'req') return void answerRequest(rec, m);
+    if (m.t === 'pong') {
+      if (rec.ping && rec.ping.ref === m.ref) { clearTimeout(rec.ping.timer); rec.ping = null; }
+      return;
+    }
     if (m.t === 'res') {
       const p = rec.pending.get(m.id); if (!p) return;
       rec.pending.delete(m.id); clearTimeout(p.timer);
@@ -199,6 +210,30 @@ function makePluginRuntime(deps) {
     return rec.restarting;
   }
 
+  /* A TIMEOUT IS NOT PROOF OF A HANG — a ping nobody answers is. A call can time out because its own work is slow
+     (a long tool, an awaited network call) while the process stays healthy; killing it then would take its other
+     calls and jobs down with it. So a timeout only asks { t:'ping' }: a live event loop answers at once, and a
+     process that cannot answer within pingMs is wedged (a busy loop, a synchronous hang). It used to stay
+     'running' forever, so every later hook call, station-wide, waited out its full timeout. Now it is killed: the
+     exit marks it crashed with this reason, and the next use restarts it, bounded by MAX_RESTARTS. One probe at a
+     time. */
+  function probe(rec) {
+    const child = rec.child;
+    if (!child || rec.state !== 'running' || rec.ping) return;
+    const ref = ++rec.seq;
+    const timer = setTimeout(() => {
+      if (!rec.ping || rec.ping.ref !== ref) return;
+      rec.ping = null;
+      if (rec.child !== child || rec.state !== 'running') return;
+      rec.hungReason = 'it stopped responding (a call timed out and it did not answer a liveness check within ' + Math.round(T.pingMs / 1000) + ' s)';
+      onLog(rec.id, '[runtime] ' + rec.hungReason + ' — ending its process; the next use restarts it');
+      try { child.kill(); } catch (e) { note('plugins.runtime.kill-hung', e); }
+    }, T.pingMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    rec.ping = { ref, timer };
+    try { child.send({ t: 'ping', ref }); } catch (e) { note('plugins.runtime.ping-send', e); }
+  }
+
   /* signal (optional): the RUN's abort signal. A STOP / E-STOP used to wait out a plugin tool to its end (up to the tool
      timeout) because nothing reached the process (QA 2026-10-02): now the call settles at once as stopped and the
      process gets { t:'cancel', ref } — the tool's ctx.signal aborts, so a tool that honours it stops its work too. */
@@ -212,6 +247,7 @@ function makePluginRuntime(deps) {
         if (!rec.pending.has(id)) return;
         rec.pending.delete(id); done();
         reject(new Error(label + ' did not answer within ' + Math.round(ms / 1000) + ' s'));
+        probe(rec);
       }, ms);
       if (timer && typeof timer.unref === 'function') timer.unref();
       rec.pending.set(id, { resolve: (v) => { done(); resolve(v); }, reject: (e) => { done(); reject(e); }, timer });
