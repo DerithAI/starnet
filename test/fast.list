@@ -348,6 +348,7 @@ test/voice-live-ui.test.js
 test/voice-flow.test.js
 test/voice-stream.test.js
 test/voice.draftguard.test.js
+test/voice.mic-release.test.js
 test/save.test.js
 test/saveversion.test.js
 test/backup-secrets.test.js
@@ -446,6 +447,7 @@ test/dev-seed-preflight.test.js
 test/browser.reach-measure.test.js
 test/browser.tool-parity.test.js
 test/browser.wait-recovery.test.js
+test/browser.refs-retire.test.js
 test/browser.download-receipt.test.js
 test/browser.attach.test.js
 test/browser.pie.test.js
@@ -1222,6 +1224,7 @@ test/loop.retry-events.test.js
 test/loop.waiting-heartbeat.test.js
 test/subagents.waiting-is-progress.test.js
 test/openai-waiting-keepalive.test.js
+test/openai-compat-lifecycle.test.js
 test/comms-wait-line.test.js
 test/line-stats.test.js
 test/linewatch.test.js
