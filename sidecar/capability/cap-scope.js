@@ -7,12 +7,15 @@
    gear that was already standing in HOME, where it does not reach that agent. Pure: station-model reads only.
 
    capScope(station, agentId, dockId) -> null | { scoped:false } |
-     { scoped:true, roomName, via:'desk'|'bay', placedTypes:[sorted floor types in that room], gearElsewhere:{ type:[{ id, name, label }] } }
+     { scoped:true, roomName, via:'desk'|'bay', bays:<bays it crews>, placedTypes:[sorted floor types in that room],
+       gearElsewhere:{ type:[{ id, name, label }] } (never a room any of its bays draws on) }
    consistentScope(station, agentId, { dockId, grantedTypes }) -> the scope ONLY when the saved floor reproduces THIS
      run's exact floor grants (the truth guard: a stale or different floor names no room), else null.
-   scopeForRun({ loadStation, agentId, runStation, extraObjects, interactive, floorless }) -> runOnce's one call:
+   scopeForRun({ loadStation, agentId, runStation, extraObjects, interactive, floorless, hasBay }) -> runOnce's one call:
      a bay-routed run (router.stationFor marks its station `floor`) compares that room's objects; an interactive run
      with no routed station compares the objects the page (or savedPlacement) sent; anything else names nothing.
+     hasBay (host: the router's plan) is asked first: an agent crewing no bay is never scoped, so its runs (the bayless
+     hero's: most COMMS runs) never load or validate the saved floor.
    makeSavedFloor({ stamp, loadStamped }) -> () => the saved station model, re-validated only when the save changed. */
 'use strict';
 
@@ -50,17 +53,22 @@ function capScope(station, agentId, dockId) {
   // agentRoomId takes the desk's room when the agent has a desk (a workstation = a computer prop) in a room
   const desk = props.find(p => p && p.agentId === agentId && station.capForProp(p.t) === 'computer');
   const via = (desk && station.roomAt(desk.x, desk.y) === roomId) ? 'desk' : 'bay';
+  // MULTI-BAY: a desk-less agent's other bays draw on THEIR rooms, so gear standing there does reach it (on those bays'
+  // runs): every capability room of every bay it crews is left out of "elsewhere"
+  const bays = props.filter(p => p && p.t === 'bay' && p.agentId === agentId);
+  const capRooms = new Set([roomId]);
+  for (const b of bays) { const r = station.agentRoomId(agentId, b.id); if (r) capRooms.add(r); }
   const gearElsewhere = {};   // per type, one entry per ROOM ID (two rooms may share a name): the first such prop's label
   for (const p of props) {
     const t = p && station.capForProp(p.t);
     if (!t || NOT_GEAR[t]) continue;
     const r = station.roomAt(p.x, p.y);
-    const nm = (r && r !== roomId) ? nameOf(r) : '';
+    const nm = (r && !capRooms.has(r)) ? nameOf(r) : '';
     if (!nm || !GEAR_LABEL[p.t]) continue;
     const list = gearElsewhere[t] || (gearElsewhere[t] = []);
     if (!list.some(x => x.id === r)) list.push({ id: r, name: nm, label: GEAR_LABEL[p.t] });
   }
-  return { scoped: true, roomName: nameOf(roomId), via, placedTypes: floorTypes(station.bayObjects(agentId, dockId)), gearElsewhere };
+  return { scoped: true, roomName: nameOf(roomId), via, bays: bays.length, placedTypes: floorTypes(station.bayObjects(agentId, dockId)), gearElsewhere };
 }
 
 function consistentScope(station, agentId, o) {
@@ -84,6 +92,7 @@ function scopeForRun(o) {
   } else if (o.interactive && !o.floorless && Array.isArray(o.extraObjects)) {
     granted = o.extraObjects;
   } else return null;             // the autonomous office is not a floor room
+  if (typeof o.hasBay === 'function' && !o.hasBay()) return null;   // cheap first: no bay on the plan, no saved-floor read
   const s = consistentScope(typeof o.loadStation === 'function' ? o.loadStation() : null, o.agentId, { dockId, grantedTypes: granted });
   return s ? Object.assign({}, s, { floorRouted: !!rs }) : null;
 }

@@ -22993,8 +22993,9 @@ async function runOnceCore(o) {
           // a STUDIO only analyzes images)
           disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet(), enabledToolsets: unrestrictedHostNow() ? null : o.enabledToolsets,
           mediaRoute: !!(studioRoute && studioRoute.ok),
-          // ROOM SCOPE: lazy (called only when a floor object is missing); the room it names is stable per agent, so the cached prefix holds
-          scopeFn: () => { try { return scopeForRun({ loadStation: savedFloor, agentId, runStation: o.station, extraObjects: o.extraObjects, interactive: surface === 'interactive', floorless: !!o.floorless }); } catch (e) { failNote('capsummary.roomscope', e); return null; } } }) + skillBlock;
+          // ROOM SCOPE: lazy (called only when a floor object is missing); the room it names is stable per agent, so the cached prefix holds.
+          // hasBay first: an agent crewing no dock on the router's plan (the bayless hero) never reads or validates the saved floor
+          scopeFn: () => { try { return scopeForRun({ loadStation: savedFloor, agentId, runStation: o.station, extraObjects: o.extraObjects, interactive: surface === 'interactive', floorless: !!o.floorless, hasBay: () => router.docksOf(agentId).length > 0 }); } catch (e) { failNote('capsummary.roomscope', e); return null; } } }) + skillBlock;
   /* CACHE-STABLE PREFIX (lean-prompt, 2026-10-12). Everything below that changes per MESSAGE — the run's skill index
      (ranked by this message), a /skill preload, the Task Brief (its id is the run's), the away briefing, a one-host
      check, the crew call, [RUNTIME] (run id, today) and the open quests — used to close the system prompt, so the

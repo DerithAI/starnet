@@ -250,8 +250,9 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
 {
   const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
   A.ok(/const savedFloor = makeSavedFloor\(\{ stamp: \(\) => saveStore\.stamp\('agent'\), loadStamped: \(\) => saveStore\.loadStamped\('agent'\) \}\);/.test(idx), 'the saved floor is memoized by the save stamp');
-  A.ok(/toolless: !isTask,\s*\n(?:\s*\/\/[^\n]*\n)*\s*disabledCaps: unrestrictedHostNow\(\) \? new Set\(\) : disabledCapsSet\(\), enabledToolsets: unrestrictedHostNow\(\) \? null : o\.enabledToolsets,\s*\n\s*mediaRoute: !!\(studioRoute && studioRoute\.ok\),\s*\n(?:\s*\/\/[^\n]*\n)*\s*scopeFn: \(\) => \{ try \{ return scopeForRun\(\{ loadStation: savedFloor, agentId, runStation: o\.station, extraObjects: o\.extraObjects, interactive: surface === 'interactive', floorless: !!o\.floorless \}\); \} catch \(e\) \{ failNote\('capsummary\.roomscope', e\); return null; \} \} \}\) \+ skillBlock;/.test(idx),
-    'summarizeCapabilities gets the TOOLSETS switches, the routine\'s own toolset list, the image route and scopeFn from this run\'s station, placed objects and surface, failing open to null');
+  A.ok(/toolless: !isTask,\s*\n(?:\s*\/\/[^\n]*\n)*\s*disabledCaps: unrestrictedHostNow\(\) \? new Set\(\) : disabledCapsSet\(\), enabledToolsets: unrestrictedHostNow\(\) \? null : o\.enabledToolsets,\s*\n\s*mediaRoute: !!\(studioRoute && studioRoute\.ok\),\s*\n(?:\s*\/\/[^\n]*\n)*\s*scopeFn: \(\) => \{ try \{ return scopeForRun\(\{ loadStation: savedFloor, agentId, runStation: o\.station, extraObjects: o\.extraObjects, interactive: surface === 'interactive', floorless: !!o\.floorless, hasBay: \(\) => router\.docksOf\(agentId\)\.length > 0 \}\); \} catch \(e\) \{ failNote\('capsummary\.roomscope', e\); return null; \} \} \}\) \+ skillBlock;/.test(idx),
+    'summarizeCapabilities gets the TOOLSETS switches, the routine\'s own toolset list, the image route and scopeFn from this run\'s station, placed objects, surface and the router\'s docks, failing open to null');
+  A.ok(/^const router = makeRouter\(\);$/m.test(idx) && /const r = router\.setPlan\(plan\);/.test(idx), 'hasBay reads the router handleRouting posts the plan into (section 13 runs that very check on a posted plan)');
   A.ok(idx.indexOf('resolved = enforceEnabledToolsets(resolved, registry, unrestrictedHostNow() ? null : o.enabledToolsets);') > 0,
     '...and that toolset list is the very one enforceEnabledToolsets narrowed this run with');
   // ...and those two facts are the very ones the run's grants and its unavailable set were built from
@@ -500,6 +501,89 @@ const BEFORE_I = '\n<capabilities_ground_truth>\nThese are your REAL powers this
   A.eq(summarizeCapabilities(resEmpty, { surface: 'autonomous', enabledToolsets: [], scopeFn: () => { askedEmpty++; return scopeE(saved, rsE); } }), summarizeCapabilities(resEmpty, { surface: 'autonomous' }),
     'an empty list (the gate keeps only the freebies): byte-identical, no room fix');
   A.eq(askedEmpty, 0, '...and the scope is never computed');
+}
+
+/* 13. THE PRODUCTION PATH (polish 10-21): sections 5-12 hand the router the station (setStation), which no sidecar route
+       calls. Live, world.js compileRouting compiles Pipeline.compileRoutingPlan(station.projectGeometry()), stamps every
+       bay record with station.bayObjects(agentId, propId), and POSTs it; handleRouting JSON-parses it into router.setPlan,
+       and stationFor builds a routed run's room from those stamped objects. index.js's scopeFn asks router.docksOf first. */
+{
+  function posted(s) {   // world.js compileRouting -> postRoutingPlan -> handleRouting, byte for byte through JSON
+    const plan = P.compileRoutingPlan(s.projectGeometry());
+    for (const b of (plan.bays || [])) b.objects = s.bayObjects(b.agentId, b.propId);
+    for (const b of (plan.dockBays || [])) b.objects = s.bayObjects(b.agentId, b.propId);
+    return JSON.parse(JSON.stringify(plan));
+  }
+  const hasBayOn = (rt, id) => () => rt.docksOf(id).length > 0;   // index.js's cheap check, verbatim
+  const { floorTypes } = require('../sidecar/capability/cap-scope.js');
+  const floorTypesOf = (r) => floorTypes(r.rooms.bay.objects);
+  const rt = makeRouter(), set = rt.setPlan(posted(st));
+  A.ok(set.ok || set.caps, 'fixture: the router takes the posted plan (' + JSON.stringify(set) + ')');
+  const bay1 = st.props().find(p => p.t === 'bay' && p.agentId === 'rq1');
+  const rs = rt.stationFor('rq1', bay1.id);
+  A.ok(rs && rs.floor && rs.floor.dockId === bay1.id, 'the posted plan\'s routed room carries the floor marker: ' + JSON.stringify(rs && rs.floor));
+  A.eq(floorTypesOf(rs), [], '...built from the stamped objects: RESEARCH holds no floor gear');
+  let loads = 0;
+  const loadSaved = () => { loads++; return saved; };
+  const resU = unattended(resolveTools('rq1', withProfile(rs, 'rq1')));
+  const u = summarizeCapabilities(resU, { surface: 'autonomous', scopeFn: () => scopeForRun({ loadStation: loadSaved, agentId: 'rq1', runStation: rs, hasBay: hasBayOn(rt, 'rq1') }) });
+  A.ok(u.indexOf('No web on this run: RESEARCH, the room your desk is in, has no DISH; the Commander can place one there for your next job (the DISH in HOME does not reach you). ') >= 0,
+    'a posted-plan line run names RESEARCH: ' + u.slice(u.indexOf('No web'), u.indexOf('No web') + 200));
+  A.eq(loads, 1, '...loading the saved floor once');
+  const nI = summarizeCapabilities(resolvedI, { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: loadSaved, agentId: 'rq1', extraObjects: extra, interactive: true, hasBay: hasBayOn(rt, 'rq1') }) });
+  A.ok(nI.indexOf('Place the DISH, SERVER CART and STUDIO in RESEARCH, the room your desk is in: gear in any other room (like the ones in HOME) does not reach you.') >= 0, 'a COMMS run of a crew with a bay on the posted plan names RESEARCH');
+
+  // PERF: the bayless hero missing gear (no STUDIO placed: the common floor) never loads or validates the saved floor
+  const fh = M.create(st.serialize());
+  A.ok(fh.removeProp(fh.props().find(p => p.t === 'studio').id).ok, 'fixture: the station has no STUDIO');
+  const rtH = makeRouter(), setH = rtH.setPlan(posted(fh)); A.ok(setH.ok || setH.caps, 'fixture: the router takes the STUDIO-less plan');
+  const heroRes = interactiveRun('agent', savedPlacement({ station: fh.serialize() }, 'agent'));
+  A.ok(heroRes.tools.indexOf('image_generate') < 0, 'fixture: the hero lacks images');
+  loads = 0;
+  let asked = 0;
+  const heroNote = summarizeCapabilities(heroRes, { surface: 'interactive', scopeFn: () => { asked++; return scopeForRun({ loadStation: loadSaved, agentId: 'agent', extraObjects: [], interactive: true, hasBay: hasBayOn(rtH, 'agent') }); } });
+  A.eq([asked, loads], [1, 0], 'the hero crews no bay on the posted plan: the scope is asked, the saved floor is never loaded');
+  A.eq(heroNote, summarizeCapabilities(heroRes, { surface: 'interactive' }), '...and its note is byte-identical');
+  A.eq(scopeForRun({ loadStation: loadSaved, agentId: 'rq1', interactive: true, extraObjects: extra, hasBay: () => false }), null, 'no bay on the plan: no scope');
+  A.eq(loads, 0, '...and no load');
+
+  // MULTI-BAY: a desk-less WRITER crews its RESEARCH bay AND a bay in HOME. Its HOME runs DO get HOME's gear, so the note
+  // never says that gear "does not reach you", and "your bay" (which one?) is "this bay" on a line run
+  const fm = M.create(st.serialize());
+  A.ok(fm.removeProp(fm.props().find(p => p.agentId === 'rq2' && /^desk/.test(p.t)).id).ok, 'fixture: the WRITER loses its desk');
+  const home = fm.rooms().find(r => r.name === 'HOME'), research = fm.rooms().find(r => r.name === 'RESEARCH');
+  let bayH = null;
+  for (const Rr of home.rects) for (let y = Rr.y1 + 1; y < Rr.y2 && !bayH; y++) for (let x = Rr.x1 + 1; x < Rr.x2 && !bayH; x++) {
+    const r = fm.addProp({ t: 'bay', x, y, w: 2, h: 2, block: true, agentId: 'rq2' }); if (r && r.ok) bayH = r;
+  }
+  const bayR = fm.props().find(p => p.t === 'bay' && p.agentId === 'rq2' && fm.roomAt(p.x, p.y) === research.id);
+  A.ok(!!bayH && !!bayR && fm.props().filter(p => p.t === 'bay' && p.agentId === 'rq2').length === 2 && fm.roomAt(fm.props().find(p => p.id === bayH.id).x, fm.props().find(p => p.id === bayH.id).y) === home.id,
+    'fixture: the WRITER crews a bay in RESEARCH and one in HOME');
+  const svM = { station: fm.serialize() }, flM = checkedStation(svM);
+  const rtM = makeRouter(), setM = rtM.setPlan(posted(fm));
+  A.ok(setM.ok || setM.caps, 'fixture: the router takes the multi-bay plan (' + JSON.stringify(setM) + ')');
+  A.eq(rtM.docksOf('rq2').length, 2, 'the posted plan knows both docks');
+  const rsH = rtM.stationFor('rq2', bayH.id), rsR = rtM.stationFor('rq2', bayR.id);
+  A.ok(rsH.floor.dockId === bayH.id && floorTypesOf(rsH).indexOf('dish') >= 0, 'its HOME bay\'s runs DO draw on HOME\'s DISH');
+  A.ok(rsR.floor.dockId === bayR.id && floorTypesOf(rsR).indexOf('dish') < 0, 'its RESEARCH bay\'s runs do not');
+  const sM = capScope(flM, 'rq2', bayR.id);
+  A.ok(sM && sM.roomName === 'RESEARCH' && sM.via === 'bay' && sM.bays === 2, 'scoped to the RESEARCH bay\'s room, two bays: ' + JSON.stringify(sM && { r: sM.roomName, via: sM.via, bays: sM.bays }));
+  A.ok(Object.keys(sM.gearElsewhere).every(t => sM.gearElsewhere[t].every(x => x.id !== home.id)), 'HOME, a capability room of its other bay, is never "elsewhere": ' + JSON.stringify(sM.gearElsewhere));
+  const uM = summarizeCapabilities(unattended(resolveTools('rq2', withProfile(rsR, 'rq2'))), { surface: 'autonomous',
+    scopeFn: () => scopeForRun({ loadStation: () => flM, agentId: 'rq2', runStation: rsR, hasBay: hasBayOn(rtM, 'rq2') }) });
+  A.ok(uM.indexOf('No web on this run: RESEARCH, the room this bay is in, has no DISH; the Commander can place one there for your next job. If the job needed it') >= 0 && !/HOME/.test(uM),
+    'the RESEARCH line run: "this bay", and HOME\'s DISH is never said not to reach it: ' + uM.slice(uM.indexOf('No web'), uM.indexOf('No web') + 200));
+  const uH = summarizeCapabilities(unattended(resolveTools('rq2', withProfile(rsH, 'rq2'))), { surface: 'autonomous',
+    scopeFn: () => scopeForRun({ loadStation: () => flM, agentId: 'rq2', runStation: rsH, hasBay: hasBayOn(rtM, 'rq2') }) });
+  A.ok(/You CAN: [^\n]*search\/fetch the web/.test(uH) && !/No web/.test(uH), 'the HOME line run has web: no room fix');
+  // a COMMS chat is at no bay: it draws on the agent's first bay's room (worldmodel.agentRoomId with no dock)
+  const exM = savedPlacement(svM, 'rq2');
+  A.eq(exM.map(o => o.objectType), [], 'fixture: the chat draws on the first bay\'s room, RESEARCH');
+  const iM = summarizeCapabilities(interactiveRun('rq2', exM), { surface: 'interactive', scopeFn: () => scopeForRun({ loadStation: () => flM, agentId: 'rq2', extraObjects: exM, interactive: true, hasBay: hasBayOn(rtM, 'rq2') }) });
+  A.ok(iM.indexOf('Place the DISH in RESEARCH, the room your first bay is in: gear in any other room does not reach you.') >= 0 && !/HOME/.test(iM),
+    'the chat: "your first bay", HOME never named: ' + iM.slice(iM.indexOf('Place the'), iM.indexOf('Place the') + 160));
+  // one bay is unchanged: "your bay"
+  A.ok(/Place the DISH in RESEARCH, the room your bay is in:/.test(summarizeCapabilities(interactiveRun('rq2', []), { surface: 'interactive', scopeFn: () => Object.assign({}, sM, { bays: 1 }) })), 'one bay: "your bay"');
 }
 
 A.report('capsummary-room-scope.test');

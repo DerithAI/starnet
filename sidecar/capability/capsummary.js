@@ -155,7 +155,10 @@ function summarizeCapabilities(resolved, opts) {
   const roomFix = !scope ? [] : CAPS.filter((c) => ROOM_GEAR.indexOf(c.id) !== -1 && placeable(c) && scope.placedTypes.indexOf(c.type) === -1 &&
     (interactive || FLOOR_UNATTENDED.indexOf(c.id) !== -1) && (CORE.indexOf(c.id) !== -1 || ((scope.gearElsewhere || {})[c.type] || []).length > 0));
   const roomExtra = roomFix.filter((c) => CORE.indexOf(c.id) === -1);   // memory / images: not in the core lack list
-  const roomIs = scope ? scope.roomName + ', the room your ' + (scope.via === 'bay' ? 'bay' : 'desk') + ' is in' : '';
+  // a desk-less agent crewing several bays: a line run is at ONE of them ("this bay"); a chat is at none and draws on its
+  // first bay's room (worldmodel.agentRoomId with no dock)
+  const roomIs = scope ? scope.roomName + ', the room ' + (scope.via !== 'bay' ? 'your desk' : !(scope.bays > 1) ? 'your bay'
+    : scope.floorRouted ? 'this bay' : 'your first bay') + ' is in' : '';
   const missing = (interactive ? lackCore.map((c) => c.have) : lackAutonomous).concat(roomExtra.map((c) => extraHave(c, noImageRoute)));
   if (missing.length) {
     note += '- You do NOT have: ' + missing.join(', ') + '.\n';
