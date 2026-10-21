@@ -254,7 +254,8 @@
       if (r.lastUsedAt != null) e.lastUsedAt = Math.max(num(e.lastUsedAt), num(r.lastUsedAt));
       if (e.state === 'stale') e.state = 'active';
     }
-    // The library may only be WRITTEN (persist, markUsed, compact) after a COMPLETE load: a failed or partial read
+    // The library may only be WRITTEN (persist, a staged proposal, a rejection, markUsed, curate, compact) after a
+    // COMPLETE load: a failed or partial read
     // leaves skills that exist on disk missing from RAM, and a write over one of them (or a compaction of the
     // partial view) is exactly how skills get replaced or deleted.
     let loaded = false, loadError = null;
@@ -624,6 +625,9 @@
       return trustSource(e.createdBy || 'agent') === 'agent-created';
     }
     function stageMutation(e, legacyWrite) {
+      // The model's write path is a write too: after a failed load it would build on an empty view (isNew for a skill
+      // on disk) and its row would replace the real pending proposal on the next boot.
+      if (!canWrite()) return { ok: false, error: cannotWrite().message };
       const aid = str(e.agentId) || 'agent';
       const seeds = Array.from(latest.values()).map(clone);
       // A writer builds on a pending draft only when it can SEE that draft: the review/curator passes read it
@@ -793,6 +797,7 @@
     }
     function rejectCandidate(e) {
       e = e || {};
+      if (!canWrite()) return { ok: false, error: cannotWrite().message };
       const found = candidateDecision(e);
       if (found.error) return { ok: false, error: found.error };
       const row = Object.assign({}, clone(found.row), { status: 'rejected', resolvedAt: now() });
@@ -921,8 +926,9 @@
        folded into the record by the next compaction) and updates RAM. A failed append keeps the RAM bump, which
        the next compaction flushes.
        THE GUARD STILL SEES EVERY USE. The re-scan on use was how a new guard rule reached a skill nobody edits, so a
-       use still scans the bytes under the current rules (CPU, no disk); only when the verdict or action would change,
-       or a legacy record lacks a verdict/digest, is the whole record persisted (rare: once per rule change). */
+       use still scans the bytes under the current rules (CPU, no disk); only when the scan (verdict, findings, summary)
+       or action would change, or a legacy record lacks a digest, is the whole record persisted (rare: once per rule
+       change). */
     function markUsed(agentId, idOrNames) {
       if (!canWrite()) return { ok: false, count: 0, error: cannotWrite().message };
       const ids = Array.isArray(idOrNames) ? idOrNames : [idOrNames];
@@ -935,9 +941,11 @@
         entry.lastUsedAt = now();
         if (entry.state === 'stale') entry.state = 'active';
         if (guard && typeof guard.scanSkillRecord === 'function') {
+          // the WHOLE scan, not only the verdict: a rule that adds a finding under the same verdict changes the
+          // categories the gate shows the Commander (the scan is deterministic for the same bytes and rules)
           const probe = scanInto(clone(entry), projectSkill(entry, true));
-          const verdictOf = (x) => str(x && x.scan && x.scan.verdict);
-          if (str(probe.guardAction) !== str(entry.guardAction) || verdictOf(probe) !== verdictOf(entry) || (digest && !entry.contentDigest)) {
+          const scanOf = (x) => JSON.stringify((x && x.scan) || null);
+          if (str(probe.guardAction) !== str(entry.guardAction) || scanOf(probe) !== scanOf(entry) || (digest && !entry.contentDigest)) {
             persist(entry); count++;
             continue;
           }
@@ -966,6 +974,7 @@
       catch (e) { return { ok: false, reason: (e && e.message) || 'rewrite failed', kept: entries.length }; }
     }
     function curate(agentId, opts2) {
+      if (!canWrite()) return { ok: false, stale: 0, archived: 0, proposedArchives: 0, error: cannotWrite().message };
       opts2 = opts2 || {};
       const staleMs = opts2.staleMs > 0 ? opts2.staleMs : 30 * 24 * 60 * 60 * 1000;
       const archiveMs = opts2.archiveMs > 0 ? opts2.archiveMs : 90 * 24 * 60 * 60 * 1000;

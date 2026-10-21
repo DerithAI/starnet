@@ -58,19 +58,28 @@ function makeSkillsIo(deps) {
      (logbound.js, before its torn-tail fix). A whole record glued to the end of a fragment is peeled back out (accepted
      only when it re-serializes to exactly those bytes, like the ledger's gluedSpendRows). Anything still unparsable is
      kept in `damaged`, and rewrite() saves those raw lines to <file>.damaged BEFORE it replaces the file: a compaction
-     never destroys bytes it could not read. */
+     never destroys bytes it could not read.
+     A TORN ROW'S OWN NESTED OBJECT IS NEVER A RECORD. A candidate row ends with its `skill` object and a promotion row
+     starts with its `entry` object, so a crash right after one leaves a tail that parses alone; loading it would make
+     an unapproved proposal (or half a promotion) the ACTIVE skill. JSON.stringify puts a nested object only right
+     after ':', ',' or '[', so a start there is skipped (a real glued record after such a byte stays in `damaged`, the
+     safe direction), and a peeled object must look like a top-level row (a recordType or a name). */
   const GLUED_MAX_TRIES = 64;
   let damaged = [];
+  function topLevelRow(o) {
+    return !!o && typeof o === 'object' && !Array.isArray(o) && (typeof o.recordType === 'string' || typeof o.name === 'string');
+  }
   function peel(line) {
     const rows = [];
     let rest = line;
     for (let round = 0; round < 8 && rest; round++) {
       let found = -1;
       for (let i = rest.indexOf('{"', 1), tries = 0; i > 0 && tries < GLUED_MAX_TRIES; i = rest.indexOf('{"', i + 1), tries++) {
+        if (':,['.includes(rest[i - 1])) continue;   // a value position: the torn row's own nested object
         const tail = rest.slice(i).trimEnd();
         let cand = null;
         try { cand = JSON.parse(tail); } catch (e) { continue; }   // a fragment's own text from here: try the next start
-        if (cand && typeof cand === 'object' && JSON.stringify(cand) === tail) { rows.unshift(cand); found = i; break; }
+        if (topLevelRow(cand) && JSON.stringify(cand) === tail) { rows.unshift(cand); found = i; break; }
       }
       if (found < 0) break;
       rest = rest.slice(0, found);
