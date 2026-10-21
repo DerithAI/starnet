@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "3bc8abb371b9478ebe5d584042ff9e3c463e1977",
+    "sourceCommit": "eedc0828665d11c506fa566daac0426d04d18d9f",
     "pathSetSha256": "977cb6e7a6c2fefcbe01097ab7c9c2befa08c45c866b457b0aaeb9b3dcbb20b6",
     "files": [
       {
@@ -1648,8 +1648,8 @@
       },
       {
         "path": "frontend/css/pipglass.css",
-        "bytes": 167181,
-        "sha256": "a77fe23f40d987ec8ce896c4f4cf87017885df6278b9b36805f434c7fb23d76a"
+        "bytes": 175483,
+        "sha256": "a8c5738570c7c9420033fe7d49c38170e3c69ff6fa9c763d2773b79a71ddda59"
       },
       {
         "path": "frontend/css/plugins.css",
@@ -1698,8 +1698,8 @@
       },
       {
         "path": "frontend/css/settings.css",
-        "bytes": 21932,
-        "sha256": "63088ff1bbf272c976d9c35a8f210a78a7168eb3d000b30ee349455d07a5ad47"
+        "bytes": 22152,
+        "sha256": "490b56bb4c3855824f4b345a488614387136e37b4bca491e4b56814e8c7a58a7"
       },
       {
         "path": "frontend/css/stepin.css",
