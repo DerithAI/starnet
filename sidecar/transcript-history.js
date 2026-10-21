@@ -15,7 +15,9 @@
    byte is remembered after our own proven append (re-read whenever the file size is not the size we left it at), and
    the active checksum is computed when the manifest is written. Reads answer from parses that are exact for the bytes
    they cover: the active segment's (checked against its size on every read), a byte-bounded cache of the newest
-   closed segments (immutable) and their verified term indexes, and each stream's own rows of a closed segment. */
+   closed segments (immutable) plus the one parsed most recently, their verified term indexes, and each stream's own
+   rows of a closed segment. A recall counts its query terms in a row (countTerms) instead of splitting the row into
+   every word, and a stream-scoped recall scores the stream's own cached rows without loading the segment's index. */
 'use strict';
 
 const { writeFileDurable } = require('./durable-write.js');
@@ -60,6 +62,41 @@ function wordTokens(v) {
   return out.filter(t => t.length <= TOKEN_MAX);
 }
 function tokenize(v) { return Array.from(new Set(wordTokens(v))); }
+/* HOW OFTEN EACH QUERY TERM IS A TOKEN OF A ROW, without building the row's tokens (perf review 2026-10-19, "Lifetime
+   search"). A recall scored every candidate row by splitting its whole content into words (a Unicode regex match and an
+   array of every word, then a map lookup per word): that was most of a recall's cost. The answer is the same count of
+   the same tokens: on the same NFKC + lower-cased text, an occurrence of a term IS one of wordTokens' tokens exactly when
+   wordTokens would cut there on both sides: at either end of the text, at a character that is neither a letter nor a
+   number, or beside a CJK character (each of those is a token of its own, so a CJK term counts wherever it occurs).
+   counts[k] receives the count for terms[k]; terms are tokenize() output (each a whole token, at most TOKEN_MAX long). */
+const WORD_CHAR = /^[\p{L}\p{N}]$/u;
+function asciiWordCode(c) { return (c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90); }
+function cutsToken(ch) { return !WORD_CHAR.test(ch) || CJK_CHAR.test(ch); }
+function cutBefore(s, i) {
+  if (i <= 0) return true;
+  const c = s.charCodeAt(i - 1);
+  if (c < 128) return !asciiWordCode(c);
+  const pair = (c & 0xfc00) === 0xdc00 && i >= 2 && (s.charCodeAt(i - 2) & 0xfc00) === 0xd800;
+  return cutsToken(pair ? s.slice(i - 2, i) : s[i - 1]);
+}
+function cutAfter(s, j) {
+  if (j >= s.length) return true;
+  const c = s.charCodeAt(j);
+  if (c < 128) return !asciiWordCode(c);
+  const pair = (c & 0xfc00) === 0xd800 && j + 1 < s.length && (s.charCodeAt(j + 1) & 0xfc00) === 0xdc00;
+  return cutsToken(pair ? s.slice(j, j + 2) : s[j]);
+}
+function countTerms(text, terms, counts) {
+  const s = str(text).normalize('NFKC').toLowerCase();
+  for (let k = 0; k < terms.length; k++) {
+    const t = terms[k];
+    let c = 0;
+    if (CJK_CHAR.test(t)) for (let at = s.indexOf(t); at >= 0; at = s.indexOf(t, at + t.length)) c++;
+    else for (let at = s.indexOf(t); at >= 0; at = s.indexOf(t, at + 1)) if (cutBefore(s, at) && cutAfter(s, at + t.length)) c++;
+    counts[k] = c;
+  }
+  return counts;
+}
 function segmentName(n) { return 'segment-' + String(n).padStart(6, '0') + '.jsonl'; }
 function indexName(n) { return 'segment-' + String(n).padStart(6, '0') + '.index.json'; }
 function clone(v) { return Object.assign({}, v); }
@@ -75,11 +112,12 @@ function makeSegmentedTranscriptIo(opts) {
   if (!root) throw new Error('makeSegmentedTranscriptIo requires root');
   const segmentBytes = Math.max(256, num(o.segmentBytes) || DEFAULT_SEGMENT_BYTES);
   const recentPerStream = Math.max(1, num(o.recentPerStream) || DEFAULT_RECENT_PER_STREAM);
-  // RAM the read caches may hold: parsed closed segments (by their JSONL bytes: 2 segments by default, about their own
-  // size in heap) and verified closed term indexes (by their JSON characters: half a segment's worth, about the 2 newest
-  // indexes, because an index parses to ~4-5x its text and only a recall reads one). 0 turns a cache off.
+  // RAM the read caches may hold: parsed closed segments (by their JSONL bytes: 2 segments by default, ~1.5x that in
+  // heap, plus the one-slot most recent parse) and verified closed term indexes (by their JSON characters: one segment's
+  // worth: a full segment's index measured ~0.4-0.55x its bytes as text and parses to ~2.4x its text, so this holds the
+  // newest one or two closed indexes, at most ~10 MB of heap, and only a recall reads one). 0 turns a cache off.
   const rowsCacheBytes = o.cacheBytes != null ? Math.max(0, num(o.cacheBytes)) : segmentBytes * 2;
-  const indexCacheBytes = o.indexCacheBytes != null ? Math.max(0, num(o.indexCacheBytes)) : Math.floor(segmentBytes / 2);
+  const indexCacheBytes = o.indexCacheBytes != null ? Math.max(0, num(o.indexCacheBytes)) : segmentBytes;
   // ONE stream's rows of a closed segment (history's unit of work), by their approximate JSON characters: one segment's
   // worth. A conversation whose rows are sprinkled through dozens of closed segments between loop and routine traffic
   // re-read and re-parsed every one of those segments 2-4 times a run, because only the 2 newest whole segments fit the
@@ -99,6 +137,7 @@ function makeSegmentedTranscriptIo(opts) {
   let tail = null;               // { n, size, last }: the active file's size + last byte right after OUR last proven append
   let activeRows = null;         // { n, size, rows, bad }: the append-active segment's parse, exact for `size` bytes
   const closedRows = { map: new Map(), bytes: 0, budget: rowsCacheBytes };      // n -> { order, rows, bad, bytes } closed parses
+  let lastClosed = null;         // { n, rows, bad, bytes }: the closed segment parsed most recently (see cacheNewest)
   const closedIndexes = { map: new Map(), bytes: 0, budget: indexCacheBytes }; // n -> { order, index, bytes } verified indexes
   const streamSlices = { map: new Map(), bytes: 0, budget: sliceCacheBytes };  // n + sid -> { order, rows, bytes }
   const verifiedIndex = new Map(); // n -> index file size:mtime + the manifest checksum it already matched
@@ -181,7 +220,11 @@ function makeSegmentedTranscriptIo(opts) {
   /* WHICH CLOSED PARSES STAY: the newest segments that fit the budget. A conversation reads newest-first and a
      lifetime search touches every segment, so least-recently-used would evict exactly what the next pass needs (a
      pass over one more segment than fits misses every time). Keeping the highest numbers holds what history reads
-     most, and a pass larger than the cache neither empties it nor thrashes it. */
+     most, and a pass larger than the cache neither empties it nor thrashes it.
+     That policy alone never keeps an OLDER segment once the newest fill the budget, so readers that come back to the
+     same older segment one after another (an away briefing reads every overnight routine's own cron-<runId> stream,
+     several to a segment) each re-read it. So the closed segment parsed most recently is also kept, in one slot of
+     its own (at most one more segment's parse; never when it alone exceeds the budget, so a budget of 0 keeps none). */
   function uncache(cache, key) {
     const prior = cache.map.get(key);
     if (prior) { cache.map.delete(key); cache.bytes -= prior.bytes; }
@@ -199,11 +242,14 @@ function makeSegmentedTranscriptIo(opts) {
     cache.map.set(key, entry);
     cache.bytes += entry.bytes;
   }
-  function rememberClosed(n, seg) { cacheNewest(closedRows, n, { order: n, rows: seg.rows, bad: seg.bad, bytes: seg.bytes }); }
+  function rememberClosed(n, seg) {
+    cacheNewest(closedRows, n, { order: n, rows: seg.rows, bad: seg.bad, bytes: seg.bytes });
+    lastClosed = seg.bytes <= closedRows.budget ? { n, rows: seg.rows, bad: seg.bad, bytes: seg.bytes } : null;
+  }
   function forgetIndex(n) { uncache(closedIndexes, n); verifiedIndex.delete(n); }
   function rememberIndex(n, index, bytes) { forgetIndex(n); cacheNewest(closedIndexes, n, { order: n, index, bytes }); }
   function forgetCaches() {
-    activeRows = null; tail = null;
+    activeRows = null; tail = null; lastClosed = null;
     for (const cache of [closedRows, closedIndexes, streamSlices]) { cache.map.clear(); cache.bytes = 0; }
     verifiedIndex.clear();
   }
@@ -218,7 +264,7 @@ function makeSegmentedTranscriptIo(opts) {
       activeRows = { n, size: seg.bytes, rows: seg.rows, bad: seg.bad };
       return { seg: activeRows, fresh: true };
     }
-    const hit = strict ? null : closedRows.map.get(n);
+    const hit = strict ? null : (closedRows.map.get(n) || (lastClosed && lastClosed.n === n ? lastClosed : null));
     if (hit) return { seg: hit, fresh: false };
     const seg = readSegmentFile(n);
     rememberClosed(n, seg);
@@ -665,6 +711,12 @@ function makeSegmentedTranscriptIo(opts) {
     }
     return out.reverse().map(publicRow);
   }
+  /* A row's score is (query terms it holds) * 1000 + (their occurrences), ranked score, then ts, then rowId, newest
+     first. Its rows per segment: a stream-scoped search reads that stream's own rows of a closed segment from RAM when
+     history already holds them (streamRowsIn's slice: every row of the stream that holds a query term is among them,
+     so no index is needed); otherwise the segment's term index names the rows holding any query term, and only a
+     segment it names is read. Rows are counted with countTerms (the same counts wordTokens gives), and a row enters
+     the top `limit` in the place a stable sort of every scored row would give it. */
   function search(streamId, query, options) {
     const settings = options || {};
     const limit = Math.max(1, Math.min(50, num(settings.limit) || 10));
@@ -672,25 +724,34 @@ function makeSegmentedTranscriptIo(opts) {
     if (!terms.length) return [];
     const all = settings.scope === 'all';
     const best = [];
-    const counts = new Map();   // query term -> its count in the row being scored (only the query's terms are counted)
+    const counts = new Array(terms.length);
+    const ranksAfter = (score, ts, rowId, b) => (b.score - score) || (num(b.ts) - ts) || (num(b.rowId) - rowId);   // > 0: b ranks first
     for (const meta of manifest.segments) {
       if (!all && !hasOwn(meta.streams, streamId)) continue;
-      const index = loadIndex(meta.number, meta.number !== manifest.activeSegment);
-      const candidates = new Set();
-      for (const term of terms) {
-        const ids = hasOwn(index.terms, term) ? index.terms[term] : null;
-        if (Array.isArray(ids)) for (const id of ids) candidates.add(num(id));
+      const n = meta.number;
+      const slice = !all && n !== manifest.activeSegment ? streamSlices.map.get(n + '\u0000' + streamId) : null;
+      let rows = slice ? slice.rows : null, candidates = null;
+      if (!rows) {
+        const index = loadIndex(n, n !== manifest.activeSegment);
+        candidates = new Set();
+        for (const term of terms) {
+          const ids = hasOwn(index.terms, term) ? index.terms[term] : null;
+          if (Array.isArray(ids)) for (const id of ids) candidates.add(num(id));
+        }
+        if (!candidates.size) continue;
+        rows = all ? readRows(n) : streamRowsIn(n, streamId, false);
       }
-      if (!candidates.size) continue;
-      for (const row of readRows(meta.number)) {
-        if (!candidates.has(num(row.rowId)) || (!all && row.streamId !== streamId)) continue;
-        for (const term of terms) counts.set(term, 0);
-        for (const t of wordTokens(row.content)) { const seen = counts.get(t); if (seen !== undefined) counts.set(t, seen + 1); }
+      for (const row of rows) {
+        if ((candidates && !candidates.has(num(row.rowId))) || (!all && row.streamId !== streamId)) continue;
+        countTerms(row.content, terms, counts);
         let distinct = 0, freq = 0;
-        for (const term of terms) { const seen = counts.get(term); if (seen) { distinct++; freq += seen; } }
+        for (const seen of counts) if (seen) { distinct++; freq += seen; }
         if (!distinct) continue;
-        best.push({ rowId: row.rowId, streamId: row.streamId, role: row.role, content: row.content, ts: row.ts, score: distinct * 1000 + freq, taint: row.taint || '', taintKnown: row.taintKnown === true || !!row.taint });
-        best.sort((a, b) => (b.score - a.score) || (num(b.ts) - num(a.ts)) || (num(b.rowId) - num(a.rowId)));
+        const score = distinct * 1000 + freq, ts = num(row.ts), rowId = num(row.rowId);
+        if (best.length === limit && ranksAfter(score, ts, rowId, best[limit - 1]) >= 0) continue;
+        let at = best.length;
+        while (at > 0 && ranksAfter(score, ts, rowId, best[at - 1]) < 0) at--;
+        best.splice(at, 0, { rowId: row.rowId, streamId: row.streamId, role: row.role, content: row.content, ts: row.ts, score, taint: row.taint || '', taintKnown: row.taintKnown === true || !!row.taint });
         if (best.length > limit) best.length = limit;
       }
     }
@@ -785,4 +846,4 @@ function makeSegmentedTranscriptIo(opts) {
   };
 }
 
-module.exports = { makeSegmentedTranscriptIo, _internals: { tokenize, wordTokens, segmentName, indexName } };
+module.exports = { makeSegmentedTranscriptIo, _internals: { tokenize, wordTokens, countTerms, segmentName, indexName } };
