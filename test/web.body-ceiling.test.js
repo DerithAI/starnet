@@ -47,6 +47,26 @@ function chunked(buf, ct) {
     A.eq(full.cut, true, 'webFetch reports the cut');
   }
 
+  // ---- 1b. the same through the Jina reader (a key configured): its cut body is reported exactly like the direct one ----
+  {
+    let st = null, jinaCalls = 0, directCalls = 0;
+    const fetchImpl = async (url) => {
+      if (String(url).indexOf('https://r.jina.ai/') === 0) { jinaCalls++; st = bigResponse(32 * MiB, 0x65, 'text/plain'); return st.response; }
+      directCalls++; return new Response('direct page', { status: 200, headers: { 'content-type': 'text/plain' } });
+    };
+    const web = makeWebTools({ fetchImpl, jinaKey: 'test-key', lookup: null, politeness: passThrough });
+    const r = await web.fetchTool.run({ url: 'https://example.com/huge-reader.txt' }, {});
+    A.eq([jinaCalls, directCalls], [1, 0], 'the page came through the Jina reader, no direct fallback');
+    A.ok(st.pulled <= 6 * MiB + 4 * CHUNK, 'jina: pulled ' + st.pulled + ' bytes of a 33,554,432-byte body');
+    A.ok(/page text from https:\/\/example\.com\/huge-reader\.txt \(first 2,097,152 characters of a longer page\)/.test(r.content), 'the Jina-path fence label says the page was cut' + (/first 2,097,152/.test(r.content) ? '' : ' (it read as the whole page: ' + JSON.stringify(r.content.slice(0, 120)) + ')'));
+    A.ok(/via jina$/.test(r.summary), 'and the summary still names the Jina source: ' + r.summary);
+    const full = await web.webFetch('https://example.com/huge-reader.txt', {});
+    A.eq([full.source, full.cut], ['jina', true], 'webFetch reports the Jina cut');
+    const small = makeWebTools({ fetchImpl: async () => new Response('Title: t\nURL Source: u\nMarkdown Content:\nsmall reader page', { status: 200 }), jinaKey: 'test-key', lookup: null, politeness: passThrough });
+    const s = await small.webFetch('https://example.com/small', {});
+    A.eq([s.source, s.text, s.cut], ['jina', 'small reader page', undefined], 'an uncut Jina page has no cut flag and the historic text');
+  }
+
   // ---- 2. web_request on a 32 MiB answer: the host note says it was cut, and nothing calls it whole ----
   {
     let st = null;

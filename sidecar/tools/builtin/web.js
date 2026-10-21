@@ -754,8 +754,9 @@
       if (!deps.jinaKey) { const e = new Error('jina not configured'); e.__retryDirect = true; throw e; }
       const headers = { 'Accept': 'text/plain', 'X-Return-Format': 'text', 'User-Agent': UA };
       if (deps.jinaKey) headers['Authorization'] = 'Bearer ' + deps.jinaKey;
+      // readBodyInfo, like directFetch: a reader body cut at the raw-body ceiling must say so, not read as the whole page
       const res = await withTimeout(signal => doFetch('https://r.jina.ai/' + targetUrl, { headers, signal })
-        .then(async r => ({ status: r.status, body: await readBodyBounded(r) })), FETCH_TIMEOUT_MS, parent);
+        .then(async r => { const info = await readBodyInfo(r); return { status: r.status, body: info.text, bodyTruncated: info.truncated }; }), FETCH_TIMEOUT_MS, parent);
       if (res.status === 401 || res.status === 402 || res.status === 429) {
         const e = new Error('jina ' + res.status); e.__retryDirect = true; throw e;
       }
@@ -766,7 +767,7 @@
         const e = new Error('upstream ' + (w ? w[1] : 'error')); e.__retryDirect = true; throw e;
       }
       const body = res.body.replace(/^(Title:[^\n]*\n)?(URL Source:[^\n]*\n)?(Published Time:[^\n]*\n)?(Markdown Content:\n)?/i, '');
-      return body.trim();
+      return { text: body.trim(), cut: !!res.bodyTruncated };
     }
 
     // FALLBACK: direct fetch + strip. No rate limit; great for static pages. Redirects are followed
@@ -800,7 +801,7 @@
       const parent = opts && opts.signal;   // run/tool-timeout signal, threaded down so a cancel drops the fetch
       let text, source, jErr, cut = false;
       const direct = async () => { const d = await directFetch(u, parent); cut = d.cut; source = 'direct'; return d.text; };
-      try { text = await jinaFetch(u.href, parent); source = 'jina'; }
+      try { const j = await jinaFetch(u.href, parent); text = j.text; cut = j.cut; source = 'jina'; }
       catch (e) { jErr = e; text = await direct(); }
       if (!text || !text.trim()) {
         if (source === 'jina') text = await direct();
