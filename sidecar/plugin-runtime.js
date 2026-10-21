@@ -232,7 +232,18 @@ function makePluginRuntime(deps) {
      Calls and hooks sent meanwhile neither extend the budget (a window polling its backend would keep a busy loop
      alive forever) nor are skipped: a guard's pre_tool_call still waits its own timeout, so a veto from a process
      that comes back inside it still lands, as before. It is ended with SIGKILL: a wedged loop can never run a SIGTERM
-     listener the plugin registered. */
+     listener the plugin registered.
+     THE KILL LINE SAYS WHAT HAPPENS NEXT (polish 2026-10-21). It always said "the next use restarts it", but live()
+     refuses a restart once MAX_RESTARTS fall inside RESTART_WINDOW_MS: a plugin killed with its budget spent stays
+     down, and the line now says so and until when (the moment the oldest of those restarts leaves the window). */
+  function restartNote(rec) {
+    const t = now();
+    const recent = rec.restarts.filter((x) => t - x < RESTART_WINDOW_MS);
+    if (recent.length < MAX_RESTARTS) return 'the next use restarts it';
+    const until = recent[recent.length - MAX_RESTARTS] + RESTART_WINDOW_MS;
+    return 'it already restarted ' + MAX_RESTARTS + ' times in the last 5 minutes, so it stays down: any use before ' +
+      new Date(until).toISOString() + ' (in ' + Math.ceil((until - t) / 1000) + ' s) is refused';
+  }
   function probe(rec) {
     const child = rec.child;
     if (!child || rec.state !== 'running' || rec.ping) return;
@@ -242,7 +253,7 @@ function makePluginRuntime(deps) {
       rec.ping = null;
       if (rec.child !== child || rec.state !== 'running') return;
       rec.hungReason = 'it stopped responding (a call timed out and it then answered nothing, not even a liveness check, for ' + Math.round(WEDGE_MS / 1000) + ' s)';
-      onLog(rec.id, '[runtime] ' + rec.hungReason + ' — ending its process; the next use restarts it');
+      onLog(rec.id, '[runtime] ' + rec.hungReason + ' — ending its process; ' + restartNote(rec));
       try { child.kill('SIGKILL'); } catch (e) { note('plugins.runtime.kill-hung', e); }
     }, WEDGE_MS);
     if (timer && typeof timer.unref === 'function') timer.unref();

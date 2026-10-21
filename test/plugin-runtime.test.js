@@ -366,8 +366,8 @@ async function plugin(id, source) {
     // One wedge cycle is a hook timeout plus the whole silence budget (5 s + 120 s in production). A hold that kept it
     // down after its second silence kill was dropped: status() still called it an ordinary crash that restarts on its
     // next use (and COMMS -> EXTENSIONS printed exactly that), so nothing the Commander saw was true. Without the hold
-    // every word is: each cycle ends the process, status() says crashed with the honest reason, the log says the next
-    // use restarts it, and the next use does. Each hook pays its timeout, as on trunk, where it stayed wedged forever.
+    // every word is: each cycle ends the process, status() says crashed with the honest reason, the log says what the
+    // next use gets (a restart, or with the budget spent a refusal until a named time), and the next use gets that. Each hook pays its timeout, as on trunk, where it stayed wedged forever.
     // Timers scaled; the injected clock moves the production cycle (125 s) per cycle.
     {
       const hlogs = [];
@@ -392,10 +392,46 @@ async function plugin(id, source) {
         'between uses status() says crashed, with the honest reason: ' + JSON.stringify(cycles.map(c => c.state + ' ' + c.error.slice(0, 22))));
       const kills = hlogs.filter(l => /^\[runtime\] it stopped responding/.test(l));
       A.eq(kills.length, 6, 'each cycle\'s kill is logged once');
-      A.ok(kills.every(l => / — ending its process; the next use restarts it$/.test(l)), 'and each kill line says the next use restarts it: ' + kills[kills.length - 1]);
+      A.ok(kills.slice(0, 3).every(l => / — ending its process; the next use restarts it$/.test(l)), 'while restarts are left, the kill line says the next use restarts it: ' + kills[2]);
+      // from the 4th kill on, its last 3 restarts all fall inside 5 minutes (125 s apart): a use in the next 50 s would be
+      // refused, so the line says so (it said "the next use restarts it" before); this test's next use comes 125 s later
+      A.ok(kills.slice(3).every(l => / — ending its process; it already restarted 3 times in the last 5 minutes, so it stays down: any use before \S+Z \(in 50 s\) is refused$/.test(l)),
+        'with the budget spent, the kill line says it stays down, and until when: ' + kills[3]);
       A.eq(hlogs.filter(l => l.startsWith('[runtime] restarting after: it stopped responding')).length, 5, 'and the next use did restart it, every time');
-      A.ok(!hlogs.some(l => /stays down|is stopped:/.test(l)), 'nothing claims it stays down');
+      A.ok(!hlogs.some(l => /is stopped:/.test(l)), 'no use was refused: each came after the time its kill line named');
       await rtH.stopAll();
+    }
+
+    // ---- 5c'++. a kill with the restart budget spent: refused until the named time, restarted from it (polish 2026-10-21) ----
+    {
+      const dlogs = [];
+      const rtD = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: (id, line) => dlogs.push(line),
+        timeouts: { hookMs: 300, toolMs: 300, callMs: 300, startMs: 5000, wedgeMs: 200 } });
+      const downer = await plugin('spindown', `
+        module.exports = { register(api) { api.on('pre_tool_call', () => { for (;;) {} }); } };`);
+      A.ok((await rtD.start(downer)).ok, 'the always-wedging plugin starts');
+      const T0 = clock;
+      const cycle = async () => {
+        await rtD.hook('spindown', 'pre_tool_call', { tool_name: 'fs.read' });
+        for (let i = 0; i < 60 && rtD.status('spindown').state === 'running'; i++) await new Promise(res => setTimeout(res, 25));
+      };
+      for (let c = 0; c < 4; c++) { await cycle(); clock += 10000; }   // start + 3 restarts, 10 s apart: the budget is spent
+      const kills = dlogs.filter(l => /^\[runtime\] it stopped responding/.test(l));
+      A.eq(kills.length, 4, 'four kills');
+      A.ok(kills.slice(0, 3).every(l => /; the next use restarts it$/.test(l)), 'the first three say the next use restarts it');
+      const until = T0 + 10000 + 5 * 60 * 1000;   // the first restart (at T0 + 10 s) leaves the 5-minute window
+      A.eq(kills[3], '[runtime] ' + rtD.status('spindown').error + ' — ending its process; it already restarted 3 times in the last 5 minutes, so it stays down: any use before ' +
+        new Date(until).toISOString() + ' (in 280 s) is refused', 'the fourth says it stays down, and names when that ends');
+      clock = until - 1;
+      A.eq(await rtD.hook('spindown', 'pre_tool_call', { tool_name: 'fs.read' }), null, 'a use just before that time gets nothing');
+      A.ok(dlogs.some(l => /^\[hook\] the plugin crashed 3 times in 5 minutes and is stopped/.test(l)), 'because it was refused, as the line said');
+      A.eq(rtD.status('spindown').state, 'crashed', 'and it stayed down');
+      A.eq(rtD.status('spindown').restarts, 3, 'with no restart spent');
+      clock = until;
+      const restartsBefore = dlogs.filter(l => l.startsWith('[runtime] restarting after:')).length;
+      await cycle();
+      A.eq(dlogs.filter(l => l.startsWith('[runtime] restarting after:')).length, restartsBefore + 1, 'from that time on, the next use restarts it');
+      await rtD.stopAll();
     }
 
     // ---- 5c''. legitimate SYNCHRONOUS work is not killed, and a guard's veto still lands (review 2026-10-21) ----
