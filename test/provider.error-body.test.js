@@ -12,6 +12,9 @@
    Injected fetch only — no network. */
 'use strict';
 const A = require('./_assert.js');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 const { classifyApiError } = require('../sidecar/providers/errorClass.js');
 const { makeAnthropicProvider } = require('../sidecar/providers/anthropic.js');
 const { makeGeminiProvider } = require('../sidecar/providers/gemini.js');
@@ -156,9 +159,11 @@ const ADAPTERS = [
     A.eq(response.body.locked, false, name + ': the capped body releases its reader');
   }
 
-  // A proxy's HTML error page is the only diagnosis there is: its text reaches the message (redacted, clamped) instead
-  // of the bare status text. The label + "http N" sentence the UI routes on stays first; a non-JSON body never rides
-  // as err.body (errorClass reads only a provider's structured error).
+  // A proxy's non-JSON error page. A non-JSON body never rides as err.body (errorClass reads only a provider's
+  // structured error). anthropic/codex/gemini/openrouter keep the status text, as before the shared reader: a proxy's
+  // prose is not a provider's error. openai-compatible quoted the page text before that reader and still does, so
+  // its quote stays redacted and on one line.
+  const SEP = { anthropic: '-', codex: '—', gemini: '-', openrouter: '—' };
   for (const [name, make] of ADAPTERS) {
     const html = '<html><body><h1>502</h1>upstream connect error or disconnect/reset before headers. reset reason: overflow\n' +
       'echo: Authorization: Bearer fixture-tok-123456 key sk-fixture-abcdefgh123</body></html>';
@@ -166,10 +171,42 @@ const ADAPTERS = [
       : new Response(html, { status: 502, statusText: 'Bad Gateway', headers: { 'Content-Type': 'text/html' } })));
     A.eq(err && err.status, 502, name + ' HTML 502: the status survives');
     A.ok(err && err.message.startsWith(name + ' http 502 '), name + ' HTML 502: the adapter\'s own sentence leads (' + (err && err.message.slice(0, 40)) + ')');
-    A.ok(err && /upstream connect error or disconnect\/reset before headers/.test(err.message), name + ' HTML 502: the page text reaches the message, not just "Bad Gateway"');
+    if (SEP[name]) A.eq(err && err.message, name + ' http 502 ' + SEP[name] + ' Bad Gateway', name + ' HTML 502: the page text stays out of the message');
     A.ok(err && !/fixture-tok-123456|sk-fixture-abcdefgh123/.test(err.message), name + ' HTML 502: tokens and keys in the page are redacted');
     A.ok(err && !/[\r\n]/.test(err.message), name + ' HTML 502: control characters are collapsed');
     A.eq(err && err.body, undefined, name + ' HTML 502: a non-JSON body never rides as a structured error');
+  }
+
+  // ROUTING (review p4-wire): a gateway's text/plain 503 says "connection reset" / "Connection refused", and a WAF's
+  // 403 page says "flagged by security policy". The browser's error copy (friendlyerror.js loaded WITHOUT require, the
+  // path real users get) reads transport and policy words BEFORE the status, so with that prose in the message a 503
+  // the gateway answered read "The connection dropped before the reply finished", and the 403 read as a content block
+  // (also in errorClass, which moves retry/fallback/rotate). The four adapters keep the status text instead.
+  {
+    const BrowserFriendly = (() => {
+      const ctx = {}; ctx.globalThis = ctx; vm.createContext(ctx);
+      vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'friendlyerror.js'), 'utf8'), ctx);
+      return ctx.Friendly;
+    })();
+    A.eq(typeof BrowserFriendly.friendlyError, 'function', 'browser-mode friendlyerror loads');
+    const pages = [
+      ['envoy reset 503', 503, 'Service Unavailable', 'upstream connect error or disconnect/reset before headers. reset reason: connection reset'],
+      ['envoy refused 503', 503, 'Service Unavailable', 'upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: delayed connect error: Connection refused'],
+      ['waf 403', 403, 'Forbidden', '<html><body>Request flagged by security policy</body></html>']
+    ];
+    for (const [name, make] of ADAPTERS.slice(1)) for (const [label, status, statusText, text] of pages) {
+      const err = await thrown(make(async (_url, init) => (!init || !init.body) ? new Response(CATALOG)
+        : new Response(text, { status, statusText, headers: { 'Content-Type': text[0] === '<' ? 'text/html' : 'text/plain' } })));
+      const tag = name + ' ' + label;
+      A.eq(err && err.message, name + ' http ' + status + ' ' + SEP[name] + ' ' + statusText, tag + ': the message is the status sentence');
+      const kind = BrowserFriendly.friendlyError(err && err.message).kind;
+      const reason = classifyApiError(err, { model: 'm' }).reason;
+      if (status === 503) A.eq(kind, 'provider_server_error', tag + ': the browser tells it as a provider fault, never a dropped connection (got ' + kind + ')');
+      else {
+        A.ok(kind !== 'content_policy_blocked', tag + ': the browser never calls it a content block (got ' + kind + ')');
+        A.eq(reason, 'auth', tag + ': errorClass reads the 403, not the page\'s policy words (got ' + reason + ')');
+      }
+    }
   }
 
   // Cleanup failure must be observable without replacing the original result or exposing its error text.

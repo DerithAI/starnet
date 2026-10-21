@@ -457,11 +457,13 @@
         }
         if (res.ok && res.body) return res;
         // The body is read ONCE, as text, through the idle watchdog and the caller's Stop (provider.runtime.readErrorBody):
-        // res.json() then res.text() threw on every non-JSON page, so a proxy's HTML 502 read only "Bad Gateway", and a
-        // stalled error body ignored Stop for up to 300 s.
+        // a stalled error body ignored Stop for up to 300 s. Only a JSON error's own words are quoted. A non-JSON page (a
+        // proxy's 503 "... reset reason: connection reset") keeps the status text: the browser's error copy reads
+        // transport and policy words before the status (friendlyerror kindFromRaw), so its prose would be told as a
+        // dropped connection or a content block the harness cannot prove.
         const eb = await provider.runtime.readErrorBody(res, { signal, url: baseUrl, tag: 'providers.openrouter' });
         const errBody = eb.parsed ? eb.data : null;
-        let detail = eb.parsed ? ((errBody && errBody.error && errorDetail(errBody.error, '')) || JSON.stringify(errBody)) : (provider.runtime.safeErrorField(eb.text, 300) || res.statusText || '');
+        let detail = eb.parsed ? ((errBody && errBody.error && errorDetail(errBody.error, '')) || JSON.stringify(errBody)) : (res.statusText || '');
         if (eb.stalled) detail += ' (error body did not finish)';
         // EFFORT SELF-HEAL (400): the model refused the reasoning rung we sent (effortRefusal). Learn what it takes and
         // resend at the nearest rung it keeps — before any token streams, so nothing is billed twice. Does not consume
