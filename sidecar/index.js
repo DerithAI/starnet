@@ -127,6 +127,7 @@ const { toolsetRows, toggleableCaps } = require('./capability/toolsets.js');   /
 const { makeCapCtx } = require('./capability/capGate.js');
 const { composeOffice, stationWithObject, stationWithConnectors } = require('./capability/office.js');   // THE MOAT: interactive office = compute freebie + placed caps
 const { summarizeCapabilities } = require('./capability/capsummary.js');   // truthful "what you can/can't do" so the agent stops over-promising
+const { scopeForRun, makeSavedFloor } = require('./capability/cap-scope.js');   // ...and WHICH room a room-scoped agent's missing gear must go in
 const { starnetManual, starnetManualIndex, starnetManualPointer } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
 const FinishLine = require('./finish-line.js');     // immutable "crawl to the finish line" task doctrine at the final prompt seam
 const { makeHarnessSnapshot } = require('./harness-snapshot.js');   // bounded secret-free build/scheduler/connectors/diagnostics truth for station.inspect
@@ -3013,6 +3014,9 @@ function engineCredentialError(provider, what) {
 // notebook: a sibling of the fs jail. Holds NO secret (the key/tokens live elsewhere). The frontend keeps
 // localStorage as a fast cache and writes through here on every persist; on boot it pulls the newer of the two.
 const saveStore = makeSaveStore({ fs, pathMod: path, root: WORKSPACES, clock: { now: () => Date.now() } });
+// the saved floor as a validated station model for the capability note's room scope (cap-scope.js): re-validated
+// (~11 ms on a 152-prop save) only when the save file's stamp moved, and only asked when a floor object is missing
+const savedFloor = makeSavedFloor({ stamp: () => saveStore.stamp('agent'), loadStamped: () => saveStore.loadStamped('agent') });
 
 /* ---- Cortex M-mem.5b: post-run reflection -> Keep/Edit/Discard turn-in ----
    After a substantive browser run COMPLETES, one cheap aux-model call (the same seam summarize() uses)
@@ -23046,7 +23050,15 @@ async function runOnceCore(o) {
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
-        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask }) + skillBlock;
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask,
+          // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied and the routine's own toolset list enforceEnabledToolsets
+          // applied (gear either one leaves out is no room fix), and the image route makeImageTools was built from (without one
+          // a STUDIO only analyzes images)
+          disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet(), enabledToolsets: unrestrictedHostNow() ? null : o.enabledToolsets,
+          mediaRoute: !!(studioRoute && studioRoute.ok),
+          // ROOM SCOPE: lazy (called only when a floor object is missing); the room it names is stable per agent, so the cached prefix holds.
+          // hasBay first: an agent crewing no dock on the router's plan (the bayless hero) never reads or validates the saved floor
+          scopeFn: () => { try { return scopeForRun({ loadStation: savedFloor, agentId, runStation: o.station, extraObjects: o.extraObjects, interactive: surface === 'interactive', floorless: !!o.floorless, hasBay: () => router.docksOf(agentId).length > 0 }); } catch (e) { failNote('capsummary.roomscope', e); return null; } } }) + skillBlock;
   /* CACHE-STABLE PREFIX (lean-prompt, 2026-10-12). Everything below that changes per MESSAGE — the run's skill index
      (ranked by this message), a /skill preload, the Task Brief (its id is the run's), the away briefing, a one-host
      check, the crew call, [RUNTIME] (run id, today) and the open quests — used to close the system prompt, so the

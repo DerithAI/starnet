@@ -216,6 +216,7 @@ test/shell-bg.test.js
 test/shell-bg-io.test.js
 test/shell-visible-window.test.js
 test/shell-input-isolation.test.js
+test/shell.source-scan.test.js
 test/shell-machine-state.test.js
 test/procledger.test.js
 test/inputguard.test.js
@@ -250,6 +251,7 @@ test/tools.test.js
 test/capgate.test.js
 test/capdrift.test.js
 test/capsummary.test.js
+test/capsummary-room-scope.test.js
 test/boot-security.test.js
 test/sidecar-fixture.test.js
 test/sidecar.security.test.js
@@ -413,10 +415,15 @@ test/transcript-perf-paths.test.js
 test/recall.test.js
 test/fs.jail.test.js
 test/fs.search-gitignore.test.js
+test/fs.search-budget.test.js
 test/fs.large-output.test.js
+test/fs.read-large.test.js
 test/fs-mutation-receipts.test.js
 test/fs.patch.test.js
 test/fs.stale-write.test.js
+test/fs.concurrent-mutations.test.js
+test/fs.read-version.test.js
+test/fs.drift-lsp-resync.test.js
 test/docextract.test.js
 test/imagewire.test.js
 test/web.ssrf.test.js
@@ -427,6 +434,7 @@ test/web.fetch-jina.test.js
 test/web.calm.test.js
 test/web.reach.test.js
 test/web.pinned-dispatcher.test.js
+test/web.body-ceiling.test.js
 test/browser.test.js
 test/browser-upload.test.js
 test/browser-proxy.test.js
