@@ -96,11 +96,17 @@ function makeTriggerRunner(deps) {
     const next = records.slice(); next[i] = nx;
     return commit(next) ? nx : null;
   }
+  /* bound each trigger's record in place (callers hold references to the inner maps): drop the OLDEST stamps — but a
+     key whose file was in the folder at the last scan goes only after every other key. Newest-wins alone dropped the
+     baseline of files still sitting there (stamped at arming, the oldest) once enough files had fired and moved out,
+     and each of those old files then fired as new. A folder holds at most SEEN_MAX / 2 files, so it never comes to that. */
   function saveSeen() {
-    // bound each trigger's record in place (callers hold references to the inner maps): drop the OLDEST stamps
     for (const id of Object.keys(seen)) {
       const m = seen[id], keys = m ? Object.keys(m) : [];
-      if (keys.length > T.SEEN_MAX) keys.sort((a, b) => m[a] - m[b]).slice(0, keys.length - T.SEEN_MAX).forEach(k => { delete m[k]; });
+      if (keys.length <= T.SEEN_MAX) continue;
+      const st = live.get(id), present = st && st.present instanceof Set ? st.present : null;
+      const rank = k => (present && present.has(k) ? 1 : 0);
+      keys.sort((a, b) => (rank(a) - rank(b)) || (m[a] - m[b])).slice(0, keys.length - T.SEEN_MAX).forEach(k => { delete m[k]; });
     }
     try { seenStore.save(seen); return true; } catch (e) { warn('[triggers] fired-file record persist failed: ' + ((e && e.message) || e)); return false; }
   }
@@ -356,11 +362,18 @@ function makeTriggerRunner(deps) {
   /* UPGRADE (2026-10-21): a folder trigger armed before the watcher listed the whole folder has a record that knows
      only the first 500 files (readdir order). The old watcher never looked past them, so a file past #500 that was
      there at arming was never recorded and never fired; listed now, every one of them would fire as new (old files,
-     real spend). On the trigger's first good scan, each file past that old window still unrecorded is recorded as
-     seen and never fires: what the old watcher would have done with it. It is stamped now, the moment the whole
-     folder came under watch, so the record's newest-wins trim keeps it as long as any fresh fire. A file inside
-     the old window is left to the scan and fires exactly as before. Then the record is marked, once.
+     real spend). On the trigger's first good scan, every unrecorded file last changed at or before the record's
+     last moment (its newest stamp — the arming or the latest fire — or the trigger's last edit) is recorded as seen
+     and never fires; a file changed after it settles and fires. By time, not by position: positions move when files
+     are deleted (the over-cap message asks for exactly that), which let old files slide into the old window and fire.
+     Cost of the rule: a file that was waiting its turn (rate limit, a paused line) when the old station stopped is
+     recorded too, and does not fire. Then the record is marked, once.
      false = the adoption could not be written: nothing fires this pass, and the next scan tries again. */
+  function legacyCutoff(t, mine) {
+    let at = Math.max(Number(t.createdAt) || 0, Number(t.updatedAt) || 0);
+    for (const k of Object.keys(mine)) if (mine[k] > at) at = mine[k];
+    return at;
+  }
   function adoptLegacy(t, s, mine, keys) {
     const at = now(), added = [];
     for (const k of keys) if (!Object.prototype.hasOwnProperty.call(mine, k)) { mine[k] = at; added.push(k); }
@@ -387,8 +400,9 @@ function makeTriggerRunner(deps) {
       try {
         const mine = seen[t.id] || (seen[t.id] = {});
         const upgrade = t.seenV !== T.FOLDER_SEEN_V && !s.adopted;
-        const res = await d.watcher.scan(t.config.path, mine, s.pending, now(), upgrade ? { legacy: true } : undefined);
+        const res = await d.watcher.scan(t.config.path, mine, s.pending, now(), upgrade ? { adoptUpTo: legacyCutoff(t, mine) } : undefined);
         if (!res.ok) { s.scanError = res.error; recordError(t.id, res.error); s.pending = new Map(); continue; }
+        if (Array.isArray(res.present)) s.present = new Set(res.present);   // read by saveSeen's trim (set before any save below)
         if (upgrade && !adoptLegacy(t, s, mine, res.legacy || [])) continue;   // nothing fires until the old record is adopted
         // the folder is readable again: a scan failure on record is no longer true — clear it (a fire error stays)
         if (s.scanError || /^(the folder no longer exists|cannot read the folder|the folder holds \d+ files|could not record the folder's existing files)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }

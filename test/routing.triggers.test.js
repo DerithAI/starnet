@@ -352,8 +352,8 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
     disk.triggers.triggers.push({ id: lid, lineId: 'L1', kind: 'folder', name: 'old drop', enabled: true, config: { path: ldir, task: 'file it' },
       maxPerHour: 120, createdAt: armedAt, updatedAt: armedAt, fires: 0, recent: [], lastError: null });
     disk.seen[lid] = oldSeen;
-    // a file that landed after arming INSIDE the old window (it sorts first): the old watcher would have fired it — so must this
-    fs.writeFileSync(path.join(ldir, 'a-early.txt'), 'landed after arming'); fs.utimesSync(path.join(ldir, 'a-early.txt'), old / 1000, old / 1000);
+    // a file that landed after arming (it sorts first, inside the old window): the old watcher would have fired it — so must this
+    fs.writeFileSync(path.join(ldir, 'a-early.txt'), 'landed after arming'); fs.utimesSync(path.join(ldir, 'a-early.txt'), (armedAt + 500) / 1000, (armedAt + 500) / 1000);
     let seenSaveFails = false;
     const mkL = () => makeTriggerRunner({
       load: () => JSON.parse(JSON.stringify(disk.triggers)), save: v => { disk.triggers = JSON.parse(JSON.stringify(v)); },
@@ -369,7 +369,7 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
     // the upgraded station boots over that record: the files past the old window are adopted, never fired
     const RL = mkL();
     await tick(RL, 4);
-    A.eq(firedNames(from0, lid), ['a-early.txt'], 'after the upgrade NO file past the old 500 fires; the one new file inside the window still does (the 300 old files past it fired as new)');
+    A.eq(firedNames(from0, lid), ['a-early.txt'], 'after the upgrade NO old file past the old 500 fires; the one file that landed after arming still does (the 300 old files past it fired as new)');
     A.eq(disk.triggers.triggers.find(x => x.id === lid).seenV, T.FOLDER_SEEN_V, 'the record is marked as baselined over the whole folder');
     A.eq(Object.keys(disk.seen[lid]).length, 801, 'the record now holds every file: 500 old + 300 adopted + the 1 fired');
     // a file that lands after the upgrade fires, even sorted past #500
@@ -402,11 +402,89 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
     A.eq(firedNames(from1, lid2), [], 'once the adoption is written, still no old file fires');
     A.ok(disk.triggers.triggers.find(x => x.id === lid2).seenV === T.FOLDER_SEEN_V && Object.keys(disk.seen[lid2]).length === 803, 'the record is adopted (500 + 303) and marked');
     A.eq(RF2.view(lid2).lastError, null, 'the could-not-record note clears once the adoption is written');
+    RF2.remove(lid2);
+
+    /* OVER THE CAP, THEN TRIMMED (review 2026-10-21). An old record on a folder over the new ceiling cannot adopt (the
+       scan is refused, honestly, and says "move older files out"). The owner deletes the EARLIEST files, so files that
+       were always past the old window slide into it; a position rule then fired hundreds of old files as new. */
+    {
+      const odir = path.join(root, 'overcapdrop'); fs.mkdirSync(odir);
+      const nm = i => 'scan-' + String(i).padStart(4, '0') + '.pdf';
+      for (let i = 0; i < 700; i++) { const p = path.join(odir, nm(i)); fs.writeFileSync(p, 'old ' + i); fs.utimesSync(p, old / 1000, old / 1000); }
+      const oid = 'trg_legacy0003', oArmed = clock - 1000, oSeen = {};
+      for (let i = 0; i < 500; i++) oSeen[T.fileKey(nm(i), fs.statSync(path.join(odir, nm(i))))] = oArmed;   // the old 500-file baseline
+      disk.triggers.triggers.push({ id: oid, lineId: 'L1', kind: 'folder', name: 'scans', enabled: true, config: { path: odir, task: 'file it' },
+        maxPerHour: 120, createdAt: oArmed, updatedAt: oArmed, fires: 0, recent: [], lastError: null });
+      disk.seen[oid] = oSeen;
+      const RO = makeTriggerRunner({
+        load: () => JSON.parse(JSON.stringify(disk.triggers)), save: v => { disk.triggers = JSON.parse(JSON.stringify(v)); },
+        seen: { load: () => JSON.parse(JSON.stringify(disk.seen)), save: v => { disk.seen = JSON.parse(JSON.stringify(v)); } },
+        makeHub: fakeHub, plan: () => plan, shipsToOutbox: (a) => a === 'agent-b', dayCap: () => ({ cap: null, spent: 0 }),
+        runsFor: sid => runsByStream[sid] || [], emit: () => {},
+        watcher: makeFolderWatcher({ fsp: sortedFsp, pathMod: path, settleMs: 0, maxEntries: 600 }),
+        now: () => clock, newId: () => 'id' + (++n) + 'abcdef0123456789'
+      });
+      const fromO = hubCalls.length;
+      const firedO = () => hubCalls.slice(fromO).filter(c => c.chatId === 'trg-' + oid).map(c => (c.text.match(/scan-\d+\.pdf|zz-[a-z]+\.pdf/) || [''])[0]);
+      await tick(RO, 2);
+      A.ok(/^the folder holds 700 files/.test(RO.view(oid).lastError || ''), 'an old record over the ceiling says why it is not watched: ' + RO.view(oid).lastError);
+      for (let i = 0; i < 150; i++) fs.unlinkSync(path.join(odir, nm(i)));    // "move older files out" — the earliest ones
+      await tick(RO, 4);
+      A.eq(firedO(), [], 'after the earliest files are moved out, no old file fires (a position rule fired scan-0500.pdf, scan-0501.pdf, …)');
+      A.eq(RO.view(oid).lastError, null, 'and the over-ceiling note clears');
+      fs.writeFileSync(path.join(odir, 'zz-new.pdf'), 'new');
+      await tick(RO, 3);
+      A.eq(firedO(), ['zz-new.pdf'], 'a file that lands after the upgrade fires');
+      RO.remove(oid);
+    }
+
+    /* ADOPTION MUST NOT EVICT (review 2026-10-21). The record is bounded (SEEN_MAX) and fired keys of files that came,
+       fired and moved out are never pruned. Newest-wins trimming after the adoption dropped the OLDEST stamps: the
+       arming baseline of files still in the folder, which then fired as new. A key whose file is present now goes last. */
+    {
+      const edir = path.join(root, 'evictdrop'); fs.mkdirSync(edir);
+      const N = 1600, fn = i => 'f' + String(i).padStart(4, '0') + '.txt';
+      for (let i = 0; i < N; i++) { const p = path.join(edir, fn(i)); fs.writeFileSync(p, 'x' + i); fs.utimesSync(p, old / 1000, old / 1000); }
+      const eid = 'trg_legacy0004', eArmed = clock - 600000, eSeen = {};
+      for (let i = 0; i < 500; i++) eSeen[T.fileKey(fn(i), fs.statSync(path.join(edir, fn(i))))] = eArmed;
+      const gone = T.SEEN_MAX - 500 - (N - 500) + 200;   // fired-and-moved-out history: the adoption overflows the record by 200
+      for (let i = 0; i < gone; i++) eSeen['drop' + i + '.pdf|' + (old + i) + '|10'] = eArmed + 1 + i;
+      disk.triggers.triggers.push({ id: eid, lineId: 'L1', kind: 'folder', name: 'busy', enabled: true, config: { path: edir, task: 't' },
+        maxPerHour: 120, createdAt: eArmed, updatedAt: eArmed, fires: 0, recent: [], lastError: null });
+      disk.seen[eid] = eSeen;
+      const RE = mkL();
+      const fromE = hubCalls.length;
+      await tick(RE, 3);
+      const rec = disk.seen[eid];
+      let lost = 0; for (let i = 0; i < N; i++) if (!(T.fileKey(fn(i), fs.statSync(path.join(edir, fn(i)))) in rec)) lost++;
+      A.eq(Object.keys(rec).length, T.SEEN_MAX, 'the record stays bounded at SEEN_MAX');
+      A.eq(lost, 0, 'no file still in the folder lost its record to the trim (the moved-out files\' keys went first)');
+      A.eq(hubCalls.slice(fromE).filter(c => c.chatId === 'trg-' + eid).length, 0, 'and no old file fired as new (the 200 that lost their record fired, as fast as the rate limit allowed)');
+      RE.remove(eid);
+      // the same trim on an ordinary fire: a full record (this folder's arming baseline + moved-out history) and ONE new file
+      const vid = 'trg_current0005', vSeen = {};
+      for (let i = 0; i < N; i++) vSeen[T.fileKey(fn(i), fs.statSync(path.join(edir, fn(i))))] = eArmed;
+      for (let i = 0; i < T.SEEN_MAX - N; i++) vSeen['gone' + i + '.pdf|' + (old + i) + '|10'] = eArmed + 1 + i;
+      disk.triggers.triggers.push({ id: vid, lineId: 'L1', kind: 'folder', name: 'busy now', enabled: true, config: { path: edir, task: 't' },
+        maxPerHour: 120, createdAt: eArmed, updatedAt: eArmed, fires: 0, recent: [], lastError: null, seenV: T.FOLDER_SEEN_V });
+      disk.seen[vid] = vSeen;
+      const RV = mkL();
+      const fromV = hubCalls.length;
+      fs.writeFileSync(path.join(edir, 'zz-fresh.txt'), 'new');
+      await tick(RV, 5);
+      const vrec = disk.seen[vid];
+      let vlost = 0; for (let i = 0; i < N; i++) if (!(T.fileKey(fn(i), fs.statSync(path.join(edir, fn(i)))) in vrec)) vlost++;
+      A.eq(hubCalls.slice(fromV).filter(c => c.chatId === 'trg-' + vid).map(c => (c.text.match(/zz-fresh\.txt|f\d{4}\.txt/) || [''])[0]), ['zz-fresh.txt'],
+        'a fire that overflows the record fires only the new file (it evicted f0000.txt\'s baseline, which then fired as new)');
+      A.ok(vlost === 0 && Object.keys(vrec).length === T.SEEN_MAX, 'every present file keeps its record; a moved-out file\'s key was dropped (' + vlost + ' lost)');
+      RV.remove(vid);
+    }
+
     // a trigger armed on this build is marked at create, so it never runs the upgrade at all
     const nb = await makeFolderWatcher({ fsp, pathMod: path }).baseline(ldir);
     const cn = RF2.create({ kind: 'folder', lineId: 'L1', config: { path: ldir, task: 'x' } }, { baselineKeys: nb.keys });
     A.ok(cn.ok && RF2.get(cn.trigger.id).seenV === T.FOLDER_SEEN_V && !('seenV' in cn.trigger), 'a new folder trigger is marked at arming (and the API view never shows it)');
-    RF2.remove(cn.trigger.id); RF2.remove(lid2);
+    RF2.remove(cn.trigger.id);
   }
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
