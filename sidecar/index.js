@@ -144,8 +144,10 @@ const {
   defaultReasoningEffortForProvider: registryDefaultReasoningEffort,
   providerRequiresKey,
   providerRequiresBaseUrl,
-  attachRateLimits
+  attachRateLimits,
+  attachCatalogCache
 } = require('./providers/factory.js');
+const { makeCatalogCache, runWindow: catalogRunWindow } = require('./providers/catalog-cache.js');
 /* RESTRICTED GOOGLE DATA NEVER RIDES THE STARNET RELAY (mcp/google-relay-guard.js). Every provider this process
    builds for StarNet Managed ('starnet' — the one StarNet-operated path model traffic can take) streams through
    the guard, so primary runs, fallbacks and auxiliary passes all send a copy with Gmail/Drive tool results
@@ -176,6 +178,11 @@ function selectProvider(opts) {
    "this meter is nearly spent" BEFORE the wall instead of after it. */
 const rateLimits = require('./providers/ratelimits.js').makeRateLimits({ clock: { now: () => Date.now() } });
 attachRateLimits(rateLimits);
+/* SHARED MODEL CATALOG (providers/catalog-cache.js). Every run builds a fresh adapter, and each adapter kept its /models
+   list to itself: a run was sized from a COLD catalog (131072 assumed for a 1M Gemini, for a 65536 Ollama) and every
+   fresh adapter re-fetched the list on its first stream. One process-wide cache (10-minute TTL, per provider + base
+   URL + credential fingerprint; reported windows per endpoint), attached at the same seam as the quota tracker. */
+attachCatalogCache(makeCatalogCache({ clock: { now: () => Date.now() } }));
 const { DEFAULT_MODEL: CODEX_DEFAULT_MODEL, liveDefaultModel: codexLiveDefaultModel, memoLiveModelIds: codexMemoLiveModelIds } = require('./providers/codex.js');
 const codexAuth = require('./providers/codex-auth.js');
 const codexTokenStore = require('./providers/codex-token-store.js');
@@ -21901,9 +21908,13 @@ async function runOnceCore(o) {
   // small run — the ONLY way to live-prove compaction against a production model without a 130k-token prompt.
   // Never set in a packaged build; unset/invalid = the catalog's real window exactly as before.
   const CONTEXT_LIMIT_OVERRIDE = Math.max(0, parseInt(String(ENV('CONTEXT_LIMIT_OVERRIDE') || ''), 10) || 0);
+  // THE RUN'S WINDOW is the model's REAL one whenever this process has seen it reported (the shared catalog answers at
+  // once: providers/catalog-cache.js); an unknown one gives the adapter at most RUN_WINDOW_WAIT_MS (1.5s) to learn it,
+  // which happens at most once per endpoint per TTL. Still unknown = the cold guess above. Read after every provider swap.
+  const knownRunWindow = CONTEXT_LIMIT_OVERRIDE ? 0 : await catalogRunWindow(provider, model);
   // RUN_CONTEXT_DEFAULTS (context.js): fold at 65% of the window; the verbatim tail is a TOKEN budget (20% of the
   // window), not six turns — six turns of big results outweighed a 64k window and a fold freed nothing.
-  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
+  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || knownRunWindow || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
   // PER-RUN TOOL-OUTPUT CAP, scaled to the window. The flat 120KB cap (~30k tokens) sat far BELOW the compaction
   // threshold (0.65 × window — ~130k tokens on a 200k model), so the one event that resets the budget
   // (agent.compact, see loopEmit) could never fire: after ~120KB of reads the agent went blind — every later

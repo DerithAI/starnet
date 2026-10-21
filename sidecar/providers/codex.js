@@ -237,6 +237,11 @@
     const renew = (typeof opts.renewToken === 'function') ? opts.renewToken : null;
     const baseUrl = (opts.baseUrl || BASE).replace(/\/$/, '');
     const reasoningEffort = normalizeCodexReasoningEffort(opts.reasoningEffort || DEFAULT_REASONING_EFFORT);
+    // WINDOW FACTS (providers/catalog-cache.js, attached by the factory). The account's live list reports each slug's
+    // context_window, and a run's adapter never lists: the window the dock's listing saw answers contextLimit instead of
+    // a flat 272000. No list is shared (a token is one account), only the window each slug REPORTED. Absent = as before.
+    const facts = (opts.catalogCache && typeof opts.catalogCache.bind === 'function')
+      ? opts.catalogCache.bind({ scope: null, endpoint: baseUrl }) : null;
 
     function buildBody(req) {
       // ONE pre-send normalization (provider.js prepareWireMessages) ahead of this wire's own pairing pass below
@@ -513,6 +518,7 @@
           const j = await res.json();
           const entries = (j && Array.isArray(j.models)) ? j.models : [];
           const out = [];
+          const reported = [];   // only the windows the backend stated (the row's 272000 stand-in teaches nothing)
           for (const it of entries) {
             if (!it || typeof it.slug !== 'string' || !it.slug.trim()) continue;
             const vis = String(it.visibility || '').toLowerCase();
@@ -540,7 +546,9 @@
               reasoningLevelDescriptions: Object.keys(effortDescriptions).length ? effortDescriptions : undefined,
               _rank: (typeof it.priority === 'number') ? it.priority : 10000
             });
+            reported.push({ id: it.slug.trim(), context_length: Number(it.context_window || it.max_context_window || 0) || 0 });
           }
+          if (facts && out.length) facts.noteWindows(reported);
           out.sort((a, b) => (a._rank - b._rank) || a.id.localeCompare(b.id));
           if (out.length) return out.map(({ _rank, ...m }) => m);
         }
@@ -550,7 +558,14 @@
       // hardcoded list, and the model dock can label the catalog offline.
       return STATIC_MODELS.map(m => Object.assign({}, m, { pricing: null, fallback: true }));
     }
-    function contextLimit(id) { const m = findModel(id); return (m && m.context_length) || 272000; }   // sane default for an unlisted Codex model
+    // the window the account's live list reported for this slug, else the curated row, else 272000 (the sane default for
+    // an unlisted Codex model)
+    function contextLimit(id) {
+      const live = facts ? facts.windowFact(id) : 0;
+      if (live) return live;
+      const m = findModel(id);
+      return (m && m.context_length) || 272000;
+    }
     function priceOf() { return null; }                  // flat-rate subscription -> no per-token price
     function supportsTools(id) { const m = findModel(id); return m ? !!m.supportsTools : true; }   // Codex models are tool-capable; never false-refuse
     // Which reasoning levels a codex model exposes — the static entry's list, or the four-level default.

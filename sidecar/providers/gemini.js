@@ -273,8 +273,22 @@
     let catalogPromise = null;
     let catalogRewarmAt = 0;
     let rewarmKicked = false;
+    // SHARED CATALOG (providers/catalog-cache.js, attached by the factory): the list this key last loaded from this
+    // endpoint (any instance) answers this one synchronously, so a run is sized from inputTokenLimit (1M on 2.x/3.x)
+    // instead of a cold 131072, and a fresh adapter no longer re-fetches every /models page. Absent = as before.
+    const shared = (opts.catalogCache && typeof opts.catalogCache.bind === 'function')
+      ? opts.catalogCache.bind({ scope: opts.catalogScope, endpoint: baseUrl, fetchList: sharedList }) : null;
+    let adoptedVersion = 0;
+    function adoptShared() {
+      if (!shared || !shared.shared) return;
+      const hit = shared.peek();
+      if (!hit || hit.version === adoptedVersion) return;
+      adoptedVersion = hit.version;
+      catalog = hit.models.slice();
+    }
 
     function maybeRewarmCatalog() {
+      if (shared && shared.shared) { adoptShared(); shared.ensure(); return; }
       if (catalog && catalog.length) return;
       if (catalogPromise) return;
       if (clock) {
@@ -528,41 +542,72 @@
       if (catalog && catalog.length) return catalog;
       if (!catalogPromise) {
         catalogPromise = (async () => {
-          try {
-            const models = new Map(), seenTokens = new Set();
-            let pageToken = '';
-            // The API defaults to 50 models per page. Never cache a successful
-            // first page as the full catalog when a later page failed.
-            for (let page = 0; page < 100; page++) {
-              const url = baseUrl + '/models' + (pageToken ? '?pageToken=' + encodeURIComponent(pageToken) : '');
-              const res = await doFetch(url, { headers: headerBag(key, 'application/json') });
-              if (!res.ok) return [];
-              const j = await res.json();
-              const raw = Array.isArray(j.models) ? j.models : (Array.isArray(j.data) ? j.data : []);
-              for (const item of raw) {
-                const model = normalizeModel(item);
-                if (model) models.set(model.id, model);
-              }
-              const next = j.nextPageToken;
-              if (!next) return Array.from(models.values());
-              if (typeof next !== 'string' || seenTokens.has(next)) return [];
-              seenTokens.add(next);
-              pageToken = next;
-            }
-            return []; // a broken endpoint cannot paginate forever or poison the cache
-          } catch (_) { return []; }
+          const list = await fetchList();
+          const version = shared ? shared.share(list) : 0;   // a live list: kept for this key, its windows noted
+          if (version) adoptedVersion = version;
+          return list;
         })();
       }
       catalog = await catalogPromise;
       if (!catalog.length) catalogPromise = null;
       return catalog;
     }
+    // Every /models page, read live. [] on any failure.
+    async function fetchList() {
+      try {
+        const models = new Map(), seenTokens = new Set();
+        let pageToken = '';
+        // The API defaults to 50 models per page. Never cache a successful
+        // first page as the full catalog when a later page failed.
+        for (let page = 0; page < 100; page++) {
+          const url = baseUrl + '/models' + (pageToken ? '?pageToken=' + encodeURIComponent(pageToken) : '');
+          const res = await doFetch(url, { headers: headerBag(key, 'application/json') });
+          if (!res.ok) return [];
+          const j = await res.json();
+          const raw = Array.isArray(j.models) ? j.models : (Array.isArray(j.data) ? j.data : []);
+          for (const item of raw) {
+            const model = normalizeModel(item);
+            if (model) models.set(model.id, model);
+          }
+          const next = j.nextPageToken;
+          if (!next) return Array.from(models.values());
+          if (typeof next !== 'string' || seenTokens.has(next)) return [];
+          seenTokens.add(next);
+          pageToken = next;
+        }
+        return []; // a broken endpoint cannot paginate forever or poison the cache
+      } catch (_) { return []; }
+    }
+    function sharedList() { return fetchList(); }   // the cache's background load
     async function listModels() { return (await loadCatalog()).map(m => Object.assign({}, m)); }
     function findModel(id) {
+      adoptShared();
       const clean = stripModelPrefix(id);
-      return catalog ? catalog.find(m => m.id === clean || m.id === id) : null;
+      const m = catalog ? catalog.find(x => x.id === clean || x.id === id) : null;
+      // a warm list without this id (a model released after it loaded): one throttled refresh can find it
+      if (!m && id && shared && catalog && catalog.length) shared.ensure({ miss: true });
+      return m;
     }
-    function contextLimit(id) { const m = findModel(id); return (m && m.context_length) || defaultContext; }
+    // Learn the window before a run is built (catalog-cache.js runWindow bounds the wait): this key's shared list, else
+    // ONE deduped load of it (none while the endpoint is in its failure back-off). Resolves to the catalog it has.
+    async function warmCatalog() {
+      adoptShared();
+      if (catalog && catalog.length) { maybeRewarmCatalog(); return catalog; }
+      if (shared && shared.shared) {
+        if (shared.inBackoff()) return catalog || [];
+        await shared.load();
+        adoptShared();
+        return catalog || [];
+      }
+      return loadCatalog();
+    }
+    // First known source wins, none invented: the catalog row, what this endpoint reported to any instance, an explicit
+    // default, 0 (unknown).
+    function contextLimit(id) {
+      const m = findModel(id);
+      if (m && m.context_length) return m.context_length;
+      return (shared && shared.windowFact(stripModelPrefix(id))) || defaultContext;
+    }
     // Gemini's API never reports a price, and returning null here left spentUsd at 0.00 for the whole run —
     // which silently disabled the per-run spend ceiling and the day/global pools (loop.js only stops when
     // spentUsd crosses the cap). Resolved off the dated list-rate table, independent of catalog warm state so
@@ -573,7 +618,7 @@
     // catalog fetch has necessarily landed.
     function reasoningEfforts(id) { return geminiEffortsFor(id); }
 
-    return { stream, listModels, contextLimit, priceOf, supportsTools, reasoningEfforts };
+    return { stream, listModels, warmCatalog, contextLimit, priceOf, supportsTools, reasoningEfforts };
   }
 
   return { makeGeminiProvider, _internals: { messagesToGemini, toGeminiTools, normalizeUsage, normalizeModel, modelPath, cleanBaseUrl, finishFor } };
