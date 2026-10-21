@@ -29,13 +29,15 @@ function makeSkillDocumentFetcher(deps) {
   }
   // limit/label: a caller fetching something other than a SKILL.md (the Skill Market's catalog index) passes its own
   // cap and name, so an oversized document is refused under its real name instead of being called a SKILL.md
-  async function bodyBytes(response, limit, label) {
+  // onChunk: called as each chunk arrives (the body's silence timer re-arms on it)
+  async function bodyBytes(response, limit, label, onChunk) {
     const tooBig = () => new Error(label ? label + ' is larger than ' + Math.round(limit / 1000) + ' KB' : 'SKILL.md is larger than 256 KB');
     const declared = Number(response && response.headers && response.headers.get('content-length')) || 0;
     if (declared > limit) throw tooBig();
     if (response.body && response.body[Symbol.asyncIterator]) {
       const chunks = []; let total = 0;
       for await (const chunk of response.body) {
+        if (onChunk) onChunk();
         const buf = Buffer.from(chunk); total += buf.length;
         if (total > limit) throw tooBig();
         chunks.push(buf);
@@ -50,10 +52,20 @@ function makeSkillDocumentFetcher(deps) {
     if (typeof fetchImpl !== 'function') throw new Error('network fetch is unavailable');
     requestOpts = requestOpts || {};
     const requestTimeoutMs = Math.max(1, Math.min(timeoutMs, Number(requestOpts.timeoutMs) || timeoutMs));
+    /* A BODY IS BOUNDED BY SILENCE, NOT BY THE REQUEST TIMER (2026-10-21). The timer used to stop once headers arrived,
+       so a body that stalled held the fetch open forever; ending the body at the request timer instead failed a large
+       download that was merely slow and steady (a 4 MB community map picture under ~330 KB/s). So the timer is an
+       inactivity timer: headers, then every body chunk, re-arm it, and requestTimeoutMs of silence ends the read. A
+       caller with a budget of its own (the package fetcher passes what is left of its 30 s) also caps the whole read
+       at it; a caller without one (community maps, the market catalog) bounds a slow trickle with its own deadline. */
+    const capMs = Number(requestOpts.timeoutMs) > 0 ? Number(requestOpts.timeoutMs) : 0;
     let u = await checked(raw);
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), requestTimeoutMs);
+      let idle = null;
+      const arm = () => { clearTimeout(idle); idle = setTimeout(() => ctrl.abort(), requestTimeoutMs); };
+      arm();
+      const cap = capMs ? setTimeout(() => ctrl.abort(), capMs) : null;
       try {
         let response;
         try {
@@ -74,21 +86,20 @@ function makeSkillDocumentFetcher(deps) {
         }
         if (!response.ok) throw new Error('skill source returned HTTP ' + response.status);
         const limit = Number(requestOpts.maxBytes) > 0 ? Math.min(Number(requestOpts.maxBytes), 4000000) : MAX_BYTES;
-        /* THE DEADLINE COVERS THE BODY. The timer used to be cleared the moment headers arrived, so a source that
-           answered its headers and then trickled or stalled the body held the fetch (and the package's 30 s budget)
-           open forever. The race settles even for a body stream that ignores the abort. */
+        arm();   // headers are in: the body's first silence window starts now
+        // the race settles even for a body stream that ignores the abort
         const timedOut = new Promise((_, reject) => {
           const fail = () => reject(new Error('skill source timed out'));
           if (ctrl.signal.aborted) fail(); else ctrl.signal.addEventListener('abort', fail, { once: true });
         });
         let bytes;
-        try { bytes = await Promise.race([bodyBytes(response, limit, requestOpts.maxBytes ? String(requestOpts.label || 'the download') : ''), timedOut]); }
+        try { bytes = await Promise.race([bodyBytes(response, limit, requestOpts.maxBytes ? String(requestOpts.label || 'the download') : '', arm), timedOut]); }
         catch (e) {
           if (ctrl.signal.aborted) throw new Error('skill source timed out');
           throw e;
         }
         return { url: u.href, bytes, text: bytes.toString('utf8') };
-      } finally { clearTimeout(timer); }
+      } finally { clearTimeout(idle); clearTimeout(cap); }
     }
     throw new Error('skill source redirected too many times');
   }

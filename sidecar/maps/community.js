@@ -31,8 +31,8 @@ const CACHE_MS = 5 * 60 * 1000;
 const SHARE_TIMEOUT_MS = 60000;
 const MINE_TIMEOUT_MS = 15000;
 const SKILL_REFS_MAX = 5;   // what the market accepts (starnet-cloud src/skillsubs.js LIMITS.refFiles)
-// the guarded fetcher's own timer stops once headers arrive, so a body that stalls would wait forever: every gallery
-// read gets its own overall deadline on top
+// the guarded fetcher ends a body that goes silent (no bytes for its request timeout), but a slow steady one runs as long
+// as bytes keep arriving: every gallery read gets its own overall deadline on top
 const READ_DEADLINE_MS = 45000;
 
 function makeCommunityMaps(deps) {

@@ -115,6 +115,25 @@ function store(io) { return makeSkillStore({ io, clock: { now: () => 9000 }, gua
     A.eq(outcome, 'skill source timed out', 'a body that stalls after its headers times out');
     A.ok(Date.now() - t0 < 2000, 'at the request deadline, not never (' + (Date.now() - t0) + ' ms)');
   }
+  // …but SILENCE ends a body, not the request timer (review 2026-10-21): ending every body at the 12 s request timer
+  // failed a community map picture (3.99 MB) that was slow but steady, which used to arrive within maps' own 45 s.
+  {
+    const steady = (gapMs, chunks) => async () => ({ status: 200, ok: true, headers: { get: () => null },
+      body: { async *[Symbol.asyncIterator]() { for (let i = 0; i < chunks; i++) { await new Promise(r => setTimeout(r, gapMs)); yield Buffer.alloc(1000, 65); } } } });
+    const slow = makeSkillDocumentFetcher({ timeoutMs: 80, fetchImpl: steady(30, 12) });
+    const t0 = Date.now();
+    const got = await slow('https://maps.example/still.png', { maxBytes: 3990000, label: 'the map picture' }).then(r => r.bytes.length, e => e.message);
+    A.eq(got, 12000, 'a steady body that takes longer than the request timeout (' + (Date.now() - t0) + ' ms vs 80 ms) still arrives whole');
+    // a caller with a budget of its own (the package fetcher's timeoutMs: left) still caps the whole read at it
+    const capped = makeSkillDocumentFetcher({ timeoutMs: 80, fetchImpl: steady(30, 1000) });
+    const t1 = Date.now();
+    const trickle = await Promise.race([
+      capped('https://slow.example/SKILL.md', { timeoutMs: 200 }).then(() => 'resolved', e => e.message),
+      new Promise(r => setTimeout(r, 3000, 'still waiting after 3 s'))
+    ]);
+    A.eq(trickle, 'skill source timed out', 'a trickle is ended at the caller\'s own budget');
+    A.ok(Date.now() - t1 < 1500, 'at that budget (' + (Date.now() - t1) + ' ms)');
+  }
 
   const fetchedUrls = [];
   const genericPackage = makeSkillPackageFetcher({ now: () => 0, fetchDocument: async url => {
