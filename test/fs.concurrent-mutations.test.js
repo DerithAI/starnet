@@ -132,6 +132,36 @@ async function rejection(p) {
     A.eq(await fsp.readFile(path.join(proj, 'c.js'), 'utf8'), 'B edit\n', "and the other run's verified edit survived");
   }
 
+  // ---- 3c. an fs.edit / fs.append that landed on another run's bytes does NOT mark them as seen ----
+  // The drift path re-applied the change onto the other writer's text and then stamped the merged file as what this
+  // agent observed, so its next fs.write, composed from its own stale view, passed the guard and erased that edit.
+  for (const tool of ['edit', 'append']) {
+    const proj = await project({ 'a.js': 'const A = 1;\nconst B = 2;\n' });
+    const old = new Date(Date.now() - 60000);
+    await fsp.utimes(path.join(proj, 'a.js'), old, old);   // the stamps below must predate the writes that follow
+    const held = heldBaseline();
+    const lead = run(proj, held.wait), worker = run(proj);
+    const c1 = { agentId: 'lead', projectRoot: proj }, c2 = { agentId: 'worker', projectRoot: proj };
+    await lead.readTool.run({ path: 'a.js' }, c1);
+    await worker.readTool.run({ path: 'a.js' }, c2);
+    const pending = tool === 'edit'
+      ? lead.editTool.run({ path: 'a.js', find: 'const A = 1;', replace: 'const A = 100;' }, c1)
+      : lead.appendTool.run({ path: 'a.js', content: 'const A2 = 100;\n' }, c1);
+    await held.reached;
+    await worker.editTool.run({ path: 'a.js', find: 'const B = 2;', replace: 'const B = 200;' }, c2);
+    held.release();
+    const r = await pending;
+    A.ok(/\[mutation receipt: read-back-verified;/.test(r.content), tool + ': the drifted change itself lands verified');
+    const merged = await fsp.readFile(path.join(proj, 'a.js'), 'utf8');
+    A.ok(/const B = 200;/.test(merged), tool + ": it landed on top of the worker's edit: " + JSON.stringify(merged));
+    const e = await rejection(lead.writeTool.run({ path: 'a.js', content: 'const A = 100;\nconst B = 2;\nconst C = 3;\n' }, c1));
+    A.ok(e && /^stale write refused: a\.js changed on disk after you read it/.test(e.message), tool + ": the lead's next whole-file write from its stale view is refused" + (e ? '' : ' (it was NOT refused: ' + JSON.stringify(await fsp.readFile(path.join(proj, 'a.js'), 'utf8')) + ')'));
+    A.eq(await fsp.readFile(path.join(proj, 'a.js'), 'utf8'), merged, tool + ": the worker's B = 200 survived");
+    await lead.readTool.run({ path: 'a.js' }, c1);
+    const again = await lead.writeTool.run({ path: 'a.js', content: merged + 'const C = 3;\n' }, c1);
+    A.ok(/^Wrote a\.js /.test(again.content), tool + ': after a re-read the write lands');
+  }
+
   // ---- 4. fs.patch whose source moved during the baseline refuses before writing anything ----
   {
     const proj = await project({ 'p.txt': 'alpha\nbeta\n' });

@@ -759,17 +759,20 @@ const { note: failNote } = require('../../failopen');
           // re-read under the lock and append to what is there NOW: another run's line written during our LSP
           // baseline used to be erased by a whole-file write composed from the older read
           const current = await readBytesOrMissing(abs);
-          let initial = existingBytes, all = combined;
+          let initial = existingBytes, all = combined, drifted = false;
           if (!sameBytes(current, existingBytes)) {
             all = (current ? current.toString('utf8') : '') + String(args.content);
             bytes = Buffer.byteLength(all, 'utf8');
             if (bytes > WRITE_BYTES) throw new Error('file too large after append (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');
-            initial = current;
+            initial = current; drifted = true;
             if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
           }
           const expected = Buffer.from(all, 'utf8');
           const r = await verifiedMutation({ operation: 'append', path: args.path, abs, expected, initial, mutate: () => fsp.writeFile(abs, expected) });
-          await stampSeen(aid, abs);   // our own append is the new baseline — a later fs.write must not read as a third-party race
+          // our own append is the new baseline — a later fs.write must not read as a third-party race. NOT after a
+          // drift: the file now holds another writer's bytes this agent never saw, so its old stamp stays and its
+          // next fs.write (composed from its own view) is refused until it reads the file again
+          if (!drifted) await stampSeen(aid, abs);
           return r;
         });
         emitDeliverable(ctx, aid, args.path);
@@ -832,17 +835,20 @@ const { note: failNote } = require('../../failopen');
         const receipt = await withFileLocks([lk], signal, async () => {
           const current = await readBytesOrMissing(abs);
           if (current == null) throw new Error('no such file: ' + args.path);
-          let initial = initialBytes;
+          let initial = initialBytes, drifted = false;
           if (!sameBytes(current, initialBytes)) {
             // another writer landed during the baseline: the edit lands on THEIR text (a vanished or now-ambiguous
             // "find" refuses with the ordinary errors), never on the stale read that would erase their change
             plan = planEdit(current.toString('utf8'));
-            initial = current;
+            initial = current; drifted = true;
             if (diagnosticTicket) diagnosticTicket.failedAtBaseline = DRIFT_REASON;
           }
           const expected = Buffer.from(plan.next, 'utf8');
           const r = await verifiedMutation({ operation: 'edit', path: args.path, abs, expected, initial, mutate: () => fsp.writeFile(abs, expected) });
-          await stampSeen(aid, abs);   // our own edit is the new baseline: read -> edit -> write used to refuse with a FABRICATED "someone else edited it" story
+          // our own edit is the new baseline: read -> edit -> write used to refuse with a FABRICATED "someone else
+          // edited it" story. NOT after a drift: the agent never saw the other writer's bytes now in the file, so
+          // its old stamp stays and a later fs.write from its stale view is refused until it reads the file again
+          if (!drifted) await stampSeen(aid, abs);
           return r;
         });
         const count = plan.count;
