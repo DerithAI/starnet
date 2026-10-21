@@ -11,6 +11,7 @@ test/group-sessions.repair.test.js
 test/group-sessions.memory.test.js
 test/group-sessions.since.test.js
 test/group-poll-idle.test.js
+test/group-paint-index.test.js
 test/save-serialize-once.test.js
 test/contract.test.js
 test/events-contract.test.js
@@ -476,6 +477,9 @@ test/scout.test.js
 test/dossier.test.js
 test/understanding.test.js
 test/fork.test.js
+test/fork-marker-perf.test.js
+test/live-markdown-incremental.test.js
+test/world-say-head.test.js
 test/taskintent.test.js
 test/taskbrief.clarify.test.js
 test/taskbrief.answer-hold.test.js
