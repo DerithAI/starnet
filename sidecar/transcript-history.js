@@ -5,7 +5,16 @@
    segment bodies one at a time, so lifetime history is retained without becoming boot-time RAM.
    The active segment is append-only + fsync'd, and appendDurable() reads the appended row back as a
    complete, newline-bounded LINE of the file before claiming success (a torn tail is isolated first).
-   Legacy transcript.jsonl(.1) files are imported without deleting or rewriting the originals. */
+   Legacy transcript.jsonl(.1) files are imported without deleting or rewriting the originals.
+
+   COST PER ROW AND PER READ (perf review 2026-10-19, #4/#5). Every row used to open the segment three times (tail
+   byte, append, read-back; each open is a Defender rescan of a file growing to 4 MB) and SHA-256 the whole ~1 MB
+   active index, which only a manifest write ever persists. Every history read re-read and re-parsed whole segments.
+   Now: ONE 'a+' handle stays open on the append-active segment (the same fsync and the same read-back proof per
+   row, through that handle), the tail byte is remembered after our own proven append (re-read whenever the file
+   size is not the size we left it at), and the active checksum is computed when the manifest is written. Reads
+   answer from parses that are exact for the bytes they cover: the active segment's (checked against its size on
+   every read), and a byte-bounded cache of the newest closed segments (immutable) and their verified term indexes. */
 'use strict';
 
 const { writeFileDurable } = require('./durable-write.js');
@@ -17,20 +26,30 @@ const VERSION = 2;
 const DEFAULT_SEGMENT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_RECENT_PER_STREAM = 1200;
 const TOKEN_MAX = 64;
+const CJK_CHAR = /^(?:\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul})$/u;
+const HAS_CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
 function str(v) { return v == null ? '' : String(v); }
 function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : Number(v) || 0; }
+// Transcript content and stream ids are untrusted dictionary keys: "constructor" must never resolve to an inherited
+// Object.prototype value (a JSON-loaded index made every recall containing that word throw).
+function hasOwn(o, k) { return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k); }
+function nullProtoMap(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return Object.create(null);
+  return Object.getPrototypeOf(v) === null ? v : Object.assign(Object.create(null), v);
+}
 function wordTokens(v) {
   // NFKC makes compatibility spellings (for example full-width Latin/digits) search the
   // same way while Unicode properties retain words written outside ASCII. Scripts that
   // ordinarily omit spaces are indexed per character so a query can match part of a phrase.
   const normalized = str(v).normalize('NFKC').toLowerCase();
-  const cjk = /^(?:\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul})$/u;
   const out = [];
   for (const word of (normalized.match(/[\p{L}\p{N}]+/gu) || [])) {
+    // a word with no character from those scripts is one token: the per-character walk below rebuilds exactly it
+    if (!HAS_CJK.test(word)) { out.push(word); continue; }
     let run = '';
     for (const char of word) {
-      if (!cjk.test(char)) { run += char; continue; }
+      if (!CJK_CHAR.test(char)) { run += char; continue; }
       if (run) { out.push(run); run = ''; }
       out.push(char);
     }
@@ -54,12 +73,25 @@ function makeSegmentedTranscriptIo(opts) {
   if (!root) throw new Error('makeSegmentedTranscriptIo requires root');
   const segmentBytes = Math.max(256, num(o.segmentBytes) || DEFAULT_SEGMENT_BYTES);
   const recentPerStream = Math.max(1, num(o.recentPerStream) || DEFAULT_RECENT_PER_STREAM);
+  // RAM the read caches may hold: parsed closed segments (by their JSONL bytes: 2 segments by default, about their own
+  // size in heap) and verified closed term indexes (by their JSON characters: half a segment's worth, about the 2 newest
+  // indexes, because an index parses to ~4-5x its text and only a recall reads one). 0 turns a cache off.
+  const rowsCacheBytes = o.cacheBytes != null ? Math.max(0, num(o.cacheBytes)) : segmentBytes * 2;
+  const indexCacheBytes = o.indexCacheBytes != null ? Math.max(0, num(o.indexCacheBytes)) : Math.floor(segmentBytes / 2);
   const warn = typeof o.onWarning === 'function' ? o.onWarning : function () {};
   const durableWrite = typeof o.writeDurable === 'function' ? o.writeDurable : writeFileDurable;
   const manifestFile = path.join(root, 'manifest.json');
   const legacyFiles = Array.isArray(o.legacyFiles) ? o.legacyFiles.slice() : [];
   let manifest;
   let activeIndex = null;
+  let activeHashStale = false;   // the active meta's checksum lags activeIndex until the next manifest write
+  let degraded = false;          // init failed: the in-memory view is not the disk's
+  let appendFd = null;           // { n, fd }: the one open 'a+' handle, on the append-active segment
+  let tail = null;               // { n, size, last }: the active file's size + last byte right after OUR last proven append
+  let activeRows = null;         // { n, size, rows, bad }: the append-active segment's parse, exact for `size` bytes
+  const closedRows = { map: new Map(), bytes: 0, budget: rowsCacheBytes };      // n -> { rows, bad, bytes } closed parses
+  const closedIndexes = { map: new Map(), bytes: 0, budget: indexCacheBytes }; // n -> { index, bytes } verified indexes
+  const verifiedIndex = new Map(); // n -> index file size:mtime + the manifest checksum it already matched
 
   function warning(message) { try { warn(message); } catch (_) {} }
   function ensureRoot() { fs.mkdirSync(root, { recursive: true }); }
@@ -67,6 +99,14 @@ function makeSegmentedTranscriptIo(opts) {
   function idxFile(n) { return path.join(root, indexName(n)); }
   function freshManifest() { return { version: VERSION, nextRowId: 1, activeSegment: 1, segments: [], legacy: [] }; }
   function saveManifest() {
+    // The append-active checksum is computed once per manifest write instead of once per row: at a full segment
+    // that index is ~1 MB of JSON, and only this persisted manifest ever carries the value (loadIndex returns the
+    // live active index without checking it). The bytes written are the ones a per-row hash would have produced.
+    if (activeHashStale && activeIndex) {
+      const meta = manifest.segments.find(s => s.number === activeIndex.segment);
+      if (meta) meta.indexHash = indexHash(activeIndex);
+      activeHashStale = false;
+    }
     durableWrite({ fs, path }, manifestFile, JSON.stringify(manifest));
   }
   function readJson(file) {
@@ -99,10 +139,8 @@ function makeSegmentedTranscriptIo(opts) {
     // keys such as "constructor" resolve to inherited prototype values, while "__proto__"
     // can mutate the dictionary itself. Normalize both fresh and JSON-loaded indexes to
     // null-prototype maps before indexing them.
-    if (!index.streams || typeof index.streams !== 'object' || Array.isArray(index.streams)) index.streams = Object.create(null);
-    else if (Object.getPrototypeOf(index.streams) !== null) index.streams = Object.assign(Object.create(null), index.streams);
-    if (!index.terms || typeof index.terms !== 'object' || Array.isArray(index.terms)) index.terms = Object.create(null);
-    else if (Object.getPrototypeOf(index.terms) !== null) index.terms = Object.assign(Object.create(null), index.terms);
+    index.streams = nullProtoMap(index.streams);
+    index.terms = nullProtoMap(index.terms);
     const sid = str(row.streamId) || 'global';
     let stream = index.streams[sid];
     if (!stream) stream = index.streams[sid] = { count: 0, lastAt: 0, preview: '', previewVersion: 1 };
@@ -114,67 +152,144 @@ function makeSegmentedTranscriptIo(opts) {
       ids.push(id);
     }
   }
-  // strict: true fails the read on ANY unreadable line; a function fails it only on a bad line the caller
-  // claims (strict(line) === true). An unreadable file always fails a strict read.
-  function readRows(n, strict) {
-    const file = segFile(n);
-    let text;
-    try { text = fs.readFileSync(file, 'utf8'); }
-    catch (e) { if (strict) throw e; warning('segment ' + n + ' unreadable: ' + ((e && e.message) || e)); return []; }
-    const rows = [];
-    let bad = 0, claimed = 0;
-    for (const line of text.split(/\r?\n/)) {
+  // One parse of a segment file: its rows, its unreadable non-blank lines (kept for strict reads), and its count of
+  // non-empty lines (the index's corruptLines arithmetic).
+  function parseSegment(buf) {
+    const rows = [], bad = [];
+    let nonempty = 0;
+    for (const line of buf.toString('utf8').split(/\r?\n/)) {
+      if (line) nonempty++;
       if (!line.trim()) continue;
       let row = null;
       try { row = JSON.parse(line); } catch (_) { row = null; }
       if (row && typeof row === 'object' && num(row.rowId) > 0) { rows.push(row); continue; }
-      bad++;
-      if (typeof strict === 'function' && strict(line)) claimed++;
+      bad.push(line);
     }
-    if (bad && (strict === true || claimed)) throw new Error('segment ' + n + ' contains unreadable transcript evidence');
-    if (bad) warning('segment ' + n + ' isolated ' + bad + ' corrupt line(s)');
-    return rows;
+    return { rows, bad, nonempty, bytes: buf.length };
+  }
+  function readSegmentFile(n) { return parseSegment(fs.readFileSync(segFile(n))); }
+  /* WHICH CLOSED PARSES STAY: the newest segments that fit the budget. A conversation reads newest-first and a
+     lifetime search touches every segment, so least-recently-used would evict exactly what the next pass needs (a
+     pass over one more segment than fits misses every time). Keeping the highest numbers holds what history reads
+     most, and a pass larger than the cache neither empties it nor thrashes it. */
+  function uncache(cache, n) {
+    const prior = cache.map.get(n);
+    if (prior) { cache.map.delete(n); cache.bytes -= prior.bytes; }
+  }
+  function cacheNewest(cache, n, entry) {
+    uncache(cache, n);
+    if (entry.bytes > cache.budget) return;
+    while (cache.bytes + entry.bytes > cache.budget) {
+      let oldest = Infinity;
+      for (const k of cache.map.keys()) if (k < oldest) oldest = k;
+      if (!(oldest < n)) return;   // everything cached is newer: this segment does not displace it
+      uncache(cache, oldest);
+    }
+    cache.map.set(n, entry);
+    cache.bytes += entry.bytes;
+  }
+  function rememberClosed(n, seg) { cacheNewest(closedRows, n, { rows: seg.rows, bad: seg.bad, bytes: seg.bytes }); }
+  function forgetIndex(n) { uncache(closedIndexes, n); verifiedIndex.delete(n); }
+  function rememberIndex(n, index, bytes) { forgetIndex(n); cacheNewest(closedIndexes, n, { index, bytes }); }
+  function forgetCaches() {
+    activeRows = null; tail = null;
+    for (const cache of [closedRows, closedIndexes]) { cache.map.clear(); cache.bytes = 0; }
+    verifiedIndex.clear();
+  }
+  // The parsed rows of segment n, as { seg, fresh } (fresh: read from disk by this call). The append-active segment
+  // answers from its parse while the file still has exactly the bytes that parse covers (one stat, no read); a closed
+  // segment is immutable, so its parse is reused from the cache. A strict read always re-reads a closed segment.
+  function segmentRows(n, strict) {
+    if (manifest && n === manifest.activeSegment) {
+      const size = fs.statSync(segFile(n)).size;
+      if (activeRows && activeRows.n === n && activeRows.size === size) return { seg: activeRows, fresh: false };
+      const seg = readSegmentFile(n);
+      activeRows = { n, size: seg.bytes, rows: seg.rows, bad: seg.bad };
+      return { seg: activeRows, fresh: true };
+    }
+    const hit = strict ? null : closedRows.map.get(n);
+    if (hit) return { seg: hit, fresh: false };
+    const seg = readSegmentFile(n);
+    rememberClosed(n, seg);
+    return { seg, fresh: true };
+  }
+  // strict: true fails the read on ANY unreadable line; a function fails it only on a bad line the caller
+  // claims (strict(line) === true). An unreadable file always fails a strict read.
+  // The returned array is the cached parse itself: callers read it, never mutate it, and copy rows they hand out.
+  function readRows(n, strict) {
+    let got;
+    try { got = segmentRows(n, !!strict); }
+    catch (e) { if (strict) throw e; warning('segment ' + n + ' unreadable: ' + ((e && e.message) || e)); return []; }
+    const seg = got.seg, bad = seg.bad.length;
+    if (bad) {
+      const claimed = typeof strict === 'function' ? seg.bad.filter(line => strict(line)).length : 0;
+      if (strict === true || claimed) throw new Error('segment ' + n + ' contains unreadable transcript evidence');
+      if (got.fresh) warning('segment ' + n + ' isolated ' + bad + ' corrupt line(s)');
+    }
+    return seg.rows;
   }
   function buildIndex(n) {
     const index = emptyIndex(n);
     let bytes = 0;
     try { bytes = fs.statSync(segFile(n)).size; } catch (_) { return index; }
     index.bytes = bytes;
-    const rows = readRows(n);
-    for (const row of rows) noteIndex(index, row);
-    const nonempty = (() => {
-      try { return fs.readFileSync(segFile(n), 'utf8').split(/\r?\n/).filter(Boolean).length; } catch (_) { return 0; }
-    })();
-    index.corruptLines = Math.max(0, nonempty - rows.length);
+    let seg;
+    try { seg = readSegmentFile(n); }
+    catch (e) { warning('segment ' + n + ' unreadable: ' + ((e && e.message) || e)); return index; }
+    if (seg.bad.length) warning('segment ' + n + ' isolated ' + seg.bad.length + ' corrupt line(s)');
+    for (const row of seg.rows) noteIndex(index, row);
+    index.corruptLines = Math.max(0, seg.nonempty - seg.rows.length);
+    // this parse is exact for these bytes: the next read of the segment is free (only once the manifest says which
+    // segment is append-active, so a closed parse is never cached for a segment that will still grow)
+    if (manifest) {
+      if (n === manifest.activeSegment) activeRows = { n, size: seg.bytes, rows: seg.rows, bad: seg.bad };
+      else rememberClosed(n, seg);
+    }
     return index;
   }
   function saveIndex(index) {
+    forgetIndex(index.segment);
     durableWrite({ fs, path }, idxFile(index.segment), JSON.stringify(index));
   }
+  // A closed index is immutable once its checksum matched: the newest ones that fit stay parsed, and one that does not
+  // fit is re-read but never re-hashed while its file keeps the size and mtime that matched.
   function loadIndex(n, persistRepair) {
     if (activeIndex && n === manifest.activeSegment) return activeIndex;
-    let index = readJson(idxFile(n));
+    const cached = closedIndexes.map.get(n);
+    if (cached) return cached.index;
+    let index = null, text = null, sig = '';
+    try { const st = fs.statSync(idxFile(n)); sig = st.size + ':' + num(st.mtimeMs); text = fs.readFileSync(idxFile(n), 'utf8'); index = JSON.parse(text); }
+    catch (_) { index = null; }
     const meta = manifest.segments.find(s => s.number === n);
-    const hashMismatch = !!(index && meta && meta.indexHash && indexHash(index) !== meta.indexHash);
+    const proof = sig + ':' + str(meta && meta.indexHash);
+    const hashMismatch = !!(index && meta && meta.indexHash && verifiedIndex.get(n) !== proof && indexHash(index) !== meta.indexHash);
     if (!index || index.version !== VERSION || index.segment !== n || hashMismatch) {
       if (hashMismatch) warning('segment ' + n + ' index checksum mismatch; rebuilding from immutable JSONL');
       index = buildIndex(n);
       if (persistRepair) { try { saveIndex(index); } catch (e) { warning('index repair failed for segment ' + n + ': ' + ((e && e.message) || e)); } }
       upsertMeta(index);
       if (persistRepair) { try { saveManifest(); } catch (e) { warning('manifest repair failed for segment ' + n + ': ' + ((e && e.message) || e)); } }
+      return index;
     }
+    // a JSON-loaded index keeps Object.prototype: search, its one reader, looks terms up with hasOwn, never by bare key
+    if (n !== manifest.activeSegment) rememberIndex(n, index, text.length);
+    if (meta && meta.indexHash) verifiedIndex.set(n, proof);
     return index;
   }
-  function metaFromIndex(index) {
+  function metaFromIndex(index, hash) {
     return {
       number: index.segment, file: segmentName(index.segment), rows: index.rows, bytes: index.bytes,
       minRowId: index.minRowId, maxRowId: index.maxRowId, minTs: index.minTs, maxTs: index.maxTs,
-      corruptLines: index.corruptLines || 0, streams: index.streams, indexHash: indexHash(index)
+      corruptLines: index.corruptLines || 0, streams: index.streams, indexHash: hash === undefined ? indexHash(index) : hash
     };
   }
-  function upsertMeta(index) {
-    const meta = metaFromIndex(index);
+  // lazy: a per-row refresh of the active segment's summary; its checksum waits for the next saveManifest()
+  function upsertMeta(index, lazy) {
     const at = manifest.segments.findIndex(s => s.number === index.segment);
+    let hash;
+    if (lazy) { hash = at >= 0 ? manifest.segments[at].indexHash : ''; activeHashStale = true; }
+    else if (index === activeIndex) activeHashStale = false;
+    const meta = metaFromIndex(index, hash);
     if (at >= 0) manifest.segments[at] = meta; else manifest.segments.push(meta);
     manifest.segments.sort((a, b) => a.number - b.number);
   }
@@ -265,6 +380,21 @@ function makeSegmentedTranscriptIo(opts) {
     for (const meta of manifest.segments) for (const row of readRows(meta.number)) if (row.legacyKey) keys.add(row.legacyKey);
     return keys;
   }
+  function closeAppend() {
+    if (!appendFd) return;
+    const fd = appendFd.fd;
+    appendFd = null;
+    try { fs.closeSync(fd); } catch (closeError) { failNote('transcript.append.write-close', closeError); }
+  }
+  // the open append handle on segment n. 'a+': every write lands at the end of the file, and positional reads through
+  // the same handle prove what landed — so a row costs no open (no Defender rescan) after the segment's first.
+  function appendHandle(n) {
+    if (appendFd && appendFd.n === n) return appendFd.fd;
+    closeAppend();
+    const fd = fs.openSync(segFile(n), 'a+');
+    appendFd = { n, fd };
+    return fd;
+  }
   function appendRaw(entry, options) {
     const settings = options || {};
     if (!activeIndex) activeIndex = loadIndex(manifest.activeSegment, false);
@@ -275,34 +405,38 @@ function makeSegmentedTranscriptIo(opts) {
     if (activeIndex.rows > 0 && activeIndex.bytes + encoded.length > segmentBytes) {
       saveIndex(activeIndex);
       upsertMeta(activeIndex);
+      closeAppend();                 // the closed segment is never written again
+      activeRows = null; tail = null;
       manifest.activeSegment++;
       activeIndex = emptyIndex(manifest.activeSegment);
       saveManifest();
     }
-    const file = segFile(manifest.activeSegment);
-    let offset = 0;
-    try { offset = fs.statSync(file).size; } catch (_) {}
+    const n = manifest.activeSegment;
+    const file = segFile(n);
+    const fd = appendHandle(n);
     /* TORN TAIL (H2). A crash mid-append can leave the segment ending in a partial row with no newline. Appending
        straight after it glued the new row onto that fragment: one unparsable line, so readRows() dropped the NEW
        row too — after the read-back below had already "proven" it by parsing only its own byte range, and a run
        journal had been retired on that proof. A lone '\n' first isolates the fragment on its own line (readRows
-       skips and counts it as corrupt), and the read-back now proves the row is a complete LINE of the file. */
-    let sep = 0;
-    if (offset > 0) {
-      let tailFd = null;
-      try {
-        const last = Buffer.alloc(1);
-        tailFd = fs.openSync(file, 'r');
-        if (fs.readSync(tailFd, last, 0, 1, offset - 1) !== 1) throw new Error('transcript tail byte unreadable');
-        if (last[0] !== 0x0a) sep = 1;
-      } finally { if (tailFd != null) try { fs.closeSync(tailFd); } catch (e) { failNote('transcript.append.tail-close', e); } }
-    }
+       skips and counts it as corrupt), and the read-back now proves the row is a complete LINE of the file.
+       The size comes from the open handle on every row; the remembered last byte is trusted only while the file is
+       exactly the size our own last proven append left it at (anything else re-reads the byte). */
+    let offset = 0, sep = 0;
+    try {
+      offset = fs.fstatSync(fd).size;
+      if (offset > 0) {
+        let last = tail && tail.n === n && tail.size === offset ? tail.last : -1;
+        if (last < 0) {
+          const one = Buffer.alloc(1);
+          if (fs.readSync(fd, one, 0, 1, offset - 1) !== 1) throw new Error('transcript tail byte unreadable');
+          last = one[0];
+        }
+        if (last !== 0x0a) sep = 1;
+      }
+    } catch (e) { closeAppend(); tail = null; throw e; }
     const bytes = sep ? Buffer.concat([Buffer.from('\n', 'utf8'), encoded]) : encoded;
     const rowStart = offset + sep;
-    let fd = null, opened = false;
     try {
-      fd = fs.openSync(file, 'a');
-      opened = true;
       // writeSync may write fewer bytes than asked; any positive count used to be taken as the whole row.
       let at = 0;
       while (at < bytes.length) {
@@ -311,39 +445,40 @@ function makeSegmentedTranscriptIo(opts) {
         at += wrote;
       }
       fs.fsyncSync(fd);
-      fs.closeSync(fd);
-      fd = null;
       // Strict read-back: prove the bytes just fsync'd are a complete LINE of the file — preceded by a newline (or
       // the file start), newline-terminated — and parse as the row we assigned.
-      let checkFd = null;
-      try {
-        const lead = rowStart > 0 ? 1 : 0;
-        const check = Buffer.alloc(encoded.length + lead);
-        checkFd = fs.openSync(file, 'r');
-        const got = fs.readSync(checkFd, check, 0, check.length, rowStart - lead);
-        if (got !== check.length) throw new Error('short transcript read-back');
-        if (lead && check[0] !== 0x0a) throw new Error('transcript read-back: row does not start a line');
-        if (check[check.length - 1] !== 0x0a) throw new Error('transcript read-back: row is not newline-terminated');
-        const proven = JSON.parse(check.toString('utf8', lead, check.length - 1));
-        if (num(proven.rowId) !== num(row.rowId)) throw new Error('transcript read-back rowId mismatch');
-        row = proven;
-      } finally { if (checkFd != null) try { fs.closeSync(checkFd); } catch (_) {} }
+      const lead = rowStart > 0 ? 1 : 0;
+      const check = Buffer.alloc(encoded.length + lead);
+      const got = fs.readSync(fd, check, 0, check.length, rowStart - lead);
+      if (got !== check.length) throw new Error('short transcript read-back');
+      if (lead && check[0] !== 0x0a) throw new Error('transcript read-back: row does not start a line');
+      if (check[check.length - 1] !== 0x0a) throw new Error('transcript read-back: row is not newline-terminated');
+      const proven = JSON.parse(check.toString('utf8', lead, check.length - 1));
+      if (num(proven.rowId) !== num(row.rowId)) throw new Error('transcript read-back rowId mismatch');
+      row = proven;
     } catch (e) {
       // A rejected append (short/stalled write, failed fsync, failed proof) is rolled back to the prior boundary —
       // strict means all or nothing. Windows refuses truncation through an append handle, so close first. If the
       // rollback fails too, the bytes are left unterminated or unparsable and the NEXT append isolates them.
-      if (fd != null) { try { fs.closeSync(fd); } catch (closeError) { failNote('transcript.append.write-close', closeError); } fd = null; }
-      if (opened) { try { fs.truncateSync(file, offset); } catch (rollbackError) { failNote('transcript.append.rollback', rollbackError); } }
+      closeAppend();
+      tail = null;
+      try { fs.truncateSync(file, offset); } catch (rollbackError) { failNote('transcript.append.rollback', rollbackError); }
       throw e;
     }
+    tail = { n, size: rowStart + encoded.length, last: 0x0a };
+    // the active parse stays exact: a torn fragment before this row (sep) was already one of its unreadable lines,
+    // and a segment this append created starts as the empty parse
+    if (offset === 0 && !(activeRows && activeRows.n === n)) activeRows = { n, size: 0, rows: [], bad: [] };
+    if (activeRows && activeRows.n === n && activeRows.size === offset) { activeRows.rows.push(row); activeRows.size = tail.size; }
+    else activeRows = null;
 
     activeIndex.bytes += bytes.length;
     noteIndex(activeIndex, row);
-    upsertMeta(activeIndex);
+    upsertMeta(activeIndex, true);
     // The JSONL row is the source of truth. Persist the small manifest only at segment boundaries/migration;
     // init() always reconciles the active tail, so a crash after this proven append cannot lose or reuse its id.
     if (settings.saveManifest) saveManifest();
-    return row;
+    return clone(row);   // the caller's copy: the cached parse keeps its own
   }
   function migrateLegacy() {
     const done = new Map((manifest.legacy || []).map(x => [x.file, x]));
@@ -414,7 +549,7 @@ function makeSegmentedTranscriptIo(opts) {
     }
   }
   function relevantSegments(streamId, reverse) {
-    const list = manifest.segments.filter(s => !streamId || (s.streams && s.streams[streamId]));
+    const list = manifest.segments.filter(s => !streamId || hasOwn(s.streams, streamId));
     return reverse ? list.slice().reverse() : list;
   }
   function readRecent(options) {
@@ -489,18 +624,22 @@ function makeSegmentedTranscriptIo(opts) {
     if (!terms.length) return [];
     const all = settings.scope === 'all';
     const best = [];
+    const counts = new Map();   // query term -> its count in the row being scored (only the query's terms are counted)
     for (const meta of manifest.segments) {
-      if (!all && !(meta.streams && meta.streams[streamId])) continue;
+      if (!all && !hasOwn(meta.streams, streamId)) continue;
       const index = loadIndex(meta.number, meta.number !== manifest.activeSegment);
       const candidates = new Set();
-      for (const term of terms) for (const id of (index.terms[term] || [])) candidates.add(num(id));
+      for (const term of terms) {
+        const ids = hasOwn(index.terms, term) ? index.terms[term] : null;
+        if (Array.isArray(ids)) for (const id of ids) candidates.add(num(id));
+      }
       if (!candidates.size) continue;
       for (const row of readRows(meta.number)) {
         if (!candidates.has(num(row.rowId)) || (!all && row.streamId !== streamId)) continue;
-        const tf = {};
-        for (const t of wordTokens(row.content)) tf[t] = (tf[t] || 0) + 1;
+        for (const term of terms) counts.set(term, 0);
+        for (const t of wordTokens(row.content)) { const seen = counts.get(t); if (seen !== undefined) counts.set(t, seen + 1); }
         let distinct = 0, freq = 0;
-        for (const term of terms) if (tf[term]) { distinct++; freq += tf[term]; }
+        for (const term of terms) { const seen = counts.get(term); if (seen) { distinct++; freq += seen; } }
         if (!distinct) continue;
         best.push({ rowId: row.rowId, streamId: row.streamId, role: row.role, content: row.content, ts: row.ts, score: distinct * 1000 + freq, taint: row.taint || '', taintKnown: row.taintKnown === true || !!row.taint });
         best.sort((a, b) => (b.score - a.score) || (num(b.ts) - num(a.ts)) || (num(b.rowId) - num(a.rowId)));
@@ -524,6 +663,15 @@ function makeSegmentedTranscriptIo(opts) {
       by.set(sid, dst);
     }
     return Array.from(by.values()).sort((a, b) => (b.lastAt - a.lastAt) || (a.streamId < b.streamId ? -1 : a.streamId > b.streamId ? 1 : 0)).slice(0, limit);
+  }
+  // How many durable rows the manifest records for ONE stream (every segment's summary), or -1 when this view
+  // cannot vouch for the disk (initialization degraded). The store compares it with its RAM mirror.
+  function streamRows(streamId) {
+    if (degraded) return -1;
+    const sid = str(streamId);
+    let n = 0;
+    for (const meta of manifest.segments) if (hasOwn(meta.streams, sid)) n += num(meta.streams[sid] && meta.streams[sid].count);
+    return n;
   }
   function readById(rowId) {
     const id = num(rowId);
@@ -564,6 +712,9 @@ function makeSegmentedTranscriptIo(opts) {
   try { init(); upgradeStalePreviews(); }
   catch (e) {
     warning('history initialization degraded to an empty in-memory view: ' + ((e && e.message) || e));
+    closeAppend();
+    forgetCaches();
+    degraded = true;
     manifest = freshManifest();
     activeIndex = emptyIndex(manifest.activeSegment);
   }
@@ -575,11 +726,14 @@ function makeSegmentedTranscriptIo(opts) {
     history,
     search,
     streams,
+    streamRows,
     around,
     readById,
+    // releases the open append handle (the next append reopens it); the process exit releases it too
+    close() { closeAppend(); },
     status() { return JSON.parse(JSON.stringify(manifest)); },
     _internals: { root, manifestFile, segFile, idxFile, tokenize }
   };
 }
 
-module.exports = { makeSegmentedTranscriptIo, _internals: { tokenize, segmentName, indexName } };
+module.exports = { makeSegmentedTranscriptIo, _internals: { tokenize, wordTokens, segmentName, indexName } };
