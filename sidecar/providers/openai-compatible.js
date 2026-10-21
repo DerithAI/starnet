@@ -340,6 +340,50 @@
     };
   }
 
+  /* One tool-call slot's accumulated argument text, and the one question the stream asks of it: would it JSON.parse
+     yet? (callIndex below arbitrates a name-echoing delta by it.) That question used to be a JSON.parse of the WHOLE
+     accumulated string on every delta: quadratic, on the sidecar's main thread — a 100 KB fs_write in 16-char deltas
+     parsed ~330 M characters. The tracker follows bracket depth and string state per byte as it arrives, so an
+     object or array that is provably still open (depth > 0, or inside a string) answers false without parsing; only
+     a top-level close runs JSON.parse, memoised by length. Text that does not open with '{' or '[' keeps the old
+     parse-every-time answer. The answer is exactly the old one: anything that parses and opens with '{' or '[' ends at
+     depth 0 outside a string. */
+  function makeArgsTracker() {
+    let acc = '', mode = '', depth = 0, inStr = false, esc = false, memoLen = -1, memo = false;
+    function feed(chunk) {
+      const s = String(chunk || '');
+      acc += s;
+      if (mode === 'legacy') return;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (!mode) {
+          if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') continue;   // JSON's own whitespace
+          if (ch !== '{' && ch !== '[') { mode = 'legacy'; return; }
+          mode = 'struct';
+        }
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === '\\') esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === '{' || ch === '[') depth++;
+        else if (ch === '}' || ch === ']') depth--;
+      }
+    }
+    function complete() {
+      if (!acc) return false;
+      if (mode === 'struct' && (depth !== 0 || inStr)) return false;   // provably not parseable yet: no O(n) parse
+      if (memoLen !== acc.length) {
+        memoLen = acc.length;
+        try { JSON.parse(acc); memo = true; } catch (_) { memo = false; }
+      }
+      return memo;
+    }
+    return { feed, complete };
+  }
+
   function makeOpenAICompatibleProvider(opts) {
     opts = opts || {};
     const doFetch = opts.fetch || (typeof fetch !== 'undefined' ? fetch : null);
@@ -735,9 +779,8 @@
       // or the next free slot when the id is also absent.
       const idxById = {};
       const lastIdxByName = {};   // name -> the most recent slot opened for that name (id/index-less servers)
-      const argsAcc = {};         // idx -> accumulated raw args, so completeness can arbitrate name repeats
+      const argsTrack = {};       // idx -> makeArgsTracker(): accumulated raw args, so completeness can arbitrate name repeats
       let nextIdx = 0;
-      const argsComplete = (s) => { if (!s) return false; try { JSON.parse(s); return true; } catch (_) { return false; } };
       function callIndex(tc) {
         if (tc.index != null) { if (tc.index >= nextIdx) nextIdx = tc.index + 1; return tc.index; }
         const id = tc.id ? String(tc.id) : '';
@@ -750,7 +793,7 @@
              Arbitrate by the current same-name slot's ARGS: still-incomplete JSON -> this delta continues
              it; complete (or no prior slot) -> a genuinely new call opens its own slot. */
           const prior = lastIdxByName[fn.name];
-          if (prior != null && !argsComplete(argsAcc[prior])) return prior;
+          if (prior != null && !(argsTrack[prior] && argsTrack[prior].complete())) return prior;
           const idx = nextIdx++;
           lastIdxByName[fn.name] = idx;
           return idx;
@@ -834,7 +877,7 @@
               started[idx] = true;
               yield { type: 'tool_start', index: idx, id: tc.id || ('call_' + idx), name: fn.name || '' };
             }
-            if (typeof fn.arguments === 'string' && fn.arguments) { argsAcc[idx] = (argsAcc[idx] || '') + fn.arguments; yield { type: 'tool_args', index: idx, chunk: fn.arguments }; }
+            if (typeof fn.arguments === 'string' && fn.arguments) { (argsTrack[idx] || (argsTrack[idx] = makeArgsTracker())).feed(fn.arguments); yield { type: 'tool_args', index: idx, chunk: fn.arguments }; }
           }
         }
         if (choice.finish_reason && !doneEmitted) {
@@ -1134,5 +1177,5 @@
     return { stream, listModels, contextLimit, priceOf, supportsTools, reasoningEfforts, localRuntime: nativeBase || undefined };
   }
 
-  return { makeOpenAICompatibleProvider, _internals: { normalizeModel, cleanBaseUrl, responseErrorDetail, safeErrorField, clampToDeclared, canonicalEffort, paramNamed, supportedEffortsFrom, toolsForceNone, replayReasoningContent } };
+  return { makeOpenAICompatibleProvider, _internals: { normalizeModel, cleanBaseUrl, responseErrorDetail, safeErrorField, makeArgsTracker, clampToDeclared, canonicalEffort, paramNamed, supportedEffortsFrom, toolsForceNone, replayReasoningContent } };
 });
