@@ -250,6 +250,7 @@ test/tools.test.js
 test/capgate.test.js
 test/capdrift.test.js
 test/capsummary.test.js
+test/capsummary-room-scope.test.js
 test/boot-security.test.js
 test/sidecar-fixture.test.js
 test/sidecar.security.test.js
