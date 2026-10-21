@@ -92,7 +92,10 @@ A.ok(/catch\s*\(e\)[\s\S]{0,1500}persistPartial\(ws,\s*acc\)[\s\S]{0,900}error:\
 A.ok(/card\.dataset\.runId\s*=\s*presenceRunId/.test(src), 'resolved presence is joined to its durable run row by runId');
 A.ok(/function\s+hydrateRunTelemetry[\s\S]{0,2200}entry\.children/.test(src), 'run completion hydrates lead + worker hierarchy from persisted rows');
 A.ok(/workerCalls[\s\S]{0,800}reasoningEffort/.test(src), 'summary exposes worker call count plus actual model/effort');
-A.ok(/function\s+telemetryRun[\s\S]{0,1300}t\.ms/.test(src), 'expanded hierarchy renders each persisted per-tool duration');
+// read inside telemetryRun's own body (it ends on its two-space closing brace): a fixed character window broke when two
+// lanes each grew the function's head line (10-21: 1,155 → 1,384 characters before the tool line)
+const telemetryRunBody = (/function\s+telemetryRun\([\s\S]*?\n  \}\n/.exec(src) || [''])[0];
+A.ok(/\bt\.ms\b/.test(telemetryRunBody), 'expanded hierarchy renders each persisted per-tool duration');
 A.ok(/hydrateRunTelemetry\(ws,\s*entry,\s*runId\)[\s\S]{0,300}if\s*\(!arts\.length/.test(src), 'clean artifact-less runs still hydrate telemetry before the quiet recap return');
 
 // ONE run, ONE duration (live walkthrough 2026-10-13): the telemetry hydration rewrote the resolved card with the
