@@ -890,6 +890,7 @@ test/channels.group-allow.test.js
 test/channels.telegram.pairing-ux.test.js
 test/channels.telegram.test.js
 test/channels.telegram.format.test.js
+test/channels.telegram.linear.test.js
 test/channels.telegram.context.test.js
 test/channels.telegram.media.test.js
 test/channels.telegram.groups.test.js
