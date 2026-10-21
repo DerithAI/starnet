@@ -11,7 +11,8 @@
    GENUINE: the REAL segmented io and the REAL store on a temp dir, through an fs that counts what each call costs. The
    index.js seams (transcriptRunSince + serveTranscript, awayBriefingInputs) are the REAL source sliced out of
    sidecar/index.js (never required: that boots a sidecar) and run against the real store. Durability stays the same:
-   one fsync and one read-back proof per row, every row readable by a fresh process. */
+   one fsync and one read-back proof per row, every row readable by a fresh process, and a row is never proven into a
+   file its path no longer names (review p5-transcript 10-21: the open handle outlived a deleted segment or folder). */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('node:fs');
@@ -294,6 +295,58 @@ try {
     c.reset();
     serveTranscript({ url: '/api/transcript?agent=agent&stream=global&runId=nobody-knows&limit=80' }, {});
     A.eq(sent.obj.turns.length, 0, 'an unknown run still answers (empty)');
+  }
+
+  // ---- 9. the open append handle never proves a row into a file the path no longer names -----------------------------
+  // A handle outlives its directory entry: with the segment deleted (AV quarantine, a user cleaning app data) or the
+  // folder removed, every write, fsync and read-back through it succeeded on an unlinked file, appendStrict reported the
+  // row durable (a run journal retires on that), and the next boot had lost it. Reopening by path per row never could.
+  {
+    const fresh = root => makeSegmentedTranscriptIo({ fs, path, root, onWarning: () => {} });
+    let t = 1;
+    // (a) the active segment alone is deleted between two strict appends
+    {
+      const { fs: cfs, c } = countingFs();
+      const root = freshDir();
+      const warnings = [];
+      const store = makeTranscriptStore({ io: track(makeSegmentedTranscriptIo({ fs: cfs, path, root, onWarning: m => warnings.push(m) })), clock: { now: () => t++ } });
+      store.appendStrict({ streamId: 'q', role: 'user', content: 'one', sourceRunId: 'R', taint: null });
+      fs.unlinkSync(path.join(root, history._internals.segmentName(1)));
+      let ok = true;
+      try { store.appendStrict({ streamId: 'q', role: 'assistant', content: 'two', sourceRunId: 'R', taint: null }); } catch (_) { ok = false; }
+      A.ok(ok, '(a) the strict append after the deletion succeeds');
+      A.eq(track(fresh(root)).history('q').map(r => r.content), ['two'], '(a) and its row is on disk for the next boot (it went to the deleted file)');
+      A.eq(store.history('q').map(r => r.content), ['two'], '(a) the store shows what the disk holds, never the deleted row from RAM');
+      A.ok(warnings.some(w => /no longer provably the file at its path/.test(w)), '(a) the change is reported');
+      c.reset();
+      store.append({ streamId: 'q', role: 'user', content: 'three', taint: null });
+      A.eq(c.open, 0, '(a) the reopened handle is kept: the next row opens nothing');
+      A.eq(track(fresh(root)).history('q').map(r => r.content), ['two', 'three'], '(a) and lands at the path too');
+    }
+    // (b) the whole transcript folder is removed: nothing is acknowledged, as when every row opened its path
+    {
+      const root = freshDir();
+      const io = track(makeSegmentedTranscriptIo({ fs, path, root, onWarning: () => {} }));
+      const store = makeTranscriptStore({ io, clock: { now: () => t++ } });
+      store.appendStrict({ streamId: 'q', role: 'user', content: 'one', sourceRunId: 'R', taint: null });
+      fs.rmSync(root, { recursive: true, force: true });
+      let code = '';
+      try { store.appendStrict({ streamId: 'q', role: 'assistant', content: 'two', sourceRunId: 'R', taint: null }); } catch (e) { code = e.code || e.message; }
+      A.eq(code, 'ENOENT', '(b) the strict append throws ENOENT (it claimed the row durable before), so the run journal stays');
+      A.ok(!fs.existsSync(root), '(b) and no folder was conjured up');
+    }
+    // (c) the segment is renamed away and a file put in its place: the next row goes to the file at the path
+    {
+      const root = freshDir();
+      const io = track(makeSegmentedTranscriptIo({ fs, path, root, onWarning: () => {} }));
+      io.appendDurable({ streamId: 'q', role: 'user', content: 'one' });
+      const seg = path.join(root, history._internals.segmentName(1));
+      fs.renameSync(seg, seg + '.moved');
+      fs.copyFileSync(seg + '.moved', seg);
+      io.appendDurable({ streamId: 'q', role: 'user', content: 'two' });
+      A.eq(track(fresh(root)).history('q').map(r => r.content), ['one', 'two'], '(c) a replaced segment receives the next row');
+      A.eq(fs.readFileSync(seg + '.moved', 'utf8').split('\n').filter(Boolean).length, 1, '(c) the moved-away file is not written again');
+    }
   }
 
   // ---- 8. away briefing: one transcript read per briefed stream, not one per run --------------------------------------

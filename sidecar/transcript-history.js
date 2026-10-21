@@ -11,8 +11,9 @@
    byte, append, read-back; each open is a Defender rescan of a file growing to 4 MB) and SHA-256 the whole ~1 MB
    active index, which only a manifest write ever persists. Every history read re-read and re-parsed whole segments.
    Now: ONE 'a+' handle stays open on the append-active segment (the same fsync and the same read-back proof per
-   row, through that handle), the tail byte is remembered after our own proven append (re-read whenever the file
-   size is not the size we left it at), and the active checksum is computed when the manifest is written. Reads
+   row, through that handle, after an attribute-only stat proves the handle is still the file at the path), the tail
+   byte is remembered after our own proven append (re-read whenever the file size is not the size we left it at), and
+   the active checksum is computed when the manifest is written. Reads
    answer from parses that are exact for the bytes they cover: the active segment's (checked against its size on
    every read), and a byte-bounded cache of the newest closed segments (immutable) and their verified term indexes. */
 'use strict';
@@ -86,7 +87,8 @@ function makeSegmentedTranscriptIo(opts) {
   let activeIndex = null;
   let activeHashStale = false;   // the active meta's checksum lags activeIndex until the next manifest write
   let degraded = false;          // init failed: the in-memory view is not the disk's
-  let appendFd = null;           // { n, fd }: the one open 'a+' handle, on the append-active segment
+  let unvouched = false;         // the active segment changed on disk outside this process: its counts may not be the disk's
+  let appendFd = null;          // { n, fd }: the one open 'a+' handle, on the append-active segment
   let tail = null;               // { n, size, last }: the active file's size + last byte right after OUR last proven append
   let activeRows = null;         // { n, size, rows, bad }: the append-active segment's parse, exact for `size` bytes
   const closedRows = { map: new Map(), bytes: 0, budget: rowsCacheBytes };      // n -> { rows, bad, bytes } closed parses
@@ -395,6 +397,17 @@ function makeSegmentedTranscriptIo(opts) {
     appendFd = { n, fd };
     return fd;
   }
+  /* THE HANDLE MUST STILL BE THE FILE AT THE PATH. A handle outlives its directory entry: if the segment was deleted,
+     quarantined or replaced, or the whole transcript folder was removed, while the sidecar ran, every write, fsync and
+     read-back through the handle succeeds on an unlinked file and the row is lost at restart, after a run journal was
+     retired on its proof. So every row compares the handle with an attribute-only stat of the path (no content open,
+     no rescan; bigint, because an NTFS file id does not fit a double). */
+  function handleIsPath(fd, file) {
+    const held = fs.fstatSync(fd, { bigint: true });
+    let here;
+    try { here = fs.statSync(file, { bigint: true }); } catch (_) { return false; }   // gone: the caller reopens by path
+    return held.nlink > 0n && here.ino === held.ino && here.dev === held.dev;
+  }
   function appendRaw(entry, options) {
     const settings = options || {};
     if (!activeIndex) activeIndex = loadIndex(manifest.activeSegment, false);
@@ -413,7 +426,7 @@ function makeSegmentedTranscriptIo(opts) {
     }
     const n = manifest.activeSegment;
     const file = segFile(n);
-    const fd = appendHandle(n);
+    let fd = appendHandle(n);
     /* TORN TAIL (H2). A crash mid-append can leave the segment ending in a partial row with no newline. Appending
        straight after it glued the new row onto that fragment: one unparsable line, so readRows() dropped the NEW
        row too — after the read-back below had already "proven" it by parsing only its own byte range, and a run
@@ -423,6 +436,17 @@ function makeSegmentedTranscriptIo(opts) {
        exactly the size our own last proven append left it at (anything else re-reads the byte). */
     let offset = 0, sep = 0;
     try {
+      if (!handleIsPath(fd, file)) {
+        // Something outside this process changed the folder (or the path cannot be checked): nothing remembered about it
+        // still holds. Reopen by path, as every row once did (a missing folder throws ENOENT and the row is not
+        // acknowledged; a missing file is created), read from disk again, and stop vouching for the durable counts the
+        // RAM mirror trusts (the rows the old file held may be gone).
+        warning('segment ' + n + ': the open handle is no longer provably the file at its path; reopening it by path');
+        closeAppend();
+        forgetCaches();
+        unvouched = true;
+        fd = appendHandle(n);
+      }
       offset = fs.fstatSync(fd).size;
       if (offset > 0) {
         let last = tail && tail.n === n && tail.size === offset ? tail.last : -1;
@@ -665,9 +689,10 @@ function makeSegmentedTranscriptIo(opts) {
     return Array.from(by.values()).sort((a, b) => (b.lastAt - a.lastAt) || (a.streamId < b.streamId ? -1 : a.streamId > b.streamId ? 1 : 0)).slice(0, limit);
   }
   // How many durable rows the manifest records for ONE stream (every segment's summary), or -1 when this view
-  // cannot vouch for the disk (initialization degraded). The store compares it with its RAM mirror.
+  // cannot vouch for the disk (initialization degraded, or the active segment changed underneath this process). The
+  // store compares it with its RAM mirror.
   function streamRows(streamId) {
-    if (degraded) return -1;
+    if (degraded || unvouched) return -1;
     const sid = str(streamId);
     let n = 0;
     for (const meta of manifest.segments) if (hasOwn(meta.streams, sid)) n += num(meta.streams[sid] && meta.streams[sid].count);
