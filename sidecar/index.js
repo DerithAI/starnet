@@ -20920,10 +20920,11 @@ async function runOnceCore(o) {
       const settled = taskBriefState ? commanderEvidenceContext(system || '', Object.assign({},taskContextInputs,{brief:taskBriefState.brief})) : taskContextBlock;
       const notes = notebookStore.get('notebook:' + agentId);
       // the Commander's taste rides into delegated work too: a worker writes the deliverable the Commander rates
-      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, otherAgentNotebooks(agentId), { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
+      const peers = (personalizationStore.read().enabled && !tasteWithheld) ? otherAgentNotebooks(agentId) : [];   // read once for taste + standing
+      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, peers, { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
       const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
       const pinned = Array.isArray(notes) ? notes.filter(r => r && r.pinned && !tasteIds.has(r.id) && !(tasteWithheld && r.origin === FeedbackMemory.ORIGIN) && !r.taintedBy) : [];
-      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, otherAgentNotebooks(agentId)).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
+      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, peers).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
       const recalled = renderRecall(rank(pinned.concat(standing), recentUserText(messages), { now: Date.now(), streamId, projectRoot: o.projectRoot || null }), { limit: 1500 });
       const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall);
       return settled + (recalled.text ? '\n\n' + redact(recalled.text) : '') + (taste.text ? '\n\n' + redact(taste.text) : '');
@@ -23142,7 +23143,10 @@ async function runOnceCore(o) {
     // decide whether it surfaces. Those records leave the ranked pool so they never take a recall slot twice.
     // station-wide: a correction given to ANY agent is about the Commander, so it shapes this agent's work too
     // (recovery runs inject nothing at all — see the note above msgs).
-    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, otherAgentNotebooks(agentId), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
+    // the other agents' notebooks are read ONCE per run, for both the taste and the standing block below
+    let peerNotebooks = null;
+    const peerBooks = () => peerNotebooks || (peerNotebooks = otherAgentNotebooks(agentId));
+    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, peerBooks(), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
     const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
     // withheld: EVERY feedback record leaves the recall pool, not just the selected taste — a verdict record carries the
     // Commander's past request ('(on: …)') and ordinary BM25 recall would hand it to a channel guest (QA 2026-10-02)
@@ -23154,7 +23158,7 @@ async function runOnceCore(o) {
     // withheld guest/group run (or a paused station) ranks the agent's own standing notes on relevance like any note,
     // instead of force-injecting 'I prefer to be called Andy' into a guest's prompt with zero relevance.
     const standingOn = !(o.recovery || tasteWithheld || !personalizationStore.read().enabled);
-    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, otherAgentNotebooks(agentId)).filter(r => r.foreign) : [];
+    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, peerBooks()).filter(r => r.foreign) : [];
     const ranked = rank(recs.concat(standingRecs), q, { now: Date.now(), streamId, projectRoot: o.projectRoot || null, vectors: hv && hv.vectors, queryVec: hv && hv.queryVec, standing: standingOn });   // M-mem.2b stream boost · project tier: only THIS project's lessons
     const recalled = renderRecall(ranked, { limit: 1500, priorityLimit: Math.min(4000, Math.max(800, Math.floor((provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS) * 0.12))) });
     const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall, { agentId });
@@ -27876,8 +27880,11 @@ function skillNameFromReflection(content) {
 // (feedbackmemory.js). One record per rated run; a later correction updates that record instead of adding another.
 // User-confirmed by construction (the Commander's own verdict and words) and seeded with Keep-strength trust. Honors
 // the personalization pause like every learning pass. Returns a truthful summary for the route response; never throws.
-// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste block. Reads go through the
-// durable store's cache; an unreadable notebook contributes nothing and never fails the run.
+// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste + standing blocks. Reads go
+// through notebookStore.getShared: a notebook whose file is unchanged since the last read (bigint stat + this process's
+// write generation) is NOT re-read or re-parsed (perf review 10-19 — every run used to parse every notebook, twice).
+// The records are FROZEN and shared: read-only here and in every consumer. An unreadable notebook contributes nothing
+// and never fails the run.
 function otherAgentNotebooks(agentId) {
   const ids = new Set(['agent']);
   for (const id of agentRoster.keys()) ids.add(id);
@@ -27885,7 +27892,7 @@ function otherAgentNotebooks(agentId) {
   const out = [];
   for (const id of ids) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(String(id))) continue;
-    try { const l = notebookStore.get('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
+    try { const l = notebookStore.getShared('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
     catch (e) { failNote('feedback.taste.read', e); }
   }
   return out;
