@@ -282,7 +282,7 @@ const TRUNK_OVERLAY = `function responseOverlay(f,light) {
     return cv;
   }`;
 function trunkSource() {
-  const { fnBody } = require('./_assert');
+  const { fnBody } = require('./_fnbody');
   const overlay = fnBody(source, 'function responseOverlay(');
   assert.ok(overlay.length > 400 && overlay.length < 6000, '(responseOverlay found)');
   const limits = /const RESPONSE_LIMIT = \d+, RESPONSE_PIXELS = \d+, RESPONSE_SINGLE = 65536;/;
