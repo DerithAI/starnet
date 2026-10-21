@@ -4,7 +4,8 @@
    The bug (perf review 10-19, channels/store.js:148): every read did readFileSync + JSON.parse of the whole file, and
    every mutation re-read the current main, re-serialized it into <file>.bak through a SECOND durable write (fsync +
    temp + rename), then wrote the main. One Telegram DM (pushInbox, chat-record reads + lastSeen save, history load,
-   two appendTurn, removeInbox) cost ~20 fsyncs, 16 parses and 15 file reads (62 ms p50 here).
+   two appendTurn, removeInbox) cost ~20 fsyncs, 16 parses and 15 file reads (62 ms p50 here). The good main is now
+   hard-linked as its .bak instead of rewritten.
 
    Proves through the REAL store + REAL fs + REAL writeFileDurable (the index.js wiring):
      (1) a warm DM does ZERO file reads, and every mutation is exactly one durable write (no temp is renamed onto a .bak);
@@ -12,7 +13,8 @@
      (3) a file replaced behind the store's back is re-read (the stat stamp misses), and a corrupt main still
          recovers from .bak with onRecover;
      (4) mutating what a read returned never poisons the next read;
-     (5) a main write that fails puts the .bak back as the main (nothing lost, nothing half-written). */
+     (5) a main write that fails leaves the previous good main in place (the .bak is a link: the main never goes
+         missing, nothing is lost, nothing is half-written). */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('node:fs');
@@ -97,12 +99,12 @@ try {
   store.saveChatRecord('123', { streamId: undefined, model: 'm1' });
   A.ok(!('streamId' in store.getChatRecord('123')), 'a cached write reads back exactly as JSON (undefined fields absent)');
 
-  // ---- (5) a failed main write restores the .bak as the main ----
+  // ---- (5) a failed main write leaves the previous good main in place ----
   const before = fs.readFileSync(mapFile, 'utf8');
   c.failMainWrite = mapFile;
   A.throws(() => store.saveChatRecord('123', { model: 'never' }), 'the failed write surfaces to the caller');
   c.failMainWrite = null;
-  A.eq(fs.readFileSync(mapFile, 'utf8'), before, 'the previous good main is back in place');
+  A.eq(fs.readFileSync(mapFile, 'utf8'), before, 'the previous good main is still in place');
   A.eq(store.getChatRecord('123').model, 'm1', 'and reads return the last committed record');
 } finally {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}

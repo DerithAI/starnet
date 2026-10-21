@@ -157,11 +157,6 @@
       }
       catch (_) { return undefined; }
     }
-    function moveCached(from, to) {   // a rename keeps size, mtime and inode: the entry follows the file
-      const hit = cache.get(from);
-      cache.delete(from);
-      if (hit) cache.set(to, hit); else cache.delete(to);
-    }
     function readJson(file) {   // recovery-aware: try the main file, then the <file>.bak last-known-good
       const m = readRaw(file);
       if (m !== undefined) return m;
@@ -196,26 +191,31 @@
       // so it is inherently serialized per file by the event loop — concurrent in-process writers cannot lose an
       // update — and it is durable + recoverable too.
       //
-      // The good main becomes the .bak by RENAME (one metadata op), not by re-serializing it through a second durable
-      // write (a second fsync + temp + rename per mutation). Its bytes were made durable when they were written as the
-      // main. A crash between the two renames leaves no main and a good .bak, which readJson already recovers — the
-      // same in-flight-update loss as a crash mid-write before. A write that then fails puts the .bak back as the main.
-      // If the rename itself is refused (a Windows sharing violation), the old copy path runs instead.
+      // The good main becomes the .bak by HARD LINK (two metadata ops: drop the old .bak, add a second name for the
+      // main's bytes), not by re-serializing it through a second durable write (a second fsync + temp + rename per
+      // mutation). Those bytes were made durable when they were written as the main; the main itself never goes
+      // missing, and the shared inode ends when the main's atomic tmp+rename replace lands (this store never writes a
+      // file in place). No hard links (FAT/exFAT, an fs facade without linkSync, a refused link) = the old copy path.
       const bak = file + '.bak';
       const good = cachedHit(file) ? true : readRaw(file) !== undefined;
-      let rotated = false;
-      if (good) {
-        try { fs.renameSync(file, bak); moveCached(file, bak); rotated = true; }
-        catch (e) {
-          failNote('channels.store.bak.rotate', e);
-          const prev = readRaw(file);
-          if (prev !== undefined) { try { writeRaw(bak, prev); } catch (e2) { failNote('channels.store.bak', e2); } }
-        }
+      if (good && !linkBak(file, bak)) {
+        const prev = readRaw(file);
+        if (prev !== undefined) { try { writeRaw(bak, prev); } catch (e) { failNote('channels.store.bak', e); } }
       }
-      try { writeRaw(file, value); }
-      catch (e) {
-        if (rotated) { try { fs.renameSync(bak, file); moveCached(bak, file); } catch (e2) { failNote('channels.store.bak.restore', e2); } }
-        throw e;
+      writeRaw(file, value);
+    }
+    function linkBak(file, bak) {
+      if (typeof fs.linkSync !== 'function' || typeof fs.unlinkSync !== 'function') return false;
+      try {
+        try { fs.unlinkSync(bak); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; }
+        cache.delete(bak);
+        fs.linkSync(file, bak);
+        const hit = cache.get(file);
+        if (hit) cache.set(bak, hit);   // one inode, one stamp: the entry describes both names
+        return true;
+      } catch (e) {
+        if (!e || (e.code !== 'EPERM' && e.code !== 'ENOTSUP' && e.code !== 'EXDEV' && e.code !== 'ENOSYS')) failNote('channels.store.bak.link', e);
+        return false;
       }
     }
 
