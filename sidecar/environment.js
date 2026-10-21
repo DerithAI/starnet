@@ -424,7 +424,7 @@
     const cfg = deps.config || {};
     const sessions = new Map();
     const ready = new Set();
-    const revived = new Set();   // agents whose LAST ensure had to start or create the container (read by reviveStale)
+    const revivals = new Map();  // agent → how many ensures had to start or create its container (read by reviveStale)
     const ensuring = new Map();
     const active = new Map();
     const lastUsed = new Map();
@@ -649,10 +649,9 @@
       ensureWorkspace(aid);
       if (!force && ready.has(aid)) return Promise.resolve({ ok: true, reused: true, container: containerName(aid) });
       if (ensuring.has(aid)) return ensuring.get(aid);
-      revived.delete(aid);
       const promise = inspectContainer(aid).then(function (state) {
         if (state.exists && state.running) return { reused: true };
-        revived.add(aid);   // this ensure is what brought the container up (started or created it)
+        revivals.set(aid, (revivals.get(aid) || 0) + 1);   // this ensure is what brings the container up (starts or creates it)
         if (state.exists) {
           return dockerRun(['start', containerName(aid)], { timeoutMs: 30000 }).then(function (r) {
             if (r.exitCode !== 0) throw new Error('could not start persistent Docker environment: ' + String(r.out || '').trim());
@@ -691,16 +690,18 @@
        docker's own refusal until the sidecar restarted, while describe() still said ready. A docker CLI refusal
        that says the container or the daemon was not there drops the cache and re-runs the full ensure (inspect →
        start → probe); a failed ensure marks the backend unavailable, as on first use.
-       The command is re-run ONCE, and only when that ensure had to START or CREATE the container: then the
-       refused exec cannot have run it. A container that was running all along (output that merely looks like the
-       refusal) keeps its original result: a command that ran is never run twice. */
+       The command is re-run ONCE, and only when an ensure since the exec reached docker had to START or CREATE the
+       container: then the refused exec cannot have run it. That is EVERY exec the same restart refused — the ones
+       joining the ensure the first refusal began, and one whose refusal arrives after the cell is already back —
+       not only the first. A container that was running all along (output that merely looks like the refusal)
+       keeps its original result: a command that ran is never run twice. */
     const DOCKER_GONE_RE = /^\s*(?:Error response from daemon:\s*(?:No such container\b|[Cc]ontainer \S+ is not running)|Cannot connect to the Docker daemon|error during connect|failed to connect to the docker API)/;
     function containerGone(r) {
       return !!r && r.exitCode !== 0 && !r.timedOut && !r.aborted && DOCKER_GONE_RE.test(String(r.out || ''));
     }
-    function reviveStale(aid) {
+    function reviveStale(aid, before) {
       ready.delete(aid);
-      return ensureContainer(aid, false).then(function () { return revived.delete(aid); }, function () { return false; });
+      return ensureContainer(aid, false).then(function () { return (revivals.get(aid) || 0) > before; }, function () { return false; });
     }
     /* The paths with no refusal to read afterwards re-check a cached cell BEFORE use instead: ensureReady (connector
        configure, Reload, and every stdio MCP connect — the docker exec -i child is spawned synchronously right after)
@@ -807,9 +808,12 @@
             maxBytes: opts.maxBytes, signal: opts.signal, clock: opts.clock || clock
           });
         };
-        return withActivity(aid, function () { return ensureContainer(aid, false).then(run).then(function (r) {
-          if (!containerGone(r)) return r;
-          return reviveStale(aid).then(function (revivedNow) { return revivedNow ? run() : r; });
+        return withActivity(aid, function () { return ensureContainer(aid, false).then(function () {
+          const before = revivals.get(aid) || 0;   // the revivals before this exec reaches docker
+          return run().then(function (r) {
+            if (!containerGone(r)) return r;
+            return reviveStale(aid, before).then(function (revivedSince) { return revivedSince ? run() : r; });
+          });
         }); });
       },
       startBackground: function (opts) {

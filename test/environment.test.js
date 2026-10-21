@@ -472,6 +472,53 @@ function makeFakeSpawn() {
       A.ok(bgRes.ok && bgStarts.length === 1 && bgStarts[0].cell === 'running', 'a background start re-checks the cached cell and starts it before its exec (cell was ' + (bgStarts[0] && bgStarts[0].cell) + ')');
     }
 
+    // ---- SEVERAL commands refused by the same restart: every one of them is re-run once, not only the first ----
+    // The revive answer lived in one per-agent flag that the first refused exec consumed, so a second exec refused by the
+    // same stopped cell (joining the same ensure, or reading its refusal after the cell was already back) got docker's
+    // refusal although its command never ran. Through the real execute path, with a stateful docker client.
+    {
+      let cell = 'missing', label = '';
+      const runs = {};
+      const late = new Set(['echo late']);   // this exec's refusal reaches the station only after the cell is back
+      const mimics = new Set();              // a command, run in a running cell, whose own output reads like the refusal
+      const dockerSpawn = (file, args) => {
+        const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+        child.stdin = { write() { return true; }, end() {} }; child.pid = 4343; child.kill = () => {};
+        const a = args || [], cmd = a[a.length - 1]; let out = '', code = 0, delay = 0;
+        if (a[0] === 'inspect') { if (cell === 'missing') { out = 'Error: No such object\n'; code = 1; } else out = (cell === 'running') + '\t' + label + '\ts8\n'; }
+        else if (a[0] === 'create') { label = a.find(x => /^ai\.starnet\.workspace=/.test(x)).split('=')[1]; cell = 'stopped'; }
+        else if (a[0] === 'start') cell = 'running';
+        else if (a[0] === 'exec') {
+          if (cell !== 'running') { out = 'Error response from daemon: container 7d2 is not running\n'; code = 1; if (late.has(cmd)) delay = 40; }
+          else if (/starnet-ready/.test(cmd)) out = 'starnet-ready';
+          else if (mimics.has(cmd)) { runs[cmd] = (runs[cmd] || 0) + 1; out = 'Error response from daemon: container 7d2 is not running\n'; code = 1; }
+          else { runs[cmd] = (runs[cmd] || 0) + 1; out = 'ran ' + cmd + '\n'; }
+        }
+        const done = () => { if (out) child.stdout.emit('data', Buffer.from(out)); child.emit('exit', code); child.emit('close', code); };
+        if (delay) setTimeout(done, delay); else setImmediate(done);
+        return child;
+      };
+      const env = makeEnvironmentManager({ spawn: dockerSpawn, fs, pathMod: path, root, clock, config: { backend: 'docker', dockerBin: 'dockerx', dockerImage: 'starnet-node:test' } });
+      A.eq((await env.execute({ agentId: 's8', cmd: 'echo warm', timeoutMs: 1000 })).out, 'ran echo warm\n', 'fixture: the cell is created, probed and runs a command');
+
+      cell = 'stopped';   // Docker Desktop restarted behind the station, three commands already on their way
+      const cmds = ['echo one', 'echo two', 'echo late'];
+      const results = await Promise.all(cmds.map(cmd => env.execute({ agentId: 's8', cmd, timeoutMs: 1000 })));
+      cmds.forEach((cmd, i) => {
+        A.eq(results[i].exitCode, 0, cmd + ': refused by the stopped cell, it runs once the cell is back (' + JSON.stringify(results[i].out) + ')');
+        A.eq(results[i].out, 'ran ' + cmd + '\n', cmd + ': the caller gets the real command output, not the docker refusal');
+        A.eq(runs[cmd], 1, cmd + ': the command ran exactly once');
+      });
+      A.eq(cell, 'running', 'the cell is running again');
+
+      // output that merely LOOKS like the refusal, AFTER that revival, from a cell that is running: still never re-run
+      const mimicCmd = 'cat notes.txt; exit 1';
+      mimics.add(mimicCmd);
+      const mimic = await env.execute({ agentId: 's8', cmd: mimicCmd, timeoutMs: 1000 });
+      A.eq(mimic.exitCode, 1, 'a running cell\'s failed command keeps its own result after an earlier revival');
+      A.eq(runs[mimicCmd], 1, 'a command that ran is never run twice, even after an earlier revival');
+    }
+
     // ---- unavailable Docker is reported as checked failure, never as a ready Safe Cell ----
     {
       const missing = makeEnvironmentManager({
