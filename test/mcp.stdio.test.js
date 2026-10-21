@@ -165,6 +165,83 @@ function writeServer(dir) {
       A.ok(await waitFor(() => deaths.length > 0, 2000), 'a clean idle code-0 self-exit still reports transport death (never a wedged "up")');
       tp2.close();
     }
+
+    // INCREMENTAL FRAMING. The parser appended every chunk to one string and re-ran /\r?\n/ over the whole
+    // unterminated line each time: a 16 MB reply arriving in 64 KB pipe chunks cost ~2.5 s of host CPU (4 MB:
+    // ~0.3 s; quadratic). Only the new chunk is searched now. The child is injected so the chunking is exact; the
+    // transport, client and JSON-RPC routing are the real ones.
+    {
+      const EE = require('events');
+      let fake = null;
+      const mkFake = () => {
+        const c = new EE(); c.stdout = new EE(); c.stderr = new EE(); c.pid = 0; c.kill = () => {};
+        c.stdin = { write(line, enc, cb) {
+          const msg = JSON.parse(line);
+          if (msg.id == null) { if (cb) cb(); return true; }   // notifications/initialized
+          setImmediate(() => {
+            if (msg.method === 'initialize') return c.stdout.emit('data', JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'fake' } } }) + '\r');
+            if (msg.method !== 'tools/call') return c.stdout.emit('data', JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n');
+            const body = JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'z'.repeat(16 * 1024 * 1024) }] } }) + '\r\n';
+            for (let i = 0; i < body.length; i += 65536) c.stdout.emit('data', body.slice(i, i + 65536));
+          });
+          if (cb) cb(); return true;
+        }, end() {}, setDefaultEncoding() {} };
+        return c;
+      };
+      const errs = [];
+      const tp3 = makeStdioTransport({ userControlIsolated: true, command: 'node', allowedCommands: ['node'], processEnv: {},
+        spawnImpl: () => (fake = mkFake()), onError: e => errs.push((e && e.message) || String(e)) });
+      const cl3 = makeMcpClient({ transport: tp3, timeoutMs: 10000 });
+      const initP = cl3.initialize();
+      await waitFor(() => !!fake);
+      setImmediate(() => fake.stdout.emit('data', '\n'));   // the initialize reply's CRLF straddles two chunks
+      await initP;
+      A.ok(true, 'a CRLF split across two chunks still frames one message');
+      const t0 = Date.now();
+      const big = await cl3.callTool('dump', {});
+      const ms = Date.now() - t0;
+      A.eq(big.content[0].text.length, 16 * 1024 * 1024, 'a 16 MB reply in 64 KB chunks arrives whole');
+      A.ok(ms < 1000, 'a 16 MB single-line reply parses in linear time (' + ms + ' ms; the rescanning parser took ~2500 ms)');
+      A.eq(errs, [], 'a large but legal line is not a transport error');
+      tp3.close();
+    }
+
+    // A LINE WITH NO END. No ceiling meant a server streaming one endless line grew the host string until V8's
+    // ~512M-char limit threw inside the 'data' handler and took the sidecar down. Past the cap, the connection
+    // fails LOUDLY: the waiting call gets the reason, the manager hears a transport death, and the child is stopped.
+    {
+      const floodFile = path.join(tmp, 'stdio-flood.js');
+      fs.writeFileSync(floodFile, [
+        "'use strict';",
+        "const readline = require('readline');",
+        "const rl = readline.createInterface({ input: process.stdin });",
+        "rl.on('line', line => {",
+        "  let msg; try { msg = JSON.parse(line); } catch (_) { return; }",
+        "  if (!msg || msg.id == null) return;",
+        "  if (msg.method === 'initialize') return process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'flood' } } }) + '\\n');",
+        "  const blob = 'x'.repeat(8192);",
+        "  const pump = () => { for (let i = 0; i < 4; i++) process.stdout.write(blob); setTimeout(pump, 5); };",
+        "  pump();",
+        "});",
+        "setInterval(() => {}, 1000);"
+      ].join('\n'));
+      const died = [], freed = [];
+      const tp4 = makeStdioTransport({
+        userControlIsolated: true, command: process.execPath, args: [floodFile],
+        env: {}, processEnv: { PATH: process.env.PATH || '' }, allowedCommands: [nodeBase], timeoutMs: 1000,
+        maxLineChars: 20000,
+        onError: e => died.push((e && e.message) || String(e)),
+        ledger: { record: () => {}, release: pid => freed.push(pid) }
+      });
+      const cl4 = makeMcpClient({ transport: tp4, timeoutMs: 5000 });
+      await cl4.initialize();
+      let callErr = null;
+      try { await cl4.callTool('flood', {}); } catch (e) { callErr = e; }
+      A.ok(callErr && /longer than 20000 characters without a newline/.test(callErr.message), 'the waiting call fails with the over-long-line reason, not a timeout (' + (callErr && callErr.message) + ')');
+      A.ok(died.some(m => /longer than 20000 characters/.test(m)), 'the transport reports the death to its manager');
+      A.eq(tp4.isClosed(), true, 'the transport is closed');
+      A.ok(await waitFor(() => freed.length === 1, 5000), 'the flooding child is stopped and its ownership receipt released');
+    }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
