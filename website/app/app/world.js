@@ -1984,14 +1984,23 @@ const World = (() => {
   }
   function collapseFlood() { if (floodAt && !floodEndAt) floodEndAt = performance.now(); }   // pull the cascade inward into the mind
   function refit() { fitNeeded = true; }
+  /* The bubble shows a line's first 160 characters, whitespace runs folded. chat.js says the WHOLE reply so far on every
+     streamed token, so folding all of it was O(reply) per token — O(n²) per answer (perf p5, 2026-10-20). Only a head that
+     already reaches past 160 folded characters decides them; a whitespace-heavy head falls back to folding everything. */
+  function bubbleText(text) {
+    const s = String(text || '');
+    if (s.length > 2048) { const head = s.slice(0, 2048).replace(/\s+/g, ' ').trimStart(); if (head.length > 160) return head.slice(0, 160); }
+    return s.replace(/\s+/g, ' ').trim().slice(0, 160);
+  }
   function say(text, opts) {
     if (!agent) return;
-    const t = String(text || '').replace(/\s+/g, ' ').trim();
+    const ambient = !!(opts && opts.ambient);
+    const t = ambient ? String(text || '').replace(/\s+/g, ' ').trim() : bubbleText(text);
     agent.say = { text: t.slice(0, 160), until: performance.now() + 4200 };
     // ambient station-life remarks are muttered ALOUD too (when the agent has a voice and isn't
     // mid-conversation) so the station feels lived-in. Real replies are spoken by chat.js, not here,
     // so only {ambient:true} lines speak — and pure filler ("...", "hmm") stays a silent bubble.
-    if (opts && opts.ambient && typeof Voice !== 'undefined' && Voice.mutter
+    if (ambient && typeof Voice !== 'undefined' && Voice.mutter
         && /[a-z]/i.test(t) && !/^h+m+[.…]?$/i.test(t)) {
       Voice.mutter(t);
     }
