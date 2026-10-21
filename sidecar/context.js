@@ -189,9 +189,10 @@
     };
   }
   function privateKeyDriver(re, rep) {
-    if (rep.indexOf('$') >= 0) return null;
+    const cut = re.source.indexOf('[\\s\\S]*?');
+    if (cut <= 0 || rep.indexOf('$') >= 0) return null;   // not the shape this proof covers: plain scan
     const at = stickyCopy(re);
-    const header = /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/y;
+    const header = new RegExp(re.source.slice(0, cut), 'y');   // the regex's own BEGIN header
     return function (s) {
       let out = '', last = 0;
       let p = s.indexOf('-----BEGIN ');
@@ -1017,6 +1018,6 @@
   // test surface only: fresh regex copies (no shared lastIndex), in order, and whether each runs through a driver
   const _internals = { secretPatterns: () => SECRET_RULES.map(r => ({ re: new RegExp(r[0].source, r[0].flags), rep: r[1], driven: !!r[2], run: r[2] })),
     // the lexical primitives, so a test can rebuild the naive single-pass ranking from the module's CURRENT rules
-    tokenize, recordText, lexicalForm, lexicalStem, LEXICAL_GROUPS };
+    tokenize, recordText, lexicalForm, lexicalStem, LEXICAL_GROUPS: LEXICAL_GROUPS.map(g => g.slice()) };
   return { _internals, makeContext, redact, setKnownSecretSource, renderRecall, injectRecall, rank, bm25, lexicalScores, expandRecallQuery, isStandingMemory, activeMemoryRecords, projectKey, memoryProjectKey, memoryAllowedInProject, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens, RUN_CONTEXT_DEFAULTS, REARM_MIN_FREED, foldFreedEnough };
 });
