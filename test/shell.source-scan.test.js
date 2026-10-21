@@ -1,15 +1,14 @@
-/* node test/shell.source-scan.test.js — the shell safety floor lexes a referenced CODE file as code, and a shell
-   file in its OWN dialect (2026-10-20).
+/* node test/shell.source-scan.test.js — the shell safety floor keeps trunk's whole-file lexing of every referenced
+   script and also lexes code launch lines alone and shell files in their OWN dialect (2026-10-20, 10-21).
 
    commandSourceEntries queued the text of every script a command names, then ran commandHeads() over EVERY queued
    source as if it were a command line in the OUTER dialect, a referenced .js/.mjs/.py file included:
    `node sidecar/tools/builtin/browser.js` lexed 5,731 fake heads out of JavaScript (~30 ms of synchronous work per
-   check). What that lexing found in code depended on shell quoting of JavaScript: an apostrophe in a comment opened
-   a POSIX quote that hid the next lines, so the same file got a different verdict under cmd and posix. A code file
-   is now scanned only on the lines that NAME a launcher or start a script path (each lexed alone, in the outer
-   dialect as before — so `execSync('npm ci && node x.mjs')` still splits on && under cmd), and a .ps1/.sh/.cmd file is lexed
-   as PowerShell/POSIX/cmd. A differential over every script in this repo x 3 dialects showed no verdict change;
-   these fixtures pin the cases that did change. Temp fixtures only. */
+   check). Narrowing that lexing (code files by line only, shell files in their own dialect only) let through
+   commands trunk refused, so every source is still lexed whole in the outer dialect as trunk did, and the floor
+   only ADDS heads on top: each launch line of a code file lexed alone (an apostrophe in an earlier comment no
+   longer hides it), and a .ps1/.sh/.cmd file also lexed as PowerShell/POSIX/cmd. These fixtures pin both the
+   added refusals and trunk's refusals the narrowed scan lost. Temp fixtures only. */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('node:fs');
@@ -66,6 +65,26 @@ try {
       const v = inputIsolationRisk('node ' + f, { cwd: root, fs, pathMod: path, dialect: 'cmd' });
       A.ok(v && /browser automation/.test(v), f + ' under cmd: the head after && is followed into second.mjs and refused (a line-start-only scan allowed it): ' + v);
       A.ok(commandSafetyRisk('node ' + f, { cwd: root, fs, pathMod: path, dialect: 'cmd', isWin: true }), f + ': the combined safety floor refuses it too');
+    }
+  }
+
+  // ---- 2c. trunk's refusals hold: a nesting launcher on a code line, an apostrophe in a shell file's comment ----
+  {
+    const list = (line) => "const steps = `\n" + line + "\n`;\nrequire('child_process').execSync(steps);\n";
+    put(root, 'nest-cmd.mjs', list('cmd /c chain.cmd'));
+    put(root, 'nest-call.mjs', list('call chain.cmd'));
+    put(root, 'nest-saps.mjs', list('Start-Process chain.cmd'));
+    put(root, 'nest-zsh.mjs', list('zsh -c ./chain.cmd'));
+    for (const f of ['nest-cmd.mjs', 'nest-call.mjs', 'nest-saps.mjs', 'nest-zsh.mjs']) for (const dialect of ['cmd', 'posix']) {
+      const v = inputIsolationRisk('node ' + f, { cwd: root, fs, pathMod: path, dialect });
+      A.ok(v && /browser automation/.test(v), f + ' under ' + dialect + ': the nested script is followed into second.mjs and refused, as trunk did: ' + v);
+      A.ok(commandSafetyRisk('node ' + f, { cwd: root, fs, pathMod: path, dialect, isWin: true }), f + ' under ' + dialect + ': the combined safety floor refuses it too');
+    }
+    put(root, 'note.sh', "#!/bin/bash\n# don't run this twice\nnode second.mjs\n");
+    put(root, 'note.ps1', "# Don't run this twice\nnode second.mjs\n");
+    for (const cmd of ['bash note.sh', 'powershell -File note.ps1']) {
+      const v = inputIsolationRisk(cmd, { cwd: root, fs, pathMod: path, dialect: 'cmd' });
+      A.ok(v && /browser automation/.test(v), cmd + ' under cmd: the line after the comment is still a head, as trunk lexed it: ' + v);
     }
   }
 

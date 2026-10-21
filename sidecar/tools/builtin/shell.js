@@ -412,12 +412,10 @@
     if (/\.(?:sh|bash)$/i.test(rel)) return { kind: 'shell', dialect: 'posix' };
     return { kind: 'code', dialect: null };
   }
-  /* The only lines of a CODE file that can yield a head the source rules below follow: one that names a package
-     runner, an interpreter or PowerShell ANYWHERE as a word (`execSync('npm ci && node x.mjs')` included — in the
-     cmd dialect `'` is no quote, so the && splits it and `node x.mjs` is a head), or that has a script path at
-     its start or right after a separator. Every head the whole-file lexing could follow begins with one of
-     those, so lexing just these lines, each whole and in the outer dialect exactly as the file used to be,
-     keeps those verdicts without lexing every line of the file. */
+  /* Extra heads for a CODE file, ADDED to trunk's whole-file lexing (never instead of it): each line that names a
+     package runner, an interpreter or PowerShell as a word, or has a script path at its start or after a
+     separator, lexed ALONE in the outer dialect. Alone, an apostrophe in an earlier comment cannot open a quote
+     that hides the line. These lines are not every line a head can come from, so they only ever add refusals. */
   const CODE_LAUNCH_WORD_RE = /(?:^|[^A-Za-z0-9_.\-\\/$])(?:npm|pnpm|yarn|node|python\d*|py|ruby|php|tsx|ts-node|bun|deno|bash|sh|powershell|pwsh)(?:\.exe|\.cmd)?(?![A-Za-z0-9_\-])/i;
   const CODE_LAUNCH_PATH_RE = /(?:^[ \t]*@?|[&|;(][ \t]*)["']?[^\s"'&|;()]+\.(?:[cm]?js|ts|tsx|jsx|ps1|py|rb|php|sh|bash|cmd|bat)(?:["'\s)]|$)/i;
   function codeLaunchHeads(text, dialect) {
@@ -451,17 +449,15 @@
       const seenKey = String(baseDir || '') + '\0' + text;
       if (!text || seen.has(seenKey)) continue;
       seen.add(seenKey); out.push({ text: text, kind: entry.kind || 'shell', dialect: entry.dialect || dialect });
-      /* CODE IS NOT SHELL (2026-10-20). Every queued source was lexed with commandHeads() as if it were a command,
-         a referenced .js/.mjs/.py file included, in the OUTER dialect: `node sidecar/tools/builtin/browser.js` lexed
-         5,731 fake heads out of JavaScript (~30 ms of synchronous regex work before the command even started). A
-         shell source (.cmd/.bat/.ps1/.sh, an npm script) is still lexed, in ITS own dialect. A code source keeps
-         its in-text launch checks (its consumers see it unchanged in `out`), and only its lines that name a launcher
-         or start a script path are lexed (codeLaunchHeads), each alone, in the outer dialect as before: the heads
-         the rules below follow (`node x.mjs`, `npm run y`, `pwsh -File z.ps1`) come from those lines, at the cost
-         of one regex pass. Lexing each line alone also means an apostrophe in an earlier comment no longer opens a
-         POSIX quote that hides later lines. It finds no MORE than lexing the line does: `execSync('node x.mjs')` on
-         its own lexes as one head that starts "require(" or "execSync(", not "node", so it is not followed, as before. */
-      const heads = (entry.kind || 'shell') === 'shell' ? commandHeads(text, entry.dialect || dialect) : codeLaunchHeads(text, dialect);
+      /* TRUNK'S HEADS, PLUS (2026-10-21). Every queued source is still lexed whole in the OUTER dialect, exactly as
+         trunk did: narrowing that lexing (code files by line, shell files in their own dialect only) let commands
+         through that trunk refused, twice. On top of it, a shell source (.cmd/.bat/.ps1/.sh) is also lexed in its
+         OWN dialect and a code source also gets codeLaunchHeads. Both only add heads, so this floor refuses
+         everything trunk refused. */
+      const ownDialect = entry.dialect || dialect;
+      let heads = commandHeads(text, dialect);
+      if ((entry.kind || 'shell') === 'shell') { if (normalizeDialect(ownDialect) !== normalizeDialect(dialect)) heads = heads.concat(commandHeads(text, ownDialect)); }
+      else heads = heads.concat(codeLaunchHeads(text, dialect));
       for (const parsedHead of heads) {
         const head = (parsedHead && parsedHead.text != null ? parsedHead.text : String(parsedHead || '')).replace(/^\s*@/, '');
         let m = head.match(/^(?:npm|npm\.cmd)\s+(?:--[A-Za-z0-9_-]+(?:=[^\s]+)?\s+)*(?:run\s+)?([A-Za-z0-9:_-]+)\b/i);
