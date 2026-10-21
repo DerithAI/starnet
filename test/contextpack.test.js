@@ -148,9 +148,12 @@ A.eq(CP.dayTag(0, T), '', 'undated → empty tag');
 // provenance survives filtering or that a completed brief actually belongs to a clean owner's directive.
 {
   const src = require('fs').readFileSync(require('path').join(__dirname, '../sidecar/index.js'), 'utf8');
-  const fn = A.fnBody(src, 'function nightshiftContextPack()');
-  A.ok(fn.startsWith('function nightshiftContextPack()') && fn.length < 10000 && /return pack;\s*}$/.test(fn),
+  const fn = A.fnBody(src, 'function nightshiftContextPack(evidence)');
+  A.ok(fn.startsWith('function nightshiftContextPack(evidence)') && fn.length < 10000 && /return pack;\s*}$/.test(fn),
     'extract exactly the host context-pack function, not neighbouring code');
+  // the one-snapshot-per-turn helper the pack reads the transcript + run history through (perf 10-19)
+  const rowsFn = A.fnBody(src, 'function evidenceRows(ev)');
+  A.ok(rowsFn.startsWith('function evidenceRows(ev)') && rowsFn.length < 600, 'extract exactly the host evidence snapshot helper');
   // the recent-run projection is its own host function (shared with the readiness count): run the REAL one too
   const recentFn = A.fnBody(src, 'function nightshiftRecentRuns()');
   A.ok(recentFn.startsWith('function nightshiftRecentRuns()') && recentFn.length < 2000, 'extract exactly the host recent-run projection');
@@ -167,7 +170,7 @@ A.eq(CP.dayTag(0, T), '', 'undated → empty tag');
     const originRuns = input.originRuns || (input.chats || []).filter(m => m && m.sourceRunId).map(m =>
       (input.runs || []).find(r => r && r.runId === m.sourceRunId) ||
       { runId: m.sourceRunId, agentId: m.agentId, streamId: m.streamId, internal: false, ownerDirective: true });
-    const pack = vm.runInNewContext(recentFn + '\n(' + fn + ')()', {
+    const pack = vm.runInNewContext(recentFn + '\n' + rowsFn + '\n(' + fn + ')()', {
       Date: { now: () => T },
       personalizationStore: { read: () => ({ enabled: input.enabled !== false }) },
       TrustedLearning,
@@ -313,7 +316,7 @@ A.eq(CP.dayTag(0, T), '', 'undated → empty tag');
 
     // The general Commander evidence reader must consume this filtered host pack in either preference mode.
     // No raw run/transcript stores are provided here: a private bypass cannot satisfy the activity assertion.
-    const evidenceFn = A.fnBody(src, 'function commanderEvidenceInputs()');
+    const evidenceFn = A.fnBody(src, 'function commanderEvidenceInputs(evidence)');
     A.ok(evidenceFn.length < 4000 && /return \{ dossier:/.test(evidenceFn), 'extract the shared Commander evidence reader');
     let packReads = 0;
     const evidence = vm.runInNewContext('(' + evidenceFn + ')()', {

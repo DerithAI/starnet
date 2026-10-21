@@ -8051,16 +8051,16 @@ function handleRecommendationsEval(req, res) {
    routine (routine.create stays consent-gated; nothing is created here). The impression is recorded like a card
    shown, so the takeover card and the agent never both pitch the same work the same day, and an offer the
    Commander ignores stops after MAX_OFFERS. Fails open to no notice. */
-function standingWorkNotice(brief, agentId, o) {
+function standingWorkNotice(brief, agentId, o, evidence) {
   try {
     if (!brief || brief.status === 'cancelled' || (o && o.recovery) || !['interactive', 'channel'].includes(brief.source) || TrustedLearning.quotedMaterial(brief.originalDirective)) return null;
     // a channel guest's request is not "the Commander asking again" (host-minted sender flags, as hostPowerWithheldFor)
     if (o && o.channelSender === true && o.channelSenderOwner !== true) return null;
     if (!personalizationStore.read().enabled) return null;
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
+    const ev = evidenceRows(evidence || {});   // one transcript + run snapshot for the brief proof AND the runs
     const n = WorkflowTakeover.notice({ directive: brief.originalDirective, agentId, projectRoot: (o && o.projectRoot) || '',
-      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()).filter(b => b.id !== brief.id), runs: runStore.all(), jobs: cronJobs,
+      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs).filter(b => b.id !== brief.id), runs: ev.runs, jobs: cronJobs,
       ratings: growthRatings.list({ limit: 500, epoch }), state: workflowTakeoverStore.read(), enabled: true, now: Date.now(), redact });
     if (!n) return null;
     workflowTakeoverStore.decide(n.id, 'shown', Date.now(), n.core).catch(e => console.warn('[workflow-takeover] notice impression not saved:', (e && e.message) || e));
@@ -8069,9 +8069,9 @@ function standingWorkNotice(brief, agentId, o) {
 }
 function workflowTakeoverCandidates(ignoreOffers) {
   const state = workflowTakeoverStore.read();
-  const saved = saveStore.load('agent') || null;
-  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
-  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()), runs: runStore.all(), jobs: cronJobs,
+  const epoch = stationEpoch();
+  const ev = evidenceRows({});
+  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs), runs: ev.runs, jobs: cronJobs,
     ratings: growthRatings.list({ limit: 500, epoch }),
     state: ignoreOffers ? Object.assign({}, state, { decisions: state.decisions.filter(d => d.never) }) : state,
     enabled: personalizationStore.read().enabled, now: Date.now(), redact });
@@ -8216,15 +8216,17 @@ function nightshiftRecentRuns() {
    hands the pure assembler already-fetched arrays (determinism-split: this side reads Date.now + the stores, the
    pure core is a transform over its inputs). Returns the assembled pack { sections, text, activityLines, counts }.
    The pack is what makes the propose step feel like magic — candidates grounded in what the Commander ACTUALLY did,
-   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty. */
-function nightshiftContextPack() {
+   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty.
+   `evidence` (optional, see evidenceRows): the caller's one transcript + run-history snapshot for this turn. */
+function nightshiftContextPack(evidence) {
   const now = Date.now();
   const runs = nightshiftRecentRuns();
+  const ev = evidence || {};   // without a caller snapshot, the two proofs below still share one copy of each store
   // Only host-recorded clean owner turns can ground activity. Check the full content before the pure core takes
   // its first line; a harmless heading cannot launder a quoted document below it. Bound the source window first.
   let cleanOwnerChats = [], chats = [];
   try {
-    cleanOwnerChats = TrustedLearning.cleanOwnerRows(transcriptStore.all(), runStore.all());
+    cleanOwnerChats = TrustedLearning.cleanOwnerRows(evidenceRows(ev).transcript, evidenceRows(ev).runs);
     chats = cleanOwnerChats.map(m => ({ role: m.role, content: m.content, ts: m.ts, streamId: m.streamId }));
   } catch (_) { cleanOwnerChats = []; chats = []; }
   // Briefs have no independent provenance stamp. Match their exact stored directive to a proven clean owner turn
@@ -8232,7 +8234,7 @@ function nightshiftContextPack() {
   // is looked up by original run id, not inside the chat tail above: a brief exists to carry work older than that tail.
   let briefs = [];
   try {
-    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), transcriptStore.all(), runStore.all())
+    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), evidenceRows(ev).transcript, evidenceRows(ev).runs)
       .map(b => ({ originalDirective: b.originalDirective, ts: b.completedAt || b.updatedAt }));
   } catch (_) { briefs = []; }
   // the active GOAL ARC (single object or null).
@@ -8283,8 +8285,7 @@ let _trackRecordMemo = { at: 0, rec: null };
 function ratingVerdictMap() {
   const out = {};
   try {
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
     for (const r of growthRatings.list({ limit: 2000, epoch })) if (r && r.runId) out[r.runId] = r.verdict;
   } catch (e) { failNote('outcomes.verdicts', e); }
   return out;
@@ -8306,20 +8307,44 @@ function stationTrackRecord() {
 function stationTrackRecordLines() {
   try { const rec = stationTrackRecord(); return rec ? Outcomes.lines(rec) : []; } catch (_) { return []; }
 }
-function commanderEvidenceInputs() {
+function commanderEvidenceInputs(evidence) {
   let topics = [], threads = [], activity = [], worksignal = '';
   const learning = personalizationStore.read().enabled;
   try { topics = learning ? Interests.summary(interestsState, { trustedOnly: true, now: Date.now(), limit: 8 }) : []; } catch (_) {}
   try { threads = threadsStore.openThreads(6); } catch (_) {}
-  try { activity = (nightshiftContextPack().activityLines || []).slice(0, 8); } catch (_) {}
+  try { activity = (nightshiftContextPack(evidence).activityLines || []).slice(0, 8); } catch (_) {}
   try { worksignal = learning ? String((scoutState.context && scoutState.context.worksignalSummary) || '') : ''; } catch (_) {}
   let goal = null; try { goal = commanderGoals.get() || null; } catch (_) {}
   let verdicts = null; try { verdicts = learning ? recommendationLedger.summary() : null; } catch (_) {}
   const trackRecord = stationTrackRecordLines();
   return { dossier: commanderDossier.get(), goal, topics, threads, activity, worksignal, verdicts, trackRecord };
 }
-function commanderEvidenceContext(existingSystem, extra) {
-  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), extra || {}, { existingSystem: existingSystem || '' }));
+function commanderEvidenceContext(existingSystem, extra, evidence) {
+  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(evidence), extra || {}, { existingSystem: existingSystem || '' }));
+}
+/* evidenceRows(ev) — ONE snapshot of the transcript mirror and the run history for one evidence assembly (perf review
+   10-19). transcriptStore.all() and runStore.all() each copy every row; a briefed task turn copied the run history 4
+   times and the transcript 3 times (the repeat-work notice's brief proof + its runs, then the context pack's clean
+   owner chats + brief proof) — 22 / 40 / 115 ms at 1k / 5k / 10k runs. The copies are taken lazily on first use and
+   shared by every consumer of the same `ev` object, all of which only read them. Nothing awaits between the reads
+   and the uses, so the snapshot is exactly what the separate copies would have returned. */
+function evidenceRows(ev) {
+  if (!ev.transcript) ev.transcript = transcriptStore.all();
+  if (!ev.runs) ev.runs = runStore.all();
+  return ev;
+}
+/* stationEpoch() — the current station generation (agent.createdAt) for the ratings reads, without parsing the whole
+   save each time: the value is kept against saveStore.stamp('agent') (one stat; it moves on every save this process
+   makes and on any outside edit) and re-read the moment the stamp moves. A read with no clean stamp is never kept. */
+let _stationEpochMemo = { stamp: '', epoch: 1 };
+function stationEpoch() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _stationEpochMemo.stamp) return _stationEpochMemo.epoch;
+  const r = saveStore.loadStamped('agent');
+  const saved = r.doc || null;
+  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+  _stationEpochMemo = { stamp: r.stamp || '', epoch: epoch };
+  return epoch;
 }
 
 /* nightshiftUserRunCount() — the readiness evidence (pack.userRunCount) WITHOUT building the whole context pack
@@ -20580,8 +20605,11 @@ async function runOnceCore(o) {
     // AUTOMATION ASK: the task's own words (or this turn's) ask for recurring/scheduled work -> the routine playbook rides this run
     let automationAsk = false;
     try { automationAsk = CommanderContext.automationIntent(taskBrief.originalDirective) || CommanderContext.automationIntent(latestUserText(messages)); } catch (_) { automationAsk = false; }
-    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o), automationAsk};
-    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs);
+    // ONE transcript + run-history snapshot for this turn's whole evidence assembly (evidenceRows): the repeat-work
+    // notice and the context pack used to copy the run history 4 times and the transcript 3 times per task turn
+    const turnEvidence = {};
+    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o, turnEvidence), automationAsk};
+    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs, turnEvidence);
   } else if (isTask) {
     // Channels and integrations may not carry a durable taskKey. They still receive the SAME bounded Commander
     // evidence as an interactive briefed run; only the task-specific brief section is absent.
