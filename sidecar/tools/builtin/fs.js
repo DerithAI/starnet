@@ -1611,12 +1611,14 @@ const { note: failNote } = require('../../failopen');
             let size = f.size;
             if (size == null) {
               try { size = Number((await fsp.stat(f.abs)).size) || 0; } catch (e) { return { skip: true }; }
+              // an abort that landed during the stat: no read starts after it (the search is already rejecting)
+              if (clock.aborted) return { skip: true };
             }
             if (size > maxBytes) return { large: true };
             return size > PREFETCH_MAX ? { later: true } : readOrSkip(f.abs);
           }, async (f, res) => {
             if (res.large) { stats.skippedLarge.push(f.rel); return; }   // named below, never a silent miss
-            if (res.later) res = await readOrSkip(f.abs);
+            if (res.later) res = clock.aborted ? { skip: true } : await readOrSkip(f.abs);
             if (res.skip) return;
             const buf = res.buf;
             if (buf.length > maxBytes) { stats.skippedLarge.push(f.rel); return; }

@@ -69,6 +69,27 @@ async function rejection(p) { try { await p; return null; } catch (e) { return e
     A.ok(readsAtAbort < 200 && c.calls.readFile.filter((p) => /\.txt$/.test(p)).length === readsAtAbort, 'and launches no further reads (' + readsAtAbort + ' of 200 read)');
   }
 
+  // ---- 2b. abort while window jobs are mid-stat: not one read starts after the abort ----
+  // (a job that was awaiting its stat when the abort hit still called readFile once the stat answered)
+  {
+    const ac = new AbortController();
+    const c = counted();
+    let n = 0;
+    const jittered = new Proxy(c.fsp, { get(target, prop) {
+      if (prop === 'stat') return async (...args) => { if (/\.txt$/.test(String(args[0]))) await sleep(5 + ((++n * 37) % 60)); return target.stat(...args); };
+      return target[prop];
+    } });
+    const pending = rejection(makeFsTools({ fsp: jittered, pathMod: path, root: ROOT, rg: false }).searchTool.run({ query: 'hello 9 19', path: 'a' }, { agentId: 'ag', signal: ac.signal }));
+    const txtReads = () => c.calls.readFile.filter((p) => /\.txt$/.test(p)).length;
+    while (txtReads() < 20) await sleep(2);
+    ac.abort();
+    const atAbort = txtReads();
+    const e = await pending;
+    await sleep(200);   // past every jittered stat still in flight
+    A.ok(e && e.name === 'AbortError', 'a search cancelled while stats are in flight rejects with AbortError');
+    A.eq(txtReads(), atAbort, 'no file read starts after the abort (' + atAbort + ' read before it)');
+  }
+
   // ---- 3. the budget covers the WALK: a slow tree stops at the budget and says so ----
   {
     for (let d = 0; d < 30; d++) {
