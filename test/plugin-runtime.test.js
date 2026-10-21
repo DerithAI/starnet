@@ -321,12 +321,23 @@ async function plugin(id, source) {
     // ---- 5c'. a WEDGED process is killed and recycled after a timeout (memory lane 2026-10-20) ----
     // A call that timed out left the process 'running' forever: a plugin stuck in a busy loop answered nothing, and
     // every later pre_tool_call hook, station-wide, waited out its full timeout. A timeout now sends a liveness ping;
-    // a process that cannot answer it is ended, and the next use restarts it. A process that is merely slow on one
-    // call (the 'hang' handler above: an awaited promise) answers the ping and is kept.
+    // a process that answers nothing for the wedge budget after it is ended, and the next use restarts it. A process
+    // that is merely slow on one call (the 'wait' handler: an awaited promise) answers the ping and is kept.
+    // A real api.every job doing synchronous work is armed now and checked in 5c'' (jobs run every 10 s at the soonest).
+    const jlogs = [];
+    const rtJ = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: (id, line) => jlogs.push(line),
+      timeouts: { hookMs: 300, startMs: 5000, wedgeMs: 3000 } });
+    const jobby = await plugin('jobby', `
+      module.exports = { register(api) {
+        api.on('pre_tool_call', () => ({ context: 'alive' }));
+        // a job whose work is synchronous for a while (an execSync git or zip call), scaled down to 1.5 s
+        api.every(10000, () => { const t = Date.now(); api.log('job started its sync work'); while (Date.now() - t < 1500) {} api.log('job finished its sync work'); });
+      } };`);
+    A.ok((await rtJ.start(jobby)).ok, 'the job plugin starts');
     {
       const wlogs = [];
       const rtW = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: (id, line) => wlogs.push(line),
-        timeouts: { callMs: 400, hookMs: 1500, startMs: 5000, pingMs: 400 } });
+        timeouts: { callMs: 400, toolMs: 400, hookMs: 1500, startMs: 5000, wedgeMs: 600 } });
       const wedge = await plugin('wedge', `
         module.exports = { register(api) {
           api.on('pre_tool_call', () => ({ context: 'alive' }));
@@ -337,8 +348,8 @@ async function plugin(id, source) {
       A.ok((await rtW.start(wedge)).ok, 'the wedge plugin starts');
       let slow = ''; try { await rtW.callHandler('wedge', 'wait', {}); } catch (e) { slow = e.message; }
       A.ok(/did not answer within/.test(slow), 'a merely slow call times out');
-      await new Promise(r => setTimeout(r, 700));
-      A.eq(rtW.status('wedge').state, 'running', 'and the process, which answers its liveness ping, is kept');
+      await new Promise(r => setTimeout(r, 900));
+      A.eq(rtW.status('wedge').state, 'running', 'and the process, which answers its liveness ping, is kept past the wedge budget');
       A.eq(await rtW.callHandler('wedge', 'hi', {}), 'hi', 'and keeps answering');
       let spun = ''; try { await rtW.callHandler('wedge', 'spin', {}); } catch (e) { spun = e.message; }
       A.ok(/did not answer within/.test(spun), 'a call into a busy loop times out');
@@ -351,38 +362,58 @@ async function plugin(id, source) {
       await rtW.stopAll();
     }
 
-    // ---- 5c''. legitimate SYNCHRONOUS work inside its own deadline is not killed (review 2026-10-21) ----
-    // A tool doing an execSync-style call blocks the event loop exactly like a busy loop. A pre_tool_call hook that
-    // timed out meanwhile pinged it, the ping went unanswered, and the process was killed with the tool 1.5 s into its
-    // 10 s budget: the tool failed as "the plugin crashed" and its work was cut off half done. Now the process is only
-    // marked unresponsive while the tool is still inside its deadline: hooks skip it at once, the tool returns.
+    // ---- 5c''. legitimate SYNCHRONOUS work is not killed, and a guard's veto still lands (review 2026-10-21) ----
+    // A tool or a background job doing an execSync-style call blocks the event loop exactly like a busy loop. The first
+    // kill path ended such a process on the first unanswered ping (a job's work, with nothing pending, was cut off half
+    // done and spent the restart budget), and the next one skipped every hook while the process was silent - so a
+    // guard's pre_tool_call answered null (allow) instead of the block it delivered once the work ended inside the
+    // hook's own timeout. Now silence is judged against one wedge budget, and hooks are sent and waited as before.
     {
-      const slogs = [];
-      const rtS = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: (id, line) => slogs.push(line),
-        timeouts: { hookMs: 300, pingMs: 300, toolMs: 10000, callMs: 10000, startMs: 5000 } });
-      const sb = await plugin('syncwork', `
+      const rtS = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: () => {},
+        timeouts: { hookMs: 300, toolMs: 10000, callMs: 10000, startMs: 5000 } });
+      const guard = await plugin('guard', `
         module.exports = { register(api) {
-          api.on('pre_tool_call', () => ({ context: 'alive' }));
+          api.on('pre_tool_call', (p) => p.tool_name === 'shell.run' ? { decision: 'block', reason: 'guard says no' } : { context: 'alive' });
           api.tool({ name: 'slow_sync', description: 'x', parameters: { type: 'object', properties: {} },
-            run: () => { const t = Date.now(); while (Date.now() - t < 1500) {} return { done: true }; } });
+            run: () => { const t = Date.now(); while (Date.now() - t < 2000) {} return { done: true }; } });
         } };`);
-      A.ok((await rtS.start(sb)).ok, 'the sync-work plugin starts');
-      const tool = rtS.callTool('syncwork', 'slow_sync', {}, {}).then(v => v, e => 'FAILED: ' + e.message);
-      await new Promise(r => setTimeout(r, 50));
-      A.eq(await rtS.hook('syncwork', 'pre_tool_call', { tool_name: 'fs.read' }), null, 'a hook during the block times out to null, as before');
-      for (let i = 0; i < 40 && !slogs.some(l => /did not answer a liveness check while a call is still running/.test(l)); i++) await new Promise(r => setTimeout(r, 25));
+      A.ok((await rtS.start(guard)).ok, 'the guard plugin starts');
       const t0 = Date.now();
-      A.eq(await rtS.hook('syncwork', 'pre_tool_call', { tool_name: 'fs.read' }), null, 'a hook while it is marked unresponsive answers null');
-      A.ok(Date.now() - t0 < 200, 'at once, not after its 300 ms timeout (' + (Date.now() - t0) + ' ms)');
-      A.eq(await tool, { done: true }, 'the tool inside its own deadline returns its result (it was killed as "crashed" before)');
-      A.eq(rtS.status('syncwork').state, 'running', 'the process was never ended');
-      A.eq(rtS.status('syncwork').restarts, 0, 'and no restart was spent');
-      A.eq(await rtS.hook('syncwork', 'pre_tool_call', { tool_name: 'fs.read' }), { context: 'alive' }, 'once it answers again its hooks run again');
-      A.ok(slogs.some(l => /\[runtime\] it is answering again/.test(l)), 'the station log says it recovered');
-      // a call that outlives its OWN deadline in a busy loop is still ended once nothing is left in flight
+      const tool = rtS.callTool('guard', 'slow_sync', {}, {}).then(v => v, e => 'FAILED: ' + e.message);
+      await new Promise(r => setTimeout(r, 50));
+      A.eq(await rtS.hook('guard', 'pre_tool_call', { tool_name: 'fs.read' }), null, 'a hook during the block times out to null, as before');
+      await new Promise(r => setTimeout(r, Math.max(0, 1300 - (Date.now() - t0))));
+      A.eq(await rtS.hook('guard', 'pre_tool_call', { tool_name: 'shell.run' }, 1500), { decision: 'block', reason: 'guard says no' },
+        'a guard hook sent while the process is silent still returns its block once the work ends inside the hook timeout (it answered null = allow before)');
+      A.eq(await tool, { done: true }, 'the tool inside its own deadline returns its result');
+      A.eq(rtS.status('guard').state, 'running', 'the process was never ended');
+      A.eq(rtS.status('guard').restarts, 0, 'and no restart was spent');
       await rtS.stopAll();
+
+      // a CALLER POLLING a wedged process cannot keep it alive: the budget runs from the first timeout, and calls sent
+      // after it do not extend it (a window polling its backend kept a busy loop running forever before)
+      const rtP = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: () => {},
+        timeouts: { callMs: 600, toolMs: 600, hookMs: 300, startMs: 5000 } });   // wedge budget derived: 600 ms
+      const poller = await plugin('poller', `
+        module.exports = { register(api) {
+          api.handle('status', () => 'ok');
+          api.handle('spin', () => { for (;;) {} });
+        } };`);
+      A.ok((await rtP.start(poller)).ok, 'the polled plugin starts');
+      const p0 = Date.now();
+      rtP.callHandler('poller', 'spin', {}).catch(() => {});
+      const poll = setInterval(() => { rtP.callHandler('poller', 'status', {}).catch(() => {}); }, 250);
+      while (Date.now() - p0 < 6000 && rtP.status('poller').state === 'running') await new Promise(r => setTimeout(r, 25));
+      clearInterval(poll);
+      const endedAt = Date.now() - p0;
+      A.eq(rtP.status('poller').state, 'crashed', 'a busy loop polled every 250 ms is still ended');
+      A.ok(endedAt < 3000, 'within its first timeout plus one wedge budget, not extended by each poll (' + endedAt + ' ms)');
+      A.eq(await rtP.callHandler('poller', 'status', {}).catch(e => e.message), 'ok', 'and the next poll restarts it and gets a real answer');
+      await rtP.stopAll();
+
+      // a call that outlives its OWN deadline in a busy loop is still ended, after the wedge budget
       const rtB = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: () => {},
-        timeouts: { hookMs: 200, pingMs: 200, toolMs: 900, callMs: 900, startMs: 5000 } });
+        timeouts: { hookMs: 200, toolMs: 900, callMs: 900, startMs: 5000 } });   // wedge budget derived: 900 ms
       const spin = await plugin('spintool', `
         module.exports = { register(api) {
           api.on('pre_tool_call', () => null);
@@ -395,10 +426,29 @@ async function plugin(id, source) {
       await new Promise(r => setTimeout(r, 450));
       A.eq(rtB.status('spintool').state, 'running', 'while the tool is inside its own 900 ms deadline the process is kept');
       A.ok(/did not answer within/.test(await spun), 'the tool times out at its own deadline');
-      for (let i = 0; i < 60 && rtB.status('spintool').state !== 'crashed'; i++) await new Promise(r => setTimeout(r, 25));
-      A.eq(rtB.status('spintool').state, 'crashed', 'then, silent with nothing in flight, the wedged process is ended');
+      for (let i = 0; i < 80 && rtB.status('spintool').state !== 'crashed'; i++) await new Promise(r => setTimeout(r, 25));
+      A.eq(rtB.status('spintool').state, 'crashed', 'then, still silent, the wedged process is ended');
       A.ok(/stopped responding/.test(rtB.status('spintool').error), 'with the honest reason');
       await rtB.stopAll();
+
+      // the api.every job armed in 5c': a hook times out during its 1.5 s of synchronous work, and nothing is in flight.
+      // Hooks are sent until one lands inside a run of the job (an idle process answers at once; one inside the job's
+      // work times out to null), so the check never depends on when the 10 s job timer fires.
+      const finishedBefore = jlogs.filter(l => l === 'job finished its sync work').length;
+      let during = 'never';
+      for (const until = Date.now() + 15000; Date.now() < until;) {
+        const r = await rtJ.hook('jobby', 'pre_tool_call', { tool_name: 'fs.read' });
+        if (r === null) { during = null; break; }
+        await new Promise(res => setTimeout(res, 50));
+      }
+      A.eq(during, null, 'a hook during the job\'s work times out to null, as before');
+      const finished = () => jlogs.filter(l => l === 'job finished its sync work').length > finishedBefore;
+      for (let i = 0; i < 80 && !finished() && rtJ.status('jobby').state === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+      A.ok(finished(), 'the job finished its work (it was killed half done before)');
+      A.eq(rtJ.status('jobby').state, 'running', 'the process was never ended: ' + JSON.stringify(rtJ.status('jobby')));
+      A.eq(rtJ.status('jobby').restarts, 0, 'and no restart was spent');
+      A.eq(await rtJ.hook('jobby', 'pre_tool_call', { tool_name: 'fs.read' }), { context: 'alive' }, 'and its hooks answer again');
+      await rtJ.stopAll();
     }
 
     // ---- 6. the crew-facing tool defs carry the connector trust contract ----
