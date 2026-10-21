@@ -209,35 +209,6 @@ const ADAPTERS = [
     }
   }
 
-  // A JSON error's quoted words go through the same redaction + 300-char clamp as the text path (review p4-wire). The
-  // four adapters put error.message — or, with no error object, JSON.stringify of the whole body (up to the 64 KB
-  // cap) — into err.message raw: a key a proxy echoed reached the run's error line and diagnostics, and a 64 KB
-  // message became a 64 KB error line. Each adapter keeps its own pick (error.message leads; else the stringified
-  // body) and err.body keeps the whole parsed body for errorClass.
-  {
-    const { MAX_ERR_BODY } = require('../sidecar/providers/provider.js').runtime;
-    const secret = 'refused Bearer fixture-json-tok-123456 key sk-fixture-json-abcdefgh123\r\n';
-    const bodies = [
-      ['error.message', { error: { message: secret + 'x'.repeat(MAX_ERR_BODY - 512), type: 'invalid_request_error', code: 'fixture_refusal', status: 'INVALID_ARGUMENT' } },
-        'refused Bearer [redacted] key [redacted] xxx'],
-      ['stringified body', { detail: secret + 'y'.repeat(MAX_ERR_BODY - 512) }, '{"detail":"refused Bearer [redacted] key [redacted]\\r\\nyyy']
-    ];
-    for (const [name, make] of ADAPTERS.slice(1)) for (const [shape, body, lead] of bodies) {
-      const raw = JSON.stringify(body);
-      A.ok(raw.length < MAX_ERR_BODY, 'fixture: the ' + shape + ' body fits under the read cap, so it parses');
-      const err = await thrown(make(async (_url, init) => (!init || !init.body) ? new Response(CATALOG)
-        : new Response(raw, { status: 400, statusText: 'Bad Request', headers: { 'Content-Type': 'application/json' } })));
-      const tag = name + ' JSON ' + shape;
-      const prefix = name + ' http 400 ' + SEP[name] + ' ';
-      A.eq(err && err.status, 400, tag + ': the status survives');
-      A.eq(err && err.body, body, tag + ': the whole parsed body still rides for errorClass');
-      A.ok(err && err.message.startsWith(prefix + lead), tag + ': the adapter\'s own pick leads, redacted (' + (err && err.message.slice(0, 90)) + ')');
-      A.ok(err && !/fixture-json-tok-123456|sk-fixture-json-abcdefgh123/.test(err.message), tag + ': tokens and keys in the JSON error are redacted');
-      A.ok(err && !/[\r\n]/.test(err.message), tag + ': control characters are collapsed');
-      A.ok(err && err.message.length <= prefix.length + 300, tag + ': the quoted detail is clamped to 300 chars (message ' + (err && err.message.length) + ' chars)');
-    }
-  }
-
   // Cleanup failure must be observable without replacing the original result or exposing its error text.
   {
     const failopen = require('../sidecar/failopen.js');

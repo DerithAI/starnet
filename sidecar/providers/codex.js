@@ -455,14 +455,13 @@
         }
         if (res.ok && res.body) return res;
         // The body is read ONCE, as text, through the idle watchdog and the caller's Stop (provider.runtime.readErrorBody):
-        // a stalled error body ignored Stop for up to 300 s. Only a JSON error's own words are quoted, redacted and
-        // clamped to 300 chars (safeErrorField; the stringified body can be the whole 64 KB). A non-JSON page (a
+        // a stalled error body ignored Stop for up to 300 s. Only a JSON error's own words are quoted. A non-JSON page (a
         // proxy's 503 "... reset reason: connection reset") keeps the status text: the browser's error copy reads
         // transport and policy words before the status (friendlyerror kindFromRaw), so its prose would be told as a
         // dropped connection or a content block the harness cannot prove.
         const eb = await provider.runtime.readErrorBody(res, { signal, url: baseUrl, tag: 'providers.codex' });
         const errBody = eb.parsed ? eb.data : null;
-        let detail = eb.parsed ? provider.runtime.safeErrorField((errBody && errBody.error && (errBody.error.message || errBody.error.code)) || JSON.stringify(errBody), 300) : (res.statusText || '');
+        let detail = eb.parsed ? ((errBody && errBody.error && (errBody.error.message || errBody.error.code)) || JSON.stringify(errBody)) : (res.statusText || '');
         if (eb.stalled) detail += ' (error body did not finish)';
         const err = new Error('codex http ' + res.status + ' — ' + detail);
         err.status = res.status;
