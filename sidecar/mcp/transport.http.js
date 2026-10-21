@@ -238,7 +238,8 @@
       } finally { clearTimeout(t); }
       if (overflowed && !answered) {
         const cap = maxEventChars >= 1048576 ? Math.round(maxEventChars / 1048576) + ' MiB' : maxEventChars + ' characters';
-        const msg = 'connector sent an SSE event over the ' + cap + ' limit without ending it: stream closed';
+        // the accounting, not "the event was over 64 MiB": a flood of short lines is cut long before its characters are
+        const msg = 'connector kept an SSE event open past the ' + cap + ' limit (each line or chunk held counts its characters plus ' + PIECE_COST + '): stream closed';
         failTo(id, msg);
         if (id != null) onError(new Error(msg));   // failTo already told onError when there is no id
         return;

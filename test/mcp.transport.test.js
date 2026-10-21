@@ -406,7 +406,7 @@ const rpc = (id, result) => JSON.stringify({ jsonrpc: '2.0', id, result });
     const got = []; tp.onMessage(m => got.push(m));
     await tp.send({ jsonrpc: '2.0', id: 31, method: 'tools/call', params: {} });
     A.ok(cancelled && fed <= 1024 * 1024 + 2 * enc.length, shape + ': the stream is cancelled at the cap (' + fed + ' bytes read; it buffered all of it, an endless one until the heap ran out)');
-    A.ok(got.length === 1 && got[0].id === 31 && /^connector sent an SSE event over the 1 MiB limit without ending it: stream closed$/.test(got[0].error && got[0].error.message), shape + ': the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
+    A.ok(got.length === 1 && got[0].id === 31 && /^connector kept an SSE event open past the 1 MiB limit \(each line or chunk held counts its characters plus 48\): stream closed$/.test(got[0].error && got[0].error.message), shape + ': the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
     A.eq(errs, [got[0].error.message], shape + ': the connection is reported dead once, with the same reason');
   }
   // SHORT LINES COUNT AS MEMORY (review 2026-10-21). Counting characters alone, an endless event of 2-character
@@ -422,7 +422,8 @@ const rpc = (id, result) => JSON.stringify({ jsonrpc: '2.0', id, result });
     await tp.send({ jsonrpc: '2.0', id: 32, method: 'tools/call', params: {} });
     const held = Math.round(fed / 3);   // lines read before the cut, every one of them kept
     A.ok(cancelled && held <= (1024 * 1024) / 32 + 1024, 'an endless run of 2-character lines is cut off by what it holds: ' + held + ' lines kept under a 1 MiB cap (counting characters alone it kept 524288, ~27x the cap in memory)');
-    A.ok(got.length === 1 && got[0].id === 32 && /^connector sent an SSE event over the 1 MiB limit without ending it: stream closed$/.test(got[0].error && got[0].error.message), 'short lines: the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
+    A.ok(!/over the 1 MiB limit/.test(got[0] && got[0].error && got[0].error.message), 'short lines: the reason does not claim the event itself passed 1 MiB (' + Math.round(fed / 1024) + ' KiB were read)');
+    A.ok(got.length === 1 && got[0].id === 32 && /^connector kept an SSE event open past the 1 MiB limit \(each line or chunk held counts its characters plus 48\): stream closed$/.test(got[0].error && got[0].error.message), 'short lines: the call fails with the reason: ' + (got[0] && got[0].error && got[0].error.message));
     A.eq(errs, [got[0].error.message], 'short lines: the connection is reported dead once, with the same reason');
   }
 
