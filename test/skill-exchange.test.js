@@ -152,6 +152,35 @@ function store(io) { return makeSkillStore({ io, clock: { now: () => 9000 }, gua
     A.eq(quick, 1000, 'a quick source still arrives');
     A.ok(delays.includes(60000), 'and its read was capped at 60 s (timers armed: ' + JSON.stringify(delays) + ')');
   }
+  // …and that deadline is ONE deadline across every redirect hop (polish 2026-10-21): it was re-armed per hop, so a
+  // source bouncing the read through 4 slow redirects held it for up to 5 times the deadline. Each hop here answers
+  // its headers in 150 ms (inside the 200 ms silence window and the 300 ms deadline); the five hops take ~750 ms.
+  {
+    const hopsSeen = [];
+    const slowHops = async (url, init) => {
+      hopsSeen.push(url);
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(resolve, 150);
+        init.signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('This operation was aborted')); }, { once: true });
+      });
+      const n = Number(url.slice(-1));
+      if (n < 4) return { status: 302, ok: false, headers: { get: (h) => h === 'location' ? 'https://hops.example/r' + (n + 1) : null } };
+      return { status: 200, ok: true, headers: { get: () => null }, body: { async *[Symbol.asyncIterator]() { yield Buffer.from('# Landed'); } } };
+    };
+    const roomy = await makeSkillDocumentFetcher({ timeoutMs: 200, bodyDeadlineMs: 3000, fetchImpl: slowHops })('https://hops.example/r0').then(r => r.text, e => e.message);
+    A.eq(roomy, '# Landed', 'the five-hop chain itself lands when the deadline has room for it');
+    for (const [name, opts, deps] of [
+      ['a read with no budget of its own', {}, { bodyDeadlineMs: 300 }],
+      ['a read with the caller\'s own budget', { timeoutMs: 300 }, {}]
+    ]) {
+      hopsSeen.length = 0;
+      const t0 = Date.now();
+      const out = await makeSkillDocumentFetcher(Object.assign({ timeoutMs: 200, fetchImpl: slowHops }, deps))('https://hops.example/r0', opts).then(r => 'resolved: ' + r.text, e => e.message);
+      const took = Date.now() - t0;
+      A.eq(out, 'skill source timed out', name + ' that keeps redirecting is ended at its one deadline (it resolved after every hop restarted the cap before)');
+      A.ok(took < 600 && hopsSeen.length <= 3, 'at ~300 ms, partway through the chain (' + took + ' ms, ' + hopsSeen.length + ' hops)');
+    }
+  }
 
   const fetchedUrls = [];
   const genericPackage = makeSkillPackageFetcher({ now: () => 0, fetchDocument: async url => {
