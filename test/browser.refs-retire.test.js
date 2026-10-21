@@ -58,6 +58,35 @@ async function message(p) { try { await p; return 'resolved'; } catch (e) { retu
     A.eq(drv.clicked, ['Search', 'Search'], 'and it clicked the same control');
   }
 
+  // ---- 1b. a CLICK-driven session stays bounded too (review 2026-10-21) ----
+  // A click that navigates moves no navEpoch, so snapshot-click-snapshot never changed "document" and every read's
+  // refs (and nodes) stayed in the table: 2000 pages = 160 000 entries. Refs older than the last few reads of the
+  // same document now retire into ranges and get the plain stale refusal; recent ones are still recovered.
+  {
+    const drv = fakeDriver();
+    const s = T.makeBrowserSession({ makeDriver: () => drv, lookup: null, env: {} });
+    await s.navigate('https://example.com/');
+    const first = (await s.snapshot())[0].ref;
+    let threeAgo = null;
+    for (let i = 1; i <= 200; i++) {
+      const snap = await s.snapshot();
+      if (i === 197) threeAgo = snap[0].ref;
+      await s.click(snap[0].ref);   // a link click: the page may change, navEpoch does not
+    }
+    A.ok(s._internals.refs.size <= 16, 'after 201 reads of one document the table holds only its last 8 reads (' + s._internals.refs.size + ' refs; it held 402 before)');
+    const clicks = drv.clicked.length;
+    const old = await message(s.click(first));
+    A.eq(old.message, 'stale browser ref: ' + first + ' (refs expire after each browser.snapshot)', 'a ref from 200 reads ago gets the plain stale refusal');
+    A.eq(drv.clicked.length, clicks, 'and is never re-aimed by role+text');
+    A.eq(await message(s.click(threeAgo)), 'resolved', 'a ref from 3 reads ago is still recovered by role+text');
+    A.eq(drv.clicked.length, clicks + 1, 'and clicked the same control');
+    await s.navigate('https://example.com/next');
+    await s.snapshot();
+    const left = await message(s.click(first));
+    A.ok(/^stale browser ref: b1 - the page navigated since that snapshot/.test(left.message), 'once the session navigates, the same retired ref says the page navigated: ' + left.message);
+    A.ok(/^unknown browser ref: b99999 /.test((await message(s.click('b99999'))).message), 'a ref never minted is still unknown');
+  }
+
   // ---- 2. a ref from a CLOSED tab stays refused as a closed tab after it is retired ----
   {
     const tab = { tab: 0 };

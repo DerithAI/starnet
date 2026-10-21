@@ -3035,22 +3035,36 @@
         throw err;
       }
     }
-    /* RETIRED REFS. `refs` holds the CURRENT document's refs only. A ref minted before the document changed can never
-       act again (version moves with navEpoch) and is never recovered (recovery refuses across navEpoch), so its node is
-       dead weight - and the map used to keep every one, for the life of the station browser. All a later use of it
-       still needs is WHICH refusal it gets, and that depends only on the tab mark it was minted on. So when the first
-       ref of a new document is minted, the old entries collapse into seq ranges per tab mark (refs are numbered in
-       order, one snapshot shares one mark): a handful of ranges, however long the session runs. */
-    const retiredRefs = [];   // [{ lo, hi, tab }] ascending, inclusive seq ranges
-    let refsEpoch = navEpoch;
-    function retireRefs() {
+    /* RETIRED REFS. `refs` holds the refs of the current document's last few DOM reads only. A ref minted before the
+       document changed can never act again (version moves with navEpoch) and is never recovered (recovery refuses
+       across navEpoch), so its node is dead weight - and the map used to keep every one, for the life of the station
+       browser. A click that navigates moves no navEpoch, so the plain snapshot-click loop never changed "document"
+       either (review 2026-10-21: 2000 pages = 160 000 entries, +35 MB): refs of the same document older than its last
+       KEEP_REF_READS reads retire too - recovery re-finds a renumbered ref from a recent read, not one many reads ago.
+       All a later use of a retired ref still needs is WHICH refusal it gets: its tab mark (a closed tab) and whether it
+       was minted on THIS document (the plain stale refusal) or an earlier one (the page navigated). So retired entries
+       collapse into seq ranges per tab mark and document (refs are numbered in order, one read shares one mark), and
+       every earlier document shares epoch -1: a handful of ranges, however long the session runs. */
+    const KEEP_REF_READS = 8;
+    const retiredRefs = [];   // [{ lo, hi, tab, epoch }] ascending, inclusive seq ranges; epoch -1 = an earlier document
+    const refReads = [];      // the versions whose reads minted the live refs, oldest first (at most KEEP_REF_READS)
+    function addRetired(lo, hi, epoch, tab) {
+      const last = retiredRefs[retiredRefs.length - 1];
+      if (last && last.hi === lo - 1 && last.epoch === epoch && last.tab.d === tab.d && last.tab.e === tab.e) last.hi = hi;
+      else retiredRefs.push({ lo, hi, epoch, tab: { d: tab.d, e: tab.e } });
+    }
+    function retireOld() {
+      // a range retired on a document the session has since left is now "earlier" too, and joins its neighbour
+      const left = retiredRefs[retiredRefs.length - 1];
+      if (left && left.epoch !== -1 && left.epoch !== navEpoch) { retiredRefs.pop(); addRetired(left.lo, left.hi, -1, left.tab); }
+      const keepFrom = refReads[0];
+      // insertion order is seq order, and version and navEpoch only grow along it: the first kept entry ends the sweep
       for (const [ref, r] of refs) {
+        if (r.navEpoch === navEpoch && r.version >= keepFrom) break;
         const n = Number(ref.slice(1));
-        const last = retiredRefs[retiredRefs.length - 1];
-        if (last && last.hi === n - 1 && last.tab.d === r.tab.d && last.tab.e === r.tab.e) last.hi = n;
-        else retiredRefs.push({ lo: n, hi: n, tab: { d: r.tab.d, e: r.tab.e } });
+        addRetired(n, n, r.navEpoch === navEpoch ? navEpoch : -1, r.tab);
+        refs.delete(ref);
       }
-      refs.clear();
     }
     function refEntry(ref) {
       const key = String(ref || '');
@@ -3062,12 +3076,16 @@
       for (let i = retiredRefs.length - 1; i >= 0; i--) {
         const g = retiredRefs[i];
         if (n > g.hi) return null;
-        if (n >= g.lo) return { version: -1, navEpoch: -1, tab: g.tab, node: null };   // minted here, on an earlier document
+        if (n >= g.lo) return { version: -1, navEpoch: g.epoch, tab: g.tab, node: null };   // minted here, its node released
       }
       return null;
     }
     function refFor(node, mark) {
-      if (refsEpoch !== navEpoch) { retireRefs(); refsEpoch = navEpoch; }
+      if (refReads[refReads.length - 1] !== version) {   // the first ref of a new read
+        refReads.push(version);
+        if (refReads.length > KEEP_REF_READS) refReads.shift();
+        retireOld();
+      }
       const ref = 'b' + (++seq);
       refs.set(ref, { version, navEpoch, tab: mark || tabMark(), node });
       return ref;
@@ -3112,6 +3130,7 @@
           throw new Error('stale browser ref: ' + list.join('/') + ' - the page navigated since that snapshot, '
             + 'so it points at the previous page. Take a fresh browser.snapshot.');
         }
+        if (known.some(k => !k.node)) throw e;   // a retired ref of this page: its node was released, nothing to re-find
         const wants = known.map(k => nodeIdentity(k.node));
         if (wants.some(w => !w.replace(/ /g, '').trim())) throw e;   // an unlabelled node: nothing to match on
         /* ONE re-snapshot resolves EVERY ref in the call. Snapshotting per-ref would invalidate the refs
