@@ -371,7 +371,7 @@ const { note: failNote } = require('../../failopen');
        so the write silently reverted the other change — the classic lost update, and the harder kind to spot
        because both sides believe they succeeded.
 
-       THE STAMP IS SCOPED TO fs.write, after tracing what each writer actually does:
+       THE STAMP WAS SCOPED TO fs.write (superseded: see READ-VERSION CHECK below), after tracing what each writer does:
          · fs.append appends to what it FINDS on disk.
          · fs.edit replaces an exact `find`; a drifted file either still matches (the edit lands on the NEW
            text, which is right) or misses and errors honestly.
@@ -390,29 +390,47 @@ const { note: failNote } = require('../../failopen');
 
        A file this agent never read has no stamp and is never refused: writing a file you did not read is
        "create it", not "clobber it". One refusal per drift — the stamp is dropped so the required re-read
-       re-arms it, and the agent can never be stuck in a loop it has no way to satisfy. */
-    const readStamps = new Map();   // agentId \0 abs -> the mtime this agent last SAW
+       re-arms it, and the agent can never be stuck in a loop it has no way to satisfy.
+
+       READ-VERSION CHECK (2026-10-21). The re-read under the lock only covered a writer that landed WHILE a call
+       was in flight. One that landed BETWEEN this agent's fs.read and its fs.edit / fs.append / fs.patch went
+       unnoticed: the call worked on bytes the agent never saw, said read-back-verified, and re-stamped the file
+       as observed, so the agent's next fs.write from its old read erased the other change. The stamp is now the
+       sha256 of the bytes this run last read or wrote (an mtime missed same-tick writes and older-stamped copies,
+       and refused a touch that changed nothing), and every mutation of a file it has a stamp for refuses BEFORE
+       writing when the disk holds other bytes. fs.write keeps its stale-write error and its one-refusal drop;
+       fs.edit / fs.append / fs.patch keep the stamp, so a blind retry is refused again with the same true reason
+       (dropping it would make fs.edit claim "you have not read" a file it did read) until fs.read re-arms it.
+       A missing file (deleted since) is not a refusal, as before. In-flight drift keeps its re-read behaviour. */
+    const readStamps = new Map();   // agentId \0 abs -> sha256 of the bytes this agent last SAW (read or wrote)
     const stampKey = (aid, abs) => String(aid) + '\0' + (P.sep === '\\' ? String(abs).toLowerCase() : String(abs));
     // the process-wide mutation lock key for one file (same case rule as pathInside / stampKey)
     const lockKey = (abs) => (P.sep === '\\' ? P.resolve(String(abs)).toLowerCase() : P.resolve(String(abs)));
     const DRIFT_REASON = 'the file changed on disk while this edit was in flight (another writer), so a before/after diagnostic comparison would include their change';
-    async function mtimeOf(abs) { try { const st = await fsp.stat(abs); return Number(st.mtimeMs || 0) || 0; } catch (_) { return 0; } }
-    async function stampSeen(aid, abs) {
-      const m = await mtimeOf(abs);
-      if (m) readStamps.set(stampKey(aid, abs), m); else readStamps.delete(stampKey(aid, abs));
+    // `seen` = the bytes this agent now knows the file holds (null = gone: drop the stamp); `hash` = their sha256, precomputed
+    function stampSeen(aid, abs, seen, hash) {
+      const h = hash || sha256(seen);
+      if (h) readStamps.set(stampKey(aid, abs), h); else readStamps.delete(stampKey(aid, abs));
+    }
+    // true when this agent has a stamp for the file and `bytes` (what is on disk now) are not what it last saw
+    function changedSinceSeen(aid, abs, bytes) {
+      const seen = readStamps.get(stampKey(aid, abs));
+      return !!seen && bytes != null && sha256(bytes) !== seen;
     }
     function staleWriteError(rel) {
       const error = new Error('stale write refused: ' + rel + ' changed on disk after you read it — someone else (another agent, or the Commander) edited it. Read it again and re-apply your change on top of the current content, or use fs.edit/fs.patch so your change merges instead of replacing the file.');
       error.precondition = { code: 'fresh_read_required', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
       return error;
     }
-    async function assertFresh(aid, abs, rel) {
-      const key = stampKey(aid, abs);
-      const seen = readStamps.get(key);
-      if (!seen) return;                          // never read here -> nothing to be stale against
-      const now = await mtimeOf(abs);
-      if (!now || now <= seen) return;            // deleted since, or untouched since we looked
-      readStamps.delete(key);                     // one refusal per drift; the re-read below re-arms it
+    // fs.edit / fs.append / fs.patch over a file whose bytes moved since this agent last read or wrote it
+    function changedSinceReadError(what, rel) {
+      const error = new Error(what + ' refused: ' + rel + ' changed on disk since you last read or wrote it (something else changed it: another agent, the Commander, or a process such as a shell command) — nothing was written. fs.read it again and redo your change against the current content.');
+      error.precondition = { code: 'fresh_read_required', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
+      return error;
+    }
+    function assertFresh(aid, abs, rel, bytes) {
+      if (!changedSinceSeen(aid, abs, bytes)) return;   // never read here, deleted since, or still the bytes we saw
+      readStamps.delete(stampKey(aid, abs));            // one refusal per drift; the re-read below re-arms it
       throw staleWriteError(rel);
     }
 
@@ -430,15 +448,16 @@ const { note: failNote } = require('../../failopen');
         // another run (it holds the lock) passed the check, and this write then replaced it. The read can never
         // be a torn half-file from a concurrent truncating writeFile either.
         const beforeBytes = await withFileLocks([lk], signal, async () => {
-          await assertFresh(aid, abs, args.path);   // refuse to overwrite a file that moved under us
-          return readBytesOrMissing(abs);
+          const b = await readBytesOrMissing(abs);
+          assertFresh(aid, abs, args.path, b);   // refuse to overwrite a file that moved under us
+          return b;
         });
         const diagnosticTicket = await beginEditDiagnostics(aid, [{ abs, base, rel: String(args.path), text: beforeBytes ? beforeBytes.toString('utf8') : '' }], ctx);
         await fsp.mkdir(P.dirname(abs), { recursive: true });
         const receipt = await withFileLocks([lk], signal, async () => {
           // re-check under the lock: the LSP baseline above can take seconds, and another run may have written since
-          await assertFresh(aid, abs, args.path);
           const current = await readBytesOrMissing(abs);
+          assertFresh(aid, abs, args.path, current);
           let initial = beforeBytes;
           if (!sameBytes(current, beforeBytes)) {
             const key = stampKey(aid, abs);
@@ -448,7 +467,7 @@ const { note: failNote } = require('../../failopen');
             if (diagnosticTicket) diagnosticTicket.drifted = DRIFT_REASON;
           }
           const r = await verifiedMutation({ operation: 'write', path: args.path, abs, expected: data, initial, mutate: () => fsp.writeFile(abs, data) });
-          await stampSeen(aid, abs);                // our own write is the new baseline, so a rewrite never self-trips
+          stampSeen(aid, abs, data);                // our own write is the new baseline, so a rewrite never self-trips
           return r;
         }).catch(resyncThenThrow(diagnosticTicket, ctx));
         emitDeliverable(ctx, aid, args.path);
@@ -486,9 +505,10 @@ const { note: failNote } = require('../../failopen');
       const lead = buf[i], need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
       return (n - i) < need ? i : n;
     }
-    // one pass over the file: checkpoints + totals, or null when it is not valid UTF-8 (or changed size under us)
+    // one pass over the file: checkpoints + totals + the sha256 of the bytes (the read-version stamp), or null when it
+    // is not valid UTF-8 (or changed size under us)
     async function buildReadIndex(fh, size, buf) {
-      const cps = [];
+      const cps = [], hash = crypto.createHash('sha256');
       let byte = 0, unit = 0, line = 0, lastByte = -1;
       while (byte < size) {
         const { bytesRead } = await fh.read(buf, 0, Math.min(READ_CHUNK, size - byte), byte);
@@ -498,13 +518,14 @@ const { note: failNote } = require('../../failopen');
         const piece = buf.subarray(0, n);
         if (!isUtf8(piece)) return null;
         cps.push({ byte, unit, line });
+        hash.update(piece);
         unit += piece.toString('utf8').length;
         for (let at = piece.indexOf(10); at >= 0; at = piece.indexOf(10, at + 1)) line++;
         lastByte = piece[n - 1];
         byte += n;
       }
       if (byte !== size) return null;
-      return { size, totalUnits: unit, newlines: line, endsWithNl: lastByte === 10, cps };
+      return { size, totalUnits: unit, newlines: line, endsWithNl: lastByte === 10, cps, sha256: hash.digest('hex') };
     }
     // decoded text from checkpoint cp to the indexed end, chunk by chunk; fn(str) returns false to stop
     async function streamReadText(fh, idx, cp, buf, fn) {
@@ -603,7 +624,7 @@ const { note: failNote } = require('../../failopen');
         if (!idx) return null;
         readIndexCache.set(key, idx);
         while (readIndexCache.size > 8) readIndexCache.delete(readIndexCache.keys().next().value);
-        await stampSeen(aid, abs);   // what this agent believes the file says, as of now (see the stale-write guard)
+        stampSeen(aid, abs, null, idx.sha256);   // what this agent believes the file says, as of now (see the stale-write guard)
         return await largeTextPage(args, fh, idx, buf, readPageMax(ctx));
       } finally {
         await fh.close();
@@ -622,7 +643,7 @@ const { note: failNote } = require('../../failopen');
         let raw;
         try { raw = await fsp.readFile(abs); }
         catch (e) { if (e && e.code === 'ENOENT') throw new Error('no such file: ' + args.path); throw e; }
-        await stampSeen(aid, abs);   // what this agent believes the file says, as of now (see the stale-write guard)
+        stampSeen(aid, abs, raw);   // what this agent believes the file says, as of now (see the stale-write guard)
 
         /* DOCUMENTS. Decoding a .docx as UTF-8 produced binary noise: the agent could see the file existed and
            had no way to read it, on exactly the formats a Commander keeps real work in. A malformed or
@@ -765,6 +786,8 @@ const { note: failNote } = require('../../failopen');
         const { abs, base } = await resolveInside(aid, args.path, { scope: 'write', ctx });
         const signal = ctx && ctx.signal, lk = lockKey(abs);
         const existingBytes = await withFileLocks([lk], signal, () => readBytesOrMissing(abs));   // never a torn read
+        // a file this agent read that has changed since: appending would build on bytes it never saw (read-version check)
+        if (changedSinceSeen(aid, abs, existingBytes)) throw changedSinceReadError('append', args.path);
         const existing = existingBytes ? existingBytes.toString('utf8') : '';
         const combined = existing + String(args.content);
         let bytes = Buffer.byteLength(combined, 'utf8');
@@ -788,7 +811,7 @@ const { note: failNote } = require('../../failopen');
           // our own append is the new baseline — a later fs.write must not read as a third-party race. NOT after a
           // drift: the file now holds another writer's bytes this agent never saw, so its old stamp stays and its
           // next fs.write (composed from its own view) is refused until it reads the file again
-          if (!drifted) await stampSeen(aid, abs);
+          if (!drifted) stampSeen(aid, abs, expected);
           return r;
         }).catch(resyncThenThrow(diagnosticTicket, ctx));
         emitDeliverable(ctx, aid, args.path);
@@ -824,6 +847,8 @@ const { note: failNote } = require('../../failopen');
         const initialBytes = await withFileLocks([lk], signal, () => readBytesOrMissing(abs));
         if (initialBytes == null) throw new Error('no such file: ' + args.path);
         assertObserved(aid, abs, args.path);
+        // observed, but the file has changed since: "find" would land on bytes the agent never saw (read-version check)
+        if (changedSinceSeen(aid, abs, initialBytes)) throw changedSinceReadError('edit', args.path);
         const txt = initialBytes.toString('utf8');
         const find = String(args.find);
         if (!find) throw new Error('"find" must be a non-empty string');
@@ -864,7 +889,7 @@ const { note: failNote } = require('../../failopen');
           // our own edit is the new baseline: read -> edit -> write used to refuse with a FABRICATED "someone else
           // edited it" story. NOT after a drift: the agent never saw the other writer's bytes now in the file, so
           // its old stamp stays and a later fs.write from its stale view is refused until it reads the file again
-          if (!drifted) await stampSeen(aid, abs);
+          if (!drifted) stampSeen(aid, abs, expected);
           return r;
         }).catch(resyncThenThrow(diagnosticTicket, ctx));
         const count = plan.count;
@@ -890,7 +915,10 @@ const { note: failNote } = require('../../failopen');
           if (plans.has(key)) return plans.get(key);
           let content = null, exists = false;
           // under the per-file lock so a concurrent writer's truncating writeFile is never read half-written
-          content = await withFileLocks([lockKey(key)], ctx && ctx.signal, readUtf8OrMissing.bind(null, key));
+          const bytes = await withFileLocks([lockKey(key)], ctx && ctx.signal, readBytesOrMissing.bind(null, key));
+          // a file this agent read that has changed since: hunks would match bytes it never saw (read-version check)
+          if (changedSinceSeen(aid, key, bytes)) throw changedSinceReadError('fs.patch', String(rel));
+          content = bytes == null ? null : bytes.toString('utf8');
           exists = content != null;
           const plan = { rel: String(rel), abs: key, base: resolved.base, exists, content, initialContent: content, touched: false };
           plans.set(key, plan);
@@ -1015,7 +1043,7 @@ const { note: failNote } = require('../../failopen');
                 operation: expected ? 'patch-write' : 'patch-delete', path: plan.rel, abs: plan.abs,
                 expected, initial, mutate: () => expected ? fsp.writeFile(plan.abs, expected) : fsp.rm(plan.abs, { force: true })
               });
-              await stampSeen(aid, plan.abs);   // our own patch is the new baseline for the stale-write guard (deletes drop the stamp)
+              stampSeen(aid, plan.abs, expected);   // our own patch is the new baseline for the stale-write guard (deletes drop the stamp)
               patchReceipt.files.push(fileReceipt);
             }
             patchReceipt.state = 'read-back-verified';
