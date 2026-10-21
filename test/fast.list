@@ -1322,3 +1322,4 @@ test/shellbg-spill-batched.test.js
 test/channels.store-cache.test.js
 test/notebook-peer-reads.test.js
 test/task-turn-evidence.test.js
+test/remote-crew-looks.test.js

@@ -11556,6 +11556,23 @@ const remotePush = require('./remote/push.js').makePush({ fs, path, file: path.j
   fetch: (url, o) => fetch(url, Object.assign({}, o, { signal: AbortSignal.timeout(15000) })),
   extraHosts: String(process.env.STARNET_REMOTE_PUSH_HOSTS || '').split(',') });   // tests only: a local fake push service
 const remotePortraits = require('./remote/portraits.js').makePortraits({ fs, path, frontend: FRONTEND });
+/* THE CREW'S LOOKS FOR A PHONE (perf review 10-19). Every status/activity poll (10 s per open phone), every portrait and
+   every 256 KB file chunk listed the agents, and each listing re-parsed the WHOLE station save to read a few skin and
+   colour strings: a 20 MB download did 80 parses. The tiny map is kept against saveStore.stamp('agent') (one stat that
+   moves on every save this process makes and on any outside edit) and rebuilt the moment the stamp moves; an unstamped
+   read (absent, locked or .bak-recovered save) is never kept. The desk sessions (deskSessions) still parse per request:
+   they ARE the bulk of the save, and keeping them would pin ~4x the file in heap (savestore.js never caches the doc). */
+let _remoteLooksMemo = { stamp: '', looks: null };
+function remoteCrewLooks() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _remoteLooksMemo.stamp && _remoteLooksMemo.looks) return Object.assign({}, _remoteLooksMemo.looks);
+  const r = saveStore.loadStamped('agent');
+  const save = r.doc || {}, out = {};
+  const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
+  add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
+  _remoteLooksMemo = { stamp: r.stamp || '', looks: out };
+  return Object.assign({}, out);
+}
 const remoteHost = require('./remote/host.js').makeRemoteHost({
   redact: (s) => redact(s),   // the desk save is raw: its turns are redacted before they merge or leave for the relay
   now: () => Date.now(), newId: () => crypto.randomUUID(), broadcast: remoteBroadcast,
@@ -11597,12 +11614,7 @@ const remoteHost = require('./remote/host.js').makeRemoteHost({
   view: remoteView,
   deskOpen: () => sse.size() > 1,   // a StarNet page is connected (the phones' own tee is always one listener)
   // how each agent looks (the skin the Commander picked), from the station save the page mirrors here
-  crewLooks: () => {
-    const save = saveStore.load('agent') || {}, out = {};
-    const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
-    add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
-    return out;
-  },
+  crewLooks: () => remoteCrewLooks(),
   portrait: (skin) => remotePortraits.forSkin(skin),
   spriteSet: (skin) => remotePortraits.setFor(skin),
   sprites: (key) => remotePortraits.framesFor(key),
