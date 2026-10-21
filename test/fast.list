@@ -18,6 +18,7 @@ test/clock-rng.test.js
 test/context.test.js
 test/redact.known-values.test.js
 test/redact.masked-keys.test.js
+test/redact.linear.test.js
 test/runtimeinfo.test.js
 test/harness-snapshot.test.js
 test/harness-stream-completion.test.js
