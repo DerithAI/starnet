@@ -505,12 +505,16 @@ const { note: failNote } = require('../../failopen');
       const lead = buf[i], need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
       return (n - i) < need ? i : n;
     }
-    // one pass over the file: checkpoints + totals + the sha256 of the bytes (the read-version stamp), or null when it
-    // is not valid UTF-8 (or changed size under us)
-    async function buildReadIndex(fh, size, buf) {
+    function readAbortError() { const e = new Error('fs.read aborted'); e.name = 'AbortError'; return e; }
+    /* one pass over the file: checkpoints + totals + the sha256 of the bytes (the read-version stamp), or null when it
+       is not valid UTF-8 (or changed size under us). It stops at the next chunk once `signal` aborts (a cancelled run,
+       or the registry's tool timeout): this pass is the one part of a large read that scales with the whole file, and
+       it used to run to the end of the file after the call had already been given up on. */
+    async function buildReadIndex(fh, size, buf, signal) {
       const cps = [], hash = crypto.createHash('sha256');
       let byte = 0, unit = 0, line = 0, lastByte = -1;
       while (byte < size) {
+        if (signal && signal.aborted) throw readAbortError();
         const { bytesRead } = await fh.read(buf, 0, Math.min(READ_CHUNK, size - byte), byte);
         if (!bytesRead) break;
         const n = utf8Cut(buf, bytesRead, byte + bytesRead >= size);
@@ -620,7 +624,7 @@ const { note: failNote } = require('../../failopen');
         const key = abs + '|' + size + '|' + Number(st.mtimeMs || 0);
         let idx = readIndexCache.get(key);
         if (idx) readIndexCache.delete(key);
-        else idx = await buildReadIndex(fh, size, buf);
+        else idx = await buildReadIndex(fh, size, buf, ctx && ctx.signal);
         if (!idx) return null;
         readIndexCache.set(key, idx);
         while (readIndexCache.size > 8) readIndexCache.delete(readIndexCache.keys().next().value);

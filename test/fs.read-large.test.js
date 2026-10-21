@@ -122,6 +122,39 @@ const MiB = 1024 * 1024;
     A.ok(missing.same && missing.b.err === 'no such file: nope.txt', 'a missing file says "no such file" on both paths');
   }
 
+  // ---- 4. the index pass honours ctx.signal: a cancelled run or the tool timeout stops it at the next chunk ----
+  // (the registry aborts ctx.signal on timeout; the pass is the one part of a large read that scales with the file)
+  {
+    const size = 12 * MiB;
+    await fsp.writeFile(absOf('huge.txt'), Buffer.alloc(size, 0x61));
+    let reads = 0, abortAt = 0, ac = new AbortController();
+    const counting = new Proxy(fsp, { get(target, prop) {
+      if (prop !== 'open') return target[prop];
+      return async (...a) => {
+        const fh = await target.open(...a);
+        return new Proxy(fh, { get(t, p) {
+          if (p === 'read') return async (...args) => { reads++; const r = await t.read(...args); if (reads === abortAt) ac.abort(); return r; };
+          const v = t[p]; return typeof v === 'function' ? v.bind(t) : v;
+        } });
+      };
+    } });
+    const reader = makeFsTools({ fsp: counting, pathMod: path, root: ROOT, limits: { readReturn: 24000, readStreamMinBytes: 64 * 1024 } }).readTool;
+    const attempt = async (args, ctx) => { try { return { out: await reader.run(args, ctx) }; } catch (e) { return { err: e }; } };
+
+    abortAt = 2;   // read 1 = the head sniff, read 2 = the first 1 MiB index chunk: the abort lands mid-pass
+    const mid = await attempt({ path: 'huge.txt', offset: size - 5, limit: 10 }, { agentId: 'ag', signal: ac.signal });
+    A.ok(mid.err && mid.err.name === 'AbortError', 'an abort during the index pass rejects with AbortError' + (mid.err ? ' (got ' + mid.err.name + ': ' + mid.err.message + ')' : ' (it ran on and returned a page)'));
+    A.eq(reads, 2, 'and the pass stopped at the next chunk: ' + reads + ' reads of a 12-chunk file (it used to read all of it, then page)');
+
+    reads = 0; abortAt = 0; ac = new AbortController(); ac.abort();
+    const pre = await attempt({ path: 'huge.txt' }, { agentId: 'ag', signal: ac.signal });
+    A.ok(pre.err && pre.err.name === 'AbortError' && reads === 1, 'an already-aborted signal reads no index chunk at all (' + reads + ' read: the head sniff)');
+
+    reads = 0;
+    const ok = await attempt({ path: 'huge.txt', offset: size - 5, limit: 10 }, { agentId: 'ag' });
+    A.eq(ok.out && ok.out.content, 'aaaaa\n[showing characters ' + (size - 5) + '-' + size + ' of ' + size + '; end of file]', 'a later uncancelled read is whole and correct (the abort cached no half-built index)');
+  }
+
   await fsp.rm(ROOT, { recursive: true, force: true });
   A.report('fs.read-large.test');
 })().catch(async (e) => {
