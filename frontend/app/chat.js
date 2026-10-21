@@ -903,6 +903,9 @@ const Chat = (() => {
   function fileRefLink(label, target) {
     const app = appFileRef(target);
     if (!app && !REL_PATH.test(target)) return escapeHtml(label);
+    // a link to a picture IS the picture (user reports 10-20: "my agent can't show me the slides" — it linked its JPGs, and a
+    // link only opened a tab; the model had no way to know an image needs the '!'), still a click away from the lightbox
+    if (/\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i.test(app ? app.path : target)) return fileRefImage(label, target);
     return '<a class="md-file" href="#" data-md-path="' + escapeHtml(app ? app.path : target) + '"' + (app ? app.attrs : '') + '>' + escapeHtml(label) + '</a>';
   }
   function fileRefImage(alt, target) {
@@ -10910,6 +10913,8 @@ const Chat = (() => {
     // wins on format; it's never baked into the saved prompt.
     const sys = system
       + (isTask ? ' If this needs real work — searching the web, reading or writing files, running a tool — do it and report the result clearly. If you can answer it directly from what you already know, just answer; don\'t reach for tools you don\'t need.' : '')
+      // agents told users "this chat can't show my workspace images" and linked them instead (user reports 10-20): say how
+      + (willSpeak ? '' : ' To show the Commander an image file (a PNG, JPG, GIF, WebP or SVG you saved), put ![short caption](path) in your reply, using the relative path you saved it under — this chat shows it as the picture.')
       + (willSpeak ? voiceModeRules() : '');
 
     const before = Object.assign({}, Harness.totals());   // COPY (totals is a mutated singleton) so the per-stream diff is real
