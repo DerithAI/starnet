@@ -3044,10 +3044,14 @@
        All a later use of a retired ref still needs is WHICH refusal it gets: its tab mark (a closed tab) and whether it
        was minted on THIS document (the plain stale refusal) or an earlier one (the page navigated). So retired entries
        collapse into seq ranges per tab mark and document (refs are numbered in order, one read shares one mark), and
-       every earlier document shares epoch -1: a handful of ranges, however long the session runs. */
+       every earlier document shares epoch -1: a handful of ranges, however long the session runs.
+       ONLY READS THE AGENT SEES COUNT (review 2026-10-21). Stale-ref recovery re-reads the page itself, and that read's
+       refs are never handed to the agent; counted as a read, every recovered action pushed one more version through the
+       window, so after ~7 recoveries the refs the agent was actually holding retired and recovery refused them.
+       A recovery read mints its refs uncounted: they ride along and retire with the agent's reads around them. */
     const KEEP_REF_READS = 8;
     const retiredRefs = [];   // [{ lo, hi, tab, epoch }] ascending, inclusive seq ranges; epoch -1 = an earlier document
-    const refReads = [];      // the versions whose reads minted the live refs, oldest first (at most KEEP_REF_READS)
+    const refReads = [];      // the versions of the agent's reads that minted the live refs, oldest first (at most KEEP_REF_READS)
     function addRetired(lo, hi, epoch, tab) {
       const last = retiredRefs[retiredRefs.length - 1];
       if (last && last.hi === lo - 1 && last.epoch === epoch && last.tab.d === tab.d && last.tab.e === tab.e) last.hi = hi;
@@ -3080,8 +3084,8 @@
       }
       return null;
     }
-    function refFor(node, mark) {
-      if (refReads[refReads.length - 1] !== version) {   // the first ref of a new read
+    function refFor(node, mark, recovery) {
+      if (!recovery && refReads[refReads.length - 1] !== version) {   // the first ref of a new read the agent sees
         refReads.push(version);
         if (refReads.length > KEEP_REF_READS) refReads.shift();
         retireOld();
@@ -3135,7 +3139,7 @@
         if (wants.some(w => !w.replace(/ /g, '').trim())) throw e;   // an unlabelled node: nothing to match on
         /* ONE re-snapshot resolves EVERY ref in the call. Snapshotting per-ref would invalidate the refs
            resolved by the previous pass - which is exactly what makes a two-ref drag unrecoverable. */
-        const fresh = await snapshot(SNAP_DEFAULT);
+        const fresh = await readRefs(SNAP_DEFAULT, true);
         const nodes = [];
         for (let i = 0; i < list.length; i++) {
           const hits = fresh.filter(n => nodeIdentity(n) === wants[i]);
@@ -3250,16 +3254,18 @@
       const d = driver;
       return (d && typeof d.lastResponse === 'function') ? d.lastResponse() : null;
     }
-    async function snapshot(limit) {
+    // recovery: true = stale-ref recovery's own re-read, whose refs the agent never sees (see RETIRED REFS)
+    async function readRefs(limit, recovery) {
       const d = ensureDriver();
       // the mark is taken BEFORE the read: a tab that goes away mid-snapshot leaves these refs dead, never re-aimed
       const mark = syncTab();
       const nodes = await d.snapshot(limit);
       version++;
       lookedAt = mark;
-      const out = (nodes || []).map(n => Object.assign({}, n, { ref: refFor(n, mark) }));
+      const out = (nodes || []).map(n => Object.assign({}, n, { ref: refFor(n, mark, recovery === true) }));
       return out;
     }
+    async function snapshot(limit) { return readRefs(limit, false); }
     /* Every ref-taking ACTION runs through recovery. The disclosure is appended to the driver's own answer
        rather than swallowed: the agent asked to act on ref b7 and we acted on a node we re-found, so it has
        to be able to see that happened — a silent recovery is the tool quietly changing the target. */

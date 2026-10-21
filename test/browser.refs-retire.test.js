@@ -87,6 +87,41 @@ async function message(p) { try { await p; return 'resolved'; } catch (e) { retu
     A.ok(/^unknown browser ref: b99999 /.test((await message(s.click('b99999'))).message), 'a ref never minted is still unknown');
   }
 
+  // ---- 1c. recovery's own re-read is not one of the agent's reads (review 2026-10-21) ----
+  // Every recovered action re-reads the page, and that read's refs are never handed to the agent. Counted in the
+  // 8-read window, they pushed the agent's own refs out: snapshot a 12-field form, find once, then fill each field with
+  // the snapshot's refs - fields 0-6 recovered, 7-11 were refused as stale and nothing was clicked.
+  {
+    const fields = Array.from({ length: 12 }, (_, i) => ({ role: 'textbox', text: 'Field ' + i, x: 10, y: 20 * i, w: 100, h: 18 }));
+    const clicked = [];
+    const drv = {
+      navigate: async u => u,
+      snapshot: async () => fields.map(f => Object.assign({}, f)),
+      click: async n => { clicked.push(n.text); return 'clicked ' + n.text; },
+      tabEpoch: () => 0, close: async () => {}
+    };
+    const s = T.makeBrowserSession({ makeDriver: () => drv, lookup: null, env: {} });
+    await s.navigate('https://example.com/form');
+    const snap = await s.snapshot();
+    await s.find({ text: 'field 3' });   // one intervening read: every snapshot ref is now stale but recoverable
+    const outcomes = [];
+    for (const n of snap) {
+      const r = await message(s.click(n.ref));
+      outcomes.push(r === 'resolved' ? 'recovered' : r.message);
+    }
+    A.eq(outcomes, fields.map(() => 'recovered'), 'all 12 old refs are recovered (7-11 were refused as stale before)');
+    A.eq(clicked, fields.map(f => f.text), 'and each click landed on its own field');
+    // recovery refs still retire with the agent's reads around them: a long recover-every-step session stays bounded
+    for (let i = 0; i < 200; i++) {
+      const fresh = await s.snapshot();
+      await s.find({ text: 'field 1' });
+      await s.click(fresh[i % 12].ref);   // stale since the find: recovered every time
+    }
+    A.eq(clicked.length, 12 + 200, 'every one of the 200 stale clicks was recovered');
+    // the last 8 agent reads = 4 cycles of snapshot (12) + find (3 hits), plus the 4 recovery reads (12) between them
+    A.ok(s._internals.refs.size <= 4 * (12 + 3 + 12), 'and the table stays bounded (' + s._internals.refs.size + ' refs after 600 reads; ~5400 kept on trunk)');
+  }
+
   // ---- 2. a ref from a CLOSED tab stays refused as a closed tab after it is retired ----
   {
     const tab = { tab: 0 };
