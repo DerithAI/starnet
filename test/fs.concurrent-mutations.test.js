@@ -167,6 +167,50 @@ async function rejection(p) {
     A.ok(/^Edited q\.js \(1 replacement\)/.test(ok.content), 'the next writer gets the file: an aborted waiter leaves no stuck lock');
   }
 
+  // ---- 6b. a waiter aborted while queued must NOT open the lock: a third writer still waits for the holder ----
+  {
+    // the primitive: H holds, W queues and aborts, N arrives while H is still inside
+    const t0 = run(await project({}));
+    const { withFileLocks } = t0._internals;
+    let inside = 0, maxInside = 0, releaseH;
+    const enter = async (wait) => { inside++; maxInside = Math.max(maxInside, inside); await wait(); inside--; };
+    const h = withFileLocks(['k6b'], null, () => enter(() => new Promise((r) => { releaseH = r; })));
+    await sleep(5);
+    const ac = new AbortController();
+    const w = rejection(withFileLocks(['k6b'], ac.signal, () => enter(() => sleep(1))));
+    await sleep(5); ac.abort();
+    const we = await w;
+    const nn = withFileLocks(['k6b'], null, () => enter(() => sleep(1)));
+    await sleep(20);
+    const overlapped = maxInside;
+    releaseH(); await h; await nn;
+    A.ok(we && we.name === 'AbortError', 'the queued waiter rejects with AbortError');
+    A.eq(overlapped, 1, 'a newcomer after an aborted waiter waits for the live holder (it once ran beside it: 2 inside at once)');
+
+    // end to end: run A's slow writeFile holds the lock, run W's append is cancelled while queued, run N appends
+    const proj = await project({ 'log.txt': 'start\n' });
+    let slowNext = false;
+    const slowFsp = new Proxy(fsp, { get(tg, p) {
+      if (p === 'writeFile') return async (...a) => { if (slowNext) { slowNext = false; await sleep(150); } return tg.writeFile(...a); };
+      return tg[p];
+    } });
+    const pathTrust = async (abs) => ({ base: proj, abs });
+    const A_ = makeFsTools({ fsp: slowFsp, pathMod: path, root: ROOT, pathTrust }), W_ = run(proj), N_ = run(proj);
+    const ctx = { agentId: 'ag', projectRoot: proj };
+    slowNext = true;
+    const pa = A_.appendTool.run({ path: 'log.txt', content: 'A\n' }, ctx);
+    await sleep(30);                                      // A is inside its locked, slow writeFile
+    const ac2 = new AbortController();
+    const pw = rejection(W_.appendTool.run({ path: 'log.txt', content: 'W\n' }, Object.assign({ signal: ac2.signal }, ctx)));
+    await sleep(10); ac2.abort();
+    const ew = await pw;
+    const pn = N_.appendTool.run({ path: 'log.txt', content: 'N\n' }, ctx);
+    const [ra, rn] = await Promise.all([pa, pn]);
+    A.ok(ew && ew.name === 'AbortError', 'the cancelled append rejects with AbortError');
+    A.eq([ra.mutationReceipt.state, rn.mutationReceipt.state], ['read-back-verified', 'read-back-verified'], 'both landed appends are verified');
+    A.eq(await fsp.readFile(path.join(proj, 'log.txt'), 'utf8'), 'start\nA\nN\n', "the third writer's line survives (it was lost: \"start\\nA\\n\")");
+  }
+
   // ---- 7. a multi-file patch racing one-file edits on both of its files: no deadlock, nothing lost ----
   {
     const proj = await project({ 'm1.txt': 'm1\nkeep1\n', 'm2.txt': 'm2\nkeep2\n' });

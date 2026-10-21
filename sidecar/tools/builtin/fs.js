@@ -56,7 +56,10 @@ const { note: failNote } = require('../../failopen');
         const gate = new Promise((r) => { release = r; });
         const tail = prev.then(() => gate);   // the next caller waits for the holder AND for us, even if we leave early
         MUTATION_TAILS.set(k, tail);
-        releases.push(() => { release(); if (MUTATION_TAILS.get(k) === tail) MUTATION_TAILS.delete(k); });
+        /* The entry is dropped only once `tail` itself has SETTLED (the holder ahead of us has let go AND so have
+           we), never at our own release: a waiter aborted while still queued releases early, and deleting the entry
+           then let the next caller start on Promise.resolve() beside the holder that was still writing. */
+        releases.push(() => { release(); tail.then(() => { if (MUTATION_TAILS.get(k) === tail) MUTATION_TAILS.delete(k); }); });
         await waitTurn(prev, signal);
         if (signal && signal.aborted) throw mutationAbortError();   // a cancelled tool must not turn into a late write
       }
