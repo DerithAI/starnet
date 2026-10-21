@@ -362,11 +362,13 @@ async function plugin(id, source) {
       await rtW.stopAll();
     }
 
-    // ---- 5c'+. a plugin that wedges on EVERY use is held down, not recycled forever (review 2026-10-21) ----
-    // One wedge cycle is a hook timeout plus the whole silence budget (5 s + 120 s in production), so restarts came
-    // ~125 s apart and MAX_RESTARTS (3 per 5 minutes) never tripped: a pre_tool_call that busy-loops was killed and
-    // restarted forever, and every hook, station-wide, paid its full timeout. Timers scaled; the injected clock moves
-    // the production cycle (125 s) per cycle.
+    // ---- 5c'+. a plugin that wedges on EVERY use is recycled on every use, and says so truthfully (review 2026-10-21) ----
+    // One wedge cycle is a hook timeout plus the whole silence budget (5 s + 120 s in production). A hold that kept it
+    // down after its second silence kill was dropped: status() still called it an ordinary crash that restarts on its
+    // next use (and COMMS -> EXTENSIONS printed exactly that), so nothing the Commander saw was true. Without the hold
+    // every word is: each cycle ends the process, status() says crashed with the honest reason, the log says the next
+    // use restarts it, and the next use does. Each hook pays its timeout, as on trunk, where it stayed wedged forever.
+    // Timers scaled; the injected clock moves the production cycle (125 s) per cycle.
     {
       const hlogs = [];
       const rtH = makePluginRuntime({ fork: cp.fork, workerPath: WORKER, store, now: () => clock, onLog: (id, line) => hlogs.push(line),
@@ -380,21 +382,19 @@ async function plugin(id, source) {
         const r = await rtH.hook('spinhook', 'pre_tool_call', { tool_name: 'fs.read' });
         const paid = Date.now() - t0;
         for (let i = 0; i < 60 && rtH.status('spinhook').state === 'running'; i++) await new Promise(res => setTimeout(res, 25));
-        cycles.push({ r, paid, state: rtH.status('spinhook').state, restarts: rtH.status('spinhook').restarts });
+        const st = rtH.status('spinhook');
+        cycles.push({ r, paid, state: st.state, restarts: st.restarts, error: st.error });
         clock += 125000;
       }
-      A.ok(cycles[0].paid >= 350 && cycles[1].paid >= 350, 'the first wedge and its one restart each pay the hook timeout: ' + JSON.stringify(cycles.slice(0, 2)));
-      A.eq(cycles.map(c => c.restarts), [0, 1, 1, 1, 1, 1], 'after its second silence kill it is not restarted again (restarts went 0,1,2,3,3,3 and it was killed every cycle before)');
-      A.ok(cycles.slice(2).every(c => c.r === null && c.paid < 200 && c.state === 'crashed'),
-        'its later hooks answer at once instead of each paying the full timeout: ' + JSON.stringify(cycles.slice(2)));
-      A.ok(hlogs.some(l => /ending its process; it stopped responding 2 times in 30 minutes, so it stays down$/.test(l)), 'the station log says it stays down');
-      A.ok(hlogs.some(l => /^\[hook\] the plugin stopped responding 2 times in 30 minutes and is stopped: it stopped responding/.test(l)),
-        'and each refused use says why, with the reason');
-      clock += 30 * 60 * 1000;   // the hold is a window, like the crash bound: half an hour later it gets one more try
-      const restartsLogged = () => hlogs.filter(l => l.startsWith('[runtime] restarting after: it stopped responding')).length;
-      const before = restartsLogged(), later = Date.now();
-      await rtH.hook('spinhook', 'pre_tool_call', { tool_name: 'fs.read' });
-      A.ok(restartsLogged() === before + 1 && Date.now() - later >= 350, 'once the window has passed the next use restarts it again (' + (Date.now() - later) + ' ms)');
+      A.ok(cycles.every(c => c.r === null && c.paid >= 350), 'every use really runs it again and pays the hook timeout: ' + JSON.stringify(cycles.map(c => c.paid)));
+      A.eq(cycles.map(c => c.restarts), [0, 1, 2, 3, 3, 3], 'every use restarts it (bounded by the crash window, which a ~125 s cycle never trips)');
+      A.ok(cycles.every(c => c.state === 'crashed' && /^it stopped responding/.test(c.error)),
+        'between uses status() says crashed, with the honest reason: ' + JSON.stringify(cycles.map(c => c.state + ' ' + c.error.slice(0, 22))));
+      const kills = hlogs.filter(l => /^\[runtime\] it stopped responding/.test(l));
+      A.eq(kills.length, 6, 'each cycle\'s kill is logged once');
+      A.ok(kills.every(l => / — ending its process; the next use restarts it$/.test(l)), 'and each kill line says the next use restarts it: ' + kills[kills.length - 1]);
+      A.eq(hlogs.filter(l => l.startsWith('[runtime] restarting after: it stopped responding')).length, 5, 'and the next use did restart it, every time');
+      A.ok(!hlogs.some(l => /stays down|is stopped:/.test(l)), 'nothing claims it stays down');
       await rtH.stopAll();
     }
 
