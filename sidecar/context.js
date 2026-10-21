@@ -124,9 +124,9 @@
   }
 
   // ---- secret redaction (module-level so it's usable without a context instance) ----
-  /* LINEAR-TIME DRIVERS (perf lane, 2026-10-20). Three shapes in SECRET_PATTERNS were quadratic as plain global
+  /* LINEAR-TIME DRIVERS (perf lane, 2026-10-20). Four shapes in SECRET_PATTERNS were quadratic as plain global
      scans. A failed attempt at one start re-scanned to the end of its run, and so did the attempt at every later start
-     in the same run: "sk-.sk-.…" and "a.a.a.…" put a word boundary every few characters, and a page of
+     in the same run: "sk-.sk-.…", "a.a.a.…" and "eyJ-eyJ-…" put a word boundary every few characters, and a page of
      BEGIN PRIVATE KEY headers with no END retried every header. 80 KB of crafted page content cost seconds per
      redact() pass, and every tool result takes at least two. The regexes are unchanged and stay the definition. A
      driver skips only start positions PROVEN unable to match, and runs the SAME regex, sticky, at the one start that
@@ -139,12 +139,17 @@
        · URL password: every start in one scheme run [A-Za-z0-9+.-] reaches the same "://" and the same remainder.
          The only start that can match is the leftmost letter at a word boundary in the run ending at each "://".
        · private key: a later BEGIN header ends later, so its END search covers a subset of the failed one's.
-         After the first unclosed header nothing later can match. */
+         After the first unclosed header nothing later can match.
+       · JWT: '.' is not a segment character [A-Za-z0-9_-], so the first segment of a start at p can only end where
+         the segment run from p+3 ends, and it must meet the fixed ".eyJ…" rest there. A later "eyJ" inside that run
+         has a shorter first segment that ends at the SAME place and needs the SAME rest. If p fails, every start up
+         to the run end fails too. */
   function isAlnumCode(c) { return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122); }
   function isWordCode(c) { return isAlnumCode(c) || c === 95; }                               // \w without /u
   function isKeyBodyCode(c) { return isAlnumCode(c) || c === 45 || c === 95 || c === 46; }    // [-_.A-Za-z0-9]
   function isSchemeCode(c) { return isAlnumCode(c) || c === 43 || c === 46 || c === 45; }     // [a-z0-9+.-] under /i
   function isLetterCode(c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122); }          // [a-z] under /i
+  function isJwtSegCode(c) { return isAlnumCode(c) || c === 95 || c === 45; }                 // [A-Za-z0-9_\-]
   function stickyCopy(re) { return new RegExp(re.source, re.flags.replace('g', '') + 'y'); }
   function maskedKeyDriver(re, rep) {
     const cut = re.source.indexOf('[-_.A-Za-z0-9]*?');
@@ -206,6 +211,24 @@
       return last ? out + s.slice(last) : s;
     };
   }
+  function jwtDriver(re, rep) {
+    if (re.source.indexOf('\\beyJ[A-Za-z0-9_\\-]{8,}\\.') !== 0 || re.flags !== 'g' || rep.indexOf('$') >= 0) return null;   // not the shape this proof covers: plain scan
+    const head = /\beyJ/g;
+    const at = stickyCopy(re);
+    return function (s) {
+      let out = '', last = 0, m;
+      head.lastIndex = 0;
+      while ((m = head.exec(s)) !== null) {
+        const p = m.index;
+        at.lastIndex = p;
+        if (at.exec(s) !== null) { out += s.slice(last, p) + rep; last = at.lastIndex; head.lastIndex = last; continue; }
+        let r = p + 3;
+        while (r < s.length && isJwtSegCode(s.charCodeAt(r))) r++;
+        head.lastIndex = r;   // no start before the end of this segment run can match either
+      }
+      return last ? out + s.slice(last) : s;
+    };
+  }
   // Key/token shapes scrubbed before anything is logged, streamed, or persisted. Each pattern is
   // distinctive enough (vendor prefix + a length floor) that it does not eat ordinary prose. This is
   // ALWAYS-ON — there is deliberately no toggle the model could flip off. Most-specific vendor prefixes
@@ -243,7 +266,7 @@
     [/\bhf_[A-Za-z0-9]{30,}\b/g, '[redacted-key]'],                     // HuggingFace
     [/\bxai-[A-Za-z0-9]{20,}\b/g, '[redacted-key]'],                    // xAI
     [/\bAC[a-f0-9]{32}\b/g, '[redacted-key]'],                          // Twilio account SID
-    [/\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}/g, '[redacted-jwt]'], // JWT
+    [/\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}/g, '[redacted-jwt]', jwtDriver], // JWT
     [/\b\d{8,10}:[A-Za-z0-9_\-]{30,}\b/g, '[redacted-token]'],          // Telegram bot token (this app uses these)
     [/sk-[A-Za-z0-9_\-]{16,}/g, '[redacted-key]'],                      // generic OpenAI-style (broad — keep last)
     [/\bBearer\s+[A-Za-z0-9._\-]{12,}/g, 'Bearer [redacted-key]'],      // Authorization: Bearer <token>

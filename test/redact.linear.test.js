@@ -1,12 +1,13 @@
 /* node test/redact.linear.test.js — redact() runs in linear time on delimiter-dense text, and redacts EXACTLY what the
    old plain regex scans did.
 
-   THE BUG (perf review 2026-10-19): three SECRET_PATTERNS shapes were quadratic as plain global scans. Each start
+   THE BUG (perf review 2026-10-19): four SECRET_PATTERNS shapes were quadratic as plain global scans. Each start
    position inside one long run re-scanned that run to its end: the masked-key rule on "sk-.sk-.…", the URL-password
-   rule on "a.a.a.…" (any dotted or dashed text), and the private-key rule on a page of BEGIN headers with no END.
+   rule on "a.a.a.…" (any dotted or dashed text), the JWT rule on "eyJ-eyJ-…" (found in lane review, not named in the
+   perf report), and the private-key rule on a page of BEGIN headers with no END.
    80 KB of crafted page content cost seconds per redact() pass, and every tool result takes at least two.
    Part 1 drives the REAL redact() on those inputs under a time bound (it fails on the old code).
-   Part 2 pins the three regexes to their old literals, then diffs each driver against the plain s.replace() scan,
+   Part 2 pins the four regexes to their old literals, then diffs each driver against the plain s.replace() scan,
    and the whole redact() against the plain scan of every pattern, on adversarial and seeded random input.
    Redaction must never get weaker: any difference at all is a failure. */
 'use strict';
@@ -29,6 +30,9 @@ const BOUND = 300;   // the old scans need 1,700-4,400 ms on the 80 KB inputs (1
     ['sk-a.sk-a. (80 KB)', 'sk-a.'.repeat(16000)],
     ['xapp-1- (80 KB)', 'xapp-1-'.repeat(11500)],
     ['BEGIN PRIVATE KEY headers with no END (320 KB)', '-----BEGIN PRIVATE KEY-----'.repeat(12000)],
+    ['eyJ-eyJ- (80 KB)', 'eyJ-'.repeat(20000)],
+    ['eyJa-eyJa- (80 KB)', 'eyJa-'.repeat(16000)],
+    ['eyJ_eyJ_ with a dot every 4 KB (80 KB)', ('eyJ_'.repeat(1000) + '.').repeat(20)],
   ];
   for (const [label, input] of cases) {
     const r = ms(() => redact(input));
@@ -41,17 +45,22 @@ const BOUND = 300;   // the old scans need 1,700-4,400 ms on the 80 KB inputs (1
   A.eq(redact('sk-. '.repeat(500) + 'sk-Ab12****Wx9Z'), 'sk-. '.repeat(500) + '[redacted-key]', 'a masked key after many spaced sk-. stubs is scrubbed on its own');
   A.eq(redact('-----BEGIN X'.repeat(500) + '-----BEGIN RSA PRIVATE KEY-----\nMIIx\n-----END RSA PRIVATE KEY-----'),
     '-----BEGIN X'.repeat(500) + '[redacted-private-key]', 'a private key after many malformed headers is scrubbed');
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+  A.eq(redact('eyJ- '.repeat(500) + JWT), 'eyJ- '.repeat(500) + '[redacted-jwt]', 'a JWT after many spaced eyJ- stubs is scrubbed on its own');
+  A.eq(redact('eyJ-'.repeat(5000) + JWT), '[redacted-jwt]', 'a JWT at the end of a long eyJ- run is scrubbed from its first eyJ, as the plain scan reads it');
 }
 
 // ---- 2. identical to the old plain scans ----
 const OLD_MASKED = /\b(?:(?:sk|pk|rk|xai|pplx|glpat|xox[abeprs])-|sk_(?:live|test)_|(?:gsk|hf|gh[pousr]|whk|ntn|lin_api)_|AIza|ya29\.)[-_.A-Za-z0-9]*?(?:[*•]{2,}|…|\.{3})(?:[-_A-Za-z0-9*•…]|\.{3})*/g;
 const OLD_PRIVATE = /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----/g;
 const OLD_URL = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:\/?#@]*:)(?!\[redacted-)[^\s\/?#]+(?=@)/gi;
+const OLD_JWT = /\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}/g;
 const pats = (C._internals && typeof C._internals.secretPatterns === 'function') ? C._internals.secretPatterns() : [];
 A.ok(pats.length > 0, 'the pattern list is reachable for the diff');
 const driven = pats.filter(p => p.driven);
-A.eq(driven.map(p => [p.re.source, p.re.flags, p.rep]), [[OLD_MASKED.source, 'g', '[redacted-key]'], [OLD_PRIVATE.source, 'g', '[redacted-private-key]'], [OLD_URL.source, 'gi', '$1[redacted-secret]']],
-  'exactly the three quadratic shapes run through a driver, and their regexes are the old ones unchanged');
+A.eq(driven.map(p => [p.re.source, p.re.flags, p.rep]), [[OLD_MASKED.source, 'g', '[redacted-key]'], [OLD_PRIVATE.source, 'g', '[redacted-private-key]'],
+  [OLD_JWT.source, 'g', '[redacted-jwt]'], [OLD_URL.source, 'gi', '$1[redacted-secret]']],
+  'exactly the four quadratic shapes run through a driver, and their regexes are the old ones unchanged');
 const plainAll = s => pats.reduce((acc, p) => acc.replace(p.re, p.rep), s);
 
 let seed = 0xc0ffee;   // mulberry32: deterministic, and every output bit is usable (a float LCG degenerates)
@@ -66,10 +75,13 @@ const URL_PIECES = ['a', 'b', 'git', 'http', 'x+y', 'Z', '1', '.', '-', '+', '_'
   '[redacted-', '[REDACTED-', 'p', 'é', '\u212a', '\u017f', '\u0131', '%40', 'u:p', 'h.com', 'http://', 'a://', 'u:p@', ':pw@', 'x://y:z@', 'git+ssh://'];
 const PRIV_PIECES = ['-----BEGIN ', '-----BEGIN PRIVATE KEY-----', '-----BEGIN RSA PRIVATE KEY-----', '-----BEGIN ec PRIVATE KEY-----', '-----END PRIVATE KEY-----',
   '-----END EC PRIVATE KEY-----', '-----END ', '-----', '-', 'RSA ', 'PRIVATE KEY-----', 'BEGIN ', '\n', 'abc', ' '];
-const ALL_PIECES = MASKED_PIECES.concat(URL_PIECES, PRIV_PIECES, ['password=', 'api_key: "', 'Bearer ', 'sk-or-v1-', 'abcdefghijklmnopqrstuvwxyz0123456789', '12345678:', 'eyJ']);
+const JWT_PIECES = ['eyJ', 'eyJ', 'eyJ', 'eyJhbGciOiJ', 'eyJabcdefgh.', 'eyJAb12_-x9.eyJ', 'eyJa.eyJabcdefgh.', 'abcdefgh.', '.eyJ', '.eyJ', '.eyJ12345678.',
+  'abcdefgh', 'Ab12_-x9', '12345678', 'abcd', 'a', 'Z', '0', '_', '-', '-', '.', '.', '..',
+  ' ', '\n', '@', ':', '/', '"', '=', '+', 'é', 'xeyJ', 'eyj', 'EyJ', 'ey', 'J', '[redacted-jwt]'];
+const ALL_PIECES = MASKED_PIECES.concat(URL_PIECES, PRIV_PIECES, JWT_PIECES, ['password=', 'api_key: "', 'Bearer ', 'sk-or-v1-', 'abcdefghijklmnopqrstuvwxyz0123456789', '12345678:', 'eyJ']);
 
 const families = [
-  [OLD_MASKED.source, MASKED_PIECES], [OLD_PRIVATE.source, PRIV_PIECES], [OLD_URL.source, URL_PIECES],
+  [OLD_MASKED.source, MASKED_PIECES], [OLD_PRIVATE.source, PRIV_PIECES], [OLD_URL.source, URL_PIECES], [OLD_JWT.source, JWT_PIECES],
 ];
 for (const [src, pieces] of families) {
   const p = driven.find(d => d.re.source === src);
