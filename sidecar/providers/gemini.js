@@ -495,9 +495,13 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '', errBody = null;
-        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
-        catch (_) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
+        // The body is read ONCE, as text, through the idle watchdog and the caller's Stop (provider.runtime.readErrorBody):
+        // res.json() then res.text() threw on every non-JSON page, so a proxy's HTML 502 read only "Bad Gateway", and a
+        // stalled error body ignored Stop for up to 300 s.
+        const eb = await provider.runtime.readErrorBody(res, { signal, url: baseUrl, tag: 'providers.gemini' });
+        const errBody = eb.parsed ? eb.data : null;
+        let detail = eb.parsed ? ((errBody && errBody.error && (errBody.error.message || errBody.error.status || errBody.error.code)) || JSON.stringify(errBody)) : (provider.runtime.safeErrorField(eb.text, 300) || res.statusText || '');
+        if (eb.stalled) detail += ' (error body did not finish)';
         const err = new Error('gemini http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;

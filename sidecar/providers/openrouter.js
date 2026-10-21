@@ -456,9 +456,13 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '', errBody = null;
-        try { const j = await res.json(); errBody = j; detail = (j && j.error && errorDetail(j.error, '')) || JSON.stringify(j); }
-        catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
+        // The body is read ONCE, as text, through the idle watchdog and the caller's Stop (provider.runtime.readErrorBody):
+        // res.json() then res.text() threw on every non-JSON page, so a proxy's HTML 502 read only "Bad Gateway", and a
+        // stalled error body ignored Stop for up to 300 s.
+        const eb = await provider.runtime.readErrorBody(res, { signal, url: baseUrl, tag: 'providers.openrouter' });
+        const errBody = eb.parsed ? eb.data : null;
+        let detail = eb.parsed ? ((errBody && errBody.error && errorDetail(errBody.error, '')) || JSON.stringify(errBody)) : (provider.runtime.safeErrorField(eb.text, 300) || res.statusText || '');
+        if (eb.stalled) detail += ' (error body did not finish)';
         // EFFORT SELF-HEAL (400): the model refused the reasoning rung we sent (effortRefusal). Learn what it takes and
         // resend at the nearest rung it keeps — before any token streams, so nothing is billed twice. Does not consume
         // a transient-retry attempt. A refusal that removes nothing new stands as the honest error.

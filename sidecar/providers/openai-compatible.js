@@ -218,14 +218,8 @@
     if (key) h.Authorization = 'Bearer ' + key;
     return h;
   }
-  function safeErrorField(value, limit) {
-    if (value == null || (typeof value === 'object' && typeof value !== 'number')) return '';
-    return String(value)
-      .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
-      .replace(/\b(?:sk|api)[-_][A-Za-z0-9_-]{8,}\b/gi, '[redacted]')
-      .replace(/[\r\n\t\0-\x08\x0b\x0c\x0e-\x1f\x7f]+/g, ' ')
-      .replace(/\s+/g, ' ').trim().slice(0, limit || 300);
-  }
+  // The redactor and the error-body reader are shared with every adapter (provider.js runtime).
+  const safeErrorField = provider.runtime.safeErrorField;
   function responseHeader(res, names) {
     if (!res || !res.headers || typeof res.headers.get !== 'function') return '';
     for (const name of names) {
@@ -234,50 +228,14 @@
     }
     return '';
   }
-  // An error body is read only this far: 500 characters are kept, so a proxy's endless HTML page is cut off.
-  const MAX_ERR_BODY = 64 * 1024;
   async function responseErrorDetail(res, signal, url) {
-    let data = null;
-    let text = '';
-    let readStream = false;
-    let bodyStalled = false;
-    try {
-      // Error headers disarm the connect guard too. An unfinished error body must retain the
-      // same idle watchdog and caller cancellation as a successful stream, including local loads.
-      if (res.body && typeof res.body.getReader === 'function') {
-        readStream = true;
-        const raw = res.body.getReader();
-        const reader = timeouts.idleGuardedReader(raw, { signal, url });
-        const decoder = new TextDecoder();
-        let bytes = 0;
-        try {
-          for (;;) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            text += decoder.decode(chunk.value, { stream: true });
-            bytes += (chunk.value && chunk.value.byteLength) || 0;
-            if (bytes >= MAX_ERR_BODY) {
-              try { await reader.cancel(); } catch (e) { failNote('providers.openai_compatible.error_reader_cancel', 'error response reader cancel failed'); }
-              break;
-            }
-          }
-          text += decoder.decode();
-        } finally { try { raw.releaseLock(); } catch (_) { failNote('providers.openai_compatible.error_reader_release', 'error response reader release failed'); } }
-      } else text = typeof res.text === 'function' ? await res.text() : '';
-      if (text) { try { data = JSON.parse(text); } catch (_) { data = null; } }
-    } catch (e) {
-      if (isAbort(e, signal)) throw e;
-      // The status line already arrived: a body that stalls is still that status (a 401 keeps its reconnect door),
-      // never a "no bytes received" stall. Keep what text did arrive.
-      if (e && e.code === 'PROVIDER_STREAM_TIMEOUT') bodyStalled = true; else text = '';
-      data = null;
-    }
-    if (!readStream && !data && !text && typeof res.json === 'function') {
-      try { data = await res.json(); } catch (e) {
-        if (isAbort(e, signal)) throw e;
-        data = null;
-      }
-    }
+    // Error headers disarm the connect guard too. An unfinished error body must retain the same idle watchdog and
+    // caller cancellation as a successful stream, including local loads: provider.runtime.readErrorBody does both,
+    // reads at most MAX_ERR_BODY (500 characters are kept, so a proxy's endless HTML page is cut off).
+    const eb = await provider.runtime.readErrorBody(res, { signal, url, tag: 'providers.openai_compatible' });
+    const data = eb.parsed ? eb.data : null;
+    const text = eb.text;
+    const bodyStalled = eb.stalled;
     const e = data && data.error;
     const message = safeErrorField((e && e.message) || (data && data.message) || text || res.statusText || ('HTTP ' + res.status), 500)
       + (bodyStalled ? ' (error body did not finish)' : '');
