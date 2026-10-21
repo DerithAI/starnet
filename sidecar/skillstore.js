@@ -333,6 +333,24 @@
       } catch (e) { failNote('skillstore.guard.scan', e); }
       return entry;
     }
+    /* THE PACKAGE MIRROR (skill-packages/<agent>/<id>/SKILL.md) is what view() hydrates over a non-canonical skill's
+       stored body, so it may only ever hold bytes the store accepted. persist() writes it AFTER the durable append (a
+       refused edit never reaches it), and markUsed re-writes it for a skill this process has not yet mirrored from its
+       current record: the first use after a boot, or the first use after a failed write (a Windows EBUSY on SKILL.md).
+       That is the repair a use used to get from persist() on every run, at one package write per skill per boot. */
+    const mirrored = new Set();
+    function mirrorDir(entry) {
+      if (!packageStore) return '';
+      const dirOf = entry.state === 'archived' && typeof packageStore.archiveDir === 'function' ? packageStore.archiveDir : packageStore.packageDir;
+      return typeof dirOf === 'function' ? str(dirOf(entry)) : '';
+    }
+    function writeMirror(entry, tag) {
+      if (!packageStore || typeof packageStore.writePackage !== 'function') return;
+      const key = keyOf(entry.agentId, entry.name);
+      mirrored.delete(key);
+      try { packageStore.writePackage(projectSkill(entry, true)); mirrored.add(key); }
+      catch (e) { failNote(tag, e); }
+    }
     function persist(entry, promotion) {
       if (!canWrite()) throw cannotWrite();
       const projected = projectSkill(entry, true);
@@ -340,24 +358,17 @@
       // Stamp the digest of the content that was JUST scanned, so the verdict and the digest can
       // never disagree about which bytes they describe.
       try { if (digest) entry.contentDigest = str(digest(projected)); } catch (_) {}
-      try {
-        if (!promotion && packageStore && typeof packageStore.writePackage === 'function') {
-          const dir = packageStore.writePackage(projectSkill(entry, true));
-          if (dir) entry.packagePath = dir;
-        }
-      } catch (e) { failNote('skillstore.package.write', e); }
+      // The record names its mirror before the append; the mirror itself is written after it (see writeMirror).
+      if (!promotion) { const dir = mirrorDir(entry); if (dir) entry.packagePath = dir; }
       try { io.append(clone(promotion ? { recordType: 'skill-promotion', entry, candidate: promotion } : entry)); }
       catch (e) { failNote('skillstore.append', e); throw e; }
       // Publish to RAM only after the durable event was accepted. Otherwise manage() reports
       // success for a skill that vanishes on the next sidecar restart.
       latest.set(keyOf(entry.agentId, entry.name), clone(entry));
-      if (promotion) {
-        candidateRows.set(keyOf(entry.agentId, entry.name), clone(promotion));
-        // The durable entry is authoritative. A failed mirror update cannot make a new
-        // candidate overwrite the previously approved package before publication commits.
-        try { if (packageStore && typeof packageStore.writePackage === 'function') packageStore.writePackage(projectSkill(entry, true)); }
-        catch (e) { failNote('skillstore.package.promotion', e); }
-      }
+      // The durable entry is authoritative: a promotion's mirror is written only once publication committed, so a
+      // failed append cannot make a new candidate overwrite the previously approved package.
+      if (promotion) candidateRows.set(keyOf(entry.agentId, entry.name), clone(promotion));
+      writeMirror(entry, promotion ? 'skillstore.package.promotion' : 'skillstore.package.write');
       maybeCompact();
       return entry;
     }
@@ -924,7 +935,8 @@
        package rewrite), which grew skills.jsonl by megabytes a day; the log's size rotation then deleted the only
        durable copy of every skill not used recently. Now each use appends a ~200-byte usage row (applied on load,
        folded into the record by the next compaction) and updates RAM. A failed append keeps the RAM bump, which
-       the next compaction flushes.
+       the next compaction flushes. The package mirror is re-written only when this process has not written it from
+       the current record (writeMirror): once per skill per boot, and after a failed write.
        THE GUARD STILL SEES EVERY USE. The re-scan on use was how a new guard rule reached a skill nobody edits, so a
        use still scans the bytes under the current rules (CPU, no disk); only when the scan (verdict, findings, summary)
        or action would change, or a legacy record lacks a digest, is the whole record persisted (rare: once per rule
@@ -952,7 +964,11 @@
         }
         const row = { recordType: 'skill-usage', agentId: entry.agentId, skillName: entry.name, useCount: entry.useCount, viewCount: num(entry.viewCount), lastUsedAt: entry.lastUsedAt };
         try { io.append(row); } catch (e) { failNote('skillstore.usage.append', e); }
-        latest.set(keyOf(entry.agentId, entry.name), entry);
+        const key = keyOf(entry.agentId, entry.name);
+        // heal a mirror this process has not written from the current record (see writeMirror); the path rides the
+        // next compaction like the counters do
+        if (!mirrored.has(key)) { const dir = mirrorDir(entry); if (dir) entry.packagePath = dir; writeMirror(entry, 'skillstore.package.write'); }
+        latest.set(key, entry);
         count++;
       }
       if (count) maybeCompact();

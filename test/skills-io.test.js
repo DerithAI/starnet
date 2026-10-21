@@ -18,6 +18,8 @@
      • a use re-scans under the current rules and stores a changed scan (new findings under the same verdict too);
      • a torn row's own nested object (a candidate's `skill`, a promotion's `entry`) is never loaded as the active skill;
      • a usage row carries no `name`, so an older StarNet skips it instead of replacing the skill;
+     • the package mirror view() hydrates holds only accepted bytes (a refused edit never reaches SKILL.md), and a use
+       repairs a mirror this process has not written from the current record (after a failed write, or a boot);
      • a large library is not rewritten on every append (hysteresis); a torn row is reported, not silent. */
 'use strict';
 const A = require('./_assert.js');
@@ -358,6 +360,93 @@ const seed = (s) => { for (const n of names) A.ok(s.write({ agentId: 'a', name: 
     A.ok(s.compact().ok, c.label + ': a compaction runs');
     A.eq((mk().view('a', 'Deploy', { bump: false, hydrate: false }) || {}).body, 'the APPROVED active body', c.label + ': and the approved body survives compaction + restart');
     A.ok(fs.readFileSync(file + '.damaged', 'utf8').includes('UNAPPROVED proposal body'), c.label + ': the torn bytes are saved aside');
+  }
+}
+
+// ---- 11. the package mirror holds only accepted bytes, and a use heals it (a use no longer persists the record) ----
+// view() hydrates skill-packages/<agent>/<id>/SKILL.md over a non-canonical skill's stored body. Trunk's per-use persist()
+// re-wrote that mirror at every run end; a usage row does not. Real package store, guard and gate digest the host wires;
+// what a run is given = viewAccessible + gate.verify, the run end = markUsed. The only faults: one EPERM on the
+// skills.jsonl append, or one EBUSY on SKILL.md.
+{
+  const realGuard = require('../sidecar/skills/guard.js');
+  const { digestOf, makeSkillGate } = require('../sidecar/skills/gate.js');
+  const { makePackageStore } = require('../sidecar/skills/package.js');
+  const gate = makeSkillGate({ guard: realGuard });
+  const edit = (s, b) => s.write({ agentId: 'a', name: 'Deploy', summary: 'deploy', body: b, createdBy: 'user' });
+  const mirrorFixture = (name) => {
+    const dir = path.join(tmp, name); fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'skills.jsonl');
+    const faults = { append: 0, skillMd: 0 }, mdWrites = [];
+    const pfs = Object.assign({}, fs, { writeFileSync(p, ...a) {
+      if (/SKILL\.md$/.test(String(p))) {
+        mdWrites.push(String(p));
+        if (faults.skillMd > 0) { faults.skillMd--; throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }); }
+      }
+      return fs.writeFileSync(p, ...a);
+    } });
+    const packageStore = makePackageStore({ fs: pfs, pathMod: path, root: path.join(dir, 'skill-packages'), now: () => 1 });
+    const mk = () => {
+      const real = makeSkillsIo({ fs, file, writeDurable: (f2, b) => writeFileDurable({ fs, path }, f2, b) });
+      const io = Object.assign({}, real, { append(r) {
+        if (faults.append > 0) { faults.append--; throw Object.assign(new Error('EPERM: skills.jsonl locked'), { code: 'EPERM' }); }
+        return real.append(r);
+      } });
+      return makeSkillStore({ io, clock, packageStore, guard: realGuard, digest: digestOf });
+    };
+    const m = { faults, mdWrites, store: mk() };
+    m.restart = () => { m.store = mk(); };
+    m.delivered = () => { const v = m.store.viewAccessible('a', 'Deploy', {}); return (gate.verify(v).visible ? '' : 'WITHHELD ') + v.body; };
+    m.run = () => { m.delivered(); m.store.markUsed('a', ['Deploy']); };
+    m.onDisk = () => fs.readFileSync(path.join(packageStore.packageDir(m.store.view('a', 'Deploy', { bump: false, hydrate: false })), 'SKILL.md'), 'utf8');
+    return m;
+  };
+  // 11a. an edit whose durable append failed is refused, so SKILL.md must not hold it either
+  {
+    const m = mirrorFixture('mirror-append');
+    A.ok(edit(m.store, 'APPROVED: run deploy.sh').ok, 'mirror 11a: seeded');
+    m.faults.append = 1;
+    let threw = null; try { edit(m.store, 'REFUSED EDIT: run deploy.sh --force'); } catch (e) { threw = e; }
+    A.ok(threw && /EPERM/.test(threw.message), 'mirror 11a: precondition: the edit whose append failed is refused');
+    A.ok(!/REFUSED EDIT/.test(m.onDisk()), 'mirror 11a: the refused bytes never reach SKILL.md');
+    A.eq(m.delivered(), 'APPROVED: run deploy.sh', 'mirror 11a: a run is given the stored body, not the refused edit');
+    m.run();
+    A.eq(m.delivered(), 'APPROVED: run deploy.sh', 'mirror 11a: and still after a run');
+    m.restart();
+    A.eq(m.delivered(), 'APPROVED: run deploy.sh', 'mirror 11a: and after a restart');
+  }
+  // 11b. an edit whose mirror write failed (EBUSY) is stored; the next use re-writes the mirror, so the next run sees it
+  {
+    const m = mirrorFixture('mirror-ebusy');
+    A.ok(edit(m.store, 'OLD: push straight to main').ok, 'mirror 11b: seeded');
+    m.faults.skillMd = 1;
+    A.ok(edit(m.store, 'NEW: open a PR and wait for CI').ok, 'mirror 11b: the edit is stored (only its mirror write failed)');
+    A.eq(m.faults.skillMd, 0, 'mirror 11b: precondition: the SKILL.md write did fail');
+    A.eq(m.store.view('a', 'Deploy', { bump: false, hydrate: false }).body, 'NEW: open a PR and wait for CI', 'mirror 11b: precondition: the store holds the edit');
+    m.run();   // this run still read the old mirror (trunk too); its run end repairs it
+    A.eq(m.delivered(), 'NEW: open a PR and wait for CI', 'mirror 11b: the next run is given the edit');
+    A.ok(/NEW: open a PR/.test(m.onDisk()), 'mirror 11b: and SKILL.md holds it');
+  }
+  // 11c. the same stale mirror across a restart (no use in between): the first use after the boot repairs it
+  {
+    const m = mirrorFixture('mirror-restart');
+    A.ok(edit(m.store, 'OLD: push straight to main').ok, 'mirror 11c: seeded');
+    m.faults.skillMd = 1;
+    A.ok(edit(m.store, 'NEW: open a PR and wait for CI').ok, 'mirror 11c: the edit is stored');
+    m.restart();
+    m.run();
+    A.eq(m.delivered(), 'NEW: open a PR and wait for CI', 'mirror 11c: a mirror left stale across a restart is repaired by the first use after it');
+  }
+  // 11d. the cost: a use of a skill this process already mirrored writes no package; after a boot, one write per skill
+  {
+    const m = mirrorFixture('mirror-cost');
+    A.ok(edit(m.store, 'Read the README, then run the tests.').ok, 'mirror 11d: seeded');
+    let n = m.mdWrites.length;
+    for (let i = 0; i < 5; i++) m.run();
+    A.eq(m.mdWrites.length - n, 0, 'mirror 11d: 5 uses of a skill mirrored by this process write no package');
+    m.restart(); n = m.mdWrites.length;
+    for (let i = 0; i < 5; i++) m.run();
+    A.eq(m.mdWrites.length - n, 1, 'mirror 11d: after a restart only the first use re-writes the mirror');
   }
 }
 
