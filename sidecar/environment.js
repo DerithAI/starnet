@@ -694,7 +694,8 @@
        container: then the refused exec cannot have run it. That is EVERY exec the same restart refused — the ones
        joining the ensure the first refusal began, and one whose refusal arrives after the cell is already back —
        not only the first. A container that was running all along (output that merely looks like the refusal)
-       keeps its original result: a command that ran is never run twice. */
+       keeps its original result: a command that ran is never run twice. Nor is one whose run was Stopped while the
+       revival waited (its abort signal fired): it keeps docker's refusal. */
     const DOCKER_GONE_RE = /^\s*(?:Error response from daemon:\s*(?:No such container\b|[Cc]ontainer \S+ is not running)|Cannot connect to the Docker daemon|error during connect|failed to connect to the docker API)/;
     function containerGone(r) {
       return !!r && r.exitCode !== 0 && !r.timedOut && !r.aborted && DOCKER_GONE_RE.test(String(r.out || ''));
@@ -812,7 +813,8 @@
           const before = revivals.get(aid) || 0;   // the revivals before this exec reaches docker
           return run().then(function (r) {
             if (!containerGone(r)) return r;
-            return reviveStale(aid, before).then(function (revivedSince) { return revivedSince ? run() : r; });
+            // a Stop during the revival wait means no re-run: the caller keeps docker's refusal (the command never ran)
+            return reviveStale(aid, before).then(function (revivedSince) { return revivedSince && !(opts.signal && opts.signal.aborted) ? run() : r; });
           });
         }); });
       },
