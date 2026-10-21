@@ -137,7 +137,7 @@ const SYNC_BASELINE = {
   'channels/sse.js': 2,
   'channels/store.js': 2,   // AUDITED — 2 left: ensureRoot mkdir, onRecover observer
   'channels/telegram.transport.js': 4,
-  'checkpoint-store.js': 10,   // AUDITED — GC failures now report; the sync size walk is gone (async repoBytes counts unreadable entries); remaining realpath/stat/readdir defaults, .bak staging and dw loader fallback
+  'checkpoint-store.js': 9,    // AUDITED — GC failures now report; the sync size walk is gone (async repoBytes counts unreadable entries; measure() sizes from git ls-tree, no per-file stat swallow); remaining realpath/stat/readdir defaults, .bak staging and dw loader fallback
   'configexport.js': 0,
   'consentwait.js': 1,
   'credits-link.js': 2,
