@@ -133,6 +133,24 @@ function store(io) { return makeSkillStore({ io, clock: { now: () => 9000 }, gua
     ]);
     A.eq(trickle, 'skill source timed out', 'a trickle is ended at the caller\'s own budget');
     A.ok(Date.now() - t1 < 1500, 'at that budget (' + (Date.now() - t1) + ' ms)');
+    // …and a caller WITHOUT one (community maps, the market catalog, an import) still has an overall deadline (review
+    // 2026-10-21): a trickle that beats every silence window held the read, and its socket, open for as long as it liked.
+    const unbudgeted = makeSkillDocumentFetcher({ timeoutMs: 80, bodyDeadlineMs: 300, fetchImpl: steady(30, 1000) });
+    const t2 = Date.now();
+    const endless = await Promise.race([
+      unbudgeted('https://maps.example/still.png', { maxBytes: 3990000, label: 'the map picture' }).then(() => 'resolved', e => e.message),
+      new Promise(r => setTimeout(r, 3000, 'still waiting after 3 s'))
+    ]);
+    A.eq(endless, 'skill source timed out', 'a trickle with no caller budget is ended at the fetcher\'s own deadline');
+    A.ok(Date.now() - t2 < 1500, 'at that deadline (' + (Date.now() - t2) + ' ms)');
+    // that deadline is 60 s unless a test scales it: one whole read of a quick source arms exactly that timer
+    const delays = [], realSetTimeout = global.setTimeout;
+    global.setTimeout = function (fn, ms, ...rest) { delays.push(ms); return realSetTimeout(fn, ms, ...rest); };
+    let quick;
+    try { quick = await makeSkillDocumentFetcher({ fetchImpl: steady(0, 1) })('https://maps.example/still.png', { maxBytes: 3990000, label: 'the map picture' }).then(r => r.bytes.length, e => e.message); }
+    finally { global.setTimeout = realSetTimeout; }
+    A.eq(quick, 1000, 'a quick source still arrives');
+    A.ok(delays.includes(60000), 'and its read was capped at 60 s (timers armed: ' + JSON.stringify(delays) + ')');
   }
 
   const fetchedUrls = [];

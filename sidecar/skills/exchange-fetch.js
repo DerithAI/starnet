@@ -11,6 +11,7 @@ const MAX_DISCOVERY_DEPTH = 8;
 const MAX_DISCOVERY_REQUESTS = MAX_PACKAGE_FILES * 2;
 const MAX_FETCHED_BYTES = MAX_PACKAGE_BYTES * 2; // package bytes plus bounded GitHub directory listings
 const PACKAGE_DEADLINE_MS = 30000;
+const BODY_DEADLINE_MS = 60000;   // a read with no budget of its own: headers + body, whole
 
 function makeSkillDocumentFetcher(deps) {
   deps = deps || {};
@@ -19,6 +20,7 @@ function makeSkillDocumentFetcher(deps) {
   const assertResolvedSafe = deps.assertResolvedSafe;
   const lookup = deps.lookup;
   const timeoutMs = deps.timeoutMs > 0 ? deps.timeoutMs : 12000;
+  const bodyDeadlineMs = deps.bodyDeadlineMs > 0 ? deps.bodyDeadlineMs : BODY_DEADLINE_MS;
 
   async function checked(raw) {
     let u = assertSafeUrl ? assertSafeUrl(raw) : new URL(raw);
@@ -57,15 +59,18 @@ function makeSkillDocumentFetcher(deps) {
        download that was merely slow and steady (a 4 MB community map picture under ~330 KB/s). So the timer is an
        inactivity timer: headers, then every body chunk, re-arm it, and requestTimeoutMs of silence ends the read. A
        caller with a budget of its own (the package fetcher passes what is left of its 30 s) also caps the whole read
-       at it; a caller without one (community maps, the market catalog) bounds a slow trickle with its own deadline. */
-    const capMs = Number(requestOpts.timeoutMs) > 0 ? Number(requestOpts.timeoutMs) : 0;
+       at it; a caller without one (community maps, the market catalog, an import) gets BODY_DEADLINE_MS (review
+       2026-10-21: a source trickling a byte before each silence window ran out held its socket open for as long as it
+       liked, and a caller's own race, like community maps' 45 s, gave up without ever closing it). 60 s still carries
+       a full 4 MB at ~67 KB/s. */
+    const capMs = Number(requestOpts.timeoutMs) > 0 ? Number(requestOpts.timeoutMs) : bodyDeadlineMs;
     let u = await checked(raw);
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const ctrl = new AbortController();
       let idle = null;
       const arm = () => { clearTimeout(idle); idle = setTimeout(() => ctrl.abort(), requestTimeoutMs); };
       arm();
-      const cap = capMs ? setTimeout(() => ctrl.abort(), capMs) : null;
+      const cap = setTimeout(() => ctrl.abort(), capMs);
       try {
         let response;
         try {
