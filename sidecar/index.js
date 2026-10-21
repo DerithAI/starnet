@@ -4781,11 +4781,22 @@ async function forceRefreshCodexAccessToken(staleToken) {
   codexRefreshInFlight = refreshCodexTokensOnce().finally(() => { codexRefreshInFlight = null; });
   return codexRefreshInFlight;
 }
+/* A refresh belongs to the exact sign-in that started it — the same rule ensureConnectorOauthToken keeps for MCP
+   grants. A logout (or a brand-new sign-in) during the token-endpoint await wins: the late response, success or
+   failure, must never be merged over it or saved, or an explicit sign-out is silently undone (the refreshed grant is
+   written over the signed-out tombstone and survives a restart) and a new account gets the old account's tokens. */
+function oauthRefreshSuperseded(label, code, current) {
+  if (current && current.access_token) return current.access_token;   // a new sign-in replaced it: serve THAT one
+  const e = new Error('Signed out of ' + label + ' while the sign-in was refreshing — connect it again to continue.');
+  e.code = code; e.reloginRequired = true; throw e;
+}
 async function refreshCodexTokensOnce() {
+  const started = codexTokens;
   let next;
   try {
-    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: codexTokens.refresh_token, now: Date.now() });
+    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
     // Relogin-class failure (invalid_grant / refresh_token_reused / 401) => the stored refresh token is DEAD.
     // Record it durably (module state + persisted envelope) so the status endpoint — and Settings — stop
     // claiming "signed in", and a restart stays honest. Transient failures (quota/network) never mark dead.
@@ -4798,6 +4809,7 @@ async function refreshCodexTokensOnce() {
     }
     throw e;
   }
+  if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
   // a successful refresh proves the sign-in is alive again — clear any standing dead marker with the same write.
   codexTokens = codexAuthState.withoutDeadMarker(Object.assign({}, codexTokens, next));
   codexAuthDead = null;
@@ -4944,10 +4956,12 @@ async function ensureOAuthAccessToken(pid) {
   return entry.refreshInFlight;
 }
 async function refreshOAuthTokensOnce(id, entry) {
+  const started = entry.tokens;   // same superseded-grant rule as refreshCodexTokensOnce: a logout/new sign-in mid-await wins
   let next;
   try {
-    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
     const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
     if (marker) {
       entry.authDead = marker;
@@ -4957,6 +4971,7 @@ async function refreshOAuthTokensOnce(id, entry) {
     }
     throw e;
   }
+  if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
   entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
   entry.authDead = null;
   saveOAuthTokens(id, entry.tokens);
@@ -5011,16 +5026,24 @@ async function ensureAccountAccessToken(entry, force, staleToken) {
   if (!force && !expiring) return entry.tokens.access_token;
   if (entry.refreshInFlight) return entry.refreshInFlight;
   entry.refreshInFlight = (async () => {
+    // superseded-grant rule (refreshCodexTokensOnce): a re-sign-in or a REMOVE during the await wins. A removed
+    // account's folder was just deleted — a late save would write an orphaned tokens.json secret back into it.
+    const started = entry.tokens;
+    const superseded = () => entry.tokens !== started || oauthAccountEntries.get(entry.pid + ':' + entry.id) !== entry;
+    const gone = () => oauthRefreshSuperseded(oauthLabel(entry.pid) + ' account', entry.pid + '_not_connected',
+      oauthAccountEntries.get(entry.pid + ':' + entry.id) === entry ? entry.tokens : null);
     let next;
     try {
       next = entry.pid === 'codex'
-        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() })
-        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() })
+        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
     } catch (e) {
+      if (superseded()) return gone();
       const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
       if (marker) { entry.authDead = marker; entry.tokens = codexAuthState.withDeadMarker(entry.tokens, marker); saveAccountTokens(entry, entry.tokens); }
       throw e;
     }
+    if (superseded()) return gone();
     entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
     entry.authDead = null;
     saveAccountTokens(entry, entry.tokens);

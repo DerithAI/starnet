@@ -16,6 +16,7 @@ test/harness-scan-local.e2e.test.js
 test/child-env.e2e.test.js
 test/connector-security.e2e.test.js
 test/connector-oauth-refresh-race.e2e.test.js
+test/provider-oauth-refresh-logout-race.e2e.test.js
 test/github-device.http.test.js
 test/workspace-owner.e2e.test.js
 test/workspace-lineage.http.test.js
