@@ -1324,3 +1324,4 @@ test/notebook-peer-reads.test.js
 test/task-turn-evidence.test.js
 test/remote-crew-looks.test.js
 test/save-persist-cost.test.js
+test/run-recoveries-page.test.js

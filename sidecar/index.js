@@ -27214,6 +27214,9 @@ function markRunRecoveryForensic(r) {
   // analyze() separates a lone torn final record (damage 'torn_tail': actionable, its `.torn-*` copy kept) from
   // real corruption (`forensic`). Only the latter — or a `.corrupt*` sibling from any earlier repair — is forensic.
   r.forensicOnly = !!r.forensic;
+  // run-journal's withEvidence already folded this file's `.corrupt*` sibling into `forensic` (the same prefix rule,
+  // over the same directory, moments ago): listing the whole directory again per row bought nothing (perf 10-19)
+  if (r.evidenceSeen === true) return r;
   try {
     const file = r.file || path.join(RUN_JOURNAL_DIR, runJournal._internals.runFileName(r.runId));
     const base = path.basename(file);
@@ -27319,7 +27322,9 @@ function scanInterruptedRuns(files) {
     // loop for more than that single file.
     const end = Math.min(list.length, at + 1);
     for (; at < end; at++) {
-      if (settledForensic.has(path.basename(list[at]))) continue;
+      // a settled forensic journal is not parsed again, but its begin-record head is read (bounded, one per tick) so the
+      // first recovery listing filtered to a conversation does not have to open every such journal itself
+      if (settledForensic.has(path.basename(list[at]))) { try { runJournal.warmHead(list[at]); } catch (e) { failNote('run-history.interrupted-head', e); } continue; }
       try {
         if (!fs.existsSync(list[at])) continue;   // settled/retired since boot by a route of this process
         const r = markRunRecoveryForensic(runJournal.recoverFile(list[at]));
@@ -27410,8 +27415,12 @@ function serveRunRecoveries(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');
   const offset = Math.max(0, Number(u.searchParams.get('offset')) || 0);
   const limit = Math.max(1, Math.min(500, Number(u.searchParams.get('limit')) || 100));
+  // additive filters (perf 10-19): a page asking for ITS conversation's interrupted run names it, so the run is found
+  // even behind hundreds of other journals, and only that conversation's journals are parsed. Absent = unchanged.
+  const filter = {};
+  for (const k of ['streamId', 'agentId']) { const v = u.searchParams.get(k); if (v != null && v.length <= 200) filter[k] = v; }
   let page;
-  try { page = runJournal.recoverPage({ offset, limit }); }
+  try { page = runJournal.recoverPage(Object.assign({ offset, limit }, filter)); }
   catch (e) { return respondJson(res, 500, { error: 'could not read run recoveries' }); }
   const rows = page.rows.map(markRunRecoveryForensic).filter(r => {
     if (!r) return false;

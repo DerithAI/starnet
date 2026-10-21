@@ -1685,8 +1685,12 @@ const Harness = (() => {
   // Durable interrupted-run recovery. Listing is read-only; preparation is accepted only when the sidecar's
   // journal proves there is no uncertain dispatched mutation. The returned token is one-shot and consumed by
   // the ordinary /api/run path, so recovery does not create a privileged second execution route.
-  async function runRecoveries() {
-    const r = await fetch('/api/run-recoveries?limit=100', { cache: 'no-store' });
+  // filter (optional): { streamId, agentId } — the sidecar then lists only that conversation's journals, so its
+  // interrupted run is found even behind hundreds of others (a plain first page of 100 missed it, perf 10-19)
+  async function runRecoveries(filter) {
+    let qs = 'limit=100';
+    for (const k of ['streamId', 'agentId']) if (filter && filter[k] != null) qs += '&' + k + '=' + encodeURIComponent(String(filter[k]));
+    const r = await fetch('/api/run-recoveries?' + qs, { cache: 'no-store' });
     if (!r.ok) throw new Error('recovery list unavailable');
     const j = await r.json();
     return Array.isArray(j && j.recoveries) ? j.recoveries : [];
