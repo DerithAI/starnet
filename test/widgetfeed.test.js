@@ -182,6 +182,49 @@ const rejects = async (p, label) => { try { await p; A.ok(false, label + ' (did 
     A.eq(t.list().find(w => w.id === 'trend').spark.length, 3, 'actual trend points are retained');
   }
 
+  /* ============================ 8. THE WIDGET'S OWN UPDATE RUN (releases#6) ============================ */
+  // the host grants widget.get/widget.set to the run whose purpose IS a configured widget: its own conversation
+  // ('widget-<id>', frontend/app/widgets.js openWidgetTask) or a routine whose job meta names it — never anything else
+  {
+    const { t } = make(); const source = { kind: 'agent', id: 'starnet', label: 'StarNet' };
+    await t.configure({ id: 'w-ai-spend', label: 'AI spend', request: 'total spend this month from the ledger', display: 'metric' }, source);
+    await run(t, { id: 'app-revenue', value: '$5' });   // an agent-fed readout: no user definition behind it
+    A.eq(t.updateRunOf({ streamId: 'widget-w-ai-spend' }), 'w-ai-spend', 'the widget\'s own conversation is its update run');
+    A.eq(t.updateRunOf({ streamId: 'cron-run1', widgetId: 'w-ai-spend' }), 'w-ai-spend', 'a routine whose job names the widget is its update run');
+    A.eq(t.updateRunOf({ streamId: 'ws_general' }), null, 'an ordinary conversation is not');
+    A.eq(t.updateRunOf({ streamId: 'widget-app-revenue' }), null, 'an agent-fed readout nobody configured grants nothing');
+    A.eq(t.updateRunOf({ streamId: 'widget-nope' }), null, 'an unknown widget grants nothing');
+    A.eq(t.updateRunOf({ streamId: 'widget-' }), null, 'a bare prefix grants nothing');
+    A.eq(t.updateRunOf({ streamId: 'widget-W/../x' }), null, 'a malformed id grants nothing');
+    A.eq(t.updateRunOf(null), null, 'no run facts grant nothing');
+    await t.remove('w-ai-spend');
+    A.eq(t.updateRunOf({ streamId: 'widget-w-ai-spend' }), null, 'a deleted widget\'s conversation grants nothing');
+    // the host wiring: after the run's narrowing, exactly the registry's widget grants, keyed by the stream / job meta
+    const idx = require('fs').readFileSync(require('path').join(__dirname, '../sidecar/index.js'), 'utf8');
+    const wire = /resolved = enforceEnabledToolsets\([^\n]*\n[\s\S]{0,1300}?widgetTools\.updateRunOf\(\{ streamId: o\.streamId, widgetId: widgetJob && widgetJob\.meta && widgetJob\.meta\.widgetId \}\)[\s\S]{0,200}?\(CAP_REGISTRY\.notebook \|\| \[\]\)\.filter\(g => g && \/\^widget\\\.\/\.test\(g\.tool\)\)/.exec(idx);
+    A.ok(!!wire, 'runOnce grants exactly the notebook\'s widget.* rows to the widget\'s update run, after per-run narrowing');
+    A.ok(/widgetScope = widgetTools\.updateRunOf\(/.test(idx) && /const capCtx = makeCapCtx\(resolved, Object\.assign\(\{[\s\S]{0,700}\n    widgetScope,\n/.test(idx), 'and stamps that widget id on the tool ctx (widgetScope)');
+  }
+  // the update run reads and publishes ITS OWN widget only; any other id is refused with a clear error
+  {
+    const { t } = make(); const source = { kind: 'agent', id: 'starnet', label: 'StarNet' };
+    await t.configure({ id: 'w-mine', label: 'Mine', request: 'mine', display: 'metric' }, source);
+    await t.configure({ id: 'w-other', label: 'Other', request: 'other', display: 'metric' }, source);
+    const scoped = { agentId: 'nova', runId: 'run_9', widgetScope: 'w-mine' };
+    A.ok((await t.getTool.run({ id: 'w-mine' }, scoped)).content.includes('version=1'), 'the scoped run reads its own widget');
+    await run(t, { id: 'w-mine', version: 1, value: '$7' }, scoped);
+    A.eq(t.list().find(w => w.id === 'w-mine').value, '$7', 'and publishes its own widget');
+    let msg = '';
+    try { await run(t, { id: 'w-other', version: 1, value: '$1' }, scoped); } catch (e) { msg = String(e.message); }
+    A.eq(msg, 'This run updates widget "w-mine" only; it cannot read or publish widget "w-other".', 'publishing another configured widget is refused, clearly');
+    A.eq(t.list().find(w => w.id === 'w-other').value, null, 'and the other widget is untouched');
+    await rejects(run(t, { id: 'brand-new', value: '1' }, scoped), 'creating a new agent-fed readout is refused too');
+    await rejects(run(t, { id: 'w-other', clear: true }, scoped), 'and clearing another id');
+    await rejects(t.getTool.run({ id: 'w-other' }, scoped), 'reading another widget\'s definition is refused');
+    await run(t, { id: 'w-other', version: 1, value: '$2' });   // no scope (an ordinary notebook grant): unchanged
+    A.eq(t.list().find(w => w.id === 'w-other').value, '$2', 'a run without a widget scope keeps the notebook grant\'s reach');
+  }
+
   console.log('widgetfeed.test.js OK');
   // report() settles the assertion counter — the .catch below only fires on a THROWN error, so
   // without this a failed assertion still exits 0 and the gate scores it green.

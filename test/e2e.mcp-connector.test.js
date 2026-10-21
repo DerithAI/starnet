@@ -12,6 +12,9 @@ const os = require('os');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
+// sentinels are read from the Commander's OWN words: a routine's run-context note (the leading text of the same user
+// message) quotes earlier chats as RECENT ACTIVITY, so a raw-content match would route a routine on a previous chat
+const { userWords } = require('./helpers/host-notes.js');
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
@@ -89,12 +92,12 @@ function startMockOpenRouter() {
           const hasToolResult = toolResults > 0;
           const hasMcpTool = (parsed.tools || []).some(t => t && t.function && t.function.name === 'mcp__demo__lookup');
           const hasInspectTool = (parsed.tools || []).some(t => t && t.function && t.function.name === 'station_inspect');
-          const wantsInspect = msgs.some(m => m && m.role === 'user' && String(m.content || '').indexOf('SELF_INSPECT') >= 0);
+          const wantsInspect = msgs.some(m => m && m.role === 'user' && userWords(m).indexOf('SELF_INSPECT') >= 0);
           const messageContent = m => typeof (m && m.content) === 'string' ? m.content : JSON.stringify((m && m.content) || '');
           const hasInspectResult = msgs.some(m => m && m.role === 'tool' && /\"schemaVersion\":1/.test(messageContent(m)) && /\"scheduler\":/.test(messageContent(m)));
           // A conversation carrying this sentinel asks for FOUR connector calls in a row — the shape of the
           // reported repeated-approval bug. Sentinel-gated so every other scenario in this file is untouched.
-          const wantsMany = msgs.some(m => m && m.role === 'user' && String(m.content || '').indexOf('FOURLOOKUPS') >= 0);
+          const wantsMany = msgs.some(m => m && m.role === 'user' && userWords(m).indexOf('FOURLOOKUPS') >= 0);
           requests.push(parsed);
 
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -362,9 +365,9 @@ async function readNdjson(res) {
     A.eq(inspectRun.status, 200, 'real run admitted the self-inspection request');
     await readNdjson(inspectRun);
     const inspectRequest = llm.requests.find(r => (r.messages || []).some(m => m && m.role === 'tool' && /\"schemaVersion\":1/.test(String(m.content || '')) && /\"scheduler\":/.test(String(m.content || ''))));
-    const inspectAdvertised = llm.requests.filter(r => (r.messages || []).some(m => m && m.role === 'user' && String(m.content || '').indexOf('SELF_INSPECT') >= 0))
+    const inspectAdvertised = llm.requests.filter(r => (r.messages || []).some(m => m && m.role === 'user' && userWords(m).indexOf('SELF_INSPECT') >= 0))
       .flatMap(r => (r.tools || []).map(t => t && t.function && t.function.name).filter(Boolean));
-    const inspectTrace = llm.requests.filter(r => (r.messages || []).some(m => m && m.role === 'user' && String(m.content || '').indexOf('SELF_INSPECT') >= 0))
+    const inspectTrace = llm.requests.filter(r => (r.messages || []).some(m => m && m.role === 'user' && userWords(m).indexOf('SELF_INSPECT') >= 0))
       .map(r => (r.messages || []).map(m => ({ role: m.role, name: m.name || '', calls: (m.tool_calls || []).map(c => c && c.function && c.function.name), content: String(m.content || '').slice(0, 120) })));
     A.ok(!!inspectRequest, 'the model received station.inspect and called it through the real wire-name boundary (advertised: ' + inspectAdvertised.join(',') + '; trace: ' + JSON.stringify(inspectTrace) + ')');
     A.ok(llm.requests.some(r => (r.tools || []).some(t => t && t.function && t.function.name === 'station_inspect')),
@@ -511,7 +514,7 @@ async function readNdjson(res) {
     A.ok(panel.filter(e => e.name === 'agent.token').map(e => e.payload.delta).join('').indexOf('MCP unavailable in autonomous run') >= 0, 'panel stream truthfully completes without MCP authority');
     A.ok(!mcp.calls.some(c => c.msg && c.msg.method === 'tools/call'), 'autonomous run never reaches the MCP server tool endpoint');
     A.ok(mcp.calls.some(c => c.headers && c.headers.authorization === 'Bearer mcp-secret-token'), 'MCP transport sent bearer token to the configured connector');
-    const autonomousRequests = llm.requests.filter(r => (r.messages || []).some(m => m && m.role === 'user' && String(m.content || '').indexOf('use the demo connector lookup for alpha') >= 0));
+    const autonomousRequests = llm.requests.filter(r => (r.messages || []).some(m => m && m.role === 'user' && userWords(m).indexOf('use the demo connector lookup for alpha') >= 0));
     A.ok(autonomousRequests.length > 0 && autonomousRequests.every(r => !(r.tools || []).some(t => t.function && t.function.name === 'mcp__demo__lookup')), 'autonomous model request does not expose the unknown MCP tool');
 
     await sse.waitFor(events => events.some(e => e.name === 'agent.run.end' && e.payload && e.payload.agentId === 'mcp-agent'), 5000, 'SSE run end');

@@ -15,6 +15,14 @@ const XpStore = (() => {
   let credentialFn = () => {};   // S3: fired ONLY when an agent's coarse track record actually changes
   let wired = false;
   let generation = 0;          // an async reply from a previous station must never credit its replacement
+  // RATING CATCH-UP RETRY (starnet-releases#4 Blocker 2). The save's watermark (station.ratingSyncAt) advances only on a
+  // complete rating sync, and the sidecar refuses every save whose watermark trails the ledger. A sync that failed once
+  // (one refused GET at boot, or the history read after a new rating) waited for the next boot, and until then no save
+  // could land. A failed catch-up now retries on a growing backoff while this station is live.
+  let ratingLoader = null;       // init's injected ledger reader (tests); null = the real /api/growth/ratings
+  let ratingFloor = 0;           // the floor a failed sync still owes (init's repair floor can sit under the watermark)
+  let ratingCatchUp = null;      // the in-flight catch-up, shared by every caller
+  let ratingRetry = null, ratingRetries = 0;
 
   // the real events that feed growth. Only explicit turn-in memory.feedback mints XP; operational events
   // update counters/milestones so the dossier still shows shipped work without leveling from chatter.
@@ -317,6 +325,39 @@ const XpStore = (() => {
     return { applied, liveApplied, snapshotAt };
   }
 
+  function clearRatingRetry() {
+    if (ratingRetry) { try { clearTimeout(ratingRetry); } catch (_) {} }
+    ratingRetry = null;
+  }
+  function scheduleRatingRetry(owner, floor) {
+    if (owner !== generation) return;
+    if (Number(floor) > 0) ratingFloor = ratingFloor ? Math.min(ratingFloor, floor) : floor;
+    if (ratingRetry) return;
+    const delay = Math.min(300000, 5000 * Math.pow(2, Math.min(6, ratingRetries++)));   // 5s, 10s, 20s … capped at 5 min
+    try {
+      ratingRetry = setTimeout(() => { ratingRetry = null; if (owner === generation) catchUpRatings(); }, delay);
+      if (ratingRetry && ratingRetry.unref) ratingRetry.unref();
+    } catch (_) { ratingRetry = null; }
+  }
+  // Sync from the floor still owed (else the watermark). One ledger read at a time; a failure schedules the next try. A
+  // success advances the watermark and persists, so the next save carries the re-synced stats (cloudsave asks for this
+  // when the station refused a save as growthStale).
+  function catchUpRatings() {
+    if (ratingCatchUp) return ratingCatchUp;
+    const owner = generation;
+    const since = ratingFloor || Math.max(1, Number(station && station.ratingSyncAt) || 1);
+    clearRatingRetry();
+    const run = syncRatingHistory(since, ratingLoader).then(result => {
+      if (ratingCatchUp === run) ratingCatchUp = null;
+      if (owner !== generation) return result;
+      if (result && !result.failed) { ratingFloor = 0; ratingRetries = 0; }
+      else scheduleRatingRetry(owner, since);
+      return result;
+    });
+    ratingCatchUp = run;
+    return run;
+  }
+
   // Persist the verdict first, then fold only the server-returned canonical entries. A duplicate may still
   // repair a browser projection that missed the original acknowledgement; Xp receipts make that replay safe.
   async function recordWorkRating(rating, fetchFn) {
@@ -354,6 +395,7 @@ const XpStore = (() => {
     const since = Math.max(1, Number(station && station.ratingSyncAt) || 1);
     const sync = await syncRatingHistory(since, floor => loadRatingHistory(floor, post), { liveRunId: body.rating.runId });
     if (owner !== generation) return { ok: false, error: 'Station changed — reload the app before rating this work.' };
+    if (sync.failed) scheduleRatingRetry(owner, since);   // the watermark now trails this rating: catch up later
     let applied = !!sync.liveApplied;
     for (const entry of body.rating.entries) {
       const result = onEvent('memory.feedback', entry, { noPersist: true });
@@ -368,6 +410,8 @@ const XpStore = (() => {
   function init(opts) {
     const owner = ++generation;
     opts = opts || {};
+    clearRatingRetry(); ratingCatchUp = null; ratingFloor = 0; ratingRetries = 0;   // a replaced station owes nothing
+    ratingLoader = opts.loadRatings || null;
     if (opts.getAgent) getAgent = opts.getAgent;
     if (opts.agents) allAgents = opts.agents;                  // S4: the whole registry, so a specialist's case is reconciled too
     if (opts.persist) persistFn = opts.persist;
@@ -399,9 +443,8 @@ const XpStore = (() => {
     const runSync = Number.isFinite(since) && since > 0 ? syncRunHistory(since, opts.loadRuns) : Promise.resolve({ applied: 0, skipped: true });
     return runSync.then(run => {
       if (owner !== generation) return { applied: 0, failed: true };
-      const ratingSync = Number.isFinite(ratingSince) && ratingSince > 0
-        ? syncRatingHistory(ratingSince, opts.loadRatings)
-        : Promise.resolve({ applied: 0, skipped: true });
+      if (Number.isFinite(ratingSince) && ratingSince > 0) ratingFloor = ratingSince;
+      const ratingSync = ratingFloor ? catchUpRatings() : Promise.resolve({ applied: 0, skipped: true });
       return ratingSync.then(ratings => ({ applied: (run.applied || 0) + (ratings.applied || 0), run, ratings, failed: !!(run.failed || ratings.failed) }));
     });
   }
@@ -409,7 +452,7 @@ const XpStore = (() => {
   // the station-wide rollup, included in the save envelope by App.persist()
   function stationStats() { return station; }
 
-  return { init, stationStats, onEvent, loadRunHistory, syncRunHistory, loadRatingHistory, syncRatingHistory, recordWorkRating };
+  return { init, stationStats, onEvent, loadRunHistory, syncRunHistory, loadRatingHistory, syncRatingHistory, catchUpRatings, recordWorkRating };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { XpStore };

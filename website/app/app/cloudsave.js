@@ -31,6 +31,10 @@ const CloudSave = (() => {
   let timer = null;                    // debounce timer for a fresh push
   let retryTimer = null;               // backoff timer scheduling the next attempt after a failure
   let pending = null;                  // newest doc awaiting a flush (older queued docs are superseded)
+  /* the exact string `pending` was cloned from (push's opts.raw), or null. It travels WITH the doc — into the flush that
+     sends it and back into `pending` if that attempt fails — and nowhere else, so once the ACK has used it the string is
+     garbage: never a second whole-save copy pinned beside latestLocal for the life of the page (idle CPU piece 3). */
+  let pendingRaw = null;
   const activeFlushes = new Set();      // confirmable writes currently waiting on the sidecar
   // #121 BROWSER CACHE FULL. The whole save lives under one browser-storage key; past the browser's per-site cap its
   // write throws. persist() still queues that envelope here (write-through), flagged cacheFailed. While the newest
@@ -58,6 +62,8 @@ const CloudSave = (() => {
   // definitively holds no save; 'forbidden' (auth 401/403) and 'unreachable' (network/timeout/5xx) mean we
   // could not ask — states that must NEVER be presented to the boot path as "no save exists".
   let lastPullOutcome = 'unreachable';   // until a pull settles, we have proven nothing
+  // starnet-releases#4 Blocker 2: the catch-up a growthStale refusal asked for (resolves true once the re-synced save is queued)
+  let staleCatchUp = null;
 
   function now() { return Date.now(); }
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
@@ -118,6 +124,17 @@ const CloudSave = (() => {
     }
   }
 
+  // GROWTH-STALE REFUSAL (starnet-releases#4 Blocker 2). The station refuses a save whose rating watermark
+  // (stationStats.ratingSyncAt) trails its rating ledger, so a stale tab cannot erase acknowledged XP. That refusal is
+  // right, and resending the same save can never pass it: only a rating catch-up advances the watermark. Ask XpStore for
+  // one; on success it persists a fresh save (App.persist -> push), and THAT save is what the next attempt sends. Nothing
+  // here touches the watermark, so the station's check still decides. Resolves true once the re-synced save is queued.
+  function requestRatingCatchUp() {
+    if (typeof XpStore === 'undefined' || !XpStore || typeof XpStore.catchUpRatings !== 'function') return null;
+    try { return Promise.resolve(XpStore.catchUpRatings()).then(r => !!r && !r.failed, () => false); }
+    catch (_) { return null; }
+  }
+
   // (re)arm the backoff retry so a dropped push is never silently abandoned. Newest-wins: whatever is
   // in `pending` when the timer fires is what gets sent, so a burst during backoff still coalesces to one.
   function scheduleRetry() {
@@ -142,7 +159,7 @@ const CloudSave = (() => {
     // honor the backoff window — if a failure streak is live and the next attempt isn't due yet, hold the
     // doc in `pending` and re-arm rather than hammering the sidecar every debounce. `force` skips this hold.
     if (!force && Core && isSave(pending) && !Core.retryDue(health, now())) { scheduleRetry(); return Promise.resolve(false); }
-    const doc = pending, docCacheFailed = pendingCacheFailed, docSeq = pendingSeq; pending = null; pendingCacheFailed = false;
+    const doc = pending, docCacheFailed = pendingCacheFailed, docSeq = pendingSeq, sentRaw = pendingRaw; pending = null; pendingRaw = null; pendingCacheFailed = false;
     if (!isSave(doc)) return Promise.resolve(false);
     const attempt = postNow(doc)
       .then(({ response: r, body }) => {
@@ -160,12 +177,22 @@ const CloudSave = (() => {
             revision = body.revision;
             if (pending) pending._saveRevision = revision;
             try {
-              const cached = JSON.parse(localStorage.getItem('starnet.save'));
+              const cachedRaw = localStorage.getItem('starnet.save');
+              /* SERIALIZE ONCE (idle CPU piece 3, 2026-10-20). The cache still holds the very string this doc was cloned
+                 from (push's raw): it is this doc, so mark it clean without re-parsing it and stringifying both sides
+                 to compare. The bytes written are exactly what the compare path below writes: the same keys in the same
+                 order, _saveRevision = the ACK's revision, _saveDirty false, the ACK's updatedAt when it sent one. Any
+                 other cache content takes the compare path, unchanged. */
+              const same = !pending && !!sentRaw && cachedRaw === sentRaw;
+              const cached = same ? null : JSON.parse(cachedRaw);
               // A preceding ACK advances the queued document's revision before it is sent. Its localStorage
               // twin still has the older revision. Compare the actual document, not that transport metadata,
               // or the final successful save stays dirty and creates a false conflict on the next restart.
               const payload = d => JSON.stringify({ ...d, _saveClient: undefined, _saveRevision: undefined });
-              if (!pending && cached && payload(cached) === payload(doc)) {
+              if (same) {
+                localStorage.setItem('starnet.save', JSON.stringify({ ...doc, _saveClient: undefined, _saveRevision: revision, _saveDirty: false,
+                  ...(Number.isFinite(body.updatedAt) ? { updatedAt: body.updatedAt } : {}) }));
+              } else if (!pending && cached && payload(cached) === payload(doc)) {
                 cached._saveRevision = revision; cached._saveDirty = false;
                 if (Number.isFinite(body.updatedAt)) cached.updatedAt = body.updatedAt;
                 localStorage.setItem('starnet.save', JSON.stringify(cached));
@@ -182,6 +209,7 @@ const CloudSave = (() => {
             // the station file confirmed this page's newest save while the cache could not hold it
             if (!pending && docCacheFailed && doc === memoryDoc) cacheFailedConfirmed = true;
           }
+          staleCatchUp = (body.ok === false && body.growthStale === true) ? requestRatingCatchUp() : null;
           if (body.ok === false) throw new Error('save refused: ' + (body.error || (body.unreadable ? 'existing record unreadable' : body.stale ? 'stale write' : 'unknown')));
         }
         if (!body || body.ok !== true) throw new Error('save acknowledgement missing');
@@ -192,7 +220,8 @@ const CloudSave = (() => {
         markFail();
         // re-queue the newest doc (newest-wins: a fresher push during the attempt already replaced it) and
         // arm the backoff retry. Fail soft — the cache is still authoritative locally, nothing throws out.
-        if (!isSave(pending)) { pending = doc; pendingCacheFailed = docCacheFailed; pendingSeq = docSeq; }
+        // the string is dropped on a failure: an outage must not pin a second whole-save copy (the retry compares the old way)
+        if (!isSave(pending)) { pending = doc; pendingRaw = null; pendingCacheFailed = docCacheFailed; pendingSeq = docSeq; }
         scheduleRetry();
         return false;
       });
@@ -215,6 +244,10 @@ const CloudSave = (() => {
     // A rejected active write re-queues its document, and a newer push may also have arrived while it was in
     // flight. Force one final, confirmable write of that newest pending state before the installer advances.
     if (isSave(pending)) confirmed = await flush({ force: true }) === true;
+    // A growth-stale refusal asked for a rating catch-up: once it has queued the re-synced save, send that ONE time.
+    // A catch-up that fails leaves the refusal standing, and the install stays paused.
+    const catchUp = staleCatchUp; staleCatchUp = null;
+    if (!confirmed && catchUp && await catchUp && isSave(pending)) confirmed = await flush({ force: true }) === true;
     // A flush may have started while the forced write was awaited. Settle it too, and fail closed if any caller
     // queued an even newer document that has not begun its durable write yet.
     while (activeFlushes.size) {
@@ -229,13 +262,17 @@ const CloudSave = (() => {
   //   opts.cacheFailed (#121): the browser cache could not hold this doc. It is queued all the same (the station file is
   //   the store of record) and held in memory until a later doc lands in the cache again. opts.cacheError: the
   //   browser's error name, so the UI says "full" only when the browser reported its quota.
+  //   opts.raw (idle CPU piece 3, 2026-10-20): the exact string Save.write produced for this doc. The clone is then one parse
+  //   of it instead of a stringify + parse, and the ACK can tell the cache still holds this doc by comparing strings.
   function push(doc, opts) {
     if (!isSave(doc)) return;
-    doc = JSON.parse(JSON.stringify(doc));
+    const raw = opts && typeof opts.raw === 'string' ? opts.raw : null;
+    doc = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(doc));
     doc._saveRevision = revision;
     doc._saveClient = clientId;
     latestLocal = doc;
     pending = doc;                     // keep only the newest
+    pendingRaw = raw;                  // …with the string it was cloned from (null: the old compare path)
     pendingCacheFailed = !!(opts && opts.cacheFailed);
     pendingSeq = ++pushSeq;
     if (!pendingCacheFailed) cacheOkSeq = pendingSeq;   // callers push without cacheFailed only for a doc the cache holds

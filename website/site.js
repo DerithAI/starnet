@@ -4,7 +4,7 @@
 
   // The network lookup below remains authoritative. This is the last signed public
   // release so an offline/rate-limited page never falls back to an older train.
-  var FALLBACK_VERSION = '0.13.1';
+  var FALLBACK_VERSION = '0.13.5';
 
   // Pricing page is written but deliberately NOT deployed (Andrew, 2026-08-02). Every link to
   // it is marked data-pricing-link and hidden while this is false, so the site never offers a
@@ -15,6 +15,11 @@
   // PRICING links as plain anchors; scripts/stage-website-deploy.mjs reads this flag to decide
   // whether pricing.html publishes at all, so the two stay in step by construction.
   var PRICING_LIVE = true;
+  // COMMUNITY_LIVE — is sharing open (community maps + SUBMIT A SKILL)? Both need the cloud's skill-upload
+  // and map-share endpoints, and maps also need an app release that carries SHARE TO COMMUNITY. While this is
+  // false, scripts/stage-website-deploy.mjs holds maps.html back, strips every Maps link, and publishes the
+  // market page's pre-launch wording (the <!--held:community--> blocks). Flip it on the day all three ship.
+  var COMMUNITY_LIVE = false;
   // Mark the whole sentence, not just the <a>, wherever pricing is mentioned mid-paragraph —
   // hiding a bare link would leave the surrounding prose referring to a page nobody can reach.
   document.querySelectorAll('[data-pricing-link]').forEach(function(el){ el.hidden = !PRICING_LIVE; });

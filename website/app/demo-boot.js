@@ -9,11 +9,63 @@
 (function(){
   'use strict';
   window.__STARNET_DEV__ = { model: 'anthropic/claude-haiku-4.5', prov: 'openrouter' };
+  /* FETCH ONLY WHAT THIS ROOM DRAWS (2026-10-14). The desktop app reads its texture catalogue from
+     local disk, so it decodes every material and every prop view at boot. Over the web that was ~240 MB
+     and 1,100 requests before the station could appear. The homepage room uses ONE floor (resin), ONE
+     wall (panelled), the default hull and ten prop types, so any other catalogue image is answered with
+     a 1x1 blank instead of a download. The room's own art is untouched and still fetched for real:
+     prop views of other types simply fail to prepare (that prop isn't on this floor), and unused
+     materials decode to a blank that nothing in this room ever samples. */
+  (function scopeTextures(){
+    var BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    var ROOM_PROPS = /^(desk|war_intelcab|gigs_servercart|comms_dish|workbench|studio|plant|intake|bay|outbox)(-[a-z0-9]+)*\.png$/;
+    function keep(url){
+      var m = /assets\/industrial\/([^?#]+)/.exec(url);
+      if (!m) return true;
+      var p = m[1];
+      if (p.indexOf('projection-correction/') === 0) return ROOM_PROPS.test(p.slice(22));
+      if (p.indexOf('remaster/floors/') === 0) return /^remaster\/floors\/resin(-v\d+)?\.png$/.test(p);
+      if (p.indexOf('remaster/walls/') === 0) return /^remaster\/walls\/panelled(-v\d+)?\.png$/.test(p);
+      if (/^(shell|floor|wall)-[a-z]+(-v\d+)?\.png$/.test(p)) return false;   // optional hull/surface materials
+      return true;
+    }
+    try {
+      var desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+      Object.defineProperty(HTMLImageElement.prototype, 'src', { configurable: true, enumerable: desc.enumerable, get: desc.get,
+        set: function(v){ desc.set.call(this, keep(String(v)) ? v : BLANK); } });
+    } catch (e) {}
+  })();
   var SEED = {"starnet.save": "{\"schema\":\"starnet.save\",\"version\":5,\"updatedAt\":1784588604512,\"agent\":{\"id\":\"agent\",\"name\":\"NOVA\",\"color\":\"#5ad0ff\",\"model\":\"anthropic/claude-haiku-4.5\",\"personaId\":\"worker-homie\",\"purpose\":\"Be the always-ready dev test agent for StarNet — a fully-onboarded general assistant a developer can talk to the instant the station boots.\",\"specialtyId\":null,\"createdAt\":1700000000000,\"docs\":{\"identity\":\"You are NOVA, the resident test agent aboard a developer's StarNet station. Sharp, concise, a little dry. You exist so the dev never has to re-do onboarding to exercise the app.\",\"purpose\":\"Be the always-ready dev test agent for StarNet — a fully-onboarded general assistant a developer can talk to the instant the station boots.\",\"manual\":\"Keep replies brief. Use your real tools (web, files, memory) when a task needs them and report what they actually returned. This is a development build — say so plainly if something looks broken.\",\"context\":\"You run inside a local dev build of StarNet that the developer relaunches constantly to test features. Each launch is a fresh sandbox seeded from a golden fixture, so you wake already configured.\"},\"stats\":{\"xp\":0,\"level\":1,\"lifetimeXp\":0,\"confidence\":50,\"samples\":0,\"counters\":{},\"milestones\":[]},\"role\":\"orchestrator\",\"systemPrompt\":\"You are NOVA, the resident test agent aboard a developer's StarNet station. Sharp, concise, a little dry. You exist so the dev never has to re-do onboarding to exercise the app.\\n\\nYOUR CREW: none yet — right now you are this station's only agent, so you do the work yourself. Never speak as if you command a crew you do not yet have; you grow into delegation as specialists join the station.\\n\\nYOUR FOUNDATION: You run on the StarNet harness — a local-first agent runtime on the Commander's own machine, not a hosted service. Your reasoning comes from whichever model the Commander has connected through their own API key or account. As you look around your environment you may meet names that are not you, and none of them change what you are: StarNet was previously called \\\"Skynet\\\" — it has been renamed, but some file paths, environment variables, and config keys may still carry the old \\\"Skynet\\\"/\\\"SKYNET_\\\" name as a back-compat alias; and because the harness was assembled from and built on earlier open-source agent runtimes, some code, comments, or tool names may reference other projects. You are a StarNet agent on the StarNet harness — not a Skynet agent, and not whatever those internal references happen to name. Do not guess at your own foundation from ambiguous signals in the environment; report only what you can actually verify, and say plainly when you are not sure.\\n\\nPERSONALITY — Friendly:\\nYou're warm, personable, and genuinely on the Commander's side — a trusted right hand who's glad to help. You talk like a sharp friend who's very good at the job: easy, human, natural contractions, never corporate filler. You actually care how things turn out, so you think a step ahead and say what you'd do, not just what was asked. Keep casual chat short and real. When there's actual WORK, you lock in and do it properly, then report results straight — the warmth is the seasoning, never a substitute for the work. Skip the throat-clearing — just answer.\\n\\nAPPROVAL — ASK FIRST: actions that write files, run commands, or reach the network need the Commander's approval — but you NEVER ask for it in a chat message. The approval system cannot see chat text; typed replies like \\\"I approve\\\" grant nothing. Instead, just make the tool call: the harness pauses it and shows the Commander a real approval prompt with Approve/Deny buttons, and the decision comes back to you automatically. Reasoning over what you already have needs no approval.\\n\\nYOUR PURPOSE (purpose.md):\\nBe the always-ready dev test agent for StarNet — a fully-onboarded general assistant a developer can talk to the instant the station boots.\\n\\nABOUT YOUR COMMANDER & THEIR WORLD (context.md):\\nYou run inside a local dev build of StarNet that the developer relaunches constantly to test features. Each launch is a fresh sandbox seeded from a golden fixture, so you wake already configured.\\n\\nSTANDING ORDERS (operating-manual.md) — always follow these:\\nKeep replies brief. Use your real tools (web, files, memory) when a task needs them and report what they actually returned. This is a development build — say so plainly if something looks broken.\\n\\nWHAT YOU KNOW ABOUT YOUR COMMANDER (the station has learned this — honor it; if anything here is wrong, the Commander will correct it):\\n- Goals: Be the always-ready dev test agent for StarNet — a fully-onboarded general assistant a developer can talk to the instant the station boots.\\n- Identity: You run inside a local dev build of StarNet that the developer relaunches constantly to test features. Each launch is a fresh sandbox seeded from a golden fixture, so you wake already configured.\\n- Standing orders: Keep replies brief. Use your real tools (web, files, memory) when a task needs them and report what they actually returned. This is a development build — say so plainly if something looks broken.\\n\\nMID-TASK PREFERENCE FORK (you may use this AT MOST ONCE per task, or not at all):\\nIf — and only if — you hit a genuine fork where the choice reveals a DURABLE preference about how your\\nCommander likes work done (format, tone, depth, ask-first vs run-with-it), you may ask instead of guessing.\\nNever use it for one-off task details (which file, which URL — just ask those normally or decide).\\nTo ask, end your reply with exactly one line in this format (2-3 short options, || and | are literal):\\nFORK: <the question, one short line> || <option A> | <option B> | <option C, optional>\\nHARD FORMAT RULE while this block is present: if your reply ends by offering the Commander a choice or\\nasking their preference (formats, tone, length, \\\"want A or B?\\\", \\\"should I keep/save/shorten…?\\\"), that\\nquestion MUST be the FORK line — never plain prose. Same question, but the Commander answers with one\\ntap and the station keeps the answer permanently. A reply that needs no question needs no FORK line.\\nExample — instead of ending with \\\"Want me to keep this casual, or make it formal?\\\", end with:\\nFORK: keep this casual, or formal? || casual | formal\\nYour Commander answers with one tap; their answer arrives as their next message AND the station remembers\\nit permanently — so never ask a fork twice, and never ask what the briefing above already tells you.\",\"provider\":\"openrouter\",\"reasoningEffort\":\"medium\"},\"usage\":{\"tokens\":0,\"cost\":0,\"calls\":0},\"prov\":\"openrouter\",\"reasoningEffort\":\"medium\",\"station\":{\"schema\":\"starnet.station\",\"version\":1,\"_nid\":3,\"meta\":{\"name\":\"STARNET STATION\",\"createdAt\":0,\"tier\":0,\"spawnRoomId\":\"r1\",\"trunkRoomId\":\"r1\"},\"rooms\":{\"r1\":{\"id\":\"r1\",\"kind\":\"hab\",\"name\":\"HAB-01\",\"rects\":[{\"x1\":0,\"y1\":0,\"x2\":17,\"y2\":10}],\"floorStyle\":\"hull\",\"wallStyle\":\"hull\",\"tier\":0,\"floorPaint\":{}}},\"order\":[\"r1\"],\"props\":[{\"id\":\"p2\",\"t\":\"desk\",\"x\":8,\"y\":1,\"w\":2,\"h\":1,\"agentId\":\"agent\"}],\"belts\":{},\"edges\":[]},\"stationStats\":{\"xp\":0,\"level\":1,\"lifetimeXp\":0,\"confidence\":50,\"samples\":0,\"counters\":{},\"milestones\":[]},\"profile\":{\"v\":1,\"tags\":{},\"seed\":null,\"enabled\":true,\"total\":0},\"worksignal\":{\"v\":1,\"lanes\":{},\"total\":0},\"dossier\":{\"v\":1,\"dims\":{\"identity\":[{\"id\":\"cd_1\",\"text\":\"You run inside a local dev build of StarNet that the developer relaunches constantly to test features. Each launch is a fresh sandbox seeded from a golden fixture, so you wake already configured.\",\"source\":\"onboarding\",\"weight\":\"stated\",\"sourceRunId\":null,\"observedAt\":null,\"createdAt\":1784405979156,\"updatedAt\":1784405979156,\"pinned\":false}],\"stack\":[],\"goals\":[{\"id\":\"cd_2\",\"text\":\"Be the always-ready dev test agent for StarNet — a fully-onboarded general assistant a developer can talk to the instant the station boots.\",\"source\":\"onboarding\",\"weight\":\"stated\",\"sourceRunId\":null,\"observedAt\":null,\"createdAt\":1784405979156,\"updatedAt\":1784405979156,\"pinned\":false}],\"style\":[],\"standing_orders\":[{\"id\":\"cd_3\",\"text\":\"Keep replies brief. Use your real tools (web, files, memory) when a task needs them and report what they actually returned. This is a development build — say so plainly if something looks broken.\",\"source\":\"onboarding\",\"weight\":\"stated\",\"sourceRunId\":null,\"observedAt\":null,\"createdAt\":1784405979156,\"updatedAt\":1784405979156,\"pinned\":false}],\"pain\":[],\"ambition\":[],\"people\":[],\"schedule\":[]},\"seededFrom\":{\"context\":true,\"purpose\":true,\"manual\":true},\"updatedAt\":1784405979156},\"workstreams\":[{\"id\":\"ws_mrqt8xaf60vw\",\"title\":null,\"agentId\":\"agent\",\"roomId\":null,\"lane\":\"active\",\"kind\":\"chat\",\"projectRoot\":null,\"history\":[],\"runIds\":[],\"deliverables\":[],\"cost\":{\"tokens\":0,\"usd\":0,\"calls\":0},\"pinned\":false,\"archived\":false,\"titleAuto\":true,\"createdAt\":1784405979015,\"lastActiveAt\":1784405979015,\"lastReadAt\":1784405979015}],\"activeId\":\"ws_mrqt8xaf60vw\",\"generalId\":\"ws_mrqt8xaf60vw\",\"sessionUndo\":null,\"deletedIds\":[]}", "starnet.widgets.v1": "{\"v\":1,\"top\":[\"runs24\"],\"bot\":[]}", "starnet.byok.reasoningEffort": "medium", "starnet.byok.model": "anthropic/claude-haiku-4.5", "starnet.station.v1": "{\"v\":1,\"settings\":{\"theme\":\"amber\",\"themeHue\":35,\"themeSat\":100,\"themeGlow\":100,\"textScale\":0,\"flicker\":true,\"sound\":true,\"keepComputerAwake\":false,\"notifyPrefs\":{\"runComplete\":true,\"needsApproval\":true,\"cronDigest\":true,\"sound\":true}},\"tasks\":[],\"notifs\":[],\"termPos\":{},\"termSize\":{},\"consoleSection\":{},\"tasksImported\":true}", "starnet.nightreport.v1": "1784588603074", "starnet.pride.v1": "{\"v\":1,\"foundedAt\":0,\"tasks\":0,\"deliverables\":0,\"routines\":0,\"workMs\":0,\"sawTask\":false,\"sawDeliverable\":false,\"sawRoutine\":false,\"sawWork\":false,\"open\":{}}", "starnet.seedreuse.v1": "{\"v\":1,\"seeds\":{}}", "starnet.byok.reasoningEffort.openrouter": "medium", "starnet.return.v1": "{\"v\":1,\"lastSeenAt\":1784588603074,\"pending\":[],\"digested\":[]}", "starnet.mint.v1": "{\"v\":1,\"shapes\":{},\"enabled\":true}", "starnet.byok.prov": "openrouter"};
   /* The captured agent fixture remains synthetic, but its floor plan must never be
      a second handwritten starter. sync-website-app generates this document from
      WorldModel.starterDoc(); --check rejects drift from the current product factory. */
   var DEMO_STATION = {"schema":"starnet.station","version":2,"_nid":10,"meta":{"name":"STARNET STATION","createdAt":0,"tier":0,"spawnRoomId":"r1","trunkRoomId":"r1"},"rooms":{"r1":{"id":"r1","kind":"hab","name":"HOME","rects":[{"x1":0,"y1":0,"x2":17,"y2":10}],"floorStyle":"hull","floorMat":"resin","wallStyle":null,"wallMat":"panelled","hullStyle":"bone","hullMat":null,"tier":0,"floorPaint":{}}},"order":["r1"],"props":[{"id":"p2","t":"desk","x":8,"y":1,"w":2,"h":1,"block":true},{"id":"p3","t":"war_intelcab","x":1,"y":0,"w":1,"h":2,"block":true},{"id":"p4","t":"gigs_servercart","x":1,"y":9,"w":1,"h":1,"block":true},{"id":"p5","t":"comms_dish","x":14,"y":0,"w":2,"h":2,"block":true},{"id":"p6","t":"workbench","x":3,"y":1,"w":2,"h":1,"block":true},{"id":"p7","t":"studio","x":14,"y":8,"w":2,"h":2,"block":true},{"id":"p8","t":"plant","x":0,"y":0,"w":1,"h":1,"block":false},{"id":"p9","t":"plant","x":17,"y":0,"w":1,"h":1,"block":false}],"belts":{},"edges":[]}; // GENERATED STARTER
+  var CREW_SCENE = (function(){
+    var belts = [];
+    for (var x = 1; x <= 16; x++) belts.push(x + ',6');
+    var crew = function(id, name, color, skin, role, purpose){
+      return { id: id, name: name, color: color, skin: skin, role: 'specialist', model: null, personaId: 'worker-homie',
+               purpose: purpose, docs: { identity: name + ' — ' + role + '.', purpose: purpose, manual: '', context: '' },
+               createdAt: 1700000000000 };
+    };
+    return {
+      belts: belts,
+      props: [
+        { id: 'p20', t: 'intake', x: 0, y: 6, w: 1, h: 1, block: true },
+        { id: 'p21', t: 'bay', x: 5, y: 7, w: 1, h: 1, block: true, agentId: 'scout', role: 'RESEARCH' },
+        { id: 'p22', t: 'bay', x: 11, y: 7, w: 1, h: 1, block: true, agentId: 'quill', role: 'WRITER' },
+        { id: 'p23', t: 'outbox', x: 17, y: 6, w: 1, h: 1, block: true },
+        { id: 'p24', t: 'desk', x: 5, y: 1, w: 2, h: 1, block: true, agentId: 'scout' },
+        { id: 'p25', t: 'desk', x: 11, y: 1, w: 2, h: 1, block: true, agentId: 'quill' },
+        { id: 'p26', t: 'desk', x: 8, y: 9, w: 2, h: 1, block: true, agentId: 'forge' }
+      ],
+      agents: [
+        crew('scout', 'SCOUT', '#7fd6a4', 'astronaut', 'researcher', 'Find sources and pull the facts.'),
+        crew('quill', 'QUILL', '#e8b85c', 'robot', 'writer', 'Turn research into a clean brief.'),
+        crew('forge', 'FORGE', '#e07a5f', 'crthead', 'builder', 'Write and run the code.')
+      ]
+    };
+  })();
   var DEMO_REV_KEY = 'starnet.website.demo.rev';
   var DEMO_REV = 'starter-c54335278c0daa68';
   try {
@@ -22,6 +74,15 @@
       demoSave.station = DEMO_STATION;
       var demoDesk = demoSave.station.props.find(function(p){ return p.t === 'desk'; });
       if (demoDesk) demoDesk.agentId = demoSave.agent.id;
+      /* THE CREW SCENE (2026-10-14): the homepage shows agents WORKING, not an empty starter.
+         The room, its materials and all eight starter props stay generated from the product
+         factory above; this only ADDS a crew and one conveyor line on the open floor:
+         INBOX → SCOUT's bay → QUILL's bay → OUTBOX along y=6, plus a second desk for FORGE.
+         The homepage (hero-demo.js) then drives these bodies through the app's own event bus. */
+      CREW_SCENE.props.forEach(function(p){ demoSave.station.props.push(p); });
+      CREW_SCENE.belts.forEach(function(b){ demoSave.station.belts[b] = 'E'; });
+      demoSave.station._nid = 40;
+      demoSave.agents = CREW_SCENE.agents;
       SEED['starnet.save'] = JSON.stringify(demoSave);
     }
 
@@ -29,9 +90,9 @@
        its captured save once per demo revision so returning visitors cannot stay pinned to an
        obsolete localStorage snapshot forever. Stamp the marker last: a partial/quota failure
        retries on the next load instead of falsely claiming the upgrade landed. */
-    if (localStorage.getItem(DEMO_REV_KEY) !== DEMO_REV) {
+    if (localStorage.getItem(DEMO_REV_KEY) !== DEMO_REV + '+crew1') {
       Object.keys(SEED).forEach(function(k){ localStorage.setItem(k, SEED[k]); });
-      localStorage.setItem(DEMO_REV_KEY, DEMO_REV);
+      localStorage.setItem(DEMO_REV_KEY, DEMO_REV + '+crew1');
     }
   } catch (e) {}
   /* Once the floor is up, mark the bridge deliberately paused (a real World API):
@@ -50,6 +111,18 @@
         /* The app's composition camera includes the tall wall and hull skirt.
            A bare canvas fit can crop the wall at the top of this wider viewport. */
         try { World.frameReviewRoom('r1'); } catch (e) {}
+        /* RENDER PACING draws an unfocused page every 200 ms (5 fps) to save power. An embed is
+           NEVER focused (pointer-events:none in the homepage), so the replay crawled at 5 fps.
+           A caller cap is the app's own override and wins over the blur rate: draw at the same
+           30 fps the desktop app uses while focused. */
+        try { World.setFrameCap(1000 / 30); } catch (e) {}
+        /* The homepage replay (station-demo.js) lives in the parent page. The app's globals are
+           top-level consts — invisible on window — and the /app/* CSP forbids eval, so this is
+           the one doorway: emit onto the app's OWN bus, nothing else. */
+        window.StarnetDemoBridge = {
+          crew: function(){ try { return App.agents().length; } catch (e) { return 0; } },
+          emit: function(name, payload){ U.bus.emit(name, payload); }
+        };
       }
     } catch (e) {}
   }, 500);

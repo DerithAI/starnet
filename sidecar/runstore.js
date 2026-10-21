@@ -128,6 +128,19 @@
     };
   }
 
+  // what a cancel interrupted (record's `cancelledWhile`, loop.js #99): the model-call wait phase (the agent.waiting
+  // enum), how long it had lasted, the adapter's facts. Bounded at the persistence boundary; anything else is dropped.
+  const WAIT_PHASES = new Set(['connect', 'first_byte', 'streaming', 'retry_backoff']);
+  function cancelledWhileOf(v) {
+    if (!v || typeof v !== 'object' || !WAIT_PHASES.has(v.phase)) return null;
+    const out = { phase: v.phase };
+    const ms = Number(v.waitedMs);
+    if (Number.isFinite(ms) && ms >= 0) out.waitedMs = Math.round(ms);
+    const note = str(v.note).replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (note) out.note = note;
+    return out;
+  }
+
   // the page-closed note (record's `pageClosed`), bounded at the persistence boundary like every other host field
   function pageClosedOf(v) {
     if (!v || typeof v !== 'object') return null;
@@ -302,6 +315,9 @@
         provider: str(e.provider).trim().slice(0, 60),
         reason: REASONS.has(e.reason) ? e.reason : 'done',     // clamp to the known enum (matches agent.run.end)
         turns: num(e.turns), tokens: num(e.tokens), usd: num(e.usd),
+        // (additive, token-burn audit 2026-10-17) how much of `tokens`' input the provider served from its prompt cache —
+        // `tokens` counts a cache read at full weight. Present only when > 0, so every other row stays byte-identical.
+        ...(num(e.cachedTokens) > 0 ? { cachedTokens: num(e.cachedTokens) } : {}),
         title: str(e.title).slice(0, TITLE_MAX),
         streamId: str(e.streamId),     // H3.2: the run's workstream — joins this outcome row to its transcript (GET /api/transcript?stream=)
         // Durable session-delivery envelope. The page bridge is best-effort (and multiple open pages may disagree
@@ -316,6 +332,7 @@
         reasoningEffort: str(e.reasoningEffort).trim().slice(0, 20),
         model: modelName(e.model),   // H3.3/G6: actual model used, or explicit (unknown) as a last resort
         unmetered: !!e.unmetered,    // G6.2: subscription usage is counted, not summed as $0 spend
+        ...(e.unpriced === true ? { unpriced: true } : {}),   // (additive) tokens with NO published price: its usd is unknown, not $0
         artifacts: artifactList(e.artifacts),   // work-visibility: what the run PRODUCED (additive; [] default)
         toolsOk: num(e.toolsOk),                // crate-honesty (additive): successful tool results — proven work, not just talk. Old rows default 0.
         identityFallback: !!e.identityFallback, // P1.2 (additive): TRUE when this run's agentId was MISSING from the roster and it ran on the station-persona/default-model fallback — an honest marker that it was NOT the named specialist. Old rows lack it and default false.
@@ -350,6 +367,10 @@
         // still open at that moment — the disconnect denied them, so none of them was granted. Set only by the host that
         // saw its stream close (index.js handleRun); present only on such a run, so every other row stays byte-identical.
         ...(pageClosedOf(e.pageClosed) ? { pageClosed: pageClosedOf(e.pageClosed) } : {}),
+        // CANCELLED WHILE (additive, #99, 2026-10-18): a cancelled run that was still WAITING on its model (no reply yet, a
+        // silent open stream, a retry backoff) names that wait — a bare `cancelled` read the same for a hung local model
+        // and a busy healthy run. Present only on such a cancelled run, so every other row stays byte-identical.
+        ...(e.reason === 'cancelled' && cancelledWhileOf(e.cancelledWhile) ? { cancelledWhile: cancelledWhileOf(e.cancelledWhile) } : {}),
         // SEND NOW LEDGER (additive, 0.13.5 live walk 2026-10-14): which of the page's tracked steering notes this run
         // read (applied) or ended without reading — so GET /api/run/steer still answers a page that lost its memory after
         // a station restart. Present only on a run that took a tracked note, so every other row stays byte-identical.

@@ -10,6 +10,12 @@ const { note: failNote } = require('./failopen.js');
 // carried "prior station evidence" and stranded on the recovery gate forever (2026-08-25). A file the
 // sidecar can write WITHOUT a Commander having created a station must never count as a prior station.
 const INFRA = /^(?:\.starnet-workspace-owner\.json|\.schema-version\.json(?:\.bak)?|\.migrated|\.migration-receipt\.json|cron\.lock|proc-ledger\.json|liveprices\.cache\.json|(?:cron\.halt|loops\.halt|nightshift\.state)\.json(?:\.bak)?)$/i;
+// Quest-refresh bookkeeping is never evidence either (#123, 2026-10-17): the QUEST REFRESH boot look stamped its
+// cadence + a 'skipped' note into _station.questrefresh.json (+ .bak) ~3 s after every boot, station or not, and the
+// `_station.*` evidence family below read that as a prior station — open once, close once, Recovery Mode forever.
+// Unlike INFRA it belongs to ONE station (a confirmed north star, staged quests), so START FRESH still quarantines it
+// with that station rather than leaving it live to steer the next one.
+const STATION_BOOKKEEPING = /^_station\.questrefresh\.json(?:\.bak)?$/i;
 // Positive evidence only. The former "anything not on the infrastructure denylist" rule made every newly
 // introduced cache/receipt a fake prior station. This covers the harness-owned durable authorities without
 // treating an arbitrary future `*.cache.json` as proof that a Commander already created a station.
@@ -19,12 +25,22 @@ function meaningfulEntries(fs, path, root) {
   try {
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
     return fs.readdirSync(root).filter(name => {
-      if (INFRA.test(name)) return false;
+      if (INFRA.test(name) || STATION_BOOKKEEPING.test(name)) return false;
       if (/\.tmp(?:\.|$)/i.test(name)) return false;
       if (name === '.browser-profile') return false;
       return STATE_EVIDENCE.test(name);
     }).slice(0, 40).map(name => ({ name, path: path.join(root, name) }));
   } catch (_) { return []; }
+}
+function bookkeepingEntries(fs, path, root) {
+  try { return fs.readdirSync(root).filter(name => STATION_BOOKKEEPING.test(name)).map(name => ({ name, path: path.join(root, name) })); }
+  catch (_) { return []; }
+}
+// Does this workspace hold a station a Commander created? The SAME positive evidence the recovery gate reads, so a
+// background writer that checks it first can never be the file that makes a station-less workspace look like one.
+function hasStationState(deps) {
+  const d = deps || {};
+  return meaningfulEntries(d.fs, d.path, d.path.resolve(String(d.workspaceRoot || ''))).length > 0;
 }
 
 // START FRESH marker: the Commander explicitly chose a new station over external prior-install evidence
@@ -99,7 +115,8 @@ function startFresh(deps) {
      alphabet files quarantined, later ones live). Loop pages until the listing is empty; the pass
      ceiling only guards against a pathological directory that regrows entries. */
   let entries = meaningfulEntries(fs, path, current);
-  if (entries.length) {
+  const bookkeeping = bookkeepingEntries(fs, path, current);
+  if (entries.length || bookkeeping.length) {
     try { fs.mkdirSync(quarantine, { recursive: true }); }
     catch (e) { return { ok: false, error: 'could not create quarantine folder: ' + String(e && e.message || e), quarantine, moved }; }
     let passes = 0;
@@ -110,6 +127,10 @@ function startFresh(deps) {
         catch (e) { return { ok: false, error: 'could not move ' + entry.name + ': ' + String(e && e.message || e), quarantine, moved }; }
       }
       entries = meaningfulEntries(fs, path, current);
+    }
+    for (const entry of bookkeeping) {   // never evidence, but this station's — it leaves with the station
+      try { fs.renameSync(entry.path, path.join(quarantine, entry.name)); moved.push(entry.name); }
+      catch (e) { return { ok: false, error: 'could not move ' + entry.name + ': ' + String(e && e.message || e), quarantine, moved }; }
     }
   }
   const acknowledgedRoots = lineage.evidence
@@ -130,4 +151,4 @@ function startFresh(deps) {
   return { ok: true, quarantine: marker.quarantine, moved, acknowledgedRoots: marker.acknowledgedRoots };
 }
 
-module.exports = { inspectWorkspaceLineage: inspectWorkspaceLineage, startFresh: startFresh, FRESH_MARKER: FRESH_MARKER, _internals: { meaningfulEntries: meaningfulEntries, STATE_EVIDENCE: STATE_EVIDENCE } };
+module.exports = { inspectWorkspaceLineage: inspectWorkspaceLineage, hasStationState: hasStationState, startFresh: startFresh, FRESH_MARKER: FRESH_MARKER, _internals: { meaningfulEntries: meaningfulEntries, STATE_EVIDENCE: STATE_EVIDENCE } };

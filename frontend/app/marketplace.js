@@ -570,6 +570,7 @@ const Marketplace = (() => {
       else if (view === 'build') wireBuildForm(stage);
       else if (view === 'harnessImport') wireHarnessImport(stage);
       else wireLaunchForm(stage);
+      wireTaglineCount(stage);
       return;
     }
     if (tab === 'recipes' && hasRecipes()) syncRecipeFocus();
@@ -1637,7 +1638,11 @@ const Marketplace = (() => {
     // the shared declined read gates the INPUT (see readyShelfHTML): a declined recipe never enters the rank,
     // and the ranker's own spread/top-up keeps the row at three from the recipes that remain — the FOR YOU
     // shelf-sink law (a negative term must never EMPTY the shelf) holds because this excludes, never down-ranks.
-    const pool = Recipes.list().filter(r => !shelfDeclined(r && r.name));
+    let pool = Recipes.list().filter(r => !shelfDeclined(r && r.name));
+    // …and the floor under that law: a Commander who has ✕'d EVERY recipe used to lose the row entirely (live, sweep/
+    // onboarding 2026-10-20: 45 declines → no FOR YOU shelf at all). Show the library again, saying exactly that.
+    const exhausted = !pool.length && Recipes.list().length > 0;
+    if (exhausted) pool = Recipes.list();
     const ranked = Recipes.rankRecipesExplained
       ? Recipes.rankRecipesExplained(pool, rankOpts)
       : { items: Recipes.rankRecipes(pool, rankOpts), personalized: false };
@@ -1670,8 +1675,10 @@ const Marketplace = (() => {
         : noticedHead(scored === 1
           ? 'one pick from your real work, plus starting points'
           : scored + ' picks from your real work, plus starting points');
+    // the declined-everything floor says so instead of any personalized claim (sweep/onboarding 2026-10-20)
+    const shownHead = exhausted ? coldHead('STARTING POINTS — you passed on every recipe, so here is the library again') : head;
     items.forEach((r, i) => trackRecommendation('recipe', r, reasonFor(r), i + 1));
-    return '<div class="mkt-sect-h mkt-foryou-sect">' + head + '</div><div class="mkt-rec-rail">' +
+    return '<div class="mkt-sect-h mkt-foryou-sect">' + shownHead + '</div><div class="mkt-rec-rail">' +
       items.map(r => forYouCardHTML(r, reasonFor(r))).join('') + '</div>';
   }
 
@@ -3605,6 +3612,21 @@ const Marketplace = (() => {
     });
     const nameIn = stage.querySelector('#mkt-r-name');
     if (nameIn) { nameIn.focus(); nameIn.setSelectionRange(nameIn.value.length, nameIn.value.length); }
+  }
+
+  /* THE TAGLINE CAP, SHOWN WHILE TYPING (releases#8). The one-line taglines (recipe, saved class, built class) stop at
+     their maxlength — typing halts and a paste is clipped — and nothing on screen said so. Each gets the summon NAME
+     bar's own live count (mkt-name-meta / mkt-name-count, warn colour at the cap), read from the input's real maxlength. */
+  function wireTaglineCount(stage) {
+    stage.querySelectorAll('#mkt-r-tag, #mkt-f-tag, #mkt-b-tag').forEach(input => {
+      const max = input.maxLength;
+      if (!(max > 0)) return;
+      const meta = document.createElement('span'); meta.className = 'mkt-name-meta';
+      const count = document.createElement('span'); count.className = 'mkt-name-count'; meta.appendChild(count);
+      const sync = () => { const n = input.value.length; count.textContent = n + ' / ' + max; count.classList.toggle('over', n >= max); };
+      input.addEventListener('input', sync); sync();
+      input.insertAdjacentElement('afterend', meta);
+    });
   }
 
   /* ---------- save / edit a specialty ---------- */

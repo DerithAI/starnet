@@ -189,7 +189,7 @@ function sandbox(opts) {
   A.ok(/notify, warnIfStationLacksKey, settleNotifs,/.test(station), 'StationUI exports the warning for onboarding');
   const app = read('frontend', 'app', 'app.js');
   A.ok(/if \(Harness\.setBaseUrl\) warnStation\(await Harness\.setBaseUrl\(baseUrl, pickedProvider\)\);/.test(app)
-    && /if \(key\) warnStation\(await \(Harness\.validateAndSetKey \? Harness\.validateAndSetKey\(key, pickedProvider\)/.test(app),
+    && /if \(key\) warnStation\(await \(Harness\.validateAndSetKey \? Harness\.validateAndSetKey\(key, pickedProvider, model\)/.test(app),
     'onboarding (the first connect) shows the same warning when the station could not keep the key');
 
   A.report('engine-key-sync.test');

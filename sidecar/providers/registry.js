@@ -181,6 +181,10 @@
       // Our own proxy records which harness run spent each debit (POST /v1/chat/completions reads this header).
       // ONLY this profile names one: a run id is never sent to a third-party provider.
       runIdHeader: 'x-starnet-run-id',
+      // The proxy forwards the body to OpenRouter untouched, so a Claude pick caches exactly like a direct OpenRouter key:
+      // the same cache_control breakpoints (openrouter.applyCacheControl; Claude ids only). Without them every managed
+      // Claude call re-billed the whole prompt as fresh input on the user's credits (token-burn audit 2026-10-17).
+      explicitCache: 'openrouter',
       order: 15
     },
     {
@@ -565,6 +569,10 @@
       // Ollama loads the model (and a potentially large context allocation) before response headers.
       // A first local run can therefore be healthy but silent for well beyond the hosted 30s ceiling.
       connectTimeoutMs: 300000,
+      // ...so a request still unanswered after 20 s tells the wait line where /api/ps says the model sits (#99: a 6 GB
+      // card running an 8B model at a 32k window, 45% on the GPU, sat silent on Working until the user cancelled).
+      waitNoteMs: 20000,
+      waitNoteMsEnv: 'SKYNET_OLLAMA_WAIT_NOTE_MS',
       // Ollama's OpenAI-compatible wire has no output ceiling of its own: with max_tokens unset a small local
       // model runs to end-of-sequence (issue #17: a 3B model typed for ten minutes). 4096 is generous for a
       // reply or a tool step; SKYNET_OLLAMA_MAX_TOKENS overrides it for stations that want more.

@@ -1,4 +1,4 @@
-    botUsername: () => String((rec && rec.username) || ''),/* sidecar/index.js — the Node host. The ONLY module with ambient I/O (http / fs / fetch /
+/* sidecar/index.js — the Node host. The ONLY module with ambient I/O (http / fs / fetch /
    process.env). It (1) serves the static frontend/ and (2) exposes POST /api/run, which
    assembles the EXISTING proven seams — registry + web/fs/notebook tools + capability gate +
    cost engine + the real OpenRouter provider — runs the unchanged agentic loop, and streams the
@@ -51,7 +51,7 @@ const { makeWorkspaceLease } = require('./workspace-lease.js');
 const { makeWorkspaceOwner, makeBootedAt, describeIdentity: describeOwnerIdentity } = require('./workspace-owner.js');
 const { makeProcessIdentity } = require('./process-identity.js');
 const { classifyWorkspace, workspaceCandidates } = require('./workspace-safety.js');
-const { inspectWorkspaceLineage, startFresh: startFreshWorkspace } = require('./workspace-lineage.js');
+const { inspectWorkspaceLineage, hasStationState, startFresh: startFreshWorkspace } = require('./workspace-lineage.js');
 const workspaceRecovery = require('./workspace-recovery.js');
 const { makeUpdatePreparation } = require('./update-preparation.js');
 const { makeAgentLifecycle } = require('./agent-lifecycle.js');
@@ -120,6 +120,7 @@ const RunRecovery = require('./run-recovery.js');
 const { makeSegmentedTranscriptIo } = require('./transcript-history.js');
 const { makeRunTranscript, recoveryBase } = require('./transcript-run.js');   // H2: a run's transcript rows land at the loop's durable boundaries, not only at run end
 const { makeSkillStore } = require('./skillstore.js');             // H4: per-agent owned skill library (singleton)
+const { makeSkillsIo } = require('./skills-io.js');                // skills.jsonl: read whole, compacted, never rotated
 const { makeCredPool } = require('./credpool.js');
 const { resolveTools } = require('./capability/resolve.js');
 const { CAP_REGISTRY } = require('./capability/registry.js');
@@ -127,6 +128,7 @@ const { toolsetRows, toggleableCaps } = require('./capability/toolsets.js');   /
 const { makeCapCtx } = require('./capability/capGate.js');
 const { composeOffice, stationWithObject, stationWithConnectors } = require('./capability/office.js');   // THE MOAT: interactive office = compute freebie + placed caps
 const { summarizeCapabilities } = require('./capability/capsummary.js');   // truthful "what you can/can't do" so the agent stops over-promising
+const { scopeForRun, makeSavedFloor } = require('./capability/cap-scope.js');   // ...and WHICH room a room-scoped agent's missing gear must go in
 const { starnetManual, starnetManualIndex, starnetManualPointer } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
 const FinishLine = require('./finish-line.js');     // immutable "crawl to the finish line" task doctrine at the final prompt seam
 const { makeHarnessSnapshot } = require('./harness-snapshot.js');   // bounded secret-free build/scheduler/connectors/diagnostics truth for station.inspect
@@ -144,8 +146,10 @@ const {
   defaultReasoningEffortForProvider: registryDefaultReasoningEffort,
   providerRequiresKey,
   providerRequiresBaseUrl,
-  attachRateLimits
+  attachRateLimits,
+  attachCatalogCache
 } = require('./providers/factory.js');
+const { makeCatalogCache, runWindow: catalogRunWindow } = require('./providers/catalog-cache.js');
 /* RESTRICTED GOOGLE DATA NEVER RIDES THE STARNET RELAY (mcp/google-relay-guard.js). Every provider this process
    builds for StarNet Managed ('starnet' — the one StarNet-operated path model traffic can take) streams through
    the guard, so primary runs, fallbacks and auxiliary passes all send a copy with Gmail/Drive tool results
@@ -176,6 +180,11 @@ function selectProvider(opts) {
    "this meter is nearly spent" BEFORE the wall instead of after it. */
 const rateLimits = require('./providers/ratelimits.js').makeRateLimits({ clock: { now: () => Date.now() } });
 attachRateLimits(rateLimits);
+/* SHARED MODEL CATALOG (providers/catalog-cache.js). Every run builds a fresh adapter, and each adapter kept its /models
+   list to itself: a run was sized from a COLD catalog (131072 assumed for a 1M Gemini, for a 65536 Ollama) and every
+   fresh adapter re-fetched the list on its first stream. One process-wide cache (10-minute TTL, per provider + base
+   URL + credential fingerprint; reported windows per endpoint), attached at the same seam as the quota tracker. */
+attachCatalogCache(makeCatalogCache({ clock: { now: () => Date.now() } }));
 const { DEFAULT_MODEL: CODEX_DEFAULT_MODEL, liveDefaultModel: codexLiveDefaultModel, memoLiveModelIds: codexMemoLiveModelIds } = require('./providers/codex.js');
 const codexAuth = require('./providers/codex-auth.js');
 const codexTokenStore = require('./providers/codex-token-store.js');
@@ -210,7 +219,7 @@ function channelBodyError(e) {
     : 'bad json';
 }
 const { MIME, CHANNEL_UPLOAD_MAX_BYTES, mimeForPath, safeDownloadName, isActiveDeliverable, parseRange, isTextDocument, documentViewHtml, DOC_VIEW_CSP, DOC_VIEW_MAX_BYTES } = require('./file-response.js');
-const { reflect, reflectSalient, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
+const { reflect, reflectSalient, refusedAction, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
 const FeedbackMemory = require('./feedbackmemory.js');   // THE COMMANDER'S TASTE: verdicts + corrections -> durable like/dislike memory
 const TasteRef = require('./tasteref.js');   // DESIGN ANCHOR: the rated run's real files / palette / fonts / image args / method, captured on a verdict
 const Failreview = require('./failreview.js');   // failure-review aux pass: PURE lesson producer for FAILED runs (reflect.js mold)
@@ -244,7 +253,7 @@ const { makeTelegramTransport } = require('./channels/telegram.transport.js');  
 const { makeEnvironmentProxyFetch } = require('./channels/proxy-fetch.js');
 const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
-const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
+const { makeChannelHub, menuCommands, dockSystem, COMMANDS: HUB_COMMANDS, chunkText: hubChunkText } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
 const { hostPowerWithheldFor, entryUntrusted, standingWorkEscalates } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
@@ -286,6 +295,7 @@ const mcpSchemaCache = require('./mcp/schema-cache.js');
 const connectorCatalog = require('./mcp/catalog.js');       // curated one-click MCP connector catalog (pure data + selectors)
 const serviceKeysMod = require('./servicekeys.js');         // ABILITIES › SAVED API CONNECTIONS: custom service API keys (pure core — env injection + masked list)
 const serviceKeysCatalog = require('./servicekeys-catalog.js');   // SAVED API CONNECTIONS: the curated PLATFORM directory (pure data)
+const onePassword = require('./onepassword.js');             // KEYS: op:// references read with the 1Password CLI, held in memory only
 const mcpOauth = require('./mcp/oauth.js');                 // generic OAuth 2.1 client for MCP connectors (discover/DCR/PKCE/refresh)
 const { sameEndpoint, resolveConnectorOauthTarget, catalogSignInAvailable, signedInConfig } = require('./mcp/oauth-target.js');
 const connectorStateMod = require('./connectorstate.js');   // one transactional envelope for connector config + OAuth secrets
@@ -329,6 +339,7 @@ const SharedSpecialties = require('../shared/specialties.js');           // SCOU
 const RecipeCatalogAll = require('../frontend/app/recipe-catalog/index.js'); // SCOUT: builtin recipe catalog (draft dedup + context)
 const { makeAutoNotifier } = require('./autonotify.js');   // B4: ping a connected channel when a cron run produces work
 const configExport = require('./configexport.js');   // P1-7: station backup — export/import/reset (pure shape+redaction; index wires the live stores)
+const backupFile = require('./backupfile.js');       // #134: the desktop station backup lands in a folder the line can name
 const harnessImport = require('./harness-import.js'); // IMPORT-AN-AGENT: read-only OpenClaw/Hermes home -> normalized preview (pure; index does the fs)
 const { writeFileDurable: writeFileDurableRaw } = require('./durable-write.js'); // G4.2: crash-safe atomic+durable single-file replace (fsync-before-rename)
 const stationRecovery = require('./station-recovery.js');
@@ -411,7 +422,7 @@ const skillMarketSigning = require('./skills/market-signing.js');   // the Skill
 const { makeVerdictReview, reviewPassFinished } = require('./verdictreview.js');   // consistency loop: a rated ok/miss run earns a skill review
 const skillCurator = require('./skillcurator.js');          // skill lifecycle/consolidation maintenance
 const slash = require('./slash.js');                       // slash-command catalog + dispatch descriptors
-const { makeUserCommands } = require('./usercommands.js');  // Commander-defined slash commands (alias/exec)
+const { makeUserCommands, menuEntries: userMenuEntries, execRefusal: userExecRefusal } = require('./usercommands.js');  // Commander-defined slash commands (alias/exec)
 const slashActionsMod = require('./slash-actions.js');     // server-side execution for dispatch:'server' commands
 const Recipes = require('../frontend/app/recipes.js');     // built-in mission recipes, also exposed as slash commands
 const { makeCheckpointStore } = require('./checkpoint-store.js');   // the shadow-git rollback net (ambient edge)
@@ -436,6 +447,7 @@ const { makeStationControlTools, cardFor: stationControlCard } = require('./tool
 const { makeRoutineTools } = require('./tools/builtin/routines.js'); // ROUTINES: agent-created StarNet cron jobs
 const { makeLoopTools } = require('./tools/builtin/loops.js');       // LOOPS: model-facing durable standing-objective controls
 const { makeCommsTools } = require('./tools/builtin/comms.js');      // COMMS: outbound reach — an agent messages a connected chat
+const RoutineMedia = require('./routine-media.js');                   // a chat-bound routine's delivery carries its files (ATTACH lines / generated images)
 const cronGuard = require('./cron-guard.js');                        // routine prompt-injection tripwire (pure, see file header)
 // Every child this file spawns gets the station-secret-free env by default (child-env.js, audit 2026-09-25 #13):
 // git in user repos, shell hooks, loop checks, the folder picker, fs.search's rg. An explicit `env` (the agent
@@ -768,8 +780,9 @@ const livePrices = (function () {
    MAX_CONCURRENT_AGENTS, the consent timeout, the cron tick) are now editable + PERSISTED so a beginner who can't
    set env vars can still tune them. PRECEDENCE is strict and disclosed in the UI: an explicit ENVIRONMENT VARIABLE
    ALWAYS WINS (a locked-down deploy stays in control), else a value SAVED here, else the built-in default. Read at
-   BOOT (these feed const CAPS / gates), so a change applies on the next restart — the UI says so. Stored in a
-   PROTECTED sibling of the fs jail (runtime.knobs.json). Loaded with a tiny self-contained reader (this runs before
+   BOOT (these feed const CAPS / gates), so a change applies on the next restart — the UI says so — EXCEPT the two
+   per-run TOKEN ceilings (RUNTIME_KNOB_DEFS live:true), which every run reads off CAPS, so a save re-resolves them for
+   the next run (issue #135). Stored in a PROTECTED sibling of the fs jail (runtime.knobs.json). Loaded with a tiny self-contained reader (this runs before
    loadResilient/num are defined); a torn/absent file → no overrides (fail-soft to env/default). */
 const RUNTIME_KNOBS_FILE = path.join(WORKSPACES, 'runtime.knobs.json');
 
@@ -799,7 +812,7 @@ let runtimeKnobs = (function loadRuntimeKnobsAtBoot() {
   function parseKnobs(raw) {
     const k = (raw && typeof raw === 'object' && raw.knobs && typeof raw.knobs === 'object') ? raw.knobs : {};
     const out = {};
-    for (const key of ['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs', 'maxSubscriptionTokens']) {
+    for (const key of ['maxIters', 'maxConcurrentAgents', 'consentTimeoutMs', 'cronTickMs', 'maxSubscriptionTokens', 'maxUnpricedTokens']) {
       const v = k[key];
       if (typeof v === 'number' && isFinite(v) && v >= 0) out[key] = Math.floor(v);
     }
@@ -827,7 +840,9 @@ function knobEnvLocked(envSuffix) { const e = envSuffix ? ENV(envSuffix) : null;
 // (toolBytesCapFor at the run seam) UNLESS SKYNET_MAX_TOOL_BYTES is explicitly set, which pins the cap
 // absolutely (deterministic tests + locked-down deploys).
 // maxUnpricedTokens: per-run TOKEN ceiling for turns no catalog/table could price on a METERED provider (the $ cap
-// is blind to them). SKYNET_MAX_UNPRICED_TOKENS overrides; 0 disables. OAuth/unmetered providers are exempt.
+// is blind to them). STARNET_MAX_UNPRICED_TOKENS or SETTINGS › APP & BACKUP (UNPRICED MODEL TOKEN CEILING, issue #135)
+// overrides; 0 disables. OAuth/unmetered providers are exempt. Both token ceilings re-resolve on a SETTINGS save
+// (handleRuntimeKnobsSet), so the next run uses the new value without a restart.
 // maxSubscriptionTokens: per-run TOKEN ceiling for $0 subscription turns (a Claude Code sign-in); cache re-reads count
 // 1/10 (loop.js SUBSCRIPTION SEATBELT). STARNET_MAX_SUBSCRIPTION_TOKENS or SETTINGS › APP & BACKUP overrides; 0 disables.
 const CAPS = { maxIters: resolveKnob('MAX_ITERS', 'maxIters', 0), maxCostUsd: 1.00, maxRepeat: 3, toolTimeoutMs: 30000, maxToolBytes: resolveKnob('MAX_TOOL_BYTES', 'maxToolBytes', 120000), maxUnpricedTokens: resolveKnob('MAX_UNPRICED_TOKENS', 'maxUnpricedTokens', 2000000), maxSubscriptionTokens: resolveKnob('MAX_SUBSCRIPTION_TOKENS', 'maxSubscriptionTokens', 2000000) };
@@ -1786,21 +1801,12 @@ function rewriteJsonlDurable(file, entries) {
   const body = (entries || []).map(e => JSON.stringify(e)).join('\n') + (entries && entries.length ? '\n' : '');
   writeFileDurable({ fs: fs, path: path }, file, body);
 }
-const skillsIo = {
-  // bounded boot-load (last LOG_MAX_BYTES of archive+live), same as ledger/runs — after compaction exists, so a
-  // bounded read never silently drops a still-live skill (compaction keeps newest-per-key; the tail read then
-  // covers far more than the compacted file). A missing file -> [].
-  readAll() {
-    try { return readBoundedJsonl(SKILLS_FILE); } catch (e) { return []; }
-  },
-  append(entry) {
-    // The skill store publishes to RAM only after this durable write returns.
-    // Never swallow a failure and claim a proposal, rejection, or promotion survived it.
-    appendJsonlDurable({ fs, note: failNote }, SKILLS_FILE, entry);
-    rotateJsonl(SKILLS_FILE);
-  },
-  rewrite(entries) { rewriteJsonlDurable(SKILLS_FILE, entries); }   // compaction full-replace
-};
+// skills.jsonl is a STATE log (newest record per skill wins), so it is never size-rotated or tail-read like the
+// ledger: rotation deleted the only copy of skills not used recently (skills-io.js). It is read whole and kept small
+// by compaction instead. The store publishes to RAM only after a durable append returns (a failure throws).
+const SKILLS_COMPACT_BYTES = Math.max(1 << 20, num(ENV('SKILLS_COMPACT_BYTES'), 4 * 1024 * 1024));
+const skillsIo = makeSkillsIo({ fs, file: SKILLS_FILE, note: failNote, compactBytes: SKILLS_COMPACT_BYTES,
+  writeDurable: (file, body) => writeFileDurable({ fs: fs, path: path }, file, body) });
 const SKILL_PACKAGES_DIR = path.join(WORKSPACES, 'skill-packages');
 const skillPackageStore = skillPackages.makePackageStore({ fs, pathMod: path, root: SKILL_PACKAGES_DIR, now: () => Date.now() });
 const skillStore = makeSkillStore({ io: skillsIo, clock: { now: () => Date.now() }, redact, packageStore: skillPackageStore, guard: skillGuard, digest: skillDigestOf,
@@ -1927,15 +1933,16 @@ const skillExchange = makeSkillExchange({
   hash: (text) => crypto.createHash('sha256').update(String(text), 'utf8').digest('hex'),
   now: () => Date.now(), makeId: () => crypto.randomBytes(16).toString('hex')
 });
-// BOOT COMPACTION: when skills.jsonl has grown past a threshold, rewrite it to one line per (agentId,name) so
-// view-bump churn + repeated edits can't grow it without bound. Runs AFTER the store loaded `latest`, so the
-// rewrite is exactly the current newest-per-skill set. Safe + idempotent; fail-open.
+// BOOT COMPACTION: when skills.jsonl has grown past a threshold, or a legacy rotated skills.jsonl.1 is still on disk
+// (an older StarNet rotated this file), rewrite it to one line per (agentId,name). Runs AFTER the store loaded
+// `latest` (archive + live, read whole), so the rewrite is exactly the current newest-per-skill set and folds the
+// archive back in. The store refuses when its load was incomplete. Safe + idempotent; fail-open.
 try {
-  const SKILLS_COMPACT_BYTES = Math.max(1 << 20, num(ENV('SKILLS_COMPACT_BYTES'), 4 * 1024 * 1024));
   let sz = 0; try { sz = fs.statSync(SKILLS_FILE).size; } catch (_) {}
-  if (sz > SKILLS_COMPACT_BYTES && typeof skillStore.compact === 'function') {
+  if (skillsIo.needsCompaction() && typeof skillStore.compact === 'function') {
     const r = skillStore.compact();
     if (r && r.ok) { try { console.warn('[skills] boot-compacted skills.jsonl (' + sz + 'B -> ' + r.kept + ' entries)'); } catch (_) {} }
+    else if (r) failNote('skills.boot-compact', new Error(r.reason || 'compaction refused'));
   }
 } catch (_) {}
 
@@ -1954,6 +1961,20 @@ const skillMarket = makeSkillMarket({
   trustedKeys: skillMarketSigning.TRUSTED_KEYS.concat(skillMarketSigning.keysFromEnv(process.env.STARNET_SKILL_MARKET_KEYS)),
   floorSerial: (() => { try { return Number(require('./skills/market-floor.json').serial) || 0; } catch (e) { failNote('skill-market.floor', e); return 0; } })(),
   loadJson: (file) => loadResilient(file, 'skill market'), saveJson: (file, value) => saveResilient(file, value)
+});
+// THE COMMUNITY MAPS GALLERY (sidecar/maps/community.js): station layouts players shared, reviewed by a person, signed
+// with the Skill Market's keys on the publisher's PC. Read through the same guarded fetcher; shared through the linked
+// account. STARNET_MAPS_URL=off switches the gallery off; any other value points it at another signed gallery.
+const COMMUNITY_MAPS_DEFAULT_URL = 'https://starnetos.com/.well-known/starnet-maps.json';
+const communityMaps = require('./maps/community.js').makeCommunityMaps({
+  fetchDocument: fetchSkillDocument, signing: skillMarketSigning,
+  trustedKeys: skillMarketSigning.TRUSTED_KEYS.concat(skillMarketSigning.keysFromEnv(process.env.STARNET_SKILL_MARKET_KEYS)),
+  catalogUrl: () => { const v = process.env.STARNET_MAPS_URL; return v == null ? COMMUNITY_MAPS_DEFAULT_URL : (String(v).trim().toLowerCase() === 'off' ? '' : String(v).trim()); },
+  cloud: () => { const c = resolveCreditsConfig(); return { url: c.url, token: c.apiKey }; },
+  fetch: (...a) => globalThis.fetch(...a), now: () => Date.now(),
+  // the highest gallery serial this station has read, per gallery URL (a replayed older gallery stays refused after a restart)
+  loadState: () => loadResilient(path.join(WORKSPACES, 'community-maps.json'), 'community maps'),
+  saveState: (value) => saveResilient(path.join(WORKSPACES, 'community-maps.json'), value)
 });
 // THE MARKET'S KILL SWITCH: while at least one market skill is installed, re-read the small signed pulled-skills list
 // shortly after boot and every few minutes, and switch off anything the market has pulled. A station with no market
@@ -2525,9 +2546,9 @@ const commanderGoals = {
     const milestones = goal && typeof goal === 'object' ? GoalAdvance.normMilestones(goal.milestones) : [];
     this._goal = this._fold((goal && typeof goal === 'object') ? {
       id: goal.id == null ? null : String(goal.id).slice(0, 64),
-      text: String(goal.text || '').slice(0, 280),
+      text: String(goal.text || '').slice(0, 280).replace(/[\uD800-\uDBFF]$/, ''),   // never half an emoji (a lone surrogate)
       done: Number(goal.done) | 0, total: Number(goal.total) | 0, pct: Number(goal.pct) | 0,
-      next: goal.next == null ? null : String(goal.next).slice(0, 200),
+      next: goal.next == null ? null : String(goal.next).slice(0, 200).replace(/[\uD800-\uDBFF]$/, ''),
       milestoneId: goal.milestoneId == null ? null : String(goal.milestoneId).slice(0, 80),
       milestones: milestones.length ? milestones : null
     } : null);
@@ -2672,8 +2693,21 @@ function cronIdentityFor(agentId) {
 }
 // GROWTH Tier 2: the dossier block a cron persona folds in, with the active goal-arc note appended (direction the
 // unattended run should work toward). Empty when both are empty → withDossier stays a no-op (the cron test invariant).
+/* CROSS-RUN CACHE (token-burn follow-up, 2026-10-17). This used to fold the WHOLE evidence pack into the persona —
+   topic counts, open threads, recent activity, verdict tallies and the TRACK RECORD's "X of N recent runs" — so every
+   server-composed system prompt (routine fires, line hops, night-shift beats, loops, workshop shifts, phone runs)
+   differed on every run: 321 of 321 same-agent hop pairs on a real station had different instructions, which moved the
+   Codex cache route and broke every provider's cached prefix between runs. The persona now carries only the STANDING
+   half (dossier + active goal: they change when the Commander changes them, not per run); the observed half rides the
+   run's <run_context> note (stationEvidenceNote, below — runOnceCore's `stationEvidence` option). */
 function dossierWithGoals() {
-  return commanderEvidenceContext('');
+  let goal = null; try { goal = commanderGoals.get() || null; } catch (e) { failNote('persona.goal', e); }
+  return CommanderContext.compose({ dossier: commanderDossier.get(), goal });
+}
+// The per-run half: the same bounded, provenance-labelled evidence block commanderEvidenceContext composes, minus the
+// dossier and goal the persona already carries. '' when the station has observed nothing (never an empty header).
+function stationEvidenceNote() {
+  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), { dossier: '', goal: null }));
 }
 function cronSystemFor(agentId) {
   const ident = cronIdentityFor(agentId);
@@ -2973,6 +3007,9 @@ function engineCredentialError(provider, what) {
 // notebook: a sibling of the fs jail. Holds NO secret (the key/tokens live elsewhere). The frontend keeps
 // localStorage as a fast cache and writes through here on every persist; on boot it pulls the newer of the two.
 const saveStore = makeSaveStore({ fs, pathMod: path, root: WORKSPACES, clock: { now: () => Date.now() } });
+// the saved floor as a validated station model for the capability note's room scope (cap-scope.js): re-validated
+// (~11 ms on a 152-prop save) only when the save file's stamp moved, and only asked when a floor object is missing
+const savedFloor = makeSavedFloor({ stamp: () => saveStore.stamp('agent'), loadStamped: () => saveStore.loadStamped('agent') });
 
 /* ---- Cortex M-mem.5b: post-run reflection -> Keep/Edit/Discard turn-in ----
    After a substantive browser run COMPLETES, one cheap aux-model call (the same seam summarize() uses)
@@ -3213,7 +3250,8 @@ function embedderFor(run) {
    -> { vectors: {id->vec}, queryVec } | null. Backfills missing record vectors (capped) + embeds the query in
    ONE or two bounded calls, books the spend, persists the store. Fail-open: null on any failure. */
 async function hybridVectors(o) {
-  if (!personalizationStore.read().enabled) return null;   // the PAUSE is server authority: no provider call at all
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return null;   // the PAUSE is server authority: no provider call at all
   const embedder = embedderFor(o.run || {});
   if (!embedder) return null;
   const recs = Array.isArray(o.recs) ? o.recs : [];
@@ -3227,6 +3265,7 @@ async function hybridVectors(o) {
     if (plan.length) {
       const r = await embedder.embed(plan.map(p => p.text));
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;   // paused/forgotten mid-call: persist no vectors (the finally still books the spend)
       const rows = plan.map((p, i) => ({ id: p.id, h: p.h, v: r.vectors[i] }));
       await notebookStore.update('embed:' + o.agentId, (cur) => Embed.mergeVectors(cur, embedder.model, rows, recs.map(x => x.id)));
     }
@@ -3237,6 +3276,7 @@ async function hybridVectors(o) {
     if (!queryVec) {
       const r = await embedder.embed([query]);
       book(r.usage);
+      if (!learningUnchangedSince(pz)) return null;
       queryVec = r.vectors[0];
       embedQueryCache.set(qKey, queryVec);
       while (embedQueryCache.size > EMBED_QUERY_CACHE_MAX) embedQueryCache.delete(embedQueryCache.keys().next().value);
@@ -3249,6 +3289,15 @@ async function hybridVectors(o) {
   } finally {
     if (usd || tokens) { try { ledger.record({ runId: o.runId, agentId: o.agentId, turns: 0, usd, tokens, model: embedder.model, unmetered: !!o.unmetered }); } catch (e) { failNote('embed.ledger.record', e); } }
   }
+}
+
+/* LEARNING RE-CHECK after an await (the scanDocumentSource rule). A learning pass checks the personalization PAUSE
+   at entry, then waits seconds on a model/embedder call; a pause or a forget (DELETE) that lands meanwhile must win,
+   or a memory/interest/draft is written after the Commander turned learning off. setEnabled and markForgotten both
+   bump `revision`, so an unchanged revision + still-enabled proves nothing moved since the pass started. */
+function learningUnchangedSince(start) {
+  const s = personalizationStore.read();
+  return !!(start && s.enabled && s.revision === start.revision);
 }
 
 /* PROJECT TIER (memory-compound lane): a belief formed inside a blessed project root is keyed to that root
@@ -3266,7 +3315,8 @@ async function runReflection(o) {
   // personalization PAUSE (memory-compound lane): reflection is the station learning about the Commander —
   // the same "learned-about-you" class the pause already silences for the scout, study packs and the failure
   // review. Server authority here too: a paused station extracts nothing and spends nothing, whatever the caller gated.
-  if (!personalizationStore.read().enabled) return;
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const origin = String((o && o.origin) || 'commander');   // which surface formed these beliefs (memcore.originOf)
@@ -3305,6 +3355,8 @@ async function runReflection(o) {
     const declined = notebookStore.get('declined:' + agentId);
     const declinedRecs = Array.isArray(declined) ? declined.map(t => ({ content: String(t) })) : [];
     const out = await reflect({ agentId, runId, messages }, { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: 5 });
+    // the Commander paused (or forgot) learning while the model was answering: remember nothing from this pass
+    if (!learningUnchangedSince(pz)) return;
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: reflect() already deduped THIS agent's own notebook declines; drop anything the Commander declined
     // in ANOTHER surface (a mined thread / a quest title / a study belief / a north star) so it isn't re-remembered.
@@ -3366,7 +3418,8 @@ async function runReflection(o) {
    memory.proposed for the confirm deck. PAUSE is server authority here exactly as in runScoutCycle: a paused
    station learns nothing new, whatever the caller gated. */
 async function runFailureReview(o) {
-  if (!personalizationStore.read().enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return;   // personalization PAUSE: no extraction, no model spend (same authority as the scout)
   const { agentId, runId, messages, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -3400,6 +3453,7 @@ async function runFailureReview(o) {
         toolTrace: o.toolTrace, recoveryAttempts: o.recoveryAttempts, uncertainMutations: o.uncertainMutations,
         messages },
       { propose, redact, existing: existing.concat(declinedRecs), clock: { now: () => Date.now() }, max: Failreview.MAX_LESSONS });
+    if (!learningUnchangedSince(pz)) return;   // paused/forgotten during the review call: no lesson is written
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: any NEW proposal source routes through the shared declined-suppression index (NS-8 lite law).
     if (proposals.length) { const dIdx = buildDeclinedIndex(agentId); proposals = proposals.filter(p => p && !dIdx.has(p.content)); }
@@ -3753,7 +3807,7 @@ async function runBackgroundSkillReview(o) {
   finally {
     clearTimeout(timer);
     if (result && result.usd) {
-      try { ledger.record({ runId: reviewRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, model: model || '', unmetered }); } catch (_) {}   // model: the spend row names what it spent on, like every other aux row
+      try { ledger.record({ runId: reviewRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, cachedTokens: result.cachedTokens || 0, model: model || '', unmetered }); } catch (_) {}   // model: the spend row names what it spent on, like every other aux row
     }
   }
   // false asks verdictreview to retry: only a pass that failed before it changed the skillbase (a budget/turn-ceiling/
@@ -3812,7 +3866,7 @@ async function runSkillCurator(o) {
   finally {
     clearTimeout(timer);
     if (result && result.usd) {
-      try { ledger.record({ runId: curatorRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, model: model || '', unmetered }); } catch (_) {}
+      try { ledger.record({ runId: curatorRunId, agentId, turns: result.turns || 0, usd: result.usd || 0, tokens: result.tokens || 0, cachedTokens: result.cachedTokens || 0, model: model || '', unmetered }); } catch (_) {}
     }
   }
 }
@@ -4076,7 +4130,7 @@ function channelAskConsent(o) {
     scope: (o.tool && o.tool.scope) || 'write',
     argsSummary: consentSummary(o.call)
   };
-  let untrack = null;
+  let untrack = null, askedId = '';
   return makeConsentWait({
     pending: pend, signal: o.signal, timeoutMs: CONSENT_TIMEOUT_MS, extendMs: CONSENT_ACK_EXTEND_MS,
     uuid: () => crypto.randomUUID(),
@@ -4088,11 +4142,13 @@ function channelAskConsent(o) {
     // already armed, so a throw from the renderer must never escape into the waiter (it would leave the run
     // paused with no timer owner) — hence the guard.
     emitPrompt: (promptId) => {
+      askedId = String(promptId || '');
       try { untrack = remoteApprovals.add(Object.assign({ runId, promptId, agentId: o.agentId, surface: o.surface === 'remote' ? 'remote' : 'channel', finish: pend.get(promptId) }, fields)); } catch (e) { failNote('remote.index.trackChannelPrompt', e); }
       try { if (typeof o.onPrompt === 'function') o.onPrompt(promptId, fields); } catch (e) { failNote('channels.consent.onPrompt', e); }
     }
   }).ask().then((decision) => {
     if (untrack) untrack();
+    if (askedId) noteChannelConsentSettled(askedId, decision);
     // makeConsentWait removes its own promptId; drop the run's bucket once the last prompt settles so a long
     // -lived channel can't accumulate one empty Map per run forever.
     if (pend.size === 0) channelPendingByRun.delete(runId);
@@ -4102,6 +4158,16 @@ function channelAskConsent(o) {
 // Resolve one prompt BY ITS OWN ID. (The reference harness resolves the session's queue head instead, so with
 // two concurrent prompts a tap on the second answers the first — keying by promptId makes that unrepresentable.)
 // Returns false when the host already settled it: timed out, aborted by a superseding message, or E-STOPped.
+/* HOW EACH SETTLED CHANNEL ASK ENDED (bounded, in-memory). STARNET REMOTE answers a channel prompt through the same
+   finisher, so a later tap on the still-live Telegram keyboard loses the race to an ALLOW — and was stamped "expired —
+   DENIED" on an action that ran (2026-10-20). The hub reads this (consentOutcome) to report what really happened. */
+const channelConsentSettled = new Map();
+function noteChannelConsentSettled(promptId, decision) {
+  channelConsentSettled.delete(promptId);
+  channelConsentSettled.set(promptId, String(decision || ''));
+  while (channelConsentSettled.size > 200) channelConsentSettled.delete(channelConsentSettled.keys().next().value);
+}
+function channelConsentOutcome(runId, promptId) { return channelConsentSettled.get(String(promptId == null ? '' : promptId)) || ''; }
 function channelResolveConsent(runId, promptId, decision) {
   const d = (decision === 'once' || decision === 'session' || decision === 'always' || decision === 'full') ? decision : 'deny';
   const pend = channelPendingByRun.get(String(runId == null ? '' : runId));
@@ -4121,7 +4187,8 @@ const revokedByTaint = { ok: taintPolicy.allowedWhenTainted, isSource: taintPoli
 
 function hardlineFloor(call) {
   const p = call && call.args && call.args.path;
-  if (typeof p === 'string' && (/(^|[\\/])\.env(\.|$)/i.test(p) || /(^|[\\/])\.git([\\/]|$)/i.test(p)))
+  // `:` too — Windows opens `.env::$DATA` as `.env` and `.git::$INDEX_ALLOCATION\hooks` as `.git\hooks` (NTFS stream syntax)
+  if (typeof p === 'string' && (/(^|[\\/])\.env(\.|:|$)/i.test(p) || /(^|[\\/])\.git([\\/:]|$)/i.test(p)))
     return 'writing ' + p + ' is blocked by the protected-file floor';
   return null;
 }
@@ -4193,7 +4260,7 @@ const pluginRuntime = makePluginRuntime({
   fork: stationChildProcess.fork, workerPath: path.join(__dirname, 'plugin-worker.js'), store: pluginStore,
   now: () => Date.now(), cwd: WORKSPACES,
   // the approval must still cover the exact code a process runs (before tool/window calls, restarts, and jobs)
-  verify: async (id, digest) => { const r = await pluginLoader.approvedRecord(id); return !!r && r.digest === digest; },
+  verify: async (id, digest, opts) => { const r = await pluginLoader.approvedRecord(id, opts && opts.quick ? { quick: true } : undefined); return !!r && r.digest === digest; },
   onLog: (id, line) => { for (const l of String(line || '').split(/\r?\n/)) if (l) console.log('[plugin:' + id + '] ' + l); }
 });
 /* A RE-APPROVAL MUST RUN THE NEW CODE. Node caches every require()d module forever, so after an edit + re-approve
@@ -4735,11 +4802,22 @@ async function forceRefreshCodexAccessToken(staleToken) {
   codexRefreshInFlight = refreshCodexTokensOnce().finally(() => { codexRefreshInFlight = null; });
   return codexRefreshInFlight;
 }
+/* A refresh belongs to the exact sign-in that started it — the same rule ensureConnectorOauthToken keeps for MCP
+   grants. A logout (or a brand-new sign-in) during the token-endpoint await wins: the late response, success or
+   failure, must never be merged over it or saved, or an explicit sign-out is silently undone (the refreshed grant is
+   written over the signed-out tombstone and survives a restart) and a new account gets the old account's tokens. */
+function oauthRefreshSuperseded(label, code, current) {
+  if (current && current.access_token) return current.access_token;   // a new sign-in replaced it: serve THAT one
+  const e = new Error('Signed out of ' + label + ' while the sign-in was refreshing — connect it again to continue.');
+  e.code = code; e.reloginRequired = true; throw e;
+}
 async function refreshCodexTokensOnce() {
+  const started = codexTokens;
   let next;
   try {
-    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: codexTokens.refresh_token, now: Date.now() });
+    next = await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
     // Relogin-class failure (invalid_grant / refresh_token_reused / 401) => the stored refresh token is DEAD.
     // Record it durably (module state + persisted envelope) so the status endpoint — and Settings — stop
     // claiming "signed in", and a restart stays honest. Transient failures (quota/network) never mark dead.
@@ -4752,6 +4830,7 @@ async function refreshCodexTokensOnce() {
     }
     throw e;
   }
+  if (codexTokens !== started) return oauthRefreshSuperseded('ChatGPT', 'codex_not_connected', codexTokens);
   // a successful refresh proves the sign-in is alive again — clear any standing dead marker with the same write.
   codexTokens = codexAuthState.withoutDeadMarker(Object.assign({}, codexTokens, next));
   codexAuthDead = null;
@@ -4898,10 +4977,12 @@ async function ensureOAuthAccessToken(pid) {
   return entry.refreshInFlight;
 }
 async function refreshOAuthTokensOnce(id, entry) {
+  const started = entry.tokens;   // same superseded-grant rule as refreshCodexTokensOnce: a logout/new sign-in mid-await wins
   let next;
   try {
-    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+    next = await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
   } catch (e) {
+    if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
     const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
     if (marker) {
       entry.authDead = marker;
@@ -4911,6 +4992,7 @@ async function refreshOAuthTokensOnce(id, entry) {
     }
     throw e;
   }
+  if (entry.tokens !== started) return oauthRefreshSuperseded(oauthLabel(id), id + '_not_connected', entry.tokens);
   entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
   entry.authDead = null;
   saveOAuthTokens(id, entry.tokens);
@@ -4965,16 +5047,24 @@ async function ensureAccountAccessToken(entry, force, staleToken) {
   if (!force && !expiring) return entry.tokens.access_token;
   if (entry.refreshInFlight) return entry.refreshInFlight;
   entry.refreshInFlight = (async () => {
+    // superseded-grant rule (refreshCodexTokensOnce): a re-sign-in or a REMOVE during the await wins. A removed
+    // account's folder was just deleted — a late save would write an orphaned tokens.json secret back into it.
+    const started = entry.tokens;
+    const superseded = () => entry.tokens !== started || oauthAccountEntries.get(entry.pid + ':' + entry.id) !== entry;
+    const gone = () => oauthRefreshSuperseded(oauthLabel(entry.pid) + ' account', entry.pid + '_not_connected',
+      oauthAccountEntries.get(entry.pid + ':' + entry.id) === entry ? entry.tokens : null);
     let next;
     try {
       next = entry.pid === 'codex'
-        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() })
-        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: entry.tokens.refresh_token, now: Date.now() });
+        ? await codexAuth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() })
+        : await entry.auth.refreshTokens({ fetch: globalThis.fetch, refresh_token: started.refresh_token, now: Date.now() });
     } catch (e) {
+      if (superseded()) return gone();
       const marker = codexAuthState.deadMarkerFromError(e, new Date().toISOString());
       if (marker) { entry.authDead = marker; entry.tokens = codexAuthState.withDeadMarker(entry.tokens, marker); saveAccountTokens(entry, entry.tokens); }
       throw e;
     }
+    if (superseded()) return gone();
     entry.tokens = codexAuthState.withoutDeadMarker(Object.assign({}, entry.tokens, next));
     entry.authDead = null;
     saveAccountTokens(entry, entry.tokens);
@@ -5155,7 +5245,7 @@ const appendDurableProcessOutput = entry => outputArtifacts.append(entry);
    ended — an honest 409), or a full one: the COMMS line stays the only signal, exactly as before. The most recently
    started live run of that agent is the one told, so a note is never duplicated across runs (shellbg.js). */
 const wakeOwnerOnBgExit = makeBgExitWaker({ steer: steerBufs, runs: runs, runsMeta: runsMeta, log: (m) => console.log(m) });
-const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, processTable: osProcessTable });
+const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, spillWriter: outputArtifacts, processTable: osProcessTable });
 if (require.main === module) {
   // vouch every minute for bg children whose handle is still open, so a crash's orphan window covers children
   // they start late (procledger.touch). One small ledger write per minute, only while bg processes run.
@@ -5181,7 +5271,7 @@ function saveExecutionSettings(next) {
 // web_request. Host authority — it comes from the run, never from tool args.
 const executionEnvironmentDeps = { spawn: childSpawn, fs: fs, pathMod: path, root: WORKSPACES, bg: shellBg, redact: redact, clock: { now: () => Date.now() }, env: process.env,
   ledger: procLedger,   // h2 F2: the LOCAL backend receipts foreground shell children for the boot orphan sweep
-  serviceEnv: (surface) => serviceKeysMod.runEnv(serviceKeys, process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
+  serviceEnv: (surface) => serviceKeysMod.runEnv(liveServiceKeys(), process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
   idleCleanupMs: () => Number(executionSettings.idleCleanupMinutes || 0) * 60000,
   sshConfig: (agentId) => executionSettingsMod.targetFor(executionSettings, agentId),
   // station-wide reap (E-STOP / Quit / shutdown): every agent with a configured remote target, read lazily so a
@@ -5345,6 +5435,10 @@ const overseer = require('./overseer.js').makeOverseer({ fs, path, writeDurable:
   file: path.join(WORKSPACES, 'overseer.json'), now: () => Date.now(),
   newId: () => 'ws_' + crypto.randomUUID().replace(/-/g, ''),
   sessions: () => saveStore.load('agent') || {}, hasAgent: id => id === 'agent' || agentRoster.has(id),
+  // the same save read plus its stamp, so GET /api/overseer's thread list re-parses the save only when it changed
+  // (overseer.js listedThreads; savestore.js stamp: one stat, never a cached doc)
+  sessionsRead: () => { const r = saveStore.loadStamped('agent'); return { doc: r.doc || {}, stamp: r.stamp }; },
+  sessionsStamp: () => saveStore.stamp('agent'),
   isRunActive: id => runs.has(id),
   // how long one hand-off's report waits on a straggler before NOVA reports the finished part (env OVERSEER_REPORT_CEILING_MS)
   reportCeilingMs: Math.max(30000, Number(process.env.OVERSEER_REPORT_CEILING_MS) || 600000) });
@@ -5380,6 +5474,19 @@ function overseerStation(parentStreamId, parentRunId) {
 }
 
 let overseerTickRunning = false;
+/* A BUSY CONVERSATION NO LONGER HOLDS UP EVERY REPORT (idle-cpu piece 2, 2026-10-19). runOnce holds a conversation's
+   overseer lock for its whole turn (tool loops, consent waits up to 900 s), and the tick used to AWAIT that lock and then
+   the review run itself: one busy conversation froze every other conversation's report, collect() and the settling of
+   orphaned 'reviewing' rows, station-wide. Now each report is its own task, queued on its own conversation's lock (it
+   keeps its place in that conversation's line, so a turn sent later still sees it) and never awaited by the tick.
+   reviewTasks = review id -> { running }: a report queued on its conversation or running now. The tick never touches a
+   row that has a task (it would call a live report interrupted). At most REVIEW_RUNS_AT_ONCE reports RUN at once (one,
+   as before: never parallel paid review runs); a queued report whose turn comes while another runs stays pending and a
+   later tick queues it again. After a restart the map is empty, so a 'reviewing' row a dead process left still settles
+   by its proof. */
+const reviewTasks = new Map();
+const REVIEW_RUNS_AT_ONCE = 1;
+function runningReviews() { let n = 0; for (const t of reviewTasks.values()) if (t.running === true) n++; return n; }
 /* NOVA's ONE report on a hand-off (version B): the overall outcome, then one line per worker by name, then only what is
    still open. The workers' full answers are not pasted back — the Commander opens each on the delegation card. The
    opening words, the per-worker "status" and "commanderDirections" are what the overseer tests and providers key on. */
@@ -5405,11 +5512,13 @@ function delegatedReportPrompt(live, waiting, followUp) {
       stillWorking: waiting.map(w => ({ name: nameOf(w.agentId), agentId: w.agentId, objective: w.prompt, status: w.status })) });
 }
 async function tickOverseer() {
-  if (overseerTickRunning || workspaceDegraded || updateHolding() || overseer.snapshot().paused) return;
+  if (overseerTickRunning || workspaceDegraded || updateHolding() || overseer.paused()) return;
   overseerTickRunning = true;
   try {
     overseer.collect(subagents.list());
-    for (let review of overseer.snapshot().reviews) {
+    for (let review of overseer.reviews()) {
+      // a report queued on its conversation or running now belongs to its task: never settle its row here
+      if (reviewTasks.has(review.id)) continue;
       if (review.agentId !== 'agent') {
         if (review.status === 'pending' || review.status === 'reviewing') overseer.patchReview(review.id, {
           status: 'cancelled', error: 'Automatic coordination belongs to the station orchestrator.' });
@@ -5422,8 +5531,11 @@ async function tickOverseer() {
         continue;
       }
       if (review.status !== 'pending') continue;
+      if (runningReviews() >= REVIEW_RUNS_AT_ONCE) continue;
       let parent;
-      try { parent = overseer.resolve(review.parentStreamId); }
+      // existence + project only: the listed rows, re-read only when the save changed (a review waiting for a provider
+      // credential re-ran this every tick, one full save parse per pending review per 2 s). The lock re-resolves afresh.
+      try { parent = overseer.resolveListed(review.parentStreamId); }
       catch (_) { overseer.patchReview(review.id, { status: 'cancelled', error: 'Parent conversation is archived or deleted.' }); continue; }
       if (parent.projectRoot && !isBlessedRoot(parent.projectRoot)) {
         overseer.patchReview(review.id, { status: 'interrupted', error: 'The parent project is no longer trusted. Restore its project access before continuing.' }); continue;
@@ -5442,8 +5554,15 @@ async function tickOverseer() {
       if (!members.length) {
         overseer.patchReview(review.id, { status: 'superseded', error: 'Every worker in this request has a newer attempt.' }); continue;
       }
+      const reviewId = review.id, task = { running: false };
+      reviewTasks.set(reviewId, task);
+      // launched, never awaited: the tick goes on to every other conversation while this one waits for its turn
+      (async () => {
       await overseer.withThread(parent.id, async () => {
-        if (updateHolding() || overseer.snapshot().paused || !overseer.snapshot().reviews.some(r => r.id === review.id && r.status === 'pending')) return;
+        const row = overseer.review(review.id);
+        if (updateHolding() || overseer.paused() || !row || row.status !== 'pending') return;
+        // another report is running (this one's turn came while it ran): stay pending, a later tick queues it again
+        if (runningReviews() >= REVIEW_RUNS_AT_ONCE) return;
         try { parent = overseer.resolve(review.parentStreamId); }
         catch (_) { overseer.patchReview(review.id, { status: 'cancelled', error: 'Parent conversation is no longer available.' }); return; }
         review = overseer.refreshReview(review.id, subagents.list()) || review;
@@ -5456,9 +5575,10 @@ async function tickOverseer() {
         }
         const runId = crypto.randomUUID();
         const reviewAbort = new AbortController();
+        task.running = true;
         overseer.patchReview(review.id, { status: 'reviewing', reviewRunId: runId, error: '' });
         const settleReview = fields => {
-          const current = overseer.snapshot().reviews.find(r => r.id === review.id);
+          const current = overseer.review(review.id);
           if (current && current.status === 'reviewing' && current.reviewRunId === runId) overseer.patchReview(review.id, fields);
         };
         runs.set(runId, reviewAbort);
@@ -5468,7 +5588,7 @@ async function tickOverseer() {
         const instruction = delegatedReportPrompt(members, waiting, review.followUp === true);
         try {
           await runOnceCoreCounted({ agentId: review.agentId, key, provider, baseUrl, model: ident.model,
-            system: ident.system || cronSystemFor(review.agentId), lead: true, isTask: true,
+            system: ident.system || cronSystemFor(review.agentId), stationEvidence: !ident.system, lead: true, isTask: true,
             syntheticTrigger: true,
             surface: 'autonomous', signal: reviewAbort.signal, streamId: parent.id, runId, parentRunId: members[0].runId,
             // the workers' text rides in `instruction`: any tainted worker hands its taint to the reviewing LEAD
@@ -5481,8 +5601,9 @@ async function tickOverseer() {
           settleReview({ status: proof && proof.reason === 'done' ? 'done' : 'interrupted',
             error: proof && proof.reason === 'done' ? '' : 'Review did not finish; inspect the saved run.' });
         } catch (e) { settleReview({ status: 'interrupted', error: String(e.message).slice(0, 300) }); }
-        finally { runs.delete(runId); runsMeta.delete(runId); grantsSession.delete(runId); }
+        finally { runs.delete(runId); runsMeta.delete(runId); grantsSession.delete(runId); task.running = false; }
       });
+      })().catch(e => console.warn('[overseer]', e.message)).finally(() => { if (reviewTasks.get(reviewId) === task) reviewTasks.delete(reviewId); });
     }
   } catch (e) { console.warn('[overseer]', e.message); }
   finally { overseerTickRunning = false; }
@@ -5890,7 +6011,21 @@ function applyServiceKeyCatalogPolicy(record) {
 }
 let serviceKeys = loadServiceKeys();
 let serviceKeysOwnedEnv = {};   // env vars WE set (the applyEnv clobber guard) — rebuilt on every apply
-function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(serviceKeys, process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
+/* 1PASSWORD REFERENCES: a KEYS row may hold op://vault/item/field instead of the key (servicekeys.js stores only the
+   reference). The value lives ONLY in this cache, read with the 1Password CLI on save and before a run that may spend
+   it. `serviceKeys` stays the PERSISTED list (every edit + save goes through it); liveServiceKeys() is the list every
+   SPENDER reads: the env, web_request, the prompt block, the panel and known-value redaction. Spend from serviceKeys
+   and a 1Password key silently vanishes; persist liveServiceKeys() and its value lands on disk. */
+const serviceKeyRefs = onePassword.makeRefCache({
+  reader: onePassword.makeOpReader({ execFile: execFile, env: process.env, platform: process.platform, join: path.join,
+    exists: p => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } } }),
+  now: () => Date.now(),
+  sleep: ms => new Promise(res => { const t = setTimeout(res, ms); if (t && t.unref) t.unref(); }),
+  onChange: () => applyServiceKeysEnv()   // a new value reaches the next shell child at once
+});
+function liveServiceKeys() { return serviceKeyRefs.live(serviceKeys); }
+function publicServiceKey(record) { return serviceKeysMod.toPublic(serviceKeyRefs.live([record])[0]); }
+function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(liveServiceKeys(), process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
 applyServiceKeysEnv();          // boot: persisted keys are live for the first run without any UI touch
 /* KNOWN-VALUE REDACTION (security audit 2026-09-25). redact() only knew vendor SHAPES, so a shapeless secret —
    a service key the model was promised it would never see, a custom connector token, a Mistral key, a rotated
@@ -5912,7 +6047,7 @@ function stationSecretValues() { return collectSecretValues([
   { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
   // the Gmail app password ALONE (its token is 'address:password'; the whole token is listed above)
   { values: (connectorConfigs || []).map(gmailImapTransport.passwordOf) },
-  { keyed: serviceKeys }
+  { keyed: liveServiceKeys() }   // a value read from 1Password is held only in the live list
 ]); }
 setKnownSecretSource(stationSecretValues);
 // Helper processes: strip the same held values, plus every name the sidecar itself exported (service keys).
@@ -5974,6 +6109,15 @@ const connectors = makeConnectorManager({
   clock: { now: () => Date.now() }, timeoutMs: MCP_CALL_TIMEOUT_MS,
   schemaCache: connectorSchemaCacheStore,
   validateConfig: cfg => cfg && cfg.transportKind === 'stdio' ? mcpStdioIsolationError(cfg) : '',
+  /* A Safe Cell stdio connector's container is readied before EVERY connect — configure, Reload, a lazy start and
+     each auto-reconnect — because the stdio transport spawns its docker exec synchronously. ensureReady re-checks a
+     cached cell, so a reconnect after a Docker restart starts the cell again instead of exec-ing into a stopped one
+     until the attempt cap. Readiness is swallowed so the transport records the honest "not ready" error. */
+  prepareConnect: async (cfg) => {
+    const aid = String((cfg && cfg.agentId) || '');
+    if (!cfg || cfg.transport !== 'stdio' || !/^[A-Za-z0-9_-]{1,40}$/.test(aid) || executionEnvironment.backendIdFor(aid) !== 'docker') return;
+    try { await executionEnvironment.ensureReady(aid); } catch (_) {}
+  },
   fingerprintConfig: cfg => mcpSchemaCache.fingerprint(cfg, value => crypto.createHash('sha256').update(value).digest('hex')),
   stdioIdleMs: Math.max(1000, Number(process.env.STARNET_MCP_STDIO_IDLE_MS) || 15 * 60 * 1000),
   stdioMaxLifetimeMs: Math.max(1000, Number(process.env.STARNET_MCP_STDIO_MAX_LIFETIME_MS) || 6 * 60 * 60 * 1000),
@@ -6163,16 +6307,7 @@ async function configureConnectorCfg(cfg, options) {
     await connectors.configure(cfg.id, Object.assign({}, cfg, { enabled: false, token: '', tokenProvider: null }), options);
     return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleDeferredMessage(cfg) };
   }
-  if (cfg && cfg.transport === 'stdio' && cfg.enabled !== false &&
-      !(Array.isArray(cfg.missingFields) && cfg.missingFields.length) && !(options && options.deferConnect)) {
-    const aid = String(cfg.agentId || '');
-    // Preparing a persistent cell is asynchronous; the stdio transport itself remains synchronous/lazy.
-    // Swallow readiness here only so the manager can record an honest connector error ("not ready") in
-    // its public status instead of leaving a saved connector with no runtime row at all.
-    if (/^[A-Za-z0-9_-]{1,40}$/.test(aid) && executionEnvironment.backendIdFor(aid) === 'docker') {
-      try { await executionEnvironment.ensureReady(aid); } catch (_) {}
-    }
-  }
+  // a Safe Cell stdio connector's cell is readied inside the manager's connect (prepareConnect), on every connect
   if (generation !== connectorResetGeneration) return { ok: false, state: 'down', toolCount: 0, superseded: true };
   if (cfg && cfg.oauth) {
     // Pass a tokenProvider (NOT a frozen token) so the manager fetches a FRESH bearer on every connect / auto-
@@ -6428,7 +6563,10 @@ let cronArmed = CRON_ENABLED || loadCronArmed();
    no-ops). It is re-entrant within this process, so applyTick(lock) -> setJobs -> saveCronJobs(lock) nests
    safely. now() uses the same Date.now the driver does (the staleness comparison is the only clock read). ---- */
 const CRON_LOCK_FILE = path.join(WORKSPACES, 'cron.lock');
-const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS });
+// The same dead-holder proofs the workspace-owner lock carries (sweep/autonomy 2026-10-20): a force-killed holder's PID
+// recycled to an unrelated process, or a lockfile older than this OS boot, is reclaimed now — not obeyed for maxRunMs.
+const cronLock = makeCronLock({ fs: fs, path: path, lockfile: CRON_LOCK_FILE, now: () => Date.now(), maxRunMs: CRON_MAX_RUN_MS,
+  bootedAt: makeBootedAt(() => Date.now()), processIdentity: processIdentity });
 
 const _sleep = (ms) => new Promise(r => { const t = setTimeout(r, ms); if (t && t.unref) t.unref(); });
 // CRON_WRITE_RETRIES × CRON_WRITE_RETRY_MS bounds the async wait for a live cross-process lock holder (was a
@@ -6478,6 +6616,26 @@ const cronEmit = (name, payload) => { try { return cronEmitValidated(name, redac
    Shared by the autonomous notifier and the agent's channel.send tool: a second copy of this fan-out would
    eventually disagree about which adapter serves a channel, and the failure mode is a message going to the
    wrong platform or silently nowhere. */
+/* readChannelUpload(agentId, rel) -> { ok, buffer, name, mime } | { ok:false, error } — the JAIL PROOF for every file
+   that leaves the station for a chat: channel.send's `files` and a routine delivery's attachments (routine-media.js)
+   both read through it. resolveInside is the same proof the fs.* tools and user attachments use, so only a file
+   inside the agent's OWN workspace can go — `../` or an absolute path is a refusal, not a traversal. Never throws:
+   a miss is { ok:false, error } the caller reports honestly. */
+async function readChannelUpload(agentId, rel) {
+  try {
+    // resolveInside THROWS on a jail violation ('illegal path' / 'path escapes workspace') and otherwise
+    // answers { base, abs } — the catch below turns a violation into an honest refusal, never a traversal.
+    const r = await fsJail.resolveInside(String(agentId || ''), String(rel || ''), { scope: 'read' });
+    const abs = r && r.abs;
+    if (!abs) return { ok: false, error: 'that path is outside your workspace' };
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st || !st.isFile()) return { ok: false, error: 'not a file' };
+    if (st.size > CHANNEL_UPLOAD_MAX_BYTES) return { ok: false, error: 'file is ' + Math.round(st.size / (1024 * 1024)) + 'MB (limit ' + Math.round(CHANNEL_UPLOAD_MAX_BYTES / (1024 * 1024)) + 'MB)' };
+    const buffer = await fsp.readFile(abs);
+    if (!buffer.length) return { ok: false, error: 'file is empty' };
+    return { ok: true, buffer: buffer, name: path.basename(abs), mime: mimeForPath(abs) };
+  } catch (e) { return { ok: false, error: (e && e.message) || 'read failed' }; }
+}
 function liveChannelFor(channel) {
   /* The DEV channel is a REAL channel — it has a hub and a working send (it captures replies for
      GET/POST /api/dev/inbound) — it just has no bot server behind it, so it never appears in genericChannels.
@@ -6621,6 +6779,24 @@ function cronReturnsToSession(job) {
   return (mode === 'local' && !!job.attachToSession)
     || (mode === 'origin' && !origin.target && !(origin.channel && origin.chatId));
 }
+/* cronDeliveryNote(job) -> the [DELIVERY] paragraph a CHAT-bound routine's run carries (routine-media.js): how to
+   attach a file to the reply the station delivers. Resolved like deliverCronResult resolves targets, so only a routine
+   whose reply really goes to a chat is told — local and session routines compose the exact pre-note system. */
+function cronDeliveryNote(job) {
+  try {
+    const mode = String((job && job.deliver) || 'local').trim();
+    let recs = [];
+    if (mode === 'origin' && job.origin && job.origin.target) recs = [channelStore.getChatRecord(String(job.origin.target))];
+    else if (mode === 'origin' && job.origin && job.origin.channel && job.origin.chatId) recs = [job.origin];
+    else if (mode.indexOf('targets:') === 0) recs = mode.slice(8).split(',').map(s => s.trim()).filter(Boolean).slice(0, 16).map(t => channelStore.getChatRecord(t));
+    const names = recs.filter(Boolean).map(r => {
+      const base = String(r.channel || 'telegram').split(':')[0];
+      const desc = channelRegistry.get(base);
+      return (desc && desc.label) || base;
+    });
+    return RoutineMedia.deliveryNote(names);
+  } catch (e) { failNote('cron.deliveryNote', e); return ''; }
+}
 function cronPreflightConfig(job) {
   const mode = String((job && job.deliver) || 'local').trim();
   if (mode === 'local') {
@@ -6682,6 +6858,22 @@ async function deliverCronResult(job, result) {
     return out;
   }
   if (!targets.length) return { ok: true, skipped: true };
+  /* FILES RIDE THE CHAT DELIVERY (routine-media.js, 2026-10-18). An unattended run cannot channel.send (the exec
+     lockout), so this is the only way a routine's image or chart reaches the chat: the ATTACH lines its reply names,
+     else the images the fire generated (its run rows' artifacts — durable, so a retried delivery finds them too).
+     Same approved target, same workspace jail as channel.send. A reply with no ATTACH line and no generated image
+     delivers byte-identically to before. */
+  let chatBody = String(result.text || ''), chatText = text, attach = { files: [], dropped: [] }, named = [], runs = [];
+  if (result.outcome !== 'failed') {
+    const parsed = RoutineMedia.parseReply(result.text);
+    try { runs = runStore.list(null, { streamId: 'cron-' + result.runId, limit: 50 }) || []; } catch (_) { runs = []; }
+    named = parsed.files;
+    attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId });
+    if (named.length) {
+      chatBody = parsed.text;
+      chatText = '✦ ' + (job.name || 'Routine') + (parsed.text.trim() ? '\n\n' + parsed.text : '');
+    }
+  }
   let failed = 0, firstError = '';
   const deliveredTargets = new Set(Array.isArray(result.deliveredTargets) ? result.deliveredTargets : []);
   for (const target of Array.from(new Set(targets)).slice(0, 16)) {
@@ -6690,15 +6882,39 @@ async function deliverCronResult(job, result) {
     if (!rec) { failed++; firstError = firstError || 'unknown chat target ' + target; continue; }
     const channel = String(rec.channel || 'telegram'), live = liveChannelFor(channel);
     if (!(live && live.adapter)) { failed++; firstError = firstError || channel + ' is not connected'; continue; }
+    const chatId = String(rec.chatId || target), route = rec.threadId ? { threadId: rec.threadId } : undefined;
     try {
-      const sent = await live.adapter.send(String(rec.chatId || target), redact(text), rec.threadId ? { threadId: rec.threadId } : undefined);
-      if (sent && sent.ok === false) throw new Error(sent.error || 'send failed');
+      // A routine's reply is as long as the model made it, and the adapter sends ONE message (the hub chunks chat
+      // replies before calling it). Sent whole, a digest past Telegram's 4096 was refused "message is too long" on the
+      // fire and on every retry — the chat never saw it (2026-10-20). Split it under the platform's ceiling, in order.
+      const desc = channelRegistry.get(channel.split(':')[0]);
+      const parts = hubChunkText(redact(chatText), Number(desc && desc.maxMessageLength) > 200 ? Number(desc.maxMessageLength) : 1900);
+      for (let i = 0; i < parts.length; i++) {
+        const sent = await live.adapter.send(chatId, parts[i], route);
+        if (sent && sent.ok === false) throw new Error((sent.error || 'send failed') + (i ? ' (after ' + i + ' of ' + parts.length + ' parts)' : ''));
+      }
       deliveredTargets.add(target);
       if (job.attachToSession) {
         channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
-        channelStore.appendTurn(job.agentId, 'assistant', String(result.text || ''));
+        channelStore.appendTurn(job.agentId, 'assistant', chatBody);
       }
-    } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); }
+    } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); continue; }
+    // The words landed, so this target is delivered: a file that fails is told to the chat, never retried (a retry
+    // would resend the message), and never silent — the Commander would be waiting for a picture that is not coming.
+    // A Full Access fire may already have put its own files here with channel.send — never the same picture twice.
+    if ((attach.files.length || (named.length && attach.dropped.length)) && !RoutineMedia.filesAlreadySent(runs, target, chatId)) {
+      const files = await RoutineMedia.sendFiles(attach.files, {
+        read: readChannelUpload,
+        send: (item) => typeof live.adapter.sendMedia === 'function'
+          ? live.adapter.sendMedia(chatId, item, route)
+          : Promise.resolve({ ok: false, error: channel + ' cannot carry files' })
+      });
+      for (const f of files.failed) console.warn('[cron] routine ' + job.id + ' file "' + f.path + '" not attached [' + channel + ']: ' + f.error);
+      const missed = files.failed.map(f => f.path).concat(named.length ? attach.dropped : []);
+      if (missed.length) {
+        try { await live.adapter.send(chatId, RoutineMedia.missedNote(missed), route); } catch (e) { failNote('cron.delivery.missedNote', e); }
+      }
+    }
   }
   return { ok: failed === 0, error: firstError || null, deliveredTargets: Array.from(deliveredTargets) };
 }
@@ -6799,11 +7015,12 @@ const cronDriver = makeCronDriver({
   // persona is a GETTER so each fire folds in the LIVE Commander dossier (it changes as the user edits it);
   // withDossier is a no-op when the dossier is empty, so this is byte-identical to CRON_PERSONA until one exists.
   persona: (agentId) => cronSystemFor(agentId),
+  deliveryNoteFor: (job) => cronDeliveryNote(job),   // a chat-bound routine is told how to ATTACH files to its delivered reply
   /* THE WORK LINE for a scheduled fire: run the stages drawn downstream of the routine's dock. Same executor,
      same caps, same per-hop crates as a channel message — only the way a hop is executed differs (a routine has
      no chat transcript; its hops ride the routine's own stream so the session shows the whole line). */
   advanceChain: (o) => chainRunner.advance({
-    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, signal: o.signal,
+    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, ask: o.ask, signal: o.signal,
     runId: o.runId, streamId: o.streamId || undefined,   // the fire's own stream ('cron-<runId>'): a SEND TO hand-off reads back exactly this fire's runs
     // the entry run's reconciled spend: MAX_CHAIN_USD bounds the WHOLE chain, and stage one is part of the
     // chain (2026-08-10 audit — the entry run rode outside its own line's $ ceiling on every path).
@@ -6848,10 +7065,11 @@ const cronDriver = makeCronDriver({
         await runOnce({
           key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
           baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
-          system: cronSystemFor(h.agentId),
+          system: cronSystemFor(h.agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
           messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: o.runsLine === true ? router.lineOfAgent(o.agentId, o.dockId ? router.dockOf(o.agentId, o.dockId) : undefined) : null, isTask: true,
           ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
+          resumeSeed: false,   // the handoff carries the upstream output: never re-send earlier stages' transcript (runOnceCore seed)
           surface: 'autonomous', trigger: 'schedule', reflect: true,
           station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
           lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
@@ -7216,12 +7434,13 @@ async function nightshiftChat(o) {
   const model = cronModelFor({ agentId: agentId });
   if (!model || !cronHasCredential(provider, key)) return { error: 'no-capability' };
   const runId = crypto.randomUUID();
-  const state = { buf: '', err: null };
+  const state = { buf: '', err: null, reason: null };
   const sink = (name, payload) => {
     const p = payload || {};
     if (name === 'agent.token') { state.buf += (p.delta || ''); return; }
     if (name === 'agent.tool_call') state.buf = '';
     if (name === 'agent.run.error') state.err = p.message || 'run error';
+    if (name === 'agent.run.end') state.reason = p.reason;
   };
   // VISIBLE WHILE THINKING (2026-07-18): the beat's broadcast opt-in (driver + force route both pass it) used to
   // reach only the ACT path — these reason-only runs ran with a local sink and NO SSE tee, so the station floor sat
@@ -7232,13 +7451,16 @@ async function nightshiftChat(o) {
   try {
     await runOnce({
       key: key, model: model, provider: provider,
-      system: (o && o.system) || (ident.system && String(ident.system)) || cronSystemFor(agentId),
+      system: (o && o.system) || (ident.system && String(ident.system)) || cronSystemFor(agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: o.messages, agentId: agentId, isTask: false, emit: sink, signal: o && o.signal,
       runId: runId, streamId: 'nightshift-' + runId, surface: 'autonomous', trigger: 'nightshift', broadcast: !!(o && o.broadcast)
     });
   } catch (e) { return { error: (e && e.message) || 'run failed' }; }
   finally { runsMeta.delete(runId); }
   if (state.err) return { error: state.err };
+  // ONLY A FINISHED RUN IS A REPLY (sweep/autonomy 2026-10-20): an E-STOP/budget/limit end carries no error event, and
+  // its partial stream used to become the beat's "delivered" draft. Anything but 'done' stands the beat down.
+  if (state.reason !== 'done') return { error: 'run ended without completion (' + (state.reason || 'no terminal outcome') + ')' };
   return { text: state.buf };
 }
 
@@ -7383,7 +7605,8 @@ function scoutDirectionBlock() {
 /* runScoutCycle — ONE post-run cycle (fire-and-forget; never throws to the caller). Mirrors runReflection's
    aux plumbing: its OWN abort+timeout, ONE streamed completion per pass, spend reconciled + booked. */
 async function runScoutCycle(o) {
-  if (!personalizationStore.read().enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
+  const pz = personalizationStore.read();
+  if (!pz.enabled) return; // PAUSE is server authority too: no extraction, drafting, or model spend
   const { runId, agentId, provider, model, cost } = o;
   const unmetered = !!(o && o.unmetered);
   const ac = new AbortController();
@@ -7415,6 +7638,8 @@ async function runScoutCycle(o) {
         'You extract the recurring, specific work topics a user\'s real activity shows. Reply ONLY in the requested tagged format.',
         Interests.buildDirective({ activityLines: activity, knownTopics: known })
       );
+      // a pause or forget that landed during the model call wins: fold, persist, and note nothing (spend is booked below)
+      if (!learningUnchangedSince(pz)) return;
       const cands = Interests.parse(reply, { activityLines: activity, requireExactEvidence: true });
       interestsState = Interests.fold(interestsState, cands, { now: Date.now(), trustedActivity: true });
       persistInterests();
@@ -7451,6 +7676,7 @@ async function runScoutCycle(o) {
         launchedOften: Scout.launchHints(scoutState, 5)   // lane B: names annotated "(rated well)" when the Commander's own verdicts earn it
       });
       const reply = await propose('You are the station\'s recipe author. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;   // no attempt stamp, no draft, no ledger row after a mid-call pause/forget
       // grounding = the same evidence the directive showed the model — the WHY must cite it (parseRecipe guard). The
       // direction block is part of that evidence, so a WHY that cites an open quest / the north star is grounded —
       // and so is the DOSSIER (it rides the directive at dossierBlock; excluding it here silently killed any WHY
@@ -7503,6 +7729,7 @@ async function runScoutCycle(o) {
         topRecommendation: cx.topRecommendation || ''
       });
       const reply = await propose('You are the station\'s recruiter. Follow the format exactly; ground every claim in the provided evidence.', directive);
+      if (!learningUnchangedSince(pz)) return;
       const parsed = ProspectGen.parse(reply, { allowedKit: SCOUT_CAP_KEYS, allowedSkills: skillSlugs, existingClasses: existing });
       scoutState = Scout.stampAttempt(scoutState, 'prospect', { now: Date.now() });
       // ProspectGen.parse has no denylist arm — enforce the dismissed-shape memory here (same 0.6 overlap rule).
@@ -7614,7 +7841,26 @@ const documentDiscovery = DiscoveryDocuments.makeDocumentDiscovery({ fsp, path, 
   hash: text => crypto.createHash('sha256').update(text).digest('hex') });
 const DISCOVERY_TICK_MS = Math.max(60 * 1000, Number(process.env.SKYNET_ENV_DISCOVERY_TICK_MS) || 15 * 60 * 1000);
 let discoveryState = (() => { try { const o = loadResilient(DISCOVERY_FILE, 'discovery'); return Discovery.normalize(o && o.state); } catch (_) { return Discovery.normalize(null); } })();
-function persistDiscovery() { try { saveResilient(DISCOVERY_FILE, { v: 1, state: discoveryState }); } catch (e) { console.warn('[discovery] state persist failed:', (e && e.message) || e); } }
+/* PERSIST-IF-CHANGED (2026-10-19, idle-CPU piece 2). Every 15-min discovery tick persisted, including the no-fire
+   path (no roots, cooldown, all fresh), and saveResilient is TWO durable writes (a .bak copy + the main file) plus a
+   read-back parse of the prior — 192 fsync'd writes a day of byte-identical content. The envelope text that last
+   reached disk is remembered; a persist whose text matches it writes nothing. The memo is cleared BEFORE each write
+   and set only AFTER the write returns, so a failed or half-done write (.bak landed, main did not) retries next
+   tick. RAM-only: the first persist after boot always writes once. Every writer of DISCOVERY_FILE goes through
+   writeDiscovery so the memo can never describe a file another writer replaced. */
+let discoveryPersistedJson = null;
+function writeDiscovery(state) {   // throws on failure (the sources route must not lie about a settings write)
+  const text = JSON.stringify({ v: 1, state: state });
+  discoveryPersistedJson = null;
+  saveResilient(DISCOVERY_FILE, { v: 1, state: state });
+  discoveryPersistedJson = text;
+}
+function persistDiscovery() {
+  try {
+    if (discoveryPersistedJson !== null && JSON.stringify({ v: 1, state: discoveryState }) === discoveryPersistedJson) return;
+    writeDiscovery(discoveryState);
+  } catch (e) { console.warn('[discovery] state persist failed:', (e && e.message) || e); }
+}
 let discoveringNow = false;
 let documentSourceRevision = 0;
 function activeDocumentSource() {
@@ -7811,7 +8057,7 @@ async function handleDiscoverySourcesPost(req, res) {
   // Save before publishing success; unlike best-effort tick persistence, a settings write must not lie.
   const next = Discovery.normalize({ ...discoveryState, sources });
   next.staged = next.staged.filter(f => f.kind !== 'client-update');
-  try { saveResilient(DISCOVERY_FILE, { v: 1, state: next }); } catch (_) { return json(500, { ok: false, error: 'could not persist source settings' }); }
+  try { writeDiscovery(next); } catch (_) { return json(500, { ok: false, error: 'could not persist source settings' }); }
   discoveryState = next;
   documentSourceRevision++;
   return json(200, { ok: true, sources: discoveryState.sources, grantsChanged: false });
@@ -7854,16 +8100,16 @@ function handleRecommendationsEval(req, res) {
    routine (routine.create stays consent-gated; nothing is created here). The impression is recorded like a card
    shown, so the takeover card and the agent never both pitch the same work the same day, and an offer the
    Commander ignores stops after MAX_OFFERS. Fails open to no notice. */
-function standingWorkNotice(brief, agentId, o) {
+function standingWorkNotice(brief, agentId, o, evidence) {
   try {
     if (!brief || brief.status === 'cancelled' || (o && o.recovery) || !['interactive', 'channel'].includes(brief.source) || TrustedLearning.quotedMaterial(brief.originalDirective)) return null;
     // a channel guest's request is not "the Commander asking again" (host-minted sender flags, as hostPowerWithheldFor)
     if (o && o.channelSender === true && o.channelSenderOwner !== true) return null;
     if (!personalizationStore.read().enabled) return null;
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
+    const ev = evidenceRows(evidence || {});   // one transcript + run snapshot for the brief proof AND the runs
     const n = WorkflowTakeover.notice({ directive: brief.originalDirective, agentId, projectRoot: (o && o.projectRoot) || '',
-      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()).filter(b => b.id !== brief.id), runs: runStore.all(), jobs: cronJobs,
+      briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs).filter(b => b.id !== brief.id), runs: ev.runs, jobs: cronJobs,
       ratings: growthRatings.list({ limit: 500, epoch }), state: workflowTakeoverStore.read(), enabled: true, now: Date.now(), redact });
     if (!n) return null;
     workflowTakeoverStore.decide(n.id, 'shown', Date.now(), n.core).catch(e => console.warn('[workflow-takeover] notice impression not saved:', (e && e.message) || e));
@@ -7872,9 +8118,9 @@ function standingWorkNotice(brief, agentId, o) {
 }
 function workflowTakeoverCandidates(ignoreOffers) {
   const state = workflowTakeoverStore.read();
-  const saved = saveStore.load('agent') || null;
-  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
-  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), transcriptStore.all(), runStore.all()), runs: runStore.all(), jobs: cronJobs,
+  const epoch = stationEpoch();
+  const ev = evidenceRows({});
+  return WorkflowTakeover.candidates({ briefs: TrustedLearning.ownedBriefs(taskBriefStore.list({ limit: 500 }), ev.transcript, ev.runs), runs: ev.runs, jobs: cronJobs,
     ratings: growthRatings.list({ limit: 500, epoch }),
     state: ignoreOffers ? Object.assign({}, state, { decisions: state.decisions.filter(d => d.never) }) : state,
     enabled: personalizationStore.read().enabled, now: Date.now(), redact });
@@ -8001,29 +8247,35 @@ function nightshiftBeliefMap() {
   return out;
 }
 
+// recent RUNS (newest-first already from runStore.list). We pass the whole recent window; the pure core windows
+// to ~7d + excludes internal streamIds (nightshift-/cron-/workshop-) + de-dupes. limit generous; core caps to 8.
+// `internal` rides through: the pure core's `!r.internal` filter was dead because this map dropped the flag, so the
+// station's own reason-only calls read as the Commander's recent work (USER-STUDY LOOP, 2026-09-28).
+// Filter provenance before projecting into the pure pack: otherwise attachment/quoted content becomes ambient
+// owner activity in a later, clean run. Run storage omits taintedBy on clean rows; legacy rows share that shape.
+// Internal titles are exclusion markers only: retain them even when a later tool taints their run, so its
+// initially clean directive cannot reappear as owner chat. The pure pack never renders an internal run title.
+// Shared by the context pack and the readiness count, so both always read the SAME projection.
+function nightshiftRecentRuns() {
+  try { return (runStore.list(null, { limit: 60 }) || []).filter(r => r && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { return []; }
+}
+
 /* NS-2: the CONTEXT-PACK io — the ambient half of contextpack.js. Gathers REAL recent activity from the durable
    stores (runs / transcript / goal arc / autonomy ledger for kept-vs-discarded / dossier beliefs / learn store) and
    hands the pure assembler already-fetched arrays (determinism-split: this side reads Date.now + the stores, the
    pure core is a transform over its inputs). Returns the assembled pack { sections, text, activityLines, counts }.
    The pack is what makes the propose step feel like magic — candidates grounded in what the Commander ACTUALLY did,
-   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty. */
-function nightshiftContextPack() {
+   not six static dossier strings. Bounded + fail-open: any store hiccup degrades that one section to empty.
+   `evidence` (optional, see evidenceRows): the caller's one transcript + run-history snapshot for this turn. */
+function nightshiftContextPack(evidence) {
   const now = Date.now();
-  // recent RUNS (newest-first already from runStore.list). We pass the whole recent window; the pure core windows
-  // to ~7d + excludes internal streamIds (nightshift-/cron-/workshop-) + de-dupes. limit generous; core caps to 8.
-  let runs = [];
-  // `internal` rides through: the pure core's `!r.internal` filter was dead because this map dropped the flag, so the
-  // station's own reason-only calls read as the Commander's recent work (USER-STUDY LOOP, 2026-09-28).
-  // Filter provenance before projecting into the pure pack: otherwise attachment/quoted content becomes ambient
-  // owner activity in a later, clean run. Run storage omits taintedBy on clean rows; legacy rows share that shape.
-  // Internal titles are exclusion markers only: retain them even when a later tool taints their run, so its
-  // initially clean directive cannot reappear as owner chat. The pure pack never renders an internal run title.
-  try { runs = (runStore.list(null, { limit: 60 }) || []).filter(r => r && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { runs = []; }
+  const runs = nightshiftRecentRuns();
+  const ev = evidence || {};   // without a caller snapshot, the two proofs below still share one copy of each store
   // Only host-recorded clean owner turns can ground activity. Check the full content before the pure core takes
   // its first line; a harmless heading cannot launder a quoted document below it. Bound the source window first.
   let cleanOwnerChats = [], chats = [];
   try {
-    cleanOwnerChats = TrustedLearning.cleanOwnerRows(transcriptStore.all(), runStore.all());
+    cleanOwnerChats = TrustedLearning.cleanOwnerRows(evidenceRows(ev).transcript, evidenceRows(ev).runs);
     chats = cleanOwnerChats.map(m => ({ role: m.role, content: m.content, ts: m.ts, streamId: m.streamId }));
   } catch (_) { cleanOwnerChats = []; chats = []; }
   // Briefs have no independent provenance stamp. Match their exact stored directive to a proven clean owner turn
@@ -8031,7 +8283,7 @@ function nightshiftContextPack() {
   // is looked up by original run id, not inside the chat tail above: a brief exists to carry work older than that tail.
   let briefs = [];
   try {
-    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), transcriptStore.all(), runStore.all())
+    briefs = TrustedLearning.ownedBriefs(taskBriefStore.list({ status: 'done', limit: 30 }), evidenceRows(ev).transcript, evidenceRows(ev).runs)
       .map(b => ({ originalDirective: b.originalDirective, ts: b.completedAt || b.updatedAt }));
   } catch (_) { briefs = []; }
   // the active GOAL ARC (single object or null).
@@ -8062,6 +8314,7 @@ function nightshiftContextPack() {
   // from the proven transcript/brief projection; retain internal run markers solely to suppress self-talk.
   pack.trustedActivityLines = contextpack.assemble({ runs: runs.filter(r => r.internal), briefs, chats, redact }, { now }).activityLines || [];
   // the count of recent USER-INITIATED runs the pack recognized — the ACTIVITY-as-grounding evidence for readiness.
+  // (nightshiftUserRunCount computes exactly this without building the rest of the pack.)
   pack.userRunCount = (pack.counts && pack.counts.runs) || 0;
   // NS-6: the top OPEN threads (durable ideas the Commander raised but never acted on), recency-ranked. The propose
   // step draws from these FIRST (improv is the fallback); citing a thread's tag in GROUNDS is the preferred grounding.
@@ -8081,8 +8334,7 @@ let _trackRecordMemo = { at: 0, rec: null };
 function ratingVerdictMap() {
   const out = {};
   try {
-    const saved = saveStore.load('agent') || null;
-    const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+    const epoch = stationEpoch();
     for (const r of growthRatings.list({ limit: 2000, epoch })) if (r && r.runId) out[r.runId] = r.verdict;
   } catch (e) { failNote('outcomes.verdicts', e); }
   return out;
@@ -8104,20 +8356,56 @@ function stationTrackRecord() {
 function stationTrackRecordLines() {
   try { const rec = stationTrackRecord(); return rec ? Outcomes.lines(rec) : []; } catch (_) { return []; }
 }
-function commanderEvidenceInputs() {
+function commanderEvidenceInputs(evidence) {
   let topics = [], threads = [], activity = [], worksignal = '';
   const learning = personalizationStore.read().enabled;
   try { topics = learning ? Interests.summary(interestsState, { trustedOnly: true, now: Date.now(), limit: 8 }) : []; } catch (_) {}
   try { threads = threadsStore.openThreads(6); } catch (_) {}
-  try { activity = (nightshiftContextPack().activityLines || []).slice(0, 8); } catch (_) {}
+  try { activity = (nightshiftContextPack(evidence).activityLines || []).slice(0, 8); } catch (_) {}
   try { worksignal = learning ? String((scoutState.context && scoutState.context.worksignalSummary) || '') : ''; } catch (_) {}
   let goal = null; try { goal = commanderGoals.get() || null; } catch (_) {}
   let verdicts = null; try { verdicts = learning ? recommendationLedger.summary() : null; } catch (_) {}
   const trackRecord = stationTrackRecordLines();
   return { dossier: commanderDossier.get(), goal, topics, threads, activity, worksignal, verdicts, trackRecord };
 }
-function commanderEvidenceContext(existingSystem, extra) {
-  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(), extra || {}, { existingSystem: existingSystem || '' }));
+function commanderEvidenceContext(existingSystem, extra, evidence) {
+  return CommanderContext.compose(Object.assign({}, commanderEvidenceInputs(evidence), extra || {}, { existingSystem: existingSystem || '' }));
+}
+/* evidenceRows(ev) — ONE snapshot of the transcript mirror and the run history for one evidence assembly (perf review
+   10-19). transcriptStore.all() and runStore.all() each copy every row; a briefed task turn copied the run history 4
+   times and the transcript 3 times (the repeat-work notice's brief proof + its runs, then the context pack's clean
+   owner chats + brief proof) — 22 / 40 / 115 ms at 1k / 5k / 10k runs. The copies are taken lazily on first use and
+   shared by every consumer of the same `ev` object, all of which only read them. Nothing awaits between the reads
+   and the uses, so the snapshot is exactly what the separate copies would have returned. */
+function evidenceRows(ev) {
+  if (!ev.transcript) ev.transcript = transcriptStore.all();
+  if (!ev.runs) ev.runs = runStore.all();
+  return ev;
+}
+/* stationEpoch() — the current station generation (agent.createdAt) for the ratings reads, without parsing the whole
+   save each time: the value is kept against saveStore.stamp('agent') (one stat; it moves on every save this process
+   makes and on any outside edit) and re-read the moment the stamp moves. A read with no clean stamp is never kept. */
+let _stationEpochMemo = { stamp: '', epoch: 1 };
+function stationEpoch() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _stationEpochMemo.stamp) return _stationEpochMemo.epoch;
+  const r = saveStore.loadStamped('agent');
+  const saved = r.doc || null;
+  const epoch = Math.max(1, Math.floor(Number(saved && saved.agent && saved.agent.createdAt) || 1));
+  _stationEpochMemo = { stamp: r.stamp || '', epoch: epoch };
+  return epoch;
+}
+
+/* nightshiftUserRunCount() — the readiness evidence (pack.userRunCount) WITHOUT building the whole context pack
+   (2026-10-19, idle-CPU piece 2). The precheck runs every 60 s night-shift tick once the gates clear, and while
+   readiness stays cold it stands down every time — yet it built the full pack to read one number: two clones of the
+   whole transcript, two of the whole run history (provenance proofs), the briefs join, the ledger join, the track
+   record (whose verdict map parses agent.save.json) and two assemble passes. The pure core's counts.runs is a
+   function of the projected runs and `now` ALONE (internal heads only filter chats), so assembling just those runs
+   yields the identical number from one bounded 60-row read. */
+function nightshiftUserRunCount() {
+  const pack = contextpack.assemble({ runs: nightshiftRecentRuns(), redact }, { now: Date.now() });
+  return (pack.counts && pack.counts.runs) || 0;
 }
 
 // NS-2: the PURELY-LOCAL pre-spend readiness gate for the night-shift driver (the cold-leash fix). Answers, with NO
@@ -8151,7 +8439,7 @@ function nightshiftPrecheck() {
     const summary = { known: Array.isArray(snap.known) ? snap.known : Object.keys((snap.beliefs) || {}) };
     const beliefsByDim = (dim) => (snap.beliefs && snap.beliefs[dim]) || [];
     let activityCount = 0;
-    try { activityCount = nightshiftContextPack().userRunCount || 0; } catch (_) { activityCount = 0; }
+    try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
     const eligible = Autopilot.eligibleArchetypes(rd.usableDims, { activityGrounded: rd.groundedBy === 'activity' });
     if (rd.tier !== 'hot' || !eligible.length) return { ok: false, reason: 'readiness' };
@@ -8169,7 +8457,7 @@ function nightshiftReadinessView() {
     const summary = { known: Array.isArray(snap.known) ? snap.known : Object.keys((snap.beliefs) || {}) };
     const beliefsByDim = (dim) => (snap.beliefs && snap.beliefs[dim]) || [];
     let activityCount = 0;
-    try { activityCount = nightshiftContextPack().userRunCount || 0; } catch (_) { activityCount = 0; }
+    try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
     return {
       tier: rd.tier, goalsUsable: !!rd.goalsUsable, usableDims: rd.usableDims || [],
@@ -8430,7 +8718,7 @@ async function runNightshiftActShift(opts) {
   let threw = null;
   try {
     await runOnce({
-      key, model, provider, system,
+      key, model, provider, system, stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId, isTask: true, emit: (typeof opts.emit === 'function' ? opts.emit : function () {}), signal: sig,
       runId, streamId: 'nightshift-act-' + runId, surface: 'autonomous', trigger: 'nightshift', broadcast: !!opts.broadcast,
@@ -9342,6 +9630,8 @@ async function modelRemoveLoop(id) {
   return true;
 }
 
+// the OLDEST unreviewed candidate below #n (the one a FIFO approval must wait for), or 0 when #n is the oldest
+function loopOlderPending(loop, n) { return loopjob.pendingReviews(loop).filter(it => it.n < n).reduce((m, it) => (m && m < it.n ? m : it.n), 0); }
 async function modelVerdictLoop(id, n, verdict, note) {
   beginLoopReview(id);
   try {
@@ -9349,6 +9639,7 @@ async function modelVerdictLoop(id, n, verdict, note) {
   if (!loop) throw new Error('no such loop');
   const target = (loop.iterations || []).find(it => it && it.n === n);
   if (!target || target.outcome !== 'candidate' || target.verdict) throw new Error('iteration #' + n + ' is not pending review');
+  { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) throw new Error('review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is'); }
   if (verdict === 'rejected') {
     const undone = await loopUndoWork(loop, n);
     if (!undone.ok) throw new Error(undone.error || 'the iteration could not be undone, so no rejection was recorded');
@@ -9452,6 +9743,7 @@ function handleLoopsVerdict(req, res) {
     if (!target) return json(404, { error: 'no iteration #' + body.n + ' on this loop' });
     if (target.outcome !== 'candidate') return json(409, { error: 'iteration #' + n + ' produced nothing to review (' + target.outcome + ')' });
     if (target.verdict) return json(409, { error: 'iteration #' + n + ' was already ' + target.verdict });
+    { const below = loopOlderPending(loop, n); if (verdict === 'approved' && below) return json(409, { error: 'review #' + below + ' first — #' + n + ' was built on top of it, so it can only be kept once #' + below + ' is' }); }
 
     const willCascade = verdict === 'rejected' ? loopjob.stackedAbove(loop, n).map(it => it.n) : [];
 
@@ -9754,12 +10046,16 @@ function advanceGoalFromQuests() {
 // A quest completion is durable before its journey fold. Recover a crash/write failure by replaying every done
 // quest; journey-store's lifetime source-key ledger makes this idempotent, and its reset epoch skips prior-Commander
 // completions. GET /api/journey awaits the same pass so the UI never outruns recoverable evidence.
+// IDLE CPU (2026-10-19): replay only the quests recordQuest would still WRITE (journeyStore.pendingQuestFolds —
+// recordQuest's own gate, epoch and source-key tests over one cached read). Replaying every done quest re-read and
+// re-normalized the whole journey once per quest to find it already folded: ~200 ms of unbroken event-loop block
+// on every 4 s journey poll at the caps. A fold that failed or was lost to a crash is still pending, so it is
+// still replayed on the next GET.
 let journeyQuestReconcile = null;
 function reconcileCompletedJourneyQuests() {
   if (journeyQuestReconcile) return journeyQuestReconcile;
   const task = (async () => {
-    for (const q of questStore.list()) {
-      if (!q || q.status !== 'done') continue;
+    for (const q of journeyStore.pendingQuestFolds(questStore.list())) {
       await journeyStore.recordQuest(q, commanderGoals.get(), q.completedAt || Date.now());
     }
   })();
@@ -9931,6 +10227,10 @@ function questRefreshTick() {
   // calls a provider, stamps refresh state, or mints quests on its own. The explicit /refresh/run route does not
   // come through this function; a Commander pressing REFRESH QUESTS remains the authority for a manual cycle.
   if (!(commanderPosture.summary() || {}).enabled) return;
+  // NO STATION, NO LOOK (#123): background initiative plans for a station a Commander created. On a workspace the
+  // recovery gate reads as station-less (a fresh install before onboarding) this tick writes nothing — its stamp +
+  // 'skipped' note used to be the first files on disk. The manual /refresh/run route never comes through here.
+  if (!hasStationState({ fs, path, workspaceRoot: WORKSPACES })) return;
   // V3 §6 note: the readiness gate is applied INSIDE the cycle as dossier ADMISSIBILITY (a synced not-ready
   // verdict blanks the dossier out of the evidence, so a blitzed onboarding can't mint quests) — never here
   // at the tick, so the cadence still spends and the honest 'skipped' ledger semantics survive.
@@ -10131,7 +10431,7 @@ function startTelegram(token, key, model, agentCfg) {
     // assembled answer. The hub's final delivery/outbox path remains durable and retryable.
     streamReplies: false,
     canReadAllGroupMessages: () => stationBotSeesAll,
-    askConsent: channelAskConsent, resolveConsent: channelResolveConsent,
+    askConsent: channelAskConsent, resolveConsent: channelResolveConsent, consentOutcome: channelConsentOutcome,
     secrets: () => {
       const t = (channelSecrets && channelSecrets.telegram) || {};
       const provider = normalizeProvider(t.provider);
@@ -10183,6 +10483,9 @@ function startTelegram(token, key, model, agentCfg) {
       try { const r = channelStore.getChatRecord(String(chatId)); return !(r && r.requireMention === false); }
       catch (_) { return true; }
     },
+    // A GROUP is closed until the paired owner sends /allow in it; the hub writes that onto the chat's record and
+    // this reads it per message. Never passed before 2026-10-19, which silently dropped every group message.
+    allowedChats: (chatId) => hub.chatAdmitted(chatId),
     // Being called by NAME is being addressed. Read lazily: the name arrives with getMe, after this is built.
     mentionPatterns: () => [stationBotName],
     // /mention observe — follow the room without answering it. Off unless the chat asked for it.
@@ -10276,6 +10579,19 @@ function startTelegram(token, key, model, agentCfg) {
   return { secretsPersisted };
 }
 
+/* The published menu = the hub's table, then the Commander's own commands (2026-10-18: a group's "/" menu listed
+   none of them, so they could only be run by someone who already knew the name). Every name a built-in owns is
+   reserved — the hub's table AND the slash registry's builtins/aliases — because a built-in always wins its name.
+   Read at connect, like the rest of the menu: an edit to usercommands.json runs at once but lists on the next
+   connect. Bot API cap: 100 rows. */
+function channelMenuCommands() {
+  const base = menuCommands();
+  const reserved = HUB_COMMANDS.map(c => c.command);
+  for (const c of slash.BUILTIN_COMMANDS) { reserved.push(c.name); for (const a of (c.aliases || [])) reserved.push(a); }
+  let mine = [];
+  try { mine = userMenuEntries(userCommandStore.load(), reserved); } catch (_) { mine = []; }
+  return base.concat(mine).slice(0, 100);
+}
 // Publish the bot's "/" menu from the hub's OWN command table, so Telegram can never offer a command the hub
 // doesn't implement (or hide one it does). Fire-and-forget and non-blocking: an empty menu is cosmetic, and a
 // slow setMyCommands must never delay or fail a connect (a lesson the reference harness learned the hard way —
@@ -10285,9 +10601,10 @@ function publishCommandMenu(adapter, label) {
   // Telegram resolves its most-specific command scope first. Publish the same table for default + all groups so
   // a forum topic never loses the command menu to an older/narrower BotFather scope. Other adapters ignore the
   // optional scope argument and keep their original single publish.
+  const list = channelMenuCommands();
   Promise.all([
-    Promise.resolve(adapter.setCommands(menuCommands())),
-    Promise.resolve(adapter.setCommands(menuCommands(), { scope: { type: 'all_group_chats' } }))
+    Promise.resolve(adapter.setCommands(list)),
+    Promise.resolve(adapter.setCommands(list, { scope: { type: 'all_group_chats' } }))
   ])
     .then((results) => { for (const r of results) if (r && r.ok === false) console.warn('[' + label + '] command menu not published: ' + (r.error || 'unknown')); })
     .catch(swallow('channels.menu'));
@@ -10430,7 +10747,7 @@ function startTelegramBot(botId) {
     // raw token deltas never become user-visible, so a tool call cannot rewrite half-formed prose underneath them.
     streamReplies: false,
     canReadAllGroupMessages: () => { const v = (recOf() || {}).seesAllGroupMessages; return (typeof v === 'boolean') ? v : null; },
-    askConsent: channelAskConsent, resolveConsent: channelResolveConsent
+    askConsent: channelAskConsent, resolveConsent: channelResolveConsent, consentOutcome: channelConsentOutcome
   });
   const adapter = makeTelegramAdapter({
     fetch: telegramTransportFetch(), token: token, apiBase: TELEGRAM_API_BASE, clock: { now: () => Date.now() },
@@ -10449,6 +10766,8 @@ function startTelegramBot(botId) {
     // agent's. recOf() re-reads the live record, so a rename in BotFather or in the roster takes effect without
     // a restart. Anything under three characters is refused inside the adapter.
     mentionPatterns: () => { const r = recOf() || {}; return [r.botName, r.name]; },
+    // groups this bot's owner admitted with /allow — read live from this bot's own scoped store, like the gate above
+    allowedChats: (chatId) => hub.chatAdmitted(chatId),
     observeUnmentioned: (chatId) => {
       try { const r = botStore.getChatRecord(String(chatId)); return !!(r && r.observeUnmentioned); }
       catch (_) { return false; }
@@ -10531,7 +10850,12 @@ function startDiscord(token, key, model, agentCfg) {
       // modelCatalog are the SAME app roster + boot-warmed catalog; NO per-channel routing logic here).
       roster: () => [...agentRoster].map(([agentId, a]) => ({ agentId, name: a.name, model: a.model, provider: a.provider })),
       setModel: (agentId, model) => setAgentModelFromChannel(agentId, model),
-      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; }   // re-warm on demand if a boot-time /models failure left it empty
+      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; },   // re-warm on demand if a boot-time /models failure left it empty
+      // the shared slash registry + the Commander's own commands — the SAME wiring the Telegram hubs carry. Without
+      // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
+      // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
+      runSlash: (input, sctx) => runSlashForChannel(input, sctx),
+      userCommandNames: () => userCommandEntries().map(c => c.name)
     },
     adapter: {
       fetch: globalThis.fetch, token: token, clock: { now: () => Date.now() },
@@ -10818,7 +11142,12 @@ function startGenericChannel(id, token, key, model, agentCfg) {
       // In-messenger control surface — identical across channels because it lives in the shared hub.
       roster: () => [...agentRoster].map(([agentId, a]) => ({ agentId, name: a.name, model: a.model, provider: a.provider })),
       setModel: (agentId, model) => setAgentModelFromChannel(agentId, model),
-      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; }
+      modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; },
+      // the shared slash registry + the Commander's own commands — the SAME wiring the Telegram hubs carry. Without
+      // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
+      // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
+      runSlash: (input, sctx) => runSlashForChannel(input, sctx),
+      userCommandNames: () => userCommandEntries().map(c => c.name)
     },
     adapter: adapterOpts
   });
@@ -11176,7 +11505,8 @@ async function handleGroups(req, res) {
       res.writeHead(200, { 'Content-Type': plain ? 'text/plain; charset=utf-8' : 'application/octet-stream', 'Content-Disposition': (plain ? 'inline' : 'attachment') + "; filename*=UTF-8''" + encodeURIComponent(file.name), 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.end(Buffer.from(file.content, 'base64'));
     }
-    if (req.method === 'GET') out = id ? await groupSessions.get(id) : await groupSessions.list();
+    // since: the open group chat's last stamp — an unchanged group answers { unchanged: true } (idle CPU piece 3, 2026-10-20)
+    if (req.method === 'GET') out = id ? await groupSessions.get(id, url.searchParams.get('since') || '') : await groupSessions.list();
     else {
       const b = JSON.parse(await readBody(req, 2 << 20, res));
       const handlers = { create: () => groupSessions.create(b), send: () => groupSessions.send(b.id, b),
@@ -11275,6 +11605,40 @@ const remotePush = require('./remote/push.js').makePush({ fs, path, file: path.j
   fetch: (url, o) => fetch(url, Object.assign({}, o, { signal: AbortSignal.timeout(15000) })),
   extraHosts: String(process.env.STARNET_REMOTE_PUSH_HOSTS || '').split(',') });   // tests only: a local fake push service
 const remotePortraits = require('./remote/portraits.js').makePortraits({ fs, path, frontend: FRONTEND });
+/* THE CREW'S LOOKS FOR A PHONE (perf review 10-19). Every status/activity poll (10 s per open phone), every portrait and
+   every 256 KB file chunk listed the agents, and each listing re-parsed the WHOLE station save to read a few skin and
+   colour strings: a 20 MB download did 80 parses. The tiny map is kept against saveStore.stamp('agent') (one stat that
+   moves on every save this process makes and on any outside edit) and rebuilt the moment the stamp moves; an unstamped
+   read (absent, locked or .bak-recovered save) is never kept. The desk sessions (deskSessions) still parse per request:
+   they ARE the bulk of the save, and keeping them would pin ~4x the file in heap (savestore.js never caches the doc). */
+let _remoteLooksMemo = { stamp: '', looks: null };
+function crewLooksOf(save) {
+  const out = {};
+  const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
+  add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
+  return out;
+}
+function remoteCrewLooks() {
+  const now = saveStore.stamp('agent');
+  if (now && now === _remoteLooksMemo.stamp && _remoteLooksMemo.looks) return Object.assign({}, _remoteLooksMemo.looks);
+  const r = saveStore.loadStamped('agent');
+  const out = crewLooksOf(r.doc || {});
+  _remoteLooksMemo = { stamp: r.stamp || '', looks: out };
+  return Object.assign({}, out);
+}
+/* SEED THE SAVE-STAMP MEMOS FROM THE SAVE ITSELF (review of perf piece 6). The desk persists (debounced, cloudsave.js)
+   after every state change — the finished reply included — so a save lands between any two task turns and between most
+   phone polls, and memos refreshed only by READING re-parsed the whole save right after each one: stationEpoch saved
+   nothing on the real path. POST /api/save already holds the parsed doc it just stored, so it refreshes both memos from
+   that doc under the stamp of the file the write left (the reasoning savestore.save() keeps its own last-write memo on).
+   A write that did not land (stale, conflict, a throw) seeds nothing, and no stamp means nothing is kept. */
+function seedSaveMemos(agentId, doc) {
+  if (agentId !== 'agent' || !doc || typeof doc !== 'object') return;
+  const stamp = saveStore.stamp('agent');
+  if (!stamp) return;
+  _stationEpochMemo = { stamp: stamp, epoch: Math.max(1, Math.floor(Number(doc.agent && doc.agent.createdAt) || 1)) };
+  _remoteLooksMemo = { stamp: stamp, looks: crewLooksOf(doc) };
+}
 const remoteHost = require('./remote/host.js').makeRemoteHost({
   redact: (s) => redact(s),   // the desk save is raw: its turns are redacted before they merge or leave for the relay
   now: () => Date.now(), newId: () => crypto.randomUUID(), broadcast: remoteBroadcast,
@@ -11316,12 +11680,7 @@ const remoteHost = require('./remote/host.js').makeRemoteHost({
   view: remoteView,
   deskOpen: () => sse.size() > 1,   // a StarNet page is connected (the phones' own tee is always one listener)
   // how each agent looks (the skin the Commander picked), from the station save the page mirrors here
-  crewLooks: () => {
-    const save = saveStore.load('agent') || {}, out = {};
-    const add = (a) => { if (a && typeof a.id === 'string') out[a.id] = { skin: String(a.skin || ''), color: String(a.color || '') }; };
-    add(save.agent); for (const a of Array.isArray(save.agents) ? save.agents : []) add(a);
-    return out;
-  },
+  crewLooks: () => remoteCrewLooks(),
   portrait: (skin) => remotePortraits.forSkin(skin),
   spriteSet: (skin) => remotePortraits.setFor(skin),
   sprites: (key) => remotePortraits.framesFor(key),
@@ -11730,6 +12089,7 @@ const ROUTES = [
   { m: 'GET', exact: '/api/voice/chat-model', h: handleVoiceChatStatus },   // SETTINGS→Models: the model a spoken turn runs on
   { m: 'POST', exact: '/api/voice/chat-model', h: handleVoiceChatSet },
   { m: 'POST', exact: '/api/config/export', h: handleConfigExport },   // P1-7 station backup
+  { m: 'POST', exact: '/api/config/export/save', h: handleConfigExportSave },   // #134 desktop: the sidecar writes it + names the path
   { m: 'POST', exact: '/api/config/import', h: handleConfigImport },
   { m: 'POST', exact: '/api/config/reset', h: handleConfigReset },
   { m: 'GET', exact: '/api/runtime/agent', h: handleRuntimeAgent },   // what a LOCAL headless caller needs to drive /api/run (no secrets)
@@ -11812,6 +12172,11 @@ const ROUTES = [
   { m: 'GET', qsplit: '/api/skill-market', h: serveSkillMarket },                // the Skill Market: catalog + this station's install state
   { m: 'POST', exact: '/api/skill-market/install', h: handleSkillMarketInstall },
   { m: 'POST', exact: '/api/skill-market/uninstall', h: handleSkillMarketUninstall },
+  { m: 'GET', qsplit: '/api/community-maps', h: serveCommunityMaps },             // the community maps gallery (signed index)
+  { m: 'GET', qsplit: '/api/community-maps/file', h: serveCommunityMapFile },     // one map's build or picture, sha256-pinned
+  { m: 'GET', exact: '/api/community-maps/mine', h: serveCommunityMapsMine },
+  { m: 'POST', exact: '/api/community-maps/share', h: handleCommunityMapShare },
+  { m: 'POST', exact: '/api/skill-market/share', h: handleSkillMarketShare },          // SHARE TO MARKET: one of an agent's skills, for review
   { m: 'POST', exact: '/api/skill-exchange/inspect', h: handleSkillExchangeInspect },
   { m: 'POST', exact: '/api/skill-exchange/registry', h: handleSkillExchangeRegistry },
   { m: 'POST', exact: '/api/skill-exchange/discover', h: handleSkillExchangeDiscover },
@@ -12800,6 +13165,10 @@ async function runSampleJob(readArgs) {
     // a PARTIAL joined job (a COPY branch failed or never reached the JOINER — chain out.partial) is not delivered, even when every
     // run row that exists ended done: a hop refused before it ran writes none (runtime repair 2026-10-12)
     const partial = (sampleLineOutcome && sampleLineOutcome.partial) ? String(sampleLineOutcome.partial) : '';
+    /* UNAPPROVED (GitHub #122): a review loop on the line used all its passes without the verdict it waits for and sent the work on (the
+       LOOP card's rule — the job still reaches its OUTBOX, so it is still delivered). Its record, its crate, the answer and the SHIPPED note
+       say nobody approved it; the receipt (line-shipments) never counts it as clean SHIPPED work. */
+    const unapproved = (sampleLineOutcome && sampleLineOutcome.unapproved) ? String(sampleLineOutcome.unapproved) : '';
     const completed = onLine && runs.length > 0 && runs.every(r => r.reason === 'done')
       && !!sampleLineOutcome && !sampleLineOutcome.stopped && !partial
       && router.chainShipsToOutbox(sampleLineOutcome.agentId, sampleLineOutcome.dockId);
@@ -12818,7 +13187,7 @@ async function runSampleJob(readArgs) {
     if (jobId) {
       const stoppedJob = !!sampleInFlight.stopRequested;
       // (wave 2 repair) the station's own fault containment stopped it (stopCause 'fault'): said as that, never "you stopped this job"
-      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs,
+      lineJobsSet(LineJobs.finish(lineJobs, jobId, { at: Date.now(), usd: totalUsd, output: sampleReplies.join(''), runs, unapproved: completed ? unapproved : '',
         status: completed ? 'delivered' : stoppedJob ? 'stopped' : runs.length ? 'problem' : 'failed',
         error: completed ? '' : stoppedJob ? (sampleInFlight.stopCause === 'fault' ? 'the station hit an internal fault and stopped this job' : 'you stopped this job') :!onLine ? 'the job did not enter through this line' : (partial && runs.every(r => r.reason === 'done')) ? 'the joiner sent on without every branch (' + partial + ')' : runs.length ? 'a step did not finish cleanly' : (refusedSaid || firstWarn || 'no step ran') }));
       sampleInFlight.jobId = null;
@@ -12833,7 +13202,7 @@ async function runSampleJob(readArgs) {
     if (line && plan.sendTo) onward.onwardDestinations = Object.entries(plan.sendTo).filter(([outboxId, s]) => s && s.fromLine === line && !(sampleLineOutcome && sampleLineOutcome.outboxId && String(sampleLineOutcome.outboxId) !== outboxId)).map(([outboxId, s]) => ({ lineId: s.toLine, outboxId }));
     if (workitemId) {
       const d = bumpQueue(agentId, -1);
-      if (completed) chanEmit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true });
+      if (completed) chanEmit('workitem.delivered', Object.assign({ workitemId, finalQueueId: 'outbox', agentId, box: '', ms: Date.now() - t0, ts: Date.now(), sample: true }, unapproved ? { unapproved } : null));
       chanEmit('queue.status', { queueId: agentId, depth: d, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
     }
     if (!completed) {
@@ -12863,7 +13232,8 @@ async function runSampleJob(readArgs) {
       ok: true, sample: true, chatId: SAMPLE_CHAT, streamId: streamId,
       agentId: agentId || null, isTask: isTask, workitemId: workitemId || null,
       replies: sampleReplies.slice(), runs: runs, delivered: delivered, totalUsd: totalUsd, shipped
-    }, shippedWhy ? { shippedWhy } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
+    // (GitHub #122) an unapproved job is never a receipt: that is the reason, said before any other
+    }, (shipped === false && unapproved) ? { shippedWhy: 'unapproved' } : shippedWhy ? { shippedWhy } : null, unapproved ? { unapproved } : null, line ? { line: line } : null, jobId ? { jobId } : null, onward));
   } finally {
     // a job whose route threw after it went out is never left "running"
     if (sampleInFlight && sampleInFlight.jobId) { try { lineJobsSet(LineJobs.finish(lineJobs, sampleInFlight.jobId, { at: Date.now(), status: 'failed', error: 'the station hit an error while the job was out' })); } catch (e) { failNote('linejobs.finish', e); } }
@@ -13394,6 +13764,7 @@ async function stepTestRunDock(h) {
       reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
       messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
       runId, trigger: 'event', streamId: h.streamId,
+      resumeSeed: false,   // every step shares one steptest stream: a step (or a NEEDS CHANGES re-run / rewind) must not inherit the others' turns
       lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId,   // LINE WATCH: the row records the step's line + bay (run.start names its crate)
       initialTaint: h.entry ? null : 'upstream agent output',
       surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
@@ -14132,6 +14503,22 @@ async function handleConfigExport(req, res) {
   return json(200, env);
 }
 
+/* POST /api/config/export/save { sections? } -> { ok, path, file, dir } (#134). The DESKTOP app's EXPORT STATION: the
+   same envelope as /api/config/export, but written by the sidecar into the Commander's Downloads folder (home when
+   there is none) and read back, so the settings line can name the exact file instead of claiming a WebView download
+   it never sees. The caller never supplies a path; a same-day backup is never overwritten (backupfile.js). */
+async function handleConfigExportSave(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  let body; try { body = JSON.parse(await readBody(req, 1 << 20)) || {}; } catch (e) { return json(400, { ok: false, error: 'bad json' }); }
+  const now = Date.now();
+  let env;
+  try { env = configExport.buildExport(collectExportSnapshot(body.sections), { now, app: 'StarNet' }); }
+  catch (e) { return json(409, { ok: false, error: (e && e.message) || 'configuration cannot be exported safely' }); }
+  const saved = backupFile.saveStationExport(JSON.stringify(env, null, 2), { home: os.homedir(), now });
+  if (!saved.ok) console.warn('[config-export] could not save the station backup: ' + saved.error);
+  return json(saved.ok ? 200 : 500, saved);
+}
+
 function connectorFieldSet(c) {
   return new Set([].concat(Array.isArray(c && c.redactedFields) ? c.redactedFields : [],
     Array.isArray(c && c.missingFields) ? c.missingFields : []).filter(x => typeof x === 'string'));
@@ -14348,6 +14735,7 @@ async function handleConfigReset(req, res) {
     case 'servicekeys': {
       if (!saveServiceKeyRemoval([])) return json(500, { ok: false, section, error: 'service-key reset could not be verified in both protected recovery copies; active keys were left unchanged' });
       serviceKeys = [];
+      serviceKeyRefs.clear();   // and every value read from 1Password
       applyServiceKeysEnv();   // scrubs the injected env vars only after both disk copies prove the reset
       break;
     }
@@ -14358,13 +14746,15 @@ async function handleConfigReset(req, res) {
 
 /* ---- P1-9 ADVANCED runtime knobs API. GET reports each knob's effective/default/saved value + whether an env
    var locks it (so the UI can gray it out honestly). POST persists overrides (env-locked knobs ignore the write).
-   Saved values apply at NEXT BOOT (they feed the boot-frozen constants) — the UI discloses this. ---- */
+   Saved values apply at NEXT BOOT (they feed the boot-frozen constants) — the UI discloses this. live:true = a per-run
+   value runOnceCore reads off CAPS each run: a save re-resolves it into CAPS (env still wins), so the next run uses it. ---- */
 const RUNTIME_KNOB_DEFS = [
   { key: 'maxIters', env: 'MAX_ITERS', def: 0, min: 0, max: 200 },
   { key: 'maxConcurrentAgents', env: 'MAX_CONCURRENT_AGENTS', def: 0, min: 0, max: 32 },
   { key: 'consentTimeoutMs', env: 'CONSENT_TIMEOUT_MS', def: 120000, min: 5000, max: 600000 },
   { key: 'cronTickMs', env: 'CRON_TICK_MS', def: 60000, min: 5000, max: 600000 },
-  { key: 'maxSubscriptionTokens', env: 'MAX_SUBSCRIPTION_TOKENS', def: 2000000, min: 0, max: 100000000 }
+  { key: 'maxSubscriptionTokens', env: 'MAX_SUBSCRIPTION_TOKENS', def: 2000000, min: 0, max: 100000000, live: true },
+  { key: 'maxUnpricedTokens', env: 'MAX_UNPRICED_TOKENS', def: 2000000, min: 0, max: 100000000, live: true }
 ];
 function saveRuntimeKnobs() {
   try { saveResilient(RUNTIME_KNOBS_FILE, { version: 1, knobs: runtimeKnobs }); }
@@ -14448,6 +14838,9 @@ async function handleRuntimeKnobsSet(req, res) {
   }
   runtimeKnobs = next;
   saveRuntimeKnobs();
+  // the per-run token ceilings take effect for the NEXT run (runOnceCore reads CAPS per run). resolveKnob keeps the
+  // precedence: an env-locked knob re-resolves to its env value, so a save never pretends to move it.
+  for (const d of RUNTIME_KNOB_DEFS) if (d.live) CAPS[d.key] = resolveKnob(d.env, d.key, d.def);
   return json(200, runtimeKnobsStatus());
 }
 
@@ -14672,7 +15065,7 @@ function handleConnectorsList(req, res) {
    protected sibling file, applied to process.env, and NEVER echoed back (the list carries a masked last4). ---- */
 function handleServiceKeysList(req, res) {
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify({ keys: serviceKeys.map(serviceKeysMod.toPublic).sort((a, b) => a.name.localeCompare(b.name)) }));
+  res.end(JSON.stringify({ keys: liveServiceKeys().map(serviceKeysMod.toPublic).sort((a, b) => a.name.localeCompare(b.name)) }));
 }
 async function handleServiceKeyUpsert(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14686,9 +15079,14 @@ async function handleServiceKeyUpsert(req, res) {
   if (r.error) return json(400, { error: r.error });
   serviceKeys = r.list.map(applyServiceKeyCatalogPolicy);
   const record = serviceKeys.find(row => row.id === r.record.id) || r.record;
+  if (!record.ref) serviceKeyRefs.drop(record.id);   // a pasted key replaced a 1Password reference: forget the value read for it
   applyServiceKeysEnv();
   const saved = saveServiceKeys();   // verified read-back; on false the key is LIVE but not durable — say so honestly
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(record), error: saved ? undefined : 'key is active for this session but could not be verified on disk' });
+  // A 1Password reference is READ now (the Commander is here to unlock and approve), so the row says at once whether it
+  // works. Saved either way: a locked vault is a state to fix, not a reason to lose the reference.
+  if (record.ref) await serviceKeyRefs.refresh(record, { timeoutMs: 60000 });
+  applyServiceKeysEnv();
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(record), error: saved ? undefined : 'key is active for this session but could not be verified on disk' });
 }
 async function handleServiceKeyToggle(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14699,7 +15097,7 @@ async function handleServiceKeyToggle(req, res) {
   serviceKeys = r.list;
   applyServiceKeysEnv();
   const saved = saveServiceKeys();
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(r.record) });
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(r.record) });
 }
 // The PLATFORM directory behind the KEYS picker. Pure curated data + a live `installed` cross-ref against
 // the Commander's own keys; carries no secrets (the store is consulted only for env-var NAMES).
@@ -14722,7 +15120,7 @@ async function handleServiceKeyAutonomy(req, res) {
   if (r.error) return json(serviceKeys.some(row => row && row.id === String(body.id || '')) ? 409 : 404, { error: r.error });
   serviceKeys = r.list;
   const saved = saveServiceKeys();
-  return json(saved ? 200 : 500, { ok: saved, saved, key: serviceKeysMod.toPublic(r.record) });
+  return json(saved ? 200 : 500, { ok: saved, saved, key: publicServiceKey(r.record) });
 }
 async function handleServiceKeyRemove(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -14732,6 +15130,7 @@ async function handleServiceKeyRemove(req, res) {
   const saved = saveServiceKeyRemoval(r.list);
   if (!saved) return json(500, { ok: false, saved: false, removed: false, error: 'key removal could not be verified in both protected recovery copies; the active key was left unchanged' });
   serviceKeys = r.list;
+  serviceKeyRefs.drop(r.removed && r.removed.id);   // and the value read from 1Password, if it was a reference
   applyServiceKeysEnv();   // scrubs the owned env var so the very next run no longer sees it
   return json(200, { ok: true, saved: true, removed: String(body.id || '') });
 }
@@ -15365,10 +15764,14 @@ function parseCronScheduleOr400(str, now, tz) {
   if (!sched) {
     const why = (opts && opts.tz != null && !cron.isValidTz(opts.tz))
       ? ('unknown timezone "' + opts.tz + '" — use an IANA zone like America/New_York')
-      : /every other|bi-?weekly|fortnight|every (?:2|two|3|three|4|four) weeks|twice a month/i.test(String(str || ''))
+      : /\bevery other\b|\bbi-?weekly\b|\bfortnight|\bevery (?:2|two|3|three|4|four) weeks\b|\btwice a month\b/i.test(String(str || ''))
       ? 'every other week cannot be scheduled — use one weekday ("mondays at 10am") or two dates a month ("the 1st and 15th of every month at 10am"), and tell the Commander which you chose'
       : "couldn't read that schedule — try \"every day at 9am\", \"weekdays at 8:30am\", \"mondays at 6pm\", \"tomorrow at 9am\", \"every 30m\", \"in 2h\" or a cron like \"0 9 * * *\"";
     const e = new Error(why); e.code = 400; throw e;
+  }
+  // a one-shot in the PAST is not a schedule: stored, it fires on the very next tick (sweep/autonomy 2026-10-20)
+  if (sched.kind === 'once' && Number(sched.runAt) < Number(now) - 60000) {
+    const e = new Error('that time already passed (' + new Date(sched.runAt).toISOString() + ') — a one-shot in the past would run the moment it is saved; give a future time, e.g. "tomorrow at 9am" or "in 2h"'); e.code = 400; throw e;
   }
   return sched;
 }
@@ -15406,7 +15809,7 @@ function widgetSources() {
   const out = connectors.list().map(c => ({ kind: 'connector', id: c.id, label: redact(c.label || c.id),
     state: !c.enabled ? 'disabled' : c.authRequired ? 'sign-in required' : c.state,
     available: c.enabled !== false && ['up', 'cached'].includes(c.state) && !c.authRequired }));
-  for (const k of serviceKeys) if (k && k.key) out.push({ kind: 'servicekey', id: k.envVar,
+  for (const k of liveServiceKeys()) if (k && k.key) out.push({ kind: 'servicekey', id: k.envVar,
     label: redact(k.name), state: k.enabled === false ? 'disabled' : 'configured', available: k.enabled !== false });
   out.push({ kind: 'agent', id: 'starnet', label: 'StarNet', state: 'available', available: true });
   return out;
@@ -15788,7 +16191,7 @@ function handleCronHistory(req, res) {
       if (!r || !(r.cronJobId === id || (job.lastRunId && r.runId === job.lastRunId))) continue;
       if (out.some(x => x.runId === r.runId)) continue;
       out.push({ runId: r.runId, at: r.endedAt || r.ts || 0, startedAt: r.startedAt || 0, durationMs: r.durationMs || 0,
-        reason: r.reason, usd: r.usd || 0, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
+        reason: r.reason, usd: r.usd || 0, spendUnknown: !!r.spendUnknown, unmetered: !!r.unmetered, toolsOk: r.toolsOk || 0, streamId: r.streamId || '',
         error: r.error || '', artifacts: (r.artifacts || []).length });
     }
     return json(200, { ok: true, id, runs: out });
@@ -15975,13 +16378,21 @@ function handleCronUpdate(req, res) {
     } catch (e) { return json(400, { error: (e && e.message) || String(e) }); }
     // pause/resume is not an EDITABLE field on updateJob — pull it out and apply via the dedicated reducers.
     let enabled; if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) { enabled = patch.enabled !== false; delete patch.enabled; }
+    /* GRANT ON AN EXISTING ROUTINE (2026-10-18): `addGrants` (body, beside patch) adds to the grants the routine holds
+       NOW, read inside the lock. The row's ▣ ALLOW IMAGES sends it. A page sending its rendered list instead could
+       re-add a grant that was dropped since that row was drawn (an agent rewriting the task clears them all). */
+    const addGrants = Array.isArray(body.addGrants) ? body.addGrants.map(g => String(g == null ? '' : g).trim()).filter(Boolean) : [];
     try {
       // G4.3: the full edit (updateJob + optional pause/resume) is ONE re-read-modify-write under the lock,
       // so it cannot clobber a concurrent advance and the pause/resume sees the just-updated job.
       await withCronWrite(jobs => {
-        const candidate = Object.assign({}, cronStore.getJob(jobs, id), patch);
+        const current = cronStore.getJob(jobs, id);
+        const edit = addGrants.length
+          ? Object.assign({}, patch, { unattendedGrants: (Array.isArray(patch.unattendedGrants) ? patch.unattendedGrants : ((current && current.unattendedGrants) || [])).concat(addGrants) })
+          : patch;
+        const candidate = Object.assign({}, current, edit);
         if (String(candidate.deliver || 'local').trim() === 'local' && candidate.attachToSession && !(candidate.origin && (candidate.origin.sessionId || candidate.origin.streamId))) throw new Error('follow-up needs a captured session origin');
-        let next = cronStore.updateJob(jobs, id, patch, { now: Date.now(), defaultTz: CRON_HOST_TZ });
+        let next = cronStore.updateJob(jobs, id, edit, { now: Date.now(), defaultTz: CRON_HOST_TZ });
         if (enabled === true) next = cronStore.resumeJob(next, id, { now: Date.now(), defaultTz: CRON_HOST_TZ });
         else if (enabled === false) next = cronStore.pauseJob(next, id);
         return next;
@@ -16178,8 +16589,9 @@ async function handleCronRun(req, res) {
   try {
     await runOnce({
       key: key, model: model,
-      system: cronSystemFor(job.agentId)
-        + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : ''),
+      stationEvidence: true, system: cronSystemFor(job.agentId)   // the persona's observed half rides the run context (dossierWithGoals)
+        + (runNowBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(runNowBrief).slice(0, 2000) : '')
+        + cronDeliveryNote(job),   // the scheduled fire's own [DELIVERY] note (cron-driver deliveryNoteFor) — same posture
       messages: [{ role: 'user', content: assembledPrompt }],
       agentId: job.agentId, isTask: true, emit: teeEmit, signal: ac.signal,
       // streamId 'cron-'+runId matches the SCHEDULED fire (cron-driver.js): Run Now must persist its transcript
@@ -16233,7 +16645,7 @@ async function handleCronRun(req, res) {
       try {
         const line = await chainRunner.advance({
           agentId: job.agentId, dockId: job.dockId ? (router.dockOf(job.agentId, job.dockId) || undefined) : undefined,
-          text: state.buf, originalText: String(job.prompt || ''), signal: ac.signal,
+          text: state.buf, originalText: assembledPrompt, ask: String(job.prompt || ''), signal: ac.signal,   // contextFrom + directive, as the scheduled fire hands it (hops no longer replay the stream)
           // the fire's own stream, exactly as the scheduled fire passes it: a SEND TO hand-off reads back THIS run's rows (the
           // every-step-ended-done check and the files it made) — without it Run Now handed on half-finished work the schedule refuses
           runId, streamId: 'cron-' + runId,
@@ -16273,10 +16685,11 @@ async function handleCronRun(req, res) {
               await runOnce({
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
                 baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
-                system: cronSystemFor(h.agentId),
+                system: cronSystemFor(h.agentId), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
                 messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: job.runsLine === true ? router.lineOfAgent(job.agentId, job.dockId ? router.dockOf(job.agentId, job.dockId) : undefined) : null, isTask: true,
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId, parallelBranch: !!h.parallel,   // a PARALLEL branch hop keeps its stream but never waits in its queue (chain.js runBatch)
+                resumeSeed: false,   // the handoff carries the upstream output: never re-send earlier stages' transcript (runOnceCore seed)
                 surface: 'autonomous', trigger: 'schedule', broadcast: true, reflect: true,
                 station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
                 lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
@@ -16354,7 +16767,9 @@ function workshopPrompt(runId, item, ctx) {
     + '- Whatever the format: ZERO SETUP on their end — self-contained, one-click openable, no external files or build step; a script ships with its single run command in "howToUse".\n'
     + '- Put every file for this deliverable UNDER the folder "' + dir + '/" in your workspace (use fs.write with paths like "' + dir + '/<file>").\n'
     + '- Do the actual work with your real tools (web search/read, files, memory). Ground factual claims in what the tools return.\n'
-    + '- You CANNOT run commands or tests here, so do not claim anything was tested — list what a human still needs to verify.\n'
+    // (token-burn audit 2026-10-17: was "You CANNOT run commands or tests here" — false whenever the bay holds a terminal, and
+    // the act then wrote its report first and verify-on-stop bought a second pass to check it; same wording as the act prompt)
+    + '- If you have a shell, CHECK the work BEFORE you write the manifest (a patch: `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved; list what a human still needs to verify.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + ((item && item.id) || '') + '",\n'
     + '    "title": "<short name>", "kind": "tool|fix|draft|doc|patch|other",\n'
@@ -16497,7 +16912,7 @@ async function runWorkshopShift(agentId, opts) {
   let threw = null;
   try {
     await runOnce({
-      key: key, model: model, system: cronSystemFor(id),
+      key: key, model: model, system: cronSystemFor(id), stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId: id, isTask: true, emit: emit, signal: signal,
       runId: runId, streamId: 'workshop-' + runId, surface: 'autonomous', trigger: 'schedule', provider: provider, broadcast: !!o.broadcast,
@@ -16614,7 +17029,8 @@ function implementPrompt(runId, source, ctx) {
         : '- There is no blessed project to patch here, so build the working artifact itself: the script, the tool, the\n'
          + '  file that does the job. ZERO SETUP — self-contained, one-click openable or one command to run.\n')
     + '- Write every file for this build UNDER "' + dir + '/" (use paths like "' + dir + '/<file>").\n'
-    + '- Do the real work with your tools. You CANNOT run commands or tests here, so never claim anything was tested —\n'
+    + '- Do the real work with your tools. If you have a shell, CHECK the work BEFORE you write the manifest (a patch:\n'
+    + '  `git apply --check` from the repo root; code: a syntax check or its test) and claim only what that check proved;\n'
     + '  list what a human still needs to check.\n'
     + '- When finished, write a manifest to "' + dir + '/deliverable.json" with EXACTLY this shape:\n'
     + '  { "v": 1, "runId": "' + runId + '", "agentId": "<your id>", "backlogId": "' + String(c.backlogId || '') + '",\n'
@@ -16720,7 +17136,7 @@ async function runImplementBuild(agentId, sourceRunId, opts) {
   let threw = null;
   try {
     await runOnce({
-      key: key, model: model, system: cronSystemFor(id), provider: provider,
+      key: key, model: model, system: cronSystemFor(id), provider: provider, stationEvidence: true,   // the persona's observed half rides the run context (dossierWithGoals)
       messages: [{ role: 'user', content: prompt }],
       agentId: id, isTask: true, emit: (typeof o.emit === 'function' ? o.emit : function () {}), signal: signal,
       runId: runId, streamId: 'workshop-' + runId, surface: 'autonomous', trigger: 'directive', broadcast: !!o.broadcast,
@@ -17347,10 +17763,13 @@ async function handleWorkshopBacklog(req, res) {
     attempts: Number(b.attempts) || 0
   }));
   const routine = findWorkshopRoutine(agentId);
+  // a shift fires only through the scheduler: OFF or E-STOPped, the routine's nextRunAt is a time that will not
+  // arrive — withhold the clock and say why (the same live state GET /api/cron reports; sweep/autonomy 2026-10-20)
+  const shiftsPaused = cronHalted ? 'halted' : (!cronArmed ? 'scheduler-off' : null);
   json(200, {
     ok: true, agentId: agentId, granted: rec.grant, backlog: rec.backlog,
-    items: items,
-    nextShiftAt: (routine && routine.enabled && routine.nextRunAt) || null,
+    items: items, shiftsPaused: shiftsPaused,
+    nextShiftAt: (!shiftsPaused && routine && routine.enabled && routine.nextRunAt) || null,
     shiftEvery: WORKSHOP_SHIFT_SCHEDULE,
     lastShift: rec.lastShift || null
   });
@@ -18551,6 +18970,8 @@ const slashActions = slashActionsMod.makeSlashActions({
         lifetime: ledger.totalUsd(),
         runs: ledger.count(),
         tokens: ledger.all().reduce((s, r) => s + (Number(r && r.tokens) || 0), 0),
+        unpricedRuns: ledger.all().filter(r => r && r.unpriced === true && !r.unmetered).length,
+        unmeteredRuns: ledger.all().filter(r => r && r.unmetered === true).length,
         agentUsd: ledger.usdForAgent(agentId),
         caps: { perRun: effectiveCaps.perRun, perAgent: effectiveCaps.perAgent, perDay: effectiveCaps.perDay, global: effectiveCaps.global }
       };
@@ -18678,7 +19099,7 @@ async function runSlashForChannel(input, ctx) {
   // caller, but an authenticated owner Telegram DM is the Commander's remote control surface and executes the
   // exact same snippet path as the desktop palette.
   if (out.directive.type === 'exec') {
-    if (!ctx.ownerTrusted) return { ok: false, text: 'That is one of your shell commands — for safety those only run in the StarNet desktop app, not over messaging.' };
+    if (!ctx.ownerTrusted) return { ok: false, text: userExecRefusal(out.directive.name, { chatType: ctx.chatType, ownerDmExec: !!ctx.ownerDmExec }) };
     return runUserExec(out.directive);
   }
   // Only dispatch:'server' commands can answer off-browser. A client command would need the DOM, so say that
@@ -18759,6 +19180,75 @@ async function handleSkillMarketInstall(req, res) {
     const on = keep ? { ok: true, enabled: skillPrefs.get(r.slug) !== false } : skillPrefs.set(r.slug, true);
     json(200, Object.assign({}, r, { enabled: !!(on && on.ok && on.enabled) }));
   } catch (e) { json(400, { ok: false, error: (e && e.message) || 'could not install that skill' }); }
+}
+// GET /api/community-maps[?refresh=1] — the community gallery as the signed index lists it (offline is a state, not a crash)
+async function serveCommunityMaps(req, res) {
+  try {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    const c = await communityMaps.catalog({ refresh: u.searchParams.get('refresh') === '1' });
+    respondJson(res, 200, c.ok ? { ok: true, serial: c.serial, maps: c.maps, linked: communityMaps.linked() } : Object.assign({ linked: communityMaps.linked() }, c));
+  } catch (e) { respondJson(res, 200, { ok: false, linked: communityMaps.linked(), error: (e && e.message) || 'could not reach the community gallery' }); }
+}
+// GET /api/community-maps/file?slug=&v=&which=build|still — only bytes that hash to what the signed index pins
+async function serveCommunityMapFile(req, res) {
+  const q = new URL(req.url, 'http://127.0.0.1').searchParams;
+  try {
+    const f = await communityMaps.file(q.get('slug') || '', Number(q.get('v')), q.get('which') === 'still' ? 'still' : 'build');
+    res.writeHead(200, { 'Content-Type': f.type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': f.bytes.length });
+    return res.end(f.bytes);
+  } catch (e) { return respondJson(res, 404, { ok: false, error: (e && e.message) || 'that map is not available' }); }
+}
+// GET /api/community-maps/mine — this account's shared maps and their review status, as the cloud reports them
+async function serveCommunityMapsMine(req, res) {
+  const r = await communityMaps.mine();
+  respondJson(res, 200, r);
+}
+// POST /api/community-maps/share { title, description, credit, agree, build, still } — ask for review; the cloud's answer verbatim
+async function handleCommunityMapShare(req, res) {
+  const body = await readJsonBody(req, readBody, 7 * 1024 * 1024, res);
+  if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
+  const r = await communityMaps.share(body);
+  respondJson(res, r.ok ? 202 : (r.outcome === 'unknown' ? 504 : (r.status >= 400 && r.status < 600 ? r.status : 502)), r);
+}
+/* POST /api/skill-market/share { agentId, id, title, description, category, license, credit, agree } — SHARE TO MARKET.
+   The skill goes exactly as this agent's library holds it (read here, never sent by the page), with its plain-text
+   reference files. A skill the skill guard holds back from the agent is not shared: the market reviewer would be the
+   second person to read what the guard already flagged. The answer is the cloud's, verbatim. */
+const MARKET_REF_EXT = /\.(?:md|txt|json|ya?ml|csv)$/i;
+async function handleSkillMarketShare(req, res) {
+  const body = await readJsonBody(req, readBody, 1 << 16, res);
+  if (body === null) return respondJson(res, 400, { ok: false, error: 'bad json' });
+  const agentId = String(body.agentId || 'agent');
+  if (!isAgentId(agentId)) return respondJson(res, 403, { ok: false, error: 'forbidden' });
+  const s = skillStore.view(agentId, String(body.id || ''), { includeArchived: true, bump: false });
+  if (!s) return respondJson(res, 404, { ok: false, error: 'That skill is not in this agent\'s library.' });
+  // someone else's skill (installed from a package or a registry) is theirs to publish, not this Commander's
+  if (String(s.createdBy || '') === 'community' || s.sourceUrl || s.sourceAuthor) {
+    return respondJson(res, 409, { ok: false, outcome: 'refused', error: 'This skill came from ' + (s.sourceAuthor ? String(s.sourceAuthor).slice(0, 60) : 'someone else') + ', so it is theirs to publish. Only skills written on this station can be shared.' });
+  }
+  const gate = skillGate.annotate([s], { verify: true })[0] || {};
+  if (gate.withheld) return respondJson(res, 409, { ok: false, outcome: 'refused', error: 'The skill guard is holding this skill back from the agent, so it can\'t be shared. Edit out what it flagged first.' });
+  const files = Array.isArray(s.files) ? s.files : Object.values(s.files || {});
+  // plain-text references only; a file stored as base64 goes too when it really is UTF-8 text
+  const textOf = (f) => {
+    if (f.encoding !== 'base64') return String(f.content || '');
+    const t = Buffer.from(String(f.content || ''), 'base64').toString('utf8');
+    return t.includes(String.fromCharCode(0xFFFD)) || t.includes('\u0000') ? null : t;
+  };
+  const refs = [];
+  for (const f of files) {
+    if (!f || !MARKET_REF_EXT.test(String(f.path || '')) || refs.length >= communityMaps.SKILL_REFS_MAX) continue;
+    const content = textOf(f);
+    if (content != null) refs.push({ name: String(f.path).split('/').pop(), content });
+  }
+  // the skill as the agent reads it: its setup (when it has one) and then its steps
+  const setup = String(s.setup || '').trim(), steps = String(s.body || '');
+  const skillText = setup && !steps.includes(setup) ? '## Setup\n\n' + setup + '\n\n' + steps : steps;
+  const r = await communityMaps.shareSkill({
+    title: body.title, description: body.description, category: body.category, license: body.license, credit: body.credit,
+    agree: body.agree === true, skillText, refs
+  });
+  respondJson(res, r.ok ? 202 : (r.outcome === 'unknown' ? 504 : (r.status >= 400 && r.status < 600 ? r.status : 502)), Object.assign({ referencesSent: refs.length, referencesLeftOut: files.length - refs.length }, r));
 }
 // POST /api/skill-market/uninstall { slug } — remove a market install; a bundled original falls back to its bundled copy.
 async function handleSkillMarketUninstall(req, res) {
@@ -18881,7 +19371,7 @@ async function handleSkillExchangeRollback(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);
   const body = await readJsonBody(req, readBody, 1 << 16, res); if (body === null) return json(400, { ok: false, error: 'bad json' });
   const agentId = String(body.agentId || 'agent'); if (!isAgentId(agentId)) return json(403, { ok: false, error: 'forbidden' });
-  try { const result = skillExchange.rollback({ agentId, id: body.id, digest: body.digest }); skillMetrics.record('rollback', 'success', {}); return json(200, result); }
+  try { const result = skillExchange.rollback({ agentId, id: body.id, digest: body.digest, force: body.force === true }); skillMetrics.record('rollback', 'success', {}); return json(200, result); }
   catch (e) { skillMetrics.record('rollback', 'failed', { error: e && e.message }); return json(400, { ok: false, error: (e && e.message) || 'could not roll back that skill' }); }
 }
 
@@ -18903,6 +19393,9 @@ function serveSkillGoldens(req, res) {
 }
 function serveAgentSkills(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  // broken is not empty: a skill library that failed to load is a failure, never "no skills yet"
+  const libState = typeof skillStore.loadState === 'function' ? skillStore.loadState() : { ok: true };
+  if (!libState.ok) return json(500, { error: 'skill library failed to load', code: 'SKILLS_LOAD_FAILED', detail: libState.error });
   try {
     const u = new URL(req.url, 'http://127.0.0.1');
     const agentId = u.searchParams.get('agent') || 'agent';
@@ -19686,7 +20179,7 @@ async function runOnce(o) {
       // Refresh ordinary queued chat after the preceding turn has persisted.
       // Preserve the new user message (including attachments); checkpoint and
       // group histories retain their own provider-valid assembly contracts.
-      if (queued && !o.recovery && !o.groupTools && !o.parentRunId
+      if (queued && o.resumeSeed !== false && !o.recovery && !o.groupTools && !o.parentRunId
         && (o.messages || []).at(-1)?.role === 'user') {
         o = { ...o, messages: (o.messages || []).filter(m => m.role === 'system')
           .concat(transcriptStore.reconstruct(o.streamId, { limit: 100 }), o.messages.slice(-1)) };
@@ -20090,6 +20583,11 @@ async function runOnceCore(o) {
   let taskContextInputs = null;
   let taskContextBlock = '';
   let taskQuestionAsked = false;
+  // ANSWER HOLD: this run's latest user text answered the brief's open question (prepare() stamped it and flipped
+  // the brief to 'ready'). Until the MODEL produces something (a token, a tool call, billed output) nothing has
+  // read that answer, so a run refused or failed before then hands the question back (reopenAnswer, outer
+  // finally) and the re-sent answer resumes the ORIGINAL task. A Commander cancel keeps the answer spent.
+  let briefAnswerHold = null;
   // Everything below is wrapped so the admission slot is ALWAYS released (early-return refusals above run
   // before tryEnter; every exit below — return, throw, or the normal finish — passes through leave()).
   try {
@@ -20177,6 +20675,7 @@ async function runOnceCore(o) {
       }, Date.now());
     } catch (e) { console.warn('[taskbrief] prepare failed:', (e && e.message) || e); taskBrief = null; }
   }
+  if (taskBrief && taskBrief.inputAction === 'answer' && taskBrief.answered && !o.recovery) briefAnswerHold = { id: taskBrief.id, answered: taskBrief.answered };
 
   if (taskBrief) taskBriefState = { brief: taskBrief };
   if (taskBrief && taskBrief.inputAction === 'cancel') {
@@ -20193,8 +20692,11 @@ async function runOnceCore(o) {
     // AUTOMATION ASK: the task's own words (or this turn's) ask for recurring/scheduled work -> the routine playbook rides this run
     let automationAsk = false;
     try { automationAsk = CommanderContext.automationIntent(taskBrief.originalDirective) || CommanderContext.automationIntent(latestUserText(messages)); } catch (_) { automationAsk = false; }
-    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o), automationAsk};
-    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs);
+    // ONE transcript + run-history snapshot for this turn's whole evidence assembly (evidenceRows): the repeat-work
+    // notice and the context pack used to copy the run history 4 times and the transcript 3 times per task turn
+    const turnEvidence = {};
+    taskContextInputs = {brief:taskBrief, goal, patterns, deferredDimensions, recipeIntake, standingWork: standingWorkNotice(taskBrief, agentId, o, turnEvidence), automationAsk};
+    taskContextBlock = commanderEvidenceContext(system || '', taskContextInputs, turnEvidence);
   } else if (isTask) {
     // Channels and integrations may not carry a durable taskKey. They still receive the SAME bounded Commander
     // evidence as an interactive briefed run; only the task-specific brief section is absent.
@@ -20243,7 +20745,7 @@ async function runOnceCore(o) {
     politeness: stationWebPoliteness,
     // reservedEnv lets web_request tell a model-provider key apart from a missing one: KEYS refuses provider
     // keys, so "add it in KEYS" would send the Commander round a loop they can never finish.
-    resolveServiceKey: (name, sfc) => serviceKeysMod.resolveForRequest(serviceKeys, name, sfc, { reservedEnv: SERVICEKEYS_RESERVED_ENV }),
+    resolveServiceKey: (name, sfc) => serviceKeysMod.resolveForRequest(liveServiceKeys(), name, sfc, { reservedEnv: SERVICEKEYS_RESERVED_ENV }),
     // workspace files in outbound requests (${file:...} body refs / multipart parts): resolved through the
     // per-agent workspace jail only (no ctx/pathTrust, unlike fs.read and browser.upload), so a request can only carry this agent's own workspace files.
     readWorkspaceFile: async (aid, rel) => {
@@ -20254,7 +20756,7 @@ async function runOnceCore(o) {
     // ONLY when the Commander has actually connected one. Resolved through the same grant as any other key,
     // so an unattended run without the tick simply uses the direct fallback instead of failing.
     jinaKey: (() => {
-      try { const r = serviceKeysMod.resolveForRequest(serviceKeys, 'JINA_API_KEY', accessSurface); return r.ok ? r.value : ''; }
+      try { const r = serviceKeysMod.resolveForRequest(liveServiceKeys(), 'JINA_API_KEY', accessSurface); return r.ok ? r.value : ''; }
       catch (_) { return ''; }
     })()
   }).register(registry);
@@ -20398,8 +20900,9 @@ async function runOnceCore(o) {
      team.dispatch hands a later worker its earlier siblings' files (o.handoffReads), and grants the lead its workers'
      saved files once they return (grantReads below). Read-only, exact real paths, gone when the run ends. */
   const runReadGrants = new Set((Array.isArray(o.handoffReads) ? o.handoffReads : []).map(String).filter(Boolean).slice(0, 64));
+  const runSessionRoots = new Set();   // folders a "session" answer approved for THIS run only (pathtrust.js 1b)
   const runPathTrust = (abs, o2) => pathTrustCore.guard(abs, {
-    scope: (o2 && o2.scope) || 'read', surface: surface, prompt: pathPrompt || null,
+    scope: (o2 && o2.scope) || 'read', surface: surface, prompt: pathPrompt || null, sessionRoots: runSessionRoots,
     agentId: (o2 && o2.agentId) || agentId,
     readGrants: Array.from(runReadGrants),
     // who CAUSED this I/O (recency metadata only): a watched run, or the Commander's owner-trusted channel DM.
@@ -20532,10 +21035,11 @@ async function runOnceCore(o) {
       const settled = taskBriefState ? commanderEvidenceContext(system || '', Object.assign({},taskContextInputs,{brief:taskBriefState.brief})) : taskContextBlock;
       const notes = notebookStore.get('notebook:' + agentId);
       // the Commander's taste rides into delegated work too: a worker writes the deliverable the Commander rates
-      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, otherAgentNotebooks(agentId), { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
+      const peers = (personalizationStore.read().enabled && !tasteWithheld) ? otherAgentNotebooks(agentId) : [];   // read once for taste + standing
+      const tasteRecs = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationTaste(notes, peers, { query: recentUserText(messages), projectRoot: o.projectRoot || '' }) : [];
       const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
       const pinned = Array.isArray(notes) ? notes.filter(r => r && r.pinned && !tasteIds.has(r.id) && !(tasteWithheld && r.origin === FeedbackMemory.ORIGIN) && !r.taintedBy) : [];
-      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, otherAgentNotebooks(agentId)).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
+      const standing = (personalizationStore.read().enabled && !tasteWithheld) ? FeedbackMemory.stationStanding(notes, peers).filter(r => !pinned.some(p => p.id && p.id === r.id)) : [];
       const recalled = renderRecall(rank(pinned.concat(standing), recentUserText(messages), { now: Date.now(), streamId, projectRoot: o.projectRoot || null }), { limit: 1500 });
       const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall);
       return settled + (recalled.text ? '\n\n' + redact(recalled.text) : '') + (taste.text ? '\n\n' + redact(taste.text) : '');
@@ -20832,25 +21336,8 @@ async function runOnceCore(o) {
       // stay just under the true ceiling: the transport may add its own prefix/footer to a chunk.
       return (isFinite(n) && n > 200) ? (n - 100) : 1900;
     },
-    /* OUTBOUND FILES (2026-07-29). readFile is the JAIL PROOF and it lives here, not in the tool: comms.js is
-       pure and must not learn about the filesystem. resolveInside is the same proof the fs.* tools and user
-       attachments use, so an agent can only attach something inside its OWN workspace — `../` or an absolute
-       path is a refusal, not a traversal. Never throws: a miss is { ok:false, error } the tool reports honestly. */
-    readFile: async (agentId, rel) => {
-      try {
-        // resolveInside THROWS on a jail violation ('illegal path' / 'path escapes workspace') and otherwise
-        // answers { base, abs } — the catch below turns a violation into an honest refusal, never a traversal.
-        const r = await fsJail.resolveInside(String(agentId || ''), String(rel || ''), { scope: 'read' });
-        const abs = r && r.abs;
-        if (!abs) return { ok: false, error: 'that path is outside your workspace' };
-        const st = await fsp.stat(abs).catch(() => null);
-        if (!st || !st.isFile()) return { ok: false, error: 'not a file' };
-        if (st.size > CHANNEL_UPLOAD_MAX_BYTES) return { ok: false, error: 'file is ' + Math.round(st.size / (1024 * 1024)) + 'MB (limit ' + Math.round(CHANNEL_UPLOAD_MAX_BYTES / (1024 * 1024)) + 'MB)' };
-        const buffer = await fsp.readFile(abs);
-        if (!buffer.length) return { ok: false, error: 'file is empty' };
-        return { ok: true, buffer: buffer, name: path.basename(abs), mime: mimeForPath(abs) };
-      } catch (e) { return { ok: false, error: (e && e.message) || 'read failed' }; }
-    },
+    // OUTBOUND FILES (2026-07-29): the jail proof lives in the host (readChannelUpload), never in the pure tool.
+    readFile: readChannelUpload,
     // Upload through the SAME target-key resolution sendTo uses, so an agent can attach a file exactly where it
     // may already send words — known-targets-only is unchanged by this feature.
     sendMediaTo: (target, item) => {
@@ -20994,6 +21481,27 @@ async function runOnceCore(o) {
   const preAuthorityTools = resolved.tools.slice();
   resolved = enforceRunAuthority(resolved, registry, userControlAuthority);
   resolved = enforceEnabledToolsets(resolved, registry, unrestrictedHostNow() ? null : o.enabledToolsets);
+  /* THE WIDGET'S OWN UPDATE RUN PUBLISHES IT (releases#6). A widget refresh runs in that widget's conversation
+     ('widget-<id>'), a scheduled update as a routine whose job names the widget; both are told to publish with
+     widget.set, which otherwise rides the NOTEBOOK prop + MEMORY switch an interactive run often lacks (the agent
+     then searched for it until stopped). Host-derived from the stream id / the job's own meta, never from text, and
+     only for a widget the Commander configured: exactly widget.get + widget.set (no consent, no network), applied
+     after the narrowing above because a per-run list must not strip the one tool this run exists to call. The run may
+     read and publish ITS OWN widget only (widgetScope on the tool ctx below; widgets.js refuses any other id). */
+  let widgetScope = '';
+  {
+    const widgetJob = (trigger === 'schedule' && o.cronJobId) ? cronJobs.find(j => j && j.id === String(o.cronJobId)) : null;
+    widgetScope = widgetTools.updateRunOf({ streamId: o.streamId, widgetId: widgetJob && widgetJob.meta && widgetJob.meta.widgetId }) || '';
+    if (widgetScope) {
+      const grants = (CAP_REGISTRY.notebook || []).filter(g => g && /^widget\./.test(g.tool));
+      resolved = Object.assign({}, resolved, {
+        tools: resolved.tools.concat(grants.map(g => g.tool).filter(n => resolved.tools.indexOf(n) < 0)),
+        grants: resolved.grants.concat(grants.filter(g => !resolved.grants.some(x => x && x.tool === g.tool))),
+        approvalRules: Object.assign({}, resolved.approvalRules), networkCaps: Object.assign({}, resolved.networkCaps)
+      });
+      for (const g of grants) { resolved.approvalRules[g.tool] = { requiresConsent: false, scope: g.scope, network: false }; resolved.networkCaps[g.tool] = false; }
+    }
+  }
   /* WITHHELD COMMANDS, EXPLAINED (issue #77). The authority above removes workspace-process tools (shell.exec,
      verify.run, terminal.start …) from an ASK-mode non-interactive run even with a WORKBENCH placed — by design.
      Record which ones it removed (and the toolset switch would otherwise have allowed) so tool.search, the
@@ -21171,7 +21679,7 @@ async function runOnceCore(o) {
         const refs = [];
         for (const k of Object.keys(hs)) String(hs[k]).replace(/\$\{([A-Z][A-Z0-9_]*)\}/g, (m, n) => { refs.push(n); return m; });
         if (!refs.length) return false;   // references no credential -> nothing was pre-approved; ask/deny as usual
-        return refs.every(n => serviceKeysMod.resolveForRequest(serviceKeys, n, accessSurface).ok);
+        return refs.every(n => serviceKeysMod.resolveForRequest(liveServiceKeys(), n, accessSurface).ok);
       } catch (_) { return false; }
     },
     // UNATTENDED TERMINAL GRANT: this routine's recorded "may use the terminal" approval. Read off the SAME
@@ -21184,6 +21692,22 @@ async function runOnceCore(o) {
     // UNATTENDED CONNECTOR GRANT: same host-side source as the authority gate, so an offered MCP tool can
     // never be refused by consent (the incoherent state the terminal lane hit before this was wired).
     connectorGrant: (call, tool) => !execution.taintedBy() && (ownerTrusted || unattendedGrants.indexOf('connectors') >= 0),
+    /* UNATTENDED IMAGES GRANT (2026-10-18): this routine's recorded "may make images" approval, off the same durable
+       job record as the two above, lifted by taint like them. It covers the routine's OWN agent only: a worker it
+       delegates to asks through this broker inside askedBy (attributeAsks) and gets nothing from it, and a line hop
+       is handed unattendedGrants: [] by its caller. */
+    studioGrant: (call, tool) => !askedBy.getStore() && !execution.taintedBy() && unattendedGrants.indexOf('studio') >= 0,
+    // the refusal names the switch that exists, so the model stops inventing one ("pre-authorize image generation on
+    // this routine"). Only a routine's own run gets it; every other autonomous caller keeps the plain refusal.
+    studioRefusal: () => {
+      if (askedBy.getStore() || !(trigger === 'schedule' && String(o.cronJobId || ''))) return null;
+      if (unattendedGrants.indexOf('studio') >= 0 && execution.taintedBy()) {
+        return 'this routine may make images, but that was switched off for the rest of THIS run because it read content from outside StarNet (' +
+          String(execution.taintedBy()).slice(0, 120) + '). No image was made. Do NOT retry it; finish without the picture.';
+      }
+      return 'this routine is not allowed to make images unattended, so no image was made. Do NOT retry it. End your reply with one short clause ' +
+        'telling the Commander they can allow it with ▣ ALLOW IMAGES on this routine in AUTOMATE › SCHEDULES.';
+    },
     surface: surface, prompt: prompt
   });
   // B1 (Cortex seam): thread runId onto capCtx so a tool's dispatch can stamp provenance (sourceRunId)
@@ -21212,6 +21736,8 @@ async function runOnceCore(o) {
     // Host-minted routine identity for routine.notepad. Interactive/model-authored runs cannot name another
     // job: only the autonomous schedule path receives this context field.
     cronJobId: (surface === 'autonomous' && trigger === 'schedule') ? String(o.cronJobId || '') : '',
+    // Host-minted: a widget's own update run (its conversation or routine) reads and publishes that widget id only.
+    widgetScope,
     // tool.search explains what the direct-domain policy keeps off this run (resolved.deferred already excludes it)
     policyWithheld: directDomainTask ? {
       names: (resolved.tools || []).filter(directDomainWithheld),
@@ -21491,9 +22017,13 @@ async function runOnceCore(o) {
   // small run — the ONLY way to live-prove compaction against a production model without a 130k-token prompt.
   // Never set in a packaged build; unset/invalid = the catalog's real window exactly as before.
   const CONTEXT_LIMIT_OVERRIDE = Math.max(0, parseInt(String(ENV('CONTEXT_LIMIT_OVERRIDE') || ''), 10) || 0);
+  // THE RUN'S WINDOW is the model's REAL one whenever this process has seen it reported (the shared catalog answers at
+  // once: providers/catalog-cache.js); an unknown one gives the adapter at most RUN_WINDOW_WAIT_MS (1.5s) to learn it,
+  // which happens at most once per endpoint per TTL. Still unknown = the cold guess above. Read after every provider swap.
+  const knownRunWindow = CONTEXT_LIMIT_OVERRIDE ? 0 : await catalogRunWindow(provider, model);
   // RUN_CONTEXT_DEFAULTS (context.js): fold at 65% of the window; the verbatim tail is a TOKEN budget (20% of the
   // window), not six turns — six turns of big results outweighed a 64k window and a fold freed nothing.
-  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
+  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || knownRunWindow || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
   // PER-RUN TOOL-OUTPUT CAP, scaled to the window. The flat 120KB cap (~30k tokens) sat far BELOW the compaction
   // threshold (0.65 × window — ~130k tokens on a 200k model), so the one event that resets the budget
   // (agent.compact, see loopEmit) could never fire: after ~120KB of reads the agent went blind — every later
@@ -21659,6 +22189,7 @@ async function runOnceCore(o) {
 
   // Per-run latches/counters/artifacts live in `execution`; policy and side effects remain in this host.
   const dispatch = async (c, ctx) => {
+    briefAnswerHold = null;   // the model asked for a tool (hidden brief_* calls emit no tool_call): the answer was read
     if (o.outputOnly) return {ok:false,isError:true,summary:'output-only',content:'Result repair cannot execute tools. Return only the corrected output.'};
     const realName = fromWire.get(c.name) || allWire.get(c.name) || c.name;
     const liveTool = registry.get(realName);
@@ -22119,6 +22650,15 @@ async function runOnceCore(o) {
     return content;
   };
 
+  // #128: the shell shell.exec ACTUALLY runs for this agent — its effective execution backend (Full Power forces local,
+  // Safe Cell is Docker, Remote SSH is ssh), then this host's OS for local. Named on the [RUNTIME] Shell line and used
+  // for the service-key syntax; null when shell.exec is not on this task run (no line, no claim).
+  const shellRuntime = (() => {
+    if (!(isTask && resolved && Array.isArray(resolved.tools) && resolved.tools.indexOf('shell.exec') >= 0)) return null;
+    try { return { backend: executionEnvironment.backendIdFor(agentId), platform: process.platform }; }
+    catch (e) { failNote('runtime.shell-backend', e); return null; }
+  })();
+  const shellIsCmd = !!(shellRuntime && shellRuntime.backend === 'local' && shellRuntime.platform === 'win32');
   // tell the model, plainly + capability-driven, that it has real tools right now (so it never claims it can't act)
   const wireNames = toolDefs.map(d => d.function.name);
   // The deferred names the PARTIAL list may call usable: every deferred declaration except a connector server's
@@ -22149,7 +22689,7 @@ async function runOnceCore(o) {
     + 'Act with tools NOW and keep going until the task is done or genuinely blocked; if blocked, say so honestly and try a different path — NEVER invent output you did not produce. '
     + 'Always take the QUIETEST path that achieves the goal: (1) a DEDICATED tool for the target service'
     + (hasJukebox ? ' (e.g. spotify_play for Spotify)' : '') + ' — try it FIRST even if you are unsure it is connected; '
-    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs, PowerShell)' : '')
+    + '(2) HEADLESS work' + (hasShellExec ? ' — shell_exec can drive installed apps invisibly (app URI schemes, app CLIs' + (shellIsCmd ? ', PowerShell' : '') + ')' : '')
     + (hasBrowserTools ? (hasShellExec ? ', and browser_* handles the web unseen' : ' — browser_* handles the web unseen') : '') + '; '
     + (hasBackgroundComputer ? 'For native apps, computer_use can discover exact windows and use background accessibility input without bringing them forward. Prefer its fresh element tokens and verify the result. ' : '')
     + (hasScreenTools
@@ -22389,7 +22929,7 @@ async function runOnceCore(o) {
   const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
     : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';
   const runtimeVersion = computeVersionSurface();
-  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now() });
+  const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now(), shell: shellRuntime });
   // RUNTIME SKILL LIBRARY (skill-builder-gap): index the agent's own authored skills + preload any it invokes,
   // riding the same skill.view/skill.manage capability gate. Never breaks a run.
   try {
@@ -22505,7 +23045,14 @@ async function runOnceCore(o) {
     const canShell = kt.indexOf('shell.exec') >= 0;
     const canRequest = kt.indexOf('web_request') >= 0;
     if (canShell || canRequest) {
-      const b = serviceKeysMod.promptBlock(serviceKeys, { shell: canShell, request: canRequest, platform: process.platform, notesFor: serviceKeysCatalog.notesFor });
+      // 1PASSWORD rows this run may spend are read BEFORE the block names them (bounded: an interactive run waits up to
+      // 30 s for the Commander to unlock/approve, an unattended one 15 s). One that cannot be read is named in the block
+      // with the reason, never advertised as present. No 1Password rows -> no wait, no change.
+      const refWaitMs = accessSurface === 'interactive' ? 30000 : 15000;
+      try { if (await serviceKeyRefs.ensureFresh(serviceKeys, { surface: accessSurface, waitMs: refWaitMs, timeoutMs: refWaitMs })) applyServiceKeysEnv(); }
+      catch (e) { failNote('servicekeys.1password', e); }
+      // the key syntax follows the shell that runs (#128): %NAME% only for local cmd.exe; Docker/SSH run POSIX sh
+      const b = serviceKeysMod.promptBlock(liveServiceKeys(), { shell: canShell, request: canRequest, platform: shellRuntime && shellRuntime.backend !== 'local' ? 'posix' : process.platform, notesFor: serviceKeysCatalog.notesFor });
       if (b) serviceKeysBlock = '\n\n' + b;
     }
   } catch (_) { serviceKeysBlock = ''; }
@@ -22557,7 +23104,15 @@ async function runOnceCore(o) {
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
-        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask }) + skillBlock;
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask,
+          // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied and the routine's own toolset list enforceEnabledToolsets
+          // applied (gear either one leaves out is no room fix), and the image route makeImageTools was built from (without one
+          // a STUDIO only analyzes images)
+          disabledCaps: unrestrictedHostNow() ? new Set() : disabledCapsSet(), enabledToolsets: unrestrictedHostNow() ? null : o.enabledToolsets,
+          mediaRoute: !!(studioRoute && studioRoute.ok),
+          // ROOM SCOPE: lazy (called only when a floor object is missing); the room it names is stable per agent, so the cached prefix holds.
+          // hasBay first: an agent crewing no dock on the router's plan (the bayless hero) never reads or validates the saved floor
+          scopeFn: () => { try { return scopeForRun({ loadStation: savedFloor, agentId, runStation: o.station, extraObjects: o.extraObjects, interactive: surface === 'interactive', floorless: !!o.floorless, hasBay: () => router.docksOf(agentId).length > 0 }); } catch (e) { failNote('capsummary.roomscope', e); return null; } } }) + skillBlock;
   /* CACHE-STABLE PREFIX (lean-prompt, 2026-10-12). Everything below that changes per MESSAGE — the run's skill index
      (ranked by this message), a /skill preload, the Task Brief (its id is the run's), the away briefing, a one-host
      check, the crew call, [RUNTIME] (run id, today) and the open quests — used to close the system prompt, so the
@@ -22576,11 +23131,20 @@ async function runOnceCore(o) {
      journeyBlock. */
   const taskDoctrine = taskBrief ? '\n\n' + TaskIntent.directive('') : '';                     // TaskIntent.directive(cx) = doctrine + '\n' + cx
   const taskBriefContext = taskBrief && String(taskContextBlock || '').trim() ? '\n\n' + String(taskContextBlock).trim() : '';
+  /* THE OBSERVED HALF OF A SERVER-COMPOSED PERSONA (cross-run cache, 2026-10-17; see dossierWithGoals). A routine fire,
+     line hop, night-shift beat, loop or workshop shift asks for it with `stationEvidence: true`: the topic counts, open
+     threads, recent activity and TRACK RECORD it used to carry in its system prompt ride this run's <run_context> note,
+     so that prompt (and the Codex cache route hashed from it) is byte-identical from one run to the next. A run with a
+     Task Brief already carries the same evidence inside its brief block, so it never gets a second copy. */
+  let stationEvidenceBlock = '';
+  if (o.stationEvidence === true && !internal && !taskBrief) {
+    try { const t = stationEvidenceNote(); if (t) stationEvidenceBlock = '\n\n' + t; } catch (e) { failNote('run.stationEvidence', e); }
+  }
   // the crew call is NOT a run-context block: it trails the Commander's words as its own <crew_call> note (below)
-  const perRunBlocks = runtimeSkillBlock + preloadedSkillBlock + taskBriefContext + awayBriefingNote + directDomainBlock + runtimeBlock;
+  const perRunBlocks = runtimeSkillBlock + preloadedSkillBlock + taskBriefContext + stationEvidenceBlock + awayBriefingNote + directDomainBlock + runtimeBlock;
   const taskSystem = stablePrefix
     ? FinishLine.append(cacheSystemPrefix + serviceKeysBlock + taskDoctrine + journeyBlock + deliverableNote, { isTask, internal, tools: resolved.tools })
-    : FinishLine.append(cacheSystemPrefix + runtimeSkillBlock
+    : FinishLine.append(cacheSystemPrefix + stationEvidenceBlock + runtimeSkillBlock
       + preloadedSkillBlock + serviceKeysBlock + taskIntentNote + awayBriefingNote + directDomainBlock + journeyBlock
       + deliverableNote + crewCallNote + runtimeBlock, { isTask, internal, tools: resolved.tools });
   const sys = internal
@@ -22602,7 +23166,11 @@ async function runOnceCore(o) {
   }
   let convo = messages;
   try {
-    if (!o.recovery && !o.groupTools && !internal && streamId && Array.isArray(messages) && messages.filter(m => m && m.role !== 'system').length <= 1) {
+    /* A work-line HOP opts out (resumeSeed:false, token-burn audit 2026-10-17). It arrives as ONE handoff turn on the
+       line's shared stream, which already carries the original request and the upstream output — so this resume
+       seed re-sent every earlier stage's tool calls and results (another agent's work, as if it were this one's own
+       past turns) ahead of it, on every stage. Measured on a real station: line hops averaged 50k tokens a call. */
+    if (!o.recovery && !o.groupTools && !internal && o.resumeSeed !== false && streamId && Array.isArray(messages) && messages.filter(m => m && m.role !== 'system').length <= 1) {
       const seed = transcriptStore.reconstruct(streamId, { limit: 100 });
       if (seed.length) {
         // Keep the incoming turn (including attachment blocks), but not its older retry copy or
@@ -22703,7 +23271,10 @@ async function runOnceCore(o) {
     // decide whether it surfaces. Those records leave the ranked pool so they never take a recall slot twice.
     // station-wide: a correction given to ANY agent is about the Commander, so it shapes this agent's work too
     // (recovery runs inject nothing at all — see the note above msgs).
-    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, otherAgentNotebooks(agentId), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
+    // the other agents' notebooks are read ONCE per run, for both the taste and the standing block below
+    let peerNotebooks = null;
+    const peerBooks = () => peerNotebooks || (peerNotebooks = otherAgentNotebooks(agentId));
+    const tasteRecs = (o.recovery || tasteWithheld || !personalizationStore.read().enabled) ? [] : FeedbackMemory.stationTaste(all, peerBooks(), { query: recentUserText(convo), projectRoot: o.projectRoot || '' });
     const tasteIds = new Set(tasteRecs.map(r => r.id).filter(Boolean));
     // withheld: EVERY feedback record leaves the recall pool, not just the selected taste — a verdict record carries the
     // Commander's past request ('(on: …)') and ordinary BM25 recall would hand it to a channel guest (QA 2026-10-02)
@@ -22715,7 +23286,7 @@ async function runOnceCore(o) {
     // withheld guest/group run (or a paused station) ranks the agent's own standing notes on relevance like any note,
     // instead of force-injecting 'I prefer to be called Andy' into a guest's prompt with zero relevance.
     const standingOn = !(o.recovery || tasteWithheld || !personalizationStore.read().enabled);
-    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, otherAgentNotebooks(agentId)).filter(r => r.foreign) : [];
+    const standingRecs = standingOn ? FeedbackMemory.stationStanding(all, peerBooks()).filter(r => r.foreign) : [];
     const ranked = rank(recs.concat(standingRecs), q, { now: Date.now(), streamId, projectRoot: o.projectRoot || null, vectors: hv && hv.vectors, queryVec: hv && hv.queryVec, standing: standingOn });   // M-mem.2b stream boost · project tier: only THIS project's lessons
     const recalled = renderRecall(ranked, { limit: 1500, priorityLimit: Math.min(4000, Math.max(800, Math.floor((provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS) * 0.12))) });
     const taste = FeedbackMemory.renderTaste(tasteRecs, renderRecall, { agentId });
@@ -22804,6 +23375,8 @@ async function runOnceCore(o) {
   // call. Never throws; a failure retries at the first loop boundary, ahead of any assistant row.
   if (execution.journalStarted()) { transcriptLiveRuns.add(runId); runTranscript.start(msgs); }
   let bufferedTaskEnd = null;
+  // Per-run. It was once an undeclared (implicit global) assignment, so overlapping runs shared one verdict.
+  let finalCompletionEvidence = null;
   // Hold a successful user-facing Task Brief end until the final text is known; a question maps to the
   // contract's additive `clarifying` terminal (neither product nor slag — every success path keys on 'done').
   const loopEmit = (name, payload) => {
@@ -22816,6 +23389,14 @@ async function runOnceCore(o) {
     // Only a fold that FREED >= 10% of the prompt re-arms it (foldFreedEnough, context.js): a 0.6% fold used to re-arm
     // the whole budget and let full-size results back into a prompt still at the window's edge (audit probe 09-22).
     if (name === 'agent.compact' && foldFreedEnough(payload)) execution.resetToolBytes();
+    // ANSWER HOLD release: the first sign the model READ the answer spends it for good (any streamed text, any
+    // visible tool call/result, or billed output tokens — a reasoning model that dies mid-think counts as read).
+    // A cancel also keeps it spent: whether a cancelled answer comes back is not this seam's call.
+    if (briefAnswerHold && payload && (payload.runId === undefined || payload.runId === runId)) {
+      if ((name === 'agent.token' && payload.delta) || name === 'agent.tool_call' || name === 'agent.tool_result'
+        || (name === 'agent.cost' && ((Number(payload.tokensOut) || 0) > 0 || (Number(payload.reasoningTokens) || 0) > 0))
+        || (name === 'agent.run.end' && payload.reason === 'cancelled')) briefAnswerHold = null;
+    }
     execution.observeToolEvent(name, payload);
     // LINE WATCH: the loop's own run.start is the normal path's — it must name the bay/crate like every early-exit
     // start above does, or the floor pairs a multi-bay agent's run with its OLDEST crate and lights the wrong bay.
@@ -23115,6 +23696,8 @@ async function runOnceCore(o) {
       bufferedTaskEnd = null;
     }
   } finally {
+    // A throw before the postconditions pass leaves this unset: settle on THIS run's own observed evidence.
+    if (!finalCompletionEvidence) finalCompletionEvidence = execution.completionEvidence();
     if (bufferedTaskEnd) {
       emit('agent.run.end', Object.assign({}, bufferedTaskEnd, {
         reason: taskQuestionAsked ? 'clarifying' : ((result && result.reason) || bufferedTaskEnd.reason),
@@ -23129,7 +23712,13 @@ async function runOnceCore(o) {
     const finalUsd = effectiveRunUsd({ usd: (result && result.usd) || 0, mediaUsd, unmetered: runUnmetered, unpricedUsage: result && result.unpricedUsage, priceOf: provider && provider.priceOf });
     const finalTurns = (result && result.turns) || 0;
     const finalTokens = (result && result.tokens) || 0;
-    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0 }); } catch (_) {}
+    const finalCachedTokens = (result && result.cachedTokens) || 0;   // the cache-served part of finalTokens' input (additive on both rows)
+    // UNPRICED (sweep/providers 2026-10-20): tokens no provider cost or catalog rate could price that the backfill above
+    // could not price either. Both rows say so, so no reader folds the run as a proven $0 metered run.
+    const backfilled = Math.max(0, ((result && result.usd) || 0) - (mediaUsd || 0)) === 0 && finalUsd > (mediaUsd || 0);
+    const runUnpriced = !runUnmetered && !backfilled && Array.isArray(result && result.unpricedUsage)
+      && result.unpricedUsage.some(u => ((Number(u && u.tokensIn) || 0) + (Number(u && u.tokensOut) || 0)) > 0);
+    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced }); } catch (_) {}
     // managed-credit SETTLE: reconcile the reservation to the real spend — refund the unused headroom to the
     // account (billing.js caps finalUsd at the reservation). Inert/no-op unless this run actually reserved credit.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: finalUsd, tokens: finalTokens, turns: finalTurns, reason: (result && result.reason) || 'done' }); } catch (_) {} }
@@ -23147,7 +23736,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -23276,6 +23865,7 @@ async function runOnceCore(o) {
     await captureTrustedLearning({ agentId, runId, projectRoot: o.projectRoot || '', input: trustedLearningInput, learningEvidence });
   }
   const _gateReflect = !!(o.reflect && memoryConfig.reflectEnabled && isTask && _auxDone && !_lineHop && reflectSalient(result.messages, o.recurring)
+      && !refusedAction(execution.toolTraceList())   // a run whose approval was not given proposes no memories (reflect.js refusedAction)
       && personalizationStore.read().enabled   // the personalization PAUSE never even offers the candidate (runReflection re-checks the same authority)
       && !reflectingNow.has(agentId) && (Date.now() - (lastReflectAt.get(agentId) || 0) >= memoryConfig.reflectCooldownMs));
   // failure-review: reflection's exact gate shape on the FAILURE side — o.reflect (real-work hosts only; delegated
@@ -23431,6 +24021,15 @@ async function runOnceCore(o) {
   return result;
 
   } finally {
+    // ANSWER HOLD still armed = this run ended (an early refusal return, a throw, a turn-0 provider error) before the
+    // model read the Commander's answer: give the question back so the re-sent answer resumes the ORIGINAL task.
+    // The store refuses if anything moved since (a newer brief, a proceed/ask/complete) — never a hijack.
+    if (briefAnswerHold) {
+      const hold = briefAnswerHold; briefAnswerHold = null;
+      if (!(signal && signal.aborted)) {
+        try { await taskBriefStore.reopenAnswer(hold.id, hold.answered, Date.now()); } catch (e) { failNote('taskbrief.reopen', e); }
+      }
+    }
     // safety net: if managed credit was reserved but a throw before the inner finally left it unsettled, settle it
     // now (full refund on usd=0). billing.js's finishRun is idempotent, so a normal settle above makes this a no-op.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: 0, reason: 'leak-guard' }); } catch (_) {} }
@@ -23898,6 +24497,13 @@ async function handleAutonomyPosture(req, res) {
   // below acting, we LEAVE the timer armed — its own gate returns binding:'posture' and no beat fires, which is
   // cheaper + simpler than tearing the timer down and matches how the driver already no-ops when not permitted.
   try { if (nightshiftShouldArm() && !nightshiftTimer) armNightshift(); } catch (_) {}
+  // THE DIAL IS THE CONSENT, MID-BEAT TOO (sweep/autonomy 2026-10-20): a write that no longer permits acting
+  // unattended stops the beat already in flight — otherwise it kept its stream and bought its remaining calls.
+  try {
+    if (postureWritten && !(commanderPosture.summary() || {}).actsUnattended && nightshiftDriver.runInFlight() && nightshiftDriver.abortBeat()) {
+      recordAutonomy({ source: 'nightshift', kind: 'note', agentId: NIGHTSHIFT_AGENT, reason: 'posture-revoked', detail: { phase: 'beat', note: 'the dial was lowered below acting on its own — the in-flight beat was stopped' } });
+    }
+  } catch (e) { failNote('nightshift.revoke.abort', e); }
   // THE DIAL IS THE UNATTENDED-BUILD CONSENT. buildsUnattended (initiative≥leash AND reach≥sandbox) records the
   // night-shift agent's away-workshop grant through the SAME store authority as POST /api/workshop/grant — without
   // it every beat silently degraded to a reason-only draft (the "dial at max, station never builds" trap,
@@ -24223,18 +24829,28 @@ function openAskCount() {
 async function awayBriefingInputs(since, now, tzOffsetMin) {
   let runs = []; try { runs = runStore.list(null, { limit: 500, since: Math.max(0, since - 1) }) || []; } catch (_) { runs = []; }
   // the run row keeps deliveryText only for session-scoped runs; a routine/loop's own words live in its durable
-  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output
+  // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output.
+  // Read ONCE per stream: every iteration of a loop shares its loop- stream, so 50 overnight iterations were 50 reads
+  // of the same last turn (perf review 2026-10-19, "Away briefing N+1").
+  const lastWords = new Map();   // streamId -> that stream's last assistant words ('' = none or unreadable)
+  const lastWordsOf = (streamId) => {
+    if (lastWords.has(streamId)) return lastWords.get(streamId);
+    let text = '';
+    try {
+      const turns = transcriptStore.reconstruct(streamId, { limit: 6 }) || [];
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const t = turns[i];
+        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) { text = t.content.trim().slice(0, 2000); break; }
+      }
+    } catch (e) { failNote('away-briefing.excerpt', e); }
+    lastWords.set(streamId, text);
+    return text;
+  };
   runs = runs.map(r => {
     const k = AwayBriefing.kindOf(r);
     if ((k !== 'routine' && k !== 'loop') || String(r.deliveryText || '').trim() || !r.streamId) return r;
-    try {
-      const turns = transcriptStore.reconstruct(String(r.streamId), { limit: 6 }) || [];
-      for (let i = turns.length - 1; i >= 0; i--) {
-        const t = turns[i];
-        if (t && t.role === 'assistant' && typeof t.content === 'string' && t.content.trim()) return Object.assign({}, r, { deliveryText: t.content.trim().slice(0, 2000) });
-      }
-    } catch (e) { failNote('away-briefing.excerpt', e); }
-    return r;
+    const text = lastWordsOf(String(r.streamId));
+    return text ? Object.assign({}, r, { deliveryText: text }) : r;
   });
   const builds = [];
   for (const agentId of workshopAgentIds()) {
@@ -24486,7 +25102,7 @@ function collectDiagnosticsInput(opts) {
       agentCount: agentRoster.size,
       uptimeMs: Date.now() - PROCESS_START,
       workspacePresent: workspacePresent,
-      lastRun: recent ? { runId: recent.runId, status: recent.reason, ts: recent.ts } : null,
+      lastRun: recent ? { runId: recent.runId, status: recent.reason, ts: recent.ts, cancelledWhile: recent.cancelledWhile || null } : null,
       // observed provider quota. Empty until a call has actually been made — an empty array means NO DATA and
       // must never be rendered as "plenty left" (see ratelimits.advise).
       rateLimits: (() => { try { return rateLimits.snapshot(); } catch (_) { return []; } })(),
@@ -24675,7 +25291,7 @@ function haltStatus() {
     cron: { halted: !!cronHalted },
     nightshift: { halted: nightshift.isHalted(nightshiftState) },
     loops: { halted: !!loopsHalted },
-    overseer: { halted: overseer.snapshot().paused, error: overseer.snapshot().error || '' }
+    overseer: { halted: overseer.paused(), error: overseer.error() }
   };
   return { halted: Object.values(subsystems).some(s => s.halted), subsystems };
 }
@@ -26443,6 +27059,8 @@ async function handleSaveWrite(req, res) {
   if (latestRatingAt > ratingSyncAt) return json(200, { ok: false, stale: true, growthStale: true, latestRatingAt });
   try {
     const result = saveStore.save(agentId, body, { compareRevision: true });
+    // a memo seed is a cache refresh: it may never turn a landed save into an error reply
+    if (result && result.ok === true) { try { seedSaveMemos(agentId, body); } catch (e) { failNote('save.seed-memos', e); } }
     json(200, result);
   } catch (e) { json(400, { error: (e && e.message) || 'save failed' }); }
 }
@@ -26713,6 +27331,9 @@ function markRunRecoveryForensic(r) {
   // analyze() separates a lone torn final record (damage 'torn_tail': actionable, its `.torn-*` copy kept) from
   // real corruption (`forensic`). Only the latter — or a `.corrupt*` sibling from any earlier repair — is forensic.
   r.forensicOnly = !!r.forensic;
+  // run-journal's withEvidence already folded this file's `.corrupt*` sibling into `forensic` (the same prefix rule,
+  // over the same directory, moments ago): listing the whole directory again per row bought nothing (perf 10-19)
+  if (r.evidenceSeen === true) return r;
   try {
     const file = r.file || path.join(RUN_JOURNAL_DIR, runJournal._internals.runFileName(r.runId));
     const base = path.basename(file);
@@ -26776,8 +27397,18 @@ function syncInterruptedRunHistory(r) {
     && String(existing.continuedReason || '') === continuedReason && !settled) return null;
   const startedAt = Number(meta.startedAt || r.firstTs || 0) || 0;
   const endedAt = Math.max(startedAt, Number(r.lastTs || 0) || 0);   // the last durable journal record = last proof of life
+  // A ROUTINE RUN THAT DIED BETWEEN FIRE AND SETTLEMENT (sweep/autonomy 2026-10-20): the row carries the journal's
+  // cronJobId so the routine's own history lists it, and the routine record stops reporting the previous run's ok.
+  const cronJobId = String(meta.trigger === 'schedule' && meta.cronJobId || '').slice(0, 100);
+  if (cronJobId) {
+    const j = cronStore.getJob(cronJobs, cronJobId);
+    if (j && cronStore.markInterrupted([j], cronJobId, { runId: r.runId, startedAt })[0] !== j) {
+      withCronWrite(jobs => cronStore.markInterrupted(jobs, cronJobId, { runId: r.runId, startedAt, error: INTERRUPTED_HISTORY_LINES[next.status] }))
+        .catch(e => failNote('cron.interrupted.mark', e));
+    }
+  }
   return runStore.record({
-    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''),
+    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''), cronJobId,
     reason: 'interrupted', turns: Number((r.checkpoint && r.checkpoint.turn) || 0) || 0, tokens: 0,
     usd: settled ? settled.usd : 0, spendUnknown: !settled, spendSettled: settled ? settled.attestedAs : '',
     title: String(meta.userTitle || ''), streamId: String(meta.streamId || ''), model: String(meta.model || ''),
@@ -26808,7 +27439,9 @@ function scanInterruptedRuns(files) {
     // loop for more than that single file.
     const end = Math.min(list.length, at + 1);
     for (; at < end; at++) {
-      if (settledForensic.has(path.basename(list[at]))) continue;
+      // a settled forensic journal is not parsed again, but its begin-record head is read (bounded, one per tick) so the
+      // first recovery listing filtered to a conversation does not have to open every such journal itself
+      if (settledForensic.has(path.basename(list[at]))) { try { runJournal.warmHead(list[at]); } catch (e) { failNote('run-history.interrupted-head', e); } continue; }
       try {
         if (!fs.existsSync(list[at])) continue;   // settled/retired since boot by a route of this process
         const r = markRunRecoveryForensic(runJournal.recoverFile(list[at]));
@@ -26899,8 +27532,12 @@ function serveRunRecoveries(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');
   const offset = Math.max(0, Number(u.searchParams.get('offset')) || 0);
   const limit = Math.max(1, Math.min(500, Number(u.searchParams.get('limit')) || 100));
+  // additive filters (perf 10-19): a page asking for ITS conversation's interrupted run names it, so the run is found
+  // even behind hundreds of other journals, and only that conversation's journals are parsed. Absent = unchanged.
+  const filter = {};
+  for (const k of ['streamId', 'agentId']) { const v = u.searchParams.get(k); if (v != null && v.length <= 200) filter[k] = v; }
   let page;
-  try { page = runJournal.recoverPage({ offset, limit }); }
+  try { page = runJournal.recoverPage(Object.assign({ offset, limit }, filter)); }
   catch (e) { return respondJson(res, 500, { error: 'could not read run recoveries' }); }
   const rows = page.rows.map(markRunRecoveryForensic).filter(r => {
     if (!r) return false;
@@ -27145,6 +27782,21 @@ function conversationTranscript(stream, options) {
     transcriptStore.history(stream, { limit: limit + 500 }).filter(r => !transcriptLiveRuns.has(String(r.sourceRunId || ''))),
     id => runStore.latest(id), dispatchDeliveryDeps.hash).slice(-limit);
 }
+/* A run's rows cannot predate the run, so a runId read is bounded to the transcript segments written since it started
+   (the desk screen re-reads its agent's live run every 3 s; without a bound each read scanned the stream's whole
+   lifetime). The start comes from the live registry, else the run's durable row (dispatch-delivery's runSince rule);
+   0 = unknown, which reads every segment as before. */
+function transcriptRunSince(runId) {
+  const id = String(runId || '');
+  if (!id) return 0;
+  const live = runsMeta.get(id);
+  const liveAt = Number(live && live.startedAt);
+  if (Number.isFinite(liveAt) && liveAt > 0) return liveAt;
+  let row = null;
+  try { row = runStore.latest(id); } catch (e) { failNote('transcript.run-since', e); }
+  const at = [row && row.startedAt, row && row.ts].map(Number).filter(v => Number.isFinite(v) && v > 0);
+  return at.length ? Math.min.apply(null, at) : 0;
+}
 function serveTranscript(req, res) {
   const json = (code, obj) => respondJson(res, code, obj);   // canonical helper (sidecar/respond.js)
   try {
@@ -27158,7 +27810,7 @@ function serveTranscript(req, res) {
     const hashText = text => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
     // Explicit delivery reads return only the full accepted projection. The ordinary exact-run view stays raw.
     const finalDelivery = sourceRunId && u.searchParams.get('delivery') === '1';
-    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined }) : [];
+    const raw = sourceRunId ? transcriptStore.history(stream, { limit: limit + 500, sourceRunId, dispatchState: finalDelivery ? 'final' : undefined, since: transcriptRunSince(sourceRunId) }) : [];
     const turns = sourceRunId
       ? raw.filter(r => finalDelivery ? transcriptStoreModule.isFinalDeliveryRow(r, hashText, (runStore.latest(r.sourceRunId) || {}).dispatchDelivery) : r.dispatchState !== 'final').slice(-limit)
       : conversationTranscript(stream, { limit });
@@ -27409,8 +28061,11 @@ function skillNameFromReflection(content) {
 // (feedbackmemory.js). One record per rated run; a later correction updates that record instead of adding another.
 // User-confirmed by construction (the Commander's own verdict and words) and seeded with Keep-strength trust. Honors
 // the personalization pause like every learning pass. Returns a truthful summary for the route response; never throws.
-// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste block. Reads go through the
-// durable store's cache; an unreadable notebook contributes nothing and never fails the run.
+// every OTHER agent's notebook (the roster, plus the hero), for the station-wide taste + standing blocks. Reads go
+// through notebookStore.getShared: a notebook whose file is unchanged since the last read (bigint stat + this process's
+// write generation) is NOT re-read or re-parsed (perf review 10-19 — every run used to parse every notebook, twice).
+// The records are FROZEN and shared: read-only here and in every consumer. An unreadable notebook contributes nothing
+// and never fails the run.
 function otherAgentNotebooks(agentId) {
   const ids = new Set(['agent']);
   for (const id of agentRoster.keys()) ids.add(id);
@@ -27418,7 +28073,7 @@ function otherAgentNotebooks(agentId) {
   const out = [];
   for (const id of ids) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(String(id))) continue;
-    try { const l = notebookStore.get('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
+    try { const l = notebookStore.getShared('notebook:' + id); if (Array.isArray(l) && l.length) out.push({ agentId: String(id), records: l }); }
     catch (e) { failNote('feedback.taste.read', e); }
   }
   return out;

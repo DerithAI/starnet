@@ -140,6 +140,8 @@ const splitOf = plan => Object.keys(plan.junctions).find(k => plan.junctions[k].
   A.eq(s('ship features in my repo and test each change'), 'build_test', 'code that gets tested: BUILD & TEST');
   A.eq(s('fix bugs and write tests for my app'), 'build_test', '…tests named: BUILD & TEST, not the review loop');
   A.eq(s('pressure-test the code I write'), 'second_opinion', '"pressure-test" is a second opinion, never QA');
+  A.eq(s('pressure-test my code, then add tests'), 'build_test', '…but a later test word still counts (each match is read on its own, #136 rewrite without lookbehind)');
+  A.eq(s('PRESSURE TEST my repo code'), 'second_opinion', '…any case, one character between ("pressure test")');
   A.eq(s('I want a second opinion on big decisions'), 'second_opinion', 'two takes: SECOND OPINION');
   A.eq(s('help me with emails'), null, 'one kind of work: no suggestion (never a guess)');
   A.eq(s('newsletter'), null, '"news" inside "newsletter" is not research (word boundaries)');

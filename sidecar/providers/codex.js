@@ -168,6 +168,53 @@
     }
     return out.length ? out : null;
   }
+  /* PROMPT-CACHE ROUTING (2026-10-17, token-burn audit). The Codex backend serves a cached prefix only to a request
+     that names a cache route. Measured live, 4 identical-prefix calls of a 21k-token StarNet request on gpt-5.6-sol:
+       no route ............................. 0 cached tokens on every call
+       body prompt_cache_key only ........... 0 cached on every call (this backend ignores it)
+       session_id header only ............... 20,864 of 21,046 (99%) from call 2
+       both (what the Codex CLI sends) ...... 99% from call 2
+     So the `session_id` HEADER is the load-bearing half; the body key rides along for parity. Without either, every
+     turn of every run was billed as fresh input against the ChatGPT plan.
+     The route is a hash of (ChatGPT account + model + the byte-stable system prefix): the turns of a run and the
+     next message of a conversation share it. Tool NAMES are not in it, so a tool.search reveal mid-run does not move
+     the route, and the per-conversation tail after cacheSystemPrefix does not split it. The account salt keeps a
+     fixed background-pass prompt (identical on every install) from sharing one route across accounts.
+     req.promptCacheKey, when a caller has a better identity, wins. Carries no content: a 128-bit hash in uuid shape. */
+  function hash128(s) {
+    let h1 = 1779033703, h2 = 3144134277, h3 = 1013904242, h4 = 2773480762;
+    for (let i = 0; i < s.length; i++) {
+      const k = s.charCodeAt(i);
+      h1 = h2 ^ Math.imul(h1 ^ k, 597399067); h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ k, 951274213); h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+    }
+    h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067); h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+    h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213); h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+    h1 ^= (h2 ^ h3 ^ h4); h2 ^= h1; h3 ^= h1; h4 ^= h1;
+    return [h1, h2, h3, h4].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('');
+  }
+  // The ChatGPT account a Codex access token belongs to (its JWT's auth claim), '' when it is not a readable JWT.
+  function tokenAccount(tok) {
+    const parts = String(tok || '').split('.');
+    if (parts.length !== 3 || !parts[1]) return '';
+    try {
+      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const json = (typeof Buffer !== 'undefined') ? Buffer.from(b64, 'base64').toString('utf8') : decodeURIComponent(escape(atob(b64)));
+      const p = JSON.parse(json) || {};
+      const auth = p['https://api.openai.com/auth'] || {};
+      return String(auth.chatgpt_account_id || auth.chatgpt_user_id || p.sub || '');
+    } catch (e) { failNote('codex.cache-account', e); return ''; }   // value default: an unsalted route still caches
+  }
+  function promptCacheKey(req, body, account) {
+    const explicit = req && typeof req.promptCacheKey === 'string' ? req.promptCacheKey.trim() : '';
+    const prefix = (req && typeof req.cacheSystemPrefix === 'string' && req.cacheSystemPrefix && body.instructions.indexOf(req.cacheSystemPrefix) === 0)
+      ? req.cacheSystemPrefix : body.instructions;
+    const seed = explicit ? 'key\n' + (account || '') + '\n' + explicit
+      : 'prefix\n' + (account || '') + '\n' + body.model + '\n' + prefix;
+    const h = hash128(seed);
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20, 32);
+  }
+
   const DEFAULT_REASONING_EFFORT = 'low';
   function normalizeCodexReasoningEffort(value) {
     const key = String(value || DEFAULT_REASONING_EFFORT).trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -190,6 +237,11 @@
     const renew = (typeof opts.renewToken === 'function') ? opts.renewToken : null;
     const baseUrl = (opts.baseUrl || BASE).replace(/\/$/, '');
     const reasoningEffort = normalizeCodexReasoningEffort(opts.reasoningEffort || DEFAULT_REASONING_EFFORT);
+    // WINDOW FACTS (providers/catalog-cache.js, attached by the factory). The account's live list reports each slug's
+    // context_window, and a run's adapter never lists: the window the dock's listing saw answers contextLimit instead of
+    // a flat 272000. No list is shared (a token is one account), only the window each slug REPORTED. Absent = as before.
+    const facts = (opts.catalogCache && typeof opts.catalogCache.bind === 'function')
+      ? opts.catalogCache.bind({ scope: null, endpoint: baseUrl }) : null;
 
     function buildBody(req) {
       // ONE pre-send normalization (provider.js prepareWireMessages) ahead of this wire's own pairing pass below
@@ -208,6 +260,7 @@
       if (effort !== 'none') body.include = ['reasoning.encrypted_content'];
       const tools = toResponsesTools(req.tools);
       if (tools) { body.tools = tools; body.tool_choice = 'auto'; body.parallel_tool_calls = true; }
+      body.prompt_cache_key = promptCacheKey(req, body, tokenAccount(token));
       return body;
     }
 
@@ -388,7 +441,9 @@
               'Content-Type': 'application/json',
               'Accept': 'text/event-stream',
               'OpenAI-Beta': 'responses=experimental',
-              'originator': 'codex_cli_rs'
+              'originator': 'codex_cli_rs',
+              // the cache route this backend actually honors (measured; see PROMPT-CACHE ROUTING) — the body key alone caches nothing
+              ...(body.prompt_cache_key ? { 'session_id': body.prompt_cache_key } : {})
             },
             body: JSON.stringify(body),
             signal: guard.signal
@@ -404,9 +459,15 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '', errBody = null;
-        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.code)) || JSON.stringify(j); }
-        catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
+        // The body is read ONCE, as text, through the idle watchdog and the caller's Stop (provider.runtime.readErrorBody):
+        // a stalled error body ignored Stop for up to 300 s. Only a JSON error's own words are quoted. A non-JSON page (a
+        // proxy's 503 "... reset reason: connection reset") keeps the status text: the browser's error copy reads
+        // transport and policy words before the status (friendlyerror kindFromRaw), so its prose would be told as a
+        // dropped connection or a content block the harness cannot prove.
+        const eb = await provider.runtime.readErrorBody(res, { signal, url: baseUrl, tag: 'providers.codex' });
+        const errBody = eb.parsed ? eb.data : null;
+        let detail = eb.parsed ? ((errBody && errBody.error && (errBody.error.message || errBody.error.code)) || JSON.stringify(errBody)) : (res.statusText || '');
+        if (eb.stalled) detail += ' (error body did not finish)';
         const err = new Error('codex http ' + res.status + ' — ' + detail);
         err.status = res.status;
         err.headers = res.headers;
@@ -457,6 +518,7 @@
           const j = await res.json();
           const entries = (j && Array.isArray(j.models)) ? j.models : [];
           const out = [];
+          const reported = [];   // only the windows the backend stated (the row's 272000 stand-in teaches nothing)
           for (const it of entries) {
             if (!it || typeof it.slug !== 'string' || !it.slug.trim()) continue;
             const vis = String(it.visibility || '').toLowerCase();
@@ -484,7 +546,9 @@
               reasoningLevelDescriptions: Object.keys(effortDescriptions).length ? effortDescriptions : undefined,
               _rank: (typeof it.priority === 'number') ? it.priority : 10000
             });
+            reported.push({ id: it.slug.trim(), context_length: Number(it.context_window || it.max_context_window || 0) || 0 });
           }
+          if (facts && out.length) facts.noteWindows(reported);
           out.sort((a, b) => (a._rank - b._rank) || a.id.localeCompare(b.id));
           if (out.length) return out.map(({ _rank, ...m }) => m);
         }
@@ -494,7 +558,14 @@
       // hardcoded list, and the model dock can label the catalog offline.
       return STATIC_MODELS.map(m => Object.assign({}, m, { pricing: null, fallback: true }));
     }
-    function contextLimit(id) { const m = findModel(id); return (m && m.context_length) || 272000; }   // sane default for an unlisted Codex model
+    // the window the account's live list reported for this slug, else the curated row, else 272000 (the sane default for
+    // an unlisted Codex model)
+    function contextLimit(id) {
+      const live = facts ? facts.windowFact(id) : 0;
+      if (live) return live;
+      const m = findModel(id);
+      return (m && m.context_length) || 272000;
+    }
     function priceOf() { return null; }                  // flat-rate subscription -> no per-token price
     function supportsTools(id) { const m = findModel(id); return m ? !!m.supportsTools : true; }   // Codex models are tool-capable; never false-refuse
     // Which reasoning levels a codex model exposes — the static entry's list, or the four-level default.
@@ -563,5 +634,5 @@
     };
   }
 
-  return { makeCodexProvider, STATIC_MODELS, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, liveModelIds, liveDefaultModel, memoLiveModelIds, _internals: { messagesToInput, extractInstructions, toResponsesTools, normalizeUsage, normalizeCodexReasoningEffort } };
+  return { makeCodexProvider, STATIC_MODELS, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, liveModelIds, liveDefaultModel, memoLiveModelIds, _internals: { messagesToInput, extractInstructions, toResponsesTools, normalizeUsage, normalizeCodexReasoningEffort, promptCacheKey, tokenAccount } };
 });

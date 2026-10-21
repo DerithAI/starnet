@@ -206,6 +206,32 @@
 .station-build-section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 10px; }
 .station-build-section-head h3 { margin: 0; font-size: 13px; font-weight: 400; letter-spacing: 1.5px; color: var(--ph); }
 .refit-overlay .station-build-section-head p { margin: 0; font-size: 13px; line-height: 1.35; color: var(--ph-dim); }
+.station-build-share-keys { display: flex; flex-wrap: wrap; gap: 8px; flex-basis: 100%; margin-top: 6px; }
+/* COMMUNITY MAPS (2026-10-18): the share form opens inside SHARED BUILDS (the picture beside the fields), and the gallery's
+   note sits on the REFRESH key's row. Same card glass and phosphor grades as the preset cards; no new chrome. */
+.station-build-community-note { display: block; flex-basis: 100%; margin-top: 4px; font-size: 13px; color: var(--ph-dim); }
+/* the open share panel presses its key (one panel at a time); a community card keeps its line to two rows (the description is the card, not an essay) */
+.refit-overlay .station-build-share-keys .bb[aria-pressed="true"] { border-color: var(--ph); color: var(--ph-bright); background: rgba(var(--ph-rgb),.11); }
+.station-build-card-community small { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.station-build-sharepanel { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; padding: 12px; border: 1px solid var(--refit-edge); border-radius: 10px; background: rgba(0,0,0,.14); }
+.station-build-sharepanel .sbs-pic { display: flex; align-items: center; justify-content: center; min-width: 0; border-radius: 8px; background: rgba(0,0,0,.35); overflow: hidden; }
+.station-build-sharepanel .sbs-pic img { display: block; max-width: 100%; max-height: 300px; height: auto; }
+.station-build-sharepanel .sbs-form { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.station-build-sharepanel label { font-size: 12px; letter-spacing: 1.2px; color: var(--ph); margin-top: 4px; }
+.station-build-sharepanel .sbs-dim { color: var(--ph-dim); letter-spacing: 0; }
+.refit-overlay .station-build-sharepanel .refit-input { width: 100%; font-size: 15px; padding: 6px 9px; }
+.station-build-sharepanel .sbs-agree { display: flex; align-items: flex-start; gap: 8px; letter-spacing: 0; font-size: 13px; line-height: 1.35; color: var(--text); margin-top: 8px; cursor: pointer; }
+/* the agreement is the SETTINGS toggle (settings.css settings-toggle-row), never the OS checkbox */
+.station-build-sharepanel .sbs-agree input[type="checkbox"] { appearance: none; -webkit-appearance: none; flex: 0 0 34px; width: 34px; height: 20px; border: 1px solid rgba(var(--ph-rgb), .35); border-radius: 20px; background: rgba(var(--ph-rgb), .05); position: relative; margin: 0; cursor: pointer; }
+.station-build-sharepanel .sbs-agree input[type="checkbox"]::after { content: ''; position: absolute; width: 12px; height: 12px; top: 3px; left: 3px; border-radius: 50%; background: var(--ph-dim); }
+.station-build-sharepanel .sbs-agree input[type="checkbox"]:checked { background: rgba(var(--ph-rgb), .18); border-color: var(--ph); }
+.station-build-sharepanel .sbs-agree input[type="checkbox"]:checked::after { left: 17px; background: var(--ph-bright); }
+.station-build-sharepanel .sbs-agree input[type="checkbox"]:focus-visible { outline: 2px solid var(--ph); outline-offset: 3px; }
+.station-build-sharepanel .sbs-travel { margin: 4px 0 0; font-size: 13px; line-height: 1.4; color: var(--ph-dim); }
+.station-build-sharepanel .sbs-travel b { color: var(--ph-bright); font-weight: 400; }
+.station-build-sharepanel .sbs-travel.sbs-link { color: var(--ph-bright); }
+.station-build-sharepanel .sbs-keys { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+@media (max-width: 720px) { .station-build-sharepanel { grid-template-columns: minmax(0, 1fr); } }
 .refit-overlay .station-build-status { display: flex; flex-direction: column; gap: 4px; }
 .station-build-flow { color: var(--ph-bright); letter-spacing: .3px; }
 .station-build-flow i { font-style: normal; color: var(--ph-dim); }

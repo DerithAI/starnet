@@ -27,13 +27,15 @@ ok(/setAgentModelPin[\s\S]{0,1500}pushRoster\(\)/.test(appjs), 'P1-6: the pin pu
 // ---- P1-7 station backup export/import/reset ----
 ok(/STATION BACKUP/.test(ui), 'P1-7: SETTINGS has a STATION BACKUP card');
 ok(/function wireBackup\(/.test(ui), 'P1-7: wireBackup is wired');
-ok(/\/api\/config\/export/.test(ui), 'P1-7: export hits /api/config/export');
+// #134: the export request + its truthful "where did it go" line live in Backup.exportStation (backup.js)
+ok(/Backup\.exportStation\(/.test(ui) && /'\/api\/config\/export'/.test(app('backup.js')), 'P1-7: export hits /api/config/export (via Backup.exportStation)');
 ok(/\/api\/config\/import/.test(ui), 'P1-7: import hits /api/config/import');
 ok(/secretsNeeded/.test(ui), 'P1-7: import surfaces re-enter-your-key states from secretsNeeded');
 ok(/n\.fields\.join\(', '\)/.test(ui), 'P1-7: import names the exact connector fields that still need re-entry');
 ok(/already applied:/.test(ui), 'P1-7: a failed multi-section import reports any sections already applied');
 ok(/const freshMsg = document\.querySelector\('#bk-msg'\)/.test(ui), 'P1-7: the import result remains visible after Settings repaints');
-ok(/your keys and tokens are never included|secrets excluded/i.test(ui), 'P1-7: the card discloses secrets are excluded');
+ok(/your keys and tokens are never included|keys and tokens are excluded|secrets excluded/i.test(ui), 'P1-7: the card discloses secrets are excluded');
+ok(/secrets excluded, re-enter keys after importing/.test(app('backup.js')), 'P1-7: the export result line repeats that secrets are excluded (#134: Backup.exportStation)');
 ok(/AutonomyStore\.exportState/.test(ui) && /AutonomyStore\.importState/.test(ui), 'P1-7: browser-owned autonomy slice round-trips');
 ok(/function exportState\(/.test(auto) && /function importState\(/.test(auto), 'P1-7: AutonomyStore exposes export/import');
 

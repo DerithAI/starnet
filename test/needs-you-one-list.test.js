@@ -101,7 +101,7 @@ const NY = require('../frontend/app/needsyou.js');
   // the doors
   NY.openKey('stepin:h1'); A.eq(opened.pop(), ['stepin', 'h1'], 'STEP-IN opens its window on THAT handoff');
   NY.openKey('extensions'); A.eq(ui.terms.pop(), ['connectors', 'extensions'], 'extensions open ABILITIES › EXTENSIONS');
-  NY.openKey(att.key); A.eq(ui.terms.pop(), ['quests', null], 'a quest attest opens QUESTS');
+  NY.openKey(att.key); A.eq(ui.terms.pop(), ['quests', 'available'], 'a quest attest opens QUESTS on NOW, where its confirm lives (PASS leads the log)');
   NY.openKey('loop:L1'); A.eq(ui.terms.pop(), ['loops', null], 'loop results open GOAL LOOPS');
   A.ok(!opened.length, 'none of them opens a conversation');
   // (Andrew 10-15: "it only takes you to deliverables … instead of where you are ACTUALLY needed") a build opens ITS OWN session,

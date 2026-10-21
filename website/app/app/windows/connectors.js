@@ -92,7 +92,7 @@
     // capability your agents can use, grouped into toolsets…"). Every pane in this console had the same
     // stutter. The `desc` is the one that stays — it is also what the search box matches on.
     const secToolsets =
-      '<label class="mc-hint" for="ts-agent">Abilities of</label><select id="ts-agent" class="ab-agent-pick" aria-label="Show the abilities of agent"></select>' +
+      '<label class="mc-hint" for="ts-agent">Show abilities of</label><select id="ts-agent" class="ab-agent-pick" aria-label="Show the abilities of agent"></select>' +
       '<button class="bb xs" id="ts-refresh" type="button">REFRESH ACCESS</button>' +
       '<div id="ts-authority" class="set-about" role="status"></div>' +
       '<div class="ts-core set-row"><span class="ts-glyph" aria-hidden="true">◉</span>' +
@@ -218,10 +218,14 @@
       '<div class="mc-form">' +
         '<div id="ky-guide" class="mc-hint" hidden></div>' +
         '<input id="ky-name" class="key-input" placeholder="platform name — e.g. Resend" autocomplete="off" spellcheck="false" maxlength="64">' +
-        '<input id="ky-key" type="password" class="key-input" placeholder="API key" autocomplete="off" spellcheck="false">' +
+        '<input id="ky-key" type="password" class="key-input" placeholder="API key — or a 1Password reference (op://vault/item/field)" autocomplete="off" spellcheck="false">' +
         '<input id="ky-docs" class="key-input" placeholder="API docs URL (optional — helps agents use the service)" autocomplete="off" spellcheck="false">' +
         '<div class="mc-hint">Stored locally by the sidecar and shown as ····last4 only. Agents get it as an environment variable ' +
           '(e.g. <code>RESEND_API_KEY</code>) in their shell, so they can call the platform’s API directly.</div>' +
+        // 1PASSWORD: the same field takes a secret reference. Only the reference is saved; the sidecar reads the key with
+        // the 1Password CLI when an agent needs it and keeps it in memory (sidecar/onepassword.js).
+        '<div class="mc-hint">Keep keys in 1Password? Paste the field’s secret reference instead (in 1Password: the field’s menu → Copy Secret Reference). ' +
+          'StarNet saves only the reference and reads the key with the 1Password CLI (<code>op</code>) when an agent needs it.</div>' +
         // TRUTHFUL TELEMETRY: the key alone is not enough. The shell it is handed to only exists when a WORKBENCH
         // prop is placed (capability/office.js grants it nowhere by default), and workspace-process tools are not
         // projected onto unattended surfaces at all (inputpolicy.js), so a saved key is inert until both hold.
@@ -841,7 +845,7 @@
           '<div><b>' + list.filter(t => t.available).length + '</b><span>AVAILABLE</span></div>' +
           '<div><b>' + list.filter(t => tsAvailability(t) === 'NEEDS PROP').length + '</b><span>NEED A PROP</span></div>' +
           '<div><b>' + list.filter(t => !t.available && tsAvailability(t) !== 'NEEDS PROP').length + '</b><span>UNAVAILABLE</span></div></div>' +
-          '<p class="ability-legend">AVAILABLE means this agent has the capability through equipment or access settings. Service connections and task permissions still apply.</p>' +
+          '<p class="ability-legend">AVAILABLE means this agent has the capability through equipment or access settings. Service connections and task permissions still apply. Each switch below applies to every agent.</p>' +
           list.map(tsRowHTML).join('');
         if (body.querySelector('#sp-connect')) setupSpotify(body);   // wire Spotify now the sp-* markup is in the JUKEBOX row
       } catch (_) { if (request !== tsRequest) return; tsAuthorityEl.textContent = 'Effective authority unavailable.'; tsListEl.innerHTML = '<div class="mc-detail">Cannot read current capabilities. Reopen ABILITIES after reconnecting.</div>'; }
@@ -1735,6 +1739,9 @@
     const kyKeyEl = body.querySelector('#ky-key');
     const kyDocsEl = body.querySelector('#ky-docs');
     kyNameEl.addEventListener('input', () => { body.querySelector('#ky-guide').hidden = true; });
+    // a 1Password reference is not a secret (it names where the key lives): show it while it is typed or pasted
+    const kyIsRef = v => /^op:\/\//i.test(String(v || '').trim());
+    kyKeyEl.addEventListener('input', () => { kyKeyEl.type = kyIsRef(kyKeyEl.value) ? 'text' : 'password'; });
     // CATALOG owns discovery; KEYS owns the credential. A platform card lands on the real add form and
     // carries only public setup metadata from /api/servicekeys/catalog — never a secret or invented state.
     function ccPrefillPlatform(p) {
@@ -1791,15 +1798,29 @@
       } catch (_) { kyPlatEl.innerHTML = '<div class="mc-detail">sidecar offline — start it to see connected platforms.</div>'; }
     }
     // BOTTOM: the custom store. Checkbox = kill-switch (key stays saved, agents stop seeing it); ✕ deletes.
+    // "read 4 min ago" from the sidecar's own read time (refReadAt) — never a client-side guess
+    function kyReadAgo(t) {
+      const s = Math.max(0, Math.round((Date.now() - Number(t || 0)) / 1000));
+      return s < 60 ? 'just now' : (s < 3600 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago');
+    }
     function kyRow(k, i) {
       const unattendedSupported = k.unattendedSupported !== false;
       const docs = k.docsUrl ? ' <a class="dim" href="' + esc(k.docsUrl) + '" target="_blank" rel="noopener">docs ↗</a>' : '';
+      // A 1Password row is "live" only when the sidecar actually holds a value it read (refReady); until the first
+      // read it says it reads on use, and a failed read says why in the row itself.
+      const op = k.source === '1password';
+      const notYet = op && !k.refReady && /^not read yet/.test(k.refError || '');
+      const state = !k.enabled ? ['var(--ph-dim)', '○ off']
+        : (!op || k.refReady ? ['var(--ok)', '● live for agents']
+          : (notYet ? ['var(--gold)', '◐ reads from 1Password on use'] : ['var(--bad)', '✕ 1Password not read']));
       return '<div class="mc-row" data-id="' + esc(k.id) + '" style="--ci:' + (i || 0) + '">' +
         '<div class="mc-top">' +
           '<span class="set-row mc-enable"><input type="checkbox" data-ky-act="toggle"' + (k.enabled ? ' checked' : '') + ' aria-label="Enable key ' + esc(k.name) + '"></span>' +
-          '<b>' + esc(k.name) + '</b> <span class="dim">' + esc(k.last4) + '</span>' +
-          '<span class="mc-state" style="color:' + (k.enabled ? 'var(--ok)' : 'var(--ph-dim)') + '">' + (k.enabled ? '● live for agents' : '○ off') + '</span></div>' +
+          '<b>' + esc(k.name) + '</b> <span class="dim">' + esc(op ? '1Password' : k.last4) + '</span>' +
+          '<span class="mc-state" style="color:' + state[0] + '">' + state[1] + '</span></div>' +
         '<div class="mc-url dim">env var <code>' + esc(k.envVar) + '</code>' + docs + '</div>' +
+        (op ? '<div class="mc-url dim">from <code>' + esc(k.ref) + '</code>' + (k.refReady && k.refReadAt ? ' · read ' + kyReadAgo(k.refReadAt) : '') + '</div>' +
+          (k.refError && !notYet ? '<div class="mc-url" style="color:' + (k.refReady ? 'var(--gold)' : 'var(--bad)') + '">' + esc(k.refError) + '</div>' : '') : '') +
         // THE UNATTENDED GRANT, stated plainly. `enabled` = an agent may spend this while you watch;
         // this second switch = ...and while you don't (cron, Night Shift, a Telegram message). Default OFF
         // and never inferred, so pasting a key can't silently change what happens overnight.
@@ -1808,7 +1829,7 @@
           '<span class="dim">' + (!unattendedSupported
             ? 'watched sessions only — ' + esc(k.unattendedReason || 'unattended use is unsupported')
             : (k.autonomous
-              ? 'usable in scheduled &amp; messaged runs'
+              ? 'usable in scheduled &amp; messaged runs' + (op ? ' while 1Password can answer without you (unlocked, or a service account)' : '')
               : 'watched sessions only — tick to allow scheduled &amp; messaged runs')) + '</span></div>' +
         '<div class="mc-acts"><button class="bb xs danger" data-ky-act="remove">✕ REMOVE</button></div>' +
       '</div>';
@@ -1828,6 +1849,8 @@
       kyMsgEl.classList.remove('ok');
       if (!name) { kyMsgEl.textContent = 'give the platform a name first'; sfx('bad'); kyNameEl.focus(); return; }
       if (!key) { kyMsgEl.textContent = 'paste the API key'; sfx('bad'); kyKeyEl.focus(); return; }
+      // the sidecar reads a reference before it answers: say so, since 1Password may be asking for approval right now
+      if (kyIsRef(key)) kyMsgEl.textContent = 'reading from 1Password — approve StarNet in the 1Password app if it asks…';
       try {
         // a non-JSON refusal parses to {} — without the r.ok check that {} reads as "saved".
         // A body that carries `key` is a structured verdict (saved:false = live-this-session,
@@ -1836,13 +1859,17 @@
         const j = await r.json().catch(() => ({}));
         if (!j.key && (!r.ok || j.error)) { kyMsgEl.textContent = '✕ ' + (j.error || ('the station refused (HTTP ' + r.status + ') — the key was NOT saved')); sfx('bad'); return; }
         // saved:false still means LIVE this session — surface the persistence truth instead of a flat "saved".
-        kyMsgEl.classList.toggle('ok', j.saved !== false);
+        // A 1Password reference is saved even when the read failed; the message says which happened.
+        const opUnread = !!(j.key && j.key.source === '1password' && !j.key.refReady);
+        kyMsgEl.classList.toggle('ok', j.saved !== false && !opUnread);
         kyMsgEl.textContent = j.saved === false
           ? '⚠ ' + name + ' is active for this session, but saving to disk failed — it may not survive a restart'
-          : '✓ ' + name + ' saved — agents can use ' + ((j.key && j.key.envVar) || 'it') + ' in their shell';
-        sfx(j.saved === false ? 'bad' : 'click');
-        if (j.saved !== false) notify('Key "' + name + '" saved', 'good');
-        kyNameEl.value = ''; kyKeyEl.value = ''; kyDocsEl.value = '';
+          : (opUnread
+            ? '⚠ ' + name + ' saved, but 1Password could not be read: ' + (j.key.refError || 'no answer') + ' — agents get ' + j.key.envVar + ' once it can'
+            : '✓ ' + name + ' saved' + (j.key && j.key.source === '1password' ? ' and read from 1Password' : '') + ' — agents can use ' + ((j.key && j.key.envVar) || 'it') + ' in their shell');
+        sfx(j.saved === false || opUnread ? 'bad' : 'click');
+        if (j.saved !== false && !opUnread) notify('Key "' + name + '" saved', 'good');
+        kyNameEl.value = ''; kyKeyEl.value = ''; kyDocsEl.value = ''; kyKeyEl.type = 'password';
         body.querySelector('#ky-guide').hidden = true;
       } catch (e) { kyMsgEl.textContent = '✕ ' + ((e && e.message) || 'failed to reach the sidecar'); sfx('bad'); }
       ccRefresh(); kyRefresh();

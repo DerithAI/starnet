@@ -17,7 +17,9 @@ const { spawnSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const SITE = path.join(ROOT, 'website');
 const read = (p) => fs.readFileSync(path.join(SITE, p), 'utf8');
-const html = read('market.html');
+// market.html carries <!--held:community-->LIVE<!--held:else FALLBACK --><!--/held--> blocks; this test pins the
+// sharing-LIVE page, so resolve every block to its live side (the held side is pinned by website-deploy-staging).
+const html = read('market.html').replace(/<!--held:community-->([\s\S]*?)<!--held:else(?: ([\s\S]*?) )?--><!--\/held-->/g, (_, live) => live);   // same pattern as scripts/stage-website-deploy.mjs
 const js = read('market.js');
 
 // ---- the page ----

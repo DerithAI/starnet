@@ -65,12 +65,13 @@
      ticked it, so every pre-existing job loads with no new power. 'workbench' = terminal (shell.exec) +
      verify.run. 'connectors' = the Commander's connected MCP servers (capability 'mcp:<connectorId>'); a
      connector the Commander switched OFF still contributes no tools, so this can never re-enable one.
+     'studio' = image_generate: the routine may make images with nobody there to approve each one.
 
      This list is STORAGE, not authority. sidecar/inputpolicy.js owns the authoritative whitelist
      (GRANTABLE_UNATTENDED) and re-filters it at the gate on every run, so a hand-edited or migrated
      cron.jobs.json can never widen a run past what the host models — the two filters are deliberately
      independent (defense in depth), which is also why this module needs no cross-require of the policy. */
-  const GRANTABLE = ['workbench', 'connectors'];
+  const GRANTABLE = ['workbench', 'connectors', 'studio'];
   function normGrants(v) {
     if (!Array.isArray(v)) return [];
     const out = [];
@@ -479,6 +480,23 @@
     }));
   }
 
+  /* markInterrupted — a RECURRING routine's run whose process died between fire and settlement (advance-before-run
+     already moved nextRunAt; markRun never ran). Honest abandonment: the record names THAT run instead of still
+     reporting the previous occurrence's ok. Nothing is re-armed, finalized or counted toward auto-pause — the run may
+     have acted, and its review/continuation lives in run recovery. A one-shot keeps its own fire-claim reclaim (G4.5);
+     a record that already settled this run or a LATER occurrence is left exactly as it is (idempotent per boot). */
+  function markInterrupted(jobs, id, info) {
+    info = info || {};
+    const runId = String(info.runId || ''), startedAt = Number(info.startedAt) || 0;
+    return mapJob(jobs, id, (job) => {
+      if (!runId || !startedAt || job.lastRunId === runId || !(job.schedule && (job.schedule.kind === 'interval' || job.schedule.kind === 'cron'))) return job;
+      const last = job.lastRunAt ? Date.parse(job.lastRunAt) : NaN;
+      if (isFinite(last) && last >= startedAt) return job;
+      return Object.assign({}, job, { lastRunId: runId, lastRunAt: iso(startedAt), lastStatus: 'error', lastReason: 'interrupted',
+        lastError: String(info.error || 'interrupted: StarNet stopped before this run finished'), state: job.enabled === false ? job.state : 'error' });
+    });
+  }
+
   function setNotepad(jobs, id, text, ctx) {
     ctx = ctx || {};
     return mapJob(jobs, id, (job) => Object.assign({}, job, {
@@ -632,6 +650,7 @@
     markMonitorCheck: markMonitorCheck,
     setNotepad: setNotepad,
     markUnfireable: markUnfireable,
+    markInterrupted: markInterrupted,
     UNFIREABLE_ERROR: UNFIREABLE_ERROR,
     DEFAULT_MAX_CONSECUTIVE_FAILURES: DEFAULT_MAX_CONSECUTIVE_FAILURES,
     removeJob: removeJob,

@@ -254,6 +254,10 @@ body.glass-demo :is(#chat-log, #gc-log) .cmsg.user  + .cmsg.user  > .cmsg-head {
 .tool-chip.held .tc-glyph,
 .tool-chip.held .tc-stat   { color: var(--ph-dim); }
 .tool-chip .tc-d-res.held { color: var(--ph-dim); }
+/* a call whose approval was not given (the broker's 'denied'): it did not run and nothing failed — the same dim phosphor */
+.tool-chip.denied .tc-glyph,
+.tool-chip.denied .tc-stat { color: var(--ph-dim); }
+.tool-chip .tc-d-res.denied { color: var(--ph-dim); }
 /* no frame-level alarm on an errored chip (2026-07-31): the red glyph/stat/detail already carry the
    outcome. A red-bordered, red-tinted chip per failed probe turned an ordinary research run into a
    wall of alarm boxes — the chip stays in the normal phosphor frame like every other step. */

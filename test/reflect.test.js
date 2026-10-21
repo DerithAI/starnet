@@ -4,7 +4,7 @@
    run), and determinism. Auto-proposals are candidates only — nothing is written here. */
 'use strict';
 const A = require('./_assert.js');
-const { reflect, parse, buildPrompt, worthReflecting, usedTools, reflectSalient, recordFromProposal, feedbackFor, highStakes } = require('../sidecar/reflect.js');
+const { reflect, parse, buildPrompt, worthReflecting, usedTools, reflectSalient, refusedAction, recordFromProposal, feedbackFor, highStakes } = require('../sidecar/reflect.js');
 const { redact } = require('../sidecar/context.js');
 const { makeClock } = require('../shared/clock-rng.js');
 
@@ -140,6 +140,20 @@ const { makeClock } = require('../shared/clock-rng.js');
   A.eq(reflectSalient([{ role: 'assistant', content: 'x'.repeat(400) }], true), false, 'no user turn -> not salient even if recurring');
   A.eq(reflectSalient([{ role: 'user', content: 'fix it' }, { role: 'tool', content: 'patched' }], false), true, 'a user turn + real tool work (no assistant prose) is salient');
   A.eq(reflectSalient(null, false), false, 'garbage in -> not salient (never throws)');
+
+  // ---- refusedAction (releases#7 / #9): a run whose approval was not given ends 'done' when the agent carries on, but its
+  //      work is not what was asked, so reflection proposes nothing from it (the reflector read a Deny as "never wants …") ----
+  const deniedRow = { callId: 'c1', name: 'fs_write', ok: false, isError: true, summary: 'denied' };
+  A.eq(refusedAction([{ callId: 'c0', name: 'fs_read', ok: true, isError: false, summary: 'read 3 lines' }, deniedRow]), true, 'a Deny on an approval card (the broker\'s denied summary) marks the run');
+  A.eq(refusedAction([{ callId: 'c0', name: 'fs_write', ok: false, isError: true, summary: 'error' }]), false, 'an ordinary tool failure is not a refusal (reflection still learns from a done run that recovered)');
+  A.eq(refusedAction([{ callId: 'c0', name: 'fs_write', ok: true, isError: false, summary: 'denied' }]), false, 'only an errored call counts');
+  A.eq(refusedAction([{ callId: 'c0', name: 'team_dispatch', ok: false, isError: true, summary: 'not run yet — waiting on the task brief' }]), false, 'a call the Task Brief held is not a refusal');
+  A.eq(refusedAction([]), false, 'no calls -> no refusal');
+  A.eq(refusedAction(null), false, 'garbage in -> false (never throws)');
+  {
+    const idx = require('fs').readFileSync(require('path').join(__dirname, '../sidecar/index.js'), 'utf8');
+    A.ok(/const _gateReflect = !!\(o\.reflect && [^\n]*reflectSalient\(result\.messages, o\.recurring\)\n\s*&& !refusedAction\(execution\.toolTraceList\(\)\)/.test(idx), 'the run-end REFLECTION gate skips a run whose approval was not given');
+  }
 
   // recordFromProposal: a Kept proposal becomes the §5.2 notebook record (content mirrors into body for the
   // legacy title/body readers; title is the kind label; stats start at 0; provenance + clock injected).

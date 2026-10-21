@@ -19,6 +19,7 @@
     <a href="../index.html#station">Product</a>
     <a href="index.html" class="on">Docs</a>
     <a href="../market.html">Skills</a>
+    <a href="../maps.html">Maps</a>
     <a href="../pricing.html" data-pricing-link>Pricing</a>
     <a href="https://github.com/androoAGI/starnet" target="_blank" rel="noopener">GitHub<svg class="nav-external" aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="12" height="12"><path d="M3 13 13 3M4 3h9v9" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></a>
   </nav>
@@ -170,7 +171,8 @@ folders listed in <a href="#where-starnet-keeps-your-data">Where StarNet keeps y
 
 <h2 id="behind-a-vpn-or-corporate-proxy">Behind a VPN or corporate proxy</h2>
 <p>The app window honors your system proxy, but the engine's own outbound connections — AI providers and
-messaging channels like Telegram or Discord — go out directly and do not route through a proxy. On a
+messaging channels like Discord — go out directly and do not route through a proxy (Telegram is the one
+exception: it honors <code>HTTPS_PROXY</code> / <code>ALL_PROXY</code>). On a
 network that forces one, the UI and browser sign-ins can look perfectly healthy while runs and channel
 connects fail with a plain network error. There is no proxy setting yet; you need direct access to the
 provider and platform APIs. <b>COPY DIAGNOSTICS</b> (under any failed turn) shows whether a proxy is
@@ -203,6 +205,7 @@ thing than have you assume it's supposed to be that way.</p>
     <a href="../pricing.html" data-pricing-link>PRICING</a>
     <a href="index.html">DOCS</a>
     <a href="../market.html">SKILLS</a>
+    <a href="../maps.html">MAPS</a>
     <a href="help.html">HELP</a>
     <a href="https://github.com/androoAGI/starnet/issues" target="_blank" rel="noopener">COMMUNITY</a>
     <a href="../legal/privacy.html">PRIVACY</a>

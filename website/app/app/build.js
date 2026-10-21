@@ -194,6 +194,8 @@ const Build = (() => {
   // SURFACE targets one surface at a time — the deck or the walls — so the palette stays two rows
   // instead of four. 'follow' wall colour = inherit the room's floor hue (the default).
   let paintTarget = 'floor', wallMat = 'plating', wallStyle = 'follow';
+  // a deck MATERIAL the Commander picked from the palette (not PLATE by default): only a picked one rides a brush drag (paintLaysDeck)
+  let matPicked = false;
   // the SHELL axis — a room's exterior, the surface you see from outside the station (WorldModel's
   // HULL_MATERIALS). 'follow' here means "the tone this material was drawn for", not "match the deck":
   // an exterior has no deck to match, and STATION's own follow-tone is the shell grey it always was.
@@ -1463,7 +1465,7 @@ const Build = (() => {
           // pick inherit the previous one's colour.
           if (shell) hullMat = mid;
           else if (walls) { wallMat = mid; if (def.suggest && styles[def.suggest]) wallStyle = def.suggest; }
-          else { mat = mid; if (def.suggest && styles[def.suggest]) style = def.suggest; }
+          else { mat = mid; matPicked = true; if (def.suggest && styles[def.suggest]) style = def.suggest; }
           renderPalette(); setHint(); sfx('click');
         };
         matGrid.appendChild(b);
@@ -2896,11 +2898,13 @@ const Build = (() => {
     g.setAttribute('role','dialog');g.setAttribute('aria-modal','true');g.setAttribute('aria-label','Station presets');
     g.innerHTML = '<div class="refit-guide-box station-build-box"><div class="station-build-heading"><div><span class="station-build-eyebrow">BUILD MODE / STATION PRESETS</span><h2>A place for your work</h2></div><button class="bb sm" data-workflow-close>BACK TO BUILD</button></div>' +
       '<p class="station-build-intro">Pick a station for the kind of work you do, then make it yours. Every station includes your workstation and all five essentials.</p>' +
-      '<div class="station-build-scroll">' + PRESET_GROUPS.map(([id, label, blurb]) => '<section class="station-build-section" data-build-section="' + id + '"><div class="station-build-section-head"><h3>' + label + '</h3><p>' + esc(blurb) + '</p></div><div class="station-build-grid" aria-label="' + esc(label.toLowerCase()) + '"></div></section>').join('') + '</div>' +
+      '<div class="station-build-scroll">' + PRESET_GROUPS.map(([id, label, blurb]) => '<section class="station-build-section" data-build-section="' + id + '"><div class="station-build-section-head"><h3>' + label + '</h3><p>' + esc(blurb) + '</p></div><div class="station-build-grid" aria-label="' + esc(label.toLowerCase()) + '"></div></section>').join('') +
+      (typeof BuildShare !== 'undefined' ? '<section class="station-build-section" data-build-section="shared"><div class="station-build-section-head"><h3>SHARED BUILDS</h3><p>Save this layout as a file to share, or open one someone sent you. Only rooms, furniture and conveyors travel.</p><span class="station-build-share-keys"><button class="bb sm" type="button" data-export-build>EXPORT THIS STATION</button><button class="bb sm" type="button" data-import-build>IMPORT A BUILD…</button>' + (typeof CommunityMaps !== 'undefined' ? '<button class="bb sm" type="button" data-share-community>SHARE TO COMMUNITY</button>' : '') + '<input type="file" accept=".json,application/json" hidden data-import-file></span></div><div class="station-build-grid" aria-label="shared builds"></div></section>' : '') +
+      (typeof BuildShare !== 'undefined' && typeof CommunityMaps !== 'undefined' ? '<section class="station-build-section" data-build-section="community"><div class="station-build-section-head"><h3>COMMUNITY MAPS</h3><p>Stations other players built and shared. Only layouts travel: you choose who works them.</p><span class="station-build-community-note" role="status"></span></div><div class="station-build-grid" aria-label="community maps"></div></section>' : '') + '</div>' +
       '<div class="station-build-footer"><div class="station-build-status" role="status">Select a preset to see what it builds.</div>' +
       '<div class="station-build-actions"><button class="bb" data-restore-build>RESTORE PREVIOUS</button><button class="bb refit-primary" data-use-build disabled>CHOOSE A PRESET</button></div><small class="station-build-note">Applying replaces rooms, props and conveyors. Your current layout is backed up; agents and conversations stay.</small></div></div>';
     g.style.setProperty('--station-build-scale', typeof U.uiZoom === 'function' ? U.uiZoom() : 1);
-    const closeP = () => { g.remove(); root?.querySelector('#refit-stations')?.focus(); };
+    const closeP = () => { g.remove(); if (typeof CommunityMaps !== 'undefined') CommunityMaps.release(); root?.querySelector('#refit-stations')?.focus(); };
     cardRegister(g, closeP); root.appendChild(g);
     g.querySelector('[data-workflow-close]').onclick = closeP;
     const status = g.querySelector('.station-build-status'), apply = g.querySelector('[data-use-build]');
@@ -2910,40 +2914,73 @@ const Build = (() => {
       setup.onclick=openPresetExample; g.querySelector('.station-build-actions').prepend(setup);
     }
     const backupKey = 'starnet.layoutBackup.' + station.doc().meta.createdAt;
-    let selected = null, armed = false;
+    let selected = null, armed = false, openSeq = 0;
+    /* community pictures paint when their card is near the visible part of the sheet: a geometry check on a short timer
+       (layout is always current; an observer or scroll event needs the page's render steps, which a hidden window skips) */
+    const lazyPaint = new Set(), lazyScroller = g.querySelector('.station-build-scroll');
+    const lazyTimer = setInterval(() => {
+      if (!g.isConnected) { clearInterval(lazyTimer); lazyPaint.clear(); return; }
+      if (!lazyPaint.size || !lazyScroller) return;
+      const v = lazyScroller.getBoundingClientRect();
+      for (const job of lazyPaint) { const r = job.el.getBoundingClientRect(); if (r.bottom > v.top - 240 && r.top < v.bottom + 240) { lazyPaint.delete(job); job.paint(); } }
+    }, 350);
     const backupButton = g.querySelector('[data-restore-build]');
     try { backupButton.disabled = !localStorage.getItem(backupKey); } catch (_) { backupButton.disabled = true; }
-    for (const item of StationTemplates.catalog) {
-      const grid = g.querySelector('[data-build-section="' + (item.group === 'work' ? 'work' : 'look') + '"] .station-build-grid');
+    /* one card per build — a preset, a build file opened in SHARED BUILDS (item.file holds its text; preview() its copy),
+       or a COMMUNITY map: no doc yet (item.stats carries its counts), its picture drawn from item.picture() and its file
+       fetched on first click by item.open() -> { text, preview } — only then can it be chosen */
+    const addCard = (item, doc, grid, preview) => {
       const button = document.createElement('button'); button.className = 'bb station-build-card';
       button.type = 'button'; button.dataset.stationBuild = item.id; button.setAttribute('aria-pressed','false');
-      const doc = StationTemplates.build(item.id, WorldModel, PropSprites);
-      const bays = doc.props.filter(p=>p.t==='bay').length;
-      button.innerHTML = '<div class="station-build-art"><canvas width="460" height="280" aria-hidden="true"></canvas><span class="station-build-check" aria-hidden="true">✓</span></div><div class="station-build-copy"><div class="station-build-meta"><span>' + item.rooms + (item.rooms === 1 ? ' ROOM' : ' ROOMS') + '</span>' + (bays ? '<span>'+bays+'-STEP LINE</span>' : '') + '</div><b>' + esc(item.name) + '</b><small>' + esc(item.description) + '</small></div>';
-      const bounds = WorldModel.create(doc).bounds(), ctx = button.querySelector('canvas').getContext('2d');
-      ctx.scale(2,2);
-      const theme = getComputedStyle(root), accent = theme.getPropertyValue('--ph').trim() || '#b6a375';
-      const scale = Math.min(210/(bounds.maxTx-bounds.minTx+1),120/(bounds.maxTy-bounds.minTy+1));
-      const ox = (230-(bounds.maxTx-bounds.minTx+1)*scale)/2, oy = (140-(bounds.maxTy-bounds.minTy+1)*scale)/2;
-      for (const room of Object.values(doc.rooms)) for (const r of room.rects) {
-        ctx.fillStyle = room.kind==='corridor'?'#343636':room.floorMat==='plank'?'#494139':'#343e43'; ctx.strokeStyle=accent;
-        const x=ox+(r.x1-bounds.minTx)*scale,y=oy+(r.y1-bounds.minTy)*scale,w=(r.x2-r.x1+1)*scale,h=(r.y2-r.y1+1)*scale;
-        ctx.fillRect(x,y,w,h);ctx.strokeRect(x+.5,y+.5,w-1,h-1);
+      const bays = doc ? doc.props.filter(p=>p.t==='bay').length : 0, st = !doc && item.stats ? item.stats : null;
+      // the same words a preset card uses: one line reads "N-STEP LINE" (the gallery counts its steps), more read "N LINES"
+      const lineMeta = bays ? bays + '-STEP LINE' : st && st.lines === 1 && st.steps ? st.steps + '-STEP LINE' : st && st.lines ? st.lines + (st.lines === 1 ? ' LINE' : ' LINES') : '';
+      if (item.picture) button.classList.add('station-build-card-community');
+      button.innerHTML = '<div class="station-build-art"><canvas width="460" height="280" aria-hidden="true"></canvas><span class="station-build-check" aria-hidden="true">✓</span></div><div class="station-build-copy"><div class="station-build-meta"><span>' + item.rooms + (item.rooms === 1 ? ' ROOM' : ' ROOMS') + '</span>' + (lineMeta ? '<span>' + lineMeta + '</span>' : '') + '</div><b>' + esc(item.name) + '</b><small>' + esc(item.description) + '</small></div>';
+      const cv = button.querySelector('canvas'), ctx = cv.getContext('2d');
+      if (doc) { ctx.scale(2,2); drawPlan(ctx, doc, 230, 140); }
+      else if (item.picture) {
+        // a community picture loads when its card scrolls into view, a few at a time (communitymaps.js queues them)
+        const noPicture = () => { ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, 0, cv.width, cv.height); ctx.fillStyle = (root && getComputedStyle(root).getPropertyValue('--ph-dim').trim()) || '#8a7a55'; ctx.font = '28px VT323, monospace'; ctx.textAlign = 'center'; ctx.fillText('NO PICTURE', cv.width / 2, cv.height / 2 + 9); };
+        const paint = () => item.picture().then(url => {
+          const im = new Image();
+          im.onload = () => { const k = Math.min(cv.width / im.width, cv.height / im.height), w = im.width * k, h = im.height * k; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(im, (cv.width - w) / 2, (cv.height - h) / 2, w, h); };
+          im.onerror = noPicture;
+          im.src = url;
+        }).catch(e => { if (!(e && e.message === 'released')) noPicture(); });
+        lazyPaint.add({ el: button, paint });
       }
-      for(const key of Object.keys(doc.belts)) {const [x,y]=key.split(',').map(Number);ctx.fillStyle='#b6a375';ctx.fillRect(ox+(x-bounds.minTx)*scale,oy+(y-bounds.minTy)*scale,scale,scale);}
-      for(const p of doc.props) {ctx.fillStyle=WorldModel.capForProp(p.t)?'#d2b276':'#6d957e';ctx.fillRect(ox+(p.x-bounds.minTx)*scale,oy+(p.y-bounds.minTy)*scale,Math.max(2,p.w*scale),Math.max(2,p.h*scale));}
-      button.onclick = () => {
+      const choose = () => {
         selected=item;armed=false;apply.disabled=false;apply.textContent='USE '+item.name;
         for(const b of g.querySelectorAll('[data-station-build]'))b.setAttribute('aria-pressed',b===button?'true':'false');
-        status.innerHTML=presetPreviewHTML(item, doc);
+        status.innerHTML=preview();
+      };
+      button.onclick = () => {
+        const mine = ++openSeq;   // the LATEST click wins: an older card's file arriving later never takes the selection
+        if (item.file || !item.open) return choose();
+        status.textContent = 'Opening ' + item.name + '…';
+        item.open().then(r => { item.file = r.text; preview = r.preview; if (mine === openSeq && button.isConnected) choose(); })
+          .catch(e => { if (mine !== openSeq) return; status.textContent = String(e && e.message || 'That map could not be opened.'); sfx('bad'); });
       };
       grid.appendChild(button);
+      return button;
+    };
+    for (const item of StationTemplates.catalog) {
+      const doc = StationTemplates.build(item.id, WorldModel, PropSprites);
+      addCard(item, doc, g.querySelector('[data-build-section="' + (item.group === 'work' ? 'work' : 'look') + '"] .station-build-grid'), () => presetPreviewHTML(item, doc));
     }
+    wireSharedBuilds(g, status, addCard);
+    wireCommunityMaps(g, status, addCard);
+    const shareKey = g.querySelector('[data-share-community]');
+    if (shareKey) shareKey.onclick = () => openShareToCommunity(g, status, shareKey);
     apply.onclick = () => {
       if(!selected)return;
       if(!armed){armed=true;apply.textContent='CONFIRM — USE '+selected.name;status.textContent='Replace the current rooms, props, and conveyors with '+selected.name+'? Agents and conversations remain. Click again to apply.';return;}
       try {
-        const doc=StationTemplates.build(selected.id,WorldModel,PropSprites,station.doc()._nid+100);
+        // a shared build is re-read against the live floor's ids at the moment it lands (the same headroom a preset gets)
+        let doc;
+        if(selected.file){const r=BuildShare.readBuild(selected.file,WorldModel,station.doc()._nid+100);if(!r.ok)throw Error(r.message);doc=r.doc;}
+        else doc=StationTemplates.build(selected.id,WorldModel,PropSprites,station.doc()._nid+100);
         localStorage.setItem(backupKey,JSON.stringify(station.serialize()));
         const result=station.replaceLayout(doc);if(!result.ok)throw Error(result.msg||result.error);
         fitCamera();closeP();sfx('click');
@@ -2959,6 +2996,184 @@ const Build = (() => {
         if(!result.ok){localStorage.setItem(backupKey,originalBackup);throw Error(result.msg||result.error);}
         fitCamera();closeP();
       }catch(e){status.textContent='Could not restore the previous layout: '+e.message;}
+    };
+  }
+
+  /* SHARED BUILDS (community builds phase 1, 2026-10-07). EXPORT writes this floor's LAYOUT to a file — BuildShare strips
+     the crew's desks, step instructions, Inbox folders and limits, connections and made props. IMPORT reads a file back
+     through the SAME cleaner and shows it as a card, so it lands through the presets' own confirm, backup and one-step
+     undo. Nothing is fetched or sent anywhere: a build travels however the Commander chooses to pass the file on. */
+  /* THE FLOOR PLAN of a station doc (the preset cards' sketch): rooms, belts, props, fitted into w×h with a margin.
+     Also the community picture whenever the stage's own still would not match the build (communitymaps.js). */
+  function drawPlan(ctx, doc, w, h) {
+    const bounds = WorldModel.create(doc).bounds();
+    const accent = (root && getComputedStyle(root).getPropertyValue('--ph').trim()) || '#b6a375';
+    const pad = Math.min(10, w * .045);
+    const scale = Math.min((w-2*pad)/(bounds.maxTx-bounds.minTx+1),(h-2*pad)/(bounds.maxTy-bounds.minTy+1));
+    const ox = (w-(bounds.maxTx-bounds.minTx+1)*scale)/2, oy = (h-(bounds.maxTy-bounds.minTy+1)*scale)/2;
+    for (const room of Object.values(doc.rooms)) for (const r of room.rects) {
+      ctx.fillStyle = room.kind==='corridor'?'#343636':room.floorMat==='plank'?'#494139':'#343e43'; ctx.strokeStyle=accent;
+      const x=ox+(r.x1-bounds.minTx)*scale,y=oy+(r.y1-bounds.minTy)*scale,rw=(r.x2-r.x1+1)*scale,rh=(r.y2-r.y1+1)*scale;
+      ctx.fillRect(x,y,rw,rh);ctx.strokeRect(x+.5,y+.5,rw-1,rh-1);
+    }
+    for(const key of Object.keys(doc.belts)) {const [x,y]=key.split(',').map(Number);ctx.fillStyle='#b6a375';ctx.fillRect(ox+(x-bounds.minTx)*scale,oy+(y-bounds.minTy)*scale,scale,scale);}
+    for(const p of doc.props) {ctx.fillStyle=WorldModel.capForProp(p.t)?'#d2b276':'#6d957e';ctx.fillRect(ox+(p.x-bounds.minTx)*scale,oy+(p.y-bounds.minTy)*scale,Math.max(2,p.w*scale),Math.max(2,p.h*scale));}
+  }
+
+  /* SHARE TO COMMUNITY (community maps, 2026-10-18). Opens IN the SHARED BUILDS section, above its cards (never a
+     popup, and one at a time: the key is pressed while it is open): the picture that will go with it, a name, a
+     credit, an optional line and the CC BY agreement. SEND FOR REVIEW hands the cleaned build to the linked account.
+     What it says next follows what is actually known: the cloud took it, the cloud refused it (nothing was stored),
+     or no answer came back (it may have arrived: check before sending again). A result that lands after the sheet was
+     closed still reaches the Commander, as a station notice. */
+  const MAP_CREDIT_KEY = 'starnet.communityMapCredit';
+  function shareOutcomeText(res, what) {
+    if (res.ok) return '';
+    if (res.outcome === 'unknown') return (res.error ? res.error + ' ' : '') + 'This station cannot tell whether the ' + what + ' arrived. Check your account page on account.starnetos.com before you send it again.';
+    if (res.linked === false) return 'Link this station to your StarNet account first (STORE › LINK STATION). A free account works. Nothing was shared.';
+    if (res.code === 'token_rejected') return res.error;
+    return (res.error || 'StarNet refused it.') + ' Nothing was shared.';
+  }
+  function openShareToCommunity(g, status, shareKey) {
+    const section = g.querySelector('[data-build-section="shared"]');
+    const grid = section && section.querySelector('.station-build-grid');
+    if (!grid || typeof CommunityMaps === 'undefined') return;
+    const open = section.querySelector('.station-build-sharepanel');
+    if (open) { open.querySelector('#sbs-title')?.focus(); return; }
+    const r = BuildShare.exportBuild(station.serialize(), WorldModel, { name: station.doc().meta.name });
+    if (r.error) { status.textContent = 'This station could not be shared: it has no layout to send.'; sfx('bad'); return; }
+    const read = BuildShare.readBuild(r.text, WorldModel, 1);
+    const pic = CommunityMaps.picture(read.doc, r.dropped, drawPlan);
+    let credit = ''; try { credit = localStorage.getItem(MAP_CREDIT_KEY) || ''; } catch (_) {}
+    const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+    const travels = [n(r.stats.rooms, 'room', 'rooms'), n(r.stats.props, 'prop', 'props')].concat(r.stats.lines ? [n(r.stats.lines, 'line', 'lines')] : []).join(' · ');
+    const panel = document.createElement('div');
+    panel.className = 'station-build-sharepanel';
+    panel.innerHTML = '<div class="sbs-pic"><img alt="The picture that goes with this map"></div><div class="sbs-form">' +
+      '<label for="sbs-title">NAME</label><input id="sbs-title" class="refit-input" maxlength="40" autocomplete="off">' +
+      '<label for="sbs-credit">CREDIT ME AS</label><input id="sbs-credit" class="refit-input" maxlength="40" autocomplete="off" placeholder="your name or handle">' +
+      '<label for="sbs-desc">ONE LINE ABOUT IT <span class="sbs-dim">optional</span></label><input id="sbs-desc" class="refit-input" maxlength="200" autocomplete="off">' +
+      '<label class="sbs-agree"><input type="checkbox" id="sbs-agree"> <span>I made this station and share it under CC BY 4.0: anyone may build it and change it, with credit to me.</span></label>' +
+      '<p class="sbs-travel">Only the layout travels: <b>' + esc(travels) + '</b>. Your crew, step instructions, project folders and connections stay home' + (r.dropped.made ? ', and so do your ' + n(r.dropped.made, 'made prop', 'made props') : '') + '.' + (pic.why ? ' ' + esc(pic.why) : '') + '</p>' +
+      '<p class="sbs-travel">A person looks at every map before it appears in the community gallery.</p>' +
+      '<div class="sbs-keys"><button class="bb refit-primary" type="button" data-sbs-send>SEND FOR REVIEW</button><button class="bb" type="button" data-sbs-cancel>CANCEL</button></div></div>';
+    panel.querySelector('img').src = pic.dataUrl;
+    const title = panel.querySelector('#sbs-title'), creditIn = panel.querySelector('#sbs-credit'), desc = panel.querySelector('#sbs-desc'), agree = panel.querySelector('#sbs-agree');
+    title.value = String(station.doc().meta.name || '').slice(0, 40); creditIn.value = credit;
+    const send = panel.querySelector('[data-sbs-send]');
+    let unlinked = false;
+    const close = () => { panel.remove(); shareKey.setAttribute('aria-pressed', 'false'); if (g.isConnected) shareKey.focus(); };
+    panel.querySelector('[data-sbs-cancel]').onclick = () => { close(); status.textContent = 'Nothing was shared.'; };
+    send.onclick = async () => {
+      const fields = { title: title.value.trim(), credit: creditIn.value.trim(), description: desc.value.trim(), agree: agree.checked, build: r.text, still: pic.dataUrl };
+      if (!fields.title) { status.textContent = 'Give the map a name.'; title.focus(); return; }
+      if (!fields.credit) { status.textContent = 'Add the name you want credited in the gallery.'; creditIn.focus(); return; }
+      if (!fields.agree) { status.textContent = 'Turn on the CC BY 4.0 agreement to share it: it is how others may build your station.'; agree.focus(); return; }
+      send.disabled = true; send.textContent = 'SENDING…'; status.textContent = 'Sending ' + fields.title + ' for review…';
+      try { localStorage.setItem(MAP_CREDIT_KEY, fields.credit); } catch (_) {}
+      const res = await CommunityMaps.share(fields);
+      const shown = panel.isConnected && g.isConnected;
+      if (res.ok && res.submission) {
+        const name = res.submission.title || fields.title;
+        if (!shown) { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify('Sent ' + name + ' for review. Your Maps tab on account.starnetos.com shows where it stands.', 'good'); return; }
+        close();
+        status.innerHTML = '<span>Sent for review: <b>' + esc(name) + '</b>.</span><span class="station-build-need">A person looks at it next. Once it is approved it appears in the community gallery with your name on it. Your Maps tab on account.starnetos.com shows where it stands.</span>';
+        sfx('click');
+        return;
+      }
+      const text = shareOutcomeText(res.ok ? { ok: false, outcome: 'unknown', error: 'StarNet gave no readable answer.' } : res, 'map');
+      if (!shown) { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(fields.title + ': ' + text, 'warn'); return; }
+      send.textContent = 'SEND FOR REVIEW';
+      send.disabled = unlinked || res.linked === false;
+      status.textContent = text;
+      sfx('bad');
+    };
+    section.insertBefore(panel, grid);
+    shareKey.setAttribute('aria-pressed', 'true');
+    title.focus(); title.select();
+    // an unlinked station learns it NOW, not after uploading a picture (the station knows without asking the cloud)
+    CommunityMaps.load(false).then(c => {
+      if (!c || c.linked !== false || !panel.isConnected) return;
+      unlinked = true; send.disabled = true;
+      const p = document.createElement('p'); p.className = 'sbs-travel sbs-link';
+      p.textContent = 'This station is not linked to a StarNet account yet. Link it first: STORE › LINK STATION (a free account works), then open SHARE TO COMMUNITY again.';
+      panel.querySelector('.sbs-keys').before(p);
+    });
+  }
+
+  /* COMMUNITY MAPS: the signed gallery, as the station verified it (read fresh each time the sheet opens). A card's
+     picture and file come only through the sidecar (every byte checked against the signed index); choosing one opens
+     it through BuildShare.readBuild, so it lands through the same confirm, backup and undo as a preset. */
+  function wireCommunityMaps(g, status, addCard) {
+    const section = g.querySelector('[data-build-section="community"]');
+    if (!section || typeof CommunityMaps === 'undefined') return;
+    const grid = section.querySelector('.station-build-grid'), note = section.querySelector('.station-build-community-note');
+    note.textContent = 'Reading the community gallery…';
+    CommunityMaps.load(true).then(c => {
+      if (!g.isConnected) return;
+      if (!c.ok) {
+        if (c.error) console.warn('[community maps] gallery not read:', c.error);
+        note.textContent = c.off ? 'The community gallery is switched off on this station.' : 'The community gallery could not be read right now. Close PRESETS and open it again to retry.';
+        return;
+      }
+      if (!c.maps.length) { note.textContent = 'No community maps yet. Be the first: SHARE TO COMMUNITY, above.'; return; }
+      note.textContent = c.maps.length + (c.maps.length === 1 ? ' map' : ' maps') + ', each one checked by a person.';
+      for (const m of c.maps) {
+        const item = {
+          id: 'community-' + m.slug, name: m.title, rooms: m.stats.rooms, stats: m.stats,
+          description: 'by ' + m.credit + (m.description ? ' · ' + m.description : ''),
+          picture: () => CommunityMaps.stillUrl(m),
+          open: async () => {
+            const text = await CommunityMaps.buildText(m);
+            const r = BuildShare.readBuild(text, WorldModel, station.doc()._nid + 100);
+            if (!r.ok) throw new Error(r.message);
+            return { text, preview: () => sharedBuildCopy(m.title, r.stats, r.dropped, 'By ' + esc(m.credit) + ' · CC BY 4.0 · ') };
+          }
+        };
+        addCard(item, null, grid, () => '');
+      }
+    });
+  }
+
+  function sharedBuildCopy(name, stats, dropped, lead) {
+    const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+    const left = ['Crew, step instructions, project folders and connections stay with the station that made it.'];
+    if (dropped.made) left.push(n(dropped.made, 'made prop was', 'made props were') + ' left out: made props belong to the station that paid for them.');
+    if (stats.lines) left.push('Its ' + (stats.lines === 1 ? 'line arrives' : 'lines arrive') + ' wired but unstaffed, with no step instructions.');
+    return '<span>' + lead + '<b>' + esc(name) + '</b> · ' + n(stats.rooms, 'room', 'rooms') + ' · ' + n(stats.props, 'prop', 'props') + '</span>'
+      + '<span class="station-build-need">' + left.map(esc).join(' ') + '</span>';
+  }
+  function wireSharedBuilds(g, status, addCard) {
+    const exp = g.querySelector('[data-export-build]'), imp = g.querySelector('[data-import-build]'), fileIn = g.querySelector('[data-import-file]');
+    const grid = g.querySelector('[data-build-section="shared"] .station-build-grid');
+    if (!exp || !imp || !fileIn || !grid) return;
+    exp.onclick = () => {
+      const r = BuildShare.exportBuild(station.serialize(), WorldModel, { name: station.doc().meta.name });
+      if (r.error) { status.textContent = 'This station could not be exported.'; sfx('bad'); return; }
+      const url = URL.createObjectURL(new Blob([r.text], { type: 'application/json' }));
+      const a = document.createElement('a'); a.href = url; a.download = r.filename;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+      status.innerHTML = sharedBuildCopy(r.filename, r.stats, r.dropped, 'Downloading ');
+      sfx('click');
+    };
+    imp.onclick = () => fileIn.click();
+    fileIn.onchange = () => {
+      const f = fileIn.files && fileIn.files[0]; fileIn.value = '';
+      if (!f) return;
+      if (f.size > BuildShare.MAX_BYTES) { status.textContent = 'That file is too large to be a station build.'; sfx('bad'); return; }
+      const reader = new FileReader();
+      reader.onerror = () => { status.textContent = 'That file could not be read.'; sfx('bad'); };
+      reader.onload = () => {
+        const text = String(reader.result || '');
+        const r = BuildShare.readBuild(text, WorldModel, station.doc()._nid + 100);
+        if (!r.ok) { status.textContent = r.message; sfx('bad'); return; }
+        // one opened build at a time: a second file replaces the first card
+        for (const old of grid.querySelectorAll('[data-station-build]')) old.remove();
+        const item = { id: 'shared-file', name: r.name, rooms: r.stats.rooms, description: f.name, file: text };
+        const button = addCard(item, r.doc, grid, () => sharedBuildCopy(r.name, r.stats, r.dropped, ''));
+        button.click(); button.scrollIntoView({ block: 'nearest' }); button.focus();
+      };
+      reader.readAsText(f);
     };
   }
 
@@ -4626,6 +4841,8 @@ const Build = (() => {
         // COUNTED IN SHIPPED? (rc walk #30) the server's own answer from the receipts the line's SHIPPED counts: true / false / null (unknown)
         shipped: response && typeof response.shipped === 'boolean' ? response.shipped : null,
         shippedWhy: response && response.shipped === false && typeof response.shippedWhy === 'string' ? response.shippedWhy : null,   // why not, only when the server proved it
+        // (GitHub #122) the server's own mark: a review loop used all its passes without an approval and sent the work on
+        unapproved: response && typeof response.unapproved === 'string' && response.unapproved ? response.unapproved : null,
         // SEND TO (conveyor-ui-01): the job's own link to the next line's job (sentTo), else the line's live SEND TOs — the panel says which
         sentTo: (response && response.sentTo && typeof response.sentTo === 'object') ? response.sentTo : null, onward: Array.isArray(response?.onwardDestinations) ? response.onwardDestinations : [] };
       finSig = ''; if (running) renderFinCard(); options.onUpdate?.(); sfx(view.ok ? 'chime' : 'bad');
@@ -5128,7 +5345,7 @@ const Build = (() => {
     } else if (tool === 'paint') {
       const id = station.roomAt(w.tx, w.ty);
       if (!id) { flashTip(ev, 'nothing to paint here'); return; }
-      drag = { mode: 'paint', roomId: id, start: w, cur: w, cells: new Set([w.tx + ',' + w.ty]), moved: false };
+      drag = { mode: 'paint', roomId: id, start: w, cur: w, cells: new Set([w.tx + ',' + w.ty]), moved: false, cx: ev.clientX, cy: ev.clientY };   // cx/cy: a jitter is not a brush stroke
     } else if (tool === 'reclaim') {
       drag = { mode: 'reclaim', start: w, cur: w, cells: new Set([w.tx + ',' + w.ty]), moved: false };
     } else { // room | hall
@@ -5175,6 +5392,7 @@ const Build = (() => {
       if ((drag.mode === 'handbelt' || drag.mode === 'handbranch') && cv.style.cursor !== 'crosshair') cv.style.cursor = 'crosshair';   // laying a belt aims (onUp restores)
       if(drag.mode==='grouppress'&&drag.moved&&slipped)drag.mode='groupmove';   // (a click on one member never moves the line one tile: wave 2, build-20)
       if(drag.mode==='boxpress'&&drag.moved)drag.mode='box';
+      if (drag.mode === 'paint' && slipped) drag.slipped = true;   // a brush stroke only once it has travelled CLICK_SLOP (paintDragged)
       if (drag.mode === 'paint' || drag.mode === 'reclaim') rasterTo(drag, w);   // accumulate every tile the brush crosses
       drag.cur = w;
     } else {
@@ -6461,7 +6679,7 @@ const Build = (() => {
       feedback(station.setHull(d.roomId, { style: hullStyle, mat: hullMat }), ev, 'shell re-clad');
       return;
     }
-    if (d.moved) {
+    if (!paintLaysDeck(d)) {
       const tiles = [...d.cells].map(k => { const p = k.split(','); return [+p[0], +p[1]]; });
       feedback(station.paintTiles(d.roomId, tiles, style), ev, 'painted');
     } else {
@@ -6470,6 +6688,15 @@ const Build = (() => {
       feedback(station.setDeck(d.roomId, { style, mat }), ev, 'deck laid');
     }
   }
+  /* THE BRUSH NEVER DROPS A PICKED MATERIAL (2026-10-17, Andrew: "when applying different textures like turf, it would keep the
+     default floor but change the hue only"). A deck material is a whole-room surface — the model has no per-tile material — and a
+     drag only ever painted the hue, so a material went missing two ways: a click that drifted across a tile seam (this press had
+     no CLICK_SLOP, unlike every other) became a brush stroke, and a deliberate stroke after picking TURF painted MEADOW tiles on
+     the old floor. Now a press under CLICK_SLOP is a click, and a stroke carrying a material the Commander picked that this room
+     does not have lays that deck as a click does. A stroke paints only the colour while the material is the room's own or none
+     was picked (the palette starts on PLATE, which never re-floors a room behind a colour stroke). */
+  const paintDragged = d => !!(d && d.moved && d.slipped);
+  const paintLaysDeck = d => paintTarget === 'floor' && (!paintDragged(d) || (matPicked && station.matOfRoom(d.roomId) !== mat));
   function commitReclaim(d, ev) {   // DELETE (tool id stays `reclaim`)
     // DRAG across tiles → clear every BELT crossed in ONE undo slot. A drag never removes rooms or
     // props (only single clicks do), so you can wipe a lane without fear of nuking the room under it.
@@ -9168,9 +9395,19 @@ const Build = (() => {
   }
   function drawGhost(t, now) {
     // paint brush: tint the crossed tiles with the chosen deck colour
-    if (drag && drag.mode === 'paint' && drag.moved) {
+    if (drag && drag.mode === 'paint' && paintDragged(drag)) {
       const base = station.FLOOR_STYLES[style] ? station.FLOOR_STYLES[style].base : '#888';
       ctx.globalAlpha = 0.55; ctx.fillStyle = base;
+      // a stroke that carries a new material lays the whole deck on release (paintLaysDeck): show the whole room, say the deck
+      const rm = paintLaysDeck(drag) && station.roomById(drag.roomId);
+      if (rm) {
+        for (const r of rm.rects) ctx.fillRect(r.x1 * t, r.y1 * t, (r.x2 - r.x1 + 1) * t, (r.y2 - r.y1 + 1) * t);
+        ctx.globalAlpha = 1;
+        const def = station.FLOOR_MATERIALS && station.FLOOR_MATERIALS[mat];
+        const bb = { x1: Math.min(...rm.rects.map(r => r.x1)), y1: Math.min(...rm.rects.map(r => r.y1)), x2: Math.max(...rm.rects.map(r => r.x2)), y2: Math.max(...rm.rects.map(r => r.y2)) };
+        ghostBadge(t, [((def && def.label) || 'NEW') + ' DECK', 'WHOLE ROOM'], true, bb);
+        return;
+      }
       let n = 0;
       for (const k of drag.cells) { const p = k.split(','); if (station.roomAt(+p[0], +p[1]) === drag.roomId) { ctx.fillRect(+p[0] * t, +p[1] * t, t, t); n++; } }
       ctx.globalAlpha = 1;
