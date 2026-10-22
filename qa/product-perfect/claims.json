@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "64667daa5c1c8ee79ee53b209527e57478bbcfdd",
+    "sourceCommit": "a5152c59e6eb8d4455c7f63a3e5d8112bf5d3348",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -268,8 +268,8 @@
       },
       {
         "path": "frontend/app/autopilot.js",
-        "bytes": 61584,
-        "sha256": "023b86d8f7d7d8c2df34a08183829c4bfe9c4dfdc0621348f48ca924de66cc98"
+        "bytes": 62435,
+        "sha256": "319a64d0ce63c20b0173b7b3cea52d4aa0b8ba46f11a6cd58c1eb211d2117043"
       },
       {
         "path": "frontend/app/autopilotstore.js",
@@ -733,8 +733,8 @@
       },
       {
         "path": "frontend/app/nightreport.js",
-        "bytes": 27578,
-        "sha256": "c3b72b2990a3d7f4f10b1e9993c6f4712bdb30a99fa032a7d5f859d398f9ba8b"
+        "bytes": 28539,
+        "sha256": "f9e58ddc4d96981b16993eb25ffdf217a6ebe7128e8a8b22a95caaa74f8d4107"
       },
       {
         "path": "frontend/app/nightreportstore.js",
