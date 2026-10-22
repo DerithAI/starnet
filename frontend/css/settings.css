@@ -172,7 +172,10 @@
   .settings-console .prov-accounts { grid-row:4; }   /* the card's own status line stays above its accounts */
   .settings-console .prov-region { grid-row:4; }
   .settings-console .prov-card:has(.prov-region) .prov-accounts { grid-row:5; }
-  .settings-console [data-provider="starnet"] :is(.prov-addkey,.prov-stat) { margin-left:0; padding-left:0; }
+  /* the StarNet card has no 42px name indent to line up with; the key keeps its own padding (zeroing it pushed ↗ LINK
+     STATION against its left edge) */
+  .settings-console [data-provider="starnet"] .prov-addkey { margin-left:0; }
+  .settings-console [data-provider="starnet"] .prov-stat { margin-left:0; padding-left:0; }
 }
 @container settings-pane (max-width:340px) {
   .settings-console .settings-group { padding:14px; }

@@ -1352,3 +1352,6 @@ test/task-turn-evidence.test.js
 test/remote-crew-looks.test.js
 test/save-persist-cost.test.js
 test/run-recoveries-page.test.js
+test/type-floor.test.js
+test/css-parse.test.js
+test/one-gutter.test.js
