@@ -1807,16 +1807,25 @@
       return true;
     }
 
-    /* THE NEXT CALL'S PRICE, before it goes out (bug d3a76db3 review). The prompt this boundary would send — the local
-       ruler (messages + tool schemas), the run-start estimate as its floor — at the current model's catalog INPUT
-       price, cache-blind (a cached prefix bills less, so this can only over-count: the safe side of a spend ceiling).
-       Output can't be known before the call and is not counted; a model nothing prices reads $0. The run's shared
-       spend pool (run-spend-pool.js) counts a worker's first call in flight at this, so workers that start together
-       cannot all fire on a $0 guess. Handed over as a function: only a pool with workers ever asks. */
+    /* THE MOST THE NEXT CALL CAN COST, before it goes out (bug d3a76db3, review of a1234b154). The prompt this boundary
+       would send — the local ruler (messages + tool schemas), the run-start estimate as its floor — at the current
+       model's catalog INPUT price, cache-blind (a cache read bills less), plus every output token the window leaves
+       room for (or the output ceiling a provider named, when lower) at its catalog OUTPUT price. A call bills no more
+       tokens than its window holds, so while output is priced at least as high as input this covers the whole call —
+       short only of a prompt-cache WRITE premium (up to 1.25x input) on a call that also fills its window. A model
+       nothing prices, or a window nobody knows, reads $0: no price. The run's shared spend pool (run-spend-pool.js)
+       RESERVES this for the call while it is in flight, so calls that go out together pass the cap by less than the
+       call sent last; a call with no price is counted as a call instead, and nothing goes out beside it. Handed over
+       as a function: only a pool with workers ever asks. */
     function nextCallUsd() {
       if (!cost || typeof cost.estimate !== 'function') return 0;
       try {
-        const r = cost.estimate({ prompt_tokens: Math.max(rulerTokens(messages), approxTokens) }, model);
+        const windowNow = windowTokens();
+        if (!(windowNow > 0)) return 0;
+        const promptTokens = Math.max(rulerTokens(messages), approxTokens);
+        let outTokens = Math.max(0, windowNow - promptTokens);
+        if (outputCapTokens > 0) outTokens = Math.min(outTokens, outputCapTokens);
+        const r = cost.estimate({ prompt_tokens: promptTokens, completion_tokens: outTokens }, model);
         const v = r ? Number(r.usd) : 0;
         return (isFinite(v) && v > 0) ? v : 0;
       } catch (e) { failNote('loop.budget.nextCallUsd', e); return 0; }
@@ -1851,16 +1860,16 @@
           emit('agent.run.error', { agentId, runId, message, transient: false });
           return end('error', { failureStage: 'budget', failureCode: 'spend_history_unavailable' });
         }
-        // projected: a run's shared spend pool (run-spend-pool.js) stopped it because calls still IN FLIGHT already
-        // take what is left — the cap was not hit yet, so the stop must not say it was (bug d3a76db3 review)
+        // projected: a check that stops a call BEFORE its cap was reached says so, and the stop line must not say the cap
+        // was hit (bug d3a76db3 review). The run's spend pool (run-spend-pool.js) never does: it HOLDS such a call instead
         if (b) return end('budget', { budgetScope: b.scope, budgetCapUsd: b.cap, budgetProjected: b.projected === true });
       }
       return null;
     }
-    /* A HELD CALL WAITS FOR EVIDENCE (bug d3a76db3, review of 9d4fc52b5). A worker's pre-call price is its prompt's input
-       price only, so workers billed mostly for output could all fire together under the cap. The run's spend pool
-       holds such a first call ({ hold: Promise }) until a call in flight settles, and the check runs again on what that
-       call really cost. A hold never outlasts a stop: it ends the moment the signal aborts. */
+    /* A HELD CALL WAITS FOR ROOM (bug d3a76db3, reviews of 9d4fc52b5 and a1234b154). The run's spend pool holds a call
+       ({ hold: Promise }) while the calls its family has in flight, each reserved at the most it can cost, leave no room
+       for it under the shared cap (or one of them has no price at all). It waits until a call in flight settles on
+       what it really cost, and the check runs again. A hold never outlasts a stop: it ends the moment the signal aborts. */
     async function forSpend(s) {
       while (s && s.hold) {
         await new Promise(resolve => {

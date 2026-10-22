@@ -8,37 +8,33 @@
    from one cap and are stopped by it.
 
    The loop's own per-run check (loop.js: spent >= maxCostUsd, before every paid call) is the per-run guarantee for
-   ONE run: it stops at the first call boundary after the cap, so it can pass the cap by at most the call already in
-   flight. A run AND its workers call in PARALLEL, so the pool also counts the calls OTHER members have in flight:
-     • spent  — what every member has booked (its loop's own tally at each check, plus each reconciled cost the
-       member books in between, so a worker that starts while its lead is mid-turn sees the lead's latest call);
-     • a member's next call is admitted only while spent < cap AND the calls its fellow members have IN FLIGHT
-       leave room under the cap. Each in-flight call is counted at THAT member's own cost, never at someone else's:
-         – a member that has booked a call: its own largest call so far;
-         – a member with nothing booked yet: the price of the call it sent, as its loop measured it before sending
-           (admit's third argument: the prompt by the local ruler at the model's catalog INPUT price — output can't
-           be known before the call), and never less than the largest first call a fellow worker has booked.
-     A STOP is decided only on those counts. But a first call's input price says nothing of its output, and workers
-     billed mostly for output (long answers, reasoning) all fired together on it (review of 9d4fc52b5). So while NO
-     worker has booked a call yet, the pool also counts each such first call in flight at no less than the lead's
-     largest turn — the only measure of a call in this family there is — and when THAT would not fit, the member is
-     HELD, not stopped: admit returns { hold } and the member is not in flight; its loop waits until a call in flight
-     settles, then asks again, and the worker's real booked cost decides (the fellow-worker floor above). A hold
-     never stops a call on the lead's turn (the lead's spawning turn carries its whole conversation; a clone's first
-     call does not), so cheap clones behind a costly lead turn are only delayed by one call, never stopped on a guess.
-   So four $0.04 workers that start together under a $0.05 cap with $0.04 left do not all fire: the first one goes,
-   the others wait for its real cost and stop with reason 'budget' (scope 'run', the lead run's cap) at their call
-   boundary, as the lead does at its next one. THE BOUND: once a worker has booked, a family passes the cap by at most
-   the call admitted last (a call is not counted against itself — the single-run bound above) plus what the calls in
-   flight with it cost beyond the fellow worker's booked first call they were counted at. Before any worker has
-   booked, the first wave is admitted only while its calls in flight fit, each counted at the larger of its input
-   price and the lead's largest turn, so it passes the cap only by what those calls cost beyond that. A lead with no
-   booked turn (a flat subscription lead books $0) gives no such measure: its crew's first wave is counted at input
-   prices alone.
+   ONE run: it stops at the first call boundary after the cap, so it passes the cap by less than the call it sent
+   last. A run AND its workers call in PARALLEL, so the pool keeps that same guarantee for the whole family by
+   RESERVING every call in flight and settling it on what it really booked (review of a1234b154: counting a call in
+   flight at what the calls booked SO FAR cost let a heavier call that came later pass the cap by more than a call):
+     • spent — what every member has booked (its loop's own tally at each check, plus each reconciled cost the
+       member books in between);
+     • RESERVED — each call in flight at the most it can cost, as its loop priced it before sending (admit's third
+       argument: the prompt at the model's catalog input price plus every output token the window leaves room for
+       at its catalog output price), never less than the costliest call any member has booked so far;
+     • a call that has no such price (a model nothing prices: every price reads $0) is counted as a CALL, never as
+       $0: while one is in flight no other member's call goes out. Calls that all book $0 can never take the pool
+       around its cap.
+   A member's call goes out while the family's booked spend is under the cap, and either nothing else is in flight
+   or the reservations of the calls in flight leave room under the cap (a call is never counted against itself —
+   the single-run bound). Otherwise the call is HELD: admit returns { hold }, the member is not in flight, and its
+   loop waits until a call in flight settles, then asks again. A STOP is only ever a cap the family really reached
+   (booked spend >= cap), never a guess about calls still in flight.
 
-   A stop the pool makes because of calls still IN FLIGHT is a projection, not a cap that was hit: it carries
-   projected:true, which loop.js puts on agent.run.end (budgetProjected) so every stop line says the run stopped
-   BEFORE it would pass the cap, never that it hit it.
+   THE BOUND: when each reservation covers its call, the family passes the cap by less than the cost of the call
+   admitted last. That call went out while booked + the reservations of the calls in flight with it < cap, and no
+   call went out while it was in flight (a later one would be the last), so the final spend < cap + its own cost.
+   A call with no price goes out only beside priced calls that leave room, and nothing goes out while it is in flight.
+   What a reservation cannot cover: a provider billing a call above the catalog's token prices (counted once it
+   books: no later reservation is less than it), a prompt-cache write premium on a call that also fills its window
+   (loop.js nextCallUsd), and spend booked outside a model call (a tool's own paid pass, a summarizer fold), which is
+   counted when it is booked. The price of the bound is TIME: near the cap, with a model
+   whose window prices a call high, or with a model nothing prices, workers take turns instead of calling at once.
 
    A pool with one member decides nothing (admit always proceeds): a run that never delegates is governed by its
    loop's own check exactly as before. An ungoverned cap (0 / Infinity / missing) never blocks.
@@ -58,46 +54,35 @@
   function makeRunSpendPool(opts) {
     const o = opts || {};
     const cap = (typeof o.capUsd === 'number' && isFinite(o.capUsd) && o.capUsd > 0) ? o.capUsd : Infinity;
-    // runId -> { spent, inFlight, callFrom, callUsd, calls, largest, first }. callUsd = the pre-call price of the call
-    // in flight. calls/largest/first count only calls that booked a cost (a call stopped before it went out books
-    // nothing, and is no evidence of what a call costs).
+    // runId -> { spent, inFlight, callFrom, boundUsd, calls }. boundUsd = the most the call in flight can cost, as its
+    // loop priced it before sending (0 = it has no price: it is counted as a call). calls = every call the member sent.
     const members = new Map();
-    let leadKey = null;          // the run that created the pool joins first: the lead
+    let largest = 0;   // the costliest call any member has booked: no reservation is ever less
+    let calls = 0;     // every call the family sent, whatever it booked ($0 calls count: calls, not only dollars)
 
     function member(runId) {
       const k = String(runId == null ? '' : runId);
       let m = members.get(k);
-      if (!m) {
-        m = { spent: 0, inFlight: false, callFrom: 0, callUsd: 0, calls: 0, largest: 0, first: 0 };
-        members.set(k, m);
-        if (leadKey === null) leadKey = k;
-      }
+      if (!m) { m = { spent: 0, inFlight: false, callFrom: 0, boundUsd: 0, calls: 0 }; members.set(k, m); }
       return m;
     }
-    function closeCall(m) {
+    /* the member's call in flight is over. sent = the call is known to have gone out: it booked a cost (agent.cost —
+       the loop books every call it makes, $0 included) or answered with a tool call. A new boundary, a run end or a
+       withdrawal also ends it, but proves nothing went out (the loop checks once per turn AND once per attempt, and a
+       failed attempt bills nothing), so only a booking or a tool call is counted, and only it is evidence of a cost. */
+    function closeCall(m, sent) {
       if (!m.inFlight) return;
       m.inFlight = false;
-      const c = m.spent - m.callFrom;   // the model call + what the member booked before its next boundary
-      if (c > 0) { m.calls++; m.largest = Math.max(m.largest, c); if (m.calls === 1) m.first = c; }
+      if (sent) {
+        m.calls++; calls++;
+        const c = m.spent - m.callFrom;   // the model call + what the member booked before its call was over
+        if (c > largest) largest = c;
+      }
       settled();
     }
     function spent() { let t = 0; for (const m of members.values()) t += m.spent; return t; }
 
-    // what member `id`'s call in flight is counted at (see the header): its own cost, never another member's.
-    //   low  — what the pool KNOWS it costs at least (a stop is decided on this): its own largest booked call, or for a
-    //          first call its pre-call price, never below a fellow worker's booked first call;
-    //   high — the same, except a first call with no booked worker call to measure it by is counted at no less than
-    //          the lead's largest turn (a hold is decided on this: it only ever delays a call, never stops one).
-    function estimate(id, m) {
-      if (m.calls > 0) return { low: m.largest, high: m.largest };
-      let fellow = 0;
-      for (const [j, w] of members) if (j !== id && j !== leadKey && w.calls > 0) fellow = Math.max(fellow, w.first);
-      const low = Math.max(m.callUsd, fellow);
-      if (fellow > 0) return { low, high: low };
-      const lead = members.get(leadKey);
-      return { low, high: Math.max(low, (lead && id !== leadKey) ? lead.largest : 0) };
-    }
-    // a HOLD waits for the next call in flight to settle (booked, idle or run end): its cost is the evidence
+    // a HOLD waits for the next call in flight to settle (booked, idle, withdrawn or run end): it frees its reservation
     let wake = null;
     function settled() { if (wake) { const w = wake; wake = null; w.resolve(); } }
     function nextSettle() {
@@ -105,71 +90,72 @@
       return wake.p;
     }
 
-    // a run takes part in this pool (idempotent). The run that created the pool joins first.
+    // a run takes part in this pool (idempotent)
     function join(runId) { member(runId); return api; }
 
     /* The run's budget check, before each paid call: spentUsd is the member's own running tally (authoritative for
-       itself); callUsd is the price of the call it is about to send, as its loop measures it before sending (a number,
-       or a function the pool calls only when it decides — a family of two or more under a real cap; missing = $0).
-       Returns null to proceed (the call is now IN FLIGHT), a stop — the shape loop.js stopForSpend already turns into
-       end('budget', { budgetScope, budgetCapUsd, budgetProjected }) — or a hold:
-         { scope:'run', usd, cap }                                  the family's booked spend reached the cap;
-         { scope:'run', usd, cap, committedUsd, projected:true }    the calls in flight already take what is left;
-         { hold: Promise }                                          the calls in flight fit at what is known of them,
-           but not with a first call nobody has measured counted at the lead's turn: the member is NOT in flight, and
-           asks again once the promise resolves (the next call in flight settled). Every hold waits on a call that
-           IS in flight, so it always ends. */
+       itself); callUsd is the most the call it is about to send can cost, as its loop prices it before sending (a
+       number, or a function the pool calls only when it decides — a family of two or more under a real cap; missing
+       or $0 = no price: the call is counted as a call). Returns null to proceed (the call is now IN FLIGHT, reserved
+       at that price), a stop — the shape loop.js stopForSpend already turns into end('budget', { budgetScope,
+       budgetCapUsd }) — or a hold:
+         { scope:'run', usd, cap }   the family's booked spend reached the cap;
+         { hold: Promise }           the calls in flight leave no room for this one: the member is NOT in flight, and
+           asks again once the promise resolves (the next call in flight settled). Every hold waits on a call that IS
+           in flight, so it always ends. */
     function admit(runId, spentUsd, callUsd) {
       const k = String(runId == null ? '' : runId);
       const m = member(k);
       if (usd(spentUsd) > m.spent) m.spent = usd(spentUsd);
-      closeCall(m);   // reaching a new boundary means the previous call has settled
-      const open = (priced) => {
-        m.inFlight = true; m.callFrom = m.spent;
-        m.callUsd = priced ? usd(typeof callUsd === 'function' ? callUsd() : callUsd) : 0;
-        return null;
-      };
-      if (cap === Infinity || members.size < 2) return open(false);   // a lone run is never decided here: no price asked
+      closeCall(m, false);   // reaching a new boundary means the previous call has settled
+      const open = (bound) => { m.inFlight = true; m.callFrom = m.spent; m.boundUsd = bound; return null; };
+      if (cap === Infinity || members.size < 2) return open(0);   // a lone run is never decided here: no price asked
       const total = spent();
       if (total >= cap) return { scope: 'run', usd: total, cap };
-      let committed = 0, unmeasured = 0;
-      for (const [id, other] of members) {
-        if (id === k || !other.inFlight) continue;
-        const e = estimate(id, other);
-        committed += e.low; unmeasured += e.high;
+      let others = 0, unpriced = 0, reserved = 0;
+      for (const [id, w] of members) {
+        if (id === k || !w.inFlight) continue;
+        others++;
+        if (w.boundUsd > 0) reserved += Math.max(w.boundUsd, largest); else unpriced++;
       }
-      if (committed > 0 && total + committed >= cap) return { scope: 'run', usd: total, cap, committedUsd: committed, projected: true };
-      if (total + unmeasured >= cap) return { hold: nextSettle() };
-      return open(true);
+      if (others > 0 && (unpriced > 0 || total + reserved >= cap)) return { hold: nextSettle() };
+      return open(usd(typeof callUsd === 'function' ? callUsd() : callUsd));
     }
     // a reconciled cost the member booked (its model call, a tool's own paid pass): counted now, and it settles the call
     function booked(runId, amount) {
       const m = member(runId);
       m.spent += usd(amount);
-      closeCall(m);
+      closeCall(m, true);
     }
-    // the member's call ended without a booked cost (it moved on to tools, or another guard stopped it)
-    function idle(runId) { closeCall(member(runId)); }
+    // the member's call ended without a booked cost (it moved on to tools)
+    function idle(runId) { closeCall(member(runId), true); }
+    // the member's call never went out: another guard (a day/global pool) refused it after the pool admitted it
+    function withdraw(runId) { closeCall(member(runId), false); }
     // the member's run ended: its final spend (never lowers what it already booked)
     function settle(runId, finalUsd) {
       const m = member(runId);
       if (usd(finalUsd) > m.spent) m.spent = usd(finalUsd);
-      closeCall(m);
+      closeCall(m, false);
     }
     function status() {
-      let inFlight = 0, largest = 0;
-      for (const m of members.values()) { if (m.inFlight) inFlight++; largest = Math.max(largest, m.largest); }
-      return { capUsd: cap, spentUsd: spent(), members: members.size, inFlight, largestCallUsd: largest };
+      let inFlight = 0, reservedUsd = 0, unpricedInFlight = 0;
+      for (const m of members.values()) {
+        if (!m.inFlight) continue;
+        inFlight++;
+        if (m.boundUsd > 0) reservedUsd += Math.max(m.boundUsd, largest); else unpricedInFlight++;
+      }
+      return { capUsd: cap, spentUsd: spent(), members: members.size, inFlight, reservedUsd, unpricedInFlight, calls, largestCallUsd: largest };
     }
 
-    const api = { join, admit, booked, idle, settle, status, capUsd: cap };
+    const api = { join, admit, booked, idle, withdraw, settle, status, capUsd: cap };
     return api;
   }
 
   // a pool the HOST minted (orchestration hands it to runOnce); anything else — a JSON body field — is not one
   function isRunSpendPool(p) {
     return !!(p && typeof p === 'object' && typeof p.admit === 'function' && typeof p.join === 'function'
-      && typeof p.booked === 'function' && typeof p.idle === 'function' && typeof p.settle === 'function');
+      && typeof p.booked === 'function' && typeof p.idle === 'function' && typeof p.withdraw === 'function'
+      && typeof p.settle === 'function');
   }
 
   return { makeRunSpendPool, isRunSpendPool };

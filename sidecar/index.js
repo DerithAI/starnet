@@ -22119,16 +22119,16 @@ async function runOnceCore(o) {
   // per-run limit it started with, so an interrupted run can be settled by the Commander from the right dashboard.
   const runReceiptMeta = () => ({ provider: providerId, model, managed: managedRun, runCapUsd });
   // The run's spend pool answers first (bug d3a76db3): once this run has workers, the lead and every worker stop at
-  // their call boundary when the shared PER RUN cap is spent (or its in-flight calls already take what is left). Its
-  // stop is scope 'run' with the cap of the run that started the pool, so the stop line names the cap the Commander set.
-  // nextCallUsd is the loop's own pre-call price of the call it is about to send (loop.js): the pool counts a worker's
-  // first call in flight at it, so workers that start together cannot all fire on a $0 guess.
+  // their call boundary when the shared PER RUN cap is spent, and wait (a hold) while the calls in flight leave no room.
+  // Its stop is scope 'run' with the cap of the run that started the pool, so the stop line names the cap the Commander
+  // set. nextCallUsd is the most the call about to go out can cost (loop.js: its prompt plus every output token the
+  // window leaves room for, at catalog prices): the pool reserves it while the call is in flight.
   const runBudget = { check: (spentThisRun, nextCallUsd) => {
     if (providerUnmetered) return null;
     const pooled = spendPool.admit(runId, spentThisRun, nextCallUsd);
     if (pooled) return pooled;
     const b = budget.check(runId, agentId, spentThisRun, Date.now(), emit, runReceiptMeta);
-    if (b) spendPool.idle(runId);   // stopped by a day/global pool: this run's call never goes out
+    if (b) spendPool.withdraw(runId);   // stopped by a day/global pool: this run's call never goes out
     return b;
   } };
 
