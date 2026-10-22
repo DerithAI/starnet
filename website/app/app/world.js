@@ -1799,6 +1799,17 @@ const World = (() => {
     dueDraws++; dueLatSum += l; if (l > dueLatMax) dueLatMax = l;
     if (l > (vsyncMs || 17) + 1) dueLate++;
   }
+  /* THE STILL TICK'S TIMER (Andrew: exactly 30/s while still). A still frame is drawn on the vsync frame()'s own rule picks
+     (the first one at least pace - half a vsync after the last draw). The timer wakes a hair after the vsync BEFORE that one
+     and rAF lands the draw, so a timer up to a vsync late (a Windows tick, ~15.6 ms at 60 Hz) still makes it, and an on-time
+     one books one rAF callback per still draw, as before. It used to aim 2 ms before the draw: a timer over 2 ms late missed
+     the vsync and the still pace fell to 20/s. */
+  const TICK_AFTER_VSYNC_MS = 0.5;
+  function drawSlackMs() { return Math.max(1, Math.min(vsyncMs || 2, 17) / 2); }   // frame()'s own slack: it draws on the vsync NEAREST the pace
+  function stillTickTimerAt(pace) {
+    const P = vsyncMs || 17, k = Math.max(1, Math.ceil((pace - drawSlackMs()) / P - 1e-9));
+    return lastDrawnAt + (k - 1) * P + TICK_AFTER_VSYNC_MS;
+  }
   function pageFocused() {
     try { return typeof document === 'undefined' || typeof document.hasFocus !== 'function' || document.hasFocus(); } catch (_) { return true; }
   }
@@ -1861,13 +1872,14 @@ const World = (() => {
     if (paceTimer) { clearTimeout(paceTimer); paceTimer = 0; }
   }
   // the ONE place the next frame is booked: rAF at a draw-rate pace, a timer then rAF at a low one or the still pace. The
-  // still wait ends a DUE LEAD before stillDue, and inside the lead it is rAF itself (see DUE LEAD). A timer-booked callback
-  // is not a vsync sample: lastRafAt is cleared so a 33 ms gap can never be learned as the display's frame interval.
+  // still wait is a timer to just past the vsync before the still frame (THE STILL TICK'S TIMER) or a DUE LEAD before stillDue,
+  // then rAF (see DUE LEAD). A timer-booked callback is not a vsync sample: lastRafAt is cleared so a 33 ms gap can never be
+  // learned as the display's frame interval.
   function scheduleFrame(pace) {
     if (!running) return;
     const now = performance.now(), still = pace < PACE_TIMER_MIN_MS && stillPaced(now), lead = dueLeadMs();
     const wait = pace >= PACE_TIMER_MIN_MS ? lastDrawnAt + pace - now - 2
-      : still && stillDue - now > lead ? Math.min(lastDrawnAt + pace - 2, stillDue - lead) - now : 0;
+      : still && stillDue - now > lead ? Math.min(stillTickTimerAt(pace), stillDue - lead) - now : 0;
     if (wait > 0) { lastRafAt = 0; paceTimerAt = still ? now + wait : 0; paceTimer = setTimeout(() => { paceTimer = 0; if (running && !raf) raf = requestAnimationFrame(frame); }, wait); }
     else raf = requestAnimationFrame(frame);
   }
