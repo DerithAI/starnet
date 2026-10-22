@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "64667daa5c1c8ee79ee53b209527e57478bbcfdd",
+    "sourceCommit": "ef12d2769e2c96174a6bffe1212ef7e4901e569c",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -338,8 +338,8 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 754946,
-        "sha256": "10d53c8243bdaffda5d478e4a6b01595b8da4e6b9ebed59646667209486a373a"
+        "bytes": 755208,
+        "sha256": "530249476692bc97bc0cf5a465fdf7a5c61931cb8e0306753c6ffa4b20e4075f"
       },
       {
         "path": "frontend/app/buildshare.js",
@@ -388,8 +388,8 @@
       },
       {
         "path": "frontend/app/communitymaps.js",
-        "bytes": 8495,
-        "sha256": "49aef12d9f8fdd6d9e7a5cdd4be81ada6782aef36ca8cbbc9bf3668995d0a9bb"
+        "bytes": 9306,
+        "sha256": "85914eb74b2d7e581f9ae1389d982019bff62e786d0483682f75c4433b0bade9"
       },
       {
         "path": "frontend/app/confbeats.js",
@@ -1203,8 +1203,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 947814,
-        "sha256": "df285efbfe158116609175b3762dbc62c7cb5399d4663d158d9da5b7c077240b"
+        "bytes": 948183,
+        "sha256": "b8d4cf35f786b7ac5225bd0457d78401154e6ea65973f57533b136e2c3a2aeea"
       },
       {
         "path": "frontend/app/stepin.js",
