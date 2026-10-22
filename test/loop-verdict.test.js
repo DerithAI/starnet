@@ -205,5 +205,30 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     const res2 = await R2.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R2.lineId, runId: 'v11' });
     A.eq(res2.text, FIXED, 'restated approval to the OUTBOX: the reviewer\'s version ships, as before');
   }
+  {
+    // the reviewer RETURNED THE FINISHED VERSION with its corrections, reworded past half the draft's three-word runs (the Creative
+    // Studio preset's own reviewer: "return the finished version (small corrections are fine)"). Its version is the work (R1): it
+    // ships and moves on alone, never swapped back for the draft it corrected, and never framed as "passed on without restating it".
+    const DRAFT = 'Grow Together! Join our community garden and help it flourish. Bring your curiosity and share your ideas. Everyone is welcome to take part.';
+    const EDITED = 'Grow Together! Help our community garden flourish. Share your ideas and learn alongside your neighbors. Everyone is welcome to take part.';
+    const R = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), {
+      writer: { text: DRAFT, usd: 0.01 }, reviewer: { text: EDITED + '\nVERDICT: approved', usd: 0.01 }
+    });
+    const res = await R.c.advance({ agentId: 'writer', text: DRAFT, originalText: 'write a community garden blurb', lineId: R.lineId, runId: 'v12' });
+    A.eq(res.text, EDITED, 'an edited approval to the OUTBOX: the reviewer\'s finished version ships, not the draft it corrected');
+    const R2 = rig(loopFloor({ maxIter: 3, when: 'approved' }), {
+      writer: { text: DRAFT, usd: 0.01 }, reviewer: { text: EDITED + '\nVERDICT: approved', usd: 0.01 }, publisher: { text: 'the design', usd: 0.01 }
+    });
+    await R2.c.advance({ agentId: 'writer', text: DRAFT, originalText: 'write a community garden blurb', lineId: R2.lineId, runId: 'v13' });
+    A.eq(upstreamOf(R2.log.find(l => l.agentId === 'publisher')), EDITED, 'an edited approval to a dock: the next stage gets the reviewer\'s version alone, unframed');
+  }
+  {
+    // ...and an approval that only TALKS ABOUT the work (names its subject, a few of its words) is still not the work
+    const R = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), {
+      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good: the three findings on rooftop solar are well sourced.\nVERDICT: approved', usd: 0.01 }
+    });
+    const res = await R.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v14' });
+    A.eq(res.text, RESEARCH, 'an approval that discusses the work to the OUTBOX: the work ships, never the discussion');
+  }
   A.report('loop-verdict');
 })();

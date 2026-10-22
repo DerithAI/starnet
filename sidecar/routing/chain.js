@@ -119,18 +119,26 @@ function workOf(s) {
   return cut >= m[0].length ? s.slice(m[0].length, cut) : s;
 }
 /* carriesWork(reply, work) -> did an APPROVING reply restate the work it passed? Restated = it keeps at least half of the work's
-   distinct three-word runs (a one- or two-word work: its words). Not "much shorter than the work": a one-line work and its
-   approval can be the same length. Pure; reads the first 64k characters of each. */
+   distinct three-word runs (a one- or two-word work: its words), OR at least two thirds of the work's distinct words: a reviewer
+   that returned the finished version with its corrections (what the verdict brief and the preset reviewers ask for) can reword
+   past half the runs while keeping most of the words, and its version is the work (R1) — never swapped back for the draft it
+   corrected. An approval that talks ABOUT the work names a few of its words, not most. Not "much shorter than the work": a
+   one-line work and its approval can be the same length. Pure; reads the first 64k characters of each. */
 const wordsOf = s => String(s).slice(0, 65536).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
 function carriesWork(reply, work) {
   const w = wordsOf(work);
   if (!w.length) return true;
+  const r = wordsOf(reply);
   const k = Math.min(3, w.length);
   const runs = a => { const g = new Set(); for (let i = 0; i + k <= a.length; i++) g.add(a.slice(i, i + k).join(' ')); return g; };
-  const want = runs(w), have = runs(wordsOf(reply));
+  const want = runs(w), have = runs(r);
   let kept = 0;
   for (const g of want) if (have.has(g)) kept++;
-  return kept * 2 >= want.size;
+  if (kept * 2 >= want.size) return true;
+  const words = new Set(w), said = new Set(r);
+  let seen = 0;
+  for (const x of words) if (said.has(x)) seen++;
+  return seen * 3 >= words.size * 2;
 }
 function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);
