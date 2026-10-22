@@ -157,9 +157,44 @@ function walkerScene(w, b) {
   A.eq(rp.mode, 'still', "renderPace().mode reads 'still' — the bench and telemetry can prove the tier");
   A.ok(Math.abs(rp.paceMs - 33.3) < 0.1 && rp.still === true && rp.stillWhy === null, '...at the 30/s pace, with no motion source named');
   A.ok(rp.stillFrames >= 29 && typeof rp.stillWhyCounts === 'object', '...and it counts the frames it judged still (' + rp.stillFrames + '), for a bench window');
-  let waits = 0; for (let i = 0; i < 100; i++) { w.runUntil(w.env.now + 1); if (w.W.renderPace().timerWait) waits++; }
-  A.ok(waits >= 85, '...waiting in a timer between draws (' + waits + '% of the time)');
+  // the wait between still draws (THE STILL TICK'S TIMER): a timer to just past the vsync before the draw, then the one booked
+  // rAF that lands it — the rAF tail is part of the wait (one callback, at the draw), never a spin
+  let inTimer = 0, inTail = 0;
+  for (let i = 0; i < 100; i++) { w.runUntil(w.env.now + 1); if (w.W.renderPace().timerWait) inTimer++; else if (w.sb.raf) inTail++; }
+  A.ok(inTimer >= 45 && inTimer + inTail >= 99, '...waiting between draws: in a timer ' + inTimer + '% of the time, then in the one booked rAF that lands the draw (' + inTail + '%)');
   A.ok(Math.abs(w.W.st().vsyncMs - 1000 / 60) < 0.5, 'a timer-booked callback is never learned as a vsync (vsyncMs stays ' + w.W.st().vsyncMs.toFixed(2) + ' ms)');
+}
+
+// ---- 1b. exactly 30/s while still, even when the timers run late (Andrew approved exactly 30/s) -------------------------
+// Windows / WebView2 timers can fire a ~15.6 ms system tick late. The still tick's timer wakes a vsync early and rAF lands
+// the draw, so the still pace holds; with on-time timers it books one rAF callback per still draw, as before.
+{
+  const stillRate = (hz, opts) => {
+    const w = makeWorld(hz, opts), b = body();
+    w.sb.agent = b; walkerScene(w, b);
+    w.W.frame(0); w.runUntil(1000);
+    const d0 = w.env.draws.length, r0 = w.env.rafCalls;
+    w.runUntil(3000);
+    return { per: (w.env.draws.length - d0) / 2, cb: (w.env.rafCalls - r0) / 2, mode: w.W.renderPace().mode };
+  };
+  for (const lag of [4, 15.6]) {
+    const r = stillRate(60, { timerLate: lag });
+    A.ok(r.per >= 28 && r.per <= 31 && r.mode === 'still', 'timers ' + lag + ' ms late, 60 Hz: a still station is still drawn ~30x a second (' + r.per + '/s)');
+    A.ok(r.cb <= r.per + 0.5, '...with one rAF callback per still draw (' + r.cb + ' callbacks/s)');
+  }
+  // (144 Hz: the vsync nearest 33.3 ms is the 5th, 34.7 ms — frame()'s half-vsync rule — so ~28.8/s there, as before)
+  for (const hz of [60, 144]) {
+    const r = stillRate(hz);
+    A.ok(r.per >= (hz === 60 ? 29 : 28) && r.per <= 31 && r.cb <= r.per + 0.5, 'on-time timers, ' + hz + ' Hz: ~30 still draws/s (' + r.per + ') and no extra rAF callbacks (' + r.cb + '/s)');
+  }
+  // the timer aims at the vsync frame() itself draws on: its slack is frame()'s skip rule, byte for byte
+  const slack = (world.slice(pFrom, pTo).match(/function drawSlackMs\(\) \{ return (Math\.max\(1, Math\.min\(vsyncMs \|\| 2, 17\) \/ 2\)); \}/) || [])[1];
+  A.ok(!!slack && frameSrc.includes('now - lastDrawnAt < pace - ' + slack + ')'), "the still tick timer's slack (drawSlackMs) is frame()'s own skip rule (" + slack + ')');
+  // MUTATION CHECK: the old tick timer (2 ms before the draw) loses a vsync to any timer over 2 ms late
+  const OLD_TICK = src => src.replace('Math.min(stillTickTimerAt(pace), stillDue - lead)', 'Math.min(lastDrawnAt + pace - 2, stillDue - lead)');
+  A.ok(OLD_TICK(world.slice(pFrom, pTo)) !== world.slice(pFrom, pTo), '(the mutation check finds the still tick timer in scheduleFrame)');
+  const old = stillRate(60, { timerLate: 4, pacer: OLD_TICK });
+  A.ok(old.per < 25, 'MUTATION CHECK — the old tick timer, timers 4 ms late: the still pace fell to ' + old.per + '/s');
 }
 
 // ---- 2. motion is drawn at the normal pace ------------------------------------------------------------------------
@@ -380,7 +415,7 @@ function dueRun(d, opts) {
   // the rule before the fix: the still wait's timer aims 2 ms before the change (inside the last vsync too), and a frame's
   // verdict re-books only a timer that would fire after the change
   const OLD = {
-    pacer: src => src.replace('still && stillDue - now > lead ? Math.min(lastDrawnAt + pace - 2, stillDue - lead) - now : 0', 'still ? Math.min(lastDrawnAt + pace, stillDue) - now - 2 : 0'),
+    pacer: src => src.replace('still && stillDue - now > lead ? Math.min(stillTickTimerAt(pace), stillDue - lead) - now : 0', 'still ? Math.min(lastDrawnAt + pace, stillDue) - now - 2 : 0'),
     verdict: src => src.replace('stillDue - dueLeadMs() < paceTimerAt - 0.5', 'stillDue < paceTimerAt'),
   };
   A.ok(OLD.pacer(world.slice(pFrom, pTo)) !== world.slice(pFrom, pTo) && OLD.verdict(world.slice(vFrom, vTo)) !== world.slice(vFrom, vTo),
