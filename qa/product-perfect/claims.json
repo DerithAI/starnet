@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "64667daa5c1c8ee79ee53b209527e57478bbcfdd",
+    "sourceCommit": "d42189a186ecdf1ea9fdc6db3f18318b605b054e",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -353,8 +353,8 @@
       },
       {
         "path": "frontend/app/chat.js",
-        "bytes": 889376,
-        "sha256": "a3577204dbc8e0e39033f8a2f575a1c24646299e81bd31869a4bb7588247e4bb"
+        "bytes": 890270,
+        "sha256": "b1e266264c836453e73ece34a2304418a240c73b813aa092f9019687c3c36736"
       },
       {
         "path": "frontend/app/chatresize.js",
@@ -578,8 +578,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 122796,
-        "sha256": "a10e3e379bcc5419849eab3134398e283fb3d0506fd9e66a4083e46da3712409"
+        "bytes": 123026,
+        "sha256": "5c13d6cc16b4eab5d865d9b5112bfcb1e15bf4302be0ed96443b53339f929021"
       },
       {
         "path": "frontend/app/hint.js",
@@ -1148,8 +1148,8 @@
       },
       {
         "path": "frontend/app/slaglog.js",
-        "bytes": 8576,
-        "sha256": "e8594a3596ee71d5e1105e3c2cafe1a680bc959deb31b72f63bb9677e0299d93"
+        "bytes": 9326,
+        "sha256": "9fa29d9b54904a66c7d708722617ae7efa6aa52d0f44aee0571000f50bded37e"
       },
       {
         "path": "frontend/app/spacebg.js",
@@ -1473,8 +1473,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 896914,
-        "sha256": "e58a5245782595202f8b46031bf5307e66bf5eb7b7bec91d28cc0ff61bf81f36"
+        "bytes": 896962,
+        "sha256": "b4f79ae5bc1267fade2e141c9fa027221f4642f7098a89bef05b8d5da2b0035f"
       },
       {
         "path": "frontend/app/worldlab.js",
