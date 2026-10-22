@@ -70,7 +70,7 @@ function hermeticEnv(base) {
   }
   return Object.assign(env, { SKYNET_FULL_ACCESS: '1', STARNET_FULL_ACCESS: '1', SKYNET_SKILL_REVIEW: '0', SKYNET_SKILL_CURATOR: '0',
     SKYNET_THREAD_MINE: '0', SKYNET_AUX_BUDGET: '0', STARNET_LIVE_PRICES: '0', STARNET_CREDITS_URL: '', SKYNET_CREDITS_URL: '',
-    SKYNET_OPENROUTER_BASE: base, SKYNET_OPENROUTER_KEY: 'sk-or-v1-tomb-fake', SKYNET_DEFAULT_MODEL: 'test/model' });
+    SKYNET_OPENROUTER_BASE: base, SKYNET_OPENROUTER_KEY: 'tomb-fixture', SKYNET_DEFAULT_MODEL: 'test/model' });
 }
 
 (async () => {
