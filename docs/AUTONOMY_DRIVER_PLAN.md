@@ -54,9 +54,10 @@ binding** ("you set me free, but I'm still learning you — here's a question in
 Andrew's ruling):** the deterministic floor's numbers moved from "goals + 4 dossier areas, or 4 recent runs" to
 one fresh *grounded* aim or one recent user run (`frontend/app/autopilot.js` `HOT_MIN` / `ACTIVITY_HOT_MIN` = 1).
 The trust line below still holds: a goals belief only counts when its weight is stated / synth / observed — a
-`seed` (the quick-setup chip's canned purpose, a thin run's synthesis, any doc copy; `dossier.js` WEIGHTS) is
-known breadth, never acting grounds. So a Commander whose awakening gave nothing of their own still sees "earn
-context, then act" until they say what they want or run one task. Whether a chosen away posture may lift even
+`seed` (the quick-setup chip's canned purpose, a thin run's synthesis and its BELIEF lines, a dig reply written
+before the Commander typed anything, any doc copy; `dossier.js` WEIGHTS; `onboarding.js` labels each write by what
+the Commander gave) is known breadth, never acting grounds. So a Commander whose awakening gave nothing of their
+own still sees "earn context, then act" until they say what they want or run one task. Whether a chosen away posture may lift even
 that hold (the DECISIONS "no usage walls" conflict the bug names) is the owner's call, not this note's. The
 per-candidate half is unchanged: every job must cite a real belief or run, clear `MIN_ACT_SCORE`, and survive
 the self-critique.

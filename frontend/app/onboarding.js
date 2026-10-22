@@ -600,15 +600,19 @@ const Onboarding = (() => {
     } catch (_) {}
   }
 
-  // V3 helpers — synthesized beliefs from a mind reply land as weight 'synth' (grounded, counts toward
-  // readiness) through the one store chokepoint; a quiet store is a no-op, never a crash.
-  function upsertSynthBeliefs(beliefs) {
+  // V3 helpers — synthesized beliefs from a mind reply land through the one store chokepoint; a quiet store is a
+  // no-op, never a crash. The weight says what the Commander actually GAVE (bug 41b2d015 review): 'synth' (grounded,
+  // counts toward readiness) only when the reply synthesizes their own words; a reply written with nothing of theirs
+  // to read — a thin run's read, the dig after "Help me figure that out" — lands as 'seed', never inked, so a goals
+  // line the model invented can never make the station think it knows what they want.
+  function upsertSynthBeliefs(beliefs, grounded) {
     if (!Array.isArray(beliefs) || typeof DossierStore === 'undefined' || !DossierStore.upsert) return;
+    const weight = grounded ? 'synth' : 'seed';
     let inked = 0;
     for (const b of beliefs) {
       if (!(b && b.dim && b.text)) continue;
-      DossierStore.upsert(b.dim, { text: b.text, source: 'onboarding', weight: 'synth' });
-      if (!inked++) ink(b.dim, b.text);   // the stamp shows the first learned line; the file holds them all
+      DossierStore.upsert(b.dim, { text: b.text, source: 'onboarding', weight });
+      if (grounded && !inked++) ink(b.dim, b.text);   // the stamp shows the first learned line; the file holds them all
     }
   }
   // one generated follow-up ask → the Commander's typed words (steer-chip law: generated chips are
@@ -739,7 +743,7 @@ const Onboarding = (() => {
       const reply = await mindWait(pending, WakeMind.parseDigReply, DIG_PATTER, SYNTHESIS_MS);
       if (!running) return;
       if (!reply) break;
-      upsertSynthBeliefs(reply.beliefs);
+      upsertSynthBeliefs(reply.beliefs, conversation.some(turn => turn.answer));   // a help-only turn has no words of theirs yet
       await Dialogue.say([seg(reply.ack, 44, 360)]);
       if (!running || !reply.ask || followupsLeft <= 0) break;
       const questionKey = text => String(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -778,7 +782,7 @@ const Onboarding = (() => {
       if (!running) return;
       let askedElse = false;
       while (mir && mir.offers && mir.offers.length) {
-        upsertSynthBeliefs(mir.beliefs);
+        upsertSynthBeliefs(mir.beliefs, true);   // the mirror only runs on their words (tuesdayT || digT)
         await Dialogue.say([seg('okay. before i write anything down — here’s what i could take off you, starting tonight:', 44, 320)]);
         if (!running) return;
         const opts = mir.offers.map((o, i) => ({ label: (o.length > 64 ? o.slice(0, 63).replace(/\s+\S*$/, '') + '…' : o), value: 'o' + i }));
@@ -842,7 +846,7 @@ const Onboarding = (() => {
       const syn = await mindWait(synPending, WakeMind.parseSynthesis, SYNTH_PATTER, SYNTHESIS_MS);
       if (!running) return;
       if (syn) {
-        upsertSynthBeliefs(syn.beliefs);
+        upsertSynthBeliefs(syn.beliefs, gaveAnything);   // a THIN read's BELIEF lines are the model's, not theirs
         await Dialogue.say([seg(syn.read, 42, 420)]);
         if (!running) return;
         const c = await Dialogue.node({ lines: [seg('did i read that right?', 46, 0)], options: WakeMind.confirmChoices() });
@@ -881,7 +885,7 @@ const Onboarding = (() => {
         if (commit) commit({ purpose: purposeT });
         purposeSaid = purposeT;
         // the one durable belief only this conversation could surface: the stack/domain they live in.
-        if (syn.stack && typeof DossierStore !== 'undefined' && DossierStore.upsert) DossierStore.upsert('stack', { text: syn.stack, source: 'onboarding', weight: 'synth' });
+        if (syn.stack && typeof DossierStore !== 'undefined' && DossierStore.upsert) DossierStore.upsert('stack', { text: syn.stack, source: 'onboarding', weight: gaveAnything ? 'synth' : 'seed' });
         if (typeof ProfileStore !== 'undefined' && typeof Classify !== 'undefined') ProfileStore.seed(Classify.getTag(purposeT));
         bumpTruth();
         await Dialogue.say([seg('there it is — your station’s purpose, in ink. that’s what this station’s for.', 44, 360)]);

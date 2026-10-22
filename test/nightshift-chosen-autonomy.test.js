@@ -19,7 +19,10 @@
        sidecar/index.js by their declarations — stores that snapshot + the picked preset's posture and gates on it;
      · the REAL night-shift driver (sidecar/nightshift-driver.js) ticks with that precheck: away + chosen posture → a
        beat FIRES (before the fix it declined with binding 'readiness' and never reached the beat);
-     · the REAL NightReport.postureOutlook speaks the awakening line from that status — no "I'll start once…" hold.
+     · the REAL NightReport.postureOutlook speaks the awakening line from that status — no "I'll start once…" hold;
+     · section 6 runs the REAL onboarding.js short conversation against a stubbed brain into that same DossierStore,
+       so the weight each awakening write carries (a thin read's BELIEF lines, the dig after "Help me figure that
+       out") is what the host gates on — never a hand-built snapshot.
    The floor stays honest: with nothing of the Commander's to cite (no grounded aims, no runs) it still stands down
    pre-spend — the canned "Code & build" chip included, in step with the station's own shared V3 verdict
    (no-direction) — and the copy names the one thing that grounds a job, never a count of areas. */
@@ -72,7 +75,7 @@ function makeHost(runs) {
 // DossierStore.syncDocs → pushToSidecar → POST /api/autonomy/posture { beliefs }). `said` = the beliefs the
 // conversation itself writes FIRST (onboarding.js: DossierStore.upsert('goals', { weight: 'synth'|'stated'|'seed' })
 // lands BEFORE purpose.md commits, so the doc seed then dedupes to nothing).
-function awakeningSnapshot(docs, said) {
+function realStore() {
   const posts = [];
   const ctx = vm.createContext({
     Dossier, Understanding,
@@ -80,10 +83,14 @@ function awakeningSnapshot(docs, said) {
   });
   const store = vm.runInContext(dossierStoreSrc + '\nDossierStore', ctx);
   store.init({});
+  const snapshot = () => { const last = posts.filter(p => p.url === '/api/autonomy/posture' && p.body && p.body.beliefs).pop(); return last ? last.body.beliefs : null; };
+  return { store, snapshot };
+}
+function awakeningSnapshot(docs, said) {
+  const { store, snapshot } = realStore();
   for (const [dim, belief] of (said || [])) store.upsert(dim, belief);
   store.syncDocs(docs, { canonical: true });
-  const last = posts.filter(p => p.url === '/api/autonomy/posture' && p.body && p.body.beliefs).pop();
-  return last ? last.body.beliefs : null;
+  return snapshot();
 }
 
 const NOW = Date.now();
@@ -213,4 +220,108 @@ for (const [label, weight] of [['confirmed synthesis', 'synth'], ['own words', '
   A.ok(/what you want help with now/.test(NR.readinessPlain(view)), 'the plain hold asks for current aims');
 }
 
-A.report('nightshift-chosen-autonomy.test');
+/* ===== 6. THE AWAKENING ITSELF labels what it writes by what the Commander gave (review of 41b2d015) =====
+   Sections 1-2 hand-build the beliefs the conversation writes. Here the REAL onboarding.js runs the short conversation
+   in a vm against a stubbed brain and writes into the REAL DossierStore; app.js then syncs the committed purpose.md
+   (syncDocs canonical) and the snapshot it POSTs is what the real host gates on. The brain's directive invites BELIEF
+   lines on every reply, including a thin run's read and the dig after "Help me figure that out" — so a model-written
+   goals line there must land as a SEED, or one invented aim makes the station hot and spends the leash unattended. */
+const onboardingSrc = fs.readFileSync(path.join(ROOT, 'frontend', 'app', 'onboarding.js'), 'utf8');
+const WakeMind = require('../frontend/app/wakemind.js');
+const DIG_ASK = 'what would you enjoy making first?';
+async function awakeningRun(opening, followUp, brain) {
+  const { store, snapshot } = realStore();
+  const commits = [], directives = [];
+  let nodes = 0;
+  const answerFor = cfg => {
+    const first = String((cfg.lines && cfg.lines[0] && cfg.lines[0].text) || '');
+    const opts = cfg.options || [];
+    if (opts.some(o => o.value === 'loose')) return { value: 'loose', label: 'short' };          // A short conversation
+    if (/set up an agent/.test(first)) return opening;
+    if (first === DIG_ASK) return followUp ? { value: followUp, label: followUp, custom: true } : { value: '', skip: true };
+    if (opts.some(o => o.value === 'yes')) return { value: 'yes', label: 'that’s me' };            // "did i read that right?"
+    const skip = opts.find(o => o.skip);
+    return skip ? { value: '', skip: true } : (opts[0] || { value: '', skip: true });
+  };
+  const ctx = vm.createContext({
+    console, Promise,
+    Interview: require('../frontend/app/interview.js'),
+    setTimeout: fn => { setImmediate(fn); return 0; }, clearTimeout() {},
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    World: {},
+    Chat: { beginInterview() {}, endInterview() {}, localLine() {}, typeLine(segs, cb) { if (cb) Promise.resolve().then(cb); return () => {}; }, prefill() {} },
+    Dialogue: {
+      open() {}, setStage() {}, ink() {}, close() {}, isOpen: () => false, say: async () => {}, answer: () => false,
+      node: async cfg => (++nodes > 120 ? new Promise(() => {}) : answerFor(cfg))
+    },
+    WakeMind,
+    Harness: { configured: () => true, chat: async o => { const d = String(o.messages[0].content); directives.push(d); return { text: brain(d) }; } },
+    DossierStore: store
+  });
+  vm.runInContext(onboardingSrc + '\nthis.Onboarding = Onboarding;', ctx);
+  ctx.Onboarding.start({ docs: {}, commit: p => commits.push(p), wake: false, name: 'TEST', role: 'orchestrator' });
+  for (let i = 0; i < 600 && !commits.some(c => c && c.purpose); i++) await new Promise(r => setImmediate(r));
+  const purpose = (commits.find(c => c && c.purpose) || {}).purpose || '';
+  store.syncDocs({ purpose }, { canonical: true });   // app.js applyAgentConfig → DossierStore.syncDocs
+  return { purpose, directives, snap: snapshot() };
+}
+const THIN_READ = 'READ: i barely know you yet.\nPURPOSE: learn you fast through real work.\nSTACK: python scripts\nBELIEF goals: wants to learn what an agent can do for them through real work.';
+const thinBrain = d => /THE READ/.test(d) ? THIN_READ : 'ACK: got it.\nASK: NONE';
+const helpBrain = d => {
+  if (/THE READ/.test(d)) return /gave you almost nothing/.test(d) ? THIN_READ : 'READ: you want your level editor shipped.\nPURPOSE: Ship the level editor for your pixel-art game.\nSTACK: NONE';
+  if (/"answer"/.test(d)) return 'ACK: a level editor — good, that is concrete.\nASK: NONE\nBELIEF goals: wants to ship the level editor for their pixel-art game.';
+  return 'ACK: happy to help you find a start.\nASK: ' + DIG_ASK + '\nBELIEF goals: wants an agent to build their side project.';   // the help turn: they said nothing yet
+};
+const goalsWeights = snap => ((snap && snap.beliefs && snap.beliefs.goals) || []).map(b => b.weight);
+function gateFor(snap, preset) {
+  const host = makeHost(0);
+  host.commanderPosture.set(null, snap);
+  host.commanderPosture.set(Autonomy.applyPreset(Autonomy.fresh(), preset));
+  const d = driverFor(host);
+  return { pre: host.nightshiftPrecheck(), tick: d.driver.applyTick(NOW), beats: d.beats(), tier: host.nightshiftReadinessView().tier };
+}
+
+(async () => {
+  // 6a. a THIN run (the opening skipped, nothing typed): the read's invented goals BELIEF never grounds acting
+  {
+    const r = await awakeningRun({ value: '', skip: true }, null, thinBrain);
+    A.ok(r.directives.some(d => /THE READ/.test(d) && /gave you almost nothing/.test(d)), 'thin run: the synthesis was asked as a THIN read (the real directive, not a hand-built snapshot)');
+    A.ok(r.purpose.length > 0, 'thin run: purpose.md still commits');
+    A.ok(goalsWeights(r.snap).length >= 2, 'thin run: the read wrote its BELIEF goals line and its purpose (' + goalsWeights(r.snap).length + ' goals beliefs)');
+    A.eq(goalsWeights(r.snap).filter(w => w !== 'seed'), [], 'thin run: every goals belief the awakening wrote is a SEED (the model invented them)');
+    A.eq(((r.snap.beliefs.stack) || []).map(b => b.weight), ['seed'], 'thin run: the read’s STACK line is a seed too');
+    for (const preset of ['build', 'free']) {
+      const g = gateFor(r.snap, preset);
+      A.eq([g.pre, g.tier], [{ ok: false, reason: 'readiness' }, 'warm'], preset + ' thin run: the chosen posture holds (warm, not hot)');
+      A.eq([g.tick.fired, g.tick.binding, g.beats], [false, 'readiness', 0], preset + ' thin run: the away tick declines before spending any leash');
+    }
+  }
+  // 6b. "Help me figure that out", then nothing typed: the dig reply's invented goals BELIEF never grounds acting
+  {
+    const r = await awakeningRun({ help: true, label: 'Help me figure that out' }, null, helpBrain);
+    A.ok(r.directives.some(d => /THE TUESDAY/.test(d) && /helpRequested/.test(d)), 'help only: the dig reply ran on the help request');
+    A.ok(goalsWeights(r.snap).length >= 2, 'help only: the dig and the read wrote goals beliefs (' + goalsWeights(r.snap).length + ')');
+    A.eq(goalsWeights(r.snap).filter(w => w !== 'seed'), [], 'help only: every goals belief is a SEED (no words of the Commander’s yet)');
+    const g = gateFor(r.snap, 'build');
+    A.eq([g.pre, g.tick.fired, g.beats], [{ ok: false, reason: 'readiness' }, false, 0], 'help only: the chosen posture holds, nothing spent');
+  }
+  // 6c. help first, then their OWN words to the follow-up: what they said grounds acting (the fix never over-corrects)
+  {
+    const r = await awakeningRun({ help: true, label: 'Help me figure that out' }, 'I want to ship the level editor for my pixel-art game.', helpBrain);
+    const goals = (r.snap.beliefs.goals || []);
+    const help = goals.find(b => /side project/.test(b.text)), said = goals.find(b => /level editor for their/.test(b.text));
+    A.eq([help && help.weight, said && said.weight], ['seed', 'synth'], 'help then words: the help turn’s line is a seed, the answered turn’s line is synth');
+    for (const preset of ['build', 'free']) {
+      const g = gateFor(r.snap, preset);
+      A.eq([g.pre, g.tier, g.tick.fired, g.beats], [{ ok: true }, 'hot', true, 1], preset + ' help then words: the chosen posture acts with zero runs');
+    }
+  }
+  // 6d. their own words at the opening: the dig's and the read's lines are synth and the chosen posture acts
+  {
+    const r = await awakeningRun({ value: 'I want to ship the level editor for my pixel-art game.', label: 'x', custom: true }, null, helpBrain);
+    A.ok(goalsWeights(r.snap).indexOf('synth') >= 0 && goalsWeights(r.snap).indexOf('seed') < 0, 'own words: the goals beliefs are grounded (' + goalsWeights(r.snap).join(',') + ')');
+    const g = gateFor(r.snap, 'build');
+    A.eq([g.pre, g.tick.fired, g.beats], [{ ok: true }, true, 1], 'own words: the chosen posture acts with zero runs');
+  }
+  A.report('nightshift-chosen-autonomy.test');
+})();
