@@ -15,8 +15,8 @@ A.eq(Autopilot.idleFor(t + 1000, t, 5000), false, 'not idle before the span');
 A.eq(Autopilot.idleFor(NaN, t, 5000), false, 'a bad clock is never idle (fail safe)');
 
 /* ---------- readiness tiers ---------- */
-// THE ACT FLOOR IS GROUNDING, NOT USAGE (bug 41b2d015): hot = a usable aim (goals, the keystone) or one recent run.
-// It used to be goals + 4 areas or 4 runs — a usage wall the Commander's chosen posture had to wait behind.
+// THE ACT FLOOR IS GROUNDING, NOT BREADTH (bug 41b2d015): hot = a usable GROUNDED aim (goals, the keystone; never a
+// seed) or one recent run. It used to be goals + 4 areas or 4 runs.
 let rd = Autopilot.readiness({ known: [], familiarity: 0 }, {}, t, {});
 A.eq(rd.tier, 'cold', 'nothing known → cold (nothing to ground a job on)');
 
@@ -24,7 +24,31 @@ rd = Autopilot.readiness({ known: ['stack'], familiarity: 1 / 7 }, { stack: fres
 A.eq(rd.tier, 'warm', 'areas known but no goals → warm (knows something, not yet what they want — never acts)');
 
 rd = Autopilot.readiness({ known: ['goals'], familiarity: 1 / 7 }, { goals: fresh() }, t, {});
-A.eq([rd.tier, rd.groundedBy], ['hot', 'dossier'], 'goals alone → hot (the awakening always authors purpose.md → goals: a chosen posture acts)');
+A.eq([rd.tier, rd.groundedBy], ['hot', 'dossier'], 'a grounded goals belief alone → hot (a chosen posture acts on the aims the Commander gave)');
+
+// ONLY CONFIRMED BELIEFS CROSS THE ACTING LINE (review of 41b2d015; AUTONOMY_DRIVER_PLAN §2 trust line; dossier.js
+// WEIGHTS): a goals area held only by SEEDS — the quick-setup chip's canned purpose, a thin run, a doc copy — is known
+// breadth, never grounding to act. The station's shared V3 verdict says "no direction" there; the act floor agrees.
+const D_earn = (r) => { const x = Autopilot.decide({ enabled: true, idle: true, actsUnattended: true, tier: r.tier }); return [x.mode, x.binding]; };
+const seedGoals = () => [{ text: 'Help me write, debug, and ship software.', weight: 'seed', createdAt: t, updatedAt: t }];
+rd = Autopilot.readiness({ known: ['goals'], familiarity: 1 / 7 }, { goals: seedGoals() }, t, {});
+A.eq([rd.tier, rd.goalsUsable, rd.goalsStale, rd.usableDims], ['warm', false, false, ['goals']], 'a seed-only goals area → warm, not hot (a canned line is not an aim; never reported stale)');
+rd = Autopilot.readiness(
+  { known: ['goals', 'identity', 'standing_orders'], familiarity: 3 / 7 },
+  { goals: seedGoals(), identity: [{ text: 'solo founder', weight: 'seed' }], standing_orders: [{ text: 'never push', weight: 'seed' }] }, t, {});
+A.eq(rd.tier, 'warm', 'three doc-seeded areas still never reach hot (seeds never add up to grounding)');
+A.eq(D_earn(rd), ['earn', 'confidence'], 'an acting dial over a seed-only station EARNS (the curiosity branch still fires), CONFIDENCE binding');
+rd = Autopilot.readiness({ known: ['goals'], familiarity: 1 / 7 }, { goals: seedGoals().concat([{ text: 'ship the pricing page', weight: 'synth', createdAt: t, updatedAt: t }]) }, t, {});
+A.eq([rd.tier, rd.goalsUsable], ['hot', true], 'a seed beside a grounded aim → hot (the grounded belief carries it)');
+['stated', 'synth', 'observed'].forEach(w => {
+  A.eq(Autopilot.readiness({ known: ['goals'] }, { goals: [{ text: 'ship it', weight: w, createdAt: t, updatedAt: t }] }, t, {}).tier, 'hot', 'a ' + w + ' goals belief grounds acting');
+});
+A.eq(Autopilot.readiness({ known: ['goals'] }, { goals: [{ text: 'ship it', weight: null }] }, t, {}).tier, 'hot', 'a legacy belief with no weight is inferred non-seed (dossier.js weightOf), never a seed by guess');
+// a fresh seed must not make stale real aims look current
+const staleAt = t - (Autopilot.STALE_MS + 1);
+rd = Autopilot.readiness({ known: ['goals'] }, { goals: [{ text: 'ship the beta', weight: 'stated', createdAt: staleAt, updatedAt: staleAt }].concat(seedGoals()) }, t, {});
+A.eq([rd.tier, rd.goalsUsable, rd.goalsStale], ['warm', false, true], 'stale grounded aims beside a fresh seed → not hot, reported stale (the seed is no freshness)');
+A.eq(Autopilot.readiness({ known: ['goals'] }, { goals: seedGoals() }, t, { activityCount: 1 }).groundedBy, 'activity', 'a seed-only dossier + one real run → hot, grounded by the RUN');
 
 rd = Autopilot.readiness(
   { known: ['goals', 'stack', 'pain', 'identity'], familiarity: 4 / 7 },

@@ -50,14 +50,16 @@ is the level the station has *earned*; it operates at the **lower of the two and
 binding** ("you set me free, but I'm still learning you — here's a question instead of a guess").
 `WAIT` means nothing ever, regardless of confidence.
 
-**Amendment (2026-10-21, bug 41b2d015):** the deterministic floor is *grounding*, never *usage*. It shipped as
-"goals + 4 dossier areas, or 4 recent runs", which held a posture the Commander chose at the awakening
-("Quietly do small jobs" / "Run free") off with no setting to lift it — a usage wall under DECISIONS ("full
-power from minute one, no grind/unlock/usage walls"). The floor is now one current aim (goals — the awakening
-always authors purpose.md, which seeds it) or one recent user run (`frontend/app/autopilot.js` `HOT_MIN` /
-`ACTIVITY_HOT_MIN` = 1). Below it there is nothing a job could cite, so the station still earns context first.
-The per-candidate half is unchanged: every job must cite a real belief or run, clear `MIN_ACT_SCORE`, and
-survive the self-critique.
+**Implementation note (2026-10-21, bug 41b2d015 — the decisions above are unchanged; the bug stays open for
+Andrew's ruling):** the deterministic floor's numbers moved from "goals + 4 dossier areas, or 4 recent runs" to
+one fresh *grounded* aim or one recent user run (`frontend/app/autopilot.js` `HOT_MIN` / `ACTIVITY_HOT_MIN` = 1).
+The trust line below still holds: a goals belief only counts when its weight is stated / synth / observed — a
+`seed` (the quick-setup chip's canned purpose, a thin run's synthesis, any doc copy; `dossier.js` WEIGHTS) is
+known breadth, never acting grounds. So a Commander whose awakening gave nothing of their own still sees "earn
+context, then act" until they say what they want or run one task. Whether a chosen away posture may lift even
+that hold (the DECISIONS "no usage walls" conflict the bug names) is the owner's call, not this note's. The
+per-candidate half is unchanged: every job must cite a real belief or run, clear `MIN_ACT_SCORE`, and survive
+the self-critique.
 
 **Two-tier grounding maps onto the ask→propose→act ladder:**
 - **Confirmed beliefs (dossier)** may ground **acting**.

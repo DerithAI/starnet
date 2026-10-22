@@ -6,8 +6,11 @@
    recent runs or 4 known dossier areas, with no setting to lift it — a usage wall on the onboarding path
    (DECISIONS: full power from minute one, no grind/unlock/usage walls).
 
-   THE FIX: the act floor is GROUNDING, not usage — a current aim (the awakening always authors purpose.md, which seeds
-   goals) or one recent user run. The per-job anti-slop guard (grounding veto, confidence gate, self-critique) is unchanged.
+   THE CHANGE: the act floor is GROUNDING, not a breadth count — one current GROUNDED aim or one recent user run. The
+   trust line holds (AUTONOMY_DRIVER_PLAN §2: only confirmed beliefs cross the acting line; dossier.js WEIGHTS): a goals
+   area held only by SEEDS — the quick-setup chip's canned purpose, a thin run, any doc copy — never makes the station
+   hot, so a Commander who gave the awakening nothing of their own still sees the hold (that hold is the open owner
+   ruling on the bug). The per-job anti-slop guard (grounding veto, confidence gate, self-critique) is unchanged.
 
    Drives the REAL path end to end, no sidecar boot (sidecar/index.js is never required or run):
      · the REAL DossierStore (frontend/app/dossierstore.js) seeds the dossier from the awakening's purpose.md and
@@ -17,8 +20,9 @@
      · the REAL night-shift driver (sidecar/nightshift-driver.js) ticks with that precheck: away + chosen posture → a
        beat FIRES (before the fix it declined with binding 'readiness' and never reached the beat);
      · the REAL NightReport.postureOutlook speaks the awakening line from that status — no "I'll start once…" hold.
-   The floor stays honest: with nothing of the Commander's to cite (no aims, no runs) it still stands down pre-spend
-   and the copy names the one thing that grounds a job, never a count of areas. */
+   The floor stays honest: with nothing of the Commander's to cite (no grounded aims, no runs) it still stands down
+   pre-spend — the canned "Code & build" chip included, in step with the station's own shared V3 verdict
+   (no-direction) — and the copy names the one thing that grounds a job, never a count of areas. */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('fs');
@@ -27,6 +31,7 @@ const vm = require('vm');
 const Autopilot = require('../frontend/app/autopilot.js');
 const Autonomy = require('../frontend/app/autonomy.js');
 const Dossier = require('../frontend/app/dossier.js');
+const Understanding = require('../frontend/app/understanding.js');
 const NR = require('../frontend/app/nightreport.js');
 const nightshift = require('../sidecar/nightshift.js');
 const { makeNightshiftDriver } = require('../sidecar/nightshift-driver.js');
@@ -64,15 +69,18 @@ function makeHost(runs) {
 }
 
 // the beliefs snapshot the REAL DossierStore sends after the awakening commits its docs (app.js applyAgentConfig →
-// DossierStore.syncDocs → pushToSidecar → POST /api/autonomy/posture { beliefs }).
-function awakeningSnapshot(docs) {
+// DossierStore.syncDocs → pushToSidecar → POST /api/autonomy/posture { beliefs }). `said` = the beliefs the
+// conversation itself writes FIRST (onboarding.js: DossierStore.upsert('goals', { weight: 'synth'|'stated'|'seed' })
+// lands BEFORE purpose.md commits, so the doc seed then dedupes to nothing).
+function awakeningSnapshot(docs, said) {
   const posts = [];
   const ctx = vm.createContext({
-    Dossier,
+    Dossier, Understanding,
     fetch: (url, opts) => { posts.push({ url: url, body: opts && opts.body ? JSON.parse(opts.body) : null }); return Promise.resolve({ ok: true, json: () => Promise.resolve({}) }); }
   });
   const store = vm.runInContext(dossierStoreSrc + '\nDossierStore', ctx);
   store.init({});
+  for (const [dim, belief] of (said || [])) store.upsert(dim, belief);
   store.syncDocs(docs, { canonical: true });
   const last = posts.filter(p => p.url === '/api/autonomy/posture' && p.body && p.body.beliefs).pop();
   return last ? last.body.beliefs : null;
@@ -99,41 +107,73 @@ function driverFor(host) {
 
 const OUTLOOK_BUILD = (n) => 'While you’re away I’ll do up to ' + NR.plural(n, 'small job') + ' a day; each arrives as a new session in your rail.';
 
-/* ===== 1. THE REPRO: quick setup — the canned "Code & build" purpose, then "Quietly do small jobs" ===== */
+/* ===== 1. a SEED never grounds acting: quick setup — the canned "Code & build" chip, then "Quietly do small jobs" ===== */
+// (review of 41b2d015) the canned chip writes purpose.md only, so goals holds ONE 'seed' belief. The station's own shared
+// V3 verdict says it has no direction; the night shift must agree and stand down pre-spend, never act on a canned line.
+const CHIP = 'Help me write, debug, and ship software.';   // onboarding.js fallbackPurposeStep 'Code & build'
 for (const preset of ['build', 'free']) {
-  const snap = awakeningSnapshot({ purpose: 'Help me write, debug, and ship software.' });
-  A.ok(snap && Array.isArray(snap.known) && snap.known.indexOf('goals') >= 0, preset + ': the awakening purpose seeds the goals area in the snapshot the sidecar receives');
+  const snap = awakeningSnapshot({ purpose: CHIP });
+  A.ok(snap && Array.isArray(snap.known) && snap.known.indexOf('goals') >= 0, preset + ' chip: the purpose.md seed reaches the snapshot the sidecar receives');
+  A.eq(snap.beliefs.goals.map(b => b.weight), ['seed'], preset + ' chip: the goals area holds only the doc seed');
+  A.ok(snap.ready && snap.ready.ok === false && snap.ready.reasons.indexOf('no-direction') >= 0, preset + ' chip: the shared V3 verdict in the same snapshot says no direction');
   const host = makeHost(0);
-  host.commanderPosture.set(null, snap);                                        // the purpose answer's beliefs sync
-  host.commanderPosture.set(Autonomy.applyPreset(Autonomy.fresh(), preset));   // the away pick (AutonomyStore.applyPreset)
-  const sum = host.commanderPosture.summary();
-  A.eq(sum.actsUnattended, true, preset + ': the chosen preset permits acting unattended');
+  host.commanderPosture.set(null, snap);
+  host.commanderPosture.set(Autonomy.applyPreset(Autonomy.fresh(), preset));
+  A.eq(host.commanderPosture.summary().actsUnattended, true, preset + ' chip: the chosen preset permits acting unattended');
 
-  A.eq(host.nightshiftPrecheck(), { ok: true }, preset + ': a station that knows what you want help with clears the pre-spend gate with zero runs');
+  A.eq(host.nightshiftPrecheck(), { ok: false, reason: 'readiness' }, preset + ' chip: a seed-only aim does NOT clear the pre-spend gate');
   const view = host.nightshiftReadinessView();
-  A.eq([view.tier, view.goalsUsable, view.goalsStale], ['hot', true, false], preset + ': status readiness is hot on the awakening aims alone');
-
+  A.eq([view.tier, view.goalsUsable, view.goalsStale], ['warm', false, false], preset + ' chip: status reads warm — a known area, not a grounded aim (and never "stale")');
   const d = driverFor(host);
-  const sd = d.driver.statusDecision(NOW);
-  A.eq([sd.fire, sd.binding], [true, null], preset + ': status says a beat would fire now (no readiness hold)');
   const r = d.driver.applyTick(NOW);
-  A.eq([r.fired, r.binding], [true, null], preset + ': the away tick FIRES the chosen posture');
-  A.eq(d.beats(), 1, preset + ': the act pipeline was actually entered');
-  A.eq(d.state().beatsUsedToday, 1, preset + ': the beat spent one unit of the daily leash, as any real beat does');
-  A.ok(!d.ledger.some(e => e.kind === 'decline' && e.binding === 'readiness'), preset + ': no readiness decline was ledgered');
-
-  const outlook = NR.postureOutlook(Object.assign({ active: true, binding: sd.binding, buildMode: 'build', draftReason: null, leashPerDay: sum.leashPerDay }, { readiness: view }));
-  A.eq(outlook, OUTLOOK_BUILD(sum.leashPerDay), preset + ': the awakening line says what it will do, with no "I’ll start once…" hold');
-  A.eq(NR.readinessText(view), '', preset + ': SETTINGS › AUTONOMY shows no still-learning line');
+  A.eq([r.fired, r.binding, d.beats(), d.state().beatsUsedToday], [false, 'readiness', 0, 0], preset + ' chip: the away tick declines BEFORE spending any leash');
+  A.eq(NR.readinessPlain(view), 'I’ll start once I know what you want help with, or I’ve seen one of your runs.', preset + ' chip: the awakening line names one answer or one run');
+  A.ok(/doesn’t know your aims yet/.test(NR.readinessText(view)), preset + ' chip: SETTINGS › AUTONOMY says it does not know the aims (a canned line is not an aim)');
 }
 
-/* ===== 2. a deeper awakening (purpose + context + operating manual) — three areas used to be "warm", never acting ===== */
+/* ===== 2. THE ASK: the Commander's OWN words at the awakening, then "Quietly do small jobs" — it acts, no usage bar ===== */
+const MISSION = 'Ship the pricing page and keep the sprite loader fast.';
+for (const [label, weight] of [['confirmed synthesis', 'synth'], ['own words', 'stated']]) {
+  for (const preset of ['build', 'free']) {
+    const tag = preset + ' ' + label;
+    const snap = awakeningSnapshot({ purpose: MISSION }, [['goals', { text: MISSION, source: 'onboarding', weight: weight }]]);
+    A.eq(snap.beliefs.goals.map(b => b.weight), [weight], tag + ': the purpose lands as ONE grounded goals belief (the doc seed dedupes)');
+    const host = makeHost(0);
+    host.commanderPosture.set(null, snap);
+    host.commanderPosture.set(Autonomy.applyPreset(Autonomy.fresh(), preset));
+    const sum = host.commanderPosture.summary();
+
+    A.eq(host.nightshiftPrecheck(), { ok: true }, tag + ': a grounded aim clears the pre-spend gate with zero runs (the old bar wanted 4 areas or 4 runs)');
+    const view = host.nightshiftReadinessView();
+    A.eq([view.tier, view.goalsUsable, view.goalsStale], ['hot', true, false], tag + ': status readiness is hot on the grounded aim alone');
+
+    const d = driverFor(host);
+    const sd = d.driver.statusDecision(NOW);
+    A.eq([sd.fire, sd.binding], [true, null], tag + ': status says a beat would fire now (no readiness hold)');
+    const r = d.driver.applyTick(NOW);
+    A.eq([r.fired, r.binding], [true, null], tag + ': the away tick FIRES the chosen posture');
+    A.eq(d.beats(), 1, tag + ': the act pipeline was actually entered');
+    A.eq(d.state().beatsUsedToday, 1, tag + ': the beat spent one unit of the daily leash, as any real beat does');
+    A.ok(!d.ledger.some(e => e.kind === 'decline' && e.binding === 'readiness'), tag + ': no readiness decline was ledgered');
+
+    const outlook = NR.postureOutlook(Object.assign({ active: true, binding: sd.binding, buildMode: 'build', draftReason: null, leashPerDay: sum.leashPerDay }, { readiness: view }));
+    A.eq(outlook, OUTLOOK_BUILD(sum.leashPerDay), tag + ': the awakening line says what it will do, with no "I’ll start once…" hold');
+    A.eq(NR.readinessText(view), '', tag + ': SETTINGS › AUTONOMY shows no still-learning line');
+  }
+}
+
+/* ===== 2b. doc seeds never add up to grounding: purpose + context + operating manual, all copied, no words of their own ===== */
 {
-  const snap = awakeningSnapshot({ purpose: 'Ship the pricing page and keep the sprite loader fast.', context: 'Solo founder building a pixel-art agent harness.', manual: 'Never push without asking.' });
-  A.eq(snap.known.slice().sort(), ['goals', 'identity', 'standing_orders'], 'the deeper awakening seeds three areas');
+  const snap = awakeningSnapshot({ purpose: CHIP, context: 'Solo founder building a pixel-art agent harness.', manual: 'Never push without asking.' });
+  A.eq(snap.known.slice().sort(), ['goals', 'identity', 'standing_orders'], 'three docs seed three areas');
+  A.ok(Object.keys(snap.beliefs).every(k => snap.beliefs[k].every(b => b.weight === 'seed')), 'every one of them is a seed');
   const host = makeHost(0);
   host.commanderPosture.set(Autonomy.applyPreset(Autonomy.fresh(), 'build'), snap);
-  A.eq(host.nightshiftPrecheck(), { ok: true }, 'three areas including the aims → clears the gate (the old bar wanted 4 areas or 4 runs)');
+  A.eq(host.nightshiftPrecheck(), { ok: false, reason: 'readiness' }, 'three seeded areas, no grounded aim, no runs → still stands down (seeds never cross the acting line)');
+  // one real run is its own grounding (the activity path), seeds or not
+  const ran = makeHost(1);
+  ran.commanderPosture.set(Autonomy.applyPreset(Autonomy.fresh(), 'build'), snap);
+  A.eq(ran.nightshiftPrecheck(), { ok: true }, 'the same seeded station with one recent user run clears the gate (the run is the grounding)');
 }
 
 /* ===== 3. the floor stays honest: nothing of the Commander's to cite → stand down pre-spend, name the one thing needed ===== */

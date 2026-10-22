@@ -16,10 +16,12 @@
    one that does nothing — the first autonomous deliverable sets trust forever. So every act must be GROUNDED:
    readiness() reads the (confirmed-only, never-inferred) dossier — the required dim and recency — plus recent user
    runs into a tier; decide() acts only when the dial permits AND the tier is hot; otherwise it EARNS more context
-   first (the flywheel: when it has nothing to act on, it acts to know more). Hot is a GROUNDING floor, never a
-   usage bar (bug 41b2d015, 2026-10-21): a Commander who CHOSE an acting posture has already said yes, so no count of
-   runs or dossier areas may hold that choice back (DECISIONS: full power from minute one, no grind/unlock/usage
-   walls). The quality guard is downstream and per-job — the grounding veto, the confidence gate, the self-critique.
+   first (the flywheel: when it has nothing to act on, it acts to know more). Hot is a GROUNDING floor, not a
+   breadth count (bug 41b2d015, 2026-10-21): one grounded aim or one recent user run, never 4 areas / 4 runs. ONLY
+   CONFIRMED BELIEFS CROSS THE ACTING LINE (AUTONOMY_DRIVER_PLAN §2 trust line; dossier.js WEIGHTS): a goals area
+   held only by 'seed' beliefs — the quick-setup chip's canned purpose, a thin run's synthesis, any doc copy — is
+   known breadth (warm) but never grounds acting. The per-job guard is downstream — grounding veto, confidence
+   gate, self-critique. Whether a chosen away posture may lift even that seed hold is Andrew's open ruling (bug).
 
    THE GOVERNING RULE — ceiling vs earned: the dial is the ceiling the Commander PERMITS; the tier is the level the
    station has EARNED; it operates at the LOWER of the two and names which is BINDING (legibility — "you set me
@@ -41,14 +43,15 @@
   const DEFAULT_TICK_MS = 20000;    // how often the store re-checks idleness
 
   // the readiness floor constants. goals is the keystone dim (you can't usefully act without knowing what they
-  // want). THE ACT FLOOR IS GROUNDING, NOT BREADTH (bug 41b2d015): the awakening ALWAYS authors purpose.md, which
-  // seeds goals, so a Commander who picks "Quietly do small jobs" or "Run free" there gets what they picked. The old
-  // bar (goals + 4 usable areas, or 4 recent runs) held that choice off until the station had been used enough — a
-  // usage wall with no setting to lift it. A job still has to cite something the station really knows (the
-  // grounding veto in parseCandidates) and clear MIN_ACT_SCORE; that, not a count, is what keeps it from guessing.
+  // want). THE ACT FLOOR IS GROUNDING, NOT BREADTH (bug 41b2d015): the old bar (goals + 4 usable areas, or 4 recent
+  // runs) held a chosen acting posture off until the station had been used enough. Now one GROUNDED aim is enough —
+  // a goals belief in the Commander's own words, a synthesis of them, or observed work (weight stated/synth/observed).
+  // A SEED never is: the awakening always authors purpose.md, but a quick-setup chip or a thin run lands there as
+  // 'seed' (onboarding.js), and a canned line must never convince the station it knows what they want (dossier.js
+  // WEIGHTS). A job still has to cite something real (the grounding veto in parseCandidates) and clear MIN_ACT_SCORE.
   const REQUIRE_DIM = 'goals';
-  const WARM_MIN = 1;               // ≥ this many usable dims but NOT the keystone → warm (knows something, not yet what they want)
-  const HOT_MIN = 1;                // goals usable (+ this many usable dims, goals included) → hot (has grounding to act)
+  const WARM_MIN = 1;               // ≥ this many usable dims but NO grounded keystone → warm (knows something, not yet what they want)
+  const HOT_MIN = 1;                // a grounded, fresh goals belief (+ this many usable dims, goals included) → hot (has grounding to act)
   const STALE_MS = 1000 * 60 * 60 * 24 * 45;   // a belief older than ~45 days is stale: still known, but too old to ground ACTING on
 
   // is the clock idle? (now - lastActivity ≥ the idle span). A bad/unknown clock is never idle (fail safe).
@@ -77,8 +80,10 @@
 
   // READINESS — derive the confidence tier, purely. TWO grounding paths, take the HIGHER:
   //   (a) DOSSIER — a dim is USABLE iff known AND its freshest belief is not stale (recency gates acting). An undated
-  //       belief (legacy/seeded) counts as fresh — never punish an old save. A usable goals belief (the keystone) is
-  //       hot; other usable areas without it are warm (the station knows something, not yet what they want).
+  //       belief (legacy/seeded) counts as fresh — never punish an old save. The keystone is hot only when goals holds
+  //       a fresh GROUNDED belief (weight not 'seed'; a legacy record with no weight is inferred non-seed, exactly as
+  //       dossier.js weightOf does); a seed-only goals area, or other usable areas without it, is warm (the station
+  //       knows something, not yet what they want). goalsStale = grounded aims on file, all past the recency window.
   //   (b) ACTIVITY (NS-2) — a recent user run is its own grounding: it directly evidences the work the Commander is
   //       doing. opts.activityCount (a count the caller derives from the context pack's user-run evidence) drives it;
   //       0/absent → this path contributes nothing (pure dossier). On a tie it names ACTIVITY as the grounding source,
@@ -102,7 +107,12 @@
       const fresh = !newest || !Number.isFinite(now) || (now - newest) <= staleMs;
       (fresh ? usableDims : staleDims).push(dim);
     }
-    const goalsUsable = usableDims.indexOf(REQUIRE_DIM) >= 0;
+    // ONLY CONFIRMED BELIEFS CROSS THE ACTING LINE: the keystone counts from its non-seed beliefs alone, fresh by
+    // their own stamps (a fresh seed beside stale real aims must not make those aims look current).
+    const goalBeliefs = known.indexOf(REQUIRE_DIM) >= 0 ? get(REQUIRE_DIM).filter(b => b && b.weight !== 'seed') : [];
+    const goalsNewest = newestStamp(goalBeliefs);
+    const goalsUsable = goalBeliefs.length > 0 && (!goalsNewest || !Number.isFinite(now) || (now - goalsNewest) <= staleMs);
+    const goalsStale = goalBeliefs.length > 0 && !goalsUsable;
     let dossierTier = 'cold';
     if (goalsUsable && usableDims.length >= HOT_MIN) dossierTier = 'hot';
     else if (usableDims.length >= WARM_MIN) dossierTier = 'warm';
@@ -118,7 +128,7 @@
     const tier = rank[activityTier] > rank[dossierTier] ? activityTier : dossierTier;
     const groundedBy = tier === 'cold' ? null : (activityTier !== 'cold' && rank[activityTier] >= rank[dossierTier] ? 'activity' : 'dossier');
     return {
-      tier, dossierTier, activityTier, groundedBy, activityCount, goalsUsable, usableDims, staleDims,
+      tier, dossierTier, activityTier, groundedBy, activityCount, goalsUsable, goalsStale, usableDims, staleDims,
       familiarity: Number.isFinite(sum.familiarity) ? sum.familiarity : 0
     };
   }

@@ -8410,8 +8410,8 @@ function nightshiftUserRunCount() {
 
 // NS-2: the PURELY-LOCAL pre-spend readiness gate for the night-shift driver (the cold-leash fix). Answers, with NO
 // model call, "could a beat even reach a model call right now?" — the same readiness/eligibility conditions the act
-// pipeline checks first. A current aim in the dossier OR one recent user run counts as grounding (Autopilot.readiness
-// folds both; bug 41b2d015 dropped the old 4-area / 4-run usage bar, so a chosen acting posture is never held for usage).
+// pipeline checks first. A current GROUNDED aim in the dossier (never a seed) OR one recent user run counts as grounding
+// (Autopilot.readiness folds both; bug 41b2d015 dropped the old 4-area / 4-run breadth bar).
 // Returns { ok, reason }. Called by the driver BEFORE the leash is spent, so a stand-down that no model call could
 // have avoided (cold on both paths → tier not hot, or nothing eligible) costs no budget. Safety reads fail closed:
 // an unproven budget/provider/readiness gate stands down as `precheck-error` and is retried on a later tick.
@@ -8460,10 +8460,11 @@ function nightshiftReadinessView() {
     let activityCount = 0;
     try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
-    // goalsStale (additive, bug 41b2d015): the aims ARE on file but past the recency window — the panel names that
-    // instead of claiming the station doesn't know them.
+    // goalsStale (additive, bug 41b2d015): grounded aims ARE on file but past the recency window — the panel names that
+    // instead of claiming the station doesn't know them. A seed-only goals area is neither usable nor stale: the
+    // station does not know their aims, it holds a canned line (the engine computes both from non-seed beliefs).
     return {
-      tier: rd.tier, goalsUsable: !!rd.goalsUsable, goalsStale: (rd.staleDims || []).indexOf(Autopilot.REQUIRE_DIM) >= 0,
+      tier: rd.tier, goalsUsable: !!rd.goalsUsable, goalsStale: !!rd.goalsStale,
       usableDims: rd.usableDims || [],
       activityCount: rd.activityCount || 0, hotDimsMin: Autopilot.HOT_MIN, hotRunsMin: Autopilot.ACTIVITY_HOT_MIN
     };

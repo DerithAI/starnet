@@ -273,7 +273,8 @@
   // (your current aims in the dossier, or a recent run). '' when already hot / no detail (an empty line is never invented).
   // THE BAR IS GROUNDING, NOT USAGE (bug 41b2d015, 2026-10-21): it used to read "it knows 2 of 4 areas and has 1 of 4
   // recent runs" — a counter the Commander had to grind before the posture they chose took effect. Hot now means one
-  // usable aim OR hotRunsMin recent runs (1), so the line names exactly that, never an area count that no longer gates.
+  // usable GROUNDED aim (never a seed: a quick-setup chip's canned purpose is not "your aims") OR hotRunsMin recent runs
+  // (1), so the line names exactly that, never an area count that no longer gates.
   // goalsStale (the aims on file are past the recency window) is named as such — "doesn't know your aims" would be false.
   // The ending names the BAR itself (org pass P09-c: 'until one of those is complete' named nothing that can complete).
   // A NECESSARY condition, never a promise: clearing it does not make it act while the dial is on WAIT / SUGGEST (the
@@ -293,7 +294,8 @@
   // happens, never a counter or an unlock ladder. The exact counts stay in readinessText (SETTINGS › AUTONOMY and LAST
   // REPORT). '' when the station is hot / the route sent no detail, exactly when readinessText is ''. It names the one
   // thing that grounds a job (bug 41b2d015) — the awakening asks what you want help with before the away question, so
-  // once that answer's dossier sync has landed the station is hot there and this line stays silent.
+  // once an answer in the Commander's own words (or a synthesis of them) has synced, the station is hot there and this
+  // line stays silent. A quick-setup chip or a thin run lands as a seed, so the line stays — that is the truth.
   function readinessPlain(rd) {
     if (!readinessText(rd)) return '';
     const runsBar = Number.isFinite(Number(rd.hotRunsMin)) ? Number(rd.hotRunsMin) : 1;
