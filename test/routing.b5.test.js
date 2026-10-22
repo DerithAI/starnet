@@ -223,4 +223,45 @@ A.eq(makeRouter().stationFor('coder'), null, 'no posted plan -> stationFor null'
   A.eq(r.resolveTarget({}), 'coder', 'a CHANGED floor resets the round-robin to the first lane');
 }
 
+/* THE SAVED STATION GRANTS (qa/bugs/a9a4f53c, 2026-10-21). The sidecar builds its router with savedStation (the saved
+   floor, validated); from then on a bay's room objects are read off that floor and the posted plan only picks the dock.
+   The real-sidecar proof is test/routing.saved-station-grants.e2e.test.js; this pins the router's reading of it. */
+{
+  const { checkedStation } = require('../sidecar/capability/saved-placement.js');
+  // two desk-less bays for the writer in two rooms: A holds a dish, B a cabinet
+  const doc = WM.defaultDoc();
+  doc.rooms.r2 = Object.assign({}, doc.rooms.r1, { id: 'r2', name: 'HAB-02', rects: [{ x1: 20, y1: 0, x2: 37, y2: 10 }] });
+  doc.order.push('r2');
+  doc.props.push({ id: 'bA', t: 'bay', x: 4, y: 1, w: 2, h: 2, agentId: 'writer' }, { id: 'dishA', t: 'comms_dish', x: 10, y: 1, w: 1, h: 1 },
+    { id: 'bB', t: 'bay', x: 24, y: 1, w: 2, h: 2, agentId: 'writer' }, { id: 'cabB', t: 'war_intelcab', x: 30, y: 1, w: 1, h: 2 });
+  doc._nid = 5;
+  let saved = checkedStation({ station: doc });
+  A.ok(saved, 'fixture: the two-room station validates');
+  const types = st => st ? st.rooms.bay.objects.map(o => o.objectType).sort() : null;
+  const listed = (agentId, propId, objects) => ({ agentId, propId, objects });
+  const plan = (bays) => ({ errors: [], hash: 'h-' + bays.map(b => b.propId).join('-'), sources: [], belts: [], bays: [], dockBays: bays });
+  const r = makeRouter({ savedStation: () => saved });
+
+  A.ok(r.setPlan(plan([listed('coder', 'ghost', ['computer', 'cabinet', 'workbench'])])).ok, 'a plan naming a bay no saved station holds is stored');
+  A.eq(r.stationFor('coder'), null, 'an agent the saved floor crews in no bay is not bay-bound, whatever bay the plan names');
+
+  r.setPlan(plan([listed('writer', 'bA', ['computer', 'cabinet', 'workbench'])]));
+  A.eq(types(r.stationFor('writer')), ['dish'], 'the saved bay\'s room is the grant: the plan\'s object list is not read');
+  A.eq(r.stationFor('writer').floor.dockId, 'bA', 'the routed room names the dock it resolved');
+  A.eq(types(r.stationFor('writer', 'bB')), ['cabinet'], 'a dock the saved floor gives the agent is the room this run gets (multi-bay)');
+  A.eq(types(r.stationFor('writer', 'nope')), ['dish'], 'a dock the saved floor does not know falls back to the plan\'s dock for this agent');
+
+  r.setPlan(plan([listed('writer', 'ghost', ['computer', 'cabinet'])]));
+  A.eq(types(r.stationFor('writer')), ['dish'], 'a plan naming a ghost bay for a crewed agent gets its first SAVED bay\'s room');
+  r.clearPlan();
+  A.eq(types(r.stationFor('writer')), ['dish'], 'with no plan at all, a crewed agent still runs in its saved room (no wider office)');
+
+  saved = null;
+  r.setPlan(plan([listed('writer', 'bA', ['computer', 'cabinet'])]));
+  A.eq(r.stationFor('writer'), null, 'no saved station: no bay room is granted from the plan');
+  const thrower = makeRouter({ savedStation: () => { throw new Error('unreadable'); } });
+  thrower.setPlan(plan([listed('writer', 'bA', ['computer', 'cabinet'])]));
+  A.eq(thrower.stationFor('writer'), null, 'an unreadable saved station grants no bay room from the plan either');
+}
+
 A.report('routing.b5');

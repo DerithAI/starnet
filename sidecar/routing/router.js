@@ -24,6 +24,10 @@ function makeRouter(o) {
     return pick;
   }
   const stationStore = o.stationStore || makeStationStore();
+  /* THE SAVED STATION GRANTS (2026-10-21). `savedStation()` -> the server-side saved floor as a validated station model,
+     or null. When the host passes it (the sidecar always does), a bay's room objects come from THAT floor, never from the
+     plan a page posted: the plan only says which dock a run is at. See stationFor. */
+  const savedStation = typeof o.savedStation === 'function' ? o.savedStation : null;
 
   // store a posted plan. null/empty clears it (no routing floor). A plan with BLOCKING errors is refused.
   function setPlan(p) {
@@ -180,15 +184,19 @@ function makeRouter(o) {
   }
 
   /* Phase B5 — per-bay capability isolation. The resolveTools-shaped station for a BAY-bound agent, built from
-     the objects the floor placed in that bay's room (carried on the posted plan). null for any agent WITHOUT a
-     bay (the caller then uses its own default office), so only bay-routed work is isolated; everything else is
-     unchanged. PURE room objects — no baseline — so an UNEQUIPPED bay grants no compute and can't spend (the
-     compute gate stays shut; cost-safe), exactly mirroring resolveTools' projection of the placed floor. */
+     the objects the floor placed in that bay's room: read off the saved station when the host passes savedStation
+     (the sidecar does — savedStationFor below), else off the posted plan (a router built without one, as the pure
+     routing tests do). null for any agent WITHOUT a bay (the caller then uses its own default office), so only
+     bay-routed work is isolated; everything else is unchanged. PURE room objects — no baseline — so an UNEQUIPPED
+     bay grants no compute and can't spend (the compute gate stays shut; cost-safe), exactly mirroring resolveTools'
+     projection of the placed floor. */
   function stationFor(agentId, dockId) {
     // the CAPABILITY view: an authoritative station wins, else the last well-formed posted plan — deployable
     // or not (a broken belt graph must not widen an agent's reach; see the setPlan note).
     const p = stationPlan || plan || capsPlan;
-    if (!p || !agentId) return null;
+    if (!agentId) return null;
+    if (savedStation && !stationStore.hasStation()) return savedStationFor(agentId, dockId, p);
+    if (!p) return null;
     // a bay isolates its agent whether or not a belt is hooked to it: `bays` = belt-hooked dispatch targets,
     // `dockBays` = EVERY bound bay (a lone dock is a complete build — 2026-07-05 sense pass). Older plans
     // without dockBays behave exactly as before.
@@ -203,17 +211,35 @@ function makeRouter(o) {
     if (!bay) return null;
     const authoritative = stationStore.hasStation() ? stationStore.bayObjects(agentId, bay.propId) : null;
     const objs = Array.isArray(authoritative) ? authoritative : (Array.isArray(bay.objects) ? bay.objects : []);
-    // each entry is EITHER a bare objectType string (the generic caps: 'computer'/'dish'/…) OR a rich object
-    // { objectType, … } carrying per-instance data — e.g. a connector portal's { objectType:'connector',
-    // connectorId } so the manager can project THAT server's tools. Normalize both to a room object.
-    // `floor` marks this as a ROUTED FLOOR ROOM (resolveTools ignores it): runOnce's capability note may then name the
-    // room this dock's agent draws on (capability/cap-scope.js), after checking the saved floor reproduces these objects
+    return roomStation(agentId, bay.propId, objs);
+  }
+  /* The saved floor decides the grant, the posted plan only picks the dock. An agent the saved floor crews in no bay is
+     not bay-bound (null: the caller's own office, exactly as with no plan), whatever bay a plan names for it; one it does
+     crew gets the room of the run's dock when that dock is one of its saved bays, else of its first saved bay. So a
+     plan can never move what a headless run is granted, and a restart re-reads the same saved floor. */
+  function savedStationFor(agentId, dockId, p) {
+    let st = null;
+    try { st = savedStation(); } catch (e) { st = null; console.warn('[routing] saved station unreadable; no bay room granted:', (e && e.message) || e); }
+    if (!st || typeof st.props !== 'function' || typeof st.bayObjects !== 'function') return null;
+    const bays = st.props().filter(b => b && b.t === 'bay' && b.agentId === agentId).map(b => String(b.id));
+    if (!bays.length) return null;
+    const planDock = p ? dockOf(agentId, dockId) : null;
+    const dock = [dockId, planDock].map(d => (d == null ? '' : String(d))).find(d => d && bays.indexOf(d) >= 0) || bays[0];
+    const objs = st.bayObjects(agentId, dock);
+    return roomStation(agentId, dock, Array.isArray(objs) ? objs : []);
+  }
+  // each entry is EITHER a bare objectType string (the generic caps: 'computer'/'dish'/…) OR a rich object
+  // { objectType, … } carrying per-instance data — e.g. a connector portal's { objectType:'connector',
+  // connectorId } so the manager can project THAT server's tools. Normalize both to a room object.
+  // `floor` marks this as a ROUTED FLOOR ROOM (resolveTools ignores it): runOnce's capability note may then name the
+  // room this dock's agent draws on (capability/cap-scope.js), after checking the saved floor reproduces these objects
+  function roomStation(agentId, dockId, objs) {
     return {
       agents: { [agentId]: { id: agentId, room: 'bay' } },
       rooms: { bay: { id: 'bay', objects: objs.map((t, i) =>
         (t && typeof t === 'object') ? Object.assign({ instanceId: 'o' + i }, t) : { instanceId: 'o' + i, objectType: t }
       ) } },
-      floor: { dockId: bay.propId }
+      floor: { dockId }
     };
   }
 
