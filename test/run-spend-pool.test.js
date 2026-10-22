@@ -59,11 +59,20 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   for (const w of ['w1', 'w2', 'w3', 'w4']) pool.join(w);
   A.eq(pool.admit('w1', 0), null, 'the first worker\'s call fits: $0.04 booked, nothing else in flight');
   const w2 = pool.admit('w2', 0);
-  A.ok(w2 && w2.scope === 'run' && w2.cap === 0.05, 'a second worker is stopped with scope run at the LEAD\'s $0.05 cap: ' + JSON.stringify(w2));
-  A.ok(w2 && near(w2.usd, 0.04) && near(w2.committedUsd, 0.04), 'the stop is the in-flight worker call taking the headroom ($0.04 booked + $0.04 in flight): with $0.01 left, less than one lead turn, that turn is the only evidence of what a call costs');
-  A.ok(w2 && w2.projected === true, 'a stop on calls still in flight is a PROJECTION (the cap was not hit yet): ' + JSON.stringify(w2));
-  A.ok(pool.admit('w3', 0) && pool.admit('w4', 0), 'the other two are stopped too');
+  A.ok(w2 && w2.hold && typeof w2.hold.then === 'function', 'a second worker is HELD, not admitted: w1\'s call in flight has nothing measured to count it by, and at the lead\'s $0.04 turn it would take the $0.01 left: ' + JSON.stringify(w2));
+  A.eq(pool.status().inFlight, 1, 'a held worker is not in flight');
+  A.ok(pool.admit('w3', 0).hold && pool.admit('w4', 0).hold, 'the other two are held too');
+  let woke = false;
+  w2.hold.then(() => { woke = true; });
+  await tick();
+  A.eq(woke, false, 'the hold lasts while w1\'s call is in flight');
   pool.booked('w1', 0.04);
+  await tick();
+  A.eq(woke, true, 'w1\'s booked call ends the hold');
+  const again = pool.admit('w2', 0);
+  A.ok(again && again.scope === 'run' && again.cap === 0.05 && near(again.usd, 0.08), 'asked again, w2 stops with scope run at the LEAD\'s $0.05 cap on what w1 really cost: ' + JSON.stringify(again));
+  A.ok(again && again.projected !== true, 'the family really reached the cap: a hit, not a projection');
+  A.ok(pool.admit('w3', 0) && pool.admit('w4', 0), 'the other two stop too');
   pool.settle('w1', 0.04);
   for (const w of ['w2', 'w3', 'w4']) pool.settle(w, 0);
   const lead = pool.admit('lead', 0.04);
@@ -94,7 +103,7 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   pool.idle('lead');          // tools now — the call is over; the $0.03 call is the largest one so far
   A.ok(near(pool.status().largestCallUsd, 0.03), 'the largest call seen is the $0.03 one');
   A.eq(pool.admit('w', 0), null, 'nothing in flight: the worker proceeds');
-  A.eq(pool.admit('lead', 0.05), null, 'lead: $0.05 booked + the worker\'s first call in flight (no worker has booked yet: counted at $0 while a whole $0.03 lead call still fits in the $0.05 left) proceeds');
+  A.eq(pool.admit('lead', 0.05), null, 'lead: $0.05 booked + the worker\'s first call in flight (nothing measured: counted at the lead\'s own $0.03 turn, which still fits in the $0.05 left) proceeds');
   pool.settle('lead', 0.01);
   A.ok(near(pool.status().spentUsd, 0.05), 'a lower final figure never un-books spend');
   pool.settle('w', 0.06);
@@ -111,8 +120,13 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   const pool = makeRunSpendPool({ capUsd: 0.50 }).join('lead');
   pool.admit('lead', 0); pool.booked('lead', 0.18); pool.idle('lead');
   for (const w of ['w1', 'w2', 'w3', 'w4']) pool.join(w);
-  for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0), null, 'mixed: clone ' + w + '\'s first call is admitted — the lead\'s $0.18 turn is no measure of a clone\'s call while $0.32 is left');
-  for (const w of ['w1', 'w2', 'w3', 'w4']) pool.booked(w, 0.02);
+  A.eq(pool.admit('w1', 0), null, 'mixed: clone w1\'s first call is admitted');
+  A.eq(pool.admit('w2', 0), null, 'mixed: and w2\'s — w1 in flight, even counted at the lead\'s $0.18 turn, fits ($0.36 of $0.50)');
+  A.ok(pool.admit('w3', 0).hold && pool.admit('w4', 0).hold, 'mixed: w3 and w4 WAIT (never stop) while two unmeasured calls at the lead\'s turn would not fit');
+  pool.booked('w1', 0.02);   // w1's first call: $0.02 — now the measure of a clone's call, never the lead's turn
+  A.eq(pool.admit('w3', 0), null, 'mixed: w3 goes once w1 booked $0.02 (w2 in flight at $0.02)');
+  A.eq(pool.admit('w4', 0), null, 'mixed: and w4 (w2 and w3 in flight at $0.02 each)');
+  for (const w of ['w2', 'w3', 'w4']) pool.booked(w, 0.02);
   for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0.02), null, 'mixed: and its second call too ($0.26 booked, the clones\' own $0.02 calls in flight)');
   for (const w of ['w1', 'w2', 'w3', 'w4']) { pool.booked(w, 0.02); pool.settle(w, 0.04); }
   A.ok(near(pool.status().spentUsd, 0.34), 'mixed: the family spent $0.34 of its $0.50 cap');
@@ -162,7 +176,9 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   pool.admit('w1', 0); pool.idle('w1');   // w1's first call never went out
   A.eq(pool.admit('w1', 0), null, 'w1 tries again (nothing in flight)');
   const w2 = pool.admit('w2', 0);
-  A.ok(w2 && w2.projected === true && near(w2.committedUsd, 0.04), 'w1 is still a worker with nothing booked — counted at the lead\'s turn (only $0.01 left), not as a $0 call: ' + JSON.stringify(w2));
+  A.ok(w2 && w2.hold, 'w1 is still a worker with nothing booked: w2 waits for what w1\'s call really costs (at the lead\'s turn it would take the $0.01 left), it is not counted as a $0 call: ' + JSON.stringify(w2));
+  pool.idle('w1');   // w1's second try never went out either
+  A.eq(pool.admit('w2', 0), null, 'nothing is in flight any more: w2 goes');
 }
 
 // ---- 1h. a member with nothing booked is counted at ITS OWN pre-call price (review of d42189a18) ----
@@ -192,7 +208,11 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   const pool = makeRunSpendPool({ capUsd: 0.50 }).join('lead');
   pool.admit('lead', 0); pool.booked('lead', 0.18); pool.idle('lead');
   for (const w of ['w1', 'w2', 'w3', 'w4']) pool.join(w);
-  for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0, 0.015), null, 'price: clone ' + w + ' at its own $0.015 price is admitted under $0.50 after the lead\'s $0.18 turn');
+  A.eq(pool.admit('w1', 0, 0.015), null, 'price: clone w1 goes');
+  A.eq(pool.admit('w2', 0, 0.015), null, 'price: clone w2 goes (w1 at the lead\'s $0.18 turn still fits)');
+  A.ok(pool.admit('w3', 0, 0.015).hold && pool.admit('w4', 0, 0.015).hold, 'price: w3 and w4 wait — never stop — at their own $0.015 prices behind the lead\'s $0.18 turn');
+  pool.booked('w1', 0.02);
+  for (const w of ['w3', 'w4']) A.eq(pool.admit(w, 0, 0.015), null, 'price: clone ' + w + ' goes once w1 booked its real $0.02 first call');
 }
 {
   // NEAR THE CAP (review of d42d1bc7e): a priced clone is counted at its own price even when less than one lead turn
@@ -202,16 +222,24 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   pool.admit('lead', 0); pool.booked('lead', 0.45);
   pool.admit('lead', 0.45); pool.booked('lead', 0.30); pool.idle('lead');   // largest call $0.45, $0.75 booked, $0.25 left
   for (const w of ['w1', 'w2', 'w3', 'w4']) pool.join(w);
-  for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0, 0.015), null, 'near cap: clone ' + w + ' at its own $0.015 price is admitted with $0.25 left, never counted at the lead\'s $0.45 turn');
-  A.eq(pool.status().inFlight, 4, 'near cap: all four priced clones are in flight');
-  // the same window with NO price: the lead's turn is still the only evidence, and it stops the second clone
+  A.eq(pool.admit('w1', 0, 0.015), null, 'near cap: clone w1 goes (nothing in flight)');
+  for (const w of ['w2', 'w3', 'w4']) {
+    const h = pool.admit(w, 0, 0.015);
+    A.ok(h && h.hold && !h.scope, 'near cap: clone ' + w + ' WAITS with $0.25 left — never stopped on the lead\'s $0.45 turn: ' + JSON.stringify(h));
+  }
+  pool.booked('w1', 0.02);   // w1's first call really cost $0.02
+  for (const w of ['w2', 'w3', 'w4']) A.eq(pool.admit(w, 0, 0.015), null, 'near cap: clone ' + w + ' goes on w1\'s real $0.02 cost');
+  A.eq(pool.status().inFlight, 3, 'near cap: the three waiting clones are in flight');
+  // the same window with NO price: the clone waits the same way, and stops on what the first clone really cost
   const bare = makeRunSpendPool({ capUsd: 1 }).join('lead');
   bare.admit('lead', 0); bare.booked('lead', 0.45);
   bare.admit('lead', 0.45); bare.booked('lead', 0.30); bare.idle('lead');
   for (const w of ['w1', 'w2']) bare.join(w);
   A.eq(bare.admit('w1', 0, 0), null, 'near cap, unpriced: the first clone goes out (nothing in flight)');
+  A.ok(bare.admit('w2', 0, 0).hold, 'near cap, unpriced: w2 waits for w1\'s real cost');
+  bare.booked('w1', 0.30);
   const w2 = bare.admit('w2', 0, 0);
-  A.ok(w2 && w2.projected === true && near(w2.committedUsd, 0.45), 'near cap, unpriced: w1 in flight is counted at the lead\'s $0.45 turn (only $0.25 left): ' + JSON.stringify(w2));
+  A.ok(w2 && w2.scope === 'run' && near(w2.usd, 1.05) && w2.projected !== true, 'near cap, unpriced: w1 booked $0.30, the family reached the cap: w2 stops on a hit: ' + JSON.stringify(w2));
 }
 {
   // a price never lowers the evidence: a fellow worker's booked first call still floors a fresh worker's count
@@ -309,7 +337,8 @@ try {
     let paidCalls = 0;
     const ro = fakeRunOnce(async (o) => {
       o.spendPool.join(o.runId);
-      const stop = o.spendPool.admit(o.runId, 0);
+      let stop = o.spendPool.admit(o.runId, 0);
+      while (stop && stop.hold) { await stop.hold; stop = o.spendPool.admit(o.runId, 0); }   // as loop.js forSpend
       if (stop) { o.spendPool.settle(o.runId, 0); return { reason: 'budget', messages: [], usd: 0 }; }
       await tick();   // the call is in flight while its siblings reach their own boundary
       paidCalls++; o.spendPool.booked(o.runId, 0.04); o.spendPool.settle(o.runId, 0.04);
@@ -396,24 +425,20 @@ try {
   }
   {
     // THE REPRO (d3a76db3): every call $0.04, PER RUN $0.05, a model nothing prices (as the e2e) — one clone's call
-    // fits, the others stop BEFORE the cap ($0.01 left, less than one lead turn: that turn is the only evidence)
+    // goes, the others wait for its real cost ($0.01 left, less than one lead turn) and stop on the cap it reached
     const f = await family('repro', 0.05, 0.04, 0.04, { models: FREE });
     A.eq(f.invalid, [], 'repro: every event (budgetProjected included) passed the event contract');
     const stopped = f.workers.filter(w => w && w.reason === 'budget');
     A.eq([f.workers.filter(w => w && w.reason === 'done').length, stopped.length], [1, 3], 'repro: one clone ran, three stopped');
-    A.ok(stopped.every(w => w.budgetScope === 'run' && w.budgetCapUsd === 0.05 && w.budgetProjected === true && w.usd === 0),
-      'repro: each stopped clone names the lead\'s $0.05 cap AND says the stop was projected (it spent $0): ' + JSON.stringify(stopped));
+    A.ok(stopped.every(w => w.budgetScope === 'run' && w.budgetCapUsd === 0.05 && w.budgetProjected === undefined && w.usd === 0),
+      'repro: each stopped clone names the lead\'s $0.05 cap the family really reached ($0.08), at $0 — a hit, no projected flag: ' + JSON.stringify(stopped));
     A.ok(f.lead && f.lead.reason === 'budget' && f.lead.budgetScope === 'run' && f.lead.budgetCapUsd === 0.05 && f.lead.budgetProjected === undefined,
       'repro: the lead stops at the $0.05 cap the family really reached — a hit, no projected flag: ' + JSON.stringify(f.lead));
     A.ok(near(f.spentUsd, 0.08), 'repro: the family spent $0.08 for a $0.05 cap (the cap plus one call), not $0.24');
-    // and every surface says what happened: a projected stop never reads as a cap that was hit
-    const w = stopped[0], l = f.lead;
-    A.eq(commsLine(w.budgetScope, w.budgetCapUsd, w.budgetCapIsBalance === true, null, null, w.budgetProjected === true),
-      'stopped before it would pass the $0.05 per-run spend cap — raise it in SETTINGS › SPENDING LIMITS', 'COMMS: a projected stop says it stopped BEFORE the cap');
-    A.ok(/^hit the \$0\.05 per-run spend cap — raise it in /.test(commsLine(l.budgetScope, l.budgetCapUsd, l.budgetCapIsBalance === true, null, null, l.budgetProjected === true)), 'COMMS: the lead\'s real hit still says hit');
-    A.eq(channelNote('budget', w), '\n\n(stopped before it would pass the $0.05 per-run spend cap — raise it in the app under SETTINGS › SPENDING LIMITS.)', 'channels: a projected stop says it stopped BEFORE the cap');
-    A.ok(/\(hit the \$0\.05 per-run spend cap/.test(channelNote('budget', l)), 'channels: the lead\'s real hit still says hit');
-    A.ok(/stopped before it would pass its per-run spend cap/.test(acpNote('budget', false, true)) && !/hit/.test(acpNote('budget', false, true)), 'ACP: a projected stop never says hit');
+    // a real hit says hit on every surface
+    const l = f.lead;
+    A.ok(/^hit the \$0\.05 per-run spend cap — raise it in /.test(commsLine(l.budgetScope, l.budgetCapUsd, l.budgetCapIsBalance === true, null, null, l.budgetProjected === true)), 'COMMS: the lead\'s real hit says hit');
+    A.ok(/\(hit the \$0\.05 per-run spend cap/.test(channelNote('budget', l)), 'channels: the lead\'s real hit says hit');
   }
   // PRICED FAMILIES (review of d42189a18): each clone's first call in flight counts at its own pre-call price — its
   // prompt by the ruler at the model's input price — so a cheap lead turn no longer lets every clone fire at once.
@@ -429,6 +454,12 @@ try {
       'cheap lead: each stopped clone stopped BEFORE the lead\'s $0.05 cap, at $0: ' + JSON.stringify(stopped));
     A.ok(f.lead && f.lead.reason === 'budget' && f.lead.budgetCapUsd === 0.05 && f.lead.budgetProjected === undefined, 'cheap lead: the lead stops at its next boundary on a real hit: ' + JSON.stringify(f.lead));
     A.ok(near(f.spentUsd, 0.09), 'cheap lead: the family spent $0.09 — the cap plus the call admitted last — not $0.17: $' + f.spentUsd);
+    // and every surface says what happened: a projected stop never reads as a cap that was hit
+    const w = stopped[0];
+    A.eq(w && commsLine(w.budgetScope, w.budgetCapUsd, w.budgetCapIsBalance === true, null, null, w.budgetProjected === true),
+      'stopped before it would pass the $0.05 per-run spend cap — raise it in SETTINGS › SPENDING LIMITS', 'COMMS: a projected stop says it stopped BEFORE the cap');
+    A.eq(w && channelNote('budget', w), '\n\n(stopped before it would pass the $0.05 per-run spend cap — raise it in the app under SETTINGS › SPENDING LIMITS.)', 'channels: a projected stop says it stopped BEFORE the cap');
+    A.ok(/stopped before it would pass its per-run spend cap/.test(acpNote('budget', false, true)) && !/hit/.test(acpNote('budget', false, true)), 'ACP: a projected stop never says hit');
   }
   {
     // EXPENSIVE CLONES: PER RUN $0.50, the lead $0.05, four $0.20 clones (~$0.16 of input each). d42189a18 spent $0.85.
@@ -455,6 +486,82 @@ try {
     A.ok(f.workers.every(w => w && w.budgetProjected === undefined), 'near cap priced: no clone carries a projected stop');
     A.eq(f.lead && f.lead.reason, 'done', 'near cap priced: the lead took its synthesis turn and finished');
     A.ok(near(f.spentUsd, 0.78), 'near cap priced: the family spent $0.78 ($0.60 + 4 x $0.02 + $0.10) inside its $1 cap: $' + f.spentUsd);
+  }
+  // OUTPUT-HEAVY CLONES (review of 9d4fc52b5): a clone's pre-call price is its prompt's INPUT price only, so clones
+  // billed mostly for output (long answers, reasoning) all fired their one call on 9d4fc52b5 wherever the cap stood.
+  // A fresh clone with no booked worker call to measure by is now HELD at its boundary while its fellows' calls in
+  // flight, each counted at the lead's turn, would not fit: it waits for a fellow's first call to book, then goes or
+  // stops on that real cost. A hold only delays: it never stops a call on the lead's turn.
+  const hitStops = (f, cap) => f.workers.filter(w => w && w.reason === 'budget').every(w => w.budgetScope === 'run' && w.budgetCapUsd === cap && w.usd === 0);
+  {
+    // probe 2: PER RUN $0.05, the lead $0.03, four clones billed $0.06 each with ~$0.005 of input. 9d4fc52b5: $0.27.
+    const f = await family('outputHeavyNearCap', 0.05, 0.03, 0.06, { models: PRICED, selfSystem: identity(2000) });
+    A.eq(f.invalid, [], 'output-heavy near cap: every event passed the event contract');
+    A.eq(f.workers.map(w => w && w.reason).sort(), ['budget', 'budget', 'budget', 'done'], 'output-heavy near cap: one clone ran, the other three waited for its real cost and stopped: ' + JSON.stringify(f.workers));
+    A.ok(hitStops(f, 0.05) && f.workers.every(w => w && w.budgetProjected === undefined), 'output-heavy near cap: each stop is the cap the family really reached ($0.09 booked), at $0, never a projection: ' + JSON.stringify(f.workers));
+    A.ok(f.lead && f.lead.reason === 'budget' && f.lead.budgetCapUsd === 0.05, 'output-heavy near cap: the lead stops at its next boundary: ' + JSON.stringify(f.lead));
+    A.ok(near(f.spentUsd, 0.09), 'output-heavy near cap: the family spent $0.09 — the cap plus one call — not $0.27: $' + f.spentUsd);
+  }
+  {
+    // probe 3: PER RUN $1, the lead $0.80, four clones with ~6,000-token prompts (~$0.06 of input) billed $0.30 each,
+    // as reasoning output bills. 9d4fc52b5: $2.00.
+    const f = await family('reasoningNearCap', 1, 0.80, 0.30, { models: PRICED, selfSystem: identity(24000) });
+    A.eq(f.invalid, [], 'reasoning near cap: every event passed the event contract');
+    A.eq(f.workers.map(w => w && w.reason).sort(), ['budget', 'budget', 'budget', 'done'], 'reasoning near cap: one clone ran, three stopped on its real $0.30 cost: ' + JSON.stringify(f.workers));
+    A.ok(hitStops(f, 1), 'reasoning near cap: each stopped clone names the lead\'s $1 cap and spent $0');
+    A.ok(near(f.spentUsd, 1.10), 'reasoning near cap: the family spent $1.10 — the cap plus one call — not $2.00: $' + f.spentUsd);
+  }
+  {
+    // probe 4, far from the cap: the lead $0.30 leaves $0.70 under PER RUN $1; the same $0.30 clones. 9d4fc52b5 (and
+    // d42d1bc7e) let all four fire: $1.50. Three clones counted at the lead's turn fit; the fourth waits, and once the
+    // first clone books $0.30 the two still in flight at that cost take what is left.
+    const f = await family('reasoningFar', 1, 0.30, 0.30, { models: PRICED, selfSystem: identity(24000) });
+    A.eq(f.invalid, [], 'reasoning far: every event passed the event contract');
+    const stopped = f.workers.filter(w => w && w.reason === 'budget');
+    A.eq([f.workers.filter(w => w && w.reason === 'done').length, stopped.length], [3, 1], 'reasoning far: three clones ran, the fourth stopped: ' + JSON.stringify(f.workers));
+    A.ok(stopped.every(w => w.budgetScope === 'run' && w.budgetCapUsd === 1 && w.usd === 0), 'reasoning far: the fourth stopped at $0 on the lead\'s $1 cap — on the calls in flight at the first clone\'s real cost, or on the cap they reached: ' + JSON.stringify(stopped));
+    A.ok(near(f.spentUsd, 1.20), 'reasoning far: the family spent $1.20 — under the cap plus one call — not $1.50: $' + f.spentUsd);
+  }
+  {
+    // probe 1: the repro on the replay DEFAULT catalog (every token $1/M, so each clone's tiny prompt is priced at a few
+    // millionths of a dollar — a priced call). 9d4fc52b5: $0.20, all four clones done.
+    const f = await family('reproDefaultCatalog', 0.05, 0.04, 0.04, {});
+    A.eq(f.invalid, [], 'repro, default catalog: every event passed the event contract');
+    A.eq(f.workers.map(w => w && w.reason).sort(), ['budget', 'budget', 'budget', 'done'], 'repro, default catalog: one clone ran, three stopped: ' + JSON.stringify(f.workers));
+    A.ok(hitStops(f, 0.05), 'repro, default catalog: each stopped clone names the lead\'s $0.05 cap and spent $0');
+    A.ok(near(f.spentUsd, 0.08), 'repro, default catalog: the family spent $0.08 — the cap plus one call — not $0.20: $' + f.spentUsd);
+  }
+  // A HELD CALL IN THE REAL LOOP: it waits, asks again, and a STOP ends the wait at once (never outlasts a cancel)
+  async function heldRun(abortAfterHold) {
+    const bus = A.makeBus();
+    const seq = A.collectBus(bus, events.names());
+    const invalid = [];
+    const emit = makeEmitter(bus, e => invalid.push(e));
+    const provider = makeReplayProvider({ turns: [turnText('answer', 0.01)], models: FREE });
+    const ac = new AbortController();
+    let release = null, asks = 0;
+    const res = runAgentLoop({ messages: [{ role: 'user', content: 'go' }], provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }),
+      model: 'replay/model', agentId: 'w', runId: 'held', limits: { maxCostUsd: 1, maxIters: 3, grace: false }, signal: ac.signal,
+      budget: { check: () => (++asks === 1 ? { hold: new Promise(r => { release = r; }) } : null) },
+      capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: 'w', room: 'office' } });
+    for (let i = 0; i < 5; i++) await tick();
+    if (abortAfterHold) ac.abort(); else release();
+    const out = await res;
+    const end = seq.find(e => e.name === 'agent.run.end');
+    return { out, end: end && end.payload, asks, costs: seq.filter(e => e.name === 'agent.cost').length, invalid, release };
+  }
+  {
+    const r = await heldRun(false);
+    A.eq(r.invalid, [], 'held: every event passed the event contract');
+    A.ok(r.asks >= 2, 'held: the loop asked again once the hold ended (asks: ' + r.asks + ')');
+    A.ok(r.end && r.end.reason === 'done' && r.costs === 1, 'held: then the call went out and the run finished: ' + JSON.stringify(r.end));
+  }
+  {
+    const r = await heldRun(true);
+    A.eq(r.invalid, [], 'held + STOP: every event passed the event contract');
+    A.ok(r.end && r.end.reason === 'cancelled' && r.costs === 0, 'held + STOP: the run ends cancelled while still held, and no call went out: ' + JSON.stringify(r.end));
+    A.eq(r.asks, 1, 'held + STOP: the pool is never asked again (a cancelled run is never put in flight)');
+    r.release();
   }
 
 } finally {

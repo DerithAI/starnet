@@ -1838,6 +1838,7 @@
       // returns a block descriptor when a soft cap is reached (no resume headroom left) -> stop as 'budget'.
       if (budget) {
         const b = budget.check(spentUsd, nextCallUsd);
+        if (b && b.hold) return b;   // the run's spend pool holds this call: forSpend() waits, then asks again
         if (b && b.unknown) {
           // name the fix that works for THIS cause: a restart replays a failed save, but never settles an interrupted run
           const message = b.cause === 'unsettled'
@@ -1855,6 +1856,24 @@
         if (b) return end('budget', { budgetScope: b.scope, budgetCapUsd: b.cap, budgetProjected: b.projected === true });
       }
       return null;
+    }
+    /* A HELD CALL WAITS FOR EVIDENCE (bug d3a76db3, review of 9d4fc52b5). A worker's pre-call price is its prompt's input
+       price only, so workers billed mostly for output could all fire together under the cap. The run's spend pool
+       holds such a first call ({ hold: Promise }) until a call in flight settles, and the check runs again on what that
+       call really cost. A hold never outlasts a stop: it ends the moment the signal aborts. */
+    async function forSpend(s) {
+      while (s && s.hold) {
+        await new Promise(resolve => {
+          if (signal.aborted) return resolve();
+          const canHear = typeof signal.addEventListener === 'function';
+          const done = () => { if (canHear) signal.removeEventListener('abort', done); resolve(); };
+          if (canHear) signal.addEventListener('abort', done, { once: true });
+          Promise.resolve(s.hold).then(done, done);
+        });
+        if (signal.aborted) return end('cancelled');
+        s = stopForSpend();
+      }
+      return s;
     }
 
     // Admission may have promoted a Commander-configured fallback because the selected primary is definitively
@@ -1879,7 +1898,8 @@
         // fall through: the grace turn runs below. Tools stay ON THE WIRE (see GRACE TURN NEVER DISPATCHES after
         // the stream) — but any call it emits is dropped, never executed, and the run ends max_iters.
       }
-      const spendStop = stopForSpend();
+      let spendStop = stopForSpend();
+      if (spendStop && spendStop.hold) spendStop = await forSpend(spendStop);
       if (spendStop) return spendStop;
       // COMPUTE GATE: a model turn needs a compute capability (a computer in the room).
       if (capCtx && typeof capCtx.canRun === 'function' && !capCtx.canRun()) {
@@ -1952,7 +1972,8 @@
       while (true) {
         bookUsage(usage, usageModel);   // a re-entry after retry/compress/fallback: book the partial attempt BEFORE the reset
         if (signal.aborted) return end('cancelled');
-        const attemptSpendStop = stopForSpend();
+        let attemptSpendStop = stopForSpend();
+        if (attemptSpendStop && attemptSpendStop.hold) attemptSpendStop = await forSpend(attemptSpendStop);
         if (attemptSpendStop) return attemptSpendStop;
         acc.text = ''; acc.toolCalls = {}; acc.reasoning = []; streamedTextChunks = []; usage = null; lastFinishReason = null;
         usageModel = model;
