@@ -4,10 +4,10 @@ slug: a-deleted-session-keeps-reaching-the-model-its-w
 title: A deleted session keeps reaching the model: its words ride every later run's RECENT ACTIVITY and recall_conversation returns it
 surface: sessions
 severity: P1
-status: open
+status: fixed
 found: 2026-10-20
 lane: sweep/sessions
-fix:
+fix: 5314b6c25
 origin: audit
 ---
 
@@ -58,5 +58,36 @@ tombstone authority. The save's `deletedIds` is already on disk (overseer reads 
 tool, `GET /api/transcript` and away/briefing/insight readers would all need to honor it. Derived memories (dossier
 beliefs, interest topics) may also count as deleted content. That scope is more than a lane fix and is a product
 call, so this is left open for the owner.
+
+## Verdict
+
+Fixed in 5314b6c25 (2026-10-21). The sidecar keeps its own record of deleted sessions (`sidecar/session-tombstones.js`,
+`<workspace>/session-tombstones.json`). It learns each delete from the save's `deletedIds` on every accepted
+`POST /api/save` and from the save on disk at boot, stamps when it learned it, and keeps it after the id leaves the
+page's list (re-open, the 500-id cap, NEW AGENT). Everything a deleted session held at or before that stamp is
+forgotten on every context path:
+
+- History: the transcript store answers `history`, `reconstruct`, `taintOf` and `all` without those rows, so
+  `GET /api/transcript`, the H1.2 resume seed, channel `historyFor`, a worker's `sessionContext`,
+  `station.read_session` and the evidence pack's clean owner chats never return them.
+- Recall: `recall_conversation` search (stream and all), browse and scroll skip them. The segment index skips them
+  before ranking, so they never take a result slot.
+- Evidence: RECENT ACTIVITY (`nightshiftRecentRuns`), the night focus titles and the away briefing skip the deleted
+  session's runs.
+- Memory: a fresh delete removes the notebook records its runs wrote, revised or proved (or that were filed under its
+  stream), their revisions to other records, its pending memory proposals, and the open threads mined from it, for
+  every agent. An unfinished purge is retried at boot.
+
+A session re-opened under the same id hears only what is said after the delete. Deleting it again restamps it.
+
+Regression: `test/session-tombstones.test.js` (ledger, history, recall, memory and cross-session reads on the real
+modules) and `test/session-delete-forgets.e2e.test.js` (this file's repro through a real hermetic sidecar with a mock
+provider, plus a restart and a re-open). Both fail on the trunk code before the fix (41 and 17 problems; the e2e shows
+`- RECENT ACTIVITY: echo session uniqueword quokka (today)` reaching the provider) and pass after it.
+
+Not covered: the transcript bytes stay in the append-only segments on disk (they are no longer read back). Interest
+topics and the page's own dossier beliefs carry no per-session provenance, so they are not purged. A notebook backup
+import (`POST /api/notebook/restore`) can add an exported note back. The page posts the save on a 1.2 s debounce, so a
+run sent within that window of the delete can still see the session. Not walked in the live app.
 
 _Found by the `sweep/sessions` lane (sessions surface), 2026-10-20._
