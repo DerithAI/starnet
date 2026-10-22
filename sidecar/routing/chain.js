@@ -118,17 +118,33 @@ function workOf(s) {
   const cut = s.lastIndexOf(REVIEW_HEAD);
   return cut >= m[0].length ? s.slice(m[0].length, cut) : s;
 }
-/* carriesWork(reply, work) -> did an APPROVING reply restate the work it passed? Restated = it keeps at least half of the work's
-   distinct three-word runs (a one- or two-word work: its words), OR at least two thirds of the work's distinct words: a reviewer
-   that returned the finished version with its corrections (what the verdict brief and the preset reviewers ask for) can reword
-   past half the runs while keeping most of the words, and its version is the work (R1) — never swapped back for the draft it
-   corrected. An approval that talks ABOUT the work names a few of its words, not most. Not "much shorter than the work": a
-   one-line work and its approval can be the same length. Pure; reads the first 64k characters of each. */
-const wordsOf = s => String(s).slice(0, 65536).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+/* carriesWork(reply, work) -> did an APPROVING reply carry the work it passed? The rule leans to the reviewer's version: swapping a
+   version the reviewer CHANGED back for the draft ships what it removed (a redacting reviewer's names, phones and emails) and drops
+   its corrections, so the draft only stands in for a reply that is plainly commentary. The reply carries the work when:
+   1. it keeps at least half of the work's distinct three-word runs (a one- or two-word work: its words), or two thirds of its
+      distinct words — a restatement, or the finished version with its corrections (what the verdict brief asks for); or
+   2. the work is more than a one-liner and the reply is at least half its length: a redaction, rewrite, tightened version or
+      translation, not commentary ("Looks good.", a few lines on the work); or
+   3. the work IS a one-liner (one line of one sentence, or under 12 words: a headline, a tagline, a post), where an approval can be
+      as long as the work, and at least half the reply is the work's own words in the work's order: a redaction keeps the
+      sentence round its [redacted] marks, an approval of the line does not.
+   Words: Chinese, Japanese, Korean and Thai text has no spaces between words, so each character there is a word (else a clause is
+   one "word" and a one-character correction loses it whole). Pure; reads the first 64k characters of each. */
+const wordsOf = s => String(s).slice(0, 65536).toLowerCase().match(/[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\p{sc=Thai}]|(?:(?![\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\p{sc=Thai}])[\p{L}\p{N}])+/gu) || [];
+const SENTENCE_BREAK = /[.!?]['"’”)\]]*\s+\S|[。！？]\s*\S/u;   // a sentence ends and another follows
+function inOrder(a, b) {   // how many of a's words b keeps in a's order (longest common subsequence), two rows
+  let prev = new Uint32Array(b.length + 1), cur = new Uint32Array(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) cur[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    const t = prev; prev = cur; cur = t;
+  }
+  return prev[b.length];
+}
 function carriesWork(reply, work) {
   const w = wordsOf(work);
   if (!w.length) return true;
   const r = wordsOf(reply);
+  if (!r.length) return false;
   const k = Math.min(3, w.length);
   const runs = a => { const g = new Set(); for (let i = 0; i + k <= a.length; i++) g.add(a.slice(i, i + k).join(' ')); return g; };
   const want = runs(w), have = runs(r);
@@ -138,7 +154,11 @@ function carriesWork(reply, work) {
   const words = new Set(w), said = new Set(r);
   let seen = 0;
   for (const x of words) if (said.has(x)) seen++;
-  return seen * 3 >= words.size * 2;
+  if (seen * 3 >= words.size * 2) return true;
+  const t = String(work).trim();
+  const oneLiner = t.indexOf('\n') < 0 && (w.length < 12 || !SENTENCE_BREAK.test(t));
+  if (!oneLiner) return r.length * 2 >= w.length;
+  return w.length * r.length <= 4e6 && inOrder(w, r) * 2 >= r.length;
 }
 function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);

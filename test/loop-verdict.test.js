@@ -230,5 +230,68 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     const res = await R.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v14' });
     A.eq(res.text, RESEARCH, 'an approval that discusses the work to the OUTBOX: the work ships, never the discussion');
   }
+
+  /* ---- A VERSION THE REVIEWER CHANGED IS THE WORK (review of the terse-approval fix, 2026-10-21). A reviewer that redacted the
+          draft, corrected Chinese or Japanese prose, tightened it or translated it returns its own version with the approval: that
+          version ships out of the OUTBOX (the channel reply, the routine result, SEND TO) and moves on to a dock alone, as on trunk.
+          Swapping it back for the draft shipped the personal data a redacting reviewer removed. ---- */
+  async function throughGate(draft, reply, runId) {
+    const sent = [];
+    const O = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), {
+      writer: { text: draft, usd: 0.01 }, reviewer: { text: reply + '\nVERDICT: approved', usd: 0.01 }
+    }, { lastStage: (a) => a === 'reviewer', onShipped: (r) => sent.push(r) });
+    const res = await O.c.advance({ agentId: 'writer', text: draft, originalText: 'go', lineId: O.lineId, runId: runId + '-out' });
+    await new Promise(r => setImmediate(r));
+    const D = rig(loopFloor({ maxIter: 3, when: 'approved' }), {
+      writer: { text: draft, usd: 0.01 }, reviewer: { text: reply + '\nVERDICT: approved', usd: 0.01 }, publisher: { text: 'the design', usd: 0.01 }
+    });
+    await D.c.advance({ agentId: 'writer', text: draft, originalText: 'go', lineId: D.lineId, runId: runId + '-dock' });
+    const pub = D.log.find(l => l.agentId === 'publisher');
+    return { outbox: res.text, sendTo: sent.length === 1 ? sent[0].text : null, dock: pub ? upstreamOf(pub) : null, dockTurn: pub ? pub.text : '' };
+  }
+  const changedIsTheWork = async (name, draft, reply, leaked) => {
+    const g = await throughGate(draft, reply, 'v-' + name);
+    A.eq(g.outbox, reply, name + ' to the OUTBOX: the reviewer\'s version ships, never the draft (' + JSON.stringify(String(g.outbox).slice(0, 80)) + ')');
+    A.eq(g.sendTo, reply, name + ' to the OUTBOX: SEND TO hands on the reviewer\'s version');
+    A.eq(g.dock, reply, name + ' to a dock: the next stage gets the reviewer\'s version alone, unframed');
+    A.ok(!/passed the work on without restating it/.test(g.dockTurn), name + ' to a dock: never told the reviewer passed the work on without restating it');
+    for (const s of leaked || []) A.ok([g.outbox, g.sendTo, g.dockTurn].every(t => String(t).indexOf(s) < 0), name + ': what moves on never carries the redacted ' + JSON.stringify(s));
+  };
+  const CUSTOMERS = 'Customer update: Wei Zhang (phone 555-0100) asked about his refund. Lina Park (lina@example.com) wants delivery moved to Friday. Order A1029 for Sam Ortiz ships tomorrow.';
+  const CUSTOMERS_R = 'Customer update: [redacted] (phone [redacted]) asked about his refund. [redacted] ([redacted]) wants delivery moved to Friday. Order A1029 for [redacted] ships tomorrow.';
+  await changedIsTheWork('a redacting reviewer', CUSTOMERS, CUSTOMERS_R, ['Wei Zhang', '555-0100', 'Lina Park', 'lina@example.com', 'Sam Ortiz']);
+  const THANKS = 'Huge thanks to Wei Zhang (wei.zhang@example.com, 555-0100) for the launch help!';
+  const THANKS_R = 'Huge thanks to [redacted] ([redacted], [redacted]) for the launch help!';
+  await changedIsTheWork('a redacting reviewer on a one-line post', THANKS, THANKS_R, ['Wei Zhang', 'wei.zhang@example.com', '555-0100']);
+  const ZH_PII = '客户张伟的电话是13800138000，他住在北京市朝阳区。李娜的邮箱是lina@example.com，她要求退款。王强的订单号是A1029，他明天取货。';
+  const ZH_PII_R = '客户[已隐去]的电话是[已隐去]，他住在[已隐去]。[已隐去]的邮箱是[已隐去]，她要求退款。[已隐去]的订单号是A1029，他明天取货。';
+  await changedIsTheWork('a redacting reviewer in Chinese', ZH_PII, ZH_PII_R, ['张伟', '13800138000', '朝阳区', '李娜', 'lina@example.com', '王强']);
+  const ZH = '我们的社区花园欢迎每一个人，大家一起种植蔬菜和花卉。请带上你的好奇心，分享你的想法，和邻居一起学习。每个周六上午九点我们都会开放，欢迎全家参加。';
+  const ZH_FIXED = '我们的社区花园欢迎每一位朋友，大家一起种植蔬菜和花卉。请带上你的好奇心，分享你的想法，和邻居们一起学习。每周六上午九点开放，欢迎全家参加。';
+  await changedIsTheWork('small corrections to Chinese', ZH, ZH_FIXED);
+  // one sentence with no spaces and one character corrected: a word per character, or the whole line is one word and the fix loses it
+  await changedIsTheWork('a one-character correction to a one-line Chinese post', '欢迎大家本周六上午九点来社区花园一起种菜', '欢迎大家本周六上午十点来社区花园一起种菜');
+  const JA = '私たちのコミュニティガーデンへようこそ。みんなで野菜と花を育てましょう。毎週土曜日の朝九時に開いています。';
+  const JA_FIXED = '私たちのコミュニティガーデンへようこそ！みんなで野菜や花を育てましょう。毎週土曜の朝九時に開いています。';
+  await changedIsTheWork('small corrections to Japanese', JA, JA_FIXED);
+  const COPY = 'Introducing our new productivity app, FocusFlow! FocusFlow is designed to help busy professionals manage their time more effectively. With FocusFlow, you can create task lists, set reminders, and track your progress throughout the day. The app also includes a built-in Pomodoro timer that helps you stay focused on your work for 25-minute intervals, followed by short breaks. FocusFlow syncs across all of your devices, so you can access your tasks wherever you are. Whether you are working from home, at the office, or on the go, FocusFlow has you covered. Download FocusFlow today and start getting more done in less time!';
+  const COPY_TIGHT = 'Meet FocusFlow, the productivity app for busy professionals. Build task lists, set reminders and track your day. A built-in Pomodoro timer keeps you on 25-minute sprints with short breaks between. Everything syncs across your devices, at home, at the office or on the road. Get FocusFlow today and do more in less time.';
+  await changedIsTheWork('a tightened version', COPY, COPY_TIGHT);
+  await changedIsTheWork('a translation', 'Our community garden welcomes everyone. Grow vegetables and flowers together. Open every Saturday at nine.',
+    'Nuestro huerto comunitario da la bienvenida a todos. Cultiva verduras y flores en compañía. Abierto cada sábado a las nueve.');
+  // ...while an approval that only talks about the work, in any script, still hands on the work it approved
+  const WORK_HEAD_TEXT = 'THE WORK UNDER REVIEW (what the reviewer was handed):\n';
+  const approvalIsNot = async (name, draft, reply) => {
+    const g = await throughGate(draft, reply, 'v-' + name);
+    A.eq(g.outbox, draft, name + ' to the OUTBOX: the approved work ships, never the approval (' + JSON.stringify(String(g.outbox).slice(0, 80)) + ')');
+    A.ok(String(g.dock).indexOf(WORK_HEAD_TEXT + draft + '\n\nREVIEW:\n' + reply) >= 0, name + ' to a dock: the work, then the approval as its review (' + JSON.stringify(String(g.dock).slice(0, 80)) + ')');
+  };
+  await approvalIsNot('a terse Chinese approval', ZH, '看起来不错，可以发布。');
+  await approvalIsNot('a Chinese approval that discusses the work', ZH, '很好：社区花园的介绍清楚，开放时间也写明了。');
+  await approvalIsNot('a terse Japanese approval', JA, 'いいと思います。');
+  await approvalIsNot('a Japanese approval that discusses the work', JA, '良いです。土曜日の案内がわかりやすい。');
+  await approvalIsNot('a terse approval of long copy', COPY, 'Looks good.');
+  await approvalIsNot('an approval that discusses long copy', COPY, 'Approved. The FocusFlow copy covers task lists, reminders, the Pomodoro timer and device sync clearly.');
+  await approvalIsNot('an approval of a one-line post', THANKS, 'Warm and specific, approved.');
   A.report('loop-verdict');
 })();
