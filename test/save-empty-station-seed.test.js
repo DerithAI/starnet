@@ -53,6 +53,7 @@ function sidecar(root, storeFs) {
   const api = vm.runInNewContext("let _remoteLooksMemo = { stamp: '', looks: null };\nlet _stationEpochMemo = { stamp: '', epoch: 1 };\n" + handlers.join('\n') +
     '\n({ serveSaveLoad, handleSaveWrite })', {
     saveStore, workspaceDegraded: false, growthRatings: { latestTs: () => 0 }, readBody: async req => req.body, failNote: () => {},
+    observeDeletedSessions: () => [],   // the deleted-session ledger feed every landed station save calls (qa/bugs/3e926b6a)
     publicWorkspaceLineage: () => ({ version: 1, priorInstallEvidence: false, onboardingAllowed: true, evidence: [] }), URL
   });
   async function call(fn, req) {
