@@ -3,14 +3,17 @@
 
    A dev-channel run (the same hub, router.stationFor and runOnce a Telegram message takes) is recorded off the provider
    wire by a mock OpenRouter that keeps each request's `tools`. The routing plan a page posts says which dock work runs
-   at; what that dock's agent may use must be what the saved station puts in its room:
-     1. with no saved station, a plan naming a bay for the chat's agent leaves its run exactly as it was, and so does the
-        restart that re-reads routing.plan.json;
+   at, and may narrow what that dock's agent gets there, never widen it past the saved room or the default office:
+     1. with no saved station (no save on the server, a refused or unreadable save), a plan naming a bay for the chat's
+        agent hands its run that bay's room held within the default office — nothing the default office lacks, and not
+        the default office's NOTEBOOK the bay does not hold — before and after the restart that re-reads
+        routing.plan.json; and an UNEQUIPPED bay (the floor paints NO COMPUTE) grants no compute: no provider call;
      2. with a saved station that crews the agent in a compute-only bay, neither a plan naming another bay nor a plan
         listing a CABINET and a DISH for the real bay adds a tool — before or after a restart;
-     3. a DISH saved into that room reaches the run, and the plan's CABINET still does not.
-   fs_write comes only from a cabinet and web_search only from a dish (capability/registry.js), so each one is a clean
-   reading of which room the run was handed. In test/http.list (a child-process boot test does not gate test:fast). */
+     3. a DISH saved into that room reaches the run, and the plan's CABINET still does not;
+     4. a plan listing less than the saved room (a save that lags after gear came off) narrows it: no DISH, no web_search.
+   fs_write comes only from a cabinet, web_search only from a dish and notebook.* only from a notebook
+   (capability/registry.js), so each one is a clean reading of which room the run was handed. In test/http.list (a child-process boot test does not gate test:fast). */
 'use strict';
 
 const A = require('./_assert.js');
@@ -52,6 +55,8 @@ function startMockOpenRouter() {
 
 const toolNamesOf = req => ((req && req.tools) || []).map(t => String((t.function && t.function.name) || t.name || ''));
 const sameSet = (a, b) => a.slice().sort().join(',') === b.slice().sort().join(',');
+const within = (a, b) => a.every(n => b.indexOf(n) >= 0);
+const isMemory = n => /^notebook[._-]?(write|read)$/.test(n);
 
 (async () => {
   const mock = await startMockOpenRouter();
@@ -69,6 +74,14 @@ const sameSet = (a, b) => a.slice().sort().join(',') === b.slice().sort().join('
     A.ok(reqs.length >= 1, label + ': the run reached the provider');
     return reqs.map(toolNamesOf).sort((a, b) => b.length - a.length)[0] || [];
   };
+  // one dev-channel task turn that must NOT reach the provider with tools (a compute-less room never makes a model call)
+  const toollessTurn = async (label) => {
+    const before = mock.requests.length;
+    const r = await fixture.json('POST', '/api/dev/inbound', { chatId: 'auth1', text: 'please run a task: list the files in the workspace' });
+    A.eq(r.status, 200, label + ': the dev inbound answers (' + String(r.text).slice(0, 160) + ')');
+    A.ok(r.body && r.body.isTask === true, label + ': the message ran as a task (' + String(r.text).slice(0, 160) + ')');
+    return mock.requests.slice(before).filter(q => toolNamesOf(q).length > 0);
+  };
   const post = async (plan, label) => {
     const r = await fixture.json('POST', '/api/routing', plan);
     A.eq(r.status, 200, label + ' is accepted for routing (' + r.text + ')');
@@ -82,6 +95,12 @@ const sameSet = (a, b) => a.slice().sort().join(',') === b.slice().sort().join('
   // a bay for this chat's agent that no saved station holds
   const ghostPlan = { errors: [], hash: 'ghost', sources: [], belts: [],
     bays: [{ agentId: 'dev_auth1', propId: 'ghost_bay', objects: WIDE }], dockBays: [{ agentId: 'dev_auth1', propId: 'ghost_bay', objects: WIDE }] };
+  // the same bay with nothing in its room: what the floor paints NO COMPUTE
+  const barePlan = { errors: [], hash: 'bare', sources: [], belts: [],
+    bays: [{ agentId: 'dev_auth1', propId: 'ghost_bay', objects: [] }], dockBays: [{ agentId: 'dev_auth1', propId: 'ghost_bay', objects: [] }] };
+  // the saved bay listed with its compute only (what a page shows after the dish came off, before the save lands)
+  const computeOnlyPlan = { errors: [], hash: 'compute-only', sources: [], belts: [],
+    bays: [{ agentId: 'dev_auth1', propId: 'bay1', objects: ['computer'] }], dockBays: [{ agentId: 'dev_auth1', propId: 'bay1', objects: ['computer'] }] };
   // the saved bay, listed with room objects the saved room does not hold
   const listedPlan = { errors: [], hash: 'listed', sources: [], belts: [],
     bays: [{ agentId: 'dev_auth1', propId: 'bay1', objects: ['computer', 'cabinet', 'dish'] }], dockBays: [{ agentId: 'dev_auth1', propId: 'bay1', objects: ['computer', 'cabinet', 'dish'] }] };
@@ -97,15 +116,22 @@ const sameSet = (a, b) => a.slice().sort().join(',') === b.slice().sort().join('
   try {
     await fixture.start();
 
-    // ---- 1. no saved station: a plan naming a bay changes nothing, live or after a restart ----
+    // ---- 1. no saved station: a plan's bay room is held within the default office, live and after a restart ----
     const base = await turn('baseline');
     A.ok(base.length > 0, 'baseline: the run carries its default office (' + base.length + ' tools)');
+    A.ok(base.some(isMemory), 'baseline: the default office carries the NOTEBOOK (' + base.filter(isMemory).join(',') + ')');
     await post(ghostPlan, 'a plan naming a bay no station holds');
     const ghost = await turn('ghost bay');
-    A.ok(sameSet(ghost, base), 'with no saved station, a plan\'s bay leaves the run\'s tools exactly as before (' + ghost.length + ' vs ' + base.length + ')');
+    A.ok(within(ghost, base), 'with no saved station, a plan\'s bay adds no tool the default office lacks (extra: ' + ghost.filter(n => base.indexOf(n) < 0).join(',') + ')');
+    A.ok(ghost.indexOf('fs_write') >= 0 && ghost.indexOf('web_search') >= 0, 'the plan\'s CABINET and DISH, both in the default office, reach the run');
+    A.ok(!ghost.some(isMemory), 'the default office\'s NOTEBOOK, which the bay room does not hold, is not granted: the bay is not handed the full office');
     await fixture.restart();
     const ghostReboot = await turn('ghost bay after restart');
-    A.ok(sameSet(ghostReboot, base), 'after a restart re-reads routing.plan.json the run is still unchanged (' + ghostReboot.length + ' vs ' + base.length + ')');
+    A.ok(sameSet(ghostReboot, ghost), 'after a restart re-reads routing.plan.json the run gets the same bounded room (' + ghostReboot.length + ' vs ' + ghost.length + ')');
+    await post(barePlan, 'a plan naming an unequipped bay');
+    const bare = await toollessTurn('unequipped bay, no saved station');
+    A.eq(bare.length, 0, 'with no saved station, an UNEQUIPPED bay grants no compute: the run makes no tooled provider call (not the full office)');
+    await post(ghostPlan, 'the ghost-bay plan again');
 
     // ---- 2. a saved compute-only bay: no plan widens it ----
     await save(stationDoc(false), 'a compute-only bay crewed by the chat\'s agent');
@@ -125,6 +151,12 @@ const sameSet = (a, b) => a.slice().sort().join(',') === b.slice().sort().join('
     const dish = await turn('saved bay with a dish');
     A.ok(dish.indexOf('web_search') >= 0, 'the DISH saved into the bay room reaches the run (web_search offered)');
     A.eq(dish.indexOf('fs_write'), -1, 'the plan\'s CABINET, which the saved room does not hold, still grants no fs_write');
+
+    // ---- 4. a plan may narrow the saved room: a lagging save after the dish came off hands no dish back ----
+    await post(computeOnlyPlan, 'a plan listing the saved bay with its compute only');
+    const lag = await turn('saved bay with a dish, plan without it');
+    A.eq(lag.indexOf('web_search'), -1, 'the saved DISH the plan no longer lists is not granted (the grant is never wider than the plan)');
+    A.ok(sameSet(lag, narrow), 'the run gets the compute-only room both agree on (' + lag.length + ' vs ' + narrow.length + ')');
   } finally {
     await fixture.dispose();
     mock.server.close();

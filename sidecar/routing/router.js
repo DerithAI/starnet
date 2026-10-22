@@ -9,6 +9,9 @@
 const Pipeline = require('../../frontend/app/pipeline.js');
 const { makeStationStore } = require('../station-store.js');
 const { healPlan } = require('./planlines.js');
+const { fullOffice } = require('../capability/office.js');
+// the object types of the default office a headless run is handed with no bay: a posted plan's room is never wider
+const DEFAULT_CEILING = new Set(fullOffice().map(o => o.objectType));
 
 function makeRouter(o) {
   o = o || {};
@@ -25,8 +28,8 @@ function makeRouter(o) {
   }
   const stationStore = o.stationStore || makeStationStore();
   /* THE SAVED STATION GRANTS (2026-10-21). `savedStation()` -> the server-side saved floor as a validated station model,
-     or null. When the host passes it (the sidecar always does), a bay's room objects come from THAT floor, never from the
-     plan a page posted: the plan only says which dock a run is at. See stationFor. */
+     or null. When the host passes it (the sidecar always does), a bay's room objects are bounded by THAT floor, never
+     widened by the plan a page posted: the plan picks the dock a run is at and may only narrow its room. See savedStationFor. */
   const savedStation = typeof o.savedStation === 'function' ? o.savedStation : null;
 
   // store a posted plan. null/empty clears it (no routing floor). A plan with BLOCKING errors is refused.
@@ -184,10 +187,10 @@ function makeRouter(o) {
   }
 
   /* Phase B5 — per-bay capability isolation. The resolveTools-shaped station for a BAY-bound agent, built from
-     the objects the floor placed in that bay's room: read off the saved station when the host passes savedStation
-     (the sidecar does — savedStationFor below), else off the posted plan (a router built without one, as the pure
-     routing tests do). null for any agent WITHOUT a bay (the caller then uses its own default office), so only
-     bay-routed work is isolated; everything else is unchanged. PURE room objects — no baseline — so an UNEQUIPPED
+     the objects the floor placed in that bay's room: bounded by the saved station when the host passes savedStation
+     (the sidecar does — savedStationFor below: never wider than the saved room or the default office), else off the
+     posted plan (a router built without one, as the pure routing tests do). null for any agent WITHOUT a bay (the
+     caller then uses its own default office), so only bay-routed work is isolated; everything else is unchanged. PURE room objects — no baseline — so an UNEQUIPPED
      bay grants no compute and can't spend (the compute gate stays shut; cost-safe), exactly mirroring resolveTools'
      projection of the placed floor. */
   function stationFor(agentId, dockId) {
@@ -205,28 +208,61 @@ function makeRouter(o) {
        rooms. A deskful agent still gets its desk room on every hop: the floor computes each dock record's
        `objects` through worldmodel.bayObjects(agentId, dockId), which prefers the desk room (remote-bay
        ruling). The first matching record is only the fallback for a plan that predates the dock key. */
-    const want = dockOf(agentId, dockId);
-    const bay = (want && ((p.bays || []).find(b => b.propId === want && b.agentId === agentId) || (p.dockBays || []).find(b => b.propId === want && b.agentId === agentId)))
-      || (p.bays || []).find(b => b.agentId === agentId) || (p.dockBays || []).find(b => b.agentId === agentId);
+    const bay = planBayOf(p, agentId, dockId);
     if (!bay) return null;
     const authoritative = stationStore.hasStation() ? stationStore.bayObjects(agentId, bay.propId) : null;
     const objs = Array.isArray(authoritative) ? authoritative : (Array.isArray(bay.objects) ? bay.objects : []);
     return roomStation(agentId, bay.propId, objs);
   }
-  /* The saved floor decides the grant, the posted plan only picks the dock. An agent the saved floor crews in no bay is
-     not bay-bound (null: the caller's own office, exactly as with no plan), whatever bay a plan names for it; one it does
-     crew gets the room of the run's dock when that dock is one of its saved bays, else of its first saved bay. So a
-     plan can never move what a headless run is granted, and a restart re-reads the same saved floor. */
+  // the plan's bay record for this agent at this dock (else its entry dock, else its first record), or null
+  function planBayOf(p, agentId, dockId) {
+    if (!p) return null;
+    const want = dockOf(agentId, dockId);
+    return (want && ((p.bays || []).find(b => b.propId === want && b.agentId === agentId) || (p.dockBays || []).find(b => b.propId === want && b.agentId === agentId)))
+      || (p.bays || []).find(b => b.agentId === agentId) || (p.dockBays || []).find(b => b.agentId === agentId) || null;
+  }
+  /* A PLAN MAY NARROW A GRANT, NEVER WIDEN IT (2026-10-21). The saved floor and the posted plan each bound a bay's room:
+     - the saved floor crews the agent: the room of the run's dock when that dock is one of its saved bays (else its first
+       saved bay), cut down to what the plan lists for the agent when the plan crews it too — so a save that lags, or was
+       refused, after gear came off a bay cannot hand that gear back;
+     - only the plan crews it (no save on the server, an unreadable or invalid save, a save that does not crew it yet):
+       the plan's room cut down to the default office (DEFAULT_CEILING) — NEVER null, because null means the caller's
+       FULL default office while the floor still paints the bay's restriction (the 2026-08-10 audit #1 class);
+     - neither crews it: null, the caller's own office, exactly as with no plan.
+     So no posted plan can make a run's grant wider than the saved room or the default office, and a restart re-reads
+     the same saved floor and the same persisted plan. */
   function savedStationFor(agentId, dockId, p) {
     let st = null;
-    try { st = savedStation(); } catch (e) { st = null; console.warn('[routing] saved station unreadable; no bay room granted:', (e && e.message) || e); }
-    if (!st || typeof st.props !== 'function' || typeof st.bayObjects !== 'function') return null;
-    const bays = st.props().filter(b => b && b.t === 'bay' && b.agentId === agentId).map(b => String(b.id));
-    if (!bays.length) return null;
-    const planDock = p ? dockOf(agentId, dockId) : null;
-    const dock = [dockId, planDock].map(d => (d == null ? '' : String(d))).find(d => d && bays.indexOf(d) >= 0) || bays[0];
-    const objs = st.bayObjects(agentId, dock);
-    return roomStation(agentId, dock, Array.isArray(objs) ? objs : []);
+    try { st = savedStation(); } catch (e) { st = null; console.warn('[routing] saved station unreadable; a bay room is held to the posted plan within the default office:', (e && e.message) || e); }
+    if (st && (typeof st.props !== 'function' || typeof st.bayObjects !== 'function')) st = null;
+    const bays = st ? st.props().filter(b => b && b.t === 'bay' && b.agentId === agentId).map(b => String(b.id)) : [];
+    if (bays.length) {
+      const planDock = p ? dockOf(agentId, dockId) : null;
+      const dock = [dockId, planDock].map(d => (d == null ? '' : String(d))).find(d => d && bays.indexOf(d) >= 0) || bays[0];
+      const saved = st.bayObjects(agentId, dock);
+      const objs = Array.isArray(saved) ? saved : [];
+      const listed = planBayOf(p, agentId, dock);
+      return roomStation(agentId, dock, listed ? objectsWithin(objs, Array.isArray(listed.objects) ? listed.objects : []) : objs);
+    }
+    const listed = planBayOf(p, agentId, dockId);
+    if (!listed) return null;
+    return roomStation(agentId, listed.propId, (Array.isArray(listed.objects) ? listed.objects : []).filter(inDefaultOffice));
+  }
+  // a room object's identity: its type plus the per-instance binding that selects WHICH server/plugin it projects
+  function objectKey(t) {
+    return (t && typeof t === 'object') ? [t.objectType, t.connectorId || '', t.pluginId || ''].join('|') : [t, '', ''].join('|');
+  }
+  // the objects of `objs` that `bound` also lists (never wider than either list)
+  function objectsWithin(objs, bound) {
+    const keys = new Set(bound.map(objectKey));
+    return objs.filter(t => keys.has(objectKey(t)));
+  }
+  // the default office a headless run gets with no bay (capability/office.js fullOffice), plus connector portals: those
+  // are account-level and ride every default office (composeOffice), and one naming no configured server projects nothing.
+  // Never the workbench, a plugin terminal, the orchestrator or the builder: those are a host's grant, never a plan's.
+  function inDefaultOffice(t) {
+    const type = (t && typeof t === 'object') ? t.objectType : t;
+    return type === 'connector' || DEFAULT_CEILING.has(type);
   }
   // each entry is EITHER a bare objectType string (the generic caps: 'computer'/'dish'/…) OR a rich object
   // { objectType, … } carrying per-instance data — e.g. a connector portal's { objectType:'connector',

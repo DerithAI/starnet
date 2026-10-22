@@ -215,7 +215,7 @@ async function readNdjson(res) {
     });
     A.eq(plan.chains['research-agent'].next, ['writer-agent'], 'the drawn floor chains the two docks');
     for (const b of plan.bays.concat(plan.dockBays)) b.objects = ['computer'];   // an unequipped bay grants no compute
-    /* the docks' ROOM is the saved station's (a bay's grant is read off the saved floor, never off the posted plan —
+    /* the docks' ROOM is bounded by the saved station (a posted plan may narrow a bay's grant, never widen it —
        qa/bugs/a9a4f53c): save both bays with a workstation each and no dish, so the bay room is computer-only */
     const WM = require('../frontend/app/worldmodel.js');
     const stDoc = WM.defaultDoc();

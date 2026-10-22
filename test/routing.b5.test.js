@@ -224,7 +224,9 @@ A.eq(makeRouter().stationFor('coder'), null, 'no posted plan -> stationFor null'
 }
 
 /* THE SAVED STATION GRANTS (qa/bugs/a9a4f53c, 2026-10-21). The sidecar builds its router with savedStation (the saved
-   floor, validated); from then on a bay's room objects are read off that floor and the posted plan only picks the dock.
+   floor, validated); from then on a bay's room is NEVER WIDER than both the saved room and the posted plan's room, and with
+   no saved room for the agent, never wider than the plan's room and the default office (fullOffice + connectors) — and
+   never null, which would hand the caller's FULL default office to a bay the floor paints as restricted.
    The real-sidecar proof is test/routing.saved-station-grants.e2e.test.js; this pins the router's reading of it. */
 {
   const { checkedStation } = require('../sidecar/capability/saved-placement.js');
@@ -242,26 +244,48 @@ A.eq(makeRouter().stationFor('coder'), null, 'no posted plan -> stationFor null'
   const plan = (bays) => ({ errors: [], hash: 'h-' + bays.map(b => b.propId).join('-'), sources: [], belts: [], bays: [], dockBays: bays });
   const r = makeRouter({ savedStation: () => saved });
 
-  A.ok(r.setPlan(plan([listed('coder', 'ghost', ['computer', 'cabinet', 'workbench'])])).ok, 'a plan naming a bay no saved station holds is stored');
-  A.eq(r.stationFor('coder'), null, 'an agent the saved floor crews in no bay is not bay-bound, whatever bay the plan names');
+  const WIDE = ['computer', 'workbench', 'dish', 'cabinet', 'orchestrator', 'builder', { objectType: 'plugin', pluginId: 'px' }, { objectType: 'connector', connectorId: 'cx' }];
+  const FULL = ['cabinet', 'computer', 'dish', 'jukebox', 'notebook', 'studio'];   // capability/office.js fullOffice
 
-  r.setPlan(plan([listed('writer', 'bA', ['computer', 'cabinet', 'workbench'])]));
-  A.eq(types(r.stationFor('writer')), ['dish'], 'the saved bay\'s room is the grant: the plan\'s object list is not read');
+  // ---- the saved floor crews the agent: saved room ∩ the plan's room ----
+  r.setPlan(plan([listed('writer', 'bA', WIDE), listed('writer', 'bB', ['computer', 'cabinet'])]));
+  A.eq(types(r.stationFor('writer')), ['dish'], 'objects the plan lists beyond the saved bay\'s room are not granted');
   A.eq(r.stationFor('writer').floor.dockId, 'bA', 'the routed room names the dock it resolved');
   A.eq(types(r.stationFor('writer', 'bB')), ['cabinet'], 'a dock the saved floor gives the agent is the room this run gets (multi-bay)');
   A.eq(types(r.stationFor('writer', 'nope')), ['dish'], 'a dock the saved floor does not know falls back to the plan\'s dock for this agent');
-
+  r.setPlan(plan([listed('writer', 'bA', ['computer']), listed('writer', 'bB', [])]));
+  A.eq(types(r.stationFor('writer')), [], 'a plan listing less than the saved room narrows it (a save lagging after gear came off)');
+  A.eq(types(r.stationFor('writer', 'bB')), [], 'an unequipped plan bay grants nothing from the saved room');
   r.setPlan(plan([listed('writer', 'ghost', ['computer', 'cabinet'])]));
-  A.eq(types(r.stationFor('writer')), ['dish'], 'a plan naming a ghost bay for a crewed agent gets its first SAVED bay\'s room');
+  A.eq(types(r.stationFor('writer')), [], 'a plan naming a ghost bay for a crewed agent: its first saved bay\'s room, cut to the plan\'s room');
+  A.eq(r.stationFor('writer').floor.dockId, 'bA', 'the ghost-plan room is the agent\'s saved bay, never the ghost');
   r.clearPlan();
   A.eq(types(r.stationFor('writer')), ['dish'], 'with no plan at all, a crewed agent still runs in its saved room (no wider office)');
 
+  // ---- the saved floor crews the agent in no bay: the plan's room ∩ the default office, never null ----
+  A.ok(r.setPlan(plan([listed('coder', 'ghost', WIDE)])).ok, 'a plan naming a bay no saved station holds is stored');
+  A.eq(types(r.stationFor('coder')), ['cabinet', 'computer', 'connector', 'dish'], 'an agent the saved floor does not crew: the plan\'s room within the default office (no workbench, plugin, orchestrator, builder)');
+  r.setPlan(plan([listed('coder', 'ghost', [])]));
+  A.eq(types(r.stationFor('coder')), [], 'an unequipped plan bay for an agent the saved floor does not crew grants nothing (not the full office)');
+  r.clearPlan();
+  A.eq(r.stationFor('coder'), null, 'with no plan and no saved bay the agent is not bay-bound (its own office, as before)');
+
+  // ---- no saved station, an unreadable one, an invalid one: the same bound, never null ----
   saved = null;
-  r.setPlan(plan([listed('writer', 'bA', ['computer', 'cabinet'])]));
-  A.eq(r.stationFor('writer'), null, 'no saved station: no bay room is granted from the plan');
+  r.setPlan(plan([listed('writer', 'bA', WIDE)]));
+  A.eq(types(r.stationFor('writer')), ['cabinet', 'computer', 'connector', 'dish'], 'no saved station: the plan\'s room within the default office');
+  A.ok((types(r.stationFor('writer')) || [null]).every(t => t === 'connector' || FULL.indexOf(t) >= 0), 'no saved station: nothing outside the default office');
+  r.setPlan(plan([listed('writer', 'bA', [])]));
+  A.eq(types(r.stationFor('writer')), [], 'no saved station: an unequipped bay still grants no compute (the floor\'s NO COMPUTE holds)');
   const thrower = makeRouter({ savedStation: () => { throw new Error('unreadable'); } });
-  thrower.setPlan(plan([listed('writer', 'bA', ['computer', 'cabinet'])]));
-  A.eq(thrower.stationFor('writer'), null, 'an unreadable saved station grants no bay room from the plan either');
+  thrower.setPlan(plan([listed('writer', 'bA', ['computer', 'workbench'])]));
+  A.eq(types(thrower.stationFor('writer')), ['computer'], 'an unreadable saved station: the plan\'s room within the default office');
+  thrower.setPlan(plan([listed('writer', 'bA', [])]));
+  A.eq(types(thrower.stationFor('writer')), [], 'an unreadable saved station: an unequipped bay grants nothing');
+  const junk = makeRouter({ savedStation: () => ({ props: 'not a function' }) });
+  junk.setPlan(plan([listed('writer', 'bA', [])]));
+  A.eq(types(junk.stationFor('writer')), [], 'a saved station that is not a station model: an unequipped bay grants nothing');
+  A.eq(junk.stationFor('nobody'), null, 'an agent no plan and no saved floor crews is not bay-bound');
 }
 
 A.report('routing.b5');

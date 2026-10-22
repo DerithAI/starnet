@@ -280,9 +280,9 @@ const lastUserTurn = (req) => {
     // (permissions.js tier 4) and the REAL fail-closed waiter (consentwait.js) — only the network is faked.
     // Give this chat's agent a CABINET. Capability projection is what decides which tools exist at all, so
     // without a placed cabinet there is no fs.write for the broker to pause on, and a bay projects PURE room objects with no baseline, so it needs its own computer to run at all (a bare workspace offers only
-    // the consent-free skill tools) and this would silently prove nothing. The room is the SAVED station's (a bay's grant
-    // is read off the saved floor, never off the posted plan — qa/bugs/a9a4f53c): save the bay, its workstation and the
-    // cabinet, then post the plan that names the bay.
+    // the consent-free skill tools) and this would silently prove nothing. The room is bounded by the SAVED station (a
+    // posted plan may narrow a bay's grant, never widen it — qa/bugs/a9a4f53c): save the bay, its workstation and the
+    // cabinet, then post the plan that names the bay with the room objects the page lists for it.
     const WM = require('../frontend/app/worldmodel.js');
     const saveHeaders = { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B };
     const stDoc = WM.defaultDoc();
@@ -296,7 +296,7 @@ const lastUserTurn = (req) => {
     A.ok(sv.status === 200 && ((await sv.json()) || {}).ok === true, 'the station with tg_4242\'s bay, workstation and cabinet is saved');
     const rr = await fetch(B + '/api/routing', {
       method: 'POST', headers: saveHeaders,
-      body: JSON.stringify({ errors: [], hash: 'buttons-e2e', bays: [], dockBays: [{ agentId: 'tg_4242', propId: 'bay1' }] })
+      body: JSON.stringify({ errors: [], hash: 'buttons-e2e', bays: [], dockBays: [{ agentId: 'tg_4242', propId: 'bay1', objects: ['computer', 'cabinet'] }] })
     });
     A.eq(rr.status, 200, 'routing plan accepted (tg_4242 docked at its saved bay: computer + cabinet)');
 
