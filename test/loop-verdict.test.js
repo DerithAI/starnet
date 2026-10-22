@@ -491,5 +491,102 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
       A.ok(BARE_PROMISE.test(run.log.find(l => l.agentId === 'reviewer').text) && res.text === RESEARCH, 'an ordinary gate (' + keyed + '-keyed): the reviewer is told a bare approval passes the work on, and it does');
     }
   }
+
+  /* ---- A FRAME INSIDE A JOINED CRATE (review of 524522d2c, 2026-10-22). Gate 1 sits on one branch of a split; its done lane meets
+          the JOINER, so its frame is one BRANCH of the merged crate the editor reviews at gate 2. Only a frame that STARTS the crate
+          was read: the editor's bare approval swapped in the whole merged crate — an exhausted gate 1's draft (the name, phone and SSN
+          its reviewer redacted) went out of the OUTBOX and through SEND TO, and a passed-on gate 1's frame wrapper shipped as part of
+          the product. Now the exhausted case moves the editor's reply on as on trunk, and a passed-on frame is unwrapped in place. ---- */
+  // INBOX -> SPLIT -> [writer -> reviewer -> LOOP 1 (max 1, back: writer)] + [researcher] -> JOINER -> editor -> LOOP 2 (max 2, back: writer) -> done
+  function joinGateFloor(doneProp) {
+    const bs = [belt(2, 6, 'E'), belt(3, 6, 'E'), belt(4, 6, 'E'), belt(5, 6, 'E'), belt(6, 6, 'E'), belt(9, 6, 'E'), belt(10, 6, 'E'), belt(11, 6, 'E'),
+      belt(14, 6, 'E'), belt(15, 6, 'E'), belt(16, 6, 'E'), belt(17, 6, 'E'), belt(18, 6, 'E'), belt(19, 6, 'E'), belt(20, 6, 'E'), belt(21, 6, 'E'),
+      belt(24, 6, 'E'), belt(25, 6, 'E'), belt(26, 6, 'E'), belt(27, 6, 'E'), belt(28, 6, 'E')];
+    bs.push(belt(16, 5, 'N'), belt(16, 4, 'N'), belt(16, 3, 'N'), belt(16, 2, 'W'));   // gate 1's back lane, into the writer's input
+    for (let x = 15; x >= 7; x--) bs.push(belt(x, 2, 'W'));
+    bs.push(belt(6, 2, 'S'), belt(6, 3, 'S'), belt(6, 4, 'S'), belt(6, 5, 'S'));
+    for (let y = 5; y >= 1; y--) bs.push(belt(26, y, 'N'));                          // gate 2's back lane, round the top
+    bs.push(belt(26, 0, 'W'));
+    for (let x = 25; x >= 6; x--) bs.push(belt(x, 0, 'W'));
+    for (let y = 0; y <= 5; y++) bs.push(belt(5, y, 'S'));
+    bs.push(belt(3, 7, 'S'), belt(3, 8, 'S'), belt(3, 9, 'S'));                     // the split's second lane, to the researcher
+    for (let x = 4; x <= 18; x++) bs.push(belt(x, 11, 'E'));
+    for (let y = 11; y >= 7; y--) bs.push(belt(19, y, 'N'));                          // ...and on into the joiner from the south
+    return geo([{ id: 'p1', t: 'intake', x: 0, y: 5, w: 2, h: 2 },
+      { id: 'p2', t: 'splitter', x: 3, y: 6, w: 1, h: 1 },
+      { id: 'p3', t: 'bay', x: 7, y: 5, w: 2, h: 2, agentId: 'writer' },
+      { id: 'p4', t: 'bay', x: 12, y: 5, w: 2, h: 2, agentId: 'reviewer' },
+      { id: 'p5', t: 'loop', x: 16, y: 6, w: 1, h: 1, done: 'E', when: 'approved', maxIter: 1 },
+      { id: 'p6', t: 'joiner', x: 19, y: 6, w: 1, h: 1 },
+      { id: 'p7', t: 'bay', x: 22, y: 5, w: 2, h: 2, agentId: 'editor' },
+      { id: 'p8', t: 'loop', x: 26, y: 6, w: 1, h: 1, done: 'E', when: 'approved', maxIter: 2 },
+      doneProp || { id: 'p9', t: 'outbox', x: 29, y: 5, w: 2, h: 2 },
+      { id: 'p10', t: 'bay', x: 2, y: 10, w: 2, h: 2, agentId: 'researcher' }], bs);
+  }
+  const NOTES = 'Permits average 40 days in the county.';
+  const joinScript = (reviewer, editor) => ({ writer: { text: LEAK, usd: 0.01 }, reviewer, researcher: { text: NOTES, usd: 0.01 }, editor, publisher: { text: 'the design', usd: 0.01 } });
+  async function throughJoin(script, runId) {
+    const sent = [];
+    const O = rig(joinGateFloor(), script, { lastStage: (a) => a === 'editor', onShipped: (r) => sent.push(r) });
+    const res = await O.c.advance({ agentId: 'writer', text: LEAK, originalText: 'write the launch post', lineId: O.lineId, runId: runId + '-out' });
+    await new Promise(r => setImmediate(r));
+    const D = rig(joinGateFloor({ id: 'p9', t: 'bay', x: 29, y: 5, w: 2, h: 2, agentId: 'publisher' }), script);
+    await D.c.advance({ agentId: 'writer', text: LEAK, originalText: 'write the launch post', lineId: D.lineId, runId: runId + '-dock' });
+    const pub = D.log.find(l => l.agentId === 'publisher');
+    return { res, plan: O.plan, router: O.router, lineId: O.lineId, editorTurn: (O.log.find(l => l.agentId === 'editor') || {}).text || '',
+      outbox: res.text, sendTo: sent.length === 1 ? sent[0] : null, dock: pub ? upstreamOf(pub) : null, dockTurn: pub ? pub.text : '' };
+  }
+  {
+    // gate 1 runs out of passes with the reviewer's redacted version as its last word; the editor approves the merged crate tersely
+    const g = await throughJoin(joinScript({ text: LEAK_R, usd: 0.01 }, { text: 'Looks good.\nVERDICT: approved', usd: 0.01 }), 'v-join-exhausted');
+    A.eq(g.plan.errors.filter(e => !e.warn).length, 0, 'a gate inside a split branch: the floor compiles (' + JSON.stringify(g.plan.errors) + ')');
+    A.ok(g.router.loopGateAfter('reviewer', g.lineId) && g.router.loopGateAfter('editor', g.lineId) && P.lineOf(g.plan, 'researcher') === g.lineId,
+      'a gate inside a split branch: both gates and both branches are on the writer\'s line');
+    A.eq(g.res.hops.map(h => h.agentId).join(','), 'reviewer,writer,reviewer,researcher,editor', 'a gate inside a split branch: gate 1 runs out, the researcher branch runs, the editor reviews the merged crate');
+    A.ok(/^JOINED OUTPUT — 2 of 2 branches delivered/.test(upstreamOf({ text: g.editorTurn })) && /=== BRANCH 1 of 2 — reviewer ===\n\[LOOP — exhausted: 1 pass round the gate at 16,6/.test(g.editorTurn),
+      'a gate inside a split branch: the editor is handed the joined crate, gate 1\'s exhausted frame inside it (not at its start)');
+    A.ok(!BARE_PROMISE.test(g.editorTurn) && /your reply is what moves on past the gate/.test(g.editorTurn),
+      'an exhausted frame inside a joined crate: the editor is never told a bare approval passes on what it was handed');
+    A.ok(g.outbox === 'Looks good.' && !leaks(g.outbox), 'an exhausted frame inside a joined crate, to the OUTBOX: the editor\'s reply ships as on trunk, never the unredacted draft (' + JSON.stringify(String(g.outbox).slice(0, 90)) + ')');
+    A.ok(g.sendTo && !leaks(g.sendTo.text) && /used all 1 pass/.test(String(g.sendTo.unapproved)), 'an exhausted frame inside a joined crate: SEND TO hands on no unredacted draft, marked unapproved');
+    A.ok(g.dock === 'Looks good.' && !leaks(g.dockTurn) && !/passed the work on without restating it/.test(g.dockTurn),
+      'an exhausted frame inside a joined crate, to a dock: the next stage is never handed the unredacted draft (' + JSON.stringify(String(g.dock).slice(0, 90)) + ')');
+  }
+  {
+    // gate 1 passes the work on for a bare approval; the editor approves the merged crate tersely: the joined work ships, unwrapped
+    const OK_WORK = 'Launch is Friday at 9am. The release notes are in the shared folder.';
+    const script = joinScript({ text: 'Looks good.\nVERDICT: approved', usd: 0.01 }, { text: 'Ship it.\nVERDICT: approved', usd: 0.01 });
+    script.writer = { text: OK_WORK, usd: 0.01 };
+    const sent = [];
+    const O = rig(joinGateFloor(), script, { lastStage: (a) => a === 'editor', onShipped: (r) => sent.push(r) });
+    const res = await O.c.advance({ agentId: 'writer', text: OK_WORK, originalText: 'write the launch post', lineId: O.lineId, runId: 'v-join-passed-out' });
+    await new Promise(r => setImmediate(r));
+    const want = P.joinPayload([{ agentId: 'reviewer', text: OK_WORK }, { agentId: 'researcher', text: NOTES }], []);
+    const ed = O.log.find(l => l.agentId === 'editor');
+    A.ok(/=== BRANCH 1 of 2 — reviewer ===\n\[LOOP — approved round the gate at 16,6 — the reviewer passed the work on without restating it\]/.test(ed.text) && BARE_PROMISE.test(ed.text),
+      'a passed-on frame inside a joined crate: the editor is handed it, and told a bare approval passes the work on');
+    A.eq(res.text, want, 'a passed-on frame inside a joined crate, to the OUTBOX: the joined work ships with the frame unwrapped (no wrapper, no REVIEW part)');
+    A.ok(sent.length === 1 && sent[0].text === want && !res.unapproved, 'a passed-on frame inside a joined crate: SEND TO hands on the same joined work');
+    const D = rig(joinGateFloor({ id: 'p9', t: 'bay', x: 29, y: 5, w: 2, h: 2, agentId: 'publisher' }), script);
+    await D.c.advance({ agentId: 'writer', text: OK_WORK, originalText: 'write the launch post', lineId: D.lineId, runId: 'v-join-passed-dock' });
+    const handed = upstreamOf(D.log.find(l => l.agentId === 'publisher'));
+    A.ok(handed.indexOf(WORK_HEAD_TEXT + want + '\n\nREVIEW:\nShip it.') > 0 && (handed.match(/\[LOOP — /g) || []).length === 1,
+      'a passed-on frame inside a joined crate, to a dock: one frame round the joined work, never a nested one (' + JSON.stringify(handed.slice(0, 90)) + ')');
+  }
+  {
+    // ...and a reply past the joiner that says the editor CHANGED the work is the work, never the joined crate it was handed
+    const g = await throughJoin(joinScript({ text: 'Looks good.\nVERDICT: approved', usd: 0.01 }, { text: 'Done.\nVERDICT: approved', usd: 0.01 }), 'v-join-done');
+    A.ok(g.outbox === 'Done.' && g.sendTo && g.sendTo.text === 'Done.' && g.dock === 'Done.', 'a changed-work reply past the joiner: the reply moves on, as on trunk (' + JSON.stringify(String(g.outbox).slice(0, 60)) + ')');
+  }
+
+  /* ---- A REPLY THAT SAYS IT CHANGED THE WORK IS NEVER A BARE APPROVAL (review of 524522d2c, 2026-10-22). "done" was an approval word
+          and "changes", "edits" and "polished" approval filler, so "Done.", "Changes done." or "Edits done, looks good." swapped the
+          draft the reviewer was handed back in for the version it says it changed — the OUTBOX, SEND TO and a dock got the old draft,
+          its phone number included. Now any claim of a change keeps the reply, as on trunk; a real terse approval still hands the work on. ---- */
+  for (const claim of ['Done.', 'All done.', 'Done, ship it.', 'Done — looks good.', 'Changes done.', 'Edits done, looks good.', 'All changes done, ready to ship.',
+    'Polished and ready.', 'OK, done.', '好了。', '可以了。', '没问题了，可以发布。'])
+    await changedIsTheWork('the changed-work reply ' + JSON.stringify(claim), PII_THANKS, claim);   // the reply itself moves on: the old draft (and its phone number) never does
+  for (const ok of ['Looks good.', 'No changes needed.', 'No further edits needed.', 'No edits needed, ship it.', 'No changes.', 'Approved.', 'Fine as is.', 'Ship it.', '太棒了！'])
+    await approvalIsNot('the real terse approval ' + JSON.stringify(ok), RESEARCH, ok);
   A.report('loop-verdict');
 })();

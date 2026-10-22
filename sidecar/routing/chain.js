@@ -112,20 +112,49 @@ function clipReviewed(s) {
 const WORK_HEAD = 'THE WORK UNDER REVIEW (what the reviewer was handed):\n', REVIEW_HEAD = '\n\nREVIEW:\n';
 const PASSED_ON = ' — the reviewer passed the work on without restating it]';
 const PASSED_FRAME = /^\[LOOP — [^\n]* — the reviewer passed the work on without restating it\]\nTHE WORK UNDER REVIEW \(what the reviewer was handed\):\n/;
-const LOOP_FRAME = /^\[LOOP — [^\n]*\]\n/;
+const LOOP_HEAD = /^\[LOOP — /m;   // a LOOP frame's first line, at the start of ANY line of a crate
+// a JOINER's merged crate (Pipeline.joinPayload): each branch's text follows its header and runs to the next header, a PARTIAL mark or the end
+const BRANCH_HEAD = /^\n\n=== BRANCH \d+ of \d+ — [^\n]* ===\n$/;
+const NEXT_SEAM = /\n\n=== (?:BRANCH \d+ of \d+ — [^\n]* ===\n|PARTIAL: )/;
 /* reviewedWork(handed) -> { work, swap }: what a stage was handed, read for the gate after it. `swap` = may a bare approval there
    hand this work on in its place? A crate an earlier gate PASSED ON for a bare approval (loopDecision's frame, PASSED_ON) carries
    the approved work inside: a later gate reviews that work, so those frames never nest and never ship. Every OTHER LOOP frame (a
    loop-back, an exhausted or escalated gate's) holds the earlier reviewer's last word in its REVIEW part — perhaps its own redacted
    version — so it is the work under review whole, as on trunk, and a bare approval of it never swaps anything in (2026-10-21
-   review: unwrapping an exhausted frame shipped the draft that reviewer had redacted). */
-function reviewedWork(s) {
-  const m = PASSED_FRAME.exec(s);
-  if (m) {
-    const cut = s.lastIndexOf(REVIEW_HEAD);
-    return cut >= m[0].length ? { work: s.slice(m[0].length, cut), swap: true } : { work: s, swap: false };
+   review: unwrapping an exhausted frame shipped the draft that reviewer had redacted).
+   FRAMES ANYWHERE (2026-10-22 review): a gate's done lane that meets a JOINER parks its frame as one BRANCH of the merged crate, so
+   a frame need not start the crate. Reading only the crate's first line missed it: a bare approval past the joiner swapped in the
+   whole merged crate, shipping a passed-on frame's wrapper, or an exhausted frame's draft (the personal data the earlier reviewer
+   had redacted). Now every line that opens a LOOP frame is read: a passed-on frame that is the whole crate, or the whole of one
+   branch, is unwrapped IN PLACE to the work it carries (the other branches, the joiner's header and PARTIAL marks kept as they are);
+   any other frame, a frame anywhere else, or one that cannot be read back exactly, keeps the crate whole with no swap. */
+function passedAt(s, start) {
+  const head = PASSED_FRAME.exec(s.slice(start));
+  if (!head) return null;
+  const body = start + head[0].length;
+  // the frame's own REVIEW part holds only the bare approval it was passed on for, running to the next seam or the end
+  for (let cut = s.indexOf(REVIEW_HEAD, body); cut >= 0; cut = s.indexOf(REVIEW_HEAD, cut + 1)) {
+    const from = cut + REVIEW_HEAD.length, seam = NEXT_SEAM.exec(s.slice(from));
+    const end = seam ? from + seam.index : s.length, notes = s.slice(from, end);
+    if (!notes.trim() || !bareApproval(notes)) continue;
+    const work = s.slice(body, cut);
+    return LOOP_HEAD.test(work) ? null : { work, end };
   }
-  return { work: s, swap: !LOOP_FRAME.test(s) };
+  return null;
+}
+function reviewedWork(s) {
+  if (!LOOP_HEAD.test(s)) return { work: s, swap: true };
+  const heads = /^\[LOOP — /gm;
+  let work = '', at = 0, m;
+  while ((m = heads.exec(s))) {
+    const start = m.index;
+    const branch = s.lastIndexOf('\n\n=== BRANCH ', start);
+    const p = (start === 0 || (branch >= 0 && BRANCH_HEAD.test(s.slice(branch, start)))) ? passedAt(s, start) : null;
+    if (!p) return { work: s, swap: false };
+    work += s.slice(at, start) + p.work;
+    at = p.end; heads.lastIndex = p.end;
+  }
+  return { work: work + s.slice(at), swap: true };
 }
 /* bareApproval(reply) -> is an APPROVING reply (its VERDICT line stripped) POSITIVELY a bare approval, so the work it approved moves
    on in its place? Only two shapes are: nothing at all (only the VERDICT line, which the verdict brief offers for passing the work
@@ -136,23 +165,30 @@ function reviewedWork(s) {
    review in its own words. One word outside the two lists ("but", "not", "don't", a noun of the work's), or a redaction mark,
    keeps the reply; neither list holds a verb that asks for a change. (2026-10-21 reviews: rules that guessed "a short note" from
    overlap, length and shape swapped short versions and caveats back for the draft, shipping the version the reviewer replaced and
-   the personal data it flagged.) Pure; a reply past 2k characters is never bare. */
-const APPROVE_WORDS = new Set(('accepted approve approved done excellent fine go good great happy lgtm love nice no ok okay perfect '
+   the personal data it flagged.) Pure; a reply past 2k characters is never bare.
+   NO CLAIM OF A CHANGE (2026-10-22 review): a reply that says the reviewer CHANGED something is never bare, whatever else it says —
+   "Done.", "All done, ship it.", "Changes done.", "Edits done, looks good.", "Polished and ready.", "好了。", "可以了。". The change
+   may sit in a file the reviewer edited, or the reply may simply be wrong, but the draft it was handed is not what it approved, so
+   swapping that draft in shipped the old version. Neither list holds a word that reports a change (done, changes, edits, polished, the
+   Chinese change-of-state 了); "no changes / edits (needed)" is read as one phrase, which reports none. When in doubt the reply is the work. */
+const APPROVE_WORDS = new Set(('accepted approve approved excellent fine go good great happy lgtm love nice no ok okay perfect '
   + 'post publish ready send ship solid works yes yep').split(' '));
-const APPROVAL_FILLER = new Set(('a accurate all also and are as be by changes clearly concise crisp edits engaging everything flow '
-  + 'for further here hook i is issues it job let look looking looks m me needed nicely notes on overall polished readable really '
+const APPROVAL_FILLER = new Set(('a accurate all also and are as be by clearly concise crisp engaging everything flow '
+  + 'for further here hook i is issues it job let look looking looks m me needed nicely notes on overall readable really '
   + 'relevant s sharp sounds sourced specific spot strong thanks that the think this thorough tight to tone too upbeat very warm '
   + 'well work written').split(' '));
+const NO_CHANGE = /(?<![\p{L}\p{N}])no (?:further |more |other )?(?:changes|edits)(?: (?:are |were )?(?:needed|required|necessary))?(?![\p{L}\p{N}])/gu;
 // Chinese, Japanese and Korean put no spaces between words: their approval phrases are matched (longest first), then their grammar
 const CJK_APPROVE = /非常好|太棒了|没有问题|没问题|不错|很好|挺好|好的|很棒|完美|可以|发布|通过|批准|同意|好|問題ありません|問題なし|大丈夫|素晴らしい|完璧|承認|いい|良い|よい|좋습니다|좋아요|좋네요|괜찮습니다|괜찮아요|승인합니다|승인|완벽합니다|완벽해요/gu;
-const CJK_FILLER = /看起来|看上去|我觉得|写得|非常|很|也|都|了|的|吧|啊|と思います|思います|とても|します|です|ます|ね|よ|아주|정말|네/gu;
+const CJK_FILLER = /看起来|看上去|我觉得|写得|非常|很|也|都|的|吧|啊|と思います|思います|とても|します|です|ます|ね|よ|아주|정말|네/gu;
 const REDACTION_MARK = /\[[^\]\n]{0,40}\]|【[^】\n]{0,40}】|\*{3,}|_{3,}|[█▇■▓▒░]/u;
 function bareApproval(reply) {
   const s = String(reply == null ? '' : reply).trim();
   if (!s) return true;
   if (s.length > 2000 || REDACTION_MARK.test(s)) return false;
   let approves = false, filler = false;
-  const rest = s.toLowerCase().replace(CJK_APPROVE, () => { approves = true; return ' '; }).replace(CJK_FILLER, () => { filler = true; return ' '; });
+  const rest = s.toLowerCase().replace(NO_CHANGE, () => { approves = true; return ' '; })
+    .replace(CJK_APPROVE, () => { approves = true; return ' '; }).replace(CJK_FILLER, () => { filler = true; return ' '; });
   for (const w of rest.match(/[\p{L}\p{N}]+/gu) || []) {
     if (APPROVE_WORDS.has(w)) approves = true;
     else if (APPROVAL_FILLER.has(w)) filler = true;
