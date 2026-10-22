@@ -110,14 +110,22 @@ function clipReviewed(s) {
   return s.slice(0, REVIEWED_HEAD) + '\n[… ' + (s.length - REVIEWED_HEAD - REVIEWED_TAIL) + ' characters of the work omitted …]\n' + s.slice(-REVIEWED_TAIL);
 }
 const WORK_HEAD = 'THE WORK UNDER REVIEW (what the reviewer was handed):\n', REVIEW_HEAD = '\n\nREVIEW:\n';
-const FRAMED = /^\[LOOP — [^\n]*\]\nTHE WORK UNDER REVIEW \(what the reviewer was handed\):\n/;
-// a crate an earlier gate handed on in this frame carries its work inside: a later gate reviews that work, so frames never nest
-// and a frame never ships as a line's product
-function workOf(s) {
-  const m = FRAMED.exec(s);
-  if (!m) return s;
-  const cut = s.lastIndexOf(REVIEW_HEAD);
-  return cut >= m[0].length ? s.slice(m[0].length, cut) : s;
+const PASSED_ON = ' — the reviewer passed the work on without restating it]';
+const PASSED_FRAME = /^\[LOOP — [^\n]* — the reviewer passed the work on without restating it\]\nTHE WORK UNDER REVIEW \(what the reviewer was handed\):\n/;
+const LOOP_FRAME = /^\[LOOP — [^\n]*\]\n/;
+/* reviewedWork(handed) -> { work, swap }: what a stage was handed, read for the gate after it. `swap` = may a bare approval there
+   hand this work on in its place? A crate an earlier gate PASSED ON for a bare approval (loopDecision's frame, PASSED_ON) carries
+   the approved work inside: a later gate reviews that work, so those frames never nest and never ship. Every OTHER LOOP frame (a
+   loop-back, an exhausted or escalated gate's) holds the earlier reviewer's last word in its REVIEW part — perhaps its own redacted
+   version — so it is the work under review whole, as on trunk, and a bare approval of it never swaps anything in (2026-10-21
+   review: unwrapping an exhausted frame shipped the draft that reviewer had redacted). */
+function reviewedWork(s) {
+  const m = PASSED_FRAME.exec(s);
+  if (m) {
+    const cut = s.lastIndexOf(REVIEW_HEAD);
+    return cut >= m[0].length ? { work: s.slice(m[0].length, cut), swap: true } : { work: s, swap: false };
+  }
+  return { work: s, swap: !LOOP_FRAME.test(s) };
 }
 /* bareApproval(reply) -> is an APPROVING reply (its VERDICT line stripped) POSITIVELY a bare approval, so the work it approved moves
    on in its place? Only two shapes are: nothing at all (only the VERDICT line, which the verdict brief offers for passing the work
@@ -156,7 +164,8 @@ function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);
   const wants = !step.when ? true : byVerdict ? (ctx.verdict !== String(step.when).toLowerCase()) : (ctx.tag === step.when);
   const again = step.backTo && n < step.max && wants;
-  const draft = (typeof reviewed === 'string' && reviewed.trim()) ? workOf(reviewed) : '';
+  const handed = (typeof reviewed === 'string' && reviewed.trim()) ? reviewedWork(reviewed) : null;
+  const draft = handed ? handed.work : '';
   const workBlock = draft ? WORK_HEAD + clipReviewed(draft) + REVIEW_HEAD : '';
   if (again) {
     return { again: true, target: step.backTo, exhausted: false,
@@ -173,11 +182,12 @@ function loopDecision(step, ctx, n, visited, text, reviewed) {
   if (byVerdict && !wants) {
     // THE APPROVED WORK (above): a bare approval hands on the work itself, unclipped — it is the product.
     // (the frame never spells the verdict line out: that word is the gate's control signal, never part of what moves on — R1)
-    const work = draft ? Verdict.stripVerdict(draft) : '';
+    // Only work a bare approval may stand for (reviewedWork: never a crate an exhausted, escalated or looping gate framed).
+    const work = (handed && handed.swap) ? Verdict.stripVerdict(draft) : '';
     const notes = String(stripped == null ? '' : stripped).trim();
     if (work.trim() && bareApproval(notes)) {
       out = (toDock && notes)
-        ? '[LOOP — ' + String(step.when).toLowerCase() + ' round the gate at ' + step.loop + ' — the reviewer passed the work on without restating it]\n'
+        ? '[LOOP — ' + String(step.when).toLowerCase() + ' round the gate at ' + step.loop + PASSED_ON + '\n'
           + WORK_HEAD + work + REVIEW_HEAD + notes
         : work;
     }
@@ -244,11 +254,28 @@ function hopTurn(t) {
   const td = t.targetDock != null && String(t.targetDock) ? String(t.targetDock) : undefined;
   let brief = null;
   if (typeof t.stageBrief === 'function') { try { brief = td ? t.stageBrief(t.target, td) : t.stageBrief(t.target); } catch (_) { brief = null; } }
-  let verdictWhen = null, last = false;
-  if (typeof t.loopGateAfter === 'function') { try { const g = td ? t.loopGateAfter(t.target, t.lineId, td) : t.loopGateAfter(t.target, t.lineId); verdictWhen = (g && Verdict.isVerdictWord(g.when)) ? g.when : null; } catch (_) { verdictWhen = null; } }
+  let verdictWhen = null, handsOn = false, last = false;
+  if (typeof t.loopGateAfter === 'function') {
+    try {
+      const g = td ? t.loopGateAfter(t.target, t.lineId, td) : t.loopGateAfter(t.target, t.lineId);
+      verdictWhen = (g && Verdict.isVerdictWord(g.when)) ? g.when : null;
+      if (verdictWhen) handsOn = bareApprovalHandsOn(g, t.target, td, t.upstream);
+    } catch (_) { verdictWhen = null; handsOn = false; }
+  }
   // the stage whose reply LEAVES the line (its lane ships to the OUTBOX, no review loop ahead) is told its reply is the result
   if (!verdictWhen && typeof t.lastStage === 'function') { try { last = !!(td ? t.lastStage(t.target, td) : t.lastStage(t.target)); } catch (_) { last = false; } }
-  return compose(t.originalText, t.from, t.upstream, t.hop, brief, verdictWhen ? Verdict.verdictBrief(verdictWhen) : '', last);
+  return compose(t.originalText, t.from, t.upstream, t.hop, brief, verdictWhen ? Verdict.verdictBrief(verdictWhen, handsOn) : '', last);
+}
+/* bareApprovalHandsOn(gate, target, targetDock, handed) -> will a bare approval from `target` at the verdict gate after it hand on
+   the work it was handed (loopDecision)? The verdict brief offers that only when it is true (2026-10-21 review): never at a
+   SELF-LOOP gate, whose back lane re-enters the reviewing dock itself (the runner hands that gate no reviewed work, so the bare
+   reply would be the product), never for a crate another gate framed (reviewedWork: an exhausted, escalated or looping frame keeps
+   the reply), and never when the gate does not say where its back lane goes (`backTo` absent). Same self-loop test as advance(). */
+function bareApprovalHandsOn(g, target, targetDock, handed) {
+  if (!g || !('backTo' in g) || !String(handed == null ? '' : handed).trim()) return false;
+  const self = (g.backDock != null && targetDock != null) ? String(g.backDock) === String(targetDock)
+    : (g.backTo != null && String(g.backTo) === String(target));
+  return !self && reviewedWork(String(handed)).swap;
 }
 
 /* lineRefusalNote(lineOfAgent, dock, lineId) -> the honest note when the line GATE refused to advance this work

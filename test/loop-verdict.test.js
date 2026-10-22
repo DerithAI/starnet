@@ -30,15 +30,20 @@ const quoted = ['VERDICT: approved', 'line', 'line', 'line', 'line'].join(NL);
 A.eq(V.stripVerdict(quoted), quoted, 'a verdict quoted above the tail is not stripped');
 A.ok(/lead with the finished work itself/.test(V.verdictBrief('approved')), 'the reviewer is told its approving reply is what moves on');
 // (2026-10-21) ...unless it is only the VERDICT line or a bare approval: then the work it was handed moves on as it is (chain.js bareApproval)
-A.ok(/a reply of only the VERDICT line, or a bare approval such as "Looks good\.", passes it on exactly as you were handed it\. Any other reply is what moves on past the gate/.test(V.verdictBrief('approved')),
-  'the reviewer is told how to pass the work on unchanged, and that any other reply is what moves on');
-A.ok(V.verdictBrief('approved').length <= 600 && V.verdictBrief('revise').length <= 600, 'the brief fits the 600 characters handoffPrompt keeps');
+const BARE_PROMISE = /a reply of only the VERDICT line, or a bare approval such as "Looks good\.", passes it on exactly as you were handed it\. Any other reply is what moves on past the gate/;
+A.ok(BARE_PROMISE.test(V.verdictBrief('approved', true)) && /lead with the finished work itself/.test(V.verdictBrief('approved', true)),
+  'where the caller knows a bare approval hands the work on: the reviewer is told how to pass it on unchanged, and that any other reply is what moves on');
+// ...and ONLY there (2026-10-21 review): a self-loop gate, a crate another gate framed and the browser's COMMS line keep the reply as it is
+A.ok(!/bare approval|only the VERDICT line/.test(V.verdictBrief('approved')) && /When the work passes, your reply is what moves on past the gate: lead with the finished work itself/.test(V.verdictBrief('approved')),
+  'by default the brief makes no bare-approval promise: the reply is what moves on (the trunk wording)');
+A.ok(!/bare approval/.test(V.verdictBrief('approved', 'yes')), '...only a literal true makes the promise');
+A.ok([V.verdictBrief('approved'), V.verdictBrief('revise'), V.verdictBrief('approved', true), V.verdictBrief('revise', true)].every(b => b.length <= 600), 'the brief fits the 600 characters handoffPrompt keeps');
 
 // the handoff prompt carries the brief as its own paragraph, and is byte-identical without it
 const base = P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky');
 A.eq(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', ''), base, 'an empty verdict brief changes nothing');
 A.ok(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', V.verdictBrief('approved')).indexOf('be picky\n\nYOUR VERDICT DECIDES') > 0, 'the verdict instruction rides after the standing brief');
-A.ok(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', V.verdictBrief('approved')).indexOf(V.verdictBrief('approved') + '\n\n') > 0, '...whole, never clipped');
+A.ok(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', V.verdictBrief('approved', true)).indexOf(V.verdictBrief('approved', true) + '\n\n') > 0, '...whole, never clipped');
 
 /* ---- 2. the gate ---- */
 const geo = (props, belts) => ({ props, belts });
@@ -361,5 +366,130 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
   for (const mask of ['***', '█████', '[ ]', '___'])
     await changedIsTheWork('a reply masked as ' + JSON.stringify(mask), PII_THANKS, mask, ['Wei Zhang', '555-0100']);
   await changedIsTheWork('approval filler alone', PII_THANKS, 'This is it.', ['Wei Zhang', '555-0100']);
+
+  /* ---- AN EXHAUSTED GATE'S FRAME IS NOT A DRAFT TO SWAP IN (review of 77b627c18, 2026-10-21). Two gates in series: gate 1 runs
+          out of passes with the reviewer's REDACTED version as its last word, and its done lane feeds the editor, whose bare
+          approval meets gate 2. The editor was handed the whole exhausted frame (the draft AND the redaction), so a bare approval
+          there swaps nothing in — as on trunk: the unredacted draft never reaches the OUTBOX, SEND TO or a dock — and a loop-back at
+          gate 2 shows the whole frame, the first reviewer's last word included. The editor is never told a bare approval passes
+          the work on. ---- */
+  // INBOX -> writer -> reviewer -> LOOP 1 (max 1, back: writer) -> editor -> LOOP 2 (max 2, back: writer) -> done
+  function twoGateFloor(doneProp) {
+    const bs = [belt(2, 4, 'E'), belt(3, 4, 'E'), belt(6, 4, 'E'), belt(7, 4, 'E'), belt(8, 4, 'E'), belt(11, 4, 'E'), belt(12, 4, 'E'), belt(13, 4, 'E'), belt(14, 4, 'E'), belt(15, 4, 'E'),
+      belt(18, 4, 'E'), belt(19, 4, 'E'), belt(20, 4, 'E'), belt(21, 4, 'E'), belt(22, 4, 'E'),
+      belt(13, 3, 'N'), belt(13, 2, 'N'), belt(13, 1, 'N'), belt(13, 0, 'W')];
+    for (let x = 12; x >= 4; x--) bs.push(belt(x, 0, 'W'));
+    bs.push(belt(3, 0, 'S'), belt(3, 1, 'S'), belt(3, 2, 'S'), belt(3, 3, 'S'), belt(20, 5, 'S'), belt(20, 6, 'S'), belt(20, 7, 'W'));
+    for (let x = 19; x >= 3; x--) bs.push(belt(x, 7, 'W'));
+    bs.push(belt(2, 7, 'N'), belt(2, 6, 'N'), belt(2, 5, 'N'));
+    return geo([{ id: 'p1', t: 'intake', x: 0, y: 3, w: 2, h: 2 },
+      { id: 'p2', t: 'bay', x: 4, y: 3, w: 2, h: 2, agentId: 'writer' },
+      { id: 'p3', t: 'bay', x: 9, y: 3, w: 2, h: 2, agentId: 'reviewer' },
+      { id: 'p4', t: 'loop', x: 13, y: 4, w: 1, h: 1, done: 'E', when: 'approved', maxIter: 1 },
+      { id: 'p5', t: 'bay', x: 16, y: 3, w: 2, h: 2, agentId: 'editor' },
+      { id: 'p6', t: 'loop', x: 20, y: 4, w: 1, h: 1, done: 'E', when: 'approved', maxIter: 2 },
+      doneProp || { id: 'p7', t: 'outbox', x: 23, y: 3, w: 2, h: 2 }], bs);
+  }
+  const LEAK = 'Call Jane Doe at 555-123-4567. SSN 123-45-6789. Launch is Friday.';
+  const LEAK_R = 'Call [redacted] at [redacted]. Launch is Friday.\n\nStill needs a source for the date.\nVERDICT: revise';
+  const leaks = (t) => /Jane Doe|555-123-4567|123-45-6789/.test(String(t));
+  const exhaustedScript = (editor) => ({ writer: { text: LEAK, usd: 0.01 }, reviewer: { text: LEAK_R, usd: 0.01 }, editor, publisher: { text: 'the design', usd: 0.01 } });
+  {
+    const sent = [];
+    const R = rig(twoGateFloor(), exhaustedScript({ text: 'Looks good.\nVERDICT: approved', usd: 0.01 }), { lastStage: (a) => a === 'editor', onShipped: (r) => sent.push(r) });
+    A.ok(R.lineId === P.lineOf(R.plan, 'writer') && R.router.loopGateAfter('reviewer', R.lineId) && R.router.loopGateAfter('editor', R.lineId), 'two gates in series: the floor compiles with both gates on the writer\'s line');
+    const res = await R.c.advance({ agentId: 'writer', text: LEAK, originalText: 'write the launch post', lineId: R.lineId, runId: 'v-two-gates-out' });
+    await new Promise(r => setImmediate(r));
+    A.eq(res.hops.map(h => h.agentId).join(','), 'reviewer,writer,reviewer,editor', 'two gates in series: gate 1 runs out of passes, the editor reviews once');
+    A.ok(res.stopped == null && /used all 1 pass without VERDICT: approved/.test(String(res.unapproved)), 'two gates in series: the job is marked unapproved (' + res.unapproved + ')');
+    const ed = R.log.find(l => l.agentId === 'editor');
+    A.ok(/\[LOOP — exhausted: 1 pass round the gate at [\d,]+ without VERDICT: approved — leaving on DONE unapproved\]/.test(ed.text) && /Call \[redacted\] at \[redacted\]/.test(ed.text),
+      'two gates in series: the editor is handed gate 1\'s exhausted frame, the redacted version in it');
+    A.ok(/YOUR VERDICT DECIDES/.test(ed.text) && !BARE_PROMISE.test(ed.text) && /your reply is what moves on past the gate/.test(ed.text),
+      'two gates in series: the editor is never told a bare approval passes on what it was handed');
+    A.ok(!leaks(res.text) && res.text === 'Looks good.', 'two gates in series to the OUTBOX: the unredacted draft never ships (' + JSON.stringify(res.text) + ')');
+    A.ok(sent.length === 1 && !leaks(sent[0].text) && /used all 1 pass/.test(String(sent[0].unapproved)), 'two gates in series: SEND TO hands on no unredacted draft, marked unapproved');
+  }
+  {
+    const R = rig(twoGateFloor({ id: 'p7', t: 'bay', x: 23, y: 3, w: 2, h: 2, agentId: 'publisher' }), exhaustedScript({ text: 'Looks good.\nVERDICT: approved', usd: 0.01 }));
+    await R.c.advance({ agentId: 'writer', text: LEAK, originalText: 'write the launch post', lineId: R.lineId, runId: 'v-two-gates-dock' });
+    const pub = R.log.find(l => l.agentId === 'publisher');
+    A.ok(pub && !leaks(pub.text) && !/passed the work on without restating it/.test(pub.text), 'two gates in series to a dock: the next stage is never handed the unredacted draft');
+  }
+  {
+    // a loop-back at gate 2: the writer sees the whole exhausted frame as the work under review, the first reviewer's last word in it
+    let k = 0;
+    const R = rig(twoGateFloor(), exhaustedScript(() => ({ text: (++k === 1) ? 'Needs a source.\nVERDICT: revise' : 'Looks good.\nVERDICT: approved', usd: 0.01 })));
+    const res = await R.c.advance({ agentId: 'writer', text: LEAK, originalText: 'write the launch post', lineId: R.lineId, runId: 'v-two-gates-back' });
+    const back = R.log.filter(l => l.agentId === 'writer').find(l => /\[LOOP — pass 1 of 2 round the gate at 20,4\]/.test(l.text));
+    A.ok(!!back, 'two gates in series: gate 2 sends the work back to the writer');
+    A.ok(back && back.text.indexOf(WORK_HEAD_TEXT + '[LOOP — exhausted: 1 pass round the gate at 13,4') >= 0 && /Call \[redacted\] at \[redacted\]/.test(back.text) && /REVIEW:\nNeeds a source\./.test(back.text),
+      'two gates in series: the loop-back shows gate 1\'s whole frame (the reviewer\'s last word too) as what the editor was handed, then gate 2\'s review');
+    A.ok(!leaks(res.text), 'two gates in series: after the loop-back the product still never carries the unredacted draft (' + JSON.stringify(res.text) + ')');
+  }
+  {
+    // ...while a crate gate 1 PASSED ON for a bare approval still carries its work to gate 2: the editor is told so, and its bare approval ships it
+    const OK_WORK = 'Launch is Friday at 9am. The release notes are in the shared folder.';
+    const sent = [];
+    const R = rig(twoGateFloor(), { writer: { text: OK_WORK, usd: 0.01 }, reviewer: { text: 'Looks good.\nVERDICT: approved', usd: 0.01 }, editor: { text: 'Ship it.\nVERDICT: approved', usd: 0.01 } },
+      { lastStage: (a) => a === 'editor', onShipped: (r) => sent.push(r) });
+    const res = await R.c.advance({ agentId: 'writer', text: OK_WORK, originalText: 'write the launch post', lineId: R.lineId, runId: 'v-two-gates-passed' });
+    await new Promise(r => setImmediate(r));
+    const ed = R.log.find(l => l.agentId === 'editor');
+    A.ok(/passed the work on without restating it/.test(ed.text) && BARE_PROMISE.test(ed.text), 'two bare approvals in series: the editor gets gate 1\'s passed-on frame and is told a bare approval passes the work on');
+    A.ok(res.text === OK_WORK && sent.length === 1 && sent[0].text === OK_WORK && !res.unapproved, 'two bare approvals in series: the approved work ships, never a frame (' + JSON.stringify(res.text) + ')');
+  }
+
+  /* ---- A SELF-LOOP GATE PROMISES NO BARE-APPROVAL PASS-ON (review of 77b627c18, 2026-10-21). A gate whose back lane re-enters the
+          dock that just ran reviews no separate draft (chain.js advance: reviewed = ''), so a bare reply there IS the product. The
+          dock's loop-back turn says so — the reply is what moves on — and the behaviour matches, in the agent-keyed and the
+          dock-keyed runner. The reviewer of an ordinary gate is still told how to pass the work on. ---- */
+  // INBOX -> refiner -> LOOP (back lane into the refiner itself) -> OUTBOX
+  const selfLoopFloor = () => {
+    const bs = [belt(1, 4, 'E'), belt(2, 4, 'E')];
+    for (let x = 5; x <= 14; x++) bs.push(belt(x, 4, 'E'));
+    bs.push(belt(12, 3, 'N'), belt(12, 2, 'N'), belt(12, 1, 'W'));
+    for (let x = 11; x >= 6; x--) bs.push(belt(x, 1, 'W'));
+    bs.push(belt(5, 1, 'S'), belt(5, 2, 'S'));
+    return geo([{ id: 'p1', t: 'intake', x: 0, y: 4, w: 1, h: 1 }, { id: 'p2', t: 'bay', x: 3, y: 3, w: 2, h: 2, agentId: 'refiner' },
+      { id: 'p5', t: 'loop', x: 12, y: 4, w: 1, h: 1, done: 'E', maxIter: 3, when: 'approved' }, outboxDone], bs);
+  };
+  const dockKeyed = (R, script) => {
+    const log = [];
+    const c = makeChainRunner({
+      nextAgent: (a, ctx) => R.router.chainNext(a, ctx), stepAgent: (a, ctx) => R.router.chainStep(a, ctx), fanSiblings: (a) => R.router.fanSiblings(a),
+      lineOfAgent: (a, d) => R.router.lineOfAgent(a, d), stepDock: (d, ctx) => R.router.chainStepDock(d, ctx), entryDockOf: (a) => R.router.entryDockOf(a),
+      loopGateAfter: (a, l, d) => R.router.loopGateAfter(a, l, d), getTag: () => 'general', emit: () => {}, now: clock, setTimer: () => 0,
+      runAgent: async (call) => { log.push(call); const r = script[call.agentId]; return typeof r === 'function' ? r(call.text, log) : r; }
+    });
+    return { c, log };
+  };
+  const SELF_DRAFT = 'Rooftop installs grew 34% in 2025; battery attach passed half; permits are the top soft cost.';
+  for (const reply of ['Looks good.', ''])
+    for (const keyed of ['agent', 'dock']) {
+      const script = { refiner: { text: (reply ? reply + '\n' : '') + 'VERDICT: approved', usd: 0.01 } };
+      const R = rig(selfLoopFloor(), script);
+      const g = R.router.loopGateAfter('refiner', R.lineId);
+      A.ok(g && g.backTo === 'refiner' && g.backDock === 'p2', 'a self-loop gate: router.loopGateAfter names the back lane\'s dock (' + JSON.stringify(g) + ')');
+      const run = keyed === 'dock' ? dockKeyed(R, script) : { c: R.c, log: R.log };
+      const res = await run.c.advance({ agentId: 'refiner', text: SELF_DRAFT + '\n\nOne more pass on the numbers.\nVERDICT: revise', originalText: 'polish: ' + SELF_DRAFT, lineId: R.lineId, runId: 'v-self-' + keyed + '-' + (reply ? 'bare' : 'verdict') });
+      const t2 = (run.log[0] || {}).text || '';
+      const label = 'a self-loop gate (' + keyed + '-keyed, ' + JSON.stringify(reply || 'VERDICT line only') + ')';
+      A.eq((run.log[0] || {}).dockId || null, keyed === 'dock' ? 'p2' : null, label + ': the hop runs ' + (keyed === 'dock' ? 'at its bay' : 'by agent'));
+      A.ok(/\[LOOP — pass 1 of 3/.test(t2) && /YOUR VERDICT DECIDES/.test(t2), label + ': the loop-back turn carries the verdict brief');
+      A.ok(!BARE_PROMISE.test(t2) && /When the work passes, your reply is what moves on past the gate: lead with the finished work itself/.test(t2),
+        label + ': ...with no bare-approval promise — the reply is what moves on');
+      A.eq(res.text, reply || 'VERDICT: approved', label + ': ...and the reply is indeed what moves on (no reviewed work at a self-loop)');
+    }
+  {
+    // the control: an ordinary gate's reviewer (agent-keyed and dock-keyed) IS told how to pass the work on, and it holds
+    const script = { writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good.\nVERDICT: approved', usd: 0.01 } };
+    for (const keyed of ['agent', 'dock']) {
+      const R = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), script);
+      const run = keyed === 'dock' ? dockKeyed(R, script) : { c: R.c, log: R.log };
+      const res = await run.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v-ordinary-' + keyed });
+      A.ok(BARE_PROMISE.test(run.log.find(l => l.agentId === 'reviewer').text) && res.text === RESEARCH, 'an ordinary gate (' + keyed + '-keyed): the reviewer is told a bare approval passes the work on, and it does');
+    }
+  }
   A.report('loop-verdict');
 })();

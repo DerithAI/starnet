@@ -426,6 +426,24 @@ function rig(floor, script, opts) {
       'two gates in a row, both terse: the second reviews the work inside the first one\'s frame — frames never nest or ship');
     A.ok(loopDecision(gate(), ctxRevise, 0, {}, 'tighten it\nVERDICT: revise', okDock.text).text.indexOf('THE WORK UNDER REVIEW (what the reviewer was handed):\n' + W + '\n\nREVIEW:\ntighten it') > 0,
       '...and a loop-back at the second gate shows the work, not the first gate\'s frame');
+    /* (review of 77b627c18, 2026-10-21) only THAT frame is unwrapped. An exhausted, escalated or looping gate's frame holds the earlier
+       reviewer's last word (perhaps its own redacted version): a later gate reviews the frame whole, and a bare approval of it swaps
+       nothing in — the draft that reviewer redacted never moves on in its place */
+    const DRAFT_PII = 'Call Jane Doe at 555-123-4567.';
+    const LAST_WORD = 'Call [redacted] at [redacted].\nVERDICT: revise';
+    const exhaustedFrame = loopDecision(gate(), ctxRevise, 2, {}, LAST_WORD, DRAFT_PII).text;
+    const escalatedFrame = loopDecision(gate({ esc: 'fixer' }), ctxRevise, 2, {}, LAST_WORD, DRAFT_PII).text;
+    const loopBackFrame = loopDecision(gate(), ctxRevise, 0, {}, LAST_WORD, DRAFT_PII).text;
+    A.ok(/^\[LOOP — exhausted/.test(exhaustedFrame) && /^\[LOOP — escalated/.test(escalatedFrame) && /^\[LOOP — pass 1 of 2/.test(loopBackFrame), 'the three other frames, each carrying the draft and the reviewer\'s last word');
+    for (const [name, frame] of [['an exhausted', exhaustedFrame], ['an escalated', escalatedFrame], ['a loop-back', loopBackFrame]]) {
+      for (const [where, g] of [['to a dock', gate()], ['out of the line', gate({ next: null })]]) {
+        const d = loopDecision(g, ctxOk, 0, {}, 'Looks good.\nVERDICT: approved', frame);
+        A.eq(d.text, 'Looks good.', name + ' gate\'s frame, a bare approval ' + where + ': the reply moves on as it is (as on trunk), never the draft inside');
+      }
+      const again = loopDecision(gate(), ctxRevise, 0, {}, 'Needs a source.\nVERDICT: revise', frame);
+      A.ok(again.text.indexOf('THE WORK UNDER REVIEW (what the reviewer was handed):\n' + frame + '\n\nREVIEW:\nNeeds a source.') > 0,
+        name + ' gate\'s frame, a loop-back at the next gate: the whole frame is what the reviewer was handed, its last word included');
+    }
     const longWork = Array.from({ length: 6000 }, (_, i) => 'w' + i).join(' ');
     const okLong = loopDecision(gate({ next: null }), ctxOk, 0, {}, 'Ship it.\nVERDICT: approved', longWork);
     A.eq(okLong.text, longWork, 'the approved work is the product: never clipped');
