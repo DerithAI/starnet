@@ -6,13 +6,17 @@
 
      1. THE LEDGER (session-tombstones.js) learns deletes from the save's deletedIds, stamps when, survives a reload,
         keeps a delete after the id leaves the page's list (a re-open, the 500 cap, NEW AGENT), restamps a second delete,
-        and ignores a save that carries no list.
-     2. HISTORY — transcriptstore history/reconstruct/taintOf/all forget the deleted session (in-memory io and the real
-        segmented io), and a session re-opened under the same id hears only what was said after the delete.
+        and ignores a save that carries no list. The FIRST list it reads (the first boot of this build) is adopted:
+        those deletes are forgotten from history and recall, but the memories they wrote are never purged retroactively.
+     2. HISTORY — transcriptstore history/reconstruct/all forget the deleted session (in-memory io and the real
+        segmented io), and a session re-opened under the same id hears only what was said after the delete. Taint is
+        not forgotten: a page that still holds the deleted history and replays it still latches the run's taint.
      3. RECALL — the real recall_conversation tool's search (stream + all), browse and scroll never return a deleted row,
         and the segment index ranks among the rows it may return (a deleted session never takes a slot).
-     4. MEMORY — forgetSessionMemory removes the notebook records, revisions, pending proposals and open threads the
-        deleted session's runs left, over the real memory-store and threads-store, and keeps everyone else's.
+     4. MEMORY — forgetSessionMemory removes what the deleted session wrote, over the real memory-store and threads-store:
+        records created there go; a record created elsewhere rolls back to its newest version from elsewhere; a rating
+        verdict keeps the verdict and the Commander's words without the deleted work's quotes; pending proposals and
+        open threads go; everyone else's stays.
      5. CROSS-SESSION READS — a read of the deleted session by id (station.read_session's transcript read, a worker's
         sessionContext, the away briefing's last words) comes back empty; other sessions read as before.
      6. THE HOST WIRING (sidecar/index.js, static): the store reads through the ledger, every accepted station save and
@@ -28,6 +32,9 @@ const { makeSegmentedTranscriptIo } = require('../sidecar/transcript-history.js'
 const { makeRecallTool } = require('../sidecar/tools/builtin/recall.js');
 const { makeMemoryStore, appendPending, listPending } = require('../sidecar/memory-store.js');
 const { makeThreadsStore } = require('../sidecar/threads-store.js');
+const { makeReplayedTaint } = require('../sidecar/taint-replay.js');
+const FeedbackMemory = require('../sidecar/feedbackmemory.js');
+const { reviseRecord } = require('../sidecar/tools/builtin/notebook.js');
 
 function temp(name) { return fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-tomb-' + name + '-')); }
 function remove(dir) { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -44,7 +51,13 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       A.eq(t.status(), 'absent', 'a fresh station has no ledger yet');
       A.eq(t.deletedAt('ws_a'), 0, 'a session nobody deleted has no stamp');
       A.eq(t.observe(undefined), [], 'a save with no deletedIds teaches nothing');
-      A.eq(t.observe(['ws_a', 'ws_b', '../escape', '', null, 'ws_a']), ['ws_a', 'ws_b'], 'each valid id is stamped once; a bad id is ignored');
+      A.eq(t.since(), 0, '…not even that the ledger has read a list');
+      // THE FIRST LIST IS ADOPTED: these deletes were made while Delete only hid the rail row
+      A.eq(t.observe(['ws_old', '../escape']), [], 'the first list the ledger reads holds no fresh delete (the first boot of this build)');
+      A.eq([t.since(), t.deletedAt('ws_old')], [1000, 1000], '…but its deletes are stamped: their transcript and recall are forgotten from now on');
+      A.eq(t.unpurged(), [], '…and recorded as purged: the memories they wrote are never wiped retroactively');
+      A.eq(t.adopted(), [{ id: 'ws_old', at: 1000 }], 'adopted() names them');
+      A.eq(t.observe(['ws_old', 'ws_a', 'ws_b', '../escape', '', null, 'ws_a']), ['ws_a', 'ws_b'], 'each valid id is stamped once; a bad id is ignored');
       A.eq(t.deletedAt('ws_a'), 1000, 'the stamp is when the sidecar learned the delete');
       A.ok(t.forgotten('ws_a', 999) && t.forgotten('ws_a', 1000) && t.forgotten('ws_a', 0), 'a row stamped at or before the delete (or unstamped) is forgotten');
       A.ok(!t.forgotten('ws_a', 1001) && !t.forgotten('ws_c', 5), 'a later row, or another session, is not');
@@ -52,7 +65,7 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       A.eq(t.observe(['ws_a', 'ws_b']), [], 'the same list again is not a new delete');
       A.eq(t.deletedAt('ws_a'), 1000, '…and keeps the first stamp');
       A.eq(t.observe('not-a-list'), [], 'a malformed list teaches nothing');
-      A.ok(t.list().every(e => e.live), '…and never reads as "every delete was undone"');
+      A.ok(['ws_a', 'ws_b'].every(id => t.list().find(e => e.id === id).live), '…and never reads as "every delete was undone"');
       // the page re-opens ws_a (revive) or drops it past its 500 cap: it leaves the list, the delete stands
       clock.set(3000);
       A.eq(t.observe(['ws_b']), [], 'an id leaving the list is no new delete');
@@ -61,6 +74,7 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       t = makeSessionTombstones({ fs, path, file, now: clock.now });
       A.eq(t.status(), 'ok', 'the ledger is durable');
       A.eq([t.deletedAt('ws_a'), t.deletedAt('ws_b')], [1000, 1000], 'both stamps survive a restart');
+      A.eq([t.since(), t.adopted().map(e => e.id)], [1000, ['ws_old']], 'so does the adoption: a restart never makes the old deletes fresh');
       A.eq(t.list().find(e => e.id === 'ws_a').live, false, 'ws_a is remembered as no longer in the page list');
       // the re-opened ws_a is deleted AGAIN: a fresh delete, stamped now
       clock.set(4000);
@@ -83,6 +97,26 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       A.ok(!capped.streams.s0 && !!capped.streams['s' + (_internals.MAX_STREAMS + 4)], '…dropping the oldest stamps first');
     } finally { remove(dir); }
   }
+  // a new station's first list is empty, so every later delete is fresh; an adopted session that is re-opened and
+  // deleted again is a fresh delete too (what it wrote since is purged)
+  {
+    const dir = temp('ledger-adopt');
+    try {
+      const clock = clockAt(50);
+      let t = makeSessionTombstones({ fs, path, file: path.join(dir, 'tomb.json'), now: clock.now });
+      A.eq(t.observe([]), [], 'a new station\'s first list is empty');
+      A.eq(t.since(), 50, '…and it is the adopted first list all the same');
+      clock.set(60);
+      A.eq(t.observe(['ws_new']), ['ws_new'], 'after it, a delete is fresh');
+      A.eq(t.unpurged().map(e => e.id), ['ws_new'], '…and its memory is purged');
+      t = makeSessionTombstones({ fs, path, file: path.join(dir, 'upgrade.json'), now: clock.now });
+      t.observe(['ws_old']);
+      clock.set(70); t.observe([]);
+      clock.set(80);
+      A.eq(t.observe(['ws_old']), ['ws_old'], 'an adopted session re-opened and deleted again is a fresh delete');
+      A.eq([t.deletedAt('ws_old'), t.adopted(), t.unpurged().map(e => e.id)], [80, [], ['ws_old']], '…restamped, no longer adopted, its memory purged');
+    } finally { remove(dir); }
+  }
 
   // ---------------- 2 + 3 + 5. history, recall, cross-session reads ----------------
   async function storePaths(label, makeIo) {
@@ -90,6 +124,7 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
     try {
       const clock = clockAt(100);
       const ledger = makeSessionTombstones({ fs, path, file: path.join(dir, 'tomb.json'), now: clock.now });
+      ledger.observe([]);   // the boot read of a station with no earlier deletes
       const io = makeIo(dir);
       const store = makeTranscriptStore({ io, clock, deletedAt: id => ledger.deletedAt(id) });
       const say = (streamId, role, content, extra) => { clock.set(clock.now() + 10); return store.append(Object.assign({ streamId, agentId: 'agent', role, content, taint: null }, extra || {})); };
@@ -108,7 +143,12 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       // HISTORY
       A.eq(store.history('ws_gone').length, 0, label + ': history() forgets the deleted session');
       A.eq(store.reconstruct('ws_gone', { limit: 80 }).length, 0, label + ': reconstruct() (resume / a worker\'s sessionContext) hands a model nothing');
-      A.eq(store.taintOf('ws_gone', [{ role: 'user', content: 'echo session uniqueword quokka' }]), null, label + ': a forgotten row taints nothing');
+      // TAINT IS NOT FORGOTTEN: a page that still holds the deleted history (a second station page, a stale tab) and
+      // replays it starts the run tainted, exactly as before the delete
+      const replayed = makeReplayedTaint({ transcript: store });
+      const pageCopy = [{ role: 'user', content: 'echo session uniqueword quokka' }, { role: 'assistant', content: 'Reply to: echo session uniqueword quokka — done.' }, { role: 'user', content: 'ok do it' }];
+      A.eq(replayed({ streamId: 'ws_gone', msgs: pageCopy }), 'replayed history (tainted by web page example.com)', label + ': a page-held replay of the deleted session\'s tainted rows still latches taint');
+      A.eq(replayed({ streamId: 'ws_keep', msgs: [{ role: 'user', content: 'the platypus plan with quokka mentioned once' }, { role: 'user', content: 'go on' }] }), null, label + ': a clean session stays clean');
       A.ok(!store.all().some(r => r.streamId === 'ws_gone'), label + ': all() (the evidence pack\'s clean owner chats) forgets it');
       A.eq(store.history('ws_keep').map(r => r.content), ['the platypus plan with quokka mentioned once', 'Platypus plan noted.'], label + ': another session reads exactly as before');
 
@@ -175,18 +215,42 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       const runs = [
         { runId: 'run_gone_1', streamId: 'ws_gone', ts: 4000 },
         { runId: 'run_gone_2', streamId: 'ws_gone', ts: 4500 },
+        { runId: 'run_gone_3', streamId: 'ws_gone', ts: 4700 },
         { runId: 'run_keep', streamId: 'ws_keep', ts: 4200 },
+        { runId: 'run_keep2', streamId: 'ws_keep', ts: 4300 },
         { runId: 'run_gone_after', streamId: 'ws_gone', ts: 9000 }   // a re-opened session's later run: not the deleted one
       ];
+      // versions written the way notebook.write's replaceId writes them (the real reviseRecord keeps the old text in history)
+      const made = (id, body, runId, createdAt) => ({ id, kind: 'note', title: 'T ' + id, body, content: body, scope: 'global', streamId: null, sourceRunId: runId, createdAt, ts: createdAt });
+      const revise = (rec, body, runId, now, extra) => reviseRecord(rec, Object.assign({ previousBody: String(rec.content), body, runId }, extra || {}), now);
+      // the review's case: a fact stated in the KEPT session, corrected once in the deleted one
+      const deploy = revise(Object.assign(made('note_3', 'Deploys go to fly.io', 'run_keep', 100), { title: 'Deploy target', confirmation: 'user-stated', statedBy: { runId: 'run_keep', quote: 'Deploys go to fly.io' } }),
+        'Deploys go to fly.io region iad', 'run_gone_2', 4500, { confirmation: 'user-stated', statedBy: { runId: 'run_gone_2', quote: 'Deploys go to fly.io region iad' } });
+      const twoKept = Object.assign(revise(revise(made('note_3b', 'v0 text', 'run_keep', 100), 'v1 text', 'run_keep2', 4300), 'v2 written in the deleted chat', 'run_gone_2', 4600),
+        { taintedBy: 'web page evil.example', pinned: false });   // the deleted run had read a page (notebook.write stamps it)
+      const middle = revise(revise(made('note_3c', 'w0 text', 'run_keep', 100), 'w1 written in the deleted chat', 'run_gone_1', 4100), 'w2 written in the deleted chat', 'run_gone_2', 4600);
+      const laterKept = revise(revise(made('note_3e', 'u0 text', 'run_keep', 100), 'u1 written in the deleted chat', 'run_gone_1', 4100), 'u2 text', 'run_keep2', 4800);
+      // rating verdicts, written by the real feedback module
+      const verdict = (input, now, id) => FeedbackMemory.apply([], input, { now, nextId: () => id }).rec;
+      const liked = verdict({ runId: 'run_gone_1', verdict: 'great', words: 'matte, no gloss', directive: 'design the quokka landing page', ref: { files: ['quokka.html'] } }, 4100, 'note_7');
+      const bare = verdict({ runId: 'run_gone_2', verdict: 'miss', directive: 'draft the quokka newsletter' }, 4600, 'note_8');
+      const edited = Object.assign(verdict({ runId: 'run_gone_3', verdict: 'great', words: 'bold type', directive: 'design the quokka poster' }, 4700, 'note_9'),
+        { body: 'I love bold type (on: design the quokka poster)', content: 'I love bold type (on: design the quokka poster)', feedbackEdited: true });
+      const keptRating = verdict({ runId: 'run_keep', verdict: 'great', words: 'short bullets', directive: 'summarize the platypus plan' }, 4200, 'note_10');
+      A.ok(/\(on: design the quokka landing page\)/.test(liked.content) && liked.feedbackRef, 'the fixture verdict quotes the rated work (the bug\'s premise)');
       await store.update('notebook:agent', () => [
         { id: 'note_1', title: 'Quokka', body: 'The quokka codeword is Wallaby-Seven', scope: 'stream', streamId: 'ws_gone', sourceRunId: 'run_gone_1', createdAt: 4000 },
         { id: 'note_2', title: 'Pet', body: 'The Commander keeps a pet quokka', scope: 'global', streamId: null, sourceRunId: 'run_gone_2', createdAt: 4500 },
-        { id: 'note_3', title: 'Corrected', body: 'revised in the deleted chat', scope: 'global', sourceRunId: 'run_keep', updatedSourceRunId: 'run_gone_2', createdAt: 100 },
-        { id: 'note_4', title: 'Stated', body: 'always reply tersely', scope: 'global', sourceRunId: 'run_x', statedBy: { runId: 'run_gone_1', quote: 'always reply tersely' }, createdAt: 100 },
+        deploy, twoKept, middle,
+        { id: 'note_3d', title: 'Corrected', body: 'revised in the deleted chat', scope: 'global', sourceRunId: 'run_keep', updatedSourceRunId: 'run_gone_2', revision: 1, createdAt: 100 },
+        laterKept,
+        { id: 'note_4', title: 'Stated', body: 'always reply tersely', scope: 'global', sourceRunId: 'run_x', confirmation: 'user-stated', statedBy: { runId: 'run_gone_1', quote: 'always reply tersely' }, createdAt: 100 },
         { id: 'note_5', title: 'Kept', body: 'The platypus plan ships Friday', scope: 'global', sourceRunId: 'run_keep', createdAt: 4200,
           history: [{ body: 'an older text the deleted chat wrote', sourceRunId: 'run_gone_1' }, { body: 'the original', sourceRunId: 'run_keep' }] },
         { id: 'note_6', title: 'After', body: 'said after the re-open', scope: 'stream', streamId: 'ws_gone', sourceRunId: 'run_gone_after', createdAt: 9000 },
-        { id: 'note_7', title: 'Feedback', origin: 'feedback', body: 'Loved the quokka draft', scope: 'global', sourceRunId: 'run_gone_1', confirmation: 'user-confirmed', createdAt: 4100 }
+        liked, bare, edited, keptRating,
+        // an older verdict record this module cannot rebuild (no words list): kept as stored
+        { id: 'note_11', kind: 'profile', origin: 'feedback', title: 'Preference', body: 'LIKED: "dark mode"', content: 'LIKED: "dark mode"', scope: 'global', streamId: null, sourceRunId: 'run_gone_3', confirmation: 'user-confirmed', createdAt: 4700 }
       ]);
       await store.update('notebook:scribe', () => [{ id: 'note_1', title: 'Scribe saw it', body: 'quokka relayed', scope: 'global', sourceRunId: 'run_gone_2', createdAt: 4500 }]);
       await appendPending(store, 'agent', 'run_gone_1', [{ id: 'p1', content: 'Commander SSN-shaped secret from the deleted chat' }], 4000);
@@ -196,22 +260,77 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       await threads.add({ id: 'th_dated', title: 'Another deleted idea about wombats', spec: 'x', sourceRef: { streamId: 'ws_gone', date: 4600 } }, 4600);
 
       const counts = await forgetSessionMemory({ store, threads, agentIds: ['agent', 'scribe', '../bad'], deleted: [{ id: 'ws_gone', at }], runs });
-      A.eq(counts, { notes: 6, revisions: 1, pending: 1, threads: 2 }, 'the purge reports what it removed');
-      const left = store.get('notebook:agent').map(r => r.id);
-      A.eq(left, ['note_5', 'note_6'], 'the notebook keeps only records the deleted session did not write, revise or prove (and the re-opened session\'s later note)');
-      A.eq(store.get('notebook:agent').find(r => r.id === 'note_5').history.map(h => h.body), ['the original'], 'a kept record loses the revision text the deleted session wrote');
+      A.eq(counts, { notes: 5, revisions: 6, restored: 3, verdicts: 2, pending: 1, threads: 2,
+        forgot: [{ agentId: 'agent', id: 'note_1' }, { agentId: 'agent', id: 'note_2' }, { agentId: 'agent', id: 'note_3d' }, { agentId: 'agent', id: 'note_8' }, { agentId: 'scribe', id: 'note_1' }] },
+        'the purge reports what it removed, rolled back and kept, and names every removed record');
+      const nb = store.get('notebook:agent');
+      const rec = id => nb.find(r => r.id === id) || null;
+      A.eq(nb.map(r => r.id), ['note_3', 'note_3b', 'note_3c', 'note_3e', 'note_4', 'note_5', 'note_6', 'note_7', 'note_9', 'note_10', 'note_11'],
+        'only records CREATED in the deleted session go (by its runs, or filed under its stream); a record created elsewhere, the re-opened session\'s later note and the rating verdicts stay');
+      // ROLL BACK, never destroy: the kept session's original text comes back
+      const d = rec('note_3');
+      A.eq([d.title, d.body, d.content, d.revision, d.history, 'updatedSourceRunId' in d, 'statedBy' in d, d.confirmation, d.sourceRunId, d.updatedAt],
+        ['Deploy target', 'Deploys go to fly.io', 'Deploys go to fly.io', 0, [], false, false, 'inferred', 'run_keep', 100],
+        'a fact stated in a kept session and corrected in the deleted one rolls back to its original text (the deleted version, its proof and its authority go)');
+      const b = rec('note_3b');
+      A.eq([b.body, b.revision, b.updatedSourceRunId, b.history.map(h => h.body), b.updatedAt], ['v1 text', 1, 'run_keep2', ['v0 text'], 4300], 'it rolls back to its NEWEST version from elsewhere, with that version\'s own revision and author');
+      A.eq([b.taintedBy, b.pinned], ['web page evil.example', false], 'a rollback never takes a taint off');
+      const c = rec('note_3c');
+      A.eq([c.body, c.revision, c.history], ['w0 text', 0, []], 'every version a deleted run wrote goes, a middle one too');
+      const e = rec('note_3e');
+      A.eq([e.body, e.history.map(h => h.body)], ['u2 text', ['u0 text']], 'a record whose current text is from elsewhere only loses the deleted run\'s version from its history');
+      A.eq([rec('note_4').body, 'statedBy' in rec('note_4'), rec('note_4').confirmation], ['always reply tersely', false, 'inferred'], 'a proof quoting the deleted session goes, and with it the stated authority it gave');
+      A.eq(rec('note_5').history.map(h => h.body), ['the original'], 'a kept record loses the revision text the deleted session wrote');
+      // RATING VERDICTS: the verdict and the Commander's words keep steering; what quoted the deleted work goes
+      const v = rec('note_7');
+      A.eq([v.content, v.body, v.feedbackVerdict, v.feedbackWords, v.feedbackDirective, 'feedbackRef' in v, v.confirmation],
+        ['LIKED: "matte, no gloss"', 'LIKED: "matte, no gloss"', 'great', ['matte, no gloss'], '', false, 'user-confirmed'],
+        'a like on a deleted session\'s run keeps the verdict and the Commander\'s words, without the directive or the reference to the deleted work');
+      A.ok(FeedbackMemory.isTaste(v), '…and it is still taste');
+      const block = FeedbackMemory.renderTaste(FeedbackMemory.selectTaste(nb), lines => ({ text: lines.map(l => l.body + ' ' + l.content).join('\n') }), { agentId: 'agent' }).text;
+      A.ok(/liked: "matte, no gloss"/.test(block) && /short bullets/.test(block), 'both verdicts still ride every later prompt\'s taste block: ' + block.slice(0, 300));
+      A.ok(!/quokka/.test(block), '…and no word of the deleted session does');
+      A.eq([rec('note_9').content, rec('note_9').feedbackEdited], ['I love bold type', true], 'a verdict the Commander edited keeps their wording, minus the deleted work\'s directive');
+      A.eq([rec('note_10').feedbackDirective, rec('note_10').content], ['summarize the platypus plan', keptRating.content], 'a verdict on a kept session\'s run is untouched');
+      A.eq(rec('note_11').content, 'LIKED: "dark mode"', 'an older verdict this module cannot rebuild keeps its stored words');
       A.eq(store.get('notebook:scribe'), [], 'another agent\'s notebook loses what the deleted session\'s run wrote there');
       A.eq(listPending(store, 'agent').map(p => p.runId), ['run_keep'], 'a pending proposal from the deleted session never waits for a Keep');
       A.eq(threads.list().map(t => t.id), ['th_keep'], 'open threads mined from the deleted session are gone (by run and by stream + date)');
       A.ok(threads.isDeclined('Build a quokka tracker') === false, 'forgetting is not declining: the denylist is untouched');
+      const zero = { notes: 0, revisions: 0, restored: 0, verdicts: 0, pending: 0, threads: 0, forgot: [] };
       const again = await forgetSessionMemory({ store, threads, agentIds: ['agent', 'scribe'], deleted: [{ id: 'ws_gone', at }], runs });
-      A.eq(again, { notes: 0, revisions: 0, pending: 0, threads: 0 }, 'the purge is idempotent (a boot retry removes nothing twice)');
-      A.eq(await forgetSessionMemory({ store, threads, agentIds: ['agent'], deleted: [], runs }), { notes: 0, revisions: 0, pending: 0, threads: 0 }, 'nothing deleted, nothing touched');
+      A.eq(again, zero, 'the purge is idempotent (a boot retry removes nothing twice)');
+      A.eq(await forgetSessionMemory({ store, threads, agentIds: ['agent'], deleted: [], runs }), zero, 'nothing deleted, nothing touched');
       // a store failure is reported, so the host records nothing as purged and retries
       let threw = false;
       try { await forgetSessionMemory({ store: { update: () => Promise.reject(new Error('disk gone')) }, agentIds: ['agent'], deleted: [{ id: 'ws_gone', at }], runs }); }
-      catch (e) { threw = /disk gone/.test(e.message); }
+      catch (err) { threw = /disk gone/.test(err.message); }
       A.ok(threw, 'a failing store throws (the host retries the purge on the next boot)');
+    } finally { remove(dir); }
+  }
+
+  // ---------------- 4b. the upgrade: deletes from before this build keep their memory ----------------
+  // what the host does at boot (index.js: observe the save's list, then purge ledger.unpurged()), over the real ledger
+  // and memory store: a session deleted before this build wrote a memory; the first boot must not wipe it
+  {
+    const dir = temp('upgrade');
+    try {
+      const clock = clockAt(1000);
+      const ledger = makeSessionTombstones({ fs, path, file: path.join(dir, 'tomb.json'), now: clock.now });
+      const store = makeMemoryStore({ fs, path, workspaces: dir });
+      const runs = [{ runId: 'run_review', streamId: 'workshop-run_review', ts: 500 }, { runId: 'run_new', streamId: 'ws_new', ts: 1500 }];
+      await store.update('notebook:agent', () => [
+        { id: 'note_1', title: 'Deploy target', body: 'The Commander deploys to fly.io region iad', scope: 'global', sourceRunId: 'run_review', createdAt: 500 },
+        { id: 'note_2', title: 'New', body: 'written in a session deleted after the upgrade', scope: 'global', sourceRunId: 'run_new', createdAt: 1500 }
+      ]);
+      A.eq(ledger.observe(['workshop-run_review']), [], 'the first boot of this build reads a delete made before it: no fresh delete');
+      A.ok(ledger.forgotten('workshop-run_review', 500), '…its transcript and recall are forgotten');
+      const boot = await forgetSessionMemory({ store, agentIds: ['agent'], deleted: ledger.unpurged(), runs });
+      A.eq([boot.notes, store.get('notebook:agent').map(r => r.id)], [0, ['note_1', 'note_2']], '…and the memory it wrote is kept (no retroactive wipe)');
+      clock.set(2000);
+      A.eq(ledger.observe(['workshop-run_review', 'ws_new']), ['ws_new'], 'a delete after the upgrade is fresh');
+      const later = await forgetSessionMemory({ store, agentIds: ['agent'], deleted: ledger.unpurged(), runs });
+      A.eq([later.forgot, store.get('notebook:agent').map(r => r.id)], [[{ agentId: 'agent', id: 'note_2' }], ['note_1']], '…and only its memory is purged');
     } finally { remove(dir); }
   }
 
@@ -224,7 +343,12 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
     A.ok(/const transcriptStore = makeTranscriptStore\(\{[^\n]*deletedAt: id => sessionTombstones\.deletedAt\(id\)/.test(src), 'the transcript store reads through the ledger');
     const saveWrite = src.slice(src.indexOf('async function handleSaveWrite('), src.indexOf('async function handleGrowthRatings('));
     A.ok(/result\.ok === true && agentId === 'agent'\) observeDeletedSessions\(body\.deletedIds\)/.test(saveWrite), 'every accepted station save feeds its deletedIds to the ledger');
-    A.ok(/saveStore\.loadState\('agent'\)[\s\S]{0,200}observeDeletedSessions\(bootSave\.doc && bootSave\.doc\.deletedIds\)/.test(src), 'the save on disk feeds the ledger at boot');
+    const boot = src.slice(src.indexOf("const bootSave = saveStore.loadState('agent');"), src.indexOf("const bootSave = saveStore.loadState('agent');") + 900);
+    A.ok(/bootSave\.status === 'ok' \|\| bootSave\.status === 'recovered' \? \(bootSave\.doc && bootSave\.doc\.deletedIds\) : bootSave\.status === 'absent' \? \[\] : undefined/.test(boot)
+      && /observeDeletedSessions\(bootIds\)/.test(boot), 'the save on disk feeds the ledger at boot (a new station with no save reads as an empty first list)');
+    const purge = src.slice(src.indexOf('function forgetDeletedSessionMemory()'), src.indexOf('function forgetDeletedSessionMemory()') + 1600);
+    A.ok(/sessionTombstones\.unpurged\(\)/.test(purge) && /chanEmit\('memory\.forget', \{ agentId: f\.agentId, id: f\.id, reason: 'session-deleted' \}\)/.test(purge),
+      'the purge runs only over unpurged deletes (an adopted one never is) and announces every removed record as memory.forget');
     A.ok(/if \(fresh\.length\) forgetDeletedSessionMemory\(\)/.test(src) && /if \(sessionTombstones\.unpurged\(\)\.length\) forgetDeletedSessionMemory\(\)/.test(src), 'a fresh delete purges memory, and an unfinished purge is retried at boot');
     const recent = src.slice(src.indexOf('function nightshiftRecentRuns()'), src.indexOf('function nightshiftContextPack('));
     A.ok(/!sessionRunForgotten\(r\)/.test(recent), 'RECENT ACTIVITY skips a deleted session\'s runs');

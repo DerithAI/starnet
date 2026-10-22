@@ -3040,10 +3040,13 @@ function memoryAgentIds() {
   } catch (e) { failNote('session-tombstones.agents', e); }
   return Array.from(ids);
 }
-/* forgetDeletedSessionMemory() — remove what deleted sessions left in memory: the notebook records and pending memory
-   proposals their runs wrote (or that were filed under their stream), the revisions their runs made to other records,
-   and the open threads mined from them (session-tombstones.js forgetSessionMemory). One pass at a time; a delete that
-   lands mid-pass runs another. A pass that fails records nothing, so the next boot retries it. */
+/* forgetDeletedSessionMemory() — remove what deleted sessions wrote into memory: the notebook records and pending memory
+   proposals created there (by their runs, or filed under their stream), the versions their runs wrote into records
+   created elsewhere (rolled back), the session quotes on a rating verdict (the verdict and the Commander's words stay),
+   and the open threads mined from them (session-tombstones.js forgetSessionMemory). Each removed record is announced as
+   memory.forget (reason 'session-deleted'): the station HUD says "memory forgotten" and an open Memory Core refreshes.
+   One pass at a time; a delete that lands mid-pass runs another. A pass that fails records nothing, so the next boot
+   retries it. */
 let sessionMemoryPurge = null;
 let sessionMemoryPurgeAgain = false;
 function forgetDeletedSessionMemory() {
@@ -3056,19 +3059,27 @@ function forgetDeletedSessionMemory() {
       const counts = await SessionTombstones.forgetSessionMemory({ store: notebookStore, threads: threadsStore,
         agentIds: memoryAgentIds(), deleted: todo, runs: runStore.all() });
       sessionTombstones.markPurged(todo);
-      if (counts.notes || counts.revisions || counts.pending || counts.threads) {
+      for (const f of counts.forgot.slice(0, 50)) chanEmit('memory.forget', { agentId: f.agentId, id: f.id, reason: 'session-deleted' });   // the rest are in the log line
+      if (counts.notes || counts.revisions || counts.verdicts || counts.pending || counts.threads) {
         console.log('[session-tombstones] deleted sessions: forgot ' + counts.notes + ' memory record(s), ' + counts.revisions
-          + ' revision(s), ' + counts.pending + ' pending proposal(s), ' + counts.threads + ' thread(s)');
+          + ' version(s) they wrote (' + counts.restored + ' record(s) rolled back to an earlier version), the session quotes on '
+          + counts.verdicts + ' rating verdict(s) (verdicts and words kept), ' + counts.pending + ' pending proposal(s), ' + counts.threads + ' thread(s)');
       }
     } while (sessionMemoryPurgeAgain);
   })().catch(swallow('session-tombstones.memory')).then(() => { sessionMemoryPurge = null; });
   return sessionMemoryPurge;
 }
-// BOOT: the save on disk is the newest list the page wrote. Deletes from before this ledger existed are stamped now,
-// which forgets everything those sessions held; an unfinished purge from an earlier run is retried.
+// BOOT: the save on disk is the newest list the page wrote (none at all = a new station: an empty list). The first list
+// the ledger ever reads is ADOPTED: those deletes were made while Delete only hid the rail row, so their transcript and
+// recall are forgotten from now on but the memories they wrote are kept (never a retroactive wipe at the first boot of
+// this build). An unreadable save teaches nothing. An unfinished purge from an earlier run is retried.
 {
   const bootSave = saveStore.loadState('agent');
-  if (bootSave.status === 'ok' || bootSave.status === 'recovered') observeDeletedSessions(bootSave.doc && bootSave.doc.deletedIds);
+  const bootIds = bootSave.status === 'ok' || bootSave.status === 'recovered' ? (bootSave.doc && bootSave.doc.deletedIds) : bootSave.status === 'absent' ? [] : undefined;
+  const firstList = !(sessionTombstones.since() > 0);
+  observeDeletedSessions(bootIds);
+  const adopted = firstList && sessionTombstones.since() > 0 ? sessionTombstones.adopted().length : 0;
+  if (adopted) console.log('[session-tombstones] ' + adopted + ' session(s) deleted before this build: forgotten from history and recall; the memories they wrote are kept');
   if (sessionTombstones.unpurged().length) forgetDeletedSessionMemory();
 }
 // the saved floor as a validated station model for the capability note's room scope (cap-scope.js): re-validated

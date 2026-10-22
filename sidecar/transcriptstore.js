@@ -190,10 +190,12 @@
     const ramMax = num(opts.ramMax) > 0 ? num(opts.ramMax) : RAM_ROWS_MAX;
     /* A DELETED SESSION IS NOT READ BACK (qa/bugs/3e926b6a). opts.deletedAt(streamId) -> ms (0 = never deleted) is the
        host's session tombstone ledger (session-tombstones.js). A row of a deleted session stamped at or before its
-       delete is FORGOTTEN: every read below (history, reconstruct, taintOf, search, streams, around, all) answers as
-       if it were not on disk, so resume, recall, cross-session reads and the evidence pack can never hand it to a
+       delete is FORGOTTEN: every read that hands rows on (history, reconstruct, search, streams, around, all) answers
+       as if it were not on disk, so resume, recall, cross-session reads and the evidence pack can never hand it to a
        model. The bytes stay in the append-only segments; a session re-opened under the same id hears only what is
-       said after the delete. Writes and counts are untouched. */
+       said after the delete. Writes and counts are untouched. taintOf is the one reader that still sees every row: it
+       returns only a taint source, never a word of dialogue, and a copy of the history held elsewhere still carries
+       whatever taint its rows had. */
     const deletedAt = typeof opts.deletedAt === 'function' ? opts.deletedAt : null;
     function forgotten(r) {
       if (!deletedAt || !r) return false;
@@ -552,7 +554,8 @@
       o = o || {};
       const prior = (Array.isArray(messages) ? messages : []).filter(m => m && typeof m === 'object' && ROLES.has(m.role) && m.role !== 'system');
       if (!prior.length) return null;
-      const rowsNow = history(streamId, { limit: num(o.limit) > 0 ? num(o.limit) : 1200 });
+      // every row, deleted or not: forgetting a session never clears the taint of text that is replayed from it
+      const rowsNow = readHistory(streamId, { limit: num(o.limit) > 0 ? num(o.limit) : 1200 }, false);
       if (!rowsNow.some(r => r && r.taint)) return null;          // the common case: this stream never carried taint
       const tainted = new Map();
       for (const r of rowsNow) if (r && r.taint) { const k = rowIdentity(r); if (k && !tainted.has(k)) tainted.set(k, str(r.taint)); }
@@ -589,8 +592,12 @@
 
     // the recent dialogue for ONE workstream, oldest-first (ready to replay back into COMMS). We keep the LAST
     // `limit` turns of that stream (the most recent), then return them in chronological order.
-    function history(streamId, o) {
+    function history(streamId, o) { return readHistory(streamId, o, true); }
+    // honorDeletes=false is taintOf's read only: it never leaves this module
+    function readHistory(streamId, o, honorDeletes) {
       o = o || {};
+      const kept = honorDeletes ? keep : (list => list);
+      const gone = honorDeletes ? forgotten : (() => false);
       const limit = num(o.limit) > 0 ? num(o.limit) : cap;
       const want = normStream(streamId);
       const sourceRunId = String(o.sourceRunId || '');
@@ -603,15 +610,15 @@
         // a deleted session's rows are all older than anything said after its delete, so the newest `limit` rows
         // minus the forgotten ones are exactly the newest `limit` rows that remain
         const held = o.strict ? null : ramHistory(want, limit, sourceRunId, o.dispatchState);
-        if (held) return keep(held);
+        if (held) return kept(held);
         try {
           const found = io.history(want, { limit, sourceRunId, dispatchState: o.dispatchState, strict: o.strict, since: num(o.since) });
-          if (Array.isArray(found)) return keep(found).map(r => Object.assign({}, r));
+          if (Array.isArray(found)) return kept(found).map(r => Object.assign({}, r));
         } catch (e) { if (o.strict) throw e; failNote('transcript.io', e); }
       }
       const out = [];
       for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) {
-        if (rows[i].streamId === want && (!sourceRunId || rows[i].sourceRunId === sourceRunId) && (!o.dispatchState || rows[i].dispatchState === o.dispatchState) && !forgotten(rows[i])) out.push(Object.assign({}, rows[i]));
+        if (rows[i].streamId === want && (!sourceRunId || rows[i].sourceRunId === sourceRunId) && (!o.dispatchState || rows[i].dispatchState === o.dispatchState) && !gone(rows[i])) out.push(Object.assign({}, rows[i]));
       }
       out.reverse();   // newest-first scan -> chronological for replay
       return out;
