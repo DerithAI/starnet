@@ -17,7 +17,7 @@
    agent's own fs.* tools can neither read nor corrupt the record of its own conversations. Legacy
    transcript.jsonl(.1) inputs remain in place after import. It holds no key (those are stored separately).
 
-     makeTranscriptStore({ io, clock, redact?, limit? }) -> {
+     makeTranscriptStore({ io, clock, redact?, limit?, deletedAt? }) -> {   // deletedAt: the deleted-session ledger (see below)
        append({ streamId, agentId, role, content }) -> entry,   // stamps ts, redacts content, appends, returns it
        history(streamId, { limit }?) -> entry[],   // CHRONOLOGICAL (oldest-first) for replay; last `limit` of that stream
        all() -> entry[],   count() -> int
@@ -188,6 +188,19 @@
     // the host adapter loads only recent rows here and answers lifetime recall lazily from per-segment indexes.
     const ramPerStream = num(opts.ramPerStream) > 0 ? num(opts.ramPerStream) : Math.max(cap * 3, 1200);
     const ramMax = num(opts.ramMax) > 0 ? num(opts.ramMax) : RAM_ROWS_MAX;
+    /* A DELETED SESSION IS NOT READ BACK (qa/bugs/3e926b6a). opts.deletedAt(streamId) -> ms (0 = never deleted) is the
+       host's session tombstone ledger (session-tombstones.js). A row of a deleted session stamped at or before its
+       delete is FORGOTTEN: every read below (history, reconstruct, taintOf, search, streams, around, all) answers as
+       if it were not on disk, so resume, recall, cross-session reads and the evidence pack can never hand it to a
+       model. The bytes stay in the append-only segments; a session re-opened under the same id hears only what is
+       said after the delete. Writes and counts are untouched. */
+    const deletedAt = typeof opts.deletedAt === 'function' ? opts.deletedAt : null;
+    function forgotten(r) {
+      if (!deletedAt || !r) return false;
+      const at = num(deletedAt(r.streamId));
+      return at > 0 && num(r.ts) <= at;
+    }
+    function keep(list) { return deletedAt ? list.filter(r => !forgotten(r)) : list; }
 
     // in-memory mirror loaded once; append keeps RAM + disk in lockstep so history() is O(n) over RAM.
     let rows = [];
@@ -260,12 +273,14 @@
       const all = o.scope === 'all';
       const want = normStream(streamId);
       if (typeof io.search === 'function') {
-        try { return io.search(want, query, { limit: limit, scope: all ? 'all' : 'stream' }) || []; } catch (e) { failNote('transcript.io', e); }
+        // the segment index ranks among the rows it may return (exclude), so a deleted session never takes a slot
+        try { return keep(io.search(want, query, { limit: limit, scope: all ? 'all' : 'stream', exclude: deletedAt ? forgotten : undefined }) || []); } catch (e) { failNote('transcript.io', e); }
       }
       const scored = [];
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
         if (!all && r.streamId !== want) continue;
+        if (forgotten(r)) continue;
         // a null-prototype map: `{}`['constructor'] is Object, so that query word "matched" every row with a string score
         const tf = Object.create(null); for (const t of tokenize(r.content)) tf[t] = (tf[t] || 0) + 1;
         let distinct = 0, freq = 0;
@@ -285,11 +300,14 @@
       const limit = num(o.limit) > 0 ? Math.min(num(o.limit), 100) : 20;
       const previewMax = num(o.previewChars) > 0 ? num(o.previewChars) : 160;
       if (typeof io.streams === 'function') {
-        try { return io.streams({ limit: limit, previewChars: previewMax }) || []; } catch (e) { failNote('transcript.io', e); }
+        // the segment summaries count and preview every row: a deleted session drops out, and one re-opened after its
+        // delete is listed from the rows said since (history() already forgets the rest)
+        try { return deletedAt ? liveStreams(io.streams({ limit: 100, previewChars: previewMax }) || [], previewMax).slice(0, limit) : (io.streams({ limit: limit, previewChars: previewMax }) || []); } catch (e) { failNote('transcript.io', e); }
       }
       const by = new Map();
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
+        if (forgotten(r)) continue;
         let e = by.get(r.streamId);
         if (!e) { e = { streamId: r.streamId, turns: 0, lastAt: 0, preview: '' }; by.set(r.streamId, e); }
         e.turns++;
@@ -304,6 +322,24 @@
       out.sort((a, b) => (b.lastAt - a.lastAt) || (a.streamId < b.streamId ? -1 : a.streamId > b.streamId ? 1 : 0));
       return out.slice(0, limit);
     }
+    function liveStreams(list, previewMax) {
+      const out = [];
+      for (const s of list) {
+        const at = s && num(deletedAt(s.streamId));
+        if (!s || !(at > 0)) { if (s) out.push(s); continue; }
+        if (num(s.lastAt) <= at) continue;   // nothing said since the delete
+        const kept = history(s.streamId, { limit: cap });
+        if (!kept.length) continue;
+        const e = { streamId: s.streamId, turns: kept.length, lastAt: 0, preview: '' };
+        for (const r of kept) {
+          if (num(r.ts) >= e.lastAt) e.lastAt = num(r.ts);
+          const preview = conversationPreview(r);
+          if (preview) { e.preview = preview.replace(/\s+/g, ' ').trim().slice(0, previewMax); e.previewTaint = r.taint || ''; e.previewTaintKnown = r.taintKnown === true || !!r.taint; }
+        }
+        out.push(e);
+      }
+      return out;
+    }
 
     // SCROLL (reference-harness parity: anchored drill-down): the window of turns around a point in ONE stream, so a
     // search hit can be READ IN CONTEXT instead of as an isolated line. Anchored on a TIMESTAMP rather than a row
@@ -315,10 +351,10 @@
       const want = normStream(streamId);
       const at = num(ts);
       if (typeof io.around === 'function') {
-        try { return io.around(want, ts, { window: win, rowId: o.rowId }) || []; } catch (e) { failNote('transcript.io', e); }
+        try { return keep(io.around(want, ts, { window: win, rowId: o.rowId }) || []); } catch (e) { failNote('transcript.io', e); }
       }
       const mine = [];
-      for (let i = 0; i < rows.length; i++) { if (rows[i].streamId === want) mine.push(rows[i]); }
+      for (let i = 0; i < rows.length; i++) { if (rows[i].streamId === want && !forgotten(rows[i])) mine.push(rows[i]); }
       if (!mine.length) return [];
       // the row closest to the anchor (mine is append-ordered, so ties resolve to the earliest match — stable).
       let anchor = 0, best = Infinity;
@@ -564,16 +600,18 @@
       // same answer without reading and parsing segments 2-4 times per run. A strict read
       // always proves the bytes on disk.
       if (typeof io.history === 'function') {
+        // a deleted session's rows are all older than anything said after its delete, so the newest `limit` rows
+        // minus the forgotten ones are exactly the newest `limit` rows that remain
         const held = o.strict ? null : ramHistory(want, limit, sourceRunId, o.dispatchState);
-        if (held) return held;
+        if (held) return keep(held);
         try {
           const found = io.history(want, { limit, sourceRunId, dispatchState: o.dispatchState, strict: o.strict, since: num(o.since) });
-          if (Array.isArray(found)) return found.map(r => Object.assign({}, r));
+          if (Array.isArray(found)) return keep(found).map(r => Object.assign({}, r));
         } catch (e) { if (o.strict) throw e; failNote('transcript.io', e); }
       }
       const out = [];
       for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) {
-        if (rows[i].streamId === want && (!sourceRunId || rows[i].sourceRunId === sourceRunId) && (!o.dispatchState || rows[i].dispatchState === o.dispatchState)) out.push(Object.assign({}, rows[i]));
+        if (rows[i].streamId === want && (!sourceRunId || rows[i].sourceRunId === sourceRunId) && (!o.dispatchState || rows[i].dispatchState === o.dispatchState) && !forgotten(rows[i])) out.push(Object.assign({}, rows[i]));
       }
       out.reverse();   // newest-first scan -> chronological for replay
       return out;
@@ -605,7 +643,7 @@
 
     return {
       append, appendStrict, appendTurns, appendNew, appendNewStrict, markPersisted, markRecorded, history, reconstruct, taintOf, search, streams, around,
-      all() { return rows.map(r => Object.assign({}, r)); },
+      all() { return keep(rows).map(r => Object.assign({}, r)); },
       count() { return rows.length; },
       _internals: { normStream, SID_RE }
     };

@@ -387,6 +387,7 @@ const QuestSweeps = require('./questsweeps.js');
 const GoalAdvance = require('./goal-advance.js'); // USER-STUDY LOOP: pure — a finished quest slate settles its plan step; journey completions fold onto the goal mirror
 const QuestRefresh = require('./questrefresh.js'); // QUEST V3: the standing 24h + caught-up quest-refresh engine (pure gates/directive/parse) // QUEST V2 §A: pure seam-matchers for the mechanical contract sweeps (run-bind / prop-live / fact-learned / artifact-exists)
 const { makeThreadsStore } = require('./threads-store.js');   // NS-6: durable THREAD LEDGER (ideas raised but never acted on)
+const SessionTombstones = require('./session-tombstones.js');   // the sidecar's own record of deleted sessions (qa/bugs/3e926b6a)
 const Recommendation = require('./recommendation-ledger.js');
 const RecommendationEval = require('./recommendation-eval.js');
 const { makeRecommendationLedger } = Recommendation; // one cross-surface recommendation/verdict lifecycle + shared utility ranker
@@ -1745,7 +1746,17 @@ const transcriptIo = makeSegmentedTranscriptIo({
   writeDurable: writeFileDurable,
   onWarning: (message) => console.warn('[transcript] ' + message)
 });
-const transcriptStore = makeTranscriptStore({ io: transcriptIo, clock: { now: () => Date.now() }, redact });
+/* DELETED SESSIONS ARE FORGOTTEN (qa/bugs/3e926b6a). The ledger learns each delete from the save the page writes
+   (handleSaveWrite, and the save on disk at boot — observeDeletedSessions) and keeps it past the page's 500-id list.
+   The transcript store reads through it, so resume, recall, cross-session reads and the evidence pack never hand a
+   deleted session's words to a model; the run-history readers that quote titles (sessionRunForgotten) and the
+   memory purge (forgetDeletedSessionMemory) honor the same stamp. Built before the transcript store reads anything. */
+const sessionTombstones = SessionTombstones.makeSessionTombstones({ fs, path, file: path.join(WORKSPACES, 'session-tombstones.json'),
+  writeDurable: writeFileDurable, now: () => Date.now(),
+  onIssue: (status, info) => console.warn('[session-tombstones] ' + status + ' ' + ((info && info.file) || '')) });
+const transcriptStore = makeTranscriptStore({ io: transcriptIo, clock: { now: () => Date.now() }, redact, deletedAt: id => sessionTombstones.deletedAt(id) });
+// a run-history row of a deleted session, filed at or before its delete: never quoted to a model again
+function sessionRunForgotten(r) { return !!r && sessionTombstones.forgotten(r.streamId, r.ts); }
 const dispatchDeliveryStore = require('./dispatch-delivery.js');
 const dispatchDeliveryDeps = { runStore, transcriptStore, redact,
   hash: text => crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
@@ -3007,6 +3018,59 @@ function engineCredentialError(provider, what) {
 // notebook: a sibling of the fs jail. Holds NO secret (the key/tokens live elsewhere). The frontend keeps
 // localStorage as a fast cache and writes through here on every persist; on boot it pulls the newer of the two.
 const saveStore = makeSaveStore({ fs, pathMod: path, root: WORKSPACES, clock: { now: () => Date.now() } });
+
+/* observeDeletedSessions(ids) — fold the station save's `deletedIds` into the session tombstone ledger (qa/bugs/3e926b6a).
+   The ledger write is synchronous: the transcript reads honor a delete the moment this returns. A fresh delete then
+   purges what that session left in memory (forgetDeletedSessionMemory), behind the reply. */
+function observeDeletedSessions(ids) {
+  let fresh = [];
+  try { fresh = sessionTombstones.observe(ids); }
+  catch (e) { failNote('session-tombstones.observe', e); }   // held in memory; the next save or boot writes it again
+  if (fresh.length) forgetDeletedSessionMemory();
+  return fresh;
+}
+// every agent whose notebook or pending proposals sit on disk (a crew member that left keeps its file), and the hero
+function memoryAgentIds() {
+  const ids = new Set(['agent']);
+  try {
+    for (const name of fs.readdirSync(WORKSPACES)) {
+      const m = /^([A-Za-z0-9_-]{1,40})\.(?:notebook|pending)\.json$/.exec(name);
+      if (m) ids.add(m[1]);
+    }
+  } catch (e) { failNote('session-tombstones.agents', e); }
+  return Array.from(ids);
+}
+/* forgetDeletedSessionMemory() — remove what deleted sessions left in memory: the notebook records and pending memory
+   proposals their runs wrote (or that were filed under their stream), the revisions their runs made to other records,
+   and the open threads mined from them (session-tombstones.js forgetSessionMemory). One pass at a time; a delete that
+   lands mid-pass runs another. A pass that fails records nothing, so the next boot retries it. */
+let sessionMemoryPurge = null;
+let sessionMemoryPurgeAgain = false;
+function forgetDeletedSessionMemory() {
+  if (sessionMemoryPurge) { sessionMemoryPurgeAgain = true; return sessionMemoryPurge; }
+  sessionMemoryPurge = (async () => {
+    do {
+      sessionMemoryPurgeAgain = false;
+      const todo = sessionTombstones.unpurged();
+      if (!todo.length) break;
+      const counts = await SessionTombstones.forgetSessionMemory({ store: notebookStore, threads: threadsStore,
+        agentIds: memoryAgentIds(), deleted: todo, runs: runStore.all() });
+      sessionTombstones.markPurged(todo);
+      if (counts.notes || counts.revisions || counts.pending || counts.threads) {
+        console.log('[session-tombstones] deleted sessions: forgot ' + counts.notes + ' memory record(s), ' + counts.revisions
+          + ' revision(s), ' + counts.pending + ' pending proposal(s), ' + counts.threads + ' thread(s)');
+      }
+    } while (sessionMemoryPurgeAgain);
+  })().catch(swallow('session-tombstones.memory')).then(() => { sessionMemoryPurge = null; });
+  return sessionMemoryPurge;
+}
+// BOOT: the save on disk is the newest list the page wrote. Deletes from before this ledger existed are stamped now,
+// which forgets everything those sessions held; an unfinished purge from an earlier run is retried.
+{
+  const bootSave = saveStore.loadState('agent');
+  if (bootSave.status === 'ok' || bootSave.status === 'recovered') observeDeletedSessions(bootSave.doc && bootSave.doc.deletedIds);
+  if (sessionTombstones.unpurged().length) forgetDeletedSessionMemory();
+}
 // the saved floor as a validated station model for the capability note's room scope (cap-scope.js): re-validated
 // (~11 ms on a 152-prop save) only when the save file's stamp moved, and only asked when a floor object is missing
 const savedFloor = makeSavedFloor({ stamp: () => saveStore.stamp('agent'), loadStamped: () => saveStore.loadStamped('agent') });
@@ -7186,7 +7250,7 @@ function nightFocusInputs() {
     const meta = {}; for (const p of (projectsStore.snapshot().projects || [])) meta[p.root] = p;
     // recent user run titles → a cheap per-root "mention" frequency (which project the Commander names lately).
     let runTitles = [];
-    try { runTitles = (runStore.list(null, { limit: 60 }) || []).filter(r => r && !contextpack.isInternalStream(r.streamId)).map(r => String(r.title || '').toLowerCase()); } catch (_) { runTitles = []; }
+    try { runTitles = (runStore.list(null, { limit: 60 }) || []).filter(r => r && !contextpack.isInternalStream(r.streamId) && !sessionRunForgotten(r)).map(r => String(r.title || '').toLowerCase()); } catch (_) { runTitles = []; }
     projects = blessedRoots().map(root => {
       const m = meta[root] || {};
       const base = nightfocus.baseName(m.displayPath || root).toLowerCase();
@@ -8257,7 +8321,7 @@ function nightshiftBeliefMap() {
 // initially clean directive cannot reappear as owner chat. The pure pack never renders an internal run title.
 // Shared by the context pack and the readiness count, so both always read the SAME projection.
 function nightshiftRecentRuns() {
-  try { return (runStore.list(null, { limit: 60 }) || []).filter(r => r && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { return []; }
+  try { return (runStore.list(null, { limit: 60 }) || []).filter(r => r && !sessionRunForgotten(r) && (r.internal || (!r.taintedBy && !TrustedLearning.quotedMaterial(r.title)))).map(r => ({ title: r.title, ts: r.ts, streamId: r.streamId, reason: r.reason, internal: !!r.internal })); } catch (_) { return []; }
 }
 
 /* NS-2: the CONTEXT-PACK io — the ambient half of contextpack.js. Gathers REAL recent activity from the durable
@@ -24827,7 +24891,8 @@ function openAskCount() {
   return n;
 }
 async function awayBriefingInputs(since, now, tzOffsetMin) {
-  let runs = []; try { runs = runStore.list(null, { limit: 500, since: Math.max(0, since - 1) }) || []; } catch (_) { runs = []; }
+  // a deleted session's runs are not reported back (qa/bugs/3e926b6a)
+  let runs = []; try { runs = (runStore.list(null, { limit: 500, since: Math.max(0, since - 1) }) || []).filter(r => !sessionRunForgotten(r)); } catch (_) { runs = []; }
   // the run row keeps deliveryText only for session-scoped runs; a routine/loop's own words live in its durable
   // transcript — read the LAST assistant turn of each briefed stream (bounded) so the excerpt is the run's real output.
   // Read ONCE per stream: every iteration of a loop shares its loop- stream, so 50 overnight iterations were 50 reads
@@ -27061,6 +27126,9 @@ async function handleSaveWrite(req, res) {
     const result = saveStore.save(agentId, body, { compareRevision: true });
     // a memo seed is a cache refresh: it may never turn a landed save into an error reply
     if (result && result.ok === true) { try { seedSaveMemos(agentId, body); } catch (e) { failNote('save.seed-memos', e); } }
+    // the station save carries the page's deleted-session list: the sidecar forgets a deleted session the moment the
+    // save that deletes it lands (qa/bugs/3e926b6a). Never turns a landed save into an error reply.
+    if (result && result.ok === true && agentId === 'agent') observeDeletedSessions(body.deletedIds);
     json(200, result);
   } catch (e) { json(400, { error: (e && e.message) || 'save failed' }); }
 }
