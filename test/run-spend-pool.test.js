@@ -16,6 +16,12 @@ const path = require('path');
 const { makeRunSpendPool, isRunSpendPool } = require('../sidecar/run-spend-pool.js');
 const { makeOrchestrationTools } = require('../sidecar/tools/builtin/orchestration.js');
 const { makeSubagentManager } = require('../sidecar/subagents.js');
+const events = require('../shared/events.js');
+const { makeEmitter } = require('../shared/emitter.js');
+const { makeReplayProvider } = require('../sidecar/providers/replay.js');
+const { makeCostEngine } = require('../sidecar/cost.js');
+const { runAgentLoop } = require('../sidecar/loop.js');
+const { makeRegistry } = require('../sidecar/tools/registry.js');
 
 const near = (a, b) => Math.abs(a - b) < 1e-9;
 const counter = () => { let n = 0; return () => 'child_' + (++n); };
@@ -53,13 +59,15 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   A.eq(pool.admit('w1', 0), null, 'the first worker\'s call fits: $0.04 booked, nothing else in flight');
   const w2 = pool.admit('w2', 0);
   A.ok(w2 && w2.scope === 'run' && w2.cap === 0.05, 'a second worker is stopped with scope run at the LEAD\'s $0.05 cap: ' + JSON.stringify(w2));
-  A.ok(w2 && near(w2.usd, 0.04) && near(w2.committedUsd, 0.04), 'the stop is the in-flight worker call taking the headroom ($0.04 booked + $0.04 in flight)');
+  A.ok(w2 && near(w2.usd, 0.04) && near(w2.committedUsd, 0.04), 'the stop is the in-flight worker call taking the headroom ($0.04 booked + $0.04 in flight): with $0.01 left, less than one lead turn, that turn is the only evidence of what a call costs');
+  A.ok(w2 && w2.projected === true, 'a stop on calls still in flight is a PROJECTION (the cap was not hit yet): ' + JSON.stringify(w2));
   A.ok(pool.admit('w3', 0) && pool.admit('w4', 0), 'the other two are stopped too');
   pool.booked('w1', 0.04);
   pool.settle('w1', 0.04);
   for (const w of ['w2', 'w3', 'w4']) pool.settle(w, 0);
   const lead = pool.admit('lead', 0.04);
   A.ok(lead && lead.scope === 'run' && near(lead.usd, 0.08) && lead.cap === 0.05, 'the lead stops at its next call boundary: the family spent $0.08 of $0.05');
+  A.ok(lead && lead.projected !== true, 'a stop at a cap the family really reached is a hit, not a projection');
   A.ok(near(pool.status().spentUsd, 0.08), 'the family spent $0.08 — the cap plus one call, not $0.24');
   A.eq(pool.status().inFlight, 0, 'nothing is left in flight');
 }
@@ -85,7 +93,7 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   pool.idle('lead');          // tools now — the call is over; the $0.03 call is the largest one so far
   A.ok(near(pool.status().largestCallUsd, 0.03), 'the largest call seen is the $0.03 one');
   A.eq(pool.admit('w', 0), null, 'nothing in flight: the worker proceeds');
-  A.eq(pool.admit('lead', 0.05), null, 'lead: $0.05 booked + the worker\'s call in flight (counted at $0.03) still fits under $0.10');
+  A.eq(pool.admit('lead', 0.05), null, 'lead: $0.05 booked + the worker\'s first call in flight (no worker has booked yet: counted at $0 while a whole $0.03 lead call still fits in the $0.05 left) proceeds');
   pool.settle('lead', 0.01);
   A.ok(near(pool.status().spentUsd, 0.05), 'a lower final figure never un-books spend');
   pool.settle('w', 0.06);
@@ -93,7 +101,70 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   A.ok(pool.admit('lead', 0.05) && pool.admit('w', 0.06), 'and once the family reached $0.10 every member stops');
 }
 
-// ---- 1f. only a pool the host minted is one ----
+// ---- 1f. MIXED CALL COSTS (review of d3a76db3): each in-flight call is counted at ITS member's own cost ----
+// The first fix counted every fellow member's open call at the costliest call anyone had booked — in team.spawn the
+// lead's large-context spawning turn — so cheap clones were stopped with the family well under the cap, where trunk
+// would have finished the whole job inside it.
+{
+  // probe A: cap $0.50, the lead's spawning turn $0.18, four clones join and call together
+  const pool = makeRunSpendPool({ capUsd: 0.50 }).join('lead');
+  pool.admit('lead', 0); pool.booked('lead', 0.18); pool.idle('lead');
+  for (const w of ['w1', 'w2', 'w3', 'w4']) pool.join(w);
+  for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0), null, 'mixed: clone ' + w + '\'s first call is admitted — the lead\'s $0.18 turn is no measure of a clone\'s call while $0.32 is left');
+  for (const w of ['w1', 'w2', 'w3', 'w4']) pool.booked(w, 0.02);
+  for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0.02), null, 'mixed: and its second call too ($0.26 booked, the clones\' own $0.02 calls in flight)');
+  for (const w of ['w1', 'w2', 'w3', 'w4']) { pool.booked(w, 0.02); pool.settle(w, 0.04); }
+  A.ok(near(pool.status().spentUsd, 0.34), 'mixed: the family spent $0.34 of its $0.50 cap');
+}
+{
+  // the simulation: cap $1, lead $0.18, four clones x five turns x $0.03 — the whole job needs $0.78 and fits
+  const pool = makeRunSpendPool({ capUsd: 1 }).join('lead');
+  pool.admit('lead', 0); pool.booked('lead', 0.18); pool.idle('lead');
+  const ws = ['w1', 'w2', 'w3', 'w4'];
+  const spentBy = {}, stops = [];
+  for (const w of ws) { pool.join(w); spentBy[w] = 0; }
+  for (let turn = 0; turn < 5; turn++) {
+    for (const w of ws) { const stop = pool.admit(w, spentBy[w]); if (stop) stops.push(w + ':' + JSON.stringify(stop)); }
+    for (const w of ws) { spentBy[w] += 0.03; pool.booked(w, 0.03); pool.idle(w); }
+  }
+  A.eq(stops, [], 'simulation: no clone is stopped while the whole job fits under the cap');
+  A.ok(near(pool.status().spentUsd, 0.78), 'simulation: all four clones finished all five turns: the family spent $0.78 of $1');
+}
+{
+  // a fresh worker in flight is counted at a FELLOW WORKER's first call once one is booked, never at the lead's turn
+  const pool = makeRunSpendPool({ capUsd: 0.30 }).join('lead');
+  pool.admit('lead', 0); pool.booked('lead', 0.18); pool.idle('lead');
+  for (const w of ['w1', 'w2', 'w3']) pool.join(w);
+  A.eq(pool.admit('w1', 0), null, 'w1 calls');
+  pool.booked('w1', 0.02);   // its first call: $0.02
+  A.eq(pool.admit('w2', 0), null, 'w2 calls (nothing in flight)');
+  A.eq(pool.admit('w3', 0), null, 'w3 calls: w2\'s first call in flight is counted at w1\'s $0.02 first call ($0.20 + $0.02 under $0.30), not the lead\'s $0.18');
+  pool.booked('w2', 0.02);
+  A.eq(pool.admit('w1', 0.02), null, 'w1: w3\'s first call in flight is counted at $0.02 too ($0.22 + $0.02)');
+}
+{
+  // a member with a costly call of its own is counted at it: the reservation still bounds the family
+  const pool = makeRunSpendPool({ capUsd: 0.25 }).join('lead');
+  pool.admit('lead', 0); pool.booked('lead', 0.02); pool.idle('lead');
+  for (const w of ['big', 'small']) pool.join(w);
+  pool.admit('big', 0); pool.booked('big', 0.12);   // big's first call cost $0.12
+  A.eq(pool.admit('big', 0.12), null, 'big makes its second call');
+  const small = pool.admit('small', 0);
+  A.ok(small && small.projected === true && near(small.usd, 0.14) && near(small.committedUsd, 0.12),
+    'a call in flight is counted at its OWN member\'s largest call: $0.14 booked + big\'s $0.12 in flight leaves no room under $0.25 for small: ' + JSON.stringify(small));
+}
+{
+  // a call stopped before it went out (a day/global pool refused it; index.js idles it) is no evidence of what a call costs
+  const pool = makeRunSpendPool({ capUsd: 0.05 }).join('lead');
+  pool.admit('lead', 0); pool.booked('lead', 0.04); pool.idle('lead');
+  for (const w of ['w1', 'w2']) pool.join(w);
+  pool.admit('w1', 0); pool.idle('w1');   // w1's first call never went out
+  A.eq(pool.admit('w1', 0), null, 'w1 tries again (nothing in flight)');
+  const w2 = pool.admit('w2', 0);
+  A.ok(w2 && w2.projected === true && near(w2.committedUsd, 0.04), 'w1 is still a worker with nothing booked — counted at the lead\'s turn (only $0.01 left), not as a $0 call: ' + JSON.stringify(w2));
+}
+
+// ---- 1g. only a pool the host minted is one ----
 A.ok(isRunSpendPool(makeRunSpendPool({ capUsd: 1 })), 'a minted pool is recognized');
 A.ok(!isRunSpendPool({ admit: 'x', join: 'y', booked: 1, idle: 2, settle: 3 }), 'a JSON-shaped object (a request body) is not a pool');
 A.ok(!isRunSpendPool(null) && !isRunSpendPool(undefined) && !isRunSpendPool('pool'), 'nothing else is a pool');
@@ -191,6 +262,86 @@ try {
     A.ok(pool.admit('lead_run', 0.04) !== null, 'and the lead itself is stopped at its next call boundary');
     A.ok(near(pool.status().spentUsd, 0.08), 'family spend $0.08 for a $0.05 cap (cap + one call), not $0.24');
   }
+
+  // ---- 3. THE REAL LOOP: a lead run's team.spawn family through loop.js + orchestration.js + the pool ----
+  // The run host is wired exactly as sidecar/index.js runOnceCore wires it (that module boots a sidecar, so it is
+  // never required here): mint-or-join the pool, the loop's budget check asks pool.admit, agent.cost books, the first
+  // agent.tool_call ends the call, the run end settles. Every event goes through the real validating emitter.
+  const turnText = (text, usd) => [{ type: 'text', delta: text }, { type: 'usage', usage: { prompt_tokens: 40, completion_tokens: 8, total_tokens: 48, cost: usd } }, { type: 'done', finishReason: 'stop' }];
+  const turnSpawn = (n, usd) => [{ type: 'tool_start', index: 0, id: 'spawn_1', name: 'team_spawn' },
+    { type: 'tool_args', index: 0, chunk: JSON.stringify({ tasks: Array.from({ length: n }, (_, i) => ({ prompt: 'part ' + (i + 1), label: 'part ' + (i + 1) })) }) },
+    { type: 'usage', usage: { prompt_tokens: 4000, completion_tokens: 400, total_tokens: 4400, cost: usd } }, { type: 'done', finishReason: 'tool_calls' }];
+  async function family(label, capUsd, leadUsd, workerUsd) {
+    const ends = [], invalid = [];
+    const newId = counter();
+    async function hostRun(o) {
+      const pool = isRunSpendPool(o.spendPool) ? o.spendPool : makeRunSpendPool({ capUsd });
+      pool.join(o.runId);
+      const bus = A.makeBus();
+      const seq = A.collectBus(bus, events.names());
+      const valid = makeEmitter(bus, e => invalid.push(e));
+      const emit = (name, payload) => {
+        if (payload && payload.runId === o.runId) {
+          if (name === 'agent.cost') pool.booked(o.runId, Number(payload.usd) || 0);
+          else if (name === 'agent.tool_call') pool.idle(o.runId);
+        }
+        return valid(name, payload);
+      };
+      const provider = makeReplayProvider({ turns: o.turns });
+      const res = await runAgentLoop({ messages: [{ role: 'user', content: 'go' }], provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }),
+        model: 'replay/model', agentId: o.agentId, runId: o.runId, limits: { maxCostUsd: capUsd, maxIters: 6, grace: false },
+        budget: { check: (spent) => pool.admit(o.runId, spent) },
+        tools: o.tools || [], dispatch: o.dispatch, capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: o.agentId, room: 'office' } });
+      pool.settle(o.runId, res.usd);
+      const end = seq.find(e => e.name === 'agent.run.end');
+      ends.push({ agentId: o.agentId, end: end && end.payload });
+      return res;
+    }
+    const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, label + '.json'), clock: { now: () => 1000 }, emit: () => {}, newId });
+    const runOnce = (o) => hostRun({ runId: o.runId, agentId: o.agentId || 'sub', spendPool: o.spendPool, turns: [turnText('part done', workerUsd)] });
+    const { spawnTool } = makeOrchestrationTools({ runOnce, roster: () => new Map(), key: 'k', model: 'replay/model', selfSystem: 'S', newId, subagents });
+    const leadPool = makeRunSpendPool({ capUsd });   // index.js mints the lead's pool and puts it on its tool ctx
+    const reg = makeRegistry();
+    reg.register({ name: 'team_spawn', schema: spawnTool.schema, run: async (args) => (await spawnTool.run(args, { agentId: 'agent', runId: 'lead', emit: () => {}, spendPool: leadPool })).content });
+    await hostRun({ runId: 'lead', agentId: 'agent', spendPool: leadPool, turns: [turnSpawn(4, leadUsd), turnText('combined brief', leadUsd)],
+      tools: [{ type: 'function', function: { name: 'team_spawn', parameters: spawnTool.schema } }], dispatch: (c, ctx) => reg.dispatch(c, ctx) });
+    const lead = ends.find(e => e.agentId === 'agent');
+    const workers = ends.filter(e => /^sub-/.test(e.agentId));
+    return { lead: lead && lead.end, workers: workers.map(w => w.end), invalid, spentUsd: leadPool.status().spentUsd };
+  }
+  const { endNote: channelNote } = require('../sidecar/channels/hub.js');
+  const { endNote: acpNote } = require('../sidecar/acp/core.js')._internals;
+  const commsLine = new Function(A.fnBody(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'chat.js'), 'utf8'), 'function budgetStopLine(') + '\nreturn budgetStopLine;')();
+  {
+    // MIXED COSTS: the lead's spawning turn $0.18, its clones $0.02 each, PER RUN $0.50 — the job fits, so it all runs
+    const f = await family('mixed', 0.50, 0.18, 0.02);
+    A.eq(f.invalid, [], 'mixed: every event the family emitted passed the event contract');
+    A.eq(f.workers.length, 4, 'mixed: four clones ran');
+    A.eq(f.workers.map(w => w && w.reason), ['done', 'done', 'done', 'done'], 'mixed: all four clones finished — none stopped on the lead\'s $0.18 turn as a guess');
+    A.eq(f.lead && f.lead.reason, 'done', 'mixed: the lead took its synthesis turn and finished');
+    A.ok(near(f.spentUsd, 0.44), 'mixed: the family spent $0.44 ($0.18 + 4 x $0.02 + $0.18) inside its $0.50 cap: $' + f.spentUsd);
+  }
+  {
+    // THE REPRO (d3a76db3): every call $0.04, PER RUN $0.05 — one clone's call fits, the others stop BEFORE the cap
+    const f = await family('repro', 0.05, 0.04, 0.04);
+    A.eq(f.invalid, [], 'repro: every event (budgetProjected included) passed the event contract');
+    const stopped = f.workers.filter(w => w && w.reason === 'budget');
+    A.eq([f.workers.filter(w => w && w.reason === 'done').length, stopped.length], [1, 3], 'repro: one clone ran, three stopped');
+    A.ok(stopped.every(w => w.budgetScope === 'run' && w.budgetCapUsd === 0.05 && w.budgetProjected === true && w.usd === 0),
+      'repro: each stopped clone names the lead\'s $0.05 cap AND says the stop was projected (it spent $0): ' + JSON.stringify(stopped));
+    A.ok(f.lead && f.lead.reason === 'budget' && f.lead.budgetScope === 'run' && f.lead.budgetCapUsd === 0.05 && f.lead.budgetProjected === undefined,
+      'repro: the lead stops at the $0.05 cap the family really reached — a hit, no projected flag: ' + JSON.stringify(f.lead));
+    A.ok(near(f.spentUsd, 0.08), 'repro: the family spent $0.08 for a $0.05 cap (the cap plus one call), not $0.24');
+    // and every surface says what happened: a projected stop never reads as a cap that was hit
+    const w = stopped[0], l = f.lead;
+    A.eq(commsLine(w.budgetScope, w.budgetCapUsd, w.budgetCapIsBalance === true, null, null, w.budgetProjected === true),
+      'stopped before it would pass the $0.05 per-run spend cap — raise it in SETTINGS › SPENDING LIMITS', 'COMMS: a projected stop says it stopped BEFORE the cap');
+    A.ok(/^hit the \$0\.05 per-run spend cap — raise it in /.test(commsLine(l.budgetScope, l.budgetCapUsd, l.budgetCapIsBalance === true, null, null, l.budgetProjected === true)), 'COMMS: the lead\'s real hit still says hit');
+    A.eq(channelNote('budget', w), '\n\n(stopped before it would pass the $0.05 per-run spend cap — raise it in the app under SETTINGS › SPENDING LIMITS.)', 'channels: a projected stop says it stopped BEFORE the cap');
+    A.ok(/\(hit the \$0\.05 per-run spend cap/.test(channelNote('budget', l)), 'channels: the lead\'s real hit still says hit');
+    A.ok(/stopped before it would pass its per-run spend cap/.test(acpNote('budget', false, true)) && !/hit/.test(acpNote('budget', false, true)), 'ACP: a projected stop never says hit');
+  }
+
 } finally {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) { /* temp dir */ }
 }

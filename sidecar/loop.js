@@ -1486,6 +1486,10 @@
       if (reason === 'budget' && (bs === 'run' || bs === 'agent' || bs === 'day' || bs === 'global')) {
         endPayload.budgetScope = bs;
         if (typeof extra.budgetCapUsd === 'number' && isFinite(extra.budgetCapUsd)) endPayload.budgetCapUsd = extra.budgetCapUsd;
+        // PROJECTED (additive, present only when true): the run family's spend pool stopped this run BEFORE the cap,
+        // because calls still in flight already take what is left — every stop line says "before it would pass the $X
+        // cap", never "hit" a cap that was not reached (bug d3a76db3 review)
+        if (extra.budgetProjected === true) endPayload.budgetProjected = true;
         // the UNPRICED-token ceiling: name the model the seatbelt could not price so the stop is legible
         // ("hit the 2,000,000-token ceiling for unpriced model X") instead of a $-cap with no dollar figure.
         if (extra.unpricedModel) {
@@ -1506,7 +1510,7 @@
       const terminalText = tail && tail.role === 'assistant' && !tail.tool_calls ? String(tail.content == null ? '' : tail.content) : '';
       const out = { reason, messages, text: terminalText, usd: spentUsd, turns, tokens: spentTokens, cachedTokens: spentCachedTokens, model, unpricedUsage: unpricedUsage.slice() };
       if (cut) out.finishReason = cut;
-      if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; }
+      if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; if (endPayload.budgetProjected) out.budgetProjected = true; }
       if (endPayload.unpricedModel) {
         out.unpricedModel = endPayload.unpricedModel; out.unpricedTokens = endPayload.unpricedTokens; out.unpricedCapTokens = endPayload.unpricedCapTokens;
         out.budgetNote = 'stopped: ' + endPayload.unpricedTokens.toLocaleString('en-US') + ' tokens on unpriced model ' + endPayload.unpricedModel + ' reached the ' + endPayload.unpricedCapTokens.toLocaleString('en-US') + '-token ceiling (no published rate - SETTINGS > APP & BACKUP > Runtime limits > UNPRICED MODEL TOKEN CEILING, or STARNET_MAX_UNPRICED_TOKENS, or a price in SKYNET_MODEL_PRICES)';
@@ -1832,7 +1836,9 @@
           emit('agent.run.error', { agentId, runId, message, transient: false });
           return end('error', { failureStage: 'budget', failureCode: 'spend_history_unavailable' });
         }
-        if (b) return end('budget', { budgetScope: b.scope, budgetCapUsd: b.cap });
+        // projected: a run's shared spend pool (run-spend-pool.js) stopped it because calls still IN FLIGHT already
+        // take what is left — the cap was not hit yet, so the stop must not say it was (bug d3a76db3 review)
+        if (b) return end('budget', { budgetScope: b.scope, budgetCapUsd: b.cap, budgetProjected: b.projected === true });
       }
       return null;
     }

@@ -12,7 +12,8 @@
         workers that would have passed it stop with reason 'budget', and the lead stops 'budget' (scope run, $0.05
         cap) instead of paying for another turn. The ledger (/api/budget/status) agrees with the run rows.
      2. PER RUN $1 (room for everything): all four workers run and the lead finishes 'done' — the shared cap never
-        refuses work that fits inside it.
+        refuses work that fits inside it. (This fixture bills every call alike; MIXED call costs — a $0.18 spawning
+        turn with $0.02 clones under a $0.50 cap — are proven through the real loop in test/run-spend-pool.test.js.)
    In test/http.list (boots a sidecar). */
 const assert = require('node:assert/strict');
 const http = require('node:http');
