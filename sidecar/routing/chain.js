@@ -102,7 +102,8 @@ function effectiveLimits(raw, fallback, poolCap) {
    THE APPROVED WORK (2026-10-18): the same missing replay left a TERSE approval ("Looks good.") handing on nothing but itself — a
    designer after researcher ▸ reviewer ▸ LOOP got no research, and a gate shipping straight out delivered the approval as the
    result. An approving reply that does not carry the work (carriesWork) now hands on the work it approved: to a dock, framed
-   with the approval as its review; out of the line, the work alone. A reply that restated the work stays the work (R1). */
+   with the approval as its review; out of the line, the work alone. A reply that restated the work, or is the reviewer's own
+   version of it, stays the work (R1). */
 const REVIEWED_HEAD = 12000, REVIEWED_TAIL = 4000;
 function clipReviewed(s) {
   if (s.length <= REVIEWED_HEAD + REVIEWED_TAIL) return s;
@@ -118,47 +119,52 @@ function workOf(s) {
   const cut = s.lastIndexOf(REVIEW_HEAD);
   return cut >= m[0].length ? s.slice(m[0].length, cut) : s;
 }
-/* carriesWork(reply, work) -> did an APPROVING reply carry the work it passed? The rule leans to the reviewer's version: swapping a
-   version the reviewer CHANGED back for the draft ships what it removed (a redacting reviewer's names, phones and emails) and drops
-   its corrections, so the draft only stands in for a reply that is plainly commentary. The reply carries the work when:
-   1. it keeps at least half of the work's distinct three-word runs (a one- or two-word work: its words), or two thirds of its
-      distinct words — a restatement, or the finished version with its corrections (what the verdict brief asks for); or
-   2. the work is more than a one-liner and the reply is at least half its length: a redaction, rewrite, tightened version or
-      translation, not commentary ("Looks good.", a few lines on the work); or
-   3. the work IS a one-liner (one line of one sentence, or under 12 words: a headline, a tagline, a post), where an approval can be
-      as long as the work, and at least half the reply is the work's own words in the work's order: a redaction keeps the
-      sentence round its [redacted] marks, an approval of the line does not.
-   Words: Chinese, Japanese, Korean and Thai text has no spaces between words, so each character there is a word (else a clause is
-   one "word" and a one-character correction loses it whole). Pure; reads the first 64k characters of each. */
-const wordsOf = s => String(s).slice(0, 65536).toLowerCase().match(/[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\p{sc=Thai}]|(?:(?![\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\p{sc=Thai}])[\p{L}\p{N}])+/gu) || [];
-const SENTENCE_BREAK = /[.!?]['"’”)\]]*\s+\S|[。！？]\s*\S/u;   // a sentence ends and another follows
-function inOrder(a, b) {   // how many of a's words b keeps in a's order (longest common subsequence), two rows
-  let prev = new Uint32Array(b.length + 1), cur = new Uint32Array(b.length + 1);
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) cur[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
-    const t = prev; prev = cur; cur = t;
+/* carriesWork(reply, work) -> did an APPROVING reply carry the work it passed? It does unless it is PLAINLY A SHORT NOTE about the
+   work: swapping a version the reviewer CHANGED back for the draft ships what it removed (a redacting reviewer's names, phones and
+   emails, a private section it cut) and drops its corrections, so an unclear reply stays the reviewer's, as before the fix. The
+   draft stands in only for a reply that
+   1. carries no redaction mark ([redacted], [已隐去], ***, "removed"...: a redaction is the reviewer's version at any length);
+   2. is one short paragraph: no blank line, at most two lines, at most NOTE_WORDS words (a Chinese, Japanese, Korean or Thai
+      character is half a word: those scripts put no spaces between words);
+   3. says little of the work's own: under a third of its vocabulary (words past a few English function words; in those scripts,
+      character pairs, past pairs of hiragana grammar) is the work's (an excerpt, a summary, a tightened version or a fix is the
+      work's words); and
+   4. is not the work's shape: two or more sentences, as many as the work, about its length (a translation shares no words).
+   Pure and linear; reads the first 64k characters of each. (2026-10-21 review: the earlier overlap-or-length rules swapped a
+   redaction or summary under half the draft's length, and any redacted long one-line export, back for the unredacted draft.) */
+const NOTE_WORDS = 25;
+const CJK = '\\p{sc=Han}\\p{sc=Hiragana}\\p{sc=Katakana}\\p{sc=Hangul}\\p{sc=Thai}';
+const TOKENS = new RegExp('[' + CJK + ']+|(?:(?![' + CJK + '])[\\p{L}\\p{N}])+', 'gu'), IS_CJK = new RegExp('^[' + CJK + ']', 'u');
+const tokensOf = s => String(s).slice(0, 65536).toLowerCase().match(TOKENS) || [];
+const sizeOf = t => t.reduce((n, x) => n + (IS_CJK.test(x) ? x.length / 2 : 1), 0);
+const FUNCTION_WORDS = new Set('a an and are as at be but by for from has have i in is it its of on or our so that the this to was we were with you your'.split(' '));
+function vocabOf(t) {
+  const v = new Set();
+  for (const x of t) {
+    if (!IS_CJK.test(x)) { if (!FUNCTION_WORDS.has(x)) v.add(x); continue; }
+    if (x.length === 1) { v.add(x); continue; }
+    for (let i = 0; i + 2 <= x.length; i++) { const p = x.slice(i, i + 2); if (!/^\p{sc=Hiragana}+$/u.test(p)) v.add(p); }
   }
-  return prev[b.length];
+  return v;
 }
+const REDACTED = /\[[^\]\n]{0,40}\]|【[^】\n]{0,40}】|\*{3,}|[█▇■]|x{4,}|\b(?:redact\w*|removed|omitted|withheld|censored|anonymi[sz]ed|scrubbed)\b|隐去|删除|屏蔽|打码|保密|伏せ|削除|非公開|비공개|삭제/iu;
+const sentencesOf = s => (String(s).slice(0, 65536).trim().match(/[.!?]['"’”)\]]*(?:\s|$)|[。！？]/gu) || []).length || 1;
 function carriesWork(reply, work) {
-  const w = wordsOf(work);
+  const w = tokensOf(work);
   if (!w.length) return true;
-  const r = wordsOf(reply);
-  if (!r.length) return false;
-  const k = Math.min(3, w.length);
-  const runs = a => { const g = new Set(); for (let i = 0; i + k <= a.length; i++) g.add(a.slice(i, i + k).join(' ')); return g; };
-  const want = runs(w), have = runs(r);
-  let kept = 0;
-  for (const g of want) if (have.has(g)) kept++;
-  if (kept * 2 >= want.size) return true;
-  const words = new Set(w), said = new Set(r);
-  let seen = 0;
-  for (const x of words) if (said.has(x)) seen++;
-  if (seen * 3 >= words.size * 2) return true;
-  const t = String(work).trim();
-  const oneLiner = t.indexOf('\n') < 0 && (w.length < 12 || !SENTENCE_BREAK.test(t));
-  if (!oneLiner) return r.length * 2 >= w.length;
-  return w.length * r.length <= 4e6 && inOrder(w, r) * 2 >= r.length;
+  const s = String(reply == null ? '' : reply).trim();
+  if (REDACTED.test(s)) return true;
+  if (/\n\s*\n/.test(s) || s.split('\n').filter(l => l.trim()).length > 2) return true;
+  const r = tokensOf(s), size = sizeOf(r);
+  if (size > NOTE_WORDS) return true;
+  const mine = vocabOf(r);
+  if (!mine.size) return false;   // nothing of its own ("", "OK", a thumbs-up): a note
+  const theirs = vocabOf(w);
+  let shared = 0;
+  for (const x of mine) if (theirs.has(x)) shared++;
+  if (shared * 3 >= mine.size) return true;
+  const n = sentencesOf(s), wsize = sizeOf(w);
+  return n >= 2 && n === sentencesOf(work) && size * 3 >= wsize * 2 && size * 2 <= wsize * 3;
 }
 function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);

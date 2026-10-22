@@ -223,9 +223,9 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     A.eq(upstreamOf(R2.log.find(l => l.agentId === 'publisher')), EDITED, 'an edited approval to a dock: the next stage gets the reviewer\'s version alone, unframed');
   }
   {
-    // ...and an approval that only TALKS ABOUT the work (names its subject, a few of its words) is still not the work
+    // ...and an approval that only TALKS ABOUT the work in its own words is still not the work
     const R = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), {
-      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good: the three findings on rooftop solar are well sourced.\nVERDICT: approved', usd: 0.01 }
+      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good: accurate, well sourced and clearly laid out.\nVERDICT: approved', usd: 0.01 }
     });
     const res = await R.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v14' });
     A.eq(res.text, RESEARCH, 'an approval that discusses the work to the OUTBOX: the work ships, never the discussion');
@@ -289,9 +289,35 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
   await approvalIsNot('a terse Chinese approval', ZH, '看起来不错，可以发布。');
   await approvalIsNot('a Chinese approval that discusses the work', ZH, '很好：社区花园的介绍清楚，开放时间也写明了。');
   await approvalIsNot('a terse Japanese approval', JA, 'いいと思います。');
-  await approvalIsNot('a Japanese approval that discusses the work', JA, '良いです。土曜日の案内がわかりやすい。');
+  await approvalIsNot('a Japanese approval that discusses the work', JA, '良いです。案内がわかりやすい。');
   await approvalIsNot('a terse approval of long copy', COPY, 'Looks good.');
-  await approvalIsNot('an approval that discusses long copy', COPY, 'Approved. The FocusFlow copy covers task lists, reminders, the Pomodoro timer and device sync clearly.');
+  await approvalIsNot('an approval that discusses long copy', COPY, 'Approved. Clear, upbeat and specific about what the app does.');
   await approvalIsNot('an approval of a one-line post', THANKS, 'Warm and specific, approved.');
+  await approvalIsNot('an approval that discusses research in three sentences', RESEARCH, 'The research is accurate and well sourced. All three findings are relevant and clearly stated. Approved for the designer.');
+
+  /* ---- A REDACTION OR SUMMARY OF ANY LENGTH IS THE WORK (review of e0c1d62fd, 2026-10-21). The draft stands in only for a reply that is
+          PLAINLY a short note about the work; an unclear reply stays the reviewer's, as on trunk. The previous rule swapped a version under
+          half the draft's length (a list redaction, a cut private section, a summary), a fully redacted one-liner, and a redacted one-line
+          export past its word budget back for the unredacted draft, at the OUTBOX, SEND TO and a dock. ---- */
+  await changedIsTheWork('a list redaction',
+    'Contacts for the launch:\n- Wei Zhang, 555-0100, wei@example.com\n- Lina Park, 555-0101, lina@example.com\n- Sam Ortiz, 555-0102, sam@example.com',
+    'Contacts for the launch:\n- [redacted]\n- [redacted]\n- [redacted]', ['Wei Zhang', '555-0100', 'wei@example.com', 'Lina Park', 'lina@example.com', 'Sam Ortiz']);
+  await changedIsTheWork('a private section cut',
+    'Launch plan: ship Friday at 9am.\n\nPrivate notes (do not share):\nWei Zhang is leaving the company next month, keep quiet.\nLina Park salary 140k, raise pending.\nSam Ortiz on medical leave until December.',
+    'Launch plan: ship Friday at 9am.', ['Wei Zhang', 'leaving the company', 'salary', '140k', 'medical leave']);
+  await changedIsTheWork('a heavy tightening', COPY, 'FocusFlow: tasks, reminders, a Pomodoro timer and sync everywhere. Get it today.');
+  await changedIsTheWork('a fully redacted one-liner', 'Call Wei Zhang at 555-0100 about the refund.', '[redacted]', ['Wei Zhang', '555-0100']);
+  await changedIsTheWork('a one-liner masked with asterisks', 'Call Wei Zhang at 555-0100 about the refund.', 'Call *** at *** about the refund.', ['Wei Zhang', '555-0100']);
+  {
+    // a one-line export (no line break, no sentence break) of 300 records, names and phones redacted: past any word budget, still the work
+    const recs = []; for (let i = 0; i < 300; i++) recs.push('{"name":"First' + i + ' Last' + i + '","phone":"555-' + (1000 + i) + '","city":"Boston"}');
+    const EXPORT = '[' + recs.join(',') + ']';
+    const EXPORT_R = EXPORT.replace(/"name":"[^"]*"/g, '"name":"[redacted]"').replace(/"phone":"[^"]*"/g, '"phone":"[redacted]"');
+    await changedIsTheWork('a redacted one-line export of 300 records', EXPORT, EXPORT_R, ['First0 Last0', '555-1000', 'First299 Last299', '555-1299']);
+  }
+  // an unclear reply (it reuses much of the work's own words, or runs past a short note) stays the reviewer's, as on trunk
+  await changedIsTheWork('an approval that reuses the work\'s own words', RESEARCH, 'Looks good: the three findings on rooftop solar are well sourced.');
+  await changedIsTheWork('a multi-paragraph review', RESEARCH,
+    'Strengths: every number is sourced and the California point is explained.\n\nMinor: you could name a county for the permitting delays.\n\nReady for the designer.');
   A.report('loop-verdict');
 })();
