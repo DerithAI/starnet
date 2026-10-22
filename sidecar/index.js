@@ -130,7 +130,7 @@ const { makeCapCtx } = require('./capability/capGate.js');
 const { composeOffice, stationWithObject, stationWithConnectors } = require('./capability/office.js');   // THE MOAT: interactive office = compute freebie + placed caps
 const { summarizeCapabilities } = require('./capability/capsummary.js');   // truthful "what you can/can't do" so the agent stops over-promising
 const { scopeForRun, makeSavedFloor } = require('./capability/cap-scope.js');   // ...and WHICH room a room-scoped agent's missing gear must go in
-const { starnetManual, starnetManualIndex, starnetManualPointer } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
+const { starnetManual, starnetManualIndex, starnetManualPointer, starnetManualTerminal } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
 const FinishLine = require('./finish-line.js');     // immutable "crawl to the finish line" task doctrine at the final prompt seam
 const { makeHarnessSnapshot } = require('./harness-snapshot.js');   // bounded secret-free build/scheduler/connectors/diagnostics truth for station.inspect
 const { makeOpenRouterProvider } = require('./providers/openrouter.js');
@@ -5170,6 +5170,9 @@ function oauthPrimaryStatus(pid) {
 // forwarded to open browser EventSources (the station HUD). The bot token / OR key are NEVER placed on a
 // payload — nothing to leak here — and redact() runs before validate() as a second backstop.
 const sse = makeSseHub({ epoch: crypto.randomUUID() });
+// THE LIVE FEED (GET /api/observe, sidecar/observer.js): every non-internal run's events + its approvals, for a watching
+// terminal. Its own hub — the page never subscribes here, so nothing the page already receives is counted twice.
+const observer = require('./observer.js').makeObserver({ redact, epoch: crypto.randomUUID() });
 // Full-payload channel logging is opt-in (STARNET_DEBUG_CHANNELS=1): every COMMS/workitem/queue event
 // otherwise printed a whole JSON line to stdout on normal operation. Default = event name only.
 const DEBUG_CHANNEL_LOGS = String(process.env.STARNET_DEBUG_CHANNELS || '') === '1';
@@ -11613,6 +11616,20 @@ async function handleGroups(req, res) {
    ==================================================================================================================== */
 const REMOTE_NOTE = '\n\n[REMOTE] The Commander sent this from their phone through StarNet Remote. Work exactly as you normally '
   + 'would. They will read your reply on a small screen, so lead with the result.';
+/* THE TERMINAL (2026-10-18, Andrew: "the agent thinks its in starnet so it will tell u to interact with buttons that ltrly dont
+   exist"). The `starnet` CLI runs the agent on its roster persona — the DESKTOP's, which speaks of the COMMS panel, approve/deny
+   buttons and one-tap FORK rows — so handleRun appends this after it (client:'terminal'). It names the terminal's real
+   commands (bin/lib/tui.js HELP), so "how do I…" gets an answer the Commander can type. A constant: it rides the cached prefix. */
+const TERMINAL_NOTE = '\n\n[TERMINAL] The Commander is talking to you from the StarNet terminal CLI (`starnet`), not the desktop '
+  + 'app. There is no station on their screen: no COMMS panel, no buttons, cards, windows, dock or one-tap rows — anything earlier '
+  + 'in these instructions about clicking, tapping, approve/deny buttons, FORK rows or placing props does not apply here. In their '
+  + 'terminal: an approval shows as a card they answer with y (allow once), n (deny) or v (read the full request first); a '
+  + 'question you ask with brief.ask is answered by number or by typing; /model shows and switches your model; /new starts a fresh '
+  + 'conversation and /resume reopens an earlier one; /stop stops your run; /flow lists workflows and /flow run <name> <text> sends '
+  + 'one job; @name talks to another agent; /help lists everything. The station\'s own commands work there too: /usage, /tools, '
+  + '/routine, /away, the Commander\'s own commands, and each skill as /<skill> <task> (/skills lists them). Never write a FORK: line — ask in plain words. When something '
+  + 'can only be done in the StarNet desktop app (placing props, building the station, connecting accounts or keys), say so '
+  + 'plainly. Write for a terminal: plain text and simple markdown (short paragraphs, lists, code blocks), no wide tables.';
 const remoteCrypto = require('./remote/crypto.js');
 const remoteDevices = require('./remote/devices.js').makeDevices({
   fs, path, crypto: remoteCrypto, file: path.join(WORKSPACES, '.secrets', 'remote.json'),
@@ -12086,6 +12103,7 @@ const ROUTES = [
   { m: 'POST', exact: '/api/channels/telegram/owner/pair', h: handleTelegramOwnerPair },
   { m: 'POST', exact: '/api/channels/telegram/owner/revoke', h: handleTelegramOwnerRevoke },
   { m: 'POST', exact: '/api/roster', h: handleRoster },
+  { m: 'POST', exact: '/api/agent/model', h: handleAgentModel },   // the terminal's /model: one agent's model + provider (via the page when open)
   { m: 'POST', exact: '/api/agent/delete', h: handleAgentDelete },
   { m: 'POST', exact: '/api/dossier', h: handleDossier },
   { m: 'POST', exact: '/api/goals', h: handleGoals },   // GROWTH Tier 2: the active goal-arc summary for cron personas
@@ -12116,6 +12134,7 @@ const ROUTES = [
   { m: 'GET', rx: GENERIC_CHANNEL_RX.status, h: (req, res, gm) => handleGenericChannelStatus(req, res, gm[1]) },
   { m: 'POST', rx: GENERIC_CHANNEL_RX.ownerPair, h: (req, res, gm) => handleChannelOwnerPair(req, res, gm[1]) },
   { m: 'GET', qsplit: '/api/channels/events', h: handleChannelEvents },   // path match: the SSE url carries ?cursor= + a ?ticket= (header-less EventSource)
+  { m: 'GET', qsplit: '/api/observe', h: (req, res) => require('./observer.js').serveObserver(observer.hub, req, res) },   // the terminal's live feed (header auth; sidecar/observer.js)
   { m: 'POST', exact: '/api/routing', h: handleRouting },
   { m: 'GET', qsplit: '/api/routing/chain', h: handleRoutingChain },   // qsplit, not exact: `exact` compares the FULL url and this route always carries a query
   // PROOF (guided workflow Phase 4): GET is the inert feature probe; POST runs ONE real, labeled sample
@@ -12619,6 +12638,10 @@ server.listen(PORT, '127.0.0.1', () => {
   // Install the Commander's shell hooks onto the station-wide spine. Awaited-but-guarded: a hooks file that
   // is broken must delay nothing and break nothing at boot.
   installShellHooks().catch(swallow('shellhooks.install'));
+  // TERMINAL MODE on macOS: a dragged-in StarNet.app has no installer to put `starnet` on PATH, so the packaged app links
+  // it into ~/.local/bin (sidecar/cli-link.js: idempotent, never replaces a file it did not make, a no-op off macOS and
+  // outside an app bundle). Windows: the installer's hooks own PATH.
+  try { const cl = require('./cli-link.js').ensureCliLink(); if (cl && cl.said) console.log('  · ' + cl.said); } catch (e) { console.warn('[cli-link] ' + ((e && e.message) || e)); }
   // auto-start a previously-connected Telegram bot (saved config), else an env-provided one (headless deploys).
   try {
     const t = (channelSecrets && channelSecrets.telegram) || {};
@@ -18755,6 +18778,37 @@ async function handleRoster(req, res) {
 // truth and re-pushes the surviving crew via /api/roster right after; this route's job is the server-side stores
 // the roster push can't touch. The hero ('agent') is never deletable — refused here as a second line of defence
 // behind the UI guard (you can't archive the founder without corrupting resume).
+/* POST /api/agent/model { agentId, model, provider, effort? } — the terminal's /model: pin ONE agent's model the way the desktop's
+   picker does. With a StarNet page connected, the PAGE applies it (station.control agent.model → setAgentModelPin: roster push +
+   save) — the page owns the crew, so a roster-only write would be reverted by its next push; a headless station (no page) is
+   its own source of truth and the roster takes it directly. A provider that is not connected is refused (the agent's next run
+   would fail), and an unknown agent too. Answers { ok, agentId, model, provider, via: 'page'|'roster' }. */
+async function handleAgentModel(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  let body; try { body = JSON.parse(await readBody(req, 1 << 14)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
+  const agentId = String(body.agentId || '');
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });
+  const cur = agentRoster.get(agentId);
+  if (!cur) return json(404, { error: 'no agent "' + agentId + '" on this station' });
+  const model = String(body.model == null ? '' : body.model).trim().slice(0, 200);
+  const provider = normalizeProviderId(String(body.provider || cur.provider || '').trim());
+  const effort = body.effort == null ? '' : String(body.effort).trim().slice(0, 20);
+  if (!model) return json(400, { error: 'no model named' });
+  if (!provider) return json(400, { error: 'no provider named' });
+  if (!providerHasCredential(provider, providerRuntimeKey(provider, ''), providerRuntimeBaseUrl(provider, ''))) {
+    return json(409, { error: 'the provider "' + provider + '" is not connected on this station (no key or sign-in)' });
+  }
+  // a StarNet page is connected (the phones' own tee is always one listener — the same test the remote host uses)
+  if (sse.size() > 1) {
+    const out = await stationBridge.request('station.control', Object.assign({ action: 'agent.model', agent: agentId, model, provider }, effort ? { effort } : {}));
+    if (out && out.ok) return json(200, Object.assign({ ok: true, agentId, model, provider, via: 'page' }, effort ? { effort } : {}));
+    if (!(out && out.unattended)) return json(409, { error: String((out && out.error) || 'the station page refused the change') });
+    // the page never answered (closed between the check and the ask): fall through to the roster
+  }
+  agentRoster.set(agentId, Object.assign({}, cur, { model, provider }, effort ? { reasoningEffort: effort } : {}));
+  if (!saveAgentRoster()) { agentRoster.set(agentId, cur); return json(500, { error: 'could not save the roster' }); }
+  return json(200, Object.assign({ ok: true, agentId, model, provider, via: 'roster' }, effort ? { effort } : {}));
+}
 async function handleAgentDelete(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 1 << 16)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
@@ -18915,6 +18969,16 @@ function placedTypesFrom(v) {
   if (Array.isArray(v)) return v.map(e => (e && typeof e === 'object') ? e.objectType : e).map(s => String(s || '').trim()).filter(Boolean);
   return String(v || '').split(',').map(s => s.trim()).filter(Boolean);
 }
+/* The floor a slash command reads. The page sends its live floor; the TERMINAL (`starnet`) has no floor to see and sends
+   none, and its runs then use the agent's SAVED floor (handleRun: no `placed` → savedPlacement). Its commands read that
+   same floor, so /tools and the skills it lists in the terminal are the ones a terminal run really gets. Any other caller
+   without a floor keeps the old reading (none). */
+function slashPlacedFor(placed, client, agentId) {
+  if (placed != null || client !== 'terminal') return placedTypesFrom(placed);
+  const id = /^[A-Za-z0-9_-]{1,40}$/.test(String(agentId || '')) ? String(agentId) : 'agent';
+  try { return placedTypesFrom(require('./capability/saved-placement.js').savedPlacement(saveStore.load('agent'), id)); }
+  catch (e) { failNote('slash.terminal-floor', e); return []; }
+}
 
 /* The gear a skill can use for this agent: what the browser reports placed (its room + shared station gear) PLUS what
    the agent's execution profile or Full Access grants, plus the ORCHESTRATOR every Commander-started run carries
@@ -18942,8 +19006,8 @@ function serveSlashCatalog(req, res) {
   let placedTypes = [], agentId = 'agent';
   try {
     const u = new URL(req.url, 'http://127.0.0.1');
-    placedTypes = placedTypesFrom(u.searchParams.get('placed') || '');
     agentId = String(u.searchParams.get('agent') || 'agent');
+    placedTypes = slashPlacedFor(u.searchParams.has('placed') ? (u.searchParams.get('placed') || '') : null, u.searchParams.get('client'), agentId);
   } catch (_) {}
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(slash.catalog(slashOptions(skillGearFor(agentId, placedTypes)))));
@@ -19200,7 +19264,7 @@ async function handleSlashDispatch(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 1 << 14)) || {}; } catch (e) { return json(400, { ok: false, error: 'bad json' }); }
   const input = body.input != null ? body.input : ('/' + String(body.command || ''));
-  const placed = placedTypesFrom(body.placed);
+  const placed = slashPlacedFor(body.placed, body.client, body.agentId);
   // skills resolve against the agent's full gear (profile / Full Access grants included); `placed` itself still rides
   // the server-action ctx unchanged below
   const out = slash.dispatch(input, slashOptions(skillGearFor(String(body.agentId || 'agent'), placed)));
@@ -19727,6 +19791,16 @@ async function handleRun(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req, 2 << 20, res)); }
   catch (e) { if (res.headersSent) return; res.writeHead(400); return res.end('bad json'); }   // over-limit already answered 413
+  // A TERMINAL has no persona of its own to send (the page composes one): `rosterSystem:true` with no system runs the agent
+  // as its roster entry defines it. Opt-in, so every caller that sends (or deliberately omits) a system is unchanged.
+  if (body && typeof body === 'object' && !body.system && body.rosterSystem === true) {
+    const rec = agentRoster.get(String(body.agentId || 'agent'));
+    if (rec && rec.system) body.system = rec.system;
+  }
+  // …and says WHERE the Commander is: the roster persona is the desktop's (COMMS panel, Approve/Deny buttons, one-tap FORK
+  // rows), so a terminal run is told the truth after it, the REMOTE_NOTE pattern. Exact match, opt-in.
+  const terminalClient = !!(body && typeof body === 'object' && body.client === 'terminal');
+  if (terminalClient) body.system = String(body.system || '') + TERMINAL_NOTE;
   const { model, system, messages = [], agentId = 'agent', isTask = false, provider, fallbackModels, fallbackProviders } = body || {};
   const recurring = !!(body && body.recurring);   // the browser's mint detector saw this task SHAPE before → salience boost for reflection
   // REASON-ONLY SELF-TALK (retitle / goal-judge / pitch / autopilot): the caller composed a complete strict-format
@@ -19896,7 +19970,7 @@ async function handleRun(req, res) {
        ended run — it would outlive every run that could ever clear it. */
     const detached = !!(by && by.detached && by.signal);
     const say = detached ? chanEmit : emit;
-    let askId = '', announced = false;
+    let askId = '', announced = false, answeredVia = '';
     if (detached && pendingByRun.get(runId) !== pending) pendingByRun.set(runId, pending);   // the turn already ended: reopen its answer slot
     const sessionOver = (d) => (detached && leadOver && d === 'session') ? 'once' : d;
     return makeConsentWait({
@@ -19916,12 +19990,16 @@ async function handleRun(req, res) {
         // saw this lead's stream, or reloaded since, files the ask under that conversation and answers with this runId)
         if (detached) Object.assign(row, { background: true, runId, streamId: streamId || '' });
         say('permission.prompt', row);
+        observer.publish('permission.prompt', row, { runId, agentId, streamId: streamId || '' });   // a watching terminal sees the ask too
         // STARNET REMOTE: index the prompt so a paired phone can answer it too. A phone answer resolves the same
         // finisher and then tells this run's page (permission.response on its own stream), so the floor stops
         // waiting on a question somebody already answered elsewhere.
         const orig = pending.get(promptId);
         if (orig) { orig.askRow = row; if (detached) orig.detached = true; }   // the snapshot + the page-closed note read these
         if (orig && fields && fields.fresh) orig.freshConsent = true;   // handleConsent: a "full" here approves this call only
+        // an answer from the TERMINAL (POST /api/consent { via:'terminal' }) settles a card the page still shows: tell the page
+        // on this run's own stream, the way a phone answer does, so the desk never keeps live keys on a settled ask
+        if (orig) orig.announce = (decision) => { announced = true; answeredVia = 'terminal'; try { say('permission.response', { promptId, decision, via: 'terminal' }); } catch (e) { failNote('consent.terminalResponse', e); } };
         // the card's INSPECT FULL REQUEST (GET /api/consent/args): the whole redacted request, kept on the pending entry in
         // server memory only — never in the event or the run record — and gone the moment the prompt settles
         if (orig && fields && fields.argsFull && typeof fields.argsFull.text === 'string') orig.consentArgs = { tool: row.tool, text: fields.argsFull.text, truncated: !!fields.argsFull.truncated };
@@ -19936,6 +20014,13 @@ async function handleRun(req, res) {
     }).ask().then((v) => {
       if (untrack) untrack();
       v = sessionOver(v);   // a "session" answer after this run ended: its session is over, so this call only
+      // a watching terminal learns the ask is settled, whoever answered it (desk, phone, terminal) or if nobody did
+      if (askId) {
+        const settled = { promptId: askId, decision: typeof v === 'string' ? (/^(once|session|always|full)$/.test(v) ? v : 'deny') : (v && v.__clarify ? 'once' : 'deny') };
+        if (answeredVia) settled.via = answeredVia;
+        if (v === 'timeout') settled.expired = true;
+        observer.publish('permission.response', settled, { runId, agentId });
+      }
       if (detached) {
         // a desk answer (POST /api/consent) settles it on one page: tell every other page and surface on the station bus
         if (!announced && askId) {
@@ -20066,7 +20151,9 @@ async function handleRun(req, res) {
       surface: 'interactive', prompt: promptConsent, pathPrompt: promptPathTrust, summon: summonRequest,   // team.summon → live summonAgent() round-trip; pathPrompt → NS-5 "work in <root>?" bless
       loginPrompt: askHuman,   // attended browser login: browser.login's two consent asks ride the same fail-closed permission.prompt channel
       // the Commander is AT the station (COMMS): this run may drive the shared, signed-in station browser
+      // (the terminal CLI is on that same computer, token-authenticated, so its runs may too)
       stationBrowser: true,
+      viewer: terminalClient ? 'terminal' : '',   // the terminal CLI: no GUI — the manual and capability notes say so
       idempotencyScope: connectorContinuationScope,
       parentRunId: connectorContinuationScope ? body.connectorContinuationOf : undefined,
       askCommander,            // in-turn clarify: brief.ask blocks + resumes the SAME turn on this watched surface
@@ -20556,7 +20643,12 @@ async function runOnceCore(o) {
   // live for autonomous runs without tool arguments ever leaving the sidecar); agent.token never (that noise
   // decision stands). redact() still runs over the view as a second backstop. Re-using the name `emit` means
   // every existing emit(...) call site below tees automatically, with no per-site change.
-  const rawEmit = o.emit;
+  // EVERY run but reason-only self-talk also reaches a watching terminal (GET /api/observe): the run's own sink runs
+  // first and unchanged; with nobody watching the tee is one size() check (sidecar/observer.js)
+  const rawEmit = internal ? o.emit : observer.tee(o.emit, {
+    runId, agentId, streamId: o.streamId || '', surface: o.surface || '', trigger, lineId: workflowLine || '', dockId: o.dockId || '',
+    prompt: () => require('./observer.js').lastUserText(messages)
+  });
   const emit = o.broadcast
     ? (name, payload) => {
         try { rawEmit(name, payload); } catch (_) {}
@@ -23041,6 +23133,8 @@ async function runOnceCore(o) {
   // An owner-trusted chat-app turn (the Commander on their phone) gets only a pointer to manual.read — never the 6K index.
   const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual())
     : (isTask && ownerTrusted && coreNames.indexOf('manual.read') >= 0) ? starnetManualPointer() : '';
+  // A terminal (CLI) task turn gets the terminal pointer instead: the desktop manual's "open X / place Y" has no meaning there.
+  const operatorManual = (isTask && o.viewer === 'terminal') ? starnetManualTerminal() : manualBlock;
   const runtimeVersion = computeVersionSurface();
   const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app, now: Date.now(), shell: shellRuntime });
   // RUNTIME SKILL LIBRARY (skill-builder-gap): index the agent's own authored skills + preload any it invokes,
@@ -23211,13 +23305,13 @@ async function runOnceCore(o) {
   // Cache only the reusable prefix across runs. All task-specific context still follows verbatim;
   // the explicit Claude boundary precedes changing context, while runtime identity remains last
   // for generic providers that automatically reuse matching prefixes.
-  const cacheSystemPrefix = (system || '') + toolNote + teamNote + manualBlock
+  const cacheSystemPrefix = (system || '') + toolNote + teamNote + operatorManual
     // A tool deferred as CERTAINLY unavailable (resolved.unavailable: no image connection, no Spotify token, no PTY...)
     // is not a power this run has, even though it stays searchable. The ground-truth block must not claim it while the
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
-        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask,
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', viewer: o.viewer || '', toolless: !isTask,
           // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied and the routine's own toolset list enforceEnabledToolsets
           // applied (gear either one leaves out is no room fix), and the image route makeImageTools was built from (without one
           // a STUDIO only analyzes images)
@@ -24192,6 +24286,8 @@ async function handleConsent(req, res) {
     if (!persisted) decision = 'deny';
   }
   if (finish) finish(decision);
+  // answered from the terminal: the page that shows this card is told on the run's own stream (askHuman's announce)
+  if (finish && body.via === 'terminal' && typeof finish.announce === 'function') finish.announce(decision);
   /* GONE (soak 10-15): the station holds no such ask any more — answered on another surface, expired, withdrawn, or lost to
      a restart. Said apart from a refusal (additive), so a surface that still shows its keys lets it go and says it is no
      longer waiting, instead of "try again" on a key nothing can answer. Never said while the ask still waits under another
@@ -24215,6 +24311,7 @@ async function handleConsentAnswer(req, res) {
   const pend = pendingByRun.get(body.runId);
   const finish = pend && pend.get(body.promptId);
   if (finish && text) finish({ __clarify: true, text });
+  if (finish && text && body.via === 'terminal' && typeof finish.announce === 'function') finish.announce('once');   // the desk's question card lets go
   if(body.receipt === true) return respondJson(res,200,{ok:!!(finish && text)});
   res.writeHead(200); res.end('ok');
 }

@@ -1,0 +1,12 @@
+#!/bin/sh
+# starnet — the StarNet command line. Installed with the desktop app it runs on the app's own node, wherever that
+# platform's bundle keeps it beside this folder; from a checkout it runs on node from PATH. Every argument passes
+# through; the exit code is the CLI's own.
+#   one folder up                   a portable layout (and Windows, via starnet.cmd)
+#   ../../MacOS/node                macOS: StarNet.app/Contents/Resources/bin → Contents/MacOS/node
+#   ../../../bin/node               Linux deb/AppImage: usr/lib/StarNet/bin → usr/bin/node
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+for NODE in "$DIR/../node" "$DIR/../../MacOS/node" "$DIR/../../../bin/node"; do
+  if [ -f "$NODE" ] && [ -x "$NODE" ]; then exec "$NODE" "$DIR/starnet.js" "$@"; fi
+done
+exec node "$DIR/starnet.js" "$@"

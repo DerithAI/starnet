@@ -30,6 +30,7 @@ const readline = require('node:readline');
 const nodeCrypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const core = require('./lib/cli-core.js');
+const folderLib = require('./lib/folder.js');
 
 const REPO = path.resolve(__dirname, '..');
 const SIDECAR = path.join(REPO, 'sidecar', 'index.js');
@@ -123,6 +124,7 @@ function makeClient(host, port) {
           const chunks = [];
           res.on('data', d => chunks.push(d));
           res.on('end', () => {
+            if (o.raw) return resolve({ ok: true, status: res.statusCode, buf: Buffer.concat(chunks) });   // bytes as sent (a sprite)
             const text = Buffer.concat(chunks).toString('utf8');
             let json = null; try { json = JSON.parse(text || 'null'); } catch (_) { json = null; }
             resolve({ ok: true, status: res.statusCode, json, text });
@@ -327,11 +329,20 @@ async function runCommand(opts, station) {
   if (!rt.ok || rt.status !== 200 || !rt.json) throw stationError('could not read the station roster (' + (rt.error || 'HTTP ' + rt.status) + ')');
   const sel = core.pickAgent(rt.json, { agent: opts.agent, model: opts.model, provider: opts.provider });
   if (!sel.ok) throw stationError(sel.error);
-  const cwd = opts.cwd ? path.resolve(opts.cwd) : '';
+  // the folder the run works in: the trusted project this folder (or --cwd) sits in; a named --cwd that is not trusted
+  // still goes (the station says it is not trusted and asks before the agent works in it)
+  let cwd = opts.cwd ? path.resolve(opts.cwd) : '';
+  let untrusted = null;
+  if (folderLib.isLocalHost(client.host)) {
+    const f = folderLib.locate({ cwd: cwd || process.cwd(), projects: await folderLib.trustedProjects(client).catch(() => []), stationDirs: stationDirs(station) });
+    if (f.trusted) cwd = f.trusted;
+    else if (!cwd && !f.skip) untrusted = f.root;
+  }
   const body = core.buildRunBody(sel, opts.prompt, { cwd });
   const tracker = core.makeRunTracker();
   const startedAt = Date.now();
-  if (!opts.json) log('▸ ' + sel.name + ' (' + sel.agentId + ') · ' + sel.provider + '/' + sel.model + ' · ' + mode + ' ' + client.base);
+  if (!opts.json) log('▸ ' + sel.name + ' (' + sel.agentId + ') · ' + sel.provider + '/' + sel.model + ' · ' + mode + ' ' + client.base + (cwd ? ' · in ' + cwd : ''));
+  if (untrusted) log('· ' + untrusted + ' is not a trusted project, so ' + sel.name + ' works in its own workspace — run `starnet` there once and press y to trust it, or pass --cwd');
 
   let abortSocket = null, cancelSent = false, graceTimer = null, timeoutTimer = null;
   async function cancel(why) {
@@ -427,6 +438,8 @@ async function doctorCommand(opts, station) {
 
 // ---- station resolution ------------------------------------------------------------------------
 function stationError(msg) { const e = new Error(msg); e.exitCode = core.EXIT.STATION; return e; }
+// StarNet's own workspaces: never offered as a project folder
+function stationDirs(station) { return [station && station.workspace, desktopWorkspaces(process.env)].filter(Boolean); }
 
 async function resolveStation(opts, env) {
   const host = opts.host || '127.0.0.1';
@@ -435,7 +448,9 @@ async function resolveStation(opts, env) {
   else candidates.push({ source: 'default', port: core.DEFAULT_PORT });
   const desktopWs = desktopWorkspaces(env);
   const desktop = discoverDesktop(desktopWs);
-  if (desktop.port && !candidates.some(c => c.port === desktop.port)) candidates.push({ source: 'desktop', port: desktop.port });
+  // a NAMED port is that station or an error: the desktop is a candidate only when no port was named (a dead --port
+  // used to fall through to the desktop app's station, so `approve --port N` could answer asks on the wrong station)
+  if (!opts.port && desktop.port && !candidates.some(c => c.port === desktop.port)) candidates.push({ source: 'desktop', port: desktop.port });
   if (!opts.spawn) {
     for (const c of candidates) {
       const client = makeClient(host, c.port);
@@ -458,7 +473,8 @@ async function resolveStation(opts, env) {
   // spawn
   const ws = defaultWorkspace(opts);
   if (path.resolve(ws) === path.resolve(desktopWs) && desktop.ownerAlive) throw stationError('the desktop app owns ' + ws + ' (pid ' + desktop.ownerPid + '); refusing to boot a second station on it');
-  const boot = bootstrapWorkspace(ws, opts, env);
+  // the dashboard sets a new station up itself (the awakening); a headless run gets the one-agent station it needs
+  const boot = opts.cmd === 'dash' ? { wrote: false } : bootstrapWorkspace(ws, opts, env);
   if (boot.wrote) log('· bootstrapped ' + ws + ' — agent ' + opts.name + ' (full power)' + (boot.provider ? ' · provider ' + boot.provider + ' from ' + boot.providerSource : ' · no provider credential found in the environment') + (boot.model ? ' · model ' + boot.model : ' · no model (pass --model or set STARNET_DEFAULT_MODEL)'));
   log('· booting a station on ' + ws);
   const sp = await spawnSidecar(ws, env, null);
@@ -468,7 +484,7 @@ async function resolveStation(opts, env) {
 // ---- main --------------------------------------------------------------------------------------
 async function main() {
   let opts;
-  try { opts = core.parseArgs(process.argv.slice(2), process.env); }
+  try { opts = core.parseArgs(process.argv.slice(2), process.env, { tty: !!(process.stdin.isTTY && process.stdout.isTTY) }); }
   catch (e) { log('starnet: ' + e.message + '\n'); log(core.USAGE); return core.EXIT.USAGE; }
   if (opts.version) { let v = 'dev'; try { v = require(path.join(REPO, 'package.json')).version; } catch (_) {} process.stdout.write('starnet ' + v + '\n'); return 0; }
   if (opts.help) { process.stdout.write(core.USAGE + '\n'); return 0; }
@@ -488,12 +504,24 @@ async function main() {
     return 0;
   }
 
+  if (opts.cmd === 'dash' && !(process.stdin.isTTY && process.stdout.isTTY)) {
+    log('starnet: the dashboard needs an interactive terminal — for a pipe or a script use `starnet ls`, `starnet watch` or `starnet approve`');
+    return core.EXIT.USAGE;
+  }
   let station = null;
+  const io = { out: s => process.stdout.write(s), err: s => process.stderr.write(s), columns: process.stdout.columns || 100 };
   try {
-    if (opts.cmd === 'status' || opts.cmd === 'doctor') opts.noSpawn = true;   // a question never boots a station
+    // a question never boots a station, and an answer or a watch only means something on a station already running
+    if (['status', 'doctor', 'ls', 'approve', 'deny', 'watch', 'flow'].indexOf(opts.cmd) >= 0) opts.noSpawn = true;
     station = await resolveStation(opts, process.env);
     if (opts.cmd === 'status') return await statusCommand(opts, station);
     if (opts.cmd === 'doctor') return await doctorCommand(opts, station);
+    if (opts.cmd === 'dash') return await require('./lib/dashboard.js').runDashboard(station, { cwd: opts.cwd ? path.resolve(opts.cwd) : '', stationDirs: stationDirs(station) });
+    const sc = require('./lib/station-commands.js');
+    if (opts.cmd === 'ls') return await sc.lsCommand(opts, station, io);
+    if (opts.cmd === 'approve' || opts.cmd === 'deny') return await sc.answerCommand(opts, station, io);
+    if (opts.cmd === 'watch') return await sc.watchCommand(opts, station, io);
+    if (opts.cmd === 'flow') return await sc.flowCommand(opts, station, io);
     return await runCommand(opts, station);
   } catch (e) {
     const code = (e && e.exitCode) || core.EXIT.RUN_FAILED;
