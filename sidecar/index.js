@@ -22121,9 +22121,11 @@ async function runOnceCore(o) {
   // The run's spend pool answers first (bug d3a76db3): once this run has workers, the lead and every worker stop at
   // their call boundary when the shared PER RUN cap is spent (or its in-flight calls already take what is left). Its
   // stop is scope 'run' with the cap of the run that started the pool, so the stop line names the cap the Commander set.
-  const runBudget = { check: (spentThisRun) => {
+  // nextCallUsd is the loop's own pre-call price of the call it is about to send (loop.js): the pool counts a worker's
+  // first call in flight at it, so workers that start together cannot all fire on a $0 guess.
+  const runBudget = { check: (spentThisRun, nextCallUsd) => {
     if (providerUnmetered) return null;
-    const pooled = spendPool.admit(runId, spentThisRun);
+    const pooled = spendPool.admit(runId, spentThisRun, nextCallUsd);
     if (pooled) return pooled;
     const b = budget.check(runId, agentId, spentThisRun, Date.now(), emit, runReceiptMeta);
     if (b) spendPool.idle(runId);   // stopped by a day/global pool: this run's call never goes out

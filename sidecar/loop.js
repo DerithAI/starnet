@@ -1807,6 +1807,20 @@
       return true;
     }
 
+    /* THE NEXT CALL'S PRICE, before it goes out (bug d3a76db3 review). The prompt this boundary would send — the local
+       ruler (messages + tool schemas), the run-start estimate as its floor — at the current model's catalog INPUT
+       price, cache-blind (a cached prefix bills less, so this can only over-count: the safe side of a spend ceiling).
+       Output can't be known before the call and is not counted; a model nothing prices reads $0. The run's shared
+       spend pool (run-spend-pool.js) counts a worker's first call in flight at this, so workers that start together
+       cannot all fire on a $0 guess. Handed over as a function: only a pool with workers ever asks. */
+    function nextCallUsd() {
+      if (!cost || typeof cost.estimate !== 'function') return 0;
+      try {
+        const r = cost.estimate({ prompt_tokens: Math.max(rulerTokens(messages), approxTokens) }, model);
+        const v = r ? Number(r.usd) : 0;
+        return (isFinite(v) && v > 0) ? v : 0;
+      } catch (e) { failNote('loop.budget.nextCallUsd', e); return 0; }
+    }
     emit('agent.run.start', { agentId, runId, trigger, model });
     // Reconcile each attempt before enforcing the same spending limits again. Retries and
     // post-compaction calls are paid work too, even when the turn counter does not advance.
@@ -1823,7 +1837,7 @@
       // CROSS-RUN BUDGET: day/global pool over the ledger. check() emits any threshold crossing itself and
       // returns a block descriptor when a soft cap is reached (no resume headroom left) -> stop as 'budget'.
       if (budget) {
-        const b = budget.check(spentUsd);
+        const b = budget.check(spentUsd, nextCallUsd);
         if (b && b.unknown) {
           // name the fix that works for THIS cause: a restart replays a failed save, but never settles an interrupted run
           const message = b.cause === 'unsettled'
