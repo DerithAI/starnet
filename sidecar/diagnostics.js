@@ -53,6 +53,18 @@
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
   // ms -> a compact human duration ("2h 13m", "47s") for the readout. Pure, no clock.
+  /* A cancelled run's `cancelledWhile` (runstore, #99): which model-call wait the cancel interrupted. A bare "cancelled"
+     in a pasted report read the same for a local model that never answered and a healthy run the user stopped. */
+  const WAIT_WORDS = { connect: 'with no reply from the model yet', first_byte: 'with no reply from the model yet',
+    streaming: 'with the model stream open but nothing shown yet', retry_backoff: 'during a retry backoff' };
+  function cancelledWhile(v, clean) {
+    if (!v || typeof v !== 'object' || !Object.prototype.hasOwnProperty.call(WAIT_WORDS, v.phase)) return {};
+    const out = { phase: v.phase };
+    if (num(v.waitedMs) > 0) out.waitedMs = Math.round(num(v.waitedMs));
+    const note = clean(v.note, 240);
+    if (note) out.note = note;
+    return { cancelledWhile: out };
+  }
   function fmtUptime(ms) {
     ms = num(ms);
     if (ms <= 0) return 'unknown';
@@ -131,11 +143,11 @@
         agentCount: num(s.agentCount),
         uptime: fmtUptime(s.uptimeMs),
         workspacePresent: bool(s.workspacePresent),
-        lastRun: lastRun ? {
+        lastRun: lastRun ? Object.assign({
           runId: clean(lastRun.runId, 80) || 'unknown',
           status: clean(lastRun.status, 40) || 'unknown',
           ts: num(lastRun.ts) || null
-        } : null,
+        }, cancelledWhile(lastRun.cancelledWhile, clean)) : null,
         /* OBSERVED PROVIDER QUOTA (providers/ratelimits.js). Numbers and slugs only — no header text is
            carried through, so this can never smuggle a value from a response into a pasted bug report.
            An EMPTY array means no call has been observed yet, which is not the same as "quota is fine";
@@ -232,7 +244,9 @@
         'Workspace dir: ' + (r.workspacePresent ? 'present' : 'missing')
       ];
       if (r.lastRun) {
-        lines.push('Last run:      ' + r.lastRun.runId + ' — ' + r.lastRun.status + (r.lastRun.ts ? ' @ ' + iso(r.lastRun.ts) : ''));
+        const cw = r.lastRun.cancelledWhile;
+        const waited = cw ? ' ' + (WAIT_WORDS[cw.phase] || 'while waiting') + (cw.waitedMs >= 1000 ? ' for ' + fmtUptime(cw.waitedMs) : '') + (cw.note ? ' (' + cw.note + ')' : '') : '';
+        lines.push('Last run:      ' + r.lastRun.runId + ' — ' + r.lastRun.status + waited + (r.lastRun.ts ? ' @ ' + iso(r.lastRun.ts) : ''));
       } else {
         lines.push('Last run:      none yet');
       }

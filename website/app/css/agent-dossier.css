@@ -71,6 +71,12 @@
 .agent-dossier .set-row input[type="checkbox"] { appearance: none; position: relative; width: 34px; height: 20px; flex: 0 0 34px; border-radius: 20px; border: 1px solid rgba(var(--ph-rgb),.4); background: rgba(var(--ph-rgb),.07); margin: 0; }
 .agent-dossier .set-row input[type="checkbox"]::after { content: ''; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--ph-dim); transform: none; }
 .agent-dossier .set-row input[type="checkbox"]:checked::after { left: 17px; transform: none; background: var(--ph-bright); }
+/* PERSONALITY › FINE-TUNE (EMOJI / BLUNT) toggles sit inline in a label.cf-desc, not a .set-row: the same station
+   switch, or the browser paints its own white box (sweep/world 2026-10-20; the control floor only tints a CHECKED tick). */
+.agent-dossier input[data-persona-toggle] { appearance: none; -webkit-appearance: none; position: relative; display: inline-block; vertical-align: middle; width: 34px; height: 20px; border-radius: 20px; border: 1px solid rgba(var(--ph-rgb),.4); background: rgba(var(--ph-rgb),.07); margin: 0 8px 0 0; cursor: pointer; }
+.agent-dossier input[data-persona-toggle]::after { content: ''; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--ph-dim); }
+.agent-dossier input[data-persona-toggle]:checked::after { left: 17px; background: var(--ph-bright); }
+.agent-dossier label:has(> input[data-persona-toggle]) { display: inline-flex; align-items: center; margin: 8px 22px 8px 0; cursor: pointer; }
 /* Progression and achievement shelf: earned state comes entirely from Xp. */
 .agent-dossier .ag-growth-hero { display: flex; align-items: center; gap: 24px; padding: 24px; margin-bottom: 18px; border: 1px solid rgba(var(--ph-rgb),.35); border-radius: 14px; background: radial-gradient(ellipse at 0% 50%,rgba(var(--ph-rgb),.19),transparent 65%),var(--menu-glass); }
 .agent-dossier .ag-level-badge { flex: 0 0 94px; height: 94px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; border: 2px solid var(--ph); outline: 1px solid rgba(var(--ph-rgb),.2); outline-offset: 5px; border-radius: 22px; background: rgba(0,0,0,.2); box-shadow: inset 0 0 22px rgba(var(--ph-rgb),.16),0 0 20px rgba(var(--ph-rgb),.08); }
@@ -148,3 +154,19 @@
 .agent-dossier .cf-access-more > summary { cursor: pointer; color: var(--ph-dim); font-size: 14px; }
 .agent-dossier .cf-access-more > summary:hover { color: var(--ph); }
 .agent-dossier .cf-access-more > .cf-card { margin-top: 10px; }
+/* SHARE TO MARKET (2026-10-18): the form opens inside the skill card (ABILITIES › skill library), like Edit. Shelf and license are pressed keys
+   (never a native select or radio); the agreement is the SETTINGS toggle. */
+.sk-lib .sk-share { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(var(--ph-rgb),.18); }
+.sk-lib .sk-share > :is(label,.skm-label) { font-size: 12px; letter-spacing: 1.2px; color: var(--ph); margin-top: 6px; }
+.sk-lib .sk-share .key-input { width: 100%; padding: 9px 12px; }
+.sk-lib .sk-share .skm-desc { min-height: 72px; }
+.sk-lib .skm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sk-lib .skm-chips .consent-btn { padding: 6px 10px; }
+.sk-lib .skm-chips .consent-btn[aria-pressed="true"] { color: var(--ph-bright); background: var(--menu-glass); border-color: var(--ph); }
+.sk-lib .skm-agree { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; font-size: 13px; line-height: 1.4; color: var(--text); letter-spacing: 0; cursor: pointer; }
+.sk-lib .skm-agree input[type="checkbox"] { appearance: none; -webkit-appearance: none; flex: 0 0 34px; width: 34px; height: 20px; border: 1px solid rgba(var(--ph-rgb), .35); border-radius: 20px; background: rgba(var(--ph-rgb), .05); position: relative; margin: 0; cursor: pointer; }
+.sk-lib .skm-agree input[type="checkbox"]::after { content: ''; position: absolute; width: 12px; height: 12px; top: 3px; left: 3px; border-radius: 50%; background: var(--ph-dim); }
+.sk-lib .skm-agree input[type="checkbox"]:checked { background: rgba(var(--ph-rgb), .18); border-color: var(--ph); }
+.sk-lib .skm-agree input[type="checkbox"]:checked::after { left: 17px; background: var(--ph-bright); }
+.sk-lib .skm-result:empty { display: none; }
+.sk-lib .skm-agree input[type="checkbox"]:focus-visible { outline: 2px solid var(--ph); outline-offset: 3px; }

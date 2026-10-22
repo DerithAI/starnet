@@ -182,9 +182,17 @@
      room for a 300k one; instead every result is offered an equal share, anything smaller than its share keeps
      its full text and hands the surplus back to the ones that are actually large. In practice the small results
      — which are usually the answers — pass through untouched and only the genuinely huge ones give ground. */
-  function squeeze(content, budget, parkedPath) {
+  // elided (> 0, the registry's outputElided): the parked file is the command's kept head + tail, not its full output.
+  function squeeze(content, budget, parkedPath, elided) {
     if (typeof content !== 'string' || content.length <= budget) return content;
-    const note = parkedPath
+    const captureDropped = Number(elided) > 0 ? Number(elided) : 0;
+    const note = (parkedPath && captureDropped)
+      ? '\n\n[... elided by the per-TURN output cap: the tool calls in this turn returned more text together '
+        + 'than one turn may carry. THE KEPT FIRST AND LAST PARTS OF THIS OUTPUT WERE SAVED to ' + parkedPath + ' (the command\'s own '
+        + 'capture had already dropped ' + captureDropped + ' characters from its middle) — read that file to see what is missing here. '
+        + 'Do NOT repeat this call as-is; rerun with narrower output to see the dropped middle. Making fewer or narrower calls per turn '
+        + 'leaves more room for each. The end of the output follows ...]\n\n'
+      : parkedPath
       ? '\n\n[... elided by the per-TURN output cap: the tool calls in this turn returned more text together '
         + 'than one turn may carry. THE FULL OUTPUT OF THIS CALL WAS SAVED to ' + parkedPath + ' — read that file '
         + 'to see what is missing. Do NOT repeat this call. Making fewer or narrower calls per turn leaves more '
@@ -201,7 +209,7 @@
       // The marker must keep BOTH halves of the note's contract, however small the share: the parked-file
       // pointer AND the do-not-repeat instruction — dropping the prohibition (review pass) let the model
       // re-issue the same wide calls next turn, squeezed identically, burning turns with no feedback.
-      const short = '\n[elided by the per-TURN output cap — do not repeat this call' + (parkedPath ? '; full output saved to ' + parkedPath : '') + ']';
+      const short = '\n[elided by the per-TURN output cap — do not repeat this call' + (parkedPath ? (captureDropped ? '; kept first and last parts saved to ' : '; full output saved to ') + parkedPath : '') + ']';
       if (short.length >= budget) {
         const bare = '\n[elided — do not repeat this call]';
         return bare.length >= budget ? bare.slice(0, Math.max(0, budget)) : content.slice(0, budget - bare.length) + bare;
@@ -242,7 +250,7 @@
       const len = results[i].content.length;
       const give = allow.get(i);
       if (give >= len) continue;                       // fit inside its share — untouched
-      results[i] = Object.assign({}, results[i], { content: squeeze(results[i].content, give, results[i].parkedPath), turnClamped: true });
+      results[i] = Object.assign({}, results[i], { content: squeeze(results[i].content, give, results[i].parkedPath, results[i].outputElided), turnClamped: true });
     }
     return results;
   }
@@ -367,7 +375,7 @@
         return { c, r, ms: Math.max(0, (meta.clock ? meta.clock.now() : 0) - t0) };
       }));
       for (const s of settled) {
-        results.push({ callId: s.c.id, isError: !!s.r.isError, ok: !!s.r.ok, content: s.r.content, summary: s.r.summary || (s.r.isError ? 'error' : 'ok'), control: s.r.control || null, images: s.r.images || null, parkedPath: s.r.parkedPath || null, ...(s.r.quietRepair ? { quietRepair: true } : {}) });
+        results.push({ callId: s.c.id, isError: !!s.r.isError, ok: !!s.r.ok, content: s.r.content, summary: s.r.summary || (s.r.isError ? 'error' : 'ok'), control: s.r.control || null, images: s.r.images || null, parkedPath: s.r.parkedPath || null, ...(s.r.outputElided > 0 ? { outputElided: s.r.outputElided } : {}), ...(s.r.quietRepair ? { quietRepair: true } : {}) });
         if (meta.hiddenTools && meta.hiddenTools.has(s.c.name)) continue;
         emit('agent.tool_result', {
           agentId: meta.agentId, runId: meta.runId, callId: s.c.id, ok: !!s.r.ok,
@@ -410,7 +418,7 @@
       }
       r = quietHiddenError(c, r || { ok: false, isError: true, content: 'tool returned nothing', summary: 'error' }, meta);
       const t1 = meta.clock ? meta.clock.now() : 0;
-      results.push({ callId: c.id, isError: !!r.isError, ok: !!r.ok, content: r.content, summary: r.summary || (r.isError ? 'error' : 'ok'), control: r.control || null, images: r.images || null, parkedPath: r.parkedPath || null, ...(r.quietRepair ? { quietRepair: true } : {}) });
+      results.push({ callId: c.id, isError: !!r.isError, ok: !!r.ok, content: r.content, summary: r.summary || (r.isError ? 'error' : 'ok'), control: r.control || null, images: r.images || null, parkedPath: r.parkedPath || null, ...(r.outputElided > 0 ? { outputElided: r.outputElided } : {}), ...(r.quietRepair ? { quietRepair: true } : {}) });
       if (r.control && r.control.final) finalControl = r.control;
       if (r.control && r.control.stopTools) stopToolsControl = r.control;
       if (!hidden) emit('agent.tool_result', {
@@ -1295,7 +1303,12 @@
        reaches for an ambient timer or time, so it stays deterministic; no ticker (or no clock) = no heartbeat,
        and every existing caller is byte-identical. */
     const waitTicker = (typeof o.waitTicker === 'function' && clock && typeof clock.now === 'function') ? o.waitTicker : null;
-    const NO_WAIT = { phase() {}, pause() {}, resume() {}, stop() {} };
+    const NO_WAIT = { phase() {}, note() {}, pause() {}, resume() {}, stop() {} };
+    /* WHAT A CANCEL INTERRUPTED (#99). A user who cancels a turn that never answered used to leave a run row saying only
+       `cancelled` — the same row as a cancel of a run that was busy and fine. The wait in progress when the signal
+       aborted (its phase, how long it had lasted on the injected clock, the adapter's note) is kept here and returned as
+       `cancelledWhile`, for the run record. A wait the Commander had already seen output in (paused) is not recorded. */
+    let abortedWait = null;
     function waitClock() {
       try { const t = Number(clock.now()); return isFinite(t) ? t : 0; }
       catch (e) { failNote('loop.wait.clock', e); return 0; }
@@ -1303,18 +1316,31 @@
     // One wait: `beatNow` emits a first heartbeat immediately (a retried attempt going out — see its call site).
     function startWaiting(phase, beatNow) {
       if (!waitTicker) return NO_WAIT;
-      const st = { phase, since: waitClock(), live: true, paused: false, disarm: null };
+      const st = { phase, since: waitClock(), live: true, paused: false, disarm: null, note: '' };
       const beat = () => {
         if (!st.live || st.paused || signal.aborted) return;
         // runs on the HOST's timer, outside the loop's own try blocks: a throwing emit must never escape into it
-        try { emit('agent.waiting', { agentId, runId, phase: st.phase, sinceMs: Math.max(0, Math.round(waitClock() - st.since)), model: String(model) }); }
+        try {
+          const payload = { agentId, runId, phase: st.phase, sinceMs: Math.max(0, Math.round(waitClock() - st.since)), model: String(model) };
+          if (st.note) payload.note = st.note;
+          emit('agent.waiting', payload);
+        }
         catch (e) { failNote('loop.wait.emit', e); }
       };
       try { const d = waitTicker(beat); st.disarm = (typeof d === 'function') ? d : null; }
       catch (e) { failNote('loop.wait.ticker', e); }
       if (beatNow) beat();
       return {
-        phase(p) { st.phase = p; },   // first_byte -> streaming keeps `since`: the wait began when the call went out
+        phase(p) { st.phase = p; st.note = ''; },   // first_byte -> streaming keeps `since`: the wait began when the call went out
+        /* The ADAPTER's own facts about this wait (a { type:'waiting' } stream event — openai-compatible's Ollama probe: no
+           headers yet, and where /api/ps says the model sits). Beats at once, so the line changes when the facts do, not
+           on the next tick; an empty note clears it. Never output: the wait is not over. */
+        note(p, text) {
+          if (!st.live) return;
+          if (p === 'connect' || p === 'first_byte' || p === 'streaming') st.phase = p;
+          st.note = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 240);
+          if (st.note) beat();
+        },
         // Visible output silences the heartbeat WITHOUT disarming it: the same stream can go quiet again (a sentence,
         // then minutes of streaming tool arguments the Commander cannot see), and that new silence must keep beating.
         pause() { st.paused = true; },
@@ -1327,6 +1353,10 @@
         stop() {
           if (!st.live) return;
           st.live = false;
+          if (signal.aborted && !st.paused) {
+            abortedWait = { phase: st.phase, waitedMs: Math.max(0, Math.round(waitClock() - st.since)) };
+            if (st.note) abortedWait.note = st.note;
+          }
           if (st.disarm) { try { st.disarm(); } catch (e) { failNote('loop.wait.disarm', e); } }
         }
       };
@@ -1479,12 +1509,13 @@
       if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; }
       if (endPayload.unpricedModel) {
         out.unpricedModel = endPayload.unpricedModel; out.unpricedTokens = endPayload.unpricedTokens; out.unpricedCapTokens = endPayload.unpricedCapTokens;
-        out.budgetNote = 'stopped: ' + endPayload.unpricedTokens.toLocaleString('en-US') + ' tokens on unpriced model ' + endPayload.unpricedModel + ' reached the ' + endPayload.unpricedCapTokens.toLocaleString('en-US') + '-token ceiling (no published rate - set SKYNET_MODEL_PRICES or SKYNET_MAX_UNPRICED_TOKENS)';
+        out.budgetNote = 'stopped: ' + endPayload.unpricedTokens.toLocaleString('en-US') + ' tokens on unpriced model ' + endPayload.unpricedModel + ' reached the ' + endPayload.unpricedCapTokens.toLocaleString('en-US') + '-token ceiling (no published rate - SETTINGS > APP & BACKUP > Runtime limits > UNPRICED MODEL TOKEN CEILING, or STARNET_MAX_UNPRICED_TOKENS, or a price in SKYNET_MODEL_PRICES)';
       }
       if (endPayload.subscriptionModel) {
         out.subscriptionModel = endPayload.subscriptionModel; out.subscriptionTokens = endPayload.subscriptionTokens; out.subscriptionCapTokens = endPayload.subscriptionCapTokens;
         out.budgetNote = 'stopped: ' + endPayload.subscriptionTokens.toLocaleString('en-US') + ' subscription tokens on ' + endPayload.subscriptionModel + ' (cache re-reads count 1/10) reached the ' + endPayload.subscriptionCapTokens.toLocaleString('en-US') + '-token per-run ceiling (SETTINGS > APP & BACKUP > Runtime limits, or STARNET_MAX_SUBSCRIPTION_TOKENS)';
       }
+      if (reason === 'cancelled' && abortedWait) out.cancelledWhile = Object.assign({}, abortedWait);   // #99: what the cancel interrupted
       if (extra && extra.failureStage) out.failureStage = String(extra.failureStage).slice(0, 80);
       if (extra && extra.failureCode) out.failureCode = String(extra.failureCode).slice(0, 80);
       if (accUsed > 0) out.acceptanceNudges = accUsed;   // SOP: how many times the host sent the model back to its checks
@@ -1923,6 +1954,7 @@
           if (retriesUsed > 0) req.preStreamRetries = 0;              // the ladder owns pacing: one request per rung
           for await (const ev of provider.stream(req)) {
             if (signal.aborted) break;
+            if (ev.type === 'waiting') { waiting.note(ev.phase, ev.note); continue; }   // the adapter's wait facts, not stream output (#99)
             if (!sawStreamEvent) { sawStreamEvent = true; waiting.phase('streaming'); }
             if (ev.type === 'text') {
               const delta = String(ev.delta == null ? '' : ev.delta);

@@ -244,6 +244,10 @@
     { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always' },
     { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]', owner: 'write' },
     { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]', owner: 'write' },
+    // A group is closed until the paired owner sends /allow IN it (2026-10-19). The adapter lets exactly these two
+    // through from a group it does not answer in yet, so the owner can open it from the inside.
+    { command: 'allow', description: 'In a group: let me answer here', owner: 'always' },
+    { command: 'deny', description: 'In a group: stop me answering here', owner: 'always' },
     { command: 'whoami', description: 'Show which agent this chat is talking to' },
     { command: 'help', description: 'List these commands', menu: false },
     // Telegram sends this when a fresh chat's START button is pressed. menu:false — the client offers it on an
@@ -279,6 +283,33 @@
     if (!head || !KNOWN_CMDS[head]) return null;   // not a control command -> treat as a normal message
     const arg = sp === -1 ? '' : s.slice(sp + 1).trim();
     return { cmd: head, arg: arg };
+  }
+
+  /* parseUserCommand(text, names) — recognise one of the Commander's OWN commands (`names` = what the sidecar's
+     usercommands.json defines). Returns { name, line }, where `line` is the canonical "/name args" the slash
+     registry can read, or null when the text is not one of them.
+
+     Two forms a messenger produces that the registry cannot read raw (2026-10-18 — custom commands did not work
+     in a bot's groups):
+       '/standup@starnetbot'  Telegram appends the bot's @name when a command is picked in a group, and in privacy
+                              mode it is often the only form the bot is sent at all. The registry refuses an '@', so
+                              this answered "Unknown command." Stripped here exactly as parseCommand strips it for
+                              the built-ins.
+       '/disk_usage'          Telegram's command grammar has no '-', so a "/disk-usage" command can only be listed in
+                              the "/" menu (and tapped) as "/disk_usage". Accepted as the same command — but an exact
+                              name always wins, so a Commander who defined both keeps both.
+     The head must end at whitespace or the end of the text: "/standup/notes.md" is a path, not a command. */
+  function parseUserCommand(text, names) {
+    const s = String(text == null ? '' : text).trim();
+    const m = /^\/([A-Za-z0-9_-]+)(?:@[A-Za-z0-9_]+)?(?=\s|$)/.exec(s);
+    if (!m) return null;
+    const list = (Array.isArray(names) ? names : []).map(n => String(n).toLowerCase());
+    const typed = m[1].toLowerCase();
+    let name = list.indexOf(typed) !== -1 ? typed : null;
+    if (!name && typed.indexOf('_') !== -1 && list.indexOf(typed.replace(/_/g, '-')) !== -1) name = typed.replace(/_/g, '-');
+    if (!name) return null;
+    const rest = s.slice(m[0].length).trim();
+    return { name: name, line: '/' + name + (rest ? ' ' + rest : '') };
   }
 
   // Forgiving roster lookup: exact agentId, then case-insensitive exact name, then case-insensitive prefix on
@@ -437,6 +468,8 @@
     // The composition root may mint this only for an authenticated Telegram owner DM. It deliberately lives at
     // the hub edge so every other channel and every Telegram group message stays on its ordinary policy.
     const ownerTrustedFor = typeof o.ownerTrusted === 'function' ? o.ownerTrusted : (() => false);
+    // whether this hub HAS an owner DM that can be trusted — what a shell-command refusal may point the owner to
+    const ownerDmExec = typeof o.ownerTrusted === 'function';
     /* OWNER IDENTITY for control commands and Full Power inheritance (2026-09-25, sec-owner-gates).
        isOwner(msg) answers "is this sender the bound owner?" in ANY chat type (the owner may /model from their own
        group); it is minted by the composition root from the adapter's paired owner id, never from message text.
@@ -492,6 +525,9 @@
     const editMessage = typeof o.editMessage === 'function' ? o.editMessage : null;
     const askConsent = typeof o.askConsent === 'function' ? o.askConsent : null;
     const resolveConsent = typeof o.resolveConsent === 'function' ? o.resolveConsent : null;
+    //   consentOutcome(runId, promptId) -> how an already-settled prompt really ended ('once'|'session'|'always'|'full'|
+    //   'deny'|'timeout'|''): STARNET REMOTE answers the same waiter, so a lost race is not always an expiry (optional)
+    const consentOutcome = typeof o.consentOutcome === 'function' ? o.consentOutcome : null;
     const buttonsOk = !!(prompts && answerCallback);   // the minimum to render a tappable keyboard at all
     // Telegram truncates long inline-button labels on narrow phones, so the FULL option text always stays in the
     // message body and the button carries a short, numbered echo of it (reference-harness lesson). 30 chars fits
@@ -568,8 +604,10 @@
     if (!store || typeof store.loadHistory !== 'function') throw new Error('makeChannelHub: a channel store is required');
     if (typeof send !== 'function') throw new Error('makeChannelHub: a send(chatId,text) is required');
 
+    // The fallback factory is INVOKED: un-invoked, personaFor returned the inner arrow and every run without a configured
+    // system prompt reached the provider opening with the literal text "() => p" (2026-06-14 .. 2026-10-20).
     const personaFor = typeof o.persona === 'function' ? o.persona
-      : (() => { const p = (typeof o.persona === 'string' && o.persona) || DEFAULT_PERSONA; return () => p; });
+      : (() => { const p = (typeof o.persona === 'string' && o.persona) || DEFAULT_PERSONA; return () => p; })();
 
     const AID_RE = /^[A-Za-z0-9_-]{1,40}$/;   // notebook/fs-jail agentId grammar (a configured agentId must match)
     // chatId -> { runId, abort, superseded, agentId, startedAt } (one run per CONVERSATION, not per agent). The
@@ -624,7 +662,8 @@
       if (!bindChats) return null;
       try {
         const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
-        const bound = rec && String(rec.streamId || '');
+        // a string, always: a NEW chat has no record, and RegExp.test(undefined) tests "undefined" — a valid-looking id
+        const bound = rec ? String(rec.streamId || '') : '';
         if (/^[A-Za-z0-9_-]{1,64}$/.test(bound)) return bound;
       } catch (_) {}
       const base = ('channel_' + channel + '_' + String(chatId)).replace(/[^A-Za-z0-9_-]/g, '_');
@@ -1018,6 +1057,17 @@
       if (outboxTimer) { try { clearTimer(outboxTimer); } catch (_) {} outboxTimer = null; }
     }
 
+    /* GROUP ADMISSION lives on the chat's own record, like /mention and /approvals: the adapter's allow-list reads
+       this per message, so /allow and /deny take effect on the next one and survive a restart. The value is the
+       CHANNEL id, not a bare flag, because the station bot and the Discord/Slack/Matrix/Signal hubs share one
+       chat map keyed by chat id alone — admitting a chat on one platform must never admit a chat that happens to
+       carry the same id on another. (An agent-bound bot's store is already namespaced per bot.) */
+    function chatAdmitted(chatId) {
+      if (typeof store.getChatRecord !== 'function') return false;
+      try { const r = store.getChatRecord(String(chatId)); return !!(r && r.admittedOn === channel); }
+      catch (_) { return false; }
+    }
+
     // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
     // live floor plan, which is content-per-message and not a stable "who am I talking to"). Used by /agents,
     // /talk confirmations, and /model to name the target honestly.
@@ -1115,6 +1165,18 @@
           const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
           for (const k of (rec && Array.isArray(rec.hopKeys) ? rec.hopKeys : [])) if (typeof k === 'string' && AID_RE.test(k)) dropped += store.clearHistory(k) || 0;
         } catch (e) { failNote('channels.hub.hopKeys.clear', e); }
+        /* A RUN READS ITS HISTORY FROM THE CANONICAL STREAM (historyFor), not from the store file above: clearing only the
+           file answered "I no longer remember" while the next run replayed up to 100 turns of the old chat, taint and all
+           (2026-10-20). Move the chat onto a fresh stream, as /new does in COMMS; the old one stays in the station's
+           history, it is just never replayed again. */
+        const oldStream = (historyFor && typeof store.saveChatRecord === 'function') ? resolvedStreamId(chatId) : null;
+        if (oldStream && !streamIdFor) {
+          try { dropped = Math.max(dropped, (historyFor(oldStream, boundId) || []).length); } catch (e) { failNote('channels.hub.new.count', e); }
+          const tail = '_n' + String(newId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
+          const base = ('channel_' + channel + '_' + String(chatId)).replace(/[^A-Za-z0-9_-]/g, '_');
+          try { store.saveChatRecord(chatId, { streamId: base.slice(0, 64 - tail.length) + tail }); }
+          catch (e) { await deliver(chatId, '⚠ Could not start this chat fresh: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
+        }
         await deliver(chatId, dropped
           ? ('Cleared ' + dropped + ' message' + (dropped === 1 ? '' : 's') + ' — this chat starts fresh. I no longer remember what we discussed.')
           : 'Nothing to clear — this chat had no history yet.', '', 'command');
@@ -1227,6 +1289,44 @@
         // The caveat rides the two states that actually depend on hearing unaddressed messages. "on" is exactly
         // what privacy mode already enforces, so warning about it there would be noise.
         await deliver(chatId, confirm[want] + ((want === 'observe' || want === 'off') ? blind : ''), '', 'command');
+        return;
+      }
+
+      /* /allow and /deny — the owner opens or closes a GROUP from inside it (owner:'always', so the gate above has
+         already refused anyone else). The confirmation says who can talk now and what it costs, because admitting
+         a room hands every member a way to start real runs on the owner's station. A direct chat is always open
+         to the owner and closed to everyone else, so the command says that instead of storing a setting that can
+         never apply. Only claimed once the durable write returned (truthful telemetry). */
+      if (cmd === 'allow' || cmd === 'deny') {
+        if (String(chatType || '') !== 'group') {
+          await deliver(chatId, '/allow and /deny are for groups — a direct chat with you is always open, and closed to everyone else.', '', 'command');
+          return;
+        }
+        const was = chatAdmitted(chatId);
+        const want = cmd === 'allow';
+        if (was === want) {
+          await deliver(chatId, want
+            ? 'This group is already admitted — I answer here when someone addresses me. Send /deny to remove me.'
+            : 'I am not answering in this group. Send /allow here to admit it.', '', 'command');
+          return;
+        }
+        let saved = false;
+        try { if (typeof store.saveChatRecord === 'function') { store.saveChatRecord(chatId, { admittedOn: want ? channel : '' }); saved = chatAdmitted(chatId) === want; } } catch (_) { saved = false; }
+        if (!saved) {
+          await deliver(chatId, '⚠ Could not save that — this group is still ' + (was ? 'admitted' : 'not admitted') + '.', '', 'command');
+          return;
+        }
+        if (!want) {
+          await deliver(chatId, 'Removed. I will not answer anything in this group until you send /allow here again.', '', 'command');
+          return;
+        }
+        const seesAll = privacyOk();
+        const byName = seesAll === false
+          ? ''   // privacy mode ON: a name is not an @mention, so it never reaches us — never promise it
+          : ', call me by name';
+        await deliver(chatId,
+          'This group is admitted. Anyone here can now talk to me — @-mention me, reply to me' + byName + ', or use a command — '
+          + 'and every answer is a real run on your station. Send /deny to remove me.', '', 'command');
         return;
       }
 
@@ -1391,7 +1491,9 @@
       // Older/test stores retain the original behavior. Production's store claim is synchronous and durable,
       // so returning from this function is the exact point the adapter may safely advance Telegram's offset.
       if (!id || typeof store.pushInbox !== 'function' || typeof store.removeInbox !== 'function') return routeInbound(msg, intake);
-      const live = activeInbox.get(id);
+      // this hub's own claim first, then the store's: a hub this one REPLACED (a reconnect) may still be running it
+      const shared = typeof store.liveInbox === 'function' && typeof store.holdInbox === 'function';
+      const live = activeInbox.get(id) || (shared ? store.liveInbox(id) : null);
       if (live) {
         if (intake && typeof intake.onAccepted === 'function') { try { intake.onAccepted({ id, durable: true, duplicate: true }); } catch (_) {} }
         return live;
@@ -1403,6 +1505,7 @@
         return value;
       }).finally(() => { activeInbox.delete(id); });
       activeInbox.set(id, running);
+      if (shared) store.holdInbox(id, running);
       return running;
     }
 
@@ -1422,6 +1525,13 @@
         const items = store.loadInbox(channel) || [];
         for (const it of items) {
           if (closed || !it || !it.message) break;
+          /* THE SNAPSHOT GOES STALE WHILE WE AWAIT. A live item's onInbound hands back its RUNNING promise, so this
+             loop can park behind a whole run while a later item (a follow-up steered into that run, a /routine add
+             typed meanwhile) finishes on its own path and leaves the inbox — replaying it from this list then ran it
+             a second time (2026-10-20). Replay only what is still durably pending right now. */
+          let pending = true;
+          try { pending = (store.loadInbox(channel) || []).some(x => x && x.id === it.id); } catch (_) { pending = true; }
+          if (!pending) continue;
           try { await onInbound(it.message, { recovered: true }); }
           catch (e) { try { console.error('[' + channel + '] durable inbox recovery failed for ' + String(it.id || '') + ':', (e && e.message) || e); } catch (_) {} break; }
         }
@@ -1437,7 +1547,10 @@
     function textBatchable(msg) {
       if (!msg || msg.edited || (Array.isArray(msg.media) && msg.media.length)) return false;
       const text = String(msg.text || '').trim();
-      return !!text && !/^\/[A-Za-z0-9_-]+(?:\s|$)/.test(text);
+      // '/allow@thebot' is a command too — it is the form Telegram's "/" menu sends in a group. Without the
+      // @suffix here it was batched as chat, and the same member's next bubble inside the window was glued on as
+      // the command's ARGUMENT: "@bot are you there?" vanished into a /deny@bot (2026-10-19).
+      return !!text && !/^\/[A-Za-z0-9_-]+(?:@[A-Za-z0-9_]+)?(?:\s|$)/.test(text);
     }
 
     async function textInbound(msg, intake) {
@@ -1495,6 +1608,13 @@
         noteRoute(msg);
         await deliver(directChatId, String(msg.directReply), '', 'admission');
         return;
+      }
+      // ADMISSION-ONLY (adapter.js): the owner's /allow or /deny from a group that is not admitted yet. It got past
+      // the allow-list only because of what it says, so it may do exactly that and nothing else — never a run,
+      // never another command, never a forwarded copy (a third party's words are never a command).
+      if (msg && msg.admissionOnly) {
+        const p = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+        if (!p || (p.cmd !== 'allow' && p.cmd !== 'deny')) return;
       }
       const hasMedia = !!(msg && Array.isArray(msg.media) && msg.media.length);
       if (!msg || (!msg.text && !hasMedia)) return;   // empty update; media-only messages ARE admitted
@@ -1577,23 +1697,29 @@
       // otherwise fall through and be answered by the MODEL — spending a turn to say it doesn't understand.
       // Match only against the names the sidecar actually reports, so an ordinary message that happens to start
       // with a slash (a path, say) still reaches the agent untouched. The registry itself decides what a given
-      // command may do here: an alias resolves and runs, a shell exec is refused off-desktop.
+      // command may do here: an alias resolves and runs, a shell exec runs only in the owner's trusted DM.
       // Same provenance rule as the built-in table above: forwarded / forward-quoting text is a third party's words,
       // never the Commander's command — it flows on to the (tainted) run as ordinary text.
-      const userNamed = carriesThirdPartyText(msg) ? null : /^\/([A-Za-z0-9_-]+)/.exec(String(msg.text || ''));
-      if (userNamed && runSlashFn && userCommandNames().indexOf(userNamed[1].toLowerCase()) !== -1) {
+      // The name list is read only for a slash-led message: it re-reads the Commander's file.
+      const userCmd = (runSlashFn && !carriesThirdPartyText(msg) && String(msg.text || '').trim().charAt(0) === '/')
+        ? parseUserCommand(msg.text, userCommandNames()) : null;
+      if (userCmd) {
         // the Commander's own commands run the Commander's own aliases — owner-only, same gate as the table above
-        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userNamed[1]), '', 'command'); return; }
+        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userCmd.name), '', 'command'); return; }
         // resolve the agent the SAME way handleCommand does, so a user command is scoped to whoever this chat
         // is actually talking to rather than a default
         const ucAgent = currentBoundAgent(chatId, boundAgentId, sec);
+        // chatType + ownerDmExec let the registry word a shell-command refusal truthfully for THIS chat: a group
+        // never runs one (the output would post to the whole room), and only a hub that can mint ownerTrusted has
+        // an owner DM where one does run.
+        const ucCtx = { agentId: ucAgent, ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec };
         let r;
-        try { r = await runSlashFn(String(msg.text).trim(), { agentId: ucAgent, ownerTrusted: ownerTrusted }); }
+        try { r = await runSlashFn(userCmd.line, ucCtx); }
         catch (e) { try { console.error('[' + channel + '] user command threw:', (e && e.message) || e); } catch (_) {} r = null; }
         const body = (r && Array.isArray(r.lines) && r.lines.length)
           ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
           : String((r && r.text) || '');
-        await deliver(chatId, body || ('/' + userNamed[1] + ' had nothing to report.'), '', 'command');
+        await deliver(chatId, body || ('/' + userCmd.name + ' had nothing to report.'), '', 'command');
         return;
       }
 
@@ -2237,14 +2363,22 @@
         try { done = !!resolveConsent(entry.meta.runId, entry.meta.promptId, opt.value); } catch (_) { done = false; }
         lostRace = !done;
       }
-      await ack(lostRace ? '⚠ Already expired — denied' : ((/^[\p{L}\p{N}]/u.test(shown) ? '✓ ' : '') + shown));
+      // A lost race is not always a denial: the same ask may have been ALLOWED on another surface (STARNET REMOTE) a moment
+      // before this tap — stamping that "expired — DENIED" contradicted an action that ran (2026-10-20).
+      let allowedAs = '';
+      if (lostRace && consentOutcome) {
+        try { const d = String(consentOutcome(entry.meta.runId, entry.meta.promptId) || ''); if (/^(once|session|always|full)$/.test(d)) allowedAs = d; } catch (_) { allowedAs = ''; }
+      }
+      await ack(allowedAs ? '✓ Already answered elsewhere — allowed' : lostRace ? '⚠ Already expired — denied' : ((/^[\p{L}\p{N}]/u.test(shown) ? '✓ ' : '') + shown));
 
       // Stamp the OUTCOME into the original message and strip the spent buttons. Cosmetic ONLY in the sense
       // that the decision is already recorded whether or not this edit lands (Telegram 400s a no-op edit, and
       // the message may have been deleted by the user) — which is why it is fired inside its own guard and its
       // result is not read. What it must never be is a different answer from the one the broker applied.
       if (editMessage && entry.messageId) {
-        const outcome = lostRace
+        const outcome = allowedAs
+          ? '▸ already answered in StarNet — ALLOWED (' + allowedAs + ')'
+          : lostRace
           ? '▸ ⚠ expired — DENIED, the run moved on'
           : '▸ ' + String(opt.display || opt.value);
         try { await editMessage(chatId, entry.messageId, String(entry.meta.text || '') + '\n\n' + outcome, {}); } catch (_) {}
@@ -2253,7 +2387,7 @@
       if (entry.kind === 'consent') {
         // The host had already settled it — the fail-closed timer fired, the run was superseded, or E-STOP hit.
         // Telling the user their tap landed would be a lie about what the harness actually did.
-        if (lostRace) { try { await deliver(chatId, '⚠ That permission request had already expired — the action was denied and the run moved on.', entry.meta.runId || '', 'prompt'); } catch (_) {} }
+        if (lostRace && !allowedAs) { try { await deliver(chatId, '⚠ That permission request had already expired — the action was denied and the run moved on.', entry.meta.runId || '', 'prompt'); } catch (_) {} }
         return;
       }
 
@@ -2316,10 +2450,10 @@
     }
 
     return {
-      onInbound, onCallback, onStatus, onMembership, close,
+      onInbound, onCallback, onStatus, onMembership, close, chatAdmitted,
       _internals: { agentIdFor, chunkText, endNote, deliver, inflight, handleCommand, currentBoundAgent, isSupersedeRaceRefusal, flushOutbox, scheduleOutboxRetry, recoverInbox, activeInbox, inboxId, OUTBOX_ESCALATE_TRIES, TASK_SUFFIX, DEFAULT_PERSONA, keyboardFor, btnLabel, sendConsentPrompt, buttonsOk, replyPreamble, MAX_REPLY_MEDIA, noteRoute, routeOpts, routes, MAX_ROUTES, editIsCurrent, startAck, ACK_EMOJI, observeTurn, startStream, streamOk, notModified }
     };
   }
 
-  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

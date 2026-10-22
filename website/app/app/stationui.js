@@ -3270,7 +3270,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // nextRunAt arrives as an ISO string from the cron store — parse, never subtract a string (NaN → "in now")
       const nextAt = j.nextShiftAt ? (Date.parse(j.nextShiftAt) || Number(j.nextShiftAt) || 0) : 0;
       const due = nextAt ? (nextAt - Date.now()) : 0;
-      const next = (j.granted && nextAt)
+      // the station withholds the clock while scheduling is OFF or E-STOPped (shiftsPaused) — say that, never a countdown
+      const next = (j.granted && j.shiftsPaused === 'halted') ? 'shifts paused — the E-STOP is engaged (resume automation to lift it)'
+        : (j.granted && j.shiftsPaused) ? 'shifts paused — scheduling is OFF (AUTOMATE › SCHEDULES › TURN SCHEDULING ON)'
+        : (j.granted && nextAt)
         ? (due <= 60000 ? 'next shift: due now' : 'next shift in ' + rel(due))
         : (j.granted ? 'shift not scheduled yet' : 'shifts are off (grant above)');
       h += '<div class="ws-bl-foot">' +
@@ -4652,6 +4655,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
               heldBtn +
               packageButtons +
               '<button class="consent-btn" data-ag-act="edit">Edit</button>' +
+              (held || s.createdBy === 'community' || s.sourceUrl || s.sourceAuthor ? '' : '<button class="consent-btn" data-ag-act="market">Share to market</button>') +
               '<button class="consent-btn" data-ag-act="sharing">Change sharing</button>' +
               '<button class="consent-btn" data-ag-act="archive">' + (s.state === 'archived' ? 'Restore' : 'Archive') + '</button>' +
             '</div>' +
@@ -4667,6 +4671,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         const opened = card.classList.toggle('open'); btn.textContent = opened ? 'v' : '>'; sfx('click'); return;
       }
       if (act === 'edit') { editAgentSkill(card, skill, agentId); return; }
+      if (act === 'market') { shareSkillToMarket(card, skill, agentId); return; }
       if (act === 'sharing') { toggleSkillSharing(card, skill, agentId); return; }
       if (act === 'check') {
         btn.classList.add('busy');
@@ -4761,6 +4766,74 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     }
   }
 
+  /* SHARE TO MARKET (2026-10-18): one of this agent's skills, offered to the Skill Market for review. Opens IN the
+     card (like Edit): the market name, the line on its card, a shelf, a license, the credit and the agreement. The
+     sidecar sends the skill exactly as the library holds it; the line it prints is what the market answered. */
+  const MARKET_SHELVES = ['Communication', 'Creative', 'Engineering', 'Marketing', 'Planning', 'Productivity', 'Research', 'Writing'];
+  const SHARE_CREDIT_KEY = 'starnet.communityMapCredit';   // one credit name for everything this Commander shares
+  function shareSkillToMarket(card, skill, agentId) {
+    const body = card.querySelector('.sk-body'); if (!body || body.dataset.sharing === '1' || body.dataset.editing === '1') return;
+    body.dataset.sharing = '1';
+    if (!card.classList.contains('open')) card.classList.add('open');
+    const actions = body.querySelector('.consent-btns'); if (!actions) return;
+    const opener = actions.querySelector('[data-ag-act="market"]');
+    const title = String(skill.name || '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).slice(0, 60);
+    const shelf0 = MARKET_SHELVES.find(c => c.toLowerCase() === String(skill.category || '').toLowerCase()) || '';
+    let credit = ''; try { credit = localStorage.getItem(SHARE_CREDIT_KEY) || ''; } catch (_) {}
+    // ids unique to THIS card: two cards sharing at once never point their labels at each other's fields
+    const uid = 'skm-' + String(skill.id || 'skill').replace(/[^A-Za-z0-9_-]/g, '_') + '-' + Date.now().toString(36);
+    const form = mkEl('div', 'sk-share');
+    form.innerHTML =
+      '<label for="' + uid + '-title">NAME ON THE MARKET</label><input id="' + uid + '-title" class="key-input" maxlength="60" autocomplete="off">' +
+      '<label for="' + uid + '-desc">WHAT IT DOES AND WHEN TO USE IT</label><textarea id="' + uid + '-desc" class="cf-ta skm-desc" maxlength="280"></textarea>' +
+      '<span class="skm-label" id="' + uid + '-shelf-l">SHELF</span><div class="skm-chips" role="group" aria-labelledby="' + uid + '-shelf-l" data-skm="shelf">' + MARKET_SHELVES.map(c => '<button type="button" class="consent-btn" aria-pressed="' + (c === shelf0) + '" data-v="' + esc(c) + '">' + esc(c) + '</button>').join('') + '</div>' +
+      '<span class="skm-label" id="' + uid + '-license-l">LICENSE</span><div class="skm-chips" role="group" aria-labelledby="' + uid + '-license-l" data-skm="license"><button type="button" class="consent-btn" aria-pressed="true" data-v="MIT">MIT</button><button type="button" class="consent-btn" aria-pressed="false" data-v="CC-BY-4.0">CC BY 4.0</button></div>' +
+      '<label for="' + uid + '-credit">CREDIT ME AS</label><input id="' + uid + '-credit" class="key-input" maxlength="60" autocomplete="off" placeholder="your name or handle">' +
+      '<label class="skm-agree"><input type="checkbox" id="' + uid + '-agree"> <span>I wrote this skill (or may share it) and publish it under the license above. Anyone may use and adapt it, with credit to me.</span></label>' +
+      '<div class="sk-attr">A person reads every line before it goes on the market. This station must be linked to your StarNet account.</div>' +
+      '<div class="sk-attr skm-result" role="status"></div>';
+    const $f = (k) => form.querySelector('#' + uid + '-' + k);
+    $f('title').value = title;
+    $f('desc').value = String(skill.summary || '').slice(0, 280);
+    $f('credit').value = credit;
+    for (const group of form.querySelectorAll('.skm-chips')) group.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      for (const x of group.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+    });
+    actions.before(form);
+    actions.innerHTML = '';
+    const send = mkEl('button', 'consent-btn'); send.textContent = 'Send for review'; actions.appendChild(send);
+    const cancel = mkEl('button', 'consent-btn'); cancel.textContent = 'Cancel'; actions.appendChild(cancel);
+    const result = form.querySelector('.skm-result');
+    const picked = (k) => { const b = form.querySelector('[data-skm="' + k + '"] [aria-pressed="true"]'); return b ? b.dataset.v : ''; };
+    // back to the card as it was, with the keyboard on the key that opened the form
+    const done = () => { loadAgentSkills(agentId); requestAnimationFrame(() => { const again = document.querySelector('[data-agent-skill="' + CSS.escape(String(skill.id)) + '"] [data-ag-act="market"]'); if (again) again.focus(); else if (opener && opener.isConnected) opener.focus(); }); };
+    cancel.onclick = done;
+    send.onclick = async () => {
+      const fields = { agentId, id: skill.id, title: $f('title').value.trim(), description: $f('desc').value.trim(),
+        category: picked('shelf'), license: picked('license'), credit: $f('credit').value.trim(), agree: $f('agree').checked };
+      if (!fields.title) { result.textContent = 'Give it a name on the market.'; $f('title').focus(); return; }
+      if (!fields.category) { result.textContent = 'Pick the shelf it belongs on.'; return; }
+      if (!fields.credit) { result.textContent = 'Add the name you want credited on the market.'; $f('credit').focus(); return; }
+      if (!fields.agree) { result.textContent = 'Turn on the agreement to share it: it is the license others use it under.'; $f('agree').focus(); return; }
+      send.disabled = true; send.textContent = 'Sending…'; result.textContent = '';
+      try { localStorage.setItem(SHARE_CREDIT_KEY, fields.credit); } catch (_) {}
+      let r = null;
+      try { r = await (await Harness.apiFetch('/api/skill-market/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields) })).json(); } catch (_) { r = null; }
+      send.disabled = false; send.textContent = 'Send for review';
+      if (r && r.ok && r.submission) {
+        result.textContent = 'Sent for review as "' + (r.submission.title || fields.title) + '". A person reads it next; your Skills tab on account.starnetos.com shows where it stands.'
+          + (r.referencesLeftOut ? ' ' + r.referencesLeftOut + (r.referencesLeftOut === 1 ? ' support file was' : ' support files were') + ' left out: the market takes up to five plain-text references.' : '');
+        send.remove(); cancel.textContent = 'Done'; cancel.focus(); sfx('click');
+        return;
+      }
+      if (!r) { result.textContent = 'The station is not answering right now. This station cannot tell whether the skill arrived. Check your Skills tab on account.starnetos.com before you send it again.'; return; }
+      if (r.outcome === 'unknown') { result.textContent = (r.error ? r.error + ' ' : '') + 'This station cannot tell whether the skill arrived. Check your Skills tab on account.starnetos.com before you send it again.'; return; }
+      if (r.linked === false) { result.textContent = 'Link this station to your StarNet account first (STORE › LINK STATION). A free account works. Nothing was shared.'; return; }
+      result.textContent = r.code === 'token_rejected' ? r.error : (r.error || 'The market refused it.') + ' Nothing was shared.';
+    };
+    $f('title').focus();
+  }
   function editAgentSkill(card, skill, agentId) {
     const body = card.querySelector('.sk-body'); if (!body || body.dataset.editing === '1') return;
     body.dataset.editing = '1';
@@ -4920,20 +4993,22 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // chat.js's in-band error branch. null (no outcome recorded — legacy save / delegated run) keeps
       // the DONE chip: we only claim FAILED when the failure is provable, never by inference.
       if (s.lastRunOk === false) return '<div class="kb-state failed">✗ RUN FAILED — REVIEW</div>';
+      if (s.lastRunOk == null && s.lastRunReason) return '<div class="kb-state stopped">■ STOPPED — REVIEW</div>';   // stopped before it finished (noteStopReason)
       return '<div class="kb-state done">FINISHED — RESULT READY</div>';
     }
     return '';
   }
   function activeAggregate(items) {
-    let running = 0, ready = 0, failed = 0;
+    let running = 0, ready = 0, failed = 0, stopped = 0;
     items.forEach(s => {
       const busy = (typeof Channels !== 'undefined' && Channels.isBusy && Channels.isBusy(s.id));
       if (busy) running++;
-      else if (s.runIds && s.runIds.length) { if (s.lastRunOk === false) failed++; else ready++; }
+      else if (s.runIds && s.runIds.length) { if (s.lastRunOk === false) failed++; else if (s.lastRunOk == null && s.lastRunReason) stopped++; else ready++; }
     });
     const parts = [];
     if (running) parts.push(running + ' RUNNING');
     if (failed) parts.push(failed + ' FAILED');
+    if (stopped) parts.push(stopped + ' STOPPED');
     if (ready) parts.push(ready + ' READY TO OPEN');
     return parts.length ? '<small class="kb-col-state">' + parts.join(' · ') + '</small>' : '';
   }
@@ -7415,7 +7490,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     { key: 'maxConcurrentAgents', label: 'MAX CONCURRENT AGENTS', hint: 'optional simultaneous-agent ceiling. 0 = unlimited (default).', min: 0, max: 32, step: 1 },
     { key: 'consentTimeoutMs', label: 'CONSENT TIMEOUT (MS)', hint: 'how long a permission prompt waits for your answer before auto-denying (so a run never hangs).', min: 5000, max: 600000, step: 1000 },
     { key: 'cronTickMs', label: 'ROUTINE TICK (MS)', hint: 'how often the scheduler checks for due routines.', min: 5000, max: 600000, step: 1000 },
-    { key: 'maxSubscriptionTokens', label: 'CLAUDE CODE TOKEN CEILING', hint: 'tokens one run may use on a Claude subscription sign-in (cache re-reads count 1/10). 0 = no ceiling.', min: 0, max: 100000000, step: 100000 }
+    { key: 'maxSubscriptionTokens', label: 'CLAUDE CODE TOKEN CEILING', hint: 'tokens one run may use on a Claude subscription sign-in (cache re-reads count 1/10). 0 = no ceiling. Applies from the next run.', min: 0, max: 100000000, step: 100000 },
+    // issue #135: the ceiling on a model StarNet can't price (a custom provider's model) was env-only. Both token ceilings
+    // apply from the next run (the sidecar re-resolves them into CAPS on save); the other rows wait for a restart.
+    { key: 'maxUnpricedTokens', label: 'UNPRICED MODEL TOKEN CEILING', hint: 'tokens one run may use on a model StarNet has no price for. 0 = no ceiling. Applies from the next run.', min: 0, max: 100000000, step: 100000 }
   ];
   /* the STANDING APPROVALS heading's tip (org P02): when an ask nobody answers is denied, in minutes, and where to change
      it. The number is the deadline the sidecar ENFORCES now (GET /api/runtime/knobs consentTimeoutMs.live — frozen at
@@ -7591,20 +7669,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       try { if (typeof AutonomyStore !== 'undefined' && AutonomyStore.exportState) out.autonomy = AutonomyStore.exportState(); } catch (_) {}
       return out;
     };
+    // #134: the line names WHERE the file went, as far as the app can know it — the desktop sidecar writes it and
+    // returns the real path; a browser is only handed it (Backup.exportStation owns both + the honest fallback).
     if (exportBtn) exportBtn.addEventListener('click', () => {
       setMsg('building export…');
-      Harness.api.post('/api/config/export', { sections: browserSections() })
-        .then(({ ok, status, j: env }) => {   // never download an error body as a "backup"
-          if (!ok) throw new Error('http ' + status);
-          const blob = new Blob([JSON.stringify(env, null, 2)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          const stamp = new Date().toISOString().slice(0, 10);
-          a.href = url; a.download = 'starnet-station-' + stamp + '.json';
-          document.body.appendChild(a); a.click(); a.remove();
-          setTimeout(() => URL.revokeObjectURL(url), 2000);
-          setMsg('✓ exported (secrets excluded — re-enter keys after importing)', true); sfx('sale');
-        }).catch(() => { setMsg('export failed'); sfx('bad'); });
+      Backup.exportStation({ sections: browserSections(), post: Harness.api.post, desktop: !!tauriInvoke() })
+        .then(r => { setMsg(r.line, r.ok); sfx(r.ok ? 'sale' : 'bad'); })
+        .catch(() => { setMsg('export failed'); sfx('bad'); });
     });
     if (importBtn && fileIn) {
       importBtn.addEventListener('click', () => fileIn.click());
@@ -10599,6 +10670,92 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       + proof + '</section>';
   }
 
+  /* ============== THE PASS — the quest log as a battle pass (2026-10-19) ==============
+     Andrew: "it should feel like a Fortnite battle pass, except the goals are based off the user's actual goals."
+     BattlePass.build (pure, battlepass.js) projects the sidecar's OWN Commander progression — level = tier, achievement
+     points = pass pts, achievement timestamps = the streak + this week's challenges — so every number here is one the
+     journey ledger already proves. Rewards are cosmetic and applied on the spot (a rank title, an ASCII frame every
+     five tiers); CLAIM is a per-viewer acknowledgement with a sting, never a gate. Drawn in plain ASCII so VT323 owns
+     every glyph. */
+  const BP_KEY = 'starnet.battlepass.v1';
+  function bpClaimed() { try { const r = JSON.parse(localStorage.getItem(BP_KEY) || 'null'); return r && Number(r.claimedTier) || 0; } catch (_) { return 0; } }
+  function bpSetClaimed(t) { try { localStorage.setItem(BP_KEY, JSON.stringify({ claimedTier: t })); } catch (_) {} }
+  function bpModel() {
+    if (typeof BattlePass === 'undefined' || !BattlePass.build) return null;
+    const j = typeof JourneyStore !== 'undefined' && JourneyStore.status ? JourneyStore.status() : null;
+    if (!j || !j.progression) return null;
+    const g = typeof GoalStore !== 'undefined' && GoalStore.activeGoal ? GoalStore.activeGoal() : null;
+    const pr = g && typeof Goals !== 'undefined' && Goals.progress ? Goals.progress(g) : { done: 0, total: 0 };
+    const registered = !!(g && Array.isArray(j.goals) && j.goals.some(x => x && x.id === g.id));
+    const metric = g && Array.isArray(j.metrics) ? j.metrics.find(m => m && m.goalId === g.id) : null;
+    return BattlePass.build({ progression: j.progression, goal: g ? { id: g.id, text: g.text, done: pr.done, total: pr.total } : null,
+      goalRegistered: registered, goalSaved: !!(g && g.successCondition), metric, claimedTier: bpClaimed(), now: Date.now() });
+  }
+  function bpRule(frame, label) {
+    const run = frame.run.repeat(240);
+    return '<div class="bp-rule" aria-hidden="true"><span>' + esc(frame.corner) + esc(frame.run.repeat(2)) + '</span>'
+      + (label ? '<span class="bp-rule-label"> ' + esc(label) + ' </span>' : '')
+      + '<span class="bp-rule-run">' + esc(run) + '</span><span>' + esc(frame.corner) + '</span></div>';
+  }
+  function passHtml() {
+    const m = bpModel();
+    if (!m) return '<div class="q-journal-empty"><span aria-hidden="true">◇</span><h3>Pass offline</h3><p>Your Commander progression has not loaded yet. It appears here as soon as the station reports it.</p></div>';
+    const f = m.frame, pad = n => String(n).padStart(2, '0');
+    const s = m.streak;
+    // the sidecar went quiet: these are the last VERIFIED numbers, not live ones — say so (sweep 10-20; the PROGRESS view
+    // and the topbar's "Lv N · saved" already do). CLAIM still works: it only marks tiers the ledger already proved.
+    let stale = false; try { const st = JourneyStore.state && JourneyStore.state(); stale = !!(st && st.stale); } catch (_) {}
+    const staleHtml = stale ? '<div class="sub warn bp-stale">[ OFFLINE ] showing your last verified pass — points and streak refresh when the station reconnects.</div>' : '';
+    // the flame: lit while the streak is alive, an ember when it is at risk, cold ash at zero.
+    const flame = s.current > 0
+      ? (s.atRisk ? '   .   \n  ( )  \n (   ) \n  \'-\'  ' : '   (   \n  ) )  \n ( ( ( \n  \'-\'  ')
+      : '       \n       \n   .   \n  \'-\'  ';
+    const weekRow = s.week.map(d => '<span class="bp-day' + (d.active ? ' on' : '') + (d.today ? ' today' : '') + (d.future ? ' future' : '') + '">'
+      + '<i>' + d.label + '</i>' + (d.active ? '[#]' : d.future ? ' · ' : '[ ]') + '</span>').join('');
+    const streakLine = s.current > 0
+      ? (s.atRisk ? 'earn points today to keep it alive' : 'today counted — come back tomorrow')
+      : (m.empty ? 'a day counts when you earn pass points' : 'earn points today to start a new streak');
+    const nodes = m.track.map((t, i) => {
+      const box = '.------.\n| T ' + pad(t.tier) + ' |\n\'------\'';
+      const need = Math.max(0, (t.tier - 1) * m.perTier - m.points);
+      const foot = t.claimable ? '<button class="bp-claim" data-tier="' + t.tier + '">[ CLAIM ]</button>'
+        : t.state === 'now' ? '<span class="bp-here">^ YOU ARE HERE</span>'
+        : t.state === 'done' ? '<span class="bp-got">CLAIMED</span>'
+        : '<span class="bp-need">' + need + ' PTS</span>';
+      const link = i < m.track.length - 1 ? '<span class="bp-link bp-link-' + (t.state === 'ahead' ? 'ahead' : t.state === 'now' ? 'now' : 'done') + '" aria-hidden="true">' + (t.state === 'done' ? '==' : t.state === 'now' ? '>>' : '--') + '</span>' : '';
+      return '<li class="bp-node bp-' + t.state + (t.claimable ? ' bp-claimable' : '') + '" aria-label="Tier ' + t.tier + ', ' + esc(t.title) + ', ' + (t.claimable ? 'earned, ready to claim' : t.state === 'now' ? 'your current tier' : t.state === 'done' ? 'claimed' : need + ' points away') + '"><pre class="bp-box" aria-hidden="true">' + box + '</pre>'
+        + '<span class="bp-node-title">' + esc(t.title) + '</span>'
+        + (t.frame ? '<span class="bp-node-frame">+ FRAME: ' + esc(t.frame) + '</span>' : '')
+        + foot + '</li>' + link;
+    }).join('');
+    const claimAll = m.claimable.length
+      ? '<div class="bp-claimbar"><span>' + m.claimable.length + ' tier' + (m.claimable.length === 1 ? '' : 's') + ' earned and waiting</span><button class="consent-btn bp-claim-all" data-tier="' + m.tier + '">CLAIM ALL</button></div>' : '';
+    const chal = m.challenges.map(c => '<li class="bp-chal' + (c.done ? ' done' : '') + '">'
+      + '<span class="bp-check" aria-hidden="true">' + (c.done ? '[x]' : '[ ]') + '</span>'
+      + '<span class="bp-chal-main"><span class="bp-chal-title">' + esc(c.title) + '</span>'
+      + '<span class="bp-chal-meter"><span class="bp-mini">' + esc(BattlePass.bar(c.have / c.need * 100, Math.min(12, c.need * 4))) + '</span> ' + c.have + '/' + c.need
+      + ' <span class="bp-pts">' + esc(c.pts) + '</span></span></span>'
+      + (c.done ? '<span class="bp-done-tag">DONE</span>' : '<button class="consent-btn bp-go" data-view="' + esc(c.go.view) + '"' + (c.go.category ? ' data-category="' + esc(c.go.category) + '"' : '') + '>GO</button>') + '</li>').join('');
+    return '<section class="bp bp-frame-' + esc(f.name.toLowerCase().replace(/\s+/g, '-')) + '" aria-label="Battle pass">'
+      + bpRule(f, 'SEASON ' + m.season.no + ' · ' + m.season.name + ' · ' + m.season.daysLeft + 'D LEFT') + staleHtml
+      + '<div class="bp-hero">'
+      + '<pre class="bp-tier" aria-hidden="true"> .--------.\n |  TIER  |\n |   ' + pad(m.tier) + '   |\n \'--------\'</pre>'
+      + '<div class="bp-hero-main"><span class="bp-eyebrow">RANK</span><b class="bp-rank">' + esc(m.rank) + '</b>'
+      + '<div class="bp-xp"><span class="bp-bar bp-bar-l" aria-hidden="true">' + esc(BattlePass.bar(m.pct, 24)) + '</span><span class="bp-bar bp-bar-s" aria-hidden="true">' + esc(BattlePass.bar(m.pct, 10)) + '</span> <b>' + m.into + '</b>/' + m.perTier + ' PTS</div>'
+      + '<div class="sub">' + m.toNext + ' pts to TIER ' + (m.tier + 1) + ' · ' + esc(m.nextRank) + ' &nbsp;·&nbsp; season +' + m.season.pts + ' pts</div></div>'
+      + '<div class="bp-streak' + (s.current > 0 ? ' lit' : '') + (s.atRisk ? ' risk' : '') + '"><pre class="bp-flame" aria-hidden="true">' + flame + '</pre>'
+      + '<div><b class="bp-streak-n">' + s.current + '</b> DAY STREAK<div class="sub">' + esc(streakLine) + '</div><div class="sub dim">BEST ' + s.best + '</div></div>'
+      + '<div class="bp-week" aria-label="Last seven days">' + weekRow + '</div></div>'
+      + '</div>'
+      + bpRule(f, 'TIER TRACK') + claimAll
+      + '<ol class="bp-track">' + nodes + '</ol>'
+      + bpRule(f, 'WEEKLY CHALLENGES') + '<div class="sub bp-reset">resets in ' + esc(m.week.resetsIn.toLowerCase()) + '</div>'
+      + '<ul class="bp-chals">' + chal + '</ul>'
+      + '<p class="sub dim bp-law">Points come only from real progress on your goals: +10 for each goal quest you confirm, planned step you finish, or metric checkpoint you pass, and +100 when you confirm a goal is achieved. Station, profile, and build quests earn no points. Tiers give titles and frames only. Every tool works at every tier.</p>'
+      + bpRule(f, '')
+      + '</section>';
+  }
+
   function questTrackHtml(arcs) {
     const goal = arcs.find(q => q && q.kind === 'arc-goal') || null;
     /* ORDER IS THE WHOLE POINT OF A PATH — and the list handed to us is NOT in it. Quests.build() returns
@@ -11251,6 +11408,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         + (open.length ? 'Choose another category to find your next action.' : 'Set a direction or refresh your quests when you are ready for what comes next.') + '</p></div>')
       + '</section></div>';
     const questViews = [
+      ['pass', 'PASS', 'Your battle pass: every point comes from real progress on your goals. Tiers give titles and frames only, never tools.'],
       ['available', 'NOW', 'Your next move, open work, and station quests.'],
       ['goals', 'GOALS', 'Define what you want to achieve long term, then choose a goal to focus on. Its plan breaks the goal into smaller steps.'],
       ['progress', 'PROGRESS', 'Your recorded progress across all goals: planned steps, tracked metrics, and earned achievements.'],
@@ -11264,6 +11422,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         '<button type="button" role="tab" id="q-tab-' + v[0] + '" data-quest-view="' + v[0] + '" aria-controls="q-view-' + v[0] + '">' + v[1]
         + '</button>').join('') + '</div>'
       + '<p class="q-view-description"></p>'
+      + '<section id="q-view-pass" class="q-view-panel q-journal-pass" role="tabpanel" aria-labelledby="q-tab-pass">' + passHtml() + '</section>'
       + '<section id="q-view-available" class="q-view-panel" role="tabpanel" aria-labelledby="q-tab-available">'
       + questBriefingHtml() + proposalsHtml + filtersHtml + journalHtml
       + (deferred.length ? '<details class="q-deferred"><summary>Saved for later / blocked (' + deferred.length + ')</summary><div class="gx-tros q-grid">' + deferred.map(tro).join('') + '</div></details>' : '')
@@ -11314,6 +11473,28 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     body.querySelectorAll('.q-step-outputs').forEach(b => b.addEventListener('click', () => {
       questOpenOutputs(b.dataset.run, b.dataset.label);
     }));
+    // THE PASS: CLAIM acknowledges tiers already earned (a sting + the per-viewer mark — nothing is unlocked by it),
+    // and a challenge's GO jumps to the view where that kind of progress is actually made.
+    body.querySelectorAll('.bp-claim, .bp-claim-all').forEach(b => b.addEventListener('click', () => {
+      const t = Number(b.dataset.tier) || 0;
+      if (!(t > bpClaimed())) return;   // already claimed (a double-click or a stale button): no second sting (sweep 10-20)
+      bpSetClaimed(t);
+      try { if (typeof SFX === 'object' && SFX.level) SFX.level(); } catch (_) {}
+      body.dataset.bpFlash = String(t);
+      rerender('quests');
+    }));
+    body.querySelectorAll('.bp-go').forEach(b => b.addEventListener('click', () => {
+      // a challenge that names a NOW category (goal quests → Missions) lands on that filter — the category list is built
+      // at render, so set both and repaint; a view-only GO just switches the tab.
+      if (b.dataset.category) { body.dataset.questView = b.dataset.view; body.dataset.questCategory = b.dataset.category; body.dataset.questSelected = ''; rerender('quests'); }
+      else selectQuestView(b.dataset.view);
+      body.scrollTop = 0;
+    }));
+    if (body.dataset.bpFlash) {
+      const lit = body.querySelectorAll('.bp-node.bp-done, .bp-node.bp-now');
+      lit.forEach(n => n.classList.add('bp-flash'));
+      delete body.dataset.bpFlash;
+    }
     body.querySelectorAll('.q-goal-start').forEach(b => b.addEventListener('click', () => {
       selectQuestView('goals'); const form = body.querySelector('.q-life-manage');
       form.open = true; form.scrollIntoView({ block: 'start' }); form.querySelector('.q-new-goal').focus();
@@ -12067,7 +12248,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     wireCompactBeat();
     wireNotifyLive();
     tick();
-    if (!started) { started = true; tickTimer = setInterval(tick, 1000); }
+    /* the 1 s station tick runs through PollGate (idle CPU piece 3, 2026-10-20): 1 s while the station can be seen, a
+       30 s floor while the Commander is away, and one tick at once on return. The quest ledger and refresh syncs ride it. */
+    if (!started) { started = true; tickTimer = (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(tick, { ms: 1000, immediate: false }) : setInterval(tick, 1000); }
   }
 
   // update the live roster WITHOUT re-running enter's one-time setup (legacy-task import, timer) — used

@@ -495,6 +495,7 @@ const App = (() => {
     if (agent && a.id === agent.id) {   // focused agent — apply live so the next run reflects the pin at once
       if (m) {
         if (typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(m);
+        noteWirePin(a);
         if (p && typeof Harness !== 'undefined' && Harness.setProv) Harness.setProv(p);
         if (hasEffort && a.reasoningEffort && typeof Harness !== 'undefined' && Harness.setReasoningEffort) Harness.setReasoningEffort(a.reasoningEffort);
       } else {
@@ -559,12 +560,24 @@ const App = (() => {
   // the only post-create path was the /yolo slash command; a creation-time control with no live equivalent is
   // the same escape class as the genesis-only codex sign-in). No dedicated endpoint exists or is needed:
   // approvalMode rides pushRoster (the sidecar roster persists it and runOnce reads it per run) + persist.
-  function setAgentApproval(agentId, mode) {
+  function setAgentApproval(agentId, mode, opts) {
     const a = agents.get(String(agentId || '')) || (agent && agent.id === agentId ? agent : null);
     if (!a) return false;
-    a.approvalMode = mode === 'full' ? 'full' : 'ask';
-    pushRoster();
+    const before = a.approvalMode === 'full' ? 'full' : 'ask', next = mode === 'full' ? 'full' : 'ask';
+    a.approvalMode = next;
+    const pushed = pushRoster();
     persist();
+    /* THE POSTURE ON SCREEN IS THE ONE THE STATION RECORDED (sweep/safecell 2026-10-20). A refused roster push (the
+       sidecar unreachable, or its durable write failing) left this row saying "asks first" while the roster the runs
+       read still said full — and the next run went ahead unasked. Put back what the station still enforces, repaint,
+       and say so. `recorded`: the station already persisted this posture itself (the permission card's FULL ACCESS). */
+    if (!(opts && opts.recorded) && before !== next) Promise.resolve(pushed).then(ok => {
+      if (ok || a.approvalMode !== next) return;
+      a.approvalMode = before; persist();
+      if (typeof StationUI === 'undefined') return;
+      if (StationUI.setRoster) StationUI.setRoster(liveAgents());
+      if (StationUI.notify) StationUI.notify('The station did not record that change — ' + (a.name || a.id) + (before === 'full' ? ' still has FULL POWER' : ' still asks first') + '. Try again once the station is reachable.', 'bad');
+    });
     return true;
   }
 
@@ -763,8 +776,14 @@ const App = (() => {
   function focusWire(a) {
     const station = stationDefaultWire();
     if (!(a && a.model)) return station;
-    return { model: a.model, provider: a.provider || station.provider, effort: a.reasoningEffort || '' };
+    return { model: a.model, provider: a.provider || station.provider, effort: a.reasoningEffort || '', owner: a.id };
   }
+  // The crew agent whose OWN pin the global model wire holds ('' = the station's model). With an Overseer that has no
+  // model, an unpinned agent used to keep that pin, e.g. a StarNet slug that then ran on managed credits or reconciled
+  // to "no model selected" under CLAUDE CODE (2026-10-21 user report). Only a crew pin is cleared: an older station whose
+  // model lives in the wire alone (no hero model) keeps it.
+  let wirePinOwner = '';
+  function noteWirePin(a) { wirePinOwner = (a && a.id !== 'agent' && a.model) ? String(a.id) : ''; }
   // SETTINGS -> PROVIDERS picks the STATION's provider, and the station default IS the Overseer's pin
   // (stationDefaultWire). The card used to move only the global wire, so the Overseer kept the provider the station
   // had just left: unpinned agents, their roster rows and a restore all followed it (the #24 "Out of managed credit"
@@ -782,6 +801,8 @@ const App = (() => {
   function applyWire(w) {
     if (typeof Harness === 'undefined') return;
     if (w.model && Harness.setModel) Harness.setModel(w.model);
+    else if (wirePinOwner && Harness.setModel) Harness.setModel('');
+    wirePinOwner = (w.model && w.owner && w.owner !== 'agent') ? String(w.owner) : '';
     if (w.provider && Harness.setProv) Harness.setProv(w.provider);
     if (w.effort && Harness.setReasoningEffort) Harness.setReasoningEffort(w.effort);
   }
@@ -944,6 +965,7 @@ const App = (() => {
       if (typeof Harness !== 'undefined' && Harness.setProv) Harness.setProv(provider);
       if (typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(model);
       agent.model = model; agent.provider = provider; agent.reasoningEffort = effort;   // #4: keep model+provider+effort TOGETHER on the agent
+      noteWirePin(agent);
       const stored = agents.get(agent.id);
       if (stored) { stored.model = model; stored.provider = provider; stored.reasoningEffort = effort; }
       const gtM = el('gt-model'); if (gtM) gtM.textContent = model;
@@ -1618,7 +1640,10 @@ const App = (() => {
     // froze BOTH copies at the first failure, so every restart reverted the station.
     const envelope = Save.envelope ? Save.envelope(saveState) : saveState;
     const doc = Save.write(envelope);
-    if (typeof CloudSave !== 'undefined') CloudSave.push(doc || envelope, { cacheFailed: !doc, cacheError: doc ? null : (Save.writeError ? Save.writeError() : null) });   // durable write-through to the sidecar (debounced, best-effort)
+    // raw: the exact string Save.write just produced for this envelope, so CloudSave clones it with one parse instead of a
+    // second whole-save stringify (idle CPU piece 3, 2026-10-20)
+    const raw = Save.takeWriteRaw ? Save.takeWriteRaw() : null;
+    if (typeof CloudSave !== 'undefined') CloudSave.push(doc || envelope, { cacheFailed: !doc, cacheError: doc ? null : (Save.writeError ? Save.writeError() : null), raw });   // durable write-through to the sidecar (debounced, best-effort)
     if (rosterPushFailed) pushRoster();   // a prior roster POST failed — retry it opportunistically on this persist
     if (!doc) {
       // #121: the cache refused this save (the browser's per-site cap). It was queued for the station file above; the save
@@ -3302,6 +3327,7 @@ const App = (() => {
     if (typeof RecQualityStore !== 'undefined') RecQualityStore.reset();   // …and no inherited recommendation-quality history (own key)
     if (typeof StudyStore !== 'undefined') StudyStore.reset();   // …and a fresh STUDY state — a new Commander never inherits the prior hero's studyDeclined denylist / ignore tallies / rating streaks (own key)
     if (typeof ThreadStore !== 'undefined') ThreadStore.reset();   // …and a fresh THREAD turn-in gate — a new Commander never inherits the prior hero's resolved/ignored mined ideas (the ledger itself is server-side, station-wide)
+    try { localStorage.removeItem('starnet.battlepass.v1'); } catch (_) {}   // …and no inherited battle-pass CLAIM marks — a new Commander claims their own tiers (stationui THE PASS)
     if (typeof QuestStateStore !== 'undefined') QuestStateStore.reset();   // …and a fresh quest memory — a new Commander never inherits dismissed/completed quest history (own key)
     if (typeof QuestLedgerStore !== 'undefined') QuestLedgerStore.reset();  // …and a clean ledger cache — the sidecar ledger is station-wide, but the session cache/notify set starts empty
     if (typeof QuestRefreshStore !== 'undefined') QuestRefreshStore.reset();  // …and a clean refresh-status cache — the engine state is station-wide/server-side, but the session cache starts empty
@@ -4496,8 +4522,10 @@ const App = (() => {
       if (card && !card.hidden && li.getAttribute('aria-describedby') === 'station-tip' && card.textContent !== tip) card.textContent = tip;
     });
   }
-  function armRailTicker() { if (!railTicker) railTicker = setInterval(updateRailLive, 1000); }
-  function stopRailTicker() { if (railTicker) { clearInterval(railTicker); railTicker = 0; } }
+  // through PollGate (idle CPU piece 3, 2026-10-20): 1 s while the rail can be seen, a 30 s floor while the Commander is
+  // away, one beat at once on return (the visibilitychange renderRail below also snaps every row back to truth)
+  function armRailTicker() { if (!railTicker) railTicker = (typeof PollGate !== 'undefined' && PollGate.every) ? PollGate.every(updateRailLive, { ms: 1000, immediate: false }) : setInterval(updateRailLive, 1000); }
+  function stopRailTicker() { if (railTicker) { if (railTicker.stop) railTicker.stop(); else clearInterval(railTicker); railTicker = 0; } }
   // A backgrounded tab FREEZES/intensively-throttles its timers, so the live clock stalls while you're away. The
   // instant the station is visible again, snap every row back to truth (and re-arm the heartbeat) so the elapsed
   // and "last worked" stamps are never caught stale — they jump straight to correct, not after the next tick.
@@ -5909,7 +5937,8 @@ const App = (() => {
       SFX.click(); dataStatus('exporting…');
       const r = await Backup.exportAll();
       dataStatus(r && r.ok
-        ? 'saved ' + r.file + ' — secrets excluded; ' + r.records + ' records' + (r.notes ? ' + ' + r.notes + ' memories' : '')
+        // #134: the page only HANDS the file over (where it lands is never reported back) — name it, never claim "saved"
+        ? 'handed ' + r.file + ' to your downloads — secrets excluded; ' + r.records + ' records' + (r.notes ? ' + ' + r.notes + ' memories' : '')
         : 'export failed');
     };
     const fileImport = el('file-import');

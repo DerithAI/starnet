@@ -143,6 +143,13 @@ async function fireAndSettle(s, reply) {
     A.eq(s.chainCalls[0].unattendedGrants, [], 'the advanceChain seam is handed an EMPTY grants list — hops never inherit authority');
     A.eq(lastOf(s.events, 'cron.result').outcome, 'ok', 'and the routine still settles ok');
   }
+  // the images grant (2026-10-18) obeys the same law: the routine's own agent may make pictures, a later stage may not
+  {
+    const s = setup({ grants: ['studio'], advanceChain: async () => ({ text: 'line done', hops: [{ agentId: 'writer' }], stopped: null }) });
+    await fireAndSettle(s, 'stage one output');
+    A.eq(s.runs[0].opts.unattendedGrants, ['studio'], "stage one keeps the recorded images grant");
+    A.eq(s.chainCalls[0].unattendedGrants, [], 'a downstream hop is handed NO images grant');
+  }
 
   /* ---- THE DOCK'S STANDING BRIEF RIDES A SCHEDULED ENTRY RUN (inbox-trigger, 2026-08-05). A routine's
      fire was the ONE entry-run path that never briefed its dock: the same agent ran WITH its standing brief

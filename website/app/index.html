@@ -25,9 +25,9 @@
 <link rel="stylesheet" href="css/settings.css?v=5">
 <link rel="stylesheet" href="css/commander.css">
 <link rel="stylesheet" href="css/channels.css?v=4">
-<link rel="stylesheet" href="css/quests.css?v=3">
+<link rel="stylesheet" href="css/quests.css?v=6">
 <link rel="stylesheet" href="css/tasks.css?v=1">
-<link rel="stylesheet" href="css/agent-dossier.css?v=7">
+<link rel="stylesheet" href="css/agent-dossier.css?v=8">
 <link rel="stylesheet" href="css/warroom.css">
 <link rel="stylesheet" href="css/safety.css">
 <link rel="stylesheet" href="css/tutorial.css">
@@ -612,7 +612,7 @@
            (the one capability no other surface covered); per-session export moved into the row ⋯ menu.
            The head above stays SESSIONS/PROJECTS + NEW only (Commander directive, 2026-07-08). -->
       <div id="ws-rail-search" class="ws-rail-search">
-        <label><span class="sr-only">Search session titles and transcripts</span><input id="ws-search" type="search" placeholder="⌕ search sessions + transcripts" autocomplete="off"></label>
+        <label><span class="sr-only">Search session titles and transcripts</span><input id="ws-search" type="search" placeholder="search sessions + transcripts" autocomplete="off"></label>
         
         <ul id="ws-search-results" aria-live="polite"></ul>
       </div>
@@ -820,11 +820,12 @@
 </section>
 
 <link rel="stylesheet" href="demo.css?v=20260921"><!-- WEBSITE EMBED ONLY: camera viewport without duplicate page glass -->
-<script src="demo-boot.js?v=20260922-current-starter-v6"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->
+<script src="demo-boot.js?v=20261014-crew-scene"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->
 <script src="app/bootguard.js"></script><!-- BOOT GUARD: installs the window error/unhandledrejection listeners before anything else can fail silently, then verifies the critical module globals after DOMContentLoaded (fatal banner names the file). Reads no state — the ONE script allowed ahead of legacymigrate -->
 <script src="app/legacymigrate.js"></script>
 <script src="app/glass-boot.js"></script><!-- FIRST store-touching script: migrate starnet.* localStorage keys -> starnet.* before any store reads -->
 <script src="js/util.js"></script>
+<script src="app/pollgate.js"></script><!-- IDLE COST: the ONE owner of "is anyone looking?" for background polls (visible cadence unchanged, a 30 s floor while away, never a stop); MUST load before its consumers (queryspine, overseer, group-chat, stationui, world, widgets) -->
 <script src="app/asciifx.js"></script><!-- ASCII-motion kit (AsciiFX): decode/dissolve/typewriter primitives; must load before its consumers (chat.js, stationui.js) -->
 <script src="js/audio.js"></script>
 <script src="js/arcade.js"></script>
@@ -886,6 +887,7 @@
 <script src="app/verdictfollowup.js"></script>
 <script src="app/pitch.js"></script>
 <script src="app/quests.js"></script>
+<script src="app/battlepass.js"></script><!-- pure battle-pass projection (2026-10-19): Commander progression → tiers, streak, season, weekly challenges; cosmetic rewards only -->
 <script src="app/journey.js"></script><!-- pure Commander-journey helpers: metrics/domain labels; separate from XP and never gates -->
 <script src="app/goals.js"></script><!-- GROWTH Tier 2: pure GOAL-TREE engine (understanding → direction) — decompose/parse/progress/chaining/evidence-fold/retire + arc projection -->
 <script src="app/goalloop.js"></script><!-- /goal AUTONOMOUS LOOP (StarNet's "Ralph loop"): pure judge-verdict parse + continuation/preemption/budget state machine; chat.js supplies the aux judge call + persistence -->
@@ -923,6 +925,7 @@
 <script src="app/qr.js"></script><!-- QR encoder (byte mode, ECC M): draws the StarNet Remote pairing link -->
 <script src="app/remote-devices.js"></script><!-- SETTINGS › REMOTE: switch Remote on, pair a phone by QR, list/remove phones -->
 <script src="app/tooltip.js"></script><!-- station tooltip: adopts every [title] so the OS never paints its own bubble; self-starts, nothing to call -->
+<script src="app/typefloor.js"></script><!-- the windows' text floor: lifts any window text measured under the reading floor to it; self-starts, nothing to call -->
 <script src="app/agentid.js"></script>
 <script src="app/workstreams.js"></script>
 <script src="app/projects.js"></script>
@@ -1006,6 +1009,8 @@
 
 <script src="app/equipmenthelp.js"></script>
 <script src="app/stationtemplates.js"></script>
+<script src="app/buildshare.js"></script><!-- SHARED BUILDS: a station's layout as a file (presets dialog EXPORT / IMPORT) -->
+<script src="app/communitymaps.js"></script><!-- COMMUNITY MAPS: share a layout for review, build one from the signed gallery (presets dialog) -->
 <script src="app/workflowpanel.js"></script><!-- the DOCKED Workflow panel (BUILD MODE): one card for the whole line, beside the live floor -->
 <script src="app/build.js"></script>
 <script src="app/save.js"></script>

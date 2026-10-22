@@ -108,6 +108,21 @@ async function run() {
     A.eq(store.hist.has('tg_555'), false, 'did NOT create a separate tg_<chatId> agent');
   }
 
+  // ---- B3. a STRING persona (or none) is the run's persona — never a function's source text ----
+  // Live-caught on the wire 2026-10-20 (sweep/channels): every station-bot run with no configured system prompt reached
+  // the provider with a system prompt that began "() => p" — the persona fallback's factory was never invoked, so the
+  // run got the source text of an arrow function instead of TELEGRAM_PERSONA / DISCORD_PERSONA / the default persona.
+  {
+    const runs = [];
+    const runOnce = async (o) => { runs.push(o); o.emit('agent.run.start', { agentId: o.agentId, runId: o.runId }); o.emit('agent.token', { agentId: o.agentId, runId: o.runId, delta: 'ok' }); o.emit('agent.run.end', { agentId: o.agentId, runId: o.runId, reason: 'done' }); };
+    const mk = (persona) => makeChannelHub(Object.assign({ runOnce, store: fakeStore(), send: () => Promise.resolve({ ok: true }), secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen() }, persona === undefined ? {} : { persona }));
+    await mk('You are the TELEGRAM persona.').onInbound(dm('hello'));
+    A.ok(runs[0].system.indexOf('You are the TELEGRAM persona.') === 0, 'a string persona opens the system prompt: ' + JSON.stringify(runs[0].system.slice(0, 40)));
+    await mk(undefined).onInbound(dm('hello'));
+    A.ok(runs[1].system.indexOf('You are the Commander\'s AI agent') === 0, 'no persona -> the default persona: ' + JSON.stringify(runs[1].system.slice(0, 40)));
+    A.ok(runs.every(r => !/=>/.test(r.system.slice(0, 20))), 'no run is handed function source as its persona');
+  }
+
   // ---- B3. Codex OAuth config: no API key is required, but provider must reach runOnce ----
   {
     const store = fakeStore(); let lastRun = null; const sends = [];
@@ -277,7 +292,7 @@ async function run() {
     // an UNBOUND chat still records the resolved agent (the notifier needs some chat for that agent)
     await hub.onInbound(dm('hello', '777'));
     A.eq(saves.length, 1, 'unbound chat -> binding persisted');
-    A.eq(saves[0], { chatId: '777', rec: { agentId: 'researcher', channel: 'telegram' } }, 'unbound chat records the resolved agent');
+    A.eq(saves[0], { chatId: '777', rec: { agentId: 'researcher', channel: 'telegram', streamId: 'channel_telegram_777' } }, 'unbound chat records the resolved agent (and its canonical stream, from the first message)');
   }
 
   /* ---- J4. WORK BELONGS TO A LINE (Andrew's ruling, 2026-08-07) ----

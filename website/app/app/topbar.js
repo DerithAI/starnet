@@ -158,11 +158,11 @@ const Topbar = (() => {
     if (wired) return;
     wired = true;
 
-    // ONE PROGRESS DOOR: the COMMANDER gauge opens QUESTS › Progress (its tooltip always promised the quest log)
+    // ONE PROGRESS DOOR: the COMMANDER gauge opens QUESTS › PASS — the Lv it shows IS the pass tier (10-19; was Progress)
     const chip = document.getElementById('tb-station');
     if (chip) {
       chip.setAttribute('role', 'button'); chip.tabIndex = 0; chip.style.cursor = 'pointer';
-      const go = () => { if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('quests', 'progress'); };
+      const go = () => { if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('quests', 'pass'); };
       chip.addEventListener('click', go);
       chip.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(); } });
     }

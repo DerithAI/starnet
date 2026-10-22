@@ -64,7 +64,7 @@ if (expectedDemo !== demoSource) {
 
 const EMBED_TAGS =
   '<link rel="stylesheet" href="demo.css?v=20260921"><!-- WEBSITE EMBED ONLY: camera viewport without duplicate page glass -->\n' +
-  '<script src="demo-boot.js?v=20260922-current-starter-v6"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->';
+  '<script src="demo-boot.js?v=20261014-crew-scene"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->';
 
 function walk(dir, base = dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
