@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**46** open (open+claimed) of 378 total — 0 P0 · 6 P1 · 40 P2
+**45** open (open+claimed) of 378 total — 0 P0 · 5 P1 · 40 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -138,7 +138,6 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P0 | fixed | sessions | [An attachment-bearing user turn is dropped from the durable transcript and the PREVIOUS turn is written in its place — the string-only scan at index.js:11299 fa](bugs/e7dcb889-an-attachment-bearing-user-turn-is-dropped-from.md) | sweep/sessions | 6afeb9ee |
 | P0 | fixed | skills | [skill.view's hydrate-then-bump stores the RENDERED SKILL.md as the skill's body, so every view→persist cycle re-appends '## Setup' and '## Support Files' — unbo](bugs/c70f8965-skill-view-s-hydrate-then-bump-stores-the-render.md) | sweep/skills | 598ab4a4 |
 | P1 | open | autonomy | [Chosen away autonomy waits for runs or dossier areas before acting (usage unlock on the onboarding path)](bugs/41b2d015-chosen-away-autonomy-waits-for-runs-or-dossier-a.md) | sweep/onboarding | — |
-| P1 | open | channels | [A sidecar crash mid-run replays the whole Telegram message as a second identical user turn, so side effects run twice and the reply undercounts them](bugs/e5ecd6b8-a-sidecar-crash-mid-run-replays-the-whole-telegr.md) | sweep/channels | — |
 | P1 | open | providers | [The PER RUN dollar cap does not bound team.spawn workers, so a 5-cent cap ran 24 cents](bugs/d3a76db3-the-per-run-dollar-cap-does-not-bound-team-spawn.md) | sweep/providers | — |
 | P1 | open | sessions | [A deleted session keeps reaching the model: its words ride every later run's RECENT ACTIVITY and recall_conversation returns it](bugs/3e926b6a-a-deleted-session-keeps-reaching-the-model-its-w.md) | sweep/sessions | — |
 | P1 | open | sessions | [An empty station file never re-seeds from the browser save and the banner blames another window](bugs/5c019483-an-empty-station-file-never-re-seeds-from-the-br.md) | sweep/onboarding | — |
@@ -175,6 +174,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | autonomy | [Windows computer movement resolves to filesystem Move-Item](bugs/758185bc-windows-computer-movement-resolves-to-filesystem.md) | computer-move-proof-0911 | dd85573b9 |
 | P1 | fixed | channels | [A lost-race consent tap stamps "▸ ✅ Allow once" onto the message before resolveConsent is asked, so a DENIED request keeps a permanent "approved" record](bugs/64563ad9-a-lost-race-consent-tap-stamps-allow-once-onto-t.md) | sweep/channels | 96fe108d |
 | P1 | fixed | channels | [A routine's reply longer than Telegram's 4096 characters is sent as one message, refused 'message is too long' on every retry, and never reaches the chat](bugs/3a9d5e4a-a-routine-s-reply-longer-than-telegram-s-4096-ch.md) | sweep/channels | 9af08a5a0 |
+| P1 | fixed | channels | [A sidecar crash mid-run replays the whole Telegram message as a second identical user turn, so side effects run twice and the reply undercounts them](bugs/e5ecd6b8-a-sidecar-crash-mid-run-replays-the-whole-telegr.md) | sweep/channels | aaa6d7f30 |
 | P1 | fixed | channels | [A Telegram consent ask allowed from STARNET REMOTE is stamped 'expired — DENIED' by a late tap on the still-live keyboard](bugs/9e60dd9f-a-telegram-consent-ask-allowed-from-starnet-remo.md) | sweep/channels | 0fcbbd42d |
 | P1 | fixed | channels | [`channel.targets` derives "reachable now" from the adapter handle's existence, so an errored (or still-connecting) channel is reported connected while telegramS](bugs/a199ee3c-channel-targets-derives-reachable-now-from-the-a.md) | sweep/channels | 96fe108d |
 | P1 | fixed | channels | [Chat replies cut off without confirmed completion](bugs/812c3bfb-chat-replies-cut-off-without-confirmed-completio.md) | agent/chat-cutoff-0919 | 93a4ee64c |
@@ -513,7 +513,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 
 | Surface | Open |
 | --- | --- |
-| channels | 5 |
+| channels | 4 |
 | autonomy | 4 |
 | providers | 11 |
 | safecell | 3 |
