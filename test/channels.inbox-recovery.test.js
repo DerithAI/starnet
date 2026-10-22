@@ -13,7 +13,11 @@
      C. the same holds when the second go reads the canonical stream (the interrupted run's directive row is not doubled)
      D. a merged text batch (one run, two receipts) gets ONE notice, no run, and both receipts are cleared
      E. Telegram handing the SAME update over again after the restart (no recovery pass) is held to the same rule
-     F. the store's attempt marker: unknown id is a no-op, the tool count never goes down, it survives a restart */
+     F. the store's attempt marker: unknown id is a no-op, the tool count never goes down, it survives a restart, and
+        every mark stamps the boot of the process that wrote it
+     G. a receipt THIS process left pending is no restart: it replays as before, with no "restarted" notice
+     H. a finished answer the full outbox refused is kept on its receipt and delivered after a real restart, never re-run
+   (the same-process saturated-outbox replay with a tool step is channels.outbox.test.js H-tool) */
 'use strict';
 const A = require('./_assert.js');
 const pathMod = require('path');
@@ -40,9 +44,9 @@ const hang = () => new Promise(() => {});   // the run the kill interrupted: it 
 
 // ONE PROCESS: a fresh store over the shared disk + a hub whose runOnce is `script`. Each boot mints its own run ids.
 let bootN = 0;
-function boot(disk, script, extra) {
+function boot(disk, script, extra, storeOpts) {
   const tag = 'p' + (++bootN);
-  const store = makeChannelStore({ fs: disk, pathMod, root: ROOT, clock });
+  const store = makeChannelStore(Object.assign({ fs: disk, pathMod, root: ROOT, clock }, storeOpts || {}));
   const sends = [], runs = [];
   const hub = makeChannelHub(Object.assign({
     channel: 'telegram',
@@ -122,7 +126,8 @@ const userCopies = (list, words) => (list || []).filter(m => m && m.role === 'us
     p1.hub.onInbound({ chatId: '55', chatType: 'dm', userId: 'u1', text: words, messageId: '900', ts: 1 });
     await waitFor(() => p1.runs.length === 1);
     const firstRunId = p1.runs[0].runId;
-    A.eq((p1.store.loadInbox('telegram')[0] || {}).attempt, { runId: firstRunId, tools: 0 }, 'fixture: the receipt names the started run, no tool step');
+    const att = (p1.store.loadInbox('telegram')[0] || {}).attempt || {};
+    A.eq({ runId: att.runId, tools: att.tools, boot: att.boot }, { runId: firstRunId, tools: 0, boot: p1.store.bootId }, 'fixture: the receipt names the started run, no tool step, and this process');
     p1.hub.close();
 
     const p2 = boot(disk, async (o) => { o.emit('agent.run.start', { runId: o.runId }); o.emit('agent.token', { delta: 'Lima.' }); o.emit('agent.run.end', { reason: 'done' }); });
@@ -213,7 +218,54 @@ const userCopies = (list, words) => (list || []).filter(m => m && m.role === 'us
     A.eq(back.attempt.runId.length, 200, 'the run id is bounded');
     A.eq(s.pushInbox({ id: 'telegram|1|1', channel: 'telegram', message: { chatId: '1', text: 'x', messageId: '1' } }).attempt.tools, 3,
       'a duplicate intake returns the receipt WITH its attempt (what a re-delivery is judged by)');
+    A.ok(typeof s.bootId === 'string' && s.bootId && back.attempt.boot === s.bootId, 'every mark stamps the boot of the process that wrote it');
+    A.ok(makeChannelStore({ fs: disk, pathMod, root: ROOT, clock }).bootId !== s.bootId, 'a new store instance (a restarted process) has a boot of its own');
+    A.eq(makeChannelStore({ fs: disk, pathMod, root: ROOT, clock, bootId: 'b-7' }).bootId, 'b-7', 'the boot is injectable');
   }
 
+  // ---- G. a receipt THIS process left pending is no restart (review 2026-10-21) ----
+  // Only an attempt stamped by an EARLIER process gets the crash rule. The same attempt stamped by this very store
+  // (processing threw, the hub replays on its next 'up') replays as before: no "restarted" notice for a restart that
+  // never happened.
+  {
+    const disk = memFs();
+    const p = boot(disk, async (o) => { o.emit('agent.run.start', { runId: o.runId }); o.emit('agent.token', { delta: 'Tidied.' }); o.emit('agent.run.end', { reason: 'done' }); });
+    const id = 'telegram|61|610';
+    p.store.pushInbox({ id: id, channel: 'telegram', message: { chatId: '61', chatType: 'dm', userId: 'u1', text: 'tidy the notes', messageId: '610', ts: 1 } });
+    p.store.markInbox(id, { runId: 'earlier-run', tools: 2 });
+    A.eq(p.store.loadInbox('telegram')[0].attempt.boot, p.store.bootId, 'fixture: the attempt was stamped by this process');
+    p.hub.onStatus({ state: 'up' });
+    await waitFor(() => p.store.loadInbox('telegram').length === 0);
+    A.eq(p.sends.filter(s => /restarted/i.test(s.text)).length, 0, 'nothing restarted, so the chat is never told it did');
+    A.eq(p.runs.length, 1, 'the receipt replays as before');
+    A.eq(p.sends.map(s => s.text), ['Tidied.'], 'and the chat gets that run\'s answer');
+    p.hub.close();
+  }
+
+  // ---- H. a finished answer the full outbox refused survives a REAL restart: delivered, never re-run ----
+  {
+    const disk = memFs();
+    const msg = { chatId: '62', chatType: 'dm', userId: 'u1', text: 'file the report', messageId: '620', ts: 1 };
+    const filed = [];
+    const p1 = boot(disk, async (o) => {
+      o.emit('agent.run.start', { runId: o.runId });
+      o.emit('agent.tool_call', { runId: o.runId, callId: 'c1', name: 'fs_write' }); filed.push(1);
+      o.emit('agent.token', { delta: 'Report filed.' }); o.emit('agent.run.end', { reason: 'done' });
+    }, { send: async () => ({ ok: false, error: 'down' }) }, { outboxLimits: { maxOutbox: 0 } });   // down AND a full outbox
+    let threw = false;
+    try { await p1.hub.onInbound(msg); } catch (_) { threw = true; }
+    A.ok(threw && filed.length === 1, 'fixture: the run finished its step, and its reply could not be sent or queued');
+    const held = (p1.store.loadInbox('telegram')[0] || {}).held || {};
+    A.ok(/Report filed\./.test(held.text || '') && Array.isArray(held.ids) && held.ids[0] === 'telegram|62|620', 'the receipt keeps the finished answer it is owed');
+    p1.hub.close();                                                    // the kill
+    const p2 = boot(disk, async (o) => { o.emit('agent.run.start', { runId: o.runId }); o.emit('agent.tool_call', { runId: o.runId, callId: 'c2', name: 'fs_write' }); filed.push(2); o.emit('agent.run.end', { reason: 'done' }); });
+    p2.hub.onStatus({ state: 'up' });
+    await waitFor(() => p2.store.loadInbox('telegram').length === 0);
+    A.eq(p2.runs.length, 0, 'after the restart the finished run is not run again');
+    A.eq(filed.length, 1, 'its step happened exactly once');
+    A.eq(p2.sends.map(s => s.text), ['Report filed.'], 'the chat gets the answer the run finished, and no restart notice for work that was done');
+    A.eq(p2.store.loadInbox('telegram'), [], 'and the receipt is settled');
+    p2.hub.close();
+  }
   A.report('channels.inbox-recovery.test');
 })().catch(e => { console.error(e); process.exit(1); });

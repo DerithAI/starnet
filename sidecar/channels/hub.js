@@ -955,7 +955,13 @@
       if (ok) { try { kickOutbox(); } catch (_) {} }   // a proven-healthy send is the cue to drain any backlog
       // The adapter acknowledged this message only after its durable INBOX receipt existed. If the failed answer
       // cannot enter the outbox, reject processing so that receipt remains and replays once capacity returns.
-      if (mustPersistFailure && !failurePersisted) throw new Error('failed reply could not be persisted: ' + ((failurePersistError && failurePersistError.message) || 'outbox unavailable'));
+      // `heldText` is the remainder the outbox refused: processInbound keeps it on that receipt (deliverHeld), so the
+      // replay sends this finished answer instead of running the message a second time.
+      if (mustPersistFailure && !failurePersisted) {
+        const err = new Error('failed reply could not be persisted: ' + ((failurePersistError && failurePersistError.message) || 'outbox unavailable'));
+        err.heldText = chunks.slice(failedAt).join('');
+        throw err;
+      }
       // `text` is the FINAL chunk's text — the one a keyboard was attached to, and therefore the exact string a
       // later editMessage must rebuild on top of when it stamps the chosen answer in place.
       return { ok: ok, messageId: messageId, text: chunks.length ? chunks[chunks.length - 1] : '' };
@@ -1500,9 +1506,9 @@
       }
       const receipt = store.pushInbox({ id: id, channel: channel, message: msg });   // throws synchronously -> adapter does NOT ack
       if (intake && typeof intake.onAccepted === 'function') { try { intake.onAccepted({ id, durable: true }); } catch (_) {} }
-      // A receipt that already carries an attempt is a RE-DELIVERY of work whose run had started before a crash — from
-      // recoverInbox, or Telegram handing the same update over again. processInbound decides what that may do.
-      const routed = withInbox(intake, [id], attemptOf(receipt));
+      // A receipt that already carries an attempt is a RE-DELIVERY of work whose run had started — from recoverInbox,
+      // or Telegram handing the same update over again. processInbound decides what that may do (attemptOf, heldOf).
+      const routed = withInbox(intake, [id], attemptOf(receipt), heldOf(receipt));
       const running = Promise.resolve().then(() => routeInbound(msg, routed)).then((value) => {
         store.removeInbox(id);   // reply delivered OR its undelivered remainder is now durable in the outbox
         return value;
@@ -1524,16 +1530,32 @@
                                     run in this chat a one-shot note (interruptedAttempt) so a "continue" finishes only
                                     what is left
        The intake copy carries every receipt this message stands for (a merged text batch or album is one run over several
-       receipts), so the marker lands on all of them. */
+       receipts), so the marker lands on all of them.
+       ONLY A REAL RESTART GETS THE CRASH RULE (review, 2026-10-21). A receipt also comes back inside the SAME process:
+       the full outbox refused a finished reply (flushOutbox -> recoverInbox replays it once capacity returns), or
+       processing threw. Taking that for a crash told the chat "StarNet restarted" when nothing restarted, and — with a
+       tool step counted — never delivered the answer the run had finished. So the attempt carries the store's bootId:
+       an attempt from THIS process is no restart and replays as before; and a finished reply the outbox refused is kept
+       on the receipt (held) and delivered by the replay, whatever process it lands in, without running anything. */
     function attemptOf(receipt) {
       const a = receipt && receipt.attempt;
       if (!a || typeof a !== 'object' || !String(a.runId || '')) return null;
+      const here = (store && store.bootId != null) ? String(store.bootId) : '';
+      if (here && String(a.boot || '') === here) return null;   // this process left it pending: not a restart
       return { runId: String(a.runId), tools: Math.max(0, Math.floor(Number(a.tools) || 0)) };
     }
-    function withInbox(intake, ids, prior) {
+    function heldOf(receipt) {
+      const h = receipt && receipt.held;
+      if (!h || typeof h !== 'object' || typeof h.text !== 'string') return null;
+      return { text: h.text, runId: String(h.runId || ''), reason: String(h.reason || ''), agentId: String(h.agentId || ''),
+        ids: Array.isArray(h.ids) ? h.ids.filter(x => typeof x === 'string' && x) : [] };
+    }
+    function withInbox(intake, ids, prior, held) {
       const out = Object.assign({}, intake || {}, { inboxIds: ids.slice() });
       if (prior) out.priorAttempt = prior;
       else delete out.priorAttempt;
+      if (held) out.heldReply = held;
+      else delete out.heldReply;
       return out;
     }
     function inboxIdsOf(intake) {
@@ -1573,7 +1595,7 @@
 
     async function routeInbound(msg, intake) {
       // work that already had a run is never merged into a newer batch: it is settled on its own, exactly once
-      if (intake && intake.priorAttempt) return processInbound(msg, intake);
+      if (intake && (intake.priorAttempt || intake.heldReply)) return processInbound(msg, intake);
       const gid = (msg && msg.mediaGroupId != null && String(msg.mediaGroupId))
         ? (String(msg.chatId) + '|' + String(msg.mediaGroupId)) : '';
       if (gid) return albumInbound(msg, gid, intake);
@@ -1640,7 +1662,7 @@
       // The batch's outcome must reach EVERY merged bubble: resolving unconditionally told the losing
       // bubbles' durable-inbox wrappers "handled" even when processing threw, so their rows were removed
       // and only the winner's original (unmerged) message survived for recovery — the rest were lost.
-      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null)); }
+      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null, null)); }
       catch (e) { rec.reject(e); throw e; }
       rec.resolve();
     }
@@ -1663,7 +1685,7 @@
       if (albums.get(gid) !== rec || rec.seq !== mySeq) return rec.done;   // a newer part re-armed the debounce
       albums.delete(gid);
       // Same failure propagation as textInbound: every merged part's durable-inbox row must survive a throw.
-      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null)); }
+      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null, null)); }
       catch (e) { rec.reject(e); throw e; }
       rec.resolve();
     }
@@ -1676,6 +1698,17 @@
         if (!inboxIds.length || typeof store.markInbox !== 'function') return;
         for (const id of inboxIds) { try { store.markInbox(id, patch); } catch (e) { failNote('channels.hub.markInbox', e); } }
       };
+      /* A FINISHED ANSWER THE OUTBOX REFUSED IS KEPT, NOT RE-EARNED. deliver throws (heldText = the undelivered
+         remainder) so these receipts stay; the text rides on every one of them, and their replay sends it (heldReply,
+         below) instead of running the message again — the run already happened, its tool steps included. */
+      const heldReply = (intake && intake.heldReply) || null;
+      async function deliverHeld(toChat, text, runId, reason, agentId, sendOpts, seedId, ids) {
+        try { return await deliver(toChat, text, runId, reason, agentId, sendOpts, seedId); }
+        catch (e) {
+          if (e && typeof e.heldText === 'string') markAttempt({ held: { text: e.heldText, runId: runId || '', reason: reason || '', agentId: agentId || '', ids: ids } });
+          throw e;
+        }
+      }
       if (msg && msg.directReply) {
         const directChatId = String(msg.chatId);
         noteRoute(msg);
@@ -1702,6 +1735,16 @@
       // Remember where this came from BEFORE anything can reply — the very first deliver() below (a command
       // answer, a config error) must already land in the right topic, not just the run's final reply.
       noteRoute(msg);
+      // the replay of a receipt whose run FINISHED but whose reply the full outbox refused: send that reply, run nothing
+      if (heldReply) {
+        const ids = heldReply.ids.length ? heldReply.ids : inboxIds;
+        await deliverHeld(chatId, heldReply.text, heldReply.runId, heldReply.reason || 'done', heldReply.agentId || undefined, undefined, '', ids);
+        // one run answered every receipt in ids (a merged batch): the others must not send it again
+        if (typeof store.removeInbox === 'function') {
+          for (const sid of ids) { if (inboxIds.indexOf(sid) < 0) { try { store.removeInbox(sid); } catch (e) { failNote('channels.hub.heldReply.remove', e); } } }
+        }
+        return;
+      }
       /* THEY ARE BACK. A chat marked unreachable (we were blocked or kicked) has just spoken, which is proof the
          block is over — clear the flag here rather than waiting for a `my_chat_member` we may never be sent.
          A stale unreachable flag would suppress this chat's outbox forever, which is the failure mode that made
@@ -2415,8 +2458,8 @@
       } finally { stopTyping(); clearAck(); if (stream && withdrawn) stream.abandon(); }
       // seal() hands deliver() the streamed message so chunk 0 replaces it in place. It also closes the stream,
       // so a late token delta can never race the final text back out of order.
-      const dr = await deliver(chatId, reply, lastRunId, state.errMsg ? 'error' : (state.reason || 'done'), finalAgentId,
-        choiceEntry ? { reply_markup: keyboardFor(choiceEntry) } : undefined, stream ? stream.seal() : '');
+      const dr = await deliverHeld(chatId, reply, lastRunId, state.errMsg ? 'error' : (state.reason || 'done'), finalAgentId,
+        choiceEntry ? { reply_markup: keyboardFor(choiceEntry) } : undefined, stream ? stream.seal() : '', inboxIds);
       // Stitch the delivered message onto the keyboard's registry entry so a tap can edit THAT message in place.
       // A send that failed retires the token immediately: leaving it would let a phantom keyboard (buttons the
       // user can see from a partially-sent reply) resolve against a question they never fully received.
