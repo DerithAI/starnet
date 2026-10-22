@@ -5702,7 +5702,9 @@ function bumpQueue(agentId, d) { const n = Math.max(0, (queueDepth.get(agentId) 
 
 // the placed floor's RoutingPlan (posted by the app on every geo change). resolveTarget answers "which agent
 // runs this work-item?"; a non-deployable plan (cycle/orphan/dead-bay) is refused so routing can't loop.
-const router = makeRouter();
+// What a bay's runs may use is bounded by the SAVED floor (savedFloor: the save file, re-validated when it changes) and
+// the default office — the plan says where work goes and may narrow what it gets there, never widen it.
+const router = makeRouter({ savedStation: () => savedFloor() });
 /* THE WORK LINE (agentic graphs, 2026-07-27). resolveTarget names the dock that runs a message; `chainRunner`
    runs everything the Commander drew DOWNSTREAM of that dock — bay -> bay, until the line ships out. One
    instance, bound to the floor's edge function; each caller hands it its own way to execute a hop. Emits its
