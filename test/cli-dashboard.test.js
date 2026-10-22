@@ -189,9 +189,27 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const ascii = screen(m, { logo: 'ascii' }, 110, 34, T0 + 3000);
   const starCell = ascii.slice(0, 4).flat().find(([t]) => t.indexOf('✦') >= 0);
   A.ok(logo.word.every((l, i) => tui.toPlain(ascii[i]).indexOf(l.trim()) >= 0) && starCell && /logohi/.test(starCell[1]), 'STARNET_LOGO=ascii draws the drawn-letter version, the star in its A glinting');
-  const crewTop = text.findIndex(l => /^╭─ CREW 3 /.test(l));
-  const astraRow = text.findIndex(l => /^│▌ ▲ ASTRA +asks │/.test(l));
-  A.ok(crewTop === 4 && astraRow === crewTop + 2 && text.some(l => /^│  ○ NOVA +│/.test(l)), 'the crew is a framed list down the left under the header, the agent in COMMS marked, its ask said in a word: ' + text[astraRow]);
+  // THE PIP-BOY CHROME (Andrew's pick 10-22): a tab rule under the logo names the places once, the one you are in hanging
+  // from it; the frames under it carry no titles; CREW is grouped by kind under strips; a stat bar runs along the foot
+  A.ok(/^── CREW 3 ───┘ COMMS ▸ ASTRA └─+$/.test(text[3]), 'the tab rule under the logo: CREW 3, and COMMS ▸ ASTRA hanging from it as the place you are in: ' + text[3]);
+  const tabSeg = rows[3].find(([t]) => /COMMS ▸ ASTRA/.test(t));
+  A.ok(tabSeg && /ink/.test(tabSeg[1]) && /hifill/.test(tabSeg[1]), 'the tab you are in is a filled label');
+  const crewTop = text.findIndex(l => /^╭─+╮╭─/.test(l));
+  const astraRow = text.findIndex(l => /^│▌ ▲ ASTRA +ASKS │/.test(l));
+  A.ok(crewTop === 4 && /^│ NEEDS YOU 1 +│/.test(text[crewTop + 1]) && astraRow === crewTop + 2, 'CREW groups by kind: NEEDS YOU first, under its strip, the agent asking under it: ' + text[crewTop + 1] + ' / ' + text[astraRow]);
+  const stripSeg = rows[crewTop + 1].find(([t]) => /NEEDS YOU/.test(t));
+  A.ok(stripSeg && /amfill/.test(stripSeg[1]), 'the NEEDS YOU strip is a filled amber label');
+  const sbRow = text.findIndex(l => /^│ STANDING BY 2 +│/.test(l));
+  A.ok(sbRow > astraRow && /^│  ○ (NOVA|CYPHER) +│/.test(text[sbRow + 1]), 'the rest stand by under their own strip');
+  A.ok(/^ {2}CREW 3 │ {2}⠋ 1 WORKING │ {2}▲ 1 NEEDS YOU │ {2}SPEND UNKNOWN +\d\d:\d\d $/.test(text[33]), 'the stat bar along the foot: crew, working, needs you, spend, the clock (no level until the station says one): ' + text[33]);
+  const lv = screen(m, { stats: { level: 3, inLevel: 12, span: 40, frac: 0.3 } }, 110, 34, T0 + 3000).map(tui.toPlain)[33];
+  A.ok(/^ LV 3  ▌{10} {2}XP 12\/40 {2}│ {2}CREW 3 │/.test(lv), 'with the station\'s level it leads with LV and a segmented XP bar: ' + lv);
+  const lvRow = screen(m, { stats: { level: 3, inLevel: 12, span: 40, frac: 0.3 } }, 110, 34, T0 + 3000)[33];
+  A.eq(lvRow.filter(([t, s]) => /^▌+$/.test(t) && /ph/.test(s)).reduce((n, [t]) => n + t.length, 0), 3,'the XP bar lights the share of the level it has made (3 of 10)');
+  const tight = screen(m, { stats: { level: 3, inLevel: 12, span: 40, frac: 0.3 } }, 92, 34, T0 + 3000).map(tui.toPlain)[33];
+  A.ok(/^ LV 3 .*NEEDS YOU │? *\d\d:\d\d $/.test(tight) && !/SPEND/.test(tight) && !/│ *\d\d:\d\d/.test(tight.replace(/ +\d\d:\d\d $/, '')) , 'a narrower bar leaves out what does not fit whole, never a cut word: ' + tight);
+  const mono = rows.map(r => tui.toAnsi(r, 0)).join('\n');
+  A.ok(/\x1b\[[0-9;]*7m COMMS ▸ ASTRA /.test(mono) && /\x1b\[[0-9;]*7m \d\d:\d\d /.test(mono), 'with NO_COLOR the filled labels are reverse video, so they still read as filled');
   const sel = rows[astraRow].find(([t]) => /ASTRA/.test(t));
   A.ok(sel && /sel/.test(sel[1]) && /hi b/.test(sel[1]), 'the agent in COMMS sits on the highlight bar, in white: ' + (sel && sel[1]));
   A.ok(!rows.flat().some(([, st]) => /a[0-5]/.test(st)), 'one palette: no agent has a hue of its own');
@@ -205,18 +223,28 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
     const t2 = screen(m2, {}, 110, 34, T0 + 3000).map(tui.toPlain);
     const nowRow = t2.findIndex(l => /NOW {4}CYPHER › shell\.exec npm test/.test(l));
     A.ok(nowRow === 1 && t2[nowRow].indexOf('NOW') > 45 && !/ASTRA/.test(t2[nowRow]), 'a NOW line beside the logo says what the other busy ones are doing: ' + t2[nowRow]);
-    A.ok(t2.some(l => /│  ⠋ CYPHER +\d+s │/.test(l)), 'a working agent in the crew list spins, and shows how long its run has gone');
+    A.ok(t2.some(l => /│  ⠋ CYPHER +▌{6} │/.test(l)) && t2.some(l => /^│ WORKING 1 +│/.test(l)), 'a working agent spins under the WORKING strip, its recent activity as a segmented meter');
+    const m6 = crew();
+    m6.tick(T0);
+    m6.apply('agent.run.start', { runId: 'r6', agentId: 'cypher', trigger: 'schedule', surface: 'autonomous', prompt: 'nightly tests' }, T0 + 100);
+    m6.tick(T0 + 2000);   // the slot it started in: it did something
+    for (let i = 2; i <= 4; i++) m6.tick(T0 + i * 2000);   // three slots waiting on its model: nothing came back
+    m6.apply('agent.token', { runId: 'r6', agentId: 'cypher', delta: 'scoring the run against the rubric' }, T0 + 9000);
+    m6.tick(T0 + 10000);
+    m6.tick(T0 + 12000);   // and a last quiet slot
+    const lit = screen(m6, { focus: 'cypher' }, 110, 34, T0 + 12500).find(r => /CYPHER/.test(tui.toPlain(r)) && /^│▌/.test(tui.toPlain(r)));
+    const cells = lit ? lit.flatMap(([t, s]) => [...t].map(ch => [ch, s])).filter(([ch]) => ch === '▌').slice(1) : [];
+    A.eq(cells.map(([, s]) => /ph/.test(s) ? 1 : 0), [1, 0, 0, 0, 1, 0], 'a segment lights only for a slot the agent did something in: a run left waiting on its model reads dim, never busy');
     A.ok(/⠋ 2 working/.test(t2[0]), 'the working count spins too');
     const spun = tui.render(m2, { focus: 'astra', input: '', scroll: 0, still: false, stationLabel: '' }, { cols: 110, rows: 34 }, T0 + 3150).map(tui.toPlain);
     A.ok(spun.some(l => /│  ⠙ CYPHER/.test(l)), 'a moving screen turns the wheel (frame 2 at +150 ms)');
   }
-  const commsRow = text.findIndex(l => /╭─ COMMS ▸ ASTRA /.test(l));
-  A.ok(commsRow === crewTop && text[commsRow].indexOf('COMMS') > 20, 'COMMS is framed beside the crew, from right under the header, so it gets most of the screen');
+  A.ok(text[crewTop].indexOf('╭', 1) >= 29 && !/CREW|COMMS/.test(text[crewTop]), 'COMMS is framed beside the crew, from right under the tab rule, so it gets most of the screen (the frames carry no titles)');
   const compact = screen(m, {}, 70, 20, T0 + 3000).map(tui.toPlain);
   const cTop = compact.findIndex(l => /^╭─ COMMS ▸ ASTRA /.test(l));
   A.ok(/S T A R N E T/.test(compact[0]) && /1 needs you/.test(compact[0]) && cTop > 0 && cTop <= 3 && /2\/3 ─╮$/.test(compact[cTop].trimEnd()) && !compact.some(l => /CREW/.test(l)), 'a small terminal gets the one-line mark with the counts, and COMMS full width, saying which agent of how many: ' + compact[cTop]);
   A.ok(!screen(m, { logo: 'plain' }, 110, 34, T0).map(tui.toPlain).some(l => l.indexOf(logo.word[1].trim()) >= 0), 'STARNET_LOGO=plain keeps to the one-line mark');
-  A.ok(text.some(l => /ASTRA asks/.test(l)) && text.some(l => /\[y\] allow once/.test(l)), 'the open ask is a card with its keys');
+  A.ok(text.some(l => /ASTRA ASKS/.test(l)) && text.some(l => /\[Y\] ALLOW ONCE/.test(l)), 'the open ask is a card with its keys');
   A.ok(text.some(l => /evil {2}text|evil text/.test(l)), 'model text is shown…');
   A.ok(!rows.some(r => r.some(([t]) => /\x1b|\x07/.test(t))), '…with every escape sequence stripped before it reaches a cell');
   const ansi = rows.map(r => tui.toAnsi(r, 3)).join('\n');
@@ -262,18 +290,20 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
     m4.setRoster({ agents: [{ agentId: 'comms-lead', name: 'Communications Lead', model: 'm' }] });
     m4.apply('agent.run.start', { runId: 'r9', agentId: 'comms-lead', trigger: 'schedule', surface: 'autonomous', prompt: 'nightly digest' }, T0 - 3725000);
     const t4 = screen(m4, { focus: 'comms-lead' }, 119, 30, T0).map(tui.toPlain);
-    A.ok(t4.some(l => /│▌ ⠋ COMMUNICATIONS L… 1h02m │/.test(l)), 'a long name keeps its words and shortens with …; an hour-long run reads 1h02m');
-    A.ok(t4.some(l => /╭─ COMMS ▸ COMMUNICATIONS LEAD /.test(l)) && t4.some(l => /│ ROUTINE +nightly digest/.test(l)), 'COMMS names it whole, and its speaker column fits the name');
+    A.ok(t4.some(l => /│▌ ⠋ COMMUNICATIONS… +▌{6} │/.test(l)), 'a long name keeps its words and shortens with … beside its meter: ' + t4.find(l => /COMMUNICATIONS/.test(l) && /^│▌/.test(l)));
+    const t4i = screen(m4, { focus: 'comms-lead', images: true }, 119, 30, T0).map(tui.toPlain);
+    A.ok(t4i.some(l => /^├─ COMMUNICATIONS… ⠋ +● REC ─/.test(l)), 'on the camera\'s rule a long name keeps the room: its run time steps aside: ' + t4i.find(l => /^├─/.test(l)));
+    A.ok(/┘ COMMS ▸ COMMUNICATIONS LEAD └/.test(t4[3]) && t4.some(l => /│ ROUTINE +nightly digest/.test(l)), 'the tab names it whole, and its speaker column fits the name');
     const { askGlance, fmtDur } = require('../bin/lib/station-model.js');
     A.eq([fmtDur(65000), fmtDur(3725000)], ['1m05s', '1h02m'], 'durations: minutes and seconds, then hours and minutes');
     A.eq(askGlance('web.request', JSON.stringify({ method: 'post', url: 'https://hooks.example.com/deploy' })), 'POST https://hooks.example.com/deploy', 'a web request asks with its method');
     const m5 = makeStation();
     const t5 = screen(m5, { focus: '' }, 110, 30, T0).map(tui.toPlain);
-    A.ok(t5.some(l => /^╭─ COMMS ─/.test(l)) && t5.some(l => /connecting to the station…/.test(l)), 'before the roster loads, COMMS says it is connecting (never an empty frame titled —)');
+    A.ok(/┘ COMMS └/.test(t5[3]) && t5.some(l => /connecting to the station…/.test(l)), 'before the roster loads, COMMS says it is connecting (never an empty tab titled —)');
   }
   A.ok(/needs at least/.test(tui.toPlain(screen(m, {}, 40, 10, T0)[0])), 'a terminal too small says so');
   const help = screen(m, { overlay: { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' } }, 110, 34, T0).map(tui.toPlain);
-  A.ok(help.some(l => /COMMANDS/.test(l)) && help.some(l => /\/flow run name text/.test(l)), '/help lists the commands');
+  A.ok(/┘ COMMANDS └/.test(help[3]) && help.some(l => /\/flow run name text/.test(l)), '/help lists every command, even beside an open ask (the tab names the list, so the list keeps the row)');
   A.eq(tui.colorLevel({ NO_COLOR: '1', COLORTERM: 'truecolor' }, true), 0, 'NO_COLOR wins');
   A.eq(tui.colorLevel({ COLORTERM: 'truecolor' }, true), 3, '24-bit where the terminal says so');
   A.eq(tui.colorLevel({}, false), 0, 'no TTY, no color');
@@ -335,7 +365,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const m = crew();
   const img = screen(m, { logoImage: { cols: 58, rows: 4 } }, 120, 30, T0).map(tui.toPlain);
   A.ok(img.slice(0, 4).every(l => l.slice(0, 58).trim() === ''), "the image's cells stay blank (the image is painted there, never written over)");
-  A.ok(/0 working/.test(img[0].slice(61)) && /^╭─ CREW /.test(img[5]), 'the counts sit beside the image, the crew list under it: ' + img[0].slice(55, 120));
+  A.ok(/0 working/.test(img[0].slice(61)) && /^── CREW 3 /.test(img[4]) && /^╭─+╮╭─/.test(img[5]), 'the counts sit beside the image, the crew list under it: ' + img[0].slice(55, 120));
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
 }
 
@@ -387,7 +417,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const withImg = screen(m, { images: true }, 120, 34, T0 + 12000);
   const scr = withImg.map(tui.toPlain);
   const div = scr.findIndex(l => /^├─/.test(l));
-  const crewTop = scr.findIndex(l => /^╭─ CREW /.test(l));
+  const crewTop = scr.findIndex(l => /^╭─+╮╭─/.test(l));
   const bot = scr.findIndex((l, i) => i > crewTop && /^╰─+╯/.test(l));
   const av = withImg.avatar;
   A.ok(div > crewTop && bot - div === 9 && /^├─ ASTRA ⠋ working ─+ ● REC ─*┤/.test(scr[div]), 'the card sits at the foot of CREW: its rule names the agent, says what it does, and carries the camera\'s REC light: ' + scr[div]);
@@ -397,7 +427,8 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(!noImg.avatar && !noImg.map(tui.toPlain).some(l => /^├─/.test(l)), 'a terminal that cannot draw images has no card: the crew list keeps the room');
   const room = makeStation();
   room.setRoster({ agents: Array.from({ length: 12 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });   // + the overseer the model adds = 13
-  A.ok(screen(room, { focus: 'a3', images: true }, 120, 30, T0).avatar, 'a crew of 13 in a 120×30 window still has it');
+  A.ok(screen(room, { focus: 'a3', images: true }, 120, 32, T0).avatar, 'a crew of 13 in a 120×32 window still has it (its STANDING BY strip and 13 rows above the camera)');
+  A.ok(!screen(room, { focus: 'a3', images: true }, 120, 30, T0).avatar, 'two rows shorter, the 13 keep the room and the camera steps aside');
   const big = makeStation();
   big.setRoster({ agents: Array.from({ length: 24 }, (_, i) => ({ agentId: 'a' + i, name: 'Agent' + i })) });
   A.ok(!screen(big, { focus: 'a3', images: true }, 120, 30, T0).avatar, 'when the crew list needs the room, the card steps aside');
@@ -448,16 +479,17 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const s1 = screen(m, { trust }, 110, 34, T0).map(tui.toPlain);
   const top = s1.findIndex(l => /┌─ ▲ TRUST THIS FOLDER\? ─/.test(l));
   A.ok(top > 0 && /│ C:\\Code\\App +│/.test(s1[top + 1]) && /you are in src · the whole project is trusted/.test(s1[top + 2]), 'started in a folder not trusted yet: COMMS asks to trust its project, naming it: ' + s1.slice(top, top + 3).join(' / '));
-  A.ok(s1.some(l => /the crew can read and change files here · it joins PROJECTS in the app/.test(l)) && s1.some(l => /not now: each agent works in its own workspace/.test(l)) && s1.some(l => /└─ \[y\] trust {3}\[n\] not now ─/.test(l)), 'says what trusting means, what not trusting means, and its keys');
-  A.ok(/^y trust this folder · n not now/.test(s1[33]), 'the key line says them too');
+  A.ok(s1.some(l => /the crew can read and change files here · it joins PROJECTS in the app/.test(l)) && s1.some(l => /not now: each agent works in its own workspace/.test(l)) && s1.some(l => /└─ \[Y\] TRUST {3}\[N\] NOT NOW ─/.test(l)), 'says what trusting means, what not trusting means, and its keys');
+  A.ok(/^y trust this folder · n not now/.test(s1[32]), 'the key line says them too');
   m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
   m.apply('permission.prompt', { runId: 'r1', agentId: 'astra', promptId: 'p1', tool: 'fs.write', argsSummary: 'auth.js (+2 −1)' }, T0 + 2);
   const s2 = screen(m, { trust }, 110, 34, T0 + 10).map(tui.toPlain);
-  A.ok(s2.some(l => /ASTRA asks/.test(l)) && !s2.some(l => /TRUST THIS FOLDER/.test(l)), 'an agent waiting on an ask comes first: the folder card waits behind it');
+  A.ok(s2.some(l => /ASTRA ASKS/.test(l)) && !s2.some(l => /TRUST THIS FOLDER/.test(l)), 'an agent waiting on an ask comes first: the folder card waits behind it');
   A.ok(!tui.trustLines({ root: '/home/you/app', folder: '/home/you/app' }, 60).some(l => l.segs && /you are in/.test(l.segs[0][0])), 'started at the project root: no "you are in" line');
   for (const [c, r] of [[110, 34], [70, 20]]) {
     const s3 = screen(crew(), { project: { root: 'C:\\Code\\App', label: '~\\Code\\App' } }, c, r, T0).map(tui.toPlain);
-    A.ok(/^.*╰─ ~\\Code\\App ─+╯$/.test(s3[r - 3].trimEnd()), 'working in a trusted project: the foot of COMMS says which (' + c + ' columns): ' + s3[r - 3]);
+    const foot = s3.findIndex(l => /╰─ ~/.test(l));
+    A.ok(foot === (c >= 100 ? r - 4 : r - 3) && /^.*╰─ ~\\Code\\App ─+╯$/.test(s3[foot].trimEnd()), 'working in a trusted project: the foot of COMMS says which (' + c + ' columns), right over the prompt: ' + s3[foot]);
   }
   A.ok(!screen(crew(), {}, 110, 34, T0).map(tui.toPlain).some(l => /╰─ \S/.test(l)), 'in no project: the foot says nothing');
 }
@@ -494,15 +526,15 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
   m.apply('permission.prompt', { runId: 'r1', agentId: 'astra', promptId: 'p1', tool: 'fs.write', argsSummary: 'auth.js (+2 −1)' }, T0 + 2);
   const s1 = screen(m, {}, 110, 34, T0 + 10).map(tui.toPlain);
-  A.ok(s1.some(l => /└─ \[y\] allow once {3}\[a\] always {3}\[n\] deny {3}\[v\] view ─/.test(l)), 'a file write offers Always, as the app\'s card does');
-  A.ok(/^y allow once · a always · n deny · v view/.test(s1[33]), 'and the key line says a');
+  A.ok(s1.some(l => /└─ \[Y\] ALLOW ONCE {3}\[A\] ALWAYS {3}\[N\] DENY {3}\[V\] VIEW ─/.test(l)), 'a file write offers Always, as the app\'s card does');
+  A.ok(/^y allow once · a always · n deny · v view/.test(s1[32]), 'and the key line says a');
   m.apply('permission.response', { promptId: 'p1', decision: 'always', via: 'terminal' }, T0 + 20);
   A.ok(m.logOf('astra').some(e => e.k === 'ok' && /^always allowed from the terminal · fs\.write/.test(e.text)), 'answered Always: COMMS says so in the card\'s words');
   const m2 = crew();
   m2.apply('agent.run.start', { runId: 'r2', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'more room' }, T0);
   m2.apply('permission.prompt', { runId: 'r2', agentId: 'astra', promptId: 'p2', tool: 'station.power', argsSummary: 'widen the leash' }, T0 + 2);
   const s2 = screen(m2, {}, 110, 34, T0 + 10).map(tui.toPlain);
-  A.ok(s2.some(l => /└─ \[y\] allow once {3}\[n\] deny/.test(l)) && !s2.some(l => /\[a\] always/.test(l)) && !/a always/.test(s2[33]), 'an ask the app answers fresh every time (the station\'s leash) has no Always');
+  A.ok(s2.some(l => /└─ \[Y\] ALLOW ONCE {3}\[N\] DENY/.test(l)) && !s2.some(l => /\[A\] ALWAYS/.test(l)) && !/a always/.test(s2[32]), 'an ask the app answers fresh every time (the station\'s leash) has no Always');
   m2.apply('permission.response', { promptId: 'p2', decision: 'once', via: 'terminal' }, T0 + 20);
   A.ok(m2.logOf('astra').some(e => e.k === 'ok' && /^allowed once from the terminal/.test(e.text)), 'and the station\'s echo (once) is what COMMS says');
   A.ok(tui.HELP.some(([k, d]) => k === 'y  a  n  v' && /once, always, no, view/.test(d)), '/help lists a');
@@ -616,9 +648,9 @@ const awakenTests = (async () => {
   const tm = crew();
   const wakeUi = { focus: 'agent', input: '', scroll: 0, still: true, stationLabel: 'private station · port 1', wake: { log: [{ who: 'STARNET', text: 'what should it be called?', first: true, full: true }, { who: 'YOU', text: 'Vega', full: true, you: true }], ask: { options: [{ label: 'Give it a station codename', value: '', skip: true }], custom: true, customLabel: 'its name', optional: true }, stage: { title: 'CREATE YOUR OVERSEER', detail: 'Who it is' }, speaker: 'STARNET' } };
   const ws = tui.render(tm, wakeUi, { cols: 120, rows: 34 }, T0).map(tui.toPlain);
-  A.ok(ws.some(l => /╭─ CREATE YOUR OVERSEER · Who it is ─/.test(l)) && ws.some(l => /│ STARNET +what should it be called\?/.test(l)) && ws.some(l => /│ YOU +Vega/.test(l)), 'the awakening owns COMMS: its stage on the frame, who said each line');
-  A.ok(ws.some(l => /┌─ ▲ YOUR CHOICE ─/.test(l)) && ws.some(l => /│ 1  Give it a station codename/.test(l)) && ws.some(l => /› +or type its name and press enter/.test(l)) && ws.some(l => /└─ \[1-1\] pick {3}\[enter\] send what you typed ─/.test(l)), 'its choice is a card: numbered options and the typed answer');
-  A.ok(/^you ▸/.test(ws[32]) && /^1-1 pick · or type your own \+ enter · ctrl\+c pauses setup/.test(ws[33]) && !ws.some(l => /CREW/.test(l)), 'the prompt is yours, the key line says how to answer, and there is no crew before the agent exists');
+  A.ok(/^──┘ CREATE YOUR OVERSEER └ Who it is ─/.test(ws[3]) && ws.some(l => /│ STARNET +what should it be called\?/.test(l)) && ws.some(l => /│ YOU +Vega/.test(l)), 'the awakening owns COMMS: its stage on the frame, who said each line');
+  A.ok(ws.some(l => /┌─ ▲ YOUR CHOICE ─/.test(l)) && ws.some(l => /│ 1  Give it a station codename/.test(l)) && ws.some(l => /› +or type its name and press enter/.test(l)) && ws.some(l => /└─ \[1-1\] PICK {3}\[ENTER\] SEND WHAT YOU TYPED ─/.test(l)), 'its choice is a card: numbered options and the typed answer');
+  A.ok(/^you ▸/.test(ws[31]) && /^1-1 pick · or type your own \+ enter · ctrl\+c pauses setup/.test(ws[32]) && !ws.some(l => /CREW/.test(l)) && /^ {2}SPEND UNKNOWN +\d\d:\d\d $/.test(ws[33]), 'the prompt is yours, the key line says how to answer, and there is no crew before the agent exists');
   wakeUi.wake.crew = true; wakeUi.wake.feedKey = 'stopped'; wakeUi.images = true; wakeUi.wake.ask = null;
   const wv = tui.render(tm, wakeUi, { cols: 120, rows: 34 }, T0);
   A.ok(wv.avatar && wv.avatar.key === 'stopped' && wv.map(tui.toPlain).some(l => /├─ \S+ waking ─/.test(l)), 'once it exists, the camera finds it at its desk in the dark: "waking"');
