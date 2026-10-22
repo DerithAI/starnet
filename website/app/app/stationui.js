@@ -4594,6 +4594,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     '    { "id": "basic", "prompt": "Write brief.json for this week", "writablePaths": ["brief.json"],\n' +
     '      "checks": [{ "id": "title", "kind": "artifact_json_equal", "path": "brief.json", "expected": { "title": "Week 41" } }] },\n' +
     '    { "id": "held", "heldOut": true, "prompt": "…", "writablePaths": ["brief.json"], "checks": [ … ] } ] }';
+  // Share to market is a door to the community cloud: it is on the card only while communitymaps.js says sharing is
+  // open (CommunityMaps.live, its COMMUNITY_LIVE switch). Until then the key is not drawn at all.
+  const communityLive = () => typeof CommunityMaps !== 'undefined' && CommunityMaps.live === true;
   function renderAgentSkills(host, skills, agentId, review) {
     review = review || {};
     if (!skills.length && !(review.candidates || []).length && !review.error) {
@@ -4655,7 +4658,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
               heldBtn +
               packageButtons +
               '<button class="consent-btn" data-ag-act="edit">Edit</button>' +
-              (held || s.createdBy === 'community' || s.sourceUrl || s.sourceAuthor ? '' : '<button class="consent-btn" data-ag-act="market">Share to market</button>') +
+              (held || s.createdBy === 'community' || s.sourceUrl || s.sourceAuthor || !communityLive() ? '' : '<button class="consent-btn" data-ag-act="market">Share to market</button>') +
               '<button class="consent-btn" data-ag-act="sharing">Change sharing</button>' +
               '<button class="consent-btn" data-ag-act="archive">' + (s.state === 'archived' ? 'Restore' : 'Archive') + '</button>' +
             '</div>' +
@@ -4772,6 +4775,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   const MARKET_SHELVES = ['Communication', 'Creative', 'Engineering', 'Marketing', 'Planning', 'Productivity', 'Research', 'Writing'];
   const SHARE_CREDIT_KEY = 'starnet.communityMapCredit';   // one credit name for everything this Commander shares
   function shareSkillToMarket(card, skill, agentId) {
+    if (!communityLive()) return;
     const body = card.querySelector('.sk-body'); if (!body || body.dataset.sharing === '1' || body.dataset.editing === '1') return;
     body.dataset.sharing = '1';
     if (!card.classList.contains('open')) card.classList.add('open');
