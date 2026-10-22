@@ -134,8 +134,8 @@ for (const preset of ['build', 'free']) {
   const d = driverFor(host);
   const r = d.driver.applyTick(NOW);
   A.eq([r.fired, r.binding, d.beats(), d.state().beatsUsedToday], [false, 'readiness', 0, 0], preset + ' chip: the away tick declines BEFORE spending any leash');
-  A.eq(NR.readinessPlain(view), 'I’ll start once I know what you want help with, or I’ve seen one of your runs.', preset + ' chip: the awakening line names one answer or one run');
-  A.ok(/doesn’t know your aims yet/.test(NR.readinessText(view)), preset + ' chip: SETTINGS › AUTONOMY says it does not know the aims (a canned line is not an aim)');
+  A.eq(NR.readinessPlain(view), 'I’ll start once you tell me in your own words what you want help with, or I’ve seen one of your runs.', preset + ' chip: the awakening line names the requirement — their own words, or one run');
+  A.ok(/has no aim it can act on yet/.test(NR.readinessText(view)) && !/doesn’t know/.test(NR.readinessText(view)), preset + ' chip: SETTINGS › AUTONOMY says it has no aim it can act on (a canned line grounds nothing) — never that it does not know what they want');
 }
 
 /* ===== 2. THE ASK: the Commander's OWN words at the awakening, then "Quietly do small jobs" — it acts, no usage bar ===== */
@@ -194,9 +194,9 @@ for (const [label, weight] of [['confirmed synthesis', 'synth'], ['own words', '
   const r = d.driver.applyTick(NOW);
   A.eq([r.fired, r.binding, d.beats(), d.state().beatsUsedToday], [false, 'readiness', 0, 0], 'the cold tick declines BEFORE spending any leash');
   const text = NR.readinessText(view);
-  A.eq(text, 'still learning you — it doesn’t know your aims yet and it has 0 of 1 recent run; to act on its own it needs either your current aims or 1 recent run', 'readinessText names the grounding bar exactly');
+  A.eq(text, 'still learning you — it has no aim it can act on yet and it has 0 of 1 recent run; to act on its own it needs either your current aims or 1 recent run', 'readinessText names the grounding bar exactly');
   A.ok(!/areas|of 4|\b4\b|a few/.test(text), 'readinessText carries no area count and no usage ladder');
-  A.eq(NR.readinessPlain(view), 'I’ll start once I know what you want help with, or I’ve seen one of your runs.', 'the plain hold names one answer or one run, never "a few of your runs"');
+  A.eq(NR.readinessPlain(view), 'I’ll start once you tell me in your own words what you want help with, or I’ve seen one of your runs.', 'the plain hold names one answer or one run, never "a few of your runs"');
   A.ok(!/a few|few real tasks/.test(NR.bindingPhrase('readiness')), 'the readiness binding phrase asks for one answer or one task, not "a few"');
 }
 
@@ -218,6 +218,14 @@ for (const [label, weight] of [['confirmed synthesis', 'synth'], ['own words', '
   A.eq([view.goalsUsable, view.goalsStale], [false, true], 'status flags the aims as stale (additive goalsStale)');
   A.ok(/too old to act on/.test(NR.readinessText(view)) && !/doesn’t know your aims/.test(NR.readinessText(view)), 'stale aims are named as too old, never as unknown');
   A.ok(/what you want help with now/.test(NR.readinessPlain(view)), 'the plain hold asks for current aims');
+  // SETTINGS › AUTONOMY renders the stand-down WHY (the binding phrase) right beside readinessText: on stale aims the two
+  // must agree — never "the station has nothing of yours" next to "the aims it has for you are too old to act on".
+  const d = driverFor(host);
+  const sd = d.driver.statusDecision(NOW);
+  const pm = NR.panelModel({ status: { active: true, away: true, beatsUsedToday: 0, leashPerDay: 3, binding: sd.binding, readiness: view }, tzOffsetMin: 0 });
+  A.eq(sd.binding, 'readiness', 'stale aims: the live status binds on readiness');
+  A.ok(/too old to act on/.test(pm.readinessText), 'stale panel: the readiness line names the aims as too old');
+  A.ok(/no current aim/.test(pm.why) && !/nothing of yours|doesn’t know/.test(pm.why), 'stale panel: the WHY line says no CURRENT aim (true beside "too old"), never "nothing of yours"');
 }
 
 /* ===== 6. THE AWAKENING ITSELF labels what it writes by what the Commander gave (review of 41b2d015) =====
@@ -229,14 +237,17 @@ for (const [label, weight] of [['confirmed synthesis', 'synth'], ['own words', '
 const onboardingSrc = fs.readFileSync(path.join(ROOT, 'frontend', 'app', 'onboarding.js'), 'utf8');
 const WakeMind = require('../frontend/app/wakemind.js');
 const DIG_ASK = 'what would you enjoy making first?';
-async function awakeningRun(opening, followUp, brain) {
+const FALLBACK_ASK = 'what would you like me to help you with?';   // onboarding.js fallbackPurposeStep() for the lead
+async function awakeningRun(opening, followUp, brain, extra) {
+  extra = extra || {};
   const { store, snapshot } = realStore();
   const commits = [], directives = [];
   let nodes = 0;
   const answerFor = cfg => {
     const first = String((cfg.lines && cfg.lines[0] && cfg.lines[0].text) || '');
     const opts = cfg.options || [];
-    if (opts.some(o => o.value === 'loose')) return { value: 'loose', label: 'short' };          // A short conversation
+    if (opts.some(o => o.value === 'loose')) return { value: extra.pace || 'loose', label: extra.pace || 'short' };   // the pace pick (short by default)
+    if (first === FALLBACK_ASK && extra.fallback) return extra.fallback;                         // the fallback mission question
     if (/set up an agent/.test(first)) return opening;
     if (first === DIG_ASK) return followUp ? { value: followUp, label: followUp, custom: true } : { value: '', skip: true };
     if (opts.some(o => o.value === 'yes')) return { value: 'yes', label: 'that’s me' };            // "did i read that right?"
@@ -322,6 +333,42 @@ function gateFor(snap, preset) {
     A.ok(goalsWeights(r.snap).indexOf('synth') >= 0 && goalsWeights(r.snap).indexOf('seed') < 0, 'own words: the goals beliefs are grounded (' + goalsWeights(r.snap).join(',') + ')');
     const g = gateFor(r.snap, 'build');
     A.eq([g.pre, g.tick.fired, g.beats], [{ ok: true }, true, 1], 'own words: the chosen posture acts with zero runs');
+  }
+  /* 6e-6g. THE FALLBACK MISSION QUESTION (41b2d015 review): quick setup, the keyless wake and a talk whose synthesis could
+     not land all ask fallbackPurposeStep. A TYPED answer there is the Commander's own words: it must land as a stated
+     goals belief (before the fix it only committed purpose.md, the doc seed held, and the station said it would start
+     "once I know what you want help with" right after they typed it). A tapped chip's canned line still holds. */
+  const OWN = 'I want to ship the level editor for my pixel-art game.';
+  // 6e. QUICK SETUP, typed their own purpose → the chosen posture acts with zero runs
+  {
+    const r = await awakeningRun({ value: OWN, label: OWN, custom: true }, null, thinBrain, { pace: 'quick' });
+    A.ok(!r.directives.some(d => /THE READ/.test(d)), 'quick typed: the quick path asked no synthesis (the fallback question is the only mission beat)');
+    A.eq(r.purpose, OWN, 'quick typed: purpose.md holds their words');
+    A.eq(goalsWeights(r.snap), ['stated'], 'quick typed: ONE stated goals belief (the purpose.md seed dedupes)');
+    for (const preset of ['build', 'free']) {
+      const g = gateFor(r.snap, preset);
+      A.eq([g.pre, g.tier, g.tick.fired, g.beats], [{ ok: true }, 'hot', true, 1], preset + ' quick typed: the chosen posture acts with zero runs');
+    }
+  }
+  // 6f. QUICK SETUP, tapped the 'Code & build' chip → the canned line is a seed and the posture holds
+  {
+    const r = await awakeningRun({ value: CHIP, label: 'Code & build' }, null, thinBrain, { pace: 'quick' });
+    A.eq(r.purpose, CHIP, 'quick chip: purpose.md holds the chip’s canned line');
+    A.eq(goalsWeights(r.snap), ['seed'], 'quick chip: the goals area holds only the doc seed');
+    for (const preset of ['build', 'free']) {
+      const g = gateFor(r.snap, preset);
+      A.eq([g.pre, g.tier, g.tick.fired, g.beats], [{ ok: false, reason: 'readiness' }, 'warm', false, 0], preset + ' quick chip: the chosen posture holds, nothing spent');
+    }
+  }
+  // 6g. SHORT TALK whose synthesis cannot be parsed → the fallback mission question, answered in their own words → acts
+  {
+    const garbled = d => /THE READ/.test(d) ? 'no tags at all here' : 'ACK: got it.\nASK: NONE';
+    const r = await awakeningRun({ value: '', skip: true }, null, garbled, { fallback: { value: OWN, label: OWN, custom: true } });
+    A.ok(r.directives.some(d => /THE READ/.test(d)), 'unparseable synthesis: the read was asked');
+    A.eq(r.purpose, OWN, 'unparseable synthesis: the fallback question committed their words');
+    A.eq(goalsWeights(r.snap), ['stated'], 'unparseable synthesis: their typed mission is ONE stated goals belief');
+    const g = gateFor(r.snap, 'build');
+    A.eq([g.pre, g.tick.fired, g.beats], [{ ok: true }, true, 1], 'unparseable synthesis, typed mission: the chosen posture acts with zero runs');
   }
   A.report('nightshift-chosen-autonomy.test');
 })();

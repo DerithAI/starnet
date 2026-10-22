@@ -549,6 +549,13 @@ const Onboarding = (() => {
         continue;
       }
       const text = isSkip ? '' : clipAnswer(String(res.value).trim());
+      // A TYPED MISSION IS THE COMMANDER'S OWN WORDS (41b2d015 review): quick setup, the keyless wake and a talk whose
+      // synthesis could not land all ask the fallback mission question, and a typed answer there only committed
+      // purpose.md, which the dossier copies in as a 'seed' (never grounds acting). Land it as a 'stated' goals belief
+      // BEFORE purpose.md commits, exactly as the synthesis path does (the doc seed then dedupes to nothing). A tapped
+      // chip's canned line stays the doc seed: it is the station's wording, not theirs.
+      const typedPurpose = !isSkip && s.field === 'purpose' && !s.dossierDim && (!!res.custom || !(s.options || []).some(x => x && x.value === text));
+      if (typedPurpose && typeof DossierStore !== 'undefined' && DossierStore.upsert) { DossierStore.upsert('goals', { text, source: 'onboarding', weight: 'stated' }); ink('goals', text); }
       if (!isSkip && commit) { const patch = s.build(text); if (patch) commit(patch); }
       if (!isSkip && s.field === 'purpose') purposeSaid = text;   // the station pick reads what they said they want help with
       // a beat that targets a dossier dimension (not a config .md) writes its answer STRAIGHT to the station-wide

@@ -31,10 +31,12 @@
     present: 'you were using the station — it waits until you step away (no clicks or keys for a while); the app stays open',
     halt: 'the emergency stop was engaged — press an ON ITS OWN rung in SETTINGS › AUTONOMY, or RESUME AUTOMATION in the top bar, to lift it',
     leash: 'today’s job limit was already used',
-    // NS-2 pre-spend readiness: the station has nothing of the Commander's to ground a job on (no current aims in the
-    // dossier AND no recent run) so a beat could not have reached a model call. Honest about what feeds it — one answer
-    // or one task, never "a few" (bug 41b2d015: the bar is grounding, not usage).
-    readiness: 'the station has nothing of yours to act on yet — tell it what you want help with, or run one task, so it has something real to work from',
+    // NS-2 pre-spend readiness: no current grounded aim in the dossier AND no recent run, so a beat could not have
+    // reached a model call. Honest about what feeds it — one answer or one task, never "a few" (bug 41b2d015: the bar is
+    // grounding, not usage). ONE sentence true in EVERY non-hot state (41b2d015 review): nothing known, only a seed (a
+    // quick-setup chip, a thin run, a doc copy), aims past the recency window, or other areas without an aim. It is shown
+    // beside readinessText (SETTINGS › AUTONOMY), so it never says "nothing of yours" next to "aims too old to act on".
+    readiness: 'the station has no current aim or recent run to ground a job on — tell it in your own words what you want help with now, or run one task',
     // NS-2 pre-spend gates the precheck can also bind on (they flow through statusDecision as bindings):
     budget: 'the spending budget is exhausted — raise the cap or resume to let jobs run',
     // NOT an exhausted budget: spend history is uncertain (usually an interrupted run that never recorded its spend), so
@@ -276,6 +278,8 @@
   // usable GROUNDED aim (never a seed: a quick-setup chip's canned purpose is not "your aims") OR hotRunsMin recent runs
   // (1), so the line names exactly that, never an area count that no longer gates.
   // goalsStale (the aims on file are past the recency window) is named as such — "doesn't know your aims" would be false.
+  // Otherwise it says it has no aim it can ACT on, never that it doesn't know them (41b2d015 review): a seed-only goals
+  // area (a quick-setup chip, a thin run, a hand-edited purpose.md) holds words the Commander may well call their aims.
   // The ending names the BAR itself (org pass P09-c: 'until one of those is complete' named nothing that can complete).
   // A NECESSARY condition, never a promise: clearing it does not make it act while the dial is on WAIT / SUGGEST (the
   // 'posture' gate binds first) or while you are at the station — so the line says what it needs, which is
@@ -286,7 +290,7 @@
     const runsBar = Number.isFinite(Number(rd.hotRunsMin)) ? Number(rd.hotRunsMin) : 1;
     const runs = Number(rd.activityCount) || 0;
     const runWord = runsBar === 1 ? 'recent run' : 'recent runs';
-    const aims = rd.goalsStale ? 'the aims it has for you are too old to act on' : 'it doesn’t know your aims yet';
+    const aims = rd.goalsStale ? 'the aims it has for you are too old to act on' : 'it has no aim it can act on yet';
     return 'still learning you — ' + aims + ' and it has ' + runs + ' of ' + runsBar + ' ' + runWord + '; to act on its own it needs either your current aims or ' + runsBar + ' ' + runWord;
   }
 
@@ -295,14 +299,15 @@
   // REPORT). '' when the station is hot / the route sent no detail, exactly when readinessText is ''. It names the one
   // thing that grounds a job (bug 41b2d015) — the awakening asks what you want help with before the away question, so
   // once an answer in the Commander's own words (or a synthesis of them) has synced, the station is hot there and this
-  // line stays silent. A quick-setup chip or a thin run lands as a seed, so the line stays — that is the truth.
+  // line stays silent. A quick-setup chip or a thin run lands as a seed, so the line stays — that is the truth. It names
+  // the REQUIREMENT, never "once I know what you want" (41b2d015 review): a seed may already say what they want.
   function readinessPlain(rd) {
     if (!readinessText(rd)) return '';
     const runsBar = Number.isFinite(Number(rd.hotRunsMin)) ? Number(rd.hotRunsMin) : 1;
     const runs = runsBar === 1 ? 'one of your runs' : runsBar + ' of your runs';
     return rd.goalsStale
       ? 'I’ll start once you tell me what you want help with now, or I’ve seen ' + runs + '.'
-      : 'I’ll start once I know what you want help with, or I’ve seen ' + runs + '.';
+      : 'I’ll start once you tell me in your own words what you want help with, or I’ve seen ' + runs + '.';
   }
 
   // THE PRESENT-TENSE MODE LINE for the readout (org pass 10-14, call #57): what an away job WILL do, in the agent's
