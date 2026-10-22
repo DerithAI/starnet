@@ -4,10 +4,10 @@ slug: chosen-away-autonomy-waits-for-runs-or-dossier-a
 title: Chosen away autonomy waits for runs or dossier areas before acting (usage unlock on the onboarding path)
 surface: autonomy
 severity: P1
-status: fixed
+status: open
 found: 2026-10-20
 lane: sweep/onboarding
-fix: a5152c59e
+fix:
 origin: audit
 ---
 
@@ -33,4 +33,10 @@ This is a deliberate design: `docs/AUTONOMY_DRIVER_PLAN.md` §2 "Earn context, t
 
 ## Verdict
 
-The no-usage-walls law wins (a5152c59e): the act floor is now grounding, not usage — a current aim (the awakening always authors purpose.md, which seeds goals) or one recent user run (`frontend/app/autopilot.js` `HOT_MIN` / `ACTIVITY_HOT_MIN` = 1, was goals + 4 areas or 4 runs). "Earn context, then act" still holds when there is nothing to cite (no aims, no runs: pre-spend `readiness` stand-down), and every job still has to pass the grounding veto, `MIN_ACT_SCORE` and the self-critique. The status readiness view adds `goalsStale`; the panel line and the awakening readout name the aims or one run, never an area counter. `test/nightshift-chosen-autonomy.test.js` drives the real DossierStore snapshot after the awakening's purpose answer, the real `commanderPosture` / `nightshiftPrecheck` / `nightshiftReadinessView` sliced from `sidecar/index.js`, and the real driver: before, the "build"/"free" pick declined with binding `readiness` and the line ended "I'll start once I've seen a few of your runs…" (29 failures); after, the away tick fires and the line is only "While you're away I'll do up to 3 small jobs a day; each arrives as a new session in your rail." Not walked live in the app (no sidecar boot in this lane).
+OPEN: waiting on the owner's ruling. The two locked decisions still conflict, and this record is not closed until Andrew rules: keep the hold as a safety floor with an override, or `wontfix`.
+
+Partial work on agent/p1-41b2d015, not merged and not walked live. a5152c59e moved the act floor from "goals + 4 dossier areas, or 4 recent runs" to one fresh grounded aim or one recent user run (`frontend/app/autopilot.js` `HOT_MIN` / `ACTIVITY_HOT_MIN` = 1). On review, that commit also let one `seed` goals belief make the station hot: the canned "Code & build" chip (`onboarding.js:120`) or a thin run's synthesis, while the same snapshot's shared V3 verdict said `no-direction`. The follow-up 9f9ade258 restores the trust line (AUTONOMY_DRIVER_PLAN §2 "only confirmed beliefs cross the acting line"; `dossier.js` WEIGHTS). `Autopilot.readiness` now counts the goals keystone only from its non-seed beliefs, and freshness comes from their own stamps. A seed-only goals area is warm, so the idle EARN branch still fires there.
+
+What a new Commander sees now: if they answer the awakening in their own words, or confirm a synthesis of them, the chosen "Quietly do small jobs" / "Run free" posture acts with zero runs. If they tap a quick-setup chip or give a thin run, the hold stays: "I’ll start once I know what you want help with, or I’ve seen one of your runs." Whether the chosen posture may lift even that remaining hold is the open question.
+
+`test/nightshift-chosen-autonomy.test.js` drives the real DossierStore snapshot, the real `commanderPosture` / `nightshiftPrecheck` / `nightshiftReadinessView` from `sidecar/index.js`, and the real driver. Chip and doc seeds stand down pre-spend; synth and stated aims fire. Before 9f9ade258 there were 11 failures (the chip fired); after, it is OK. `test/autopilot.test.js` pins the seed rule: 4 failures before, OK after.
