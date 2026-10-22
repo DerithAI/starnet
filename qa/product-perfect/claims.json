@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "64667daa5c1c8ee79ee53b209527e57478bbcfdd",
+    "sourceCommit": "2a2596397712a8c5939a90a1ea9cbedb20ba477c",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -268,8 +268,8 @@
       },
       {
         "path": "frontend/app/autopilot.js",
-        "bytes": 61584,
-        "sha256": "023b86d8f7d7d8c2df34a08183829c4bfe9c4dfdc0621348f48ca924de66cc98"
+        "bytes": 63579,
+        "sha256": "d3a7914a80b15b59cf99be271f9f176b0f91c70f8360efb575a510efa23cb108"
       },
       {
         "path": "frontend/app/autopilotstore.js",
@@ -733,8 +733,8 @@
       },
       {
         "path": "frontend/app/nightreport.js",
-        "bytes": 27578,
-        "sha256": "c3b72b2990a3d7f4f10b1e9993c6f4712bdb30a99fa032a7d5f859d398f9ba8b"
+        "bytes": 29427,
+        "sha256": "62a60342aa9fce26a574fd1b035e619e504793c83e563c3f84e4181878b68181"
       },
       {
         "path": "frontend/app/nightreportstore.js",
@@ -743,8 +743,8 @@
       },
       {
         "path": "frontend/app/onboarding.js",
-        "bytes": 71156,
-        "sha256": "cd9a9e44cee3ab8668f694adf5834cfdcc6c61b4d538d8ea9458589a9cc5afa9"
+        "bytes": 72736,
+        "sha256": "31af9fe34c99f9d1dd49c232c7dd4842ade404c8c0fc72942026f36f76a81d8e"
       },
       {
         "path": "frontend/app/outputbrowser.js",

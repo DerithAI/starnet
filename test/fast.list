@@ -583,6 +583,7 @@ test/nightshift-localday.test.js
 test/nightshift-decline-edge.test.js
 test/contextpack.test.js
 test/nightreport.test.js
+test/nightshift-chosen-autonomy.test.js
 test/autonomy-write.test.js
 test/autonotify.test.js
 test/permgrants.test.js

@@ -8410,7 +8410,8 @@ function nightshiftUserRunCount() {
 
 // NS-2: the PURELY-LOCAL pre-spend readiness gate for the night-shift driver (the cold-leash fix). Answers, with NO
 // model call, "could a beat even reach a model call right now?" — the same readiness/eligibility conditions the act
-// pipeline checks first. Dossier OR substantial recent activity counts as grounding (Autopilot.readiness folds both).
+// pipeline checks first. A current GROUNDED aim in the dossier (never a seed) OR one recent user run counts as grounding
+// (Autopilot.readiness folds both; bug 41b2d015 dropped the old 4-area / 4-run breadth bar).
 // Returns { ok, reason }. Called by the driver BEFORE the leash is spent, so a stand-down that no model call could
 // have avoided (cold on both paths → tier not hot, or nothing eligible) costs no budget. Safety reads fail closed:
 // an unproven budget/provider/readiness gate stands down as `precheck-error` and is retried on a later tick.
@@ -8459,8 +8460,12 @@ function nightshiftReadinessView() {
     let activityCount = 0;
     try { activityCount = nightshiftUserRunCount(); } catch (_) { activityCount = 0; }
     const rd = Autopilot.readiness(summary, beliefsByDim, Date.now(), { activityCount });
+    // goalsStale (additive, bug 41b2d015): grounded aims ARE on file but past the recency window — the panel names that
+    // instead of claiming the station doesn't know them. A seed-only goals area is neither usable nor stale: the
+    // station does not know their aims, it holds a canned line (the engine computes both from non-seed beliefs).
     return {
-      tier: rd.tier, goalsUsable: !!rd.goalsUsable, usableDims: rd.usableDims || [],
+      tier: rd.tier, goalsUsable: !!rd.goalsUsable, goalsStale: !!rd.goalsStale,
+      usableDims: rd.usableDims || [],
       activityCount: rd.activityCount || 0, hotDimsMin: Autopilot.HOT_MIN, hotRunsMin: Autopilot.ACTIVITY_HOT_MIN
     };
   } catch (_) { return null; }
@@ -8495,8 +8500,8 @@ async function runNightshiftBeat(opts) {
   const pack = nightshiftContextPack();
   const activity = pack.activityLines || [];
   const threads = pack.threads || [];   // NS-6: open threads draw FIRST (improv is the fallback)
-  // readiness folds BOTH grounding paths: the dossier AND substantial recent activity (a heavily-active brand-new
-  // user is now hot on activity alone). eligibility opens to all archetypes when activity is the grounding source.
+  // readiness folds BOTH grounding paths: the dossier's current aims AND recent user runs (one run is grounding on
+  // its own). eligibility opens to all archetypes when activity is the grounding source.
   const snap = commanderPosture.beliefs() || {};
   const summary = { known: Array.isArray(snap.known) ? snap.known : Object.keys((snap.beliefs) || {}) };
   const beliefsByDim = (dim) => (snap.beliefs && snap.beliefs[dim]) || [];
