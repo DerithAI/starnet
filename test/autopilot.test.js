@@ -15,16 +15,21 @@ A.eq(Autopilot.idleFor(t + 1000, t, 5000), false, 'not idle before the span');
 A.eq(Autopilot.idleFor(NaN, t, 5000), false, 'a bad clock is never idle (fail safe)');
 
 /* ---------- readiness tiers ---------- */
-let rd = Autopilot.readiness({ known: ['stack'], familiarity: 1 / 7 }, { stack: fresh() }, t, {});
-A.eq(rd.tier, 'cold', 'no goals → cold (no keystone to ground acting)');
+// THE ACT FLOOR IS GROUNDING, NOT USAGE (bug 41b2d015): hot = a usable aim (goals, the keystone) or one recent run.
+// It used to be goals + 4 areas or 4 runs — a usage wall the Commander's chosen posture had to wait behind.
+let rd = Autopilot.readiness({ known: [], familiarity: 0 }, {}, t, {});
+A.eq(rd.tier, 'cold', 'nothing known → cold (nothing to ground a job on)');
 
-rd = Autopilot.readiness({ known: ['goals', 'stack'], familiarity: 2 / 7 }, { goals: fresh(), stack: fresh() }, t, {});
-A.eq(rd.tier, 'warm', 'goals + 2 usable dims → warm (may earn / propose, not yet act)');
+rd = Autopilot.readiness({ known: ['stack'], familiarity: 1 / 7 }, { stack: fresh() }, t, {});
+A.eq(rd.tier, 'warm', 'areas known but no goals → warm (knows something, not yet what they want — never acts)');
+
+rd = Autopilot.readiness({ known: ['goals'], familiarity: 1 / 7 }, { goals: fresh() }, t, {});
+A.eq([rd.tier, rd.groundedBy], ['hot', 'dossier'], 'goals alone → hot (the awakening always authors purpose.md → goals: a chosen posture acts)');
 
 rd = Autopilot.readiness(
   { known: ['goals', 'stack', 'pain', 'identity'], familiarity: 4 / 7 },
   { goals: fresh(), stack: fresh(), pain: fresh(), identity: fresh() }, t, {});
-A.eq(rd.tier, 'hot', 'goals + 4 usable dims → hot (has EARNED the right to act)');
+A.eq(rd.tier, 'hot', 'goals + more areas → still hot (breadth is no longer a bar)');
 
 // recency: a goals belief older than the stale window is no longer usable → drops back below the floor.
 const old = t - (Autopilot.STALE_MS + 1);
@@ -32,11 +37,13 @@ rd = Autopilot.readiness(
   { known: ['goals', 'stack', 'pain', 'identity'], familiarity: 4 / 7 },
   { goals: [{ text: 'x', createdAt: old, updatedAt: old }], stack: fresh(), pain: fresh(), identity: fresh() }, t, {});
 A.eq(rd.goalsUsable, false, 'a stale goals belief is not usable grounding');
-A.eq(rd.tier, 'cold', 'stale keystone → cold even with breadth (recency gates acting)');
+A.eq(rd.staleDims, ['goals'], 'the stale keystone is reported as stale (the status names it)');
+A.eq(rd.tier, 'warm', 'stale keystone → not hot even with breadth (recency gates acting)');
 
 // an UNDATED belief (legacy/seeded, pre-timestamps) counts as fresh — never punish an old save.
 rd = Autopilot.readiness({ known: ['goals', 'stack'], familiarity: 2 / 7 }, { goals: [{ text: 'x' }], stack: [{ text: 'y' }] }, t, {});
-A.eq(rd.tier, 'warm', 'undated beliefs are treated as fresh (no staleness penalty for old saves)');
+A.eq(rd.tier, 'hot', 'undated beliefs are treated as fresh (no staleness penalty for old saves)');
+A.eq([Autopilot.HOT_MIN, Autopilot.ACTIVITY_HOT_MIN], [1, 1], 'the published hot bars are one aim / one run (the status route reports them)');
 
 /* ---------- decide: the ceiling-vs-earned matrix ---------- */
 const D = Autopilot.decide;
@@ -199,17 +206,21 @@ A.eq(Autopilot.scoreAndSelect(tie2, { weights: Autopilot.learnWeightsFrom(Autopi
 
 /* ---------- NS-2: activity-as-grounding readiness + the extended grounding veto + the activity directive block ---------- */
 
-// (a) READINESS folds a SECOND grounding path: substantial recent user-run activity. A brand-new (empty) dossier
-//     with heavy activity still reaches hot — no more endless get-to-know-you stand-downs for an active user.
+// (a) READINESS folds a SECOND grounding path: recent user-run activity. A brand-new (empty) dossier with a real
+//     recent run reaches hot — the run is citable evidence of their work (bug 41b2d015: one run, not four).
 let rdA = Autopilot.readiness({ known: [], familiarity: 0 }, {}, t, { activityCount: 0 });
 A.eq(rdA.tier, 'cold', 'empty dossier + no activity → cold (nothing to ground on)');
-rdA = Autopilot.readiness({ known: [], familiarity: 0 }, {}, t, { activityCount: 2 });
-A.eq([rdA.tier, rdA.groundedBy], ['warm', 'activity'], 'empty dossier + 2 recent runs → warm, grounded BY activity');
-rdA = Autopilot.readiness({ known: [], familiarity: 0 }, {}, t, { activityCount: 4 });
-A.eq([rdA.tier, rdA.groundedBy], ['hot', 'activity'], 'empty dossier + 4 recent runs → HOT on activity alone (heavy-activity new user gets useful beats)');
-// the dossier path still wins when it is higher (activity never DISCOUNTS the dossier bars).
+rdA = Autopilot.readiness({ known: [], familiarity: 0 }, {}, t, { activityCount: 1 });
+A.eq([rdA.tier, rdA.groundedBy], ['hot', 'activity'], 'empty dossier + ONE recent run → HOT on activity alone (no usage bar)');
+rdA = Autopilot.readiness({ known: ['stack'], familiarity: 1 / 7 }, { stack: fresh() }, t, { activityCount: 1 });
+A.eq([rdA.tier, rdA.groundedBy], ['hot', 'activity'], 'a warm (no-goals) dossier + one run → hot, grounded BY the run');
+// the dossier path stands alone when there is no activity (activity never DISCOUNTS the dossier).
 rdA = Autopilot.readiness({ known: ['goals', 'stack', 'pain', 'identity'], familiarity: 4 / 7 }, { goals: fresh(), stack: fresh(), pain: fresh(), identity: fresh() }, t, { activityCount: 0 });
-A.eq([rdA.tier, rdA.groundedBy], ['hot', 'dossier'], 'a full dossier is hot on its own; groundedBy names dossier');
+A.eq([rdA.tier, rdA.groundedBy], ['hot', 'dossier'], 'a dossier with aims is hot on its own; groundedBy names dossier');
+// a tie with real activity names activity, so a goals-only dossier beside a recent run keeps every archetype the run
+// can ground (the old goals-only + 4-run station was activity-grounded; dropping the bars must not narrow it).
+rdA = Autopilot.readiness({ known: ['goals'], familiarity: 1 / 7 }, { goals: fresh() }, t, { activityCount: 3 });
+A.eq([rdA.tier, rdA.groundedBy], ['hot', 'activity'], 'aims + recent runs → hot, grounded by activity (all archetypes stay open to the veto)');
 A.eq(Autopilot.readiness({ known: [] }, {}, t, {}).tier, 'cold', 'no activityCount at all → pure dossier path (unchanged)');
 
 // (b) ELIGIBILITY opens to ALL archetypes when the grounding is activity (candidates cite a run/chat line, not a dim).

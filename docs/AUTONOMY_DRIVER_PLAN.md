@@ -50,6 +50,15 @@ is the level the station has *earned*; it operates at the **lower of the two and
 binding** ("you set me free, but I'm still learning you — here's a question instead of a guess").
 `WAIT` means nothing ever, regardless of confidence.
 
+**Amendment (2026-10-21, bug 41b2d015):** the deterministic floor is *grounding*, never *usage*. It shipped as
+"goals + 4 dossier areas, or 4 recent runs", which held a posture the Commander chose at the awakening
+("Quietly do small jobs" / "Run free") off with no setting to lift it — a usage wall under DECISIONS ("full
+power from minute one, no grind/unlock/usage walls"). The floor is now one current aim (goals — the awakening
+always authors purpose.md, which seeds it) or one recent user run (`frontend/app/autopilot.js` `HOT_MIN` /
+`ACTIVITY_HOT_MIN` = 1). Below it there is nothing a job could cite, so the station still earns context first.
+The per-candidate half is unchanged: every job must cite a real belief or run, clear `MIN_ACT_SCORE`, and
+survive the self-critique.
+
 **Two-tier grounding maps onto the ask→propose→act ladder:**
 - **Confirmed beliefs (dossier)** may ground **acting**.
 - **Observed affinity (profile)** may only ground **proposing** — and, crucially, it **targets the
