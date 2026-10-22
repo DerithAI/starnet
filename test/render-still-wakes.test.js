@@ -173,7 +173,7 @@ function bootVoice() {
   // ---- 3. every other async writer of drawn state wakes the floor (the real source, function by function) ----------------
   {
     const has = (sig, re, label) => { const b = A.fnBody(code, sig); A.ok(!!b && re.test(b), label); };
-    has('function noteFirstShip(p)', /firstShipPulse = \{ at: fnow, tiles: receipt\.tiles \};\s*motionWake\(\);/, 'FIRST SHIP: the pulse set in the count read\'s answer wakes the floor (test/first-ship-receipt drives it)');
+    has('function noteFirstShip(p)', /firstShipPulse = \{ at: \(typeof performance !== 'undefined'\) \? performance\.now\(\) : fnow, tiles: receipt\.tiles \};[^\n]*\n\s*motionWake\(\);/, 'FIRST SHIP: the pulse set in the count read\'s answer wakes the floor (test/first-ship-receipt drives it)');
     has('function fetchSnapshot()', /reconcileFromSnapshot\(snap\);[^\n]*\n\s*motionWake\(\);/, 'the snapshot reconcile (run clocks, glyphs, queues, lit bodies) wakes the floor');
     has('function pollFeedState()', /if \(changed\) \{ routingNags = buildRoutingNags\(\); motionWake\(\); \}/, 'a feed-truth change (the NO FEED callouts) wakes the floor');
     has('function pollLineJobStreams()', /lineJobStream = m;\s*motionWake\(\);/, 'the crate join (which chute a pending crate stands on) wakes the floor');
@@ -181,6 +181,7 @@ function bootVoice() {
     has('function pollConnectors()', /reconcileConnectors\(connIds\);\s*motionWake\(\);/, "a connector portal's state wakes the floor");
     has('function pollSpotify()', /PropSprites\.setSpotifyConnected\(!!\(j && j\.connected\)\); motionWake\(\);/, "the jukebox's dead/live state wakes the floor");
     has('function emitProductCrate(aid, spec, dockId)', /convey\.enqueueAt\(t\.x, t\.y, spec\); motionWake\(\);/, 'a product crate enqueued (the hand-off grace timer releases one between frames) rides from the next vsync');
+    has('function loadStation(st)', /unsub = station\.onChange\(p => \{[^\n]*motionWake\(\); \}\);/, 'a layout edit (station.onChange — a builder step or an undo after an await) wakes the floor (test/render-still.test.js drives it)');
     has('function awakenTurn()', /agent\.dir = side; motionWake\(\);[\s\S]*setGlance\('south', 700, performance\.now\(\)\); motionWake\(\);[\s\S]*agent\.dir = 'south'; motionWake\(\);/, "each timed beat of the awakening's Turn wakes the floor");
     const open = code.slice(code.indexOf('const open = () => {'), code.indexOf('connOpenFn = open;'));
     A.ok(/source\.onopen = \(\) => \{[^\n]*motionWake\(\); \};/.test(open) && /source\.onerror = \(\) => \{[^\n]*bridgeRecovering = true; motionWake\(\);/.test(open),

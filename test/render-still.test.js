@@ -74,23 +74,30 @@ function frameBody(now) { stillBegin(); scene.step(now); stillVerdict(now); }
 const EXPOSE = `
 this.W = { paceMs, scheduleFrame, paceWake, motionWake, userActive, cameraMoved, renderPace, stillBegin, stillVerdict, stillMove, noteDue, frame,
   noteDrawCost, resetBudget: () => { drawCostMs = 0; },
+  dueLeadMs,
   st: () => ({ stillNow, stillWhy, stillDue, paceTimer, inputAt, motionUntil, vsyncMs, stillFrames }),
   consts: { PACE_VISIBLE_MS, PACE_MOTION_MS, PACE_STILL_MS, PACE_MOTION_HOLD_MS, INPUT_HOLD_MS, BODY_CLOCKS } };`;
 
-function makeWorld(hz) {
+// opts.timerLate: every setTimeout fires this many ms late (a Windows / WebView2 system tick is ~15.6 ms) ·
+// opts.pacer(src) / opts.verdict(src): rewrite the lifted pacer / verdict block (a mutation check: the old rule must fail) ·
+// opts.extra: more real world.js source (lifted functions + their stubs), run in the same sandbox
+function makeWorld(hz, opts) {
+  opts = opts || {};
   const env = { now: 0, rafQ: [], timers: [], tid: 0, rafCalls: 0, draws: [], hz };
-  const P = 1000 / hz;
+  const P = 1000 / hz, late = opts.timerLate || 0;
   const sb = {
-    console, Map, Math, Object, Infinity, NaN,
+    console, Map, Set, Math, Object, Infinity, NaN,
     document: { hasFocus: () => true },
     performance: { now: () => env.now },
     requestAnimationFrame: fn => { env.rafQ.push(fn); return env.rafQ.length + 1000; },
     cancelAnimationFrame: () => { env.rafQ.length = 0; },
-    setTimeout: (fn, ms) => { const id = ++env.tid; env.timers.push({ id, at: env.now + Math.max(0, ms), fn }); return id; },
+    setTimeout: (fn, ms) => { const id = ++env.tid; env.timers.push({ id, at: env.now + Math.max(0, ms) + late, fn }); return id; },
     clearTimeout: id => { env.timers = env.timers.filter(t => t.id !== id); },
   };
   vm.createContext(sb);
-  vm.runInContext(PRELUDE + world.slice(pFrom, pTo) + '\n' + renderPaceSrc + '\n' + world.slice(vFrom, vTo) + '\n' + frameSrc + '\n' + EXPOSE, sb);
+  const pacer = opts.pacer ? opts.pacer(world.slice(pFrom, pTo)) : world.slice(pFrom, pTo);
+  const verdict = opts.verdict ? opts.verdict(world.slice(vFrom, vTo)) : world.slice(vFrom, vTo);
+  vm.runInContext(PRELUDE + pacer + '\n' + renderPaceSrc + '\n' + verdict + '\n' + frameSrc + '\n' + (opts.extra || '') + '\n' + EXPOSE, sb);
   const W = sb.W;
   // the event loop: timers fire at their time; rAF callbacks run on the next vsync boundary (k * P)
   const actions = [];   // test-side events at a wall time: { at, fn }
@@ -349,6 +356,139 @@ function walkerScene(w, b) {
   A.ok(m >= 26 && w.W.st().stillWhy === 'speech', '...but with a bubble over its head (which rounds to whole px as the head swells) it keeps the normal pace (' + m + ' draws in 450 ms)');
 }
 
+// ---- 4d. DUE LEAD: a due change is met by rAF, never by a timer that can fire a Windows tick late (final fixes 10-21) ---
+// The scene arms a body's idle clock d ms after a draw (inside the frame, as the inner life does); its walk must be drawn on
+// the first vsync at/after the clock, whatever the timers do. WebView2 on Windows can fire a timer a whole ~15.6 ms system
+// tick late: the old rule (a timer 2 ms before the change) then missed the vsync and drew the change a frame late.
+function dueRun(d, opts) {
+  const w = makeWorld(60, opts), b = body();
+  w.sb.agent = b;
+  let last = 0, armAt = Infinity, L = null;
+  w.sb.scene = { step(now) {
+    w.env.draws.push(now);
+    const dt = last ? now - last : 0; last = now;
+    if (b.state === 'idle' && now >= b.idleUntil) { b.state = 'walk'; b.walkFrom = now; }
+    if (b.state === 'walk') b.px += 0.03 * dt;
+    if (now >= armAt && L == null) { L = now; b.idleUntil = now + d; }
+  } };
+  w.W.frame(0); w.runUntil(1000);
+  armAt = w.env.now;
+  w.runUntil(armAt + d + 200);
+  return { w, L, at: b.walkFrom, want: w.firstVsyncAtOrAfter(L + d) };
+}
+{
+  // the rule before the fix: the still wait's timer aims 2 ms before the change (inside the last vsync too), and a frame's
+  // verdict re-books only a timer that would fire after the change
+  const OLD = {
+    pacer: src => src.replace('still && stillDue - now > lead ? Math.min(lastDrawnAt + pace - 2, stillDue - lead) - now : 0', 'still ? Math.min(lastDrawnAt + pace, stillDue) - now - 2 : 0'),
+    verdict: src => src.replace('stillDue - dueLeadMs() < paceTimerAt - 0.5', 'stillDue < paceTimerAt'),
+  };
+  A.ok(OLD.pacer(world.slice(pFrom, pTo)) !== world.slice(pFrom, pTo) && OLD.verdict(world.slice(vFrom, vTo)) !== world.slice(vFrom, vTo),
+    '(the mutation check finds the DUE LEAD rule in scheduleFrame and the verdict\'s re-book)');
+  // +60 ms: the change is known a still tick ahead, so the draw before it books the wait toward it
+  const old = dueRun(60, Object.assign({ timerLate: 15.6 }, OLD));
+  A.ok(old.at - old.want > 1, 'MUTATION CHECK — the old rule, timers 15.6 ms late: a change due +60 ms is drawn a vsync late (+' + (old.at - old.L).toFixed(1) + ' ms; its vsync is +' + (old.want - old.L).toFixed(1) + ')');
+  A.ok(old.w.W.renderPace().dueLate === 1, "...and renderPace's dueLate counts it (the readout catches a miss)");
+  for (const d of [60, 10]) {
+    const r = dueRun(d, { timerLate: 15.6 });
+    A.ok(Math.abs(r.at - r.want) < 0.01, 'timers 15.6 ms late: a change due +' + d + ' ms lands on its vsync (+' + (r.at - r.L).toFixed(1) + ' ms) — rAF, not a timer, covers the last vsync before it');
+    const rp = r.w.W.renderPace();
+    A.ok(rp.dueDraws === 1 && rp.dueLate === 0 && rp.dueLatMaxMs <= 1000 / 60 && rp.dueLatAvgMs === rp.dueLatMaxMs, '...and renderPace reads it: one due change drawn, none late (latency ' + rp.dueLatMaxMs + ' ms)');
+  }
+  const miss = [], lateCount = [];
+  for (const lag of [0, 4, 15.6]) for (let d = 1; d <= 400; d += d < 60 ? 2.3 : 17.9) {
+    const x = dueRun(d, { timerLate: lag });
+    if (!(Math.abs(x.at - x.want) < 0.01)) miss.push(lag + 'ms late, due +' + d.toFixed(1) + ' → drawn +' + (x.at - x.L).toFixed(1) + ' (want +' + (x.want - x.L).toFixed(1) + ')');
+    if (x.w.W.renderPace().dueLate) lateCount.push(lag + '/' + d.toFixed(1));
+  }
+  A.ok(!miss.length, 'SWEEP — due +1..400 ms, timers on time, 4 ms and 15.6 ms late: every change lands on the first vsync at/after it' + (miss.length ? ' — missed: ' + miss.slice(0, 6).join('; ') : ''));
+  A.ok(!lateCount.length, '...and renderPace counts none of them late' + (lateCount.length ? ' — ' + lateCount.slice(0, 6).join(', ') : ''));
+  // the long still wait stays a timer: a still floor with nothing due spins no rAF, even with late timers
+  const w = makeWorld(60, { timerLate: 15.6 }), b = body();
+  w.sb.agent = b; walkerScene(w, b);
+  w.W.frame(0); w.runUntil(1000);
+  const d0 = w.env.draws.length, r0 = w.env.rafCalls;
+  w.runUntil(3000);
+  const dn = w.env.draws.length - d0, rn = w.env.rafCalls - r0;
+  A.ok(rn <= dn + 1 && w.W.renderPace().mode === 'still', 'the long still wait is still a timer: one rAF callback per still draw, no spin (' + rn + ' callbacks, ' + dn + ' draws in 2 s, timers 15.6 ms late)');
+  A.ok(Math.abs(w.W.dueLeadMs() - (1000 / 60 + 4)) < 0.5, 'the lead is one learned vsync + 4 ms (' + w.W.dueLeadMs().toFixed(1) + ' ms)');
+}
+
+// ---- 4e. the final fixes' wakes, through the real pacer: a camera cut from a timer, a layout edit, start stamps ------------
+const WAKE_SRC = (world.match(/  const WAKE_API = new Set\(\[[\s\S]*?\]\);/) || [''])[0] + '\n' + A.fnBody(code, 'function wakeOnCall(api)');
+A.ok(/const WAKE_API/.test(WAKE_SRC) && /function wakeOnCall\(api\)/.test(WAKE_SRC), 'world.js carries WAKE_API and wakeOnCall (lifted below)');
+{
+  // (a) frameReviewRoom: stationcommands.js frames what the builder built from a setTimeout (700 ms after the build) — the real
+  // function, wrapped by the real wakeOnCall, cuts the camera on the next vsync; unwrapped (before the fix) it waited out a still tick
+  const extra = WAKE_SRC + '\n' + A.fnBody(code, 'function frameReviewRoom(id)') + '\n' + A.fnBody(code, 'function fitCamera()') + `
+var MINZ = 0.5, MAXZ = 8, fitW = 0, fitH = 0, StationBake = { WALL: { up: 24, skirt: 6 } };
+function clampz(v, a, b) { return Math.max(a, Math.min(b, v)); }
+var station = { serialize: () => ({ rooms: { r1: { rects: [{ x1: 2, y1: 2, x2: 9, y2: 7 }] } } }) };
+this.API = wakeOnCall({ frameReviewRoom }); this.rawFrameReviewRoom = frameReviewRoom;`;
+  const run = (fn) => {
+    const w = makeWorld(60, { extra }), b = body();
+    w.sb.agent = b; w.sb.cache = { W: 400, H: 300 }; w.sb.geo = { origin: { tx: 0, ty: 0 } };
+    const seen = [];
+    w.sb.scene = { step(now) { w.env.draws.push(now); seen.push([now, w.sb.scale]); } };
+    w.W.frame(0); w.runUntil(1000);
+    const L = w.toNextDraw(), s0 = w.sb.scale, c0 = w.W.renderPace().stillWhyCounts;
+    w.at(L + 5, () => fn(w));
+    w.runUntil(L + 120);
+    const cut = seen.find(([t, s]) => t > L && s !== s0), c1 = w.W.renderPace().stillWhyCounts;
+    return { w, L, cut, moved: (c1.wake || 0) + (c1.camera || 0) - (c0.wake || 0) - (c0.camera || 0) };
+  };
+  const ok = run(w => w.sb.API.frameReviewRoom('r1'));
+  A.ok(ok.cut && Math.abs(ok.cut[0] - (ok.L + 1000 / 60)) < 0.01, "World.frameReviewRoom from a timer between still frames: the camera cut is drawn on the next vsync (+" + (ok.cut ? (ok.cut[0] - ok.L).toFixed(1) : '?') + ' ms)');
+  A.ok(ok.moved >= 1 && ok.w.W.renderPace().mode === 'still', '...that frame is judged moving (' + ok.moved + '), and the new framing then goes still again');
+  const raw = run(w => w.sb.rawFrameReviewRoom('r1'));
+  A.ok(raw.cut && raw.cut[0] - raw.L > 30, 'MUTATION CHECK — unwrapped (before the fix), the same cut waited out the still tick (+' + (raw.cut ? (raw.cut[0] - raw.L).toFixed(1) : '?') + ' ms)');
+}
+{
+  // (b) station.onChange: a layout edit that lands after an await (a builder step, a restyle, an undo) wakes a still floor — the
+  // real subscriber from loadStation
+  const sub = (A.fnBody(code, 'function loadStation(st)').match(/if \(station && station\.onChange\) unsub = station\.onChange\(p => \{[^\n]*\}\);/) || [''])[0];
+  A.ok(/motionWake\(\); \}\);$/.test(sub), "loadStation's station.onChange subscriber ends in motionWake()");
+  const extra = 'var geoDirty = false, bakeEditPending = false, unsub = null, onEdit = null;\nvar station = { onChange(fn) { onEdit = fn; return () => {}; } };\n' + sub + '\nthis.edit = p => onEdit(p); this.dirty = () => geoDirty;';
+  const w = makeWorld(60, { extra }), b = body();
+  w.sb.agent = b; walkerScene(w, b);
+  w.W.frame(0); w.runUntil(1000);
+  const L = w.toNextDraw();
+  w.at(L + 4, () => w.sb.edit({ staticBakeUnchanged: true }));   // a prop placed after an await
+  w.runUntil(L + 100);
+  const next = w.env.draws.find(t => t > L);
+  A.ok(w.sb.dirty() && Math.abs(next - (L + 1000 / 60)) < 0.01, 'a layout edit between still frames is drawn on the next vsync (+' + (next - L).toFixed(1) + ' ms; the still tick is +33.3)');
+}
+{
+  // (c) animation start stamps set between frames read the wall clock, never the last frame's fnow (up to 33 ms old on a still
+  // floor, so the flash / ripple would start part-way through): the real dockArrival, onWorkitemDeliver and spawnAgent
+  const extra = A.fnBody(code, 'function dockArrival(p)') + '\n' + A.fnBody(code, 'function onWorkitemDeliver(bx)') + '\n' + A.fnBody(code, 'function spawnAgent(a)') + `
+var fnow = 0, routingPlan = { dockBays: [{ propId: 'bay1', agentId: 'm' }], bayTileToAgent: {} }, U = { irnd: (a) => a };
+function bodyForAgent(id) { return crew.find(x => x.agentId === id) || null; }
+function wakeIn() { wakeAt = performance.now(); }
+function workerFoot() { return { x: 300, y: 150 }; }
+function crewColor() { return '#fff'; }
+function makeCrewBody(id, name, color, x, y) { return { id: 'c_' + id, agentId: id, name, px: x, py: y, dir: 'south', state: 'idle', idleUntil: Infinity, glanceCd: Infinity, _pose: 'p', _renderFrame: 0 }; }
+function greetNewcomer() {}
+this.dock = dockArrival; this.deliver = onWorkitemDeliver; this.spawn = spawnAgent;`;
+  const w = makeWorld(60, { extra }), mate = body({ id: 'm1', agentId: 'm', px: 260 });
+  w.sb.agent = body(); w.sb.crew = [mate];
+  w.sb.scene = { step(now) { w.env.draws.push(now); w.sb.fnow = now; } };   // frameBody: fnow = now
+  w.W.frame(0); w.runUntil(1000);
+  const L = w.toNextDraw();
+  w.runUntil(L + 30);   // 30 ms into a still interval: fnow is still L
+  w.sb.dock({ agentId: 'm' });
+  A.ok(w.sb.dockFlashes.get('bay1') === L + 30 && mate.wakeAt === L + 30, 'dockArrival between frames: the dock flash and the ripple start on the wall clock (+30 ms), not the stale fnow (' + (w.sb.dockFlashes.get('bay1') - L) + ', ' + (mate.wakeAt - L) + ')');
+  w.runUntil(L + 2000); const L2 = w.toNextDraw(); w.runUntil(L2 + 25);
+  w.sb.deliver({ x: 1, y: 1, payload: { agentId: 'm' } });
+  A.ok(mate.wakeAt === L2 + 25, 'a crate delivered to a crew body: its wake ripple starts on the wall clock (+' + (mate.wakeAt - L2) + ' ms)');
+  w.runUntil(L2 + 2000); const L3 = w.toNextDraw(); w.runUntil(L3 + 21);
+  w.sb.spawn({ id: 'newbie', name: 'NEW' });
+  const nb = w.sb.crew.find(x => x.agentId === 'newbie');
+  A.ok(nb && nb.wakeAt === L3 + 21, 'a summoned body materializing between frames: its ripple starts on the wall clock (+' + (nb ? nb.wakeAt - L3 : '?') + ' ms)');
+  A.ok(/firstShipPulse = \{ at: \(typeof performance !== 'undefined'\) \? performance\.now\(\) : fnow, tiles: receipt\.tiles \};/.test(A.fnBody(code, 'function noteFirstShip(p)')),
+    "noteFirstShip's pulse starts on the wall clock (test/first-ship-receipt.test.js drives it)");
+}
+
 // ---- 5. a wake from outside the frame (input, a harness event, a World API call) lands on the next vsync ------------
 {
   const w = makeWorld(60), b = body();
@@ -420,6 +560,9 @@ function walkerScene(w, b) {
   flip('camera', 'a pan', () => { sb.panX += 7; });
   flip('camera', 'a zoom', () => { sb.scale *= 1.1; });
   flip('camera', 'a focus ease running', () => { sb.camLerp = { scale: 3, panX: 0, panY: 0 }; }, () => { sb.camLerp = null; });
+  // the ease's own gate (frameBody: camLerp && !camAnim && !camLock): under a follow-lock a camLerp is dormant — it moves nothing
+  calm('a focus ease left dormant under a follow-lock (the lock owns the camera; the ease runs only once it lets go)',
+    () => { sb.camLerp = { scale: 3, panX: 0, panY: 0 }; sb.camLock = { id: 'hero', sc: 3, source: 'session' }; }, () => { sb.camLerp = null; sb.camLock = null; });
   flip('camera', 'a scripted camera move', () => { sb.camAnim = { t: 0 }; }, () => { sb.camAnim = null; });
   flip('camera', 'the hand hold after a drag', () => { sb.performance.now = () => now; W.cameraMoved(); }, null);
   // input
@@ -576,6 +719,52 @@ function walkerScene(w, b) {
   A.ok(settle().stillDue === Infinity || settle().stillDue > now, 'past clocks are never due');
 }
 
+{
+  const gate = (A.fnBody(code, 'function frameBody(now)').match(/if \((camLerp && !camAnim && !camLock)\) \{/) || [])[1];
+  A.ok(!!gate && A.fnBody(code, 'function stillVerdict(now)').includes('(' + gate + ')'), "the verdict's focus-ease term is the ease's own gate in frameBody (" + gate + ')');
+}
+
+// ---- 7b. THE PROP LOOP: a body resting on a prop leaves its art as drawn; a body working one is motion (final fixes 10-21) ----
+// The real lines of drawScene's prop pass (who holds which prop, its `work`, its `live`, the STILL mark), run per prop on the
+// real REST_USE / restingOn, with each prop's use kind read from the real catalog in propsprites.js.
+{
+  const sceneSrc = A.fnBody(code, 'function drawScene(now, dt, slices)');
+  const lp = sceneSrc.indexOf('const leisureProps = new Set();'), lpEnd = sceneSrc.indexOf('\n', sceneSrc.indexOf('for (const body of [agent, ...crew])', lp));
+  const wk = sceneSrc.indexOf('const work = ('), wkEnd = sceneSrc.indexOf("stillMove('prop');", wk) + "stillMove('prop');".length;
+  A.ok(lp > 0 && lpEnd > lp && wk > lpEnd && wkEnd > wk && wkEnd - wk < 1600, '(the prop pass lines are found in drawScene)');
+  const extra = `var outboxLit = false, scanningTiles = new Set();
+function bayLit() { return false; } function workstationLit() { return false; } function isWorkstationProp() { return false; }
+function heatFor() { return 0; } function deskProgFor() { return null; } function workstationOccupied() { return false; }
+function propOnScreen() { return true; }
+function propPass(now) { ${sceneSrc.slice(lp, lpEnd)}
+  for (const p of (geo && geo.props) || []) { ${sceneSrc.slice(wk, wkEnd)} } }
+this.propPass = propPass;`;
+  const ps = fs.readFileSync(path.join(root, 'frontend/app/propsprites.js'), 'utf8');
+  const kindOf = id => { const m = ps.match(new RegExp('\\{ id: "' + id + '",[^\\n]*?use: \\{ kind: \'(\\w+)\'')); return m ? m[1] : null; };
+  const w = makeWorld(60, { extra }), sb = w.sb, W = w.W;
+  const hero = body({ id: 'hero' }), mate = body({ id: 'mate', px: 300 });
+  sb.agent = hero; sb.crew = [mate];
+  const now = 5000;
+  const verdict = () => { W.stillBegin(); sb.propPass(now); W.stillVerdict(now); return W.st(); };
+  const holding = (id, label, want) => {
+    const kind = kindOf(id);
+    A.ok(!!kind, '(' + id + ' is in the catalog, use kind ' + kind + ')');
+    sb.geo = { props: [{ id: 'p_' + id, t: id, x: 10, y: 10, w: 1, h: 1, use: { kind } }] };
+    mate.usingProp = 'p_' + id; verdict();
+    const s = verdict();
+    A.ok(want ? s.stillWhy === want : s.stillNow, label + ' → ' + (want || 'still') + (s.stillNow ? '' : ' [got ' + s.stillWhy + ']'));
+    mate.usingProp = null; sb.geo = null; verdict();
+  };
+  holding('bunk', 'a body napping in a bunk (kind bed: the quilt breath is the prop clock\'s due edge)', null);
+  holding('beanbag', 'a body lounging on a beanbag', null);
+  holding('couch', 'a body on a couch', null);
+  holding('stool', 'a body perched on a stool', null);
+  holding('benchpress', 'a body on the bench press (static art)', null);
+  holding('punchbag', 'a body boxing the heavy bag (kind bag: active punching, the bag swings)', 'prop');
+  holding('tv', 'a body using the TV (its screen plays)', 'prop');
+  A.ok(verdict().stillNow, '...and with no prop held the floor is still');
+}
+
 // ---- 8. the wiring in the real world.js ---------------------------------------------------------------------------
 const bodySrc = A.fnBody(code, 'function frameBody(now)');
 A.ok(/^\s*function frameBody\(now\) \{\s*stillBegin\(\);/.test(bodySrc), 'frameBody judges itself: stillBegin() is its first act');
@@ -612,6 +801,83 @@ A.ok(/return wakeOnCall\(\{ init, rebake,/.test(code), 'the World API is returne
     A.ok(names.includes(n), 'World.' + n + ' wakes a still floor');
   for (const n of ['renderPace', 'cameraState', 'cameraDbg', 'dbg', 'getActivity', 'crewFrames', 'planStatus'])
     A.ok(!names.includes(n), 'World.' + n + ' is a read: polling it never keeps a still floor at full pace');
+  A.ok(names.includes('frameReviewRoom') && names.includes('init'), 'World.frameReviewRoom (the builder\'s camera cut, from a timer) and World.init (its resize re-anchors the pan) wake a still floor');
+
+  // THE CAMERA RATCHET (final fixes 10-21): every exported World function that writes the camera — scale, panX, panY, camLock,
+  // camLerp or camAnim, itself or through any world.js function it reaches — is wrapped by wakeOnCall, so a camera API added
+  // later can never leave its move waiting out a still interval. Reached = named anywhere in its body (a call, or a value
+  // handed on: a callback, a timer); writes inside the frame itself (frame / frameBody / drawScene) are that frame's own,
+  // judged by its verdict. EXEMPT names say why.
+  const CAM = ['scale', 'panX', 'panY', 'camLock', 'camLerp', 'camAnim'];
+  const writeRe = v => new RegExp('(^|[^.\\w$])' + v + '\\s*(?:=(?!=)|\\+=|-=|\\*=|\\/=)', 'g');
+  const localRe = v => new RegExp('\\b(?:let|const|var)\\s+(?:[\\w$]+\\s*=[^;,]*,\\s*)*' + v + '\\b|function\\s*[\\w$]*\\s*\\([^)]*\\b' + v + '\\b[^)]*\\)|\\(\\s*\\{[^}]*\\b' + v + '\\b[^}]*\\}\\s*\\)\\s*=>');
+  const writes = src => CAM.filter(v => writeRe(v).test(src) && !localRe(v).test(src));
+  const decl = {}, range = [];
+  for (const m of code.matchAll(/\bfunction ([A-Za-z_$][\w$]*)\s*\(/g)) {
+    if (decl[m[1]]) continue;
+    decl[m[1]] = A.fnBody(code.slice(m.index), 'function ' + m[1] + '(');
+    range.push([m.index, m.index + decl[m[1]].length]);
+  }
+  const big = Object.keys(decl).filter(n => decl[n].length > code.length / 4);
+  A.ok(Object.keys(decl).length > 500 && !big.length, '(the ratchet indexed ' + Object.keys(decl).length + ' world.js functions, none mis-scanned long' + (big.length ? ': ' + big.join(', ') : '') + ')');
+  const FRAME = new Set(['frame', 'frameBody', 'drawScene']);
+  const refs = src => [...new Set([...src.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)(?![\w$])(?!\s*:)/g)].map(m => m[1]))].filter(n => decl[n] && !FRAME.has(n));
+  const Wr = {}, Ed = {};
+  for (const n of Object.keys(decl)) { Wr[n] = new Set(writes(decl[n])); Ed[n] = refs(decl[n]).filter(x => x !== n); }
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const n of Object.keys(decl)) for (const g of Ed[n]) for (const v of Wr[g]) if (!Wr[n].has(v)) { Wr[n].add(v); changed = true; }
+  }
+  // the export object, split at its top-level commas
+  const at = code.indexOf('return wakeOnCall({');
+  const obj = A.fnBody(code.slice(at), 'return wakeOnCall(');
+  const inner = obj.slice(obj.indexOf('{') + 1, obj.lastIndexOf('}'));
+  const props = [];
+  { let depth = 0, cur = '';
+    for (let i = 0; i < inner.length; i++) {
+      const c = inner[i];
+      if (c === '"' || c === "'" || c === '`') { let j = i + 1; for (; j < inner.length; j++) { if (inner[j] === '\\') { j++; continue; } if (inner[j] === c) break; } cur += inner.slice(i, j + 1); i = j; continue; }
+      if ('([{'.includes(c)) depth++; else if (')]}'.includes(c)) depth--;
+      if (c === ',' && depth === 0) { props.push(cur.trim()); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim()) props.push(cur.trim()); }
+  const exportWrites = {};
+  const bad = [];
+  for (const p of props) {
+    const m = p.match(/^([A-Za-z_$][\w$]*)\s*(?::\s*([\s\S]*))?$/);
+    if (!m) { bad.push(p.slice(0, 40)); continue; }
+    const key = m[1], val = (m[2] == null ? key : m[2]).trim(), bare = /^[A-Za-z_$][\w$]*$/.test(val);
+    const s = new Set(bare ? (Wr[val] || []) : writes(val));
+    if (!bare) for (const g of refs(val)) for (const v of Wr[g]) s.add(v);
+    exportWrites[key] = [...s];
+  }
+  A.ok(props.length > 120 && !bad.length, '(the ratchet read ' + props.length + ' World exports' + (bad.length ? '; unparsed: ' + bad.join(' | ') : '') + ')');
+  // coverage: every write to a camera variable sits in a function the ratchet indexed, or in the export object itself
+  const lineAt = i => code.slice(code.lastIndexOf('\n', i) + 1, code.indexOf('\n', i));
+  const orphan = [];
+  for (const v of CAM) for (const m of code.matchAll(writeRe(v))) {
+    const i = m.index + m[1].length;
+    if (/^\s*let\b/.test(lineAt(i)) && !range.some(([a, b]) => i > a && i < b)) continue;   // the module's own declaration
+    if ((i >= at && i < at + obj.length) || range.some(([a, b]) => i > a && i < b)) continue;
+    orphan.push(v + ': ' + lineAt(i).trim().slice(0, 60));
+  }
+  A.ok(!orphan.length, 'every camera write in world.js is inside a function the ratchet reads' + (orphan.length ? ' — not: ' + orphan.join(' | ') : ''));
+  const CAM_EXEMPT = {
+    renderStill: 'a still render: it swaps in its own canvas and camera and puts the live ones back in finally — the floor\'s view never changes',
+    renderStillOfTiles: 'renderStill, cropped',
+    stop: 'stops the loop (running = false): nothing is drawn after it, and start() draws at once',
+  };
+  const writers = Object.keys(exportWrites).filter(k => exportWrites[k].length);
+  A.ok(writers.length >= 15, '(the ratchet finds ' + writers.length + ' camera-writing exports: ' + writers.join(', ') + ')');
+  const unwrapped = writers.filter(k => !names.includes(k) && !k.startsWith('_dbg') && !CAM_EXEMPT[k]);
+  A.ok(!unwrapped.length, 'every World export that writes the camera wakes a still floor (WAKE_API)' + (unwrapped.length ? ' — not wrapped: ' + unwrapped.map(k => k + ' [' + exportWrites[k].join(',') + ']').join(', ') : ''));
+  const staleEx = Object.keys(CAM_EXEMPT).filter(k => !writers.includes(k) || names.includes(k));
+  A.ok(!staleEx.length, 'every camera exemption is a real camera writer left unwrapped on purpose' + (staleEx.length ? ' — stale: ' + staleEx.join(', ') : ''));
+  A.ok(/const keep = \{ cv, ctx, scale, panX, panY, overlaysOn \};[\s\S]*finally \{[\s\S]*cv = keep\.cv; ctx = keep\.ctx; scale = keep\.scale; panX = keep\.panX; panY = keep\.panY;/.test(A.fnBody(code, 'function renderStill(maxPx, opts)')),
+    '(renderStill really does restore the live camera in finally)');
+  for (const k of ['frameReviewRoom', 'restoreCamera', 'lockBody', 'focusBody', 'focusAgent', 'camPushIn', 'init'])
+    A.ok(writers.includes(k), '(the ratchet sees World.' + k + ' write the camera)');
 }
 
 // ---- 8b. THE CLOCK RATCHET: every clock the frame clock is compared against in world.js is due in the verdict, or exempt for
@@ -658,6 +924,7 @@ A.ok(/return wakeOnCall\(\{ init, rebake,/.test(code), 'the World API is returne
     'userReturnUntil': "raises THE LOOK-UP's chance inside maybeGlance, whose pending roll is motion (heroGlanceAt)",
     'plan.until': 'a traffic plan for a body holding a walk target — motion already', 'trafficRetry.get': 'a traffic retry for a body holding a walk target — motion already',
     'forgetAt': 'habituation decay: it changes later decisions, nothing drawn', 'mournCd': 'gates a grief beat that a prop edit queues (an input / World API wake)',
+    'dueWatch': "the DUE LEAD readout: frame() records how late the verdict's own due change drew — it gates nothing",
   };
   const unknown = [], stale = [];
   for (const k of keys) {

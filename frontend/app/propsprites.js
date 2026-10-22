@@ -11176,7 +11176,13 @@ const PropSprites = (() => {
     if (!id) return; const s = connState[id] || (connState[id] = {});
     s.state = state || 'offline'; if (toolCount != null) s.toolCount = toolCount;
   }
-  function pulseConnector(id) { if (!id) return; (connState[id] || (connState[id] = {})).firedAt = now; }
+  function pulseConnector(id) { if (!id) return; (connState[id] || (connState[id] = {})).firedAt = now; notePulse(); }
+  /* STILL (world.js STILL VERDICT): the latest stamp any harness pulse was fired at — a connector packet, a workbench flash,
+     a tool-fire surge. Every pulse decays over the same PULSE_MS from its own stamp, so "some pulse is still decaying at t"
+     is exactly "the latest stamp is under PULSE_MS old" (a pulse dropped since — a reconciled connector, a replaced bench
+     pulse — can only keep it true a little longer: unsure is motion). One number: pulsing() walks no map, allocates nothing. */
+  let lastPulseAt = 0;
+  function notePulse() { if (now > lastPulseAt) lastPulseAt = now; }
   function connectorFired(id) { const s = id && connState[id]; return (s && s.firedAt) ? Math.max(0, 1 - (now - s.firedAt) / PULSE_MS) : 0; }
   /* reconcile against a SUCCESSFUL /api/connectors poll: any tracked connector ABSENT from the live list was
      removed/unbound server-side, so DROP it — else its portal would keep glowing green off a stale last-known
@@ -11196,6 +11202,7 @@ const PropSprites = (() => {
   let wbFiredAt = 0, wbBad = false;                 // global fallback (no propId)
   const wbInst = {};                                // propId -> { at, bad } per-instance pulse
   function pulseWorkbench(ok, id) {
+    notePulse();
     if (id) { wbInst[id] = { at: now, bad: ok === false }; return; }
     wbFiredAt = now; wbBad = (ok === false);
   }
@@ -11225,7 +11232,7 @@ const PropSprites = (() => {
   const propPulse = {};          // propId -> { at, cap, bad }
   // ok defaults true (the success surge). ok===false => a distinct RED failure cue (denied/errored tool call) —
   // TRUTH: a call that the gate denied or that errored never did the work, so it must NOT read as the green surge.
-  function pulseProp(id, cap, ok) { if (!id) return; propPulse[id] = { at: now, cap: cap || '', bad: ok === false }; }
+  function pulseProp(id, cap, ok) { if (!id) return; propPulse[id] = { at: now, cap: cap || '', bad: ok === false }; notePulse(); }
 
   // G2.3 — uncollected work: the world layer feeds the ReturnStore's pending crates here each frame; the OUTBOX
   // sprite stacks that many banked-product crates (cap 5 + counter). PER OUTBOX (10-03): a map propId -> count, so
@@ -11252,14 +11259,9 @@ const PropSprites = (() => {
   /* STILL (world.js STILL VERDICT, 2026-10-21): is any harness-driven pulse still decaying at `t` (the frame's clock) — a
      connector's packet, a workbench's shell/verify flash, a capability prop's tool-fire surge? Each plays PULSE_MS after
      the event that fired it; the bus wakes the first frame, and this keeps the decay at the normal pace wherever it is.
-     Allocation-free: plain key walks over the three live maps. */
-  function pulsing(t) {
-    if (wbFiredAt && t - wbFiredAt < PULSE_MS) return true;
-    for (const k in connState) { const s = connState[k]; if (s && s.firedAt && t - s.firedAt < PULSE_MS) return true; }
-    for (const k in wbInst) { const s = wbInst[k]; if (s && s.at && t - s.at < PULSE_MS) return true; }
-    for (const k in propPulse) { const s = propPulse[k]; if (s && s.at && t - s.at < PULSE_MS) return true; }
-    return false;
-  }
+     O(1) and allocation-free (final fixes 10-21): one stamp, lastPulseAt — a for-in over connState (dictionary-mode once
+     reconcileConnectors deletes from it) built a key list on every frame. */
+  function pulsing(t) { return lastPulseAt > 0 && t - lastPulseAt < PULSE_MS; }
 
   /* draw one prop. f = {t, x, y, w, h} in LOCAL tile coords; `work` lights its screens.
      `live` (G0.2/G0.3, optional) carries the seated agent's TRUTHFUL activity: { heat, prog } — heat

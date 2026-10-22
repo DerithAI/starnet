@@ -21,7 +21,8 @@ A.ok(from > 0 && to > from, 'world.js carries fixtureAnchorKey right before reba
 const fixtureAnchorKey = new Function(world.slice(from, to) + '; return fixtureAnchorKey;')();
 
 // the wiring: only a bake-changing edit (or a moved frame, or a moved lamp anchor) marks the bake dirty
-A.ok(/station\.onChange\(p => \{ geoDirty = true; if \(!p \|\| !p\.staticBakeUnchanged \|\| p\.global\) bakeEditPending = true; \}\)/.test(world),
+// (the STILL tier's wake rides after it: a layout edit is drawn on the next vsync — test/render-still.test.js)
+A.ok(/station\.onChange\(p => \{ geoDirty = true; if \(!p \|\| !p\.staticBakeUnchanged \|\| p\.global\) bakeEditPending = true; motionWake\(\); \}\)/.test(world),
   'the floor subscription marks the bake only for an edit WorldModel says changes it');
 A.ok(/if \(bakeEditPending \|\| frameMoved \|\| fixtureAnchorKey\(geo\) !== bakedAnchorKey\) bakeDirty = true;/.test(world),
   'rederive re-bakes for a bake edit, a moved frame, or a moved lamp anchor — nothing else');

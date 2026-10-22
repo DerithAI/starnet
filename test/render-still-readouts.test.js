@@ -32,10 +32,10 @@ function sky(opts = {}) {
   const window = { devicePixelRatio: 1, screen: { width: 1920, height: 1080 }, matchMedia: () => mql };
   const SpaceBG = new Function('document', 'window', 'performance', skySrc + '\nreturn SpaceBG;')(document, window, undefined);
   const rects = [];
-  let fs_ = '#000', frameRects = null;
+  let fs_ = '#000', frameRects = null, frameImgs = null;   // frameImgs: every image the draw blitted, in order (r.imgs)
   const ctx = { globalAlpha: 1, globalCompositeOperation: 'source-over', set fillStyle(v) { fs_ = v; }, get fillStyle() { return fs_; },
-    fillRect(x, y, w, h) { if (frameRects) frameRects.push([fs_, x, y, w, h]); }, drawImage: noop, createRadialGradient: () => ({ addColorStop: noop }) };
-  return { SpaceBG, mql, draw(id, now, w = 1280, h = 720) { SpaceBG.setBackdrop(id); frameRects = []; SpaceBG.draw(ctx, w, h, now); const r = frameRects; frameRects = null; rects.push(r); return r; } };
+    fillRect(x, y, w, h) { if (frameRects) frameRects.push([fs_, x, y, w, h]); }, drawImage(img) { if (frameImgs) frameImgs.push(img); }, createRadialGradient: () => ({ addColorStop: noop }) };
+  return { SpaceBG, mql, draw(id, now, w = 1280, h = 720) { SpaceBG.setBackdrop(id); frameRects = []; frameImgs = []; SpaceBG.draw(ctx, w, h, now); const r = frameRects; r.imgs = frameImgs; frameRects = frameImgs = null; rects.push(r); return r; } };
 }
 function seeded(fn) {
   const random = Math.random; let s = 0x2545F491;
@@ -64,8 +64,19 @@ seeded(() => {
   A.eq(s.SpaceBG.nextChange(t + 10), t + 10, 'a backdrop switch not yet built (or still baking off-thread) is a change in progress');
   s.draw('nursery', t + 20);
   A.ok(s.SpaceBG.nextChange(t + 20) > t + 20, 'THE NURSERY carries the same weather (a meteor is due)');
+  // OCEAN (final fixes 10-21): the water STEPS — draw() swaps its wave plate every 340 ms — so the next plate edge is due (the
+  // swell's slide, the glitter and the clouds stay ambient drift); proven on the draw itself: the plate it blits changes exactly there
   s.draw('ocean', t + 30); s.draw('ocean', t + 40);
-  A.eq(s.SpaceBG.nextChange(t + 40), Infinity, 'ocean: only slow layers (swell, glitter, clouds) and no weather — nothing the still pace must not slow');
+  const oNow = t + 40, edge = s.SpaceBG.nextChange(oNow);
+  A.ok(edge > oNow && edge - oNow <= 340 && edge % 340 === 0, 'ocean: the next wave-plate edge is due (+' + Math.round(edge - oNow) + ' ms, on the 340 ms plate clock), never Infinity');
+  const plate = tq => s.draw('ocean', tq).imgs[0];
+  A.ok(plate(edge - 1) === plate(oNow) && plate(edge) !== plate(edge - 1), '...and the plate the draw blits changes exactly at that edge (not before it)');
+  A.eq(s.SpaceBG.nextChange(edge), edge + 340, '...then the edge after it');
+  A.eq(s.SpaceBG.nextChange(edge + 100), edge + 340, '...between edges, the coming one');
+  s.mql.matches = true;
+  A.eq(s.SpaceBG.nextChange(edge + 100), Infinity, '...under reduced motion the water holds plate 0: nothing due');
+  A.ok(plate(edge + 100) === plate(edge + 500), '(and the draw really holds one plate then)');
+  s.mql.matches = false;
   // NIGHT CITY's cars are separate objects crossing the screen, never drift (review 10-21: they were classed as ambient, so a
   // city floor drew them at 30/s): a city sky with traffic driving is changing on every draw
   s.draw('city', t + 30); s.draw('city', t + 40);
@@ -165,6 +176,19 @@ function props(remaster, industrial) {
   A.ok(PS.pulsing(4100) && !PS.pulsing(4900), "a workbench's per-instance shell/verify flash");
   PS.setNow(5000); PS.pulseWorkbench(true);
   A.ok(PS.pulsing(5800) && !PS.pulsing(5900), "the global workbench flash");
+  // O(1) (final fixes 10-21): pulsing() reads one stamp — no walk of connState, which goes dictionary-mode once
+  // reconcileConnectors deletes from it (a for-in over it built a key list every frame)
+  PS.setNow(6000); for (let i = 0; i < 40; i++) PS.pulseConnector('mcp' + i);
+  PS.setNow(6200); PS.pulseProp('cab9', 'cabinet', false); PS.reconcileConnectors(['mcp3']);
+  A.ok(PS.pulsing(7099) && !PS.pulsing(7100), 'the latest of many pulses (40 connectors, then a surge) holds it for its full 900 ms, and no longer');
+  PS.setNow(8000); PS.pulseConnector('mcp3'); PS.setNow(8100); PS.pulseWorkbench(true, 'wbX');
+  A.ok(PS.pulsing(8999) && !PS.pulsing(9000), '...each kind of pulse stamps it (a connector packet, then a workbench flash)');
+  const PS0 = props(undefined); PS0.setNow(0); PS0.pulseProp('cab0', 'cabinet', true);
+  A.ok(!PS0.pulsing(100), 'a pulse fired with the clock frozen (now = 0) never counts, as before');
+  const pulsingSrc = (psSrc.match(/function pulsing\(t\) \{[^\n]*\}/) || [''])[0];
+  A.ok(/^function pulsing\(t\) \{ return lastPulseAt > 0 && t - lastPulseAt < PULSE_MS; \}$/.test(pulsingSrc), 'pulsing() is one comparison: no map walk, no allocation per frame (' + pulsingSrc.length + ' chars)');
+  A.ok(['function pulseConnector(id)', 'function pulseWorkbench(ok, id)', 'function pulseProp(id, cap, ok)'].every(h => /notePulse\(\);/.test(A.fnBody(psSrc, h))),
+    '...every pulse writer stamps it (notePulse)');
   // the occupied quilt's breath: the next crossing of sin(t / 2000) > 0.2, computed
   PS.setNow(7777); PS.clockBegin(); PS.drawOver({ t: 'bunk', x: 2, y: 2, w: 2, h: 3 });
   const edge = PS.clockNext(), on = t => Math.sin(t / 2000) > 0.2;
