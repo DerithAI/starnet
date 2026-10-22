@@ -126,6 +126,15 @@ function runDashboard(station, opts) {
     for (const a of (doc && Array.isArray(doc.agents) ? doc.agents : [])) if (a && a.id) wearing[a.id] = String(a.skin || '');
     for (const id of model.state.order) feed.setSkin(id, camfeed.setFor(id, wearing[id], skinTable));
   }
+  // the station's level for the stat bar: its growth record in the save, read through the app's own xp.js (Xp.compute). A
+  // save without one (or a read that fails) leaves the level out of the bar — never a made-up LV 1
+  let Xp = null;
+  async function loadStats() {
+    try { Xp = Xp || require(require('node:path').join(__dirname, '..', '..', 'frontend', 'app', 'xp.js')); } catch (_) { return; }
+    const s = await get('/api/save?agent=agent', 30000);
+    const doc = s.ok && s.status === 200 && s.json ? s.json.save : null;
+    ui.stats = doc && doc.stationStats ? Xp.compute(doc.stationStats) : null;
+  }
   function loadFeedAssets(id) {
     for (const p of feed.needs(id)) {
       if (inFlight.has(p)) continue;
@@ -835,6 +844,7 @@ function runDashboard(station, opts) {
     await Promise.all([loadSnapshot(), loadBudget(), loadLines().catch(() => {}), locateFolder().catch(() => {})]);
     await loadHistory().catch(() => {});
     loadSkins().then(paint, () => {});
+    loadStats().then(paint, () => {});
     ui.focus = pickFocus() || ui.focus;
     connectFeed();
     paint();
@@ -843,6 +853,7 @@ function runDashboard(station, opts) {
     every(10000, loadBudget);
     every(6000, () => loadLines().catch(() => {}));
     every(20000, () => loadRoster().then(() => { if (ui.images && model.state.order.some(id => !feed.hasSkin(id))) return loadSkins(); }));
+    every(60000, loadStats);   // the level the stat bar shows
     timers.push(setInterval(paint, 100));   // the working spinner turns at 10 frames a second (paint writes only rows that changed)
     checkOnboarding().catch(() => {});   // a station with no agent yet: the awakening, here
   })().catch(e => { stop(0); process.stderr.write('starnet: ' + ((e && e.message) || e) + '\n'); });

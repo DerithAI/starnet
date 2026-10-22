@@ -13,6 +13,7 @@
 
 const SLOTS = 14;            // activity history width
 const SLOT_MS = 2000;        // one activity bar = 2 s of the agent's events
+const RUN_FLOOR = 0.6;       // a slot with a run open but nothing done in it (above it, the agent did something)
 const RECENT_MS = 8000;      // how long "done" / "stopped" stays on a row before it settles to idle
 // what an answered ask granted, in the app card's own words (the station echoes what it APPLIED: a fresh-consent ask's
 // "always" comes back as once)
@@ -384,7 +385,7 @@ function makeStation() {
     if (!st.lastSlotAt) st.lastSlotAt = now;
     while (now - st.lastSlotAt >= SLOT_MS) {
       st.lastSlotAt += SLOT_MS;
-      for (const a of st.agents.values()) { a.act.push(a.bucket + (a.runs.size ? 0.6 : 0)); a.act.shift(); a.bucket = 0; }
+      for (const a of st.agents.values()) { a.act.push(a.bucket + (a.runs.size ? RUN_FLOOR : 0)); a.act.shift(); a.bucket = 0; }
     }
   }
 
@@ -482,4 +483,4 @@ function costText(cost) {
   return 'spend unknown';
 }
 
-module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, askGlance, askInspect, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RECENT_MS, ONCE_ONLY_TOOLS };
+module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, askGlance, askInspect, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RUN_FLOOR, RECENT_MS, ONCE_ONLY_TOOLS };

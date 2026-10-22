@@ -11,7 +11,7 @@
    control characters and escape sequences before it reaches a cell: model output can never drive the terminal. */
 'use strict';
 
-const { fmtDur, fmtShort, costText, askInspect, ONCE_ONLY_TOOLS } = require('./station-model.js');
+const { fmtDur, fmtShort, costText, askInspect, ONCE_ONLY_TOOLS, RUN_FLOOR } = require('./station-model.js');
 // the StarNet mark, cut from the real brand art by dev/cli-logo.cjs (never redrawn)
 const logo = require('./logo.js');
 const sixelLib = require('./sixel.js');   // the real logo: an image where the terminal draws Sixel, braille dots elsewhere
@@ -42,7 +42,7 @@ function trunc(s, n) {
   if (width(t) <= n) return t;
   let out = '', w = 0;
   for (const ch of t) { const cw = cpWidth(ch.codePointAt(0)); if (w + cw > n - 1) break; out += ch; w += cw; }
-  return out + '…';
+  return out.trimEnd() + '…';
 }
 function wrap(text, w) {
   w = Math.max(4, w);
@@ -222,6 +222,9 @@ function render(model, ui, size, now) {
   const lw = img ? img.cols : word ? Math.max(...word.map(l => width(l))) : 0;
   const lrows = img ? img.rows : word ? word.length : 0;
   let y, top;
+  // THE PIP-BOY CHROME (Andrew 10-22, mock A): a tab rule under the logo and a stat bar at the foot, where there is room
+  const chrome = !narrow && H >= 20;
+  let tabsRow = -1;
   if ((img || word) && lrows >= 3 && W - lw - 3 >= 44) {
     if (word) putLogo(g, word);
     const x0 = lw + 3;
@@ -230,6 +233,7 @@ function render(model, ui, size, now) {
     if (busy.length) drawNow(x0, 1);
     if (flows.length) drawFlows(x0, 2);
     top = lrows + 1;
+    if (chrome) tabsRow = lrows;   // the blank row under the logo
   } else {
     // the one-line mark, the counts on it; NOW and FLOWS under it only when they have something to say
     let x = 0;
@@ -241,31 +245,47 @@ function render(model, ui, size, now) {
     if (flows.length) drawFlows(0, y++);
     top = y;
   }
-  const promptY = H - 2, hintY = H - 1, bot = promptY - 1;
+  const statY = chrome ? H - 1 : -1, hintY = chrome ? H - 2 : H - 1, promptY = hintY - 1, bot = promptY - 1;
   let avatar = null;   // { x, y, cols, rows, id, key }: where the dashboard paints the camera feed, of whom, doing what
+  const wk = ui.wake || null;   // the awakening (a station with no agent yet): its stage names where you are
 
   // ---- CREW: a framed list down the left — lamp, name, and a word for what it is doing — the one in COMMS marked; at its
   // foot, where the terminal draws images and the list leaves room, the station camera locked on the agent in COMMS -
   const side = W >= 90 && rows.length > 0 && !(ui.wake && !ui.wake.crew);   // the awakening shows the crew once its agent exists
   const sw = side ? 30 : 0;   // room for a name and its tag, and for the camera feed at its foot
   if (side) {
-    const card = ui.images && focusRow && rows.length <= bot - top - 1 - AGENT_ROWS;
+    // the crew BY KIND, each kind under its strip (the app's NEEDS YOU, grouped by kind): who waits on you, who works,
+    // who stands by. A kind with nobody in it is not drawn.
+    const items = [];
+    for (const [label, list, st] of [
+      ['NEEDS YOU', rows.filter(r => r.status.key === 'needs'), 'ink b amfill'],
+      ['WORKING', rows.filter(r => r.status.key === 'working'), 'lbl b sel'],
+      ['STANDING BY', rows.filter(r => r.status.key !== 'needs' && r.status.key !== 'working'), 'lbl b sel']
+    ]) if (list.length) { items.push({ strip: label + ' ' + list.length, st }); for (const r of list) items.push({ r }); }
+    const card = ui.images && focusRow && items.length <= bot - top - 1 - AGENT_ROWS;
     const listBot = card ? bot - AGENT_ROWS : bot;
     const inner = listBot - top - 1;
-    const fi = Math.max(0, rows.indexOf(focusRow));
-    const start = rows.length > inner ? Math.min(Math.max(0, fi - Math.floor(inner / 2)), rows.length - inner) : 0;
-    const shown = rows.slice(start, start + inner);
+    const fi = Math.max(0, items.findIndex(it => it.r === focusRow));
+    const start = items.length > inner ? Math.min(Math.max(0, fi - Math.floor(inner / 2)), items.length - inner) : 0;
+    const shown = items.slice(start, start + inner);
+    const above = items.slice(0, start).filter(it => it.r).length, below = items.slice(start + shown.length).filter(it => it.r).length;
     frame(g, 0, top, sw - 1, bot, 'rule');
-    edgeL(g, 2, top, [['CREW', 'lbl b'], [' ' + rows.length, 'dim']]);
-    if (start > 0) edgeR(g, sw - 2, top, [['↑ ' + start, 'dim']]);
-    if (start + shown.length < rows.length) edgeR(g, sw - 2, bot, [['↓ ' + (rows.length - start - shown.length), 'dim']]);
-    shown.forEach((r, i) => {
-      const yy = top + 1 + i, foc = r === focusRow;
+    if (tabsRow < 0) edgeL(g, 2, top, [['CREW', 'lbl b'], [' ' + rows.length, 'dim']]);
+    if (above) edgeR(g, sw - 2, top, [['↑ ' + above, 'dim']]);
+    if (below) edgeR(g, sw - 2, bot, [['↓ ' + below, 'dim']]);
+    shown.forEach((it, i) => {
+      const yy = top + 1 + i;
+      if (it.strip) { g.put(1, yy, (' ' + it.strip).padEnd(sw - 2, ' '), it.st); return; }
+      const r = it.r, foc = r === focusRow;
       const [lamp, lc] = lampOf(r.status, blink, now, ui.still);
-      const tag = tagOf(r.status, now);
+      // a working agent shows what it has been doing, a segment per 2 s slot: lit = it did something then (a run merely
+      // open, waiting on its model, is the dim floor, so a stalled run never reads as busy); the rest keep their word
+      const meter = r.status.key === 'working' && Array.isArray(r.act) ? r.act.slice(-6) : null;
+      const tag = meter ? null : tagOf(r.status, now);
       g.put(3, yy, lamp, lc);
-      g.put(5, yy, trunc(r.name, sw - 7 - (tag ? width(tag[0]) + 1 : 0)), foc || r.status.key !== 'idle' ? 'hi b' : 'fg');
-      if (tag) g.putR(sw - 2, yy, tag[0], tag[1]);
+      g.put(5, yy, trunc(r.name, sw - 7 - (meter ? 7 : tag ? width(tag[0]) + 1 : 0)), foc || r.status.key !== 'idle' ? 'hi b' : 'fg');
+      if (meter) meter.forEach((v, k) => g.put(sw - 8 + k, yy, '▌', v > RUN_FLOOR ? 'ph' : 'rule'));
+      else if (tag) g.putR(sw - 2, yy, tag[0], tag[1]);
       if (foc) { g.put(1, yy, '▌', 'ph b'); g.hl(yy, 1, sw - 1, 'sel'); }
     });
     if (card) {
@@ -278,7 +298,9 @@ function render(model, ui, size, now) {
       // the crew list's own word for an ask; a name too long for the word keeps the state's lamp alone (⠋ ▲ ✓ ■ ○)
       let word = waking ? 'waking' : focusRow.status.key === 'needs' ? '▲ asks' : said0;
       if (width(focusRow.name) > sw - 14 - width(word)) word = [...word][0];
-      const more = focusRow.status.key === 'working' || waking ? '' : said;   // how long it has worked is on its row in the list
+      // how long it has worked or waited (its row in the list shows its activity), said only beside the whole name
+      let more = waking ? '' : said;
+      if (more && width(focusRow.name) > sw - 15 - width(word) - width(more)) more = '';
       const title = trunc(focusRow.name, Math.max(4, sw - 14 - width(word) - (more ? width(more) + 1 : 0)));
       edgeL(g, 2, listBot, [[title, 'hi b'], [' ', ''], [word, wc]].concat(more ? [[' ' + more, 'dim']] : []));
       // the feed is an image the dashboard paints into these cells; the screen only says where, of whom, doing what
@@ -289,9 +311,11 @@ function render(model, ui, size, now) {
   // ---- COMMS: the focused agent's conversation, framed; the open ask's card sits at its foot ------------------------------
   const cx0 = sw, cx1 = W - 1;
   frame(g, cx0, top, cx1, bot, 'rule');
-  const wk = ui.wake || null;   // the awakening (a station with no agent yet): its stage names the frame
-  if (wk) edgeL(g, cx0 + 2, top, [[wk.stage.title || 'THE AWAKENING', 'ph b']].concat(wk.stage.detail ? [[' · ' + wk.stage.detail, 'dim']] : []));
-  else edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
+  // with the tab rule above, the frames carry no titles of their own (the rule says each place once)
+  if (tabsRow < 0) {
+    if (wk) edgeL(g, cx0 + 2, top, [[wk.stage.title || 'THE AWAKENING', 'ph b']].concat(wk.stage.detail ? [[' · ' + wk.stage.detail, 'dim']] : []));
+    else edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
+  }
   const right = [];
   if (focusRow && focusRow.model && cx1 - cx0 > 60) right.push([focusRow.model, 'dim']);
   if (ui.scroll > 0) right.push([(right.length ? '  ' : '') + '↑ ' + ui.scroll, 'am']);
@@ -306,11 +330,53 @@ function render(model, ui, size, now) {
   const cardTop = iy1 - card.length + 1;
   const paneBot = card.length ? cardTop - 1 : iy1 + 1;
   if (ui.picker) drawPicker(g, ui.picker, iy0, paneBot, ix0, ix1, blink);
-  else if (ui.overlay) drawOverlay(g, ui.overlay, iy0, paneBot, ix0, ix1);
+  else if (ui.overlay) drawOverlay(g, ui.overlay, iy0, paneBot, ix0, ix1, tabsRow >= 0);
   else if (wk) drawWake(g, wk, iy0, paneBot, ix0, ix1, ui, now);
   else if (!focusRow) g.put(ix0, iy0, trunc(head.feed === 'connecting' ? 'connecting to the station…' : 'no agents on this station yet', ix1 - ix0 + 1), 'dim');
   else drawPane(g, focusRow ? model.logOf(focusRow.id) : [], focusRow, iy0, paneBot, ix0, ix1, ui, now);
   if (card.length) drawCard(g, card, cardTop, ix0, cw, blink);
+
+  // ---- THE TAB RULE: the places on this screen, the one you are in hanging from the rule in a filled label ---------------
+  if (tabsRow >= 0) {
+    // a list laid over COMMS (/help) is the place you are in: the tab names it, so the list keeps the row
+    const here = ui.overlay && !ui.picker ? [ui.overlay.title, ''] : wk ? [wk.stage.title || 'THE AWAKENING', wk.stage.detail || ''] : [focusRow ? 'COMMS ▸ ' + focusRow.name : 'COMMS', ''];
+    const tabs = (side ? [['CREW', ' ' + rows.length]] : []).concat([['@here']]).concat(flows.length && !wk ? [['FLOWS', ' ' + flows.length]] : []);
+    let x = g.put(0, tabsRow, '──', 'rule');
+    for (const t of tabs) {
+      if (t[0] === '@here') {
+        x = g.put(x, tabsRow, '┘', 'rule');
+        x = g.put(x, tabsRow, ' ' + trunc(here[0], Math.max(8, W - x - 30)) + ' ', 'ink b hifill');
+        x = g.put(x, tabsRow, '└', 'rule');
+        if (here[1]) x = g.put(x, tabsRow, ' ' + trunc(here[1], Math.max(4, W - x - 24)) + ' ', 'dim');
+      } else { x = g.put(x, tabsRow, ' ' + t[0], 'dim b'); x = g.put(x, tabsRow, t[1] + ' ', 'dim'); }
+      x = g.put(x, tabsRow, '───', 'rule');
+    }
+    while (x < W) x = g.put(x, tabsRow, '─', 'rule');
+  }
+  // ---- THE STAT BAR (the Pip-Boy's level · HP · AP): the station's level and what it is doing, in segments -----------------
+  if (statY >= 0) {
+    const sep = ['│', 'rule'];
+    const parts = [];
+    const st = ui.stats;   // the station's growth, read from its save (Xp.compute): level and how far into it
+    if (st && st.level) parts.push([[' LV ' + st.level + ' ', 'ink b hifill'], [' ', '']].concat(Array.from({ length: 10 }, (_, k) => ['▌', k < Math.round((st.frac || 0) * 10) ? 'ph' : 'rule'])).concat([['  XP ' + st.inLevel + '/' + st.span + '  ', 'dim']]));
+    // the awakening before its agent exists has no crew to count
+    if (!(wk && !wk.crew)) {
+      parts.push([['  CREW ' + rows.length + ' ', 'fg b']]);
+      parts.push([[(head.working ? spin(now, ui.still) + ' ' : '○ ') + head.working + ' WORKING ', head.working ? 'ph b' : 'dim']].map(s => ['  ' + s[0], s[1]]));
+      parts.push([[(head.needs ? '▲ ' : '△ ') + head.needs + ' NEEDS YOU ', head.needs ? 'am b' : 'dim']].map(s => ['  ' + s[0], s[1]]));
+    }
+    parts.push([['  ' + costText(head.cost).toUpperCase() + ' ', 'fg']]);
+    const d = new Date(now), clock = ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ' ';
+    const room = W - width(clock) - 1;
+    let x = 0, drawn = 0;
+    parts.forEach(segs => {
+      const w = segs.reduce((n, s) => n + width(s[0]), 0) + (drawn ? 1 : 0);
+      if (x + w > room) return;   // what does not fit is left out whole, never cut
+      if (drawn++) x = g.put(x, statY, sep[0], sep[1]);
+      for (const [t, s] of segs) x = g.put(x, statY, t, s);
+    });
+    g.putR(W, statY, clock, 'ink b hifill');
+  }
 
   // ---- prompt + keys ------------------------------------------------------------------------------------------------
   const flashKey = ui.keyFlash && ui.keyFlash.until > now;
@@ -351,10 +417,10 @@ function stateWords(s, now, still) {
 
 // the word beside a name in the CREW list: what its lamp means, in a word
 function tagOf(s, now) {
-  if (s.key === 'needs') return ['asks', 'am'];
+  if (s.key === 'needs') return ['ASKS', 'am'];
   if (s.key === 'working') return [fmtDur(now - (s.since || now)), 'ph'];
-  if (s.key === 'done') return ['done', 'ok'];
-  if (s.key === 'stopped') return [trunc(String(s.text || 'stopped'), 9), 'bad'];
+  if (s.key === 'done') return ['DONE', 'ok'];
+  if (s.key === 'stopped') return [trunc(String(s.text || 'stopped').toUpperCase(), 9), 'bad'];
   return null;
 }
 
@@ -527,9 +593,9 @@ function drawPicker(g, p, top, bot, x0, x1, blink) {
   });
   g.put(x0, bot - 1, trunc(p.foot || '↑ ↓ pick · enter choose · esc close · type to filter', x1 - x0 + 1), 'dim');
 }
-function drawOverlay(g, o, top, bot, x0, x1) {
+function drawOverlay(g, o, top, bot, x0, x1, titled) {
   let y = top;
-  g.put(x0, y++, o.title, 'hi b');
+  if (!titled) g.put(x0, y++, o.title, 'hi b');
   const wide = x1 - x0 >= 66;
   for (const [k, d] of o.items) {
     if (y >= bot - 1) break;
@@ -573,7 +639,7 @@ function trustLines(t, cw) {
   if (t.folder && t.folder !== t.root) lines.push({ kind: 'body', segs: [['you are in ' + t.folder.slice(String(t.root).replace(/[\\/]+$/, '').length + 1) + ' · the whole project is trusted', 'dim']] });
   wrap('the crew can read and change files here · it joins PROJECTS in the app', cw - 4).forEach(s => lines.push({ kind: 'body', segs: [[s, 'fg']] }));
   wrap('not now: each agent works in its own workspace', cw - 4).forEach(s => lines.push({ kind: 'body', segs: [[s, 'dim']] }));
-  lines.push({ kind: 'bottom', keys: [['[y] trust', 'am b'], ['[n] not now', 'fg']] });
+  lines.push({ kind: 'bottom', keys: [['[Y] TRUST', 'am b'], ['[N] NOT NOW', 'am b']] });
   return lines;
 }
 /* THE AWAKENING in COMMS (bin/lib/awaken.js): who said each line (STARNET before the agent exists, then the agent; YOU
@@ -616,8 +682,8 @@ function wakeCardLines(ask, cw, now, still) {
   opts.forEach((o, i) => lines.push({ kind: 'body', segs: [[(i + 1) + '  ', 'am b'], [String(o.label || ''), o.skip ? 'dim' : 'fg']] }));
   if (ask.custom) lines.push({ kind: 'body', segs: [['›  ', 'am'], ['or type ' + (ask.customLabel || 'your own answer') + ' and press enter' + (ask.optional && !opts.some(o => o.skip) ? ' (enter alone skips)' : ''), 'dim']] });
   const keys = [];
-  if (opts.length) keys.push(['[1-' + opts.length + '] pick', 'am b']);
-  if (ask.custom) keys.push(['[enter] send what you typed', 'fg']);
+  if (opts.length) keys.push(['[1-' + opts.length + '] PICK', 'am b']);
+  if (ask.custom) keys.push(['[ENTER] SEND WHAT YOU TYPED', 'am b']);
   lines.push({ kind: 'bottom', keys });
   return lines;
 }
@@ -629,7 +695,7 @@ function drawCard(g, lines, y0, x0, cw, blink) {
       let x = g.put(x0, y, '┌─ ', 'am');
       x = g.put(x, y, '▲ ', blink ? 'am b' : 'am faint');
       if (l.title) x = g.put(x, y, l.title + ' ', 'hi b');
-      else { x = g.put(x, y, l.name, 'hi b'); x = g.put(x, y, ' asks ', 'am'); }
+      else { x = g.put(x, y, String(l.name).toUpperCase(), 'hi b'); x = g.put(x, y, ' ASKS ', 'am b'); }
       while (x < xr) x = g.put(x, y, '─', 'am');
       g.put(xr, y, '┐', 'am');
     } else if (l.kind === 'body') {
@@ -639,12 +705,12 @@ function drawCard(g, lines, y0, x0, cw, blink) {
     } else {
       let x = g.put(x0, y, '└─ ', 'am');
       if (l.keys) l.keys.forEach(([t, s], j) => { if (j) x = g.put(x, y, '   ', 'am'); x = g.put(x, y, t, s); });
-      else if (l.question) x = g.put(x, y, 'pick a number or type an answer', 'am b');
+      else if (l.question) x = g.put(x, y, 'PICK A NUMBER OR TYPE AN ANSWER', 'am b');
       else {
-        x = g.put(x, y, '[y] allow once', 'am b'); x = g.put(x, y, '   ', 'am');
-        if (l.always) { x = g.put(x, y, '[a] always', 'fg'); x = g.put(x, y, '   ', 'am'); }
-        x = g.put(x, y, '[n] deny', 'fg'); x = g.put(x, y, '   ', 'am');
-        x = g.put(x, y, l.view ? '[v] hide' : '[v] view', 'fg');
+        x = g.put(x, y, '[Y] ALLOW ONCE', 'am b'); x = g.put(x, y, '   ', 'am');
+        if (l.always) { x = g.put(x, y, '[A] ALWAYS', 'am b'); x = g.put(x, y, '   ', 'am'); }
+        x = g.put(x, y, '[N] DENY', 'am b'); x = g.put(x, y, '   ', 'am');
+        x = g.put(x, y, l.view ? '[V] HIDE' : '[V] VIEW', 'am b');
       }
       x = g.put(x, y, ' ', 'am');
       const tl = l.more > 0 ? ' +' + l.more + ' more ' : '';
@@ -661,10 +727,12 @@ function drawCard(g, lines, y0, x0, cw, blink) {
 const PALETTE = {
   fg: ['#d9d2d4', 252], hi: ['#ffffff', 231], dim: ['#7f666b', 95], rule: ['#7a1c28', 88], lbl: ['#ff4757', 203],
   ph: ['#ff3b4e', 203], am: ['#ffb43a', 214], ok: ['#5dffa8', 85], bad: ['#ff6b3d', 202],
-  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196]   // the wordmark's neon red, and the prompt's ▸
+  logo: ['#ff2e3e', 196], logohi: ['#ffb0b8', 217], brand: ['#ff2e3e', 196],   // the wordmark's neon red, and the prompt's ▸
+  ink: ['#0c0c0c', 16]   // text on a filled label (the tab you are in, the level, the clock, the NEEDS YOU strip)
 };
 // (256-color: the card sits on a near-black — the nearest palette brown, 58, is a loud olive)
-const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 234], inv: ['#ff3b4e', 203] };
+// hifill / amfill: the Pip-Boy's filled labels — white for where you are, amber for what waits on you
+const BG = { sel: ['#3a0c14', 52], card: ['#1f1405', 234], inv: ['#ff3b4e', 203], hifill: ['#ffffff', 231], amfill: ['#ffb43a', 214] };
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function sgr(style, level) {
   const parts = String(style || '').split(/\s+/).filter(Boolean);
@@ -672,7 +740,7 @@ function sgr(style, level) {
   if (parts.indexOf('b') >= 0) codes.push('1');
   if (parts.indexOf('faint') >= 0) codes.push('2');
   if (level === 0) {
-    if (parts.indexOf('inv') >= 0 || parts.indexOf('sel') >= 0) codes.push('7');
+    if (parts.indexOf('inv') >= 0 || parts.indexOf('sel') >= 0 || parts.some(p => /fill$/.test(p))) codes.push('7');
     return codes.length ? '\x1b[' + codes.join(';') + 'm' : '';
   }
   const fgKey = parts.find(p => PALETTE[p]);
