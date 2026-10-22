@@ -3019,12 +3019,14 @@ function engineCredentialError(provider, what) {
 // localStorage as a fast cache and writes through here on every persist; on boot it pulls the newer of the two.
 const saveStore = makeSaveStore({ fs, pathMod: path, root: WORKSPACES, clock: { now: () => Date.now() } });
 
-/* observeDeletedSessions(ids) — fold the station save's `deletedIds` into the session tombstone ledger (qa/bugs/3e926b6a).
+/* observeDeletedSessions(save) — fold the station save's deleted-session lists into the session tombstone ledger
+   (qa/bugs/3e926b6a). Only `forgetIds` — the Commander's Delete of a conversation — is forgotten; a row DELETE AGENT or a
+   task card's remove took off the rail is in `deletedIds` only and keeps its history and memory (session-tombstones.js).
    The ledger write is synchronous: the transcript reads honor a delete the moment this returns. A fresh delete then
    purges what that session left in memory (forgetDeletedSessionMemory), behind the reply. */
-function observeDeletedSessions(ids) {
+function observeDeletedSessions(save) {
   let fresh = [];
-  try { fresh = sessionTombstones.observe(ids); }
+  try { fresh = sessionTombstones.observeSave(save); }
   catch (e) { failNote('session-tombstones.observe', e); }   // held in memory; the next save or boot writes it again
   if (fresh.length) forgetDeletedSessionMemory();
   return fresh;
@@ -3075,9 +3077,9 @@ function forgetDeletedSessionMemory() {
 // this build). An unreadable save teaches nothing. An unfinished purge from an earlier run is retried.
 {
   const bootSave = saveStore.loadState('agent');
-  const bootIds = bootSave.status === 'ok' || bootSave.status === 'recovered' ? (bootSave.doc && bootSave.doc.deletedIds) : bootSave.status === 'absent' ? [] : undefined;
+  const bootLists = bootSave.status === 'ok' || bootSave.status === 'recovered' ? bootSave.doc : bootSave.status === 'absent' ? { forgetIds: [], deletedIds: [] } : null;
   const firstList = !(sessionTombstones.since() > 0);
-  observeDeletedSessions(bootIds);
+  observeDeletedSessions(bootLists);
   const adopted = firstList && sessionTombstones.since() > 0 ? sessionTombstones.adopted().length : 0;
   if (adopted) console.log('[session-tombstones] ' + adopted + ' session(s) deleted before this build: forgotten from history and recall; the memories they wrote are kept');
   if (sessionTombstones.unpurged().length) forgetDeletedSessionMemory();
@@ -27137,9 +27139,9 @@ async function handleSaveWrite(req, res) {
     const result = saveStore.save(agentId, body, { compareRevision: true });
     // a memo seed is a cache refresh: it may never turn a landed save into an error reply
     if (result && result.ok === true) { try { seedSaveMemos(agentId, body); } catch (e) { failNote('save.seed-memos', e); } }
-    // the station save carries the page's deleted-session list: the sidecar forgets a deleted session the moment the
-    // save that deletes it lands (qa/bugs/3e926b6a). Never turns a landed save into an error reply.
-    if (result && result.ok === true && agentId === 'agent') observeDeletedSessions(body.deletedIds);
+    // the station save carries the page's deleted-session lists: the sidecar forgets a session the Commander deleted the
+    // moment the save that deletes it lands (qa/bugs/3e926b6a). Never turns a landed save into an error reply.
+    if (result && result.ok === true && agentId === 'agent') observeDeletedSessions(body);
     json(200, result);
   } catch (e) { json(400, { error: (e && e.message) || 'save failed' }); }
 }

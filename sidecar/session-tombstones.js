@@ -7,26 +7,34 @@
    "deleted", and is a separate control from Archive, so the reading is plain: that conversation is not fed back to a
    model again.
 
+   ONLY THE COMMANDER'S DELETE OF A CONVERSATION FORGETS. The save carries two lists: `deletedIds` (every row the page
+   removed, so it never re-forms) and `forgetIds`, the subset the Commander deleted as a conversation (the rail's
+   Delete, station.control session.delete — Workstreams.del(id, { forget: true })). A row removed as a side effect is
+   in deletedIds only and is NOT forgotten: DELETE AGENT's removeByAgent archives the agent's record (the route adopts
+   its ratings into the hero's notebook, and deleting an agent must not erase the record of what it did), and a task
+   card's remove (task.manage) is board housekeeping. Those only hide rows, as they always did.
+
    The page's list cannot be the authority on its own: it holds the newest 500 ids, NEW AGENT clears it, and a
    deliberate re-open (Workstreams.adopt revive:true) takes an id back out. So this ledger learns each deletion from
    the save the page writes (POST /api/save, and the save on disk at boot), stamps WHEN it learned it, and keeps it:
 
-     since:   when this ledger first read the page's list (ms; 0 = never yet)
+     since:   when this ledger first read the page's lists (ms; 0 = never yet)
      streams: { [streamId]: { at, live, purged, adopted? } }
-       at     — when the sidecar first saw the id in the save's deletedIds (ms). Everything that session held at or
+       at     — when the sidecar first saw the id in the save's forgetIds (ms). Everything that session held at or
                 before `at` is FORGOTTEN: every reader that hands conversation to a model answers as if it were gone.
-       live   — the id is in the save's deletedIds right now. An id that left the list (a re-open, the 500 cap, a NEW
+       live   — the id is in the save's forgetIds right now. An id that left the list (a re-open, the 500 cap, a NEW
                 AGENT reset) keeps its `at`: what was deleted stays deleted. A re-opened session starts clean — only
                 what is said after the delete is heard — and if it is deleted again (back in the list after leaving
                 it), that is a fresh delete and `at` moves to then.
-       adopted — true when the stamp came from the first list (below): its memory was kept, never purged
+       adopted — true when the stamp came from the first read (below): its memory was kept, never purged
        purged — the `at` whose derived memory (notebook records, open threads, pending proposals) has been removed;
                 a crash between the stamp and the purge is retried on the next boot.
 
-   THE FIRST LIST IS ADOPTED, NOT PURGED. The deletes already in the list the first time this ledger reads it were made
-   while Delete only hid the rail row, before anyone said it would forget memory. They are stamped (their transcript,
-   recall and run titles are forgotten from then on) and recorded as purged, so the memories those sessions wrote are
-   never wiped retroactively at the first boot of this build. Only a delete made after that is a fresh delete.
+   THE FIRST READ IS ADOPTED, NOT PURGED. The deletes already in the save the first time this ledger reads it were made
+   while Delete only hid the rail row, before anyone said it would forget memory, and before the page told a
+   conversation delete from a side-effect one — so every id in either list is stamped (their transcript, recall and run
+   titles are forgotten from then on) and recorded as purged: the memories those sessions wrote are never wiped
+   retroactively at the first boot of this build. Only a forgetIds delete made after that is a fresh delete.
 
    forgotten(streamId, ts) is the one predicate every reader shares. deletedAt(streamId) answers 0 for a session that
    was never deleted. Pure over an injected fs (makeDomainStore: durable write + read-back proof), no ambient clock.
@@ -76,24 +84,26 @@ function makeSessionTombstones(deps) {
     state = saved.value;
   }
 
-  /* observe(deletedIds) — fold the save's current list in. Returns the ids this call stamped (fresh deletes), oldest
-     first. A value that is not an array teaches nothing: an older page that never wrote the list must not read as
-     "every deletion was undone". The first list this ledger ever reads is ADOPTED (see the header): its ids are
-     stamped and recorded as purged, and none is returned as fresh; adopted() lists them. The new state is held in
-     memory even when the durable write fails, so this process never serves a deleted session; the throw tells the
-     caller the stamp is not on disk yet. */
-  function observe(deletedIds) {
-    if (!Array.isArray(deletedIds)) return [];
-    const want = new Set(deletedIds.map(x => String(x == null ? '' : x)).filter(id => SID_RE.test(id)));
-    const at = Math.max(1, num(now()));
+  /* observe(forgetIds, deletedIds?) — fold the save's current lists in. Returns the ids this call stamped (fresh
+     deletes), oldest first. Only forgetIds (the Commander's deletes of a conversation) stamps a fresh delete; a value
+     that is not an array teaches nothing: an older page that never wrote the list must not read as "every deletion was
+     undone". The FIRST read is ADOPTED (see the header): every id in either list is stamped and recorded as purged,
+     and none is returned as fresh; adopted() lists them. It needs one of the two lists (an older save holds only
+     deletedIds). The new state is held in memory even when the durable write fails, so this process never serves a
+     deleted session; the throw tells the caller the stamp is not on disk yet. */
+  const validIds = list => (Array.isArray(list) ? list : []).map(x => String(x == null ? '' : x)).filter(id => SID_RE.test(id));
+  function observe(forgetIds, deletedIds) {
     const adopting = !(state.since > 0);
+    if (!Array.isArray(forgetIds) && !(adopting && Array.isArray(deletedIds))) return [];
+    const want = new Set(validIds(forgetIds));
+    const at = Math.max(1, num(now()));
     const next = { since: adopting ? at : state.since, streams: Object.assign({}, state.streams) };
     const fresh = [];
     let changed = adopting;
-    for (const id of want) {
+    for (const id of adopting ? new Set(validIds(forgetIds).concat(validIds(deletedIds))) : want) {
       const e = next.streams[id];
       if (e && e.live) continue;
-      next.streams[id] = adopting ? { at, live: true, purged: at, adopted: true } : { at, live: true, purged: 0 };
+      next.streams[id] = adopting ? { at, live: want.has(id), purged: at, adopted: true } : { at, live: true, purged: 0 };
       if (!adopting) fresh.push(id);
       changed = true;
     }
@@ -105,6 +115,10 @@ function makeSessionTombstones(deps) {
     state = normalizeState(next);
     commit(state);
     return fresh;
+  }
+  // observeSave(doc) — the station save the page wrote (Workstreams.serialize() rides it): its forgetIds and deletedIds
+  function observeSave(doc) {
+    return doc && typeof doc === 'object' ? observe(doc.forgetIds, doc.deletedIds) : [];
   }
 
   function deletedAt(streamId) {
@@ -141,7 +155,7 @@ function makeSessionTombstones(deps) {
   function list() {
     return Object.keys(state.streams).map(id => Object.assign({ id }, state.streams[id]));
   }
-  return { observe, deletedAt, forgotten, unpurged, markPurged, adopted, list, since: () => state.since, status: () => status, file: store.file };
+  return { observe, observeSave, deletedAt, forgotten, unpurged, markPurged, adopted, list, since: () => state.since, status: () => status, file: store.file };
 }
 
 /* ---- what a deleted session left in memory ---- */

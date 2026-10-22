@@ -20,7 +20,10 @@
      5. CROSS-SESSION READS — a read of the deleted session by id (station.read_session's transcript read, a worker's
         sessionContext, the away briefing's last words) comes back empty; other sessions read as before.
      6. THE HOST WIRING (sidecar/index.js, static): the store reads through the ledger, every accepted station save and
-        the boot save feed it, and the run-history readers that quote titles to a model skip a deleted session's runs. */
+        the boot save feed it, and the run-history readers that quote titles to a model skip a deleted session's runs.
+     7. WHO FORGETS: only the Commander's Delete of a conversation (the save's forgetIds). DELETE AGENT and a task
+        card's remove hide rows and forget nothing: the ratings the agent-delete route adopted keep their directive and
+        feedbackRef, the threads mined there stay, and those conversations read as before. */
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -334,6 +337,133 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
     } finally { remove(dir); }
   }
 
+  // ---------------- 7. who forgets: only the Commander's Delete of a conversation ----------------
+  // Review (blocking): DELETE AGENT's removeByAgent and a task card's remove put rows in deletedIds, and the sidecar
+  // purged them as session deletes — stripping the ratings /api/agent/delete had just adopted into the hero's notebook
+  // (their directive and DESIGN ANCHOR feedbackRef), the threads mined there, and the conversations themselves. Here
+  // the real page module and the real app.js delete paths (lifted) write the save, the real ledger reads it the way
+  // POST /api/save does (observeSave), the real adoptTaste moves the departing agent's ratings the way the route does,
+  // and the real purge runs over what the ledger says is unpurged.
+  {
+    const dir = temp('who');
+    try {
+      const W = require('../frontend/app/workstreams.js');
+      const appSrc = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'app.js'), 'utf8');
+      const deleteWorkstreamSrc = A.fnBody(appSrc, 'function deleteWorkstream(id, groupDeleted)');
+      const deleteAgentSrc = A.fnBody(appSrc, 'function deleteAgent(agentId)');
+      A.ok(!!deleteWorkstreamSrc && !!deleteAgentSrc, 'the page\'s rail Delete and DELETE AGENT are lifted from app.js');
+      let saved = null;
+      const ctx = {
+        agents: new Map([['agent', { id: 'agent', role: 'orchestrator' }], ['scribe', { id: 'scribe', role: 'specialist' }]]),
+        fetch: async (url) => ({ ok: url === '/api/agent/delete', json: async () => ({ ok: true }) }),
+        // persist(): the station save is Object.assign({ agent, … }, Workstreams.serialize()), sent as JSON
+        persist: () => { saved = JSON.parse(JSON.stringify(Object.assign({ agent: { id: 'agent' } }, W.serialize()))); }
+      };
+      const page = new Function('W', 'CTX', `
+        const Workstreams = W;
+        const agents = CTX.agents; let agent = CTX.agents.get('agent');
+        const SFX = { bad() {}, close() {} };
+        const StationUI = { notify() {}, setRoster() {} };
+        const World = { despawnAgent() {} };
+        const station = null;
+        const fetch = CTX.fetch;
+        function focusAgent(id) { agent = agents.get(id); }
+        function loadActiveStream() {}
+        function renderRail() {}
+        function recomposeOrchestrators() {}
+        function pushRoster() {}
+        function liveAgents() { return [...agents.values()]; }
+        function persist() { CTX.persist(); }
+        ${deleteWorkstreamSrc}
+        ${deleteAgentSrc}
+        return { deleteWorkstream, deleteAgent };
+      `)(W, ctx);
+
+      W.reset();
+      const bakery = W.create('Bakery landing page', { agentId: 'scribe', activate: false });   // the scribe's rated work
+      const card = W.create('Order flour', { kind: 'task', activate: false });                   // a task-board card
+      const diary = W.create('Private diary', { activate: false });                               // the Commander deletes this
+      const worker = W.adopt({ id: 'ws_diary_worker', title: 'worker thread', worker: true, parentStreamId: diary.id, agentId: 'scribe' });
+      A.ok(!!worker, 'the diary has a delegated worker thread');
+      const clock = clockAt(1000);
+      const ledger = makeSessionTombstones({ fs, path, file: path.join(dir, 'tomb.json'), now: clock.now });
+      ctx.persist();
+      A.eq([ledger.observeSave(saved), ledger.since()], [[], 1000], 'the first save is the adopted first read (nothing deleted yet)');
+
+      // memory: the scribe's ratings (the real feedback module) and what the diary session wrote
+      const store = makeMemoryStore({ fs, path, workspaces: dir });
+      const threads = makeThreadsStore({ fs, path, workspaces: dir });
+      const runs = [{ runId: 'run_bakery_1', streamId: bakery.id, ts: 1100 }, { runId: 'run_bakery_2', streamId: bakery.id, ts: 1200 },
+        { runId: 'run_diary', streamId: diary.id, ts: 1300 }, { runId: 'run_diary_worker', streamId: worker.id, ts: 1350 }];
+      let scribeNb = [];
+      for (const input of [{ runId: 'run_bakery_1', verdict: 'great', directive: 'design the landing page for the bakery', ref: { files: ['bakery.html'], colors: ['#c84b31'] } },
+        { runId: 'run_bakery_2', verdict: 'miss', words: 'too busy, fewer colours', directive: 'redo the bakery hero', ref: { files: ['bakery-hero.html'] } }]) {
+        const out = FeedbackMemory.apply(scribeNb, input, { now: 1100, nextId: l => 'note_' + (l.length + 1) });
+        scribeNb = out.list;
+      }
+      await store.update('notebook:scribe', () => scribeNb);
+      await store.update('notebook:agent', () => [{ id: 'note_1', title: 'Diary', body: 'the Commander wrote about their week', scope: 'stream', streamId: diary.id, sourceRunId: 'run_diary', createdAt: 1300 },
+        { id: 'note_2', title: 'Worker', body: 'the worker read the diary', scope: 'global', sourceRunId: 'run_diary_worker', createdAt: 1350 }]);
+      await threads.add({ id: 'th_bakery', title: 'Add a bakery order form', spec: 'bakery', sourceRef: { streamId: bakery.id, runId: 'run_bakery_1', date: 1100 } }, 1100);
+      await threads.add({ id: 'th_diary', title: 'Plan the week from the diary', spec: 'diary', sourceRef: { streamId: diary.id, runId: 'run_diary', date: 1300 } }, 1300);
+
+      // DELETE AGENT: the route adopts the scribe's ratings into the hero's notebook, then the page removes its sessions
+      clock.set(2000);
+      await store.update('notebook:agent', cur => FeedbackMemory.adoptTaste(cur, store.get('notebook:scribe'), null, 'scribe') || undefined);
+      const adopted = store.get('notebook:agent').filter(r => r.adoptedFrom === 'scribe');
+      A.eq(adopted.map(r => r.sourceRunId), ['run_bakery_1', 'run_bakery_2'], 'the route adopted both ratings with their sourceRunId (the review\'s premise)');
+      A.ok(adopted.every(r => r.feedbackRef && r.feedbackDirective), '…each with its directive and its DESIGN ANCHOR reference');
+      A.eq(await page.deleteAgent('scribe'), true, 'DELETE AGENT is accepted');
+      A.ok(saved.deletedIds.indexOf(bakery.id) >= 0 && !W.get(bakery.id), 'its session left the rail (deletedIds, so the row never re-forms)');
+      A.ok(saved.forgetIds.indexOf(bakery.id) < 0, '…but it is not a conversation the Commander deleted (not in forgetIds)');
+      A.ok(!!W.get(worker.id), '…and a worker thread it holds stays with the conversation that asked for it');
+      A.eq(ledger.observeSave(saved), [], 'so the save that removes it forgets nothing');
+      // a task card's remove (station.manage_task calls Workstreams.del(task.id), no forget)
+      A.ok(W.del(card.id) === true, 'the task card is removed');
+      ctx.persist();
+      A.eq([ledger.observeSave(saved), saved.deletedIds.indexOf(card.id) >= 0, saved.forgetIds.indexOf(card.id) < 0], [[], true, true], 'a task card\'s remove hides the row and forgets nothing');
+      A.eq([ledger.deletedAt(bakery.id), ledger.deletedAt(card.id)], [0, 0], 'their history and recall read as before (no stamp)');
+      // the Commander's rail Delete of the diary
+      clock.set(3000);
+      A.eq(page.deleteWorkstream(diary.id), true, 'the Commander deletes the diary from the rail');
+      A.eq(saved.forgetIds, [diary.id, worker.id], 'the rail Delete marks the conversation forgotten, and its worker thread with it');
+      A.eq(ledger.observeSave(saved), [diary.id, worker.id], 'only those are fresh deletes for the sidecar');
+      A.eq(ledger.unpurged().map(e => e.id).sort(), [diary.id, worker.id].sort(), '…and only their memory is due a purge');
+      const before = JSON.parse(JSON.stringify(store.get('notebook:agent').filter(r => r.adoptedFrom === 'scribe')));
+      const counts = await forgetSessionMemory({ store, threads, agentIds: ['agent'], deleted: ledger.unpurged(), runs });
+      ledger.markPurged(ledger.unpurged());
+      const nb = store.get('notebook:agent');
+      A.eq(nb.filter(r => r.adoptedFrom === 'scribe'), before, 'DELETE AGENT never strips adopted taste: both ratings survive the purge byte for byte');
+      A.ok(nb.filter(r => r.adoptedFrom === 'scribe').every(r => r.feedbackRef && /bakery/.test(r.feedbackDirective)), '…their feedbackRef and directive included');
+      A.ok(/LIKED the result of: design the landing page for the bakery/.test(before[0].content) && /DISLIKED: "too busy, fewer colours" \(on: redo the bakery hero\)/.test(before[1].content), '…in the words the Commander rated');
+      A.eq([counts.notes, nb.some(r => r.id === 'note_1'), nb.some(r => r.id === 'note_2')], [2, false, false], 'the Commander\'s Delete still forgets what the diary and its worker wrote');
+      A.eq(threads.list().map(t => t.id), ['th_bakery'], 'the idea mined from the deleted agent\'s session stays open; the diary\'s goes');
+      // the page lists round-trip; a revive takes the id out of both (the sidecar keeps its stamp); NEW AGENT clears both
+      W.init(JSON.parse(JSON.stringify(W.serialize())));
+      A.eq(W.serialize().forgetIds, [diary.id, worker.id], 'forgetIds survives a save/load round-trip');
+      A.ok(!!W.adopt({ id: diary.id, title: 'reopened', revive: true }) && W.serialize().forgetIds.indexOf(diary.id) < 0, 'a deliberate re-open takes the id out of forgetIds');
+      ctx.persist();
+      A.eq([ledger.observeSave(saved), ledger.deletedAt(diary.id)], [[], 3000], '…and the delete stands for what was said before it');
+      A.eq(W.reset() && W.serialize().forgetIds, [], 'NEW AGENT clears the page\'s list');
+      // an older page that never wrote forgetIds teaches nothing after the first read
+      A.eq(ledger.observeSave({ deletedIds: ['ws_from_old_page'] }), [], 'a save with deletedIds and no forgetIds stamps nothing');
+      A.eq(ledger.deletedAt('ws_from_old_page'), 0, '…so a side-effect delete from an older page is never forgotten');
+    } finally { remove(dir); }
+  }
+  // the first boot of this build reads a save from before it: deletedIds only, every delete adopted (memory kept)
+  {
+    const dir = temp('who-upgrade');
+    try {
+      const ledger = makeSessionTombstones({ fs, path, file: path.join(dir, 'tomb.json'), now: () => 500 });
+      A.eq(ledger.observeSave({ deletedIds: ['ws_old_a', 'ws_old_b'] }), [], 'an older save (no forgetIds) is the adopted first read');
+      A.eq([ledger.since(), ledger.adopted().map(e => e.id), ledger.unpurged()], [500, ['ws_old_a', 'ws_old_b'], []],
+        '…its deletes are forgotten from history and recall, and the memories they wrote are never purged');
+      A.eq(ledger.list().map(e => e.live), [false, false], '…none counts as a live forgetIds entry, so the next save restamps nothing');
+      A.eq(ledger.observeSave({ deletedIds: ['ws_old_a', 'ws_old_b'], forgetIds: [] }), [], 'the next save is no fresh delete');
+      A.eq(ledger.observeSave(null), [], 'an unreadable save teaches nothing');
+    } finally { remove(dir); }
+  }
+
   // ---------------- 6. host wiring (static: sidecar/index.js is never required here) ----------------
   {
     const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
@@ -342,10 +472,18 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
     A.ok(ledgerAt > 0 && storeAt > ledgerAt, 'the ledger is built before the transcript store reads anything');
     A.ok(/const transcriptStore = makeTranscriptStore\(\{[^\n]*deletedAt: id => sessionTombstones\.deletedAt\(id\)/.test(src), 'the transcript store reads through the ledger');
     const saveWrite = src.slice(src.indexOf('async function handleSaveWrite('), src.indexOf('async function handleGrowthRatings('));
-    A.ok(/result\.ok === true && agentId === 'agent'\) observeDeletedSessions\(body\.deletedIds\)/.test(saveWrite), 'every accepted station save feeds its deletedIds to the ledger');
+    A.ok(/result\.ok === true && agentId === 'agent'\) observeDeletedSessions\(body\)/.test(saveWrite), 'every accepted station save feeds the ledger');
+    const observeFn = src.slice(src.indexOf('function observeDeletedSessions(save)'), src.indexOf('function observeDeletedSessions(save)') + 400);
+    A.ok(/fresh = sessionTombstones\.observeSave\(save\)/.test(observeFn), '…through observeSave, so only the save\'s forgetIds is forgotten (section 7)');
     const boot = src.slice(src.indexOf("const bootSave = saveStore.loadState('agent');"), src.indexOf("const bootSave = saveStore.loadState('agent');") + 900);
-    A.ok(/bootSave\.status === 'ok' \|\| bootSave\.status === 'recovered' \? \(bootSave\.doc && bootSave\.doc\.deletedIds\) : bootSave\.status === 'absent' \? \[\] : undefined/.test(boot)
-      && /observeDeletedSessions\(bootIds\)/.test(boot), 'the save on disk feeds the ledger at boot (a new station with no save reads as an empty first list)');
+    A.ok(/bootSave\.status === 'ok' \|\| bootSave\.status === 'recovered' \? bootSave\.doc : bootSave\.status === 'absent' \? \{ forgetIds: \[\], deletedIds: \[\] \} : null/.test(boot)
+      && /observeDeletedSessions\(bootLists\)/.test(boot), 'the save on disk feeds the ledger at boot (a new station with no save reads as empty first lists)');
+    // the page side: only the rail Delete (and station.control session.delete, which runs it) marks a conversation forgotten
+    const cmds = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'stationcommands.js'), 'utf8');
+    A.ok(/action === 'remove'\) \{\s*if \(!Workstreams\.del\(task\.id\)\)/.test(cmds), 'station.manage_task\'s remove deletes the card without forget (task.manage runs unprompted under FULL POWER)');
+    A.ok(/act === 'session\.delete'[\s\S]{0,400}\(save\.forgetIds \|\| \[\]\)\.indexOf\(id\) >= 0/.test(cmds), 'station.control session.delete proves the forget landed in the save');
+    const wsSrc = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'workstreams.js'), 'utf8');
+    A.ok(/w\.agentId === aid && del\(w\.id\)\)/.test(A.fnBody(wsSrc, 'function removeByAgent(agentId)') || ''), 'removeByAgent deletes without forget');
     const purge = src.slice(src.indexOf('function forgetDeletedSessionMemory()'), src.indexOf('function forgetDeletedSessionMemory()') + 1600);
     A.ok(/sessionTombstones\.unpurged\(\)/.test(purge) && /chanEmit\('memory\.forget', \{ agentId: f\.agentId, id: f\.id, reason: 'session-deleted' \}\)/.test(purge),
       'the purge runs only over unpurged deletes (an adopted one never is) and announces every removed record as memory.forget');

@@ -4,7 +4,8 @@
 
      1. A session (ws_quokka) says "echo session uniqueword quokka"; its run saves two memories (one filed under the
         chat, one station-wide). A second session (ws_keep) drafts the platypus plan — the control.
-     2. The page deletes ws_quokka: POST /api/save with deletedIds:["ws_quokka"] (what Workstreams.del + persist write).
+     2. The Commander deletes ws_quokka from the rail: POST /api/save with deletedIds and forgetIds ["ws_quokka"] (what
+        deleteWorkstream's Workstreams.del(id, { forget: true }) + persist write).
      3. Every context path forgets it, and only it:
           HISTORY       GET /api/transcript?stream=ws_quokka is empty; a run on that id (a re-open, a bound channel) is
                         not seeded with the deleted dialogue (the H1.2 resume seed).
@@ -114,9 +115,9 @@ function hermeticEnv(base) {
     const before = await records();
     A.ok(before.filter(r => /Wallaby/.test(String(r.body))).length === 2, 'before the delete its two memories are in the notebook: ' + JSON.stringify(before.map(r => r.body)));
 
-    // ---- 2. the page deletes it (Workstreams.del + persist -> POST /api/save) ----
+    // ---- 2. the Commander deletes it (Workstreams.del(id, { forget: true }) + persist -> POST /api/save) ----
     const saved = await json('POST', '/api/save', { agent: { id: 'agent', name: 'NOVA', createdAt: 1 }, updatedAt: Date.now(), _saveRevision: 0,
-      workstreams: [{ id: KEPT, title: 'Platypus plan', history: [] }, { id: FRESH, title: null, history: [] }], deletedIds: [DELETED] });
+      workstreams: [{ id: KEPT, title: 'Platypus plan', history: [] }, { id: FRESH, title: null, history: [] }], deletedIds: [DELETED], forgetIds: [DELETED] });
     A.eq(saved.status === 200 && saved.body && saved.body.ok, true, 'the save that deletes the session lands: ' + JSON.stringify(saved.body));
 
     // ---- 3. every context path forgets it ----
