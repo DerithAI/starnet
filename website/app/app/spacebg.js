@@ -1658,6 +1658,14 @@ const SpaceBG = (() => {
       tile2(ctx, st.wispCv, w, h, parX(cam, SURF.cloud * 1.55) + t * 13, parY(cam, SURF.cloud * 1.55) + t * 3.6);
       ctx.globalAlpha = 1;
     },
+    /* the STILL readout (world.js STILL VERDICT; final fixes 10-21): the water STEPS — draw() swaps the wave plate every
+       FRAME_MS (the texture wave advances between plates), so the next plate edge is due and each step lands on its own vsync
+       (plasma's dueAt, the same shape), never up to a still interval late. The swell's slide, the glitter, the cloud decks and
+       their shadows stay ambient drift. Reduced motion holds plate 0: nothing due. */
+    nextChange(now, st) {
+      if (reduceMotion() || !st.frames || st.frames.length < 2) return Infinity;
+      return (Math.floor(now / OCEAN_BG.FRAME_MS) + 1) * OCEAN_BG.FRAME_MS;
+    },
   };
 
   /* ---------------------------------------------------------- BACKDROP: NIGHT CITY ---- */
