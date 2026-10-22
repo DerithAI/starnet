@@ -23198,7 +23198,7 @@ async function runOnceCore(o) {
     // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
     + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
         ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
-        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', toolless: !isTask, viewer: o.viewer || '',
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow(), delegatedBy: o.delegatedBy || '', viewer: o.viewer || '', toolless: !isTask,
           // ROOM SCOPE facts: the TOOLSETS switches resolveTools applied and the routine's own toolset list enforceEnabledToolsets
           // applied (gear either one leaves out is no room fix), and the image route makeImageTools was built from (without one
           // a STUDIO only analyzes images)

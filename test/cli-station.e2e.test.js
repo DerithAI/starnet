@@ -12,7 +12,10 @@
      6. `-p` started inside a project works in it once the station trusts it (the agent is told the folder and a
         relative write lands there), and before that says the folder is not trusted and works in its own workspace;
      7. the station's own slash commands answer the terminal (POST /api/slash/dispatch, client 'terminal'): /tools reads
-        the agent's SAVED floor (the floor a terminal run gets), /usage answers, a page-only command says it is one.
+        the agent's SAVED floor (the floor a terminal run gets), /usage answers, a page-only command says it is one;
+     8. a terminal task run (the dashboard's body) is told it has no station on screen: the [TERMINAL] note, the terminal
+        manual pointer and the capability note's "place it in the desktop app" (the run's viewer reaches
+        summarizeCapabilities); a page run gets none of it.
    Part of test:http. */
 'use strict';
 
@@ -223,6 +226,22 @@ function hermetic(profile) {
     A.ok(yolo.ok && yolo.directive.type === 'client', 'a page-only command comes back as one (the terminal says it only works in the app)');
     const cat = (await fixture.json('GET', '/api/slash/catalog?agent=agent&client=terminal')).body;
     A.ok(cat && Array.isArray(cat.commands) && cat.commands.some(c => c.name === 'usage'), 'the catalog answers the terminal');
+
+    /* ---- 8. a terminal task run is told it has no station on screen --------------------------------- */
+    // the dashboard's own body (bin/lib/dashboard.js send): roster persona, client 'terminal', a task, no floor sent (the
+    // saved floor above: a cabinet only, so the run lacks gear and the capability note says where gear is placed)
+    const termRun = async (extra) => {
+      seen.length = 0;
+      const r = await post(fixture, '/api/run', Object.assign({ model: 'test/model', provider: 'openrouter', agentId: 'agent', isTask: true, messages: [{ role: 'user', content: 'look around the station' }] }, extra));
+      A.eq(r.status, 200, 'the run answered: ' + r.status);
+      return seen.map(s => s.sys).join('\n');
+    };
+    const termSys = await termRun({ streamId: 'cli-agent', rosterSystem: true, client: 'terminal' });
+    A.ok(termSys.indexOf('[TERMINAL] The Commander is talking to you from the StarNet terminal CLI') >= 0, 'the terminal run carries the [TERMINAL] note');
+    A.ok(termSys.indexOf('using StarNet from its TERMINAL CLI') >= 0, 'and the terminal manual pointer, not the desktop manual');
+    A.ok(termSys.indexOf('name the object to place in the StarNet desktop app to grant it') >= 0, 'and the capability note sends missing gear to the desktop app (the run\'s viewer reached summarizeCapabilities): ' + (termSys.match(/You do NOT have[^\n]*\n[^\n]*/) || [''])[0].slice(0, 300));
+    const deskSys = await termRun({ streamId: 'desk-e2e-8', placed: [{ objectType: 'cabinet' }] });
+    A.ok(deskSys.indexOf('[TERMINAL]') < 0 && deskSys.indexOf('in the StarNet desktop app to grant it') < 0 && deskSys.indexOf('TERMINAL CLI') < 0, 'a page run on the same station gets none of it');
   } catch (e) {
     A.ok(false, 'cli-station e2e threw: ' + ((e && e.stack) || e));
   } finally {
