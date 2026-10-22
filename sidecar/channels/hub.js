@@ -46,8 +46,14 @@
   // why a stopped run ended, as a short human note appended to the reply (mirrors chat.js endReason handling).
   // A 'budget' stop names WHICH spend cap fired (scope/cap ride the additive agent.run.end fields; absent on an
   // old payload → the generic money line) so a channel user isn't sent hunting through runtime settings.
-  function budgetNote(scope, capUsd, atBalance) {
+  function budgetNote(scope, capUsd, atBalance, projected) {
     const cap = (typeof capUsd === 'number' && isFinite(capUsd) && capUsd >= 0.01) ? '$' + capUsd.toFixed(2).replace(/\.00$/, '') + ' ' : '';   // sub-cent caps would read "$0.00"
+    // projected (agent.run.end budgetProjected): the run family's calls still in flight already took what was left, so
+    // the run stopped BEFORE the cap — never say it hit one it did not reach (mirrors chat.js budgetStopLine)
+    if (scope === 'run' && projected === true) {
+      if (atBalance === true) return '\n\n(' + (cap ? 'stopped before it would spend more than the ' + cap + 'left on your StarNet balance' : 'stopped before it would spend more than what is left on your StarNet balance') + ' — add credits in the app under SETTINGS → AI & MODELS.)';
+      return '\n\n(stopped before it would pass the ' + cap + 'per-run spend cap — raise it in the app under SETTINGS › SPENDING LIMITS.)';
+    }
     const what = scope === 'run' ? 'hit the ' + cap + 'per-run spend cap'
       : scope === 'agent' ? 'this agent hit its ' + cap + 'lifetime spend cap'
       : scope === 'day' ? 'hit the ' + cap + 'daily spend cap'
@@ -75,7 +81,7 @@
     if (reason === 'max_iters') return '\n\n(reached the step limit — message "continue" to keep going.)';
     if (reason === 'budget') {
       if (st.unpricedModel || st.subscriptionModel) return '\n\n(' + StopReason.stopSentence('budget', st) + '.)';
-      return budgetNote(st.budgetScope, st.budgetCapUsd, !!st.budgetCapIsBalance);
+      return budgetNote(st.budgetScope, st.budgetCapUsd, !!st.budgetCapIsBalance, st.budgetProjected === true);
     }
     // a /stop, a newer message or an E-STOP never reaches here (abandoned() owns those); what is left is a STOP by run
     // id from the station (the desk screen / HUD STOP → POST /api/cancel), so say so instead of going quiet.
@@ -2191,7 +2197,7 @@
           else if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; noteToolStep(); }   // counted: an 'empty' end after tools is not "nothing was done"
           else if (name === 'agent.run.error') { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; }
           else if (name === 'capdenied') state.errMsg = state.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
-          else if (name === 'agent.run.end') { state.reason = p.reason; state.finishReason = p.finishReason || null; state.unpricedModel = p.unpricedModel || null; state.unpricedCapTokens = Number(p.unpricedCapTokens) || 0; state.subscriptionModel = p.subscriptionModel || null; state.subscriptionCapTokens = Number(p.subscriptionCapTokens) || 0; state.budgetScope = p.budgetScope || null; state.budgetCapUsd = (typeof p.budgetCapUsd === 'number' && isFinite(p.budgetCapUsd)) ? p.budgetCapUsd : null; state.budgetCapIsBalance = p.budgetCapIsBalance === true; if (typeof p.usd === 'number' && isFinite(p.usd)) state.usd = Math.max(state.usd || 0, p.usd); }
+          else if (name === 'agent.run.end') { state.reason = p.reason; state.finishReason = p.finishReason || null; state.unpricedModel = p.unpricedModel || null; state.unpricedCapTokens = Number(p.unpricedCapTokens) || 0; state.subscriptionModel = p.subscriptionModel || null; state.subscriptionCapTokens = Number(p.subscriptionCapTokens) || 0; state.budgetScope = p.budgetScope || null; state.budgetCapUsd = (typeof p.budgetCapUsd === 'number' && isFinite(p.budgetCapUsd)) ? p.budgetCapUsd : null; state.budgetCapIsBalance = p.budgetCapIsBalance === true; state.budgetProjected = p.budgetProjected === true; if (typeof p.usd === 'number' && isFinite(p.usd)) state.usd = Math.max(state.usd || 0, p.usd); }
         };
 
         // CONSENT SURFACE (per-chat, default OFF — see /approvals). With it off nothing changes: the run stays

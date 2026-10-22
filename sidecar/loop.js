@@ -974,6 +974,11 @@
     const approxTokens = o.approxTokens || 0;   // initial rough estimate; feeds the error classifier's overflow ratio
     let contextLimit = o.contextLimit || 0;     // 0 = unknown (cold catalog) -> the ratio heuristic is skipped;
                                                 // re-resolved on a provider fallback (see the fallback branch)
+    // The window the next call's PRICE may lean on (nextCallUsd): only one a provider reported for the CURRENT model —
+    // never the context manager's cold guess (index.js sizes it to 131072 when nothing reported a window), and never a
+    // window kept from the model a fallback left (contextLimit keeps that one: stale beats none for folding, not for
+    // pricing). Lowered by a provider-named window like contextLimit.
+    let callWindow = contextLimit;
     // OPTIONAL cross-run cost governor (sidecar/budget.js): consulted in the guards each turn; null = ungoverned
     // (every existing caller/test, byte-identical). The per-RUN ceiling stays maxCostUsd below.
     const budget = o.budget;
@@ -1486,6 +1491,10 @@
       if (reason === 'budget' && (bs === 'run' || bs === 'agent' || bs === 'day' || bs === 'global')) {
         endPayload.budgetScope = bs;
         if (typeof extra.budgetCapUsd === 'number' && isFinite(extra.budgetCapUsd)) endPayload.budgetCapUsd = extra.budgetCapUsd;
+        // PROJECTED (additive, present only when true): the run family's spend pool stopped this run BEFORE the cap,
+        // because calls still in flight already take what is left — every stop line says "before it would pass the $X
+        // cap", never "hit" a cap that was not reached (bug d3a76db3 review)
+        if (extra.budgetProjected === true) endPayload.budgetProjected = true;
         // the UNPRICED-token ceiling: name the model the seatbelt could not price so the stop is legible
         // ("hit the 2,000,000-token ceiling for unpriced model X") instead of a $-cap with no dollar figure.
         if (extra.unpricedModel) {
@@ -1506,7 +1515,7 @@
       const terminalText = tail && tail.role === 'assistant' && !tail.tool_calls ? String(tail.content == null ? '' : tail.content) : '';
       const out = { reason, messages, text: terminalText, usd: spentUsd, turns, tokens: spentTokens, cachedTokens: spentCachedTokens, model, unpricedUsage: unpricedUsage.slice() };
       if (cut) out.finishReason = cut;
-      if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; }
+      if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; if (endPayload.budgetProjected) out.budgetProjected = true; }
       if (endPayload.unpricedModel) {
         out.unpricedModel = endPayload.unpricedModel; out.unpricedTokens = endPayload.unpricedTokens; out.unpricedCapTokens = endPayload.unpricedCapTokens;
         out.budgetNote = 'stopped: ' + endPayload.unpricedTokens.toLocaleString('en-US') + ' tokens on unpriced model ' + endPayload.unpricedModel + ' reached the ' + endPayload.unpricedCapTokens.toLocaleString('en-US') + '-token ceiling (no published rate - SETTINGS > APP & BACKUP > Runtime limits > UNPRICED MODEL TOKEN CEILING, or STARNET_MAX_UNPRICED_TOKENS, or a price in SKYNET_MODEL_PRICES)';
@@ -1633,6 +1642,7 @@
       const n = Math.floor(Number(limit) || 0);
       if (!(n > 0)) return;
       if (!contextLimit || n < contextLimit) contextLimit = n;
+      if (!callWindow || n < callWindow) callWindow = n;
       if (context && typeof context.setContextLimit === 'function') {
         const cur = Number(context.contextLimit) || 0;
         if (!cur || n < cur) { try { context.setContextLimit(n); } catch (e) { failNote('loop.compaction.adoptWindow', e); } }
@@ -1803,6 +1813,46 @@
       return true;
     }
 
+    /* THE MOST OUTPUT ONE CALL CAN BILL, when anything says (bug d3a76db3, review of 32fc352e4): the lowest of the
+       provider's own ceiling for this model (provider.outputLimit: the catalog's max output, or the max_tokens the
+       adapter sends — anthropic always sends one) and an output ceiling a provider named after a refusal (it rides
+       the request as req.maxTokens). 0 = nothing says. */
+    function outputCeilingTokens() {
+      let n = outputCapTokens > 0 ? outputCapTokens : 0;
+      if (provider && typeof provider.outputLimit === 'function') {
+        try {
+          const v = Math.floor(Number(provider.outputLimit(model)) || 0);
+          if (v > 0) n = n > 0 ? Math.min(n, v) : v;
+        } catch (e) { failNote('loop.budget.outputLimit', e); }
+      }
+      return n;
+    }
+    /* THE MOST THE NEXT CALL CAN COST, before it goes out (bug d3a76db3, reviews of a1234b154 and 32fc352e4). The
+       prompt this boundary would send — the local ruler (messages + tool schemas), the run-start estimate as its floor —
+       at the current model's catalog INPUT price, cache-blind (a cache read bills less), plus the most output the call
+       can bill at its catalog OUTPUT price: the output ceiling (outputCeilingTokens) or every token the window leaves
+       room for, whichever is lower. The window is only one a provider REPORTED for this model (callWindow), never the
+       context manager's cold 131072 guess: under a guess, a 400k-window model with a 128k output was reserved below
+       what it bills. Nothing known about either — a window nobody reported and no output ceiling (the OpenAI API's
+       /models publishes neither) — reads $0, and so does a model nothing prices: no price. The run's shared spend pool
+       (run-spend-pool.js) RESERVES this for the call while it is in flight, so calls that go out together pass the
+       cap by less than the call sent last; a call with no price is counted as a call instead, and nothing goes out
+       beside it. What this cannot cover: a prompt-cache WRITE premium (up to 1.25x input), and a prompt the provider
+       counts above the ruler when the output ceiling, not the window, is the bound. Handed over as a function: only a
+       pool with workers ever asks. */
+    function nextCallUsd() {
+      if (!cost || typeof cost.estimate !== 'function') return 0;
+      try {
+        const promptTokens = Math.max(rulerTokens(messages), approxTokens);
+        const room = callWindow > 0 ? Math.max(0, callWindow - promptTokens) : null;   // null = no window reported
+        const ceiling = outputCeilingTokens();
+        if (room === null && !(ceiling > 0)) return 0;   // nothing bounds the output: no price, counted as a call
+        const outTokens = room === null ? ceiling : (ceiling > 0 ? Math.min(room, ceiling) : room);
+        const r = cost.estimate({ prompt_tokens: promptTokens, completion_tokens: outTokens }, model);
+        const v = r ? Number(r.usd) : 0;
+        return (isFinite(v) && v > 0) ? v : 0;
+      } catch (e) { failNote('loop.budget.nextCallUsd', e); return 0; }
+    }
     emit('agent.run.start', { agentId, runId, trigger, model });
     // Reconcile each attempt before enforcing the same spending limits again. Retries and
     // post-compaction calls are paid work too, even when the turn counter does not advance.
@@ -1819,7 +1869,8 @@
       // CROSS-RUN BUDGET: day/global pool over the ledger. check() emits any threshold crossing itself and
       // returns a block descriptor when a soft cap is reached (no resume headroom left) -> stop as 'budget'.
       if (budget) {
-        const b = budget.check(spentUsd);
+        const b = budget.check(spentUsd, nextCallUsd);
+        if (b && b.hold) return b;   // the run's spend pool holds this call: forSpend() waits, then asks again
         if (b && b.unknown) {
           // name the fix that works for THIS cause: a restart replays a failed save, but never settles an interrupted run
           const message = b.cause === 'unsettled'
@@ -1832,9 +1883,29 @@
           emit('agent.run.error', { agentId, runId, message, transient: false });
           return end('error', { failureStage: 'budget', failureCode: 'spend_history_unavailable' });
         }
-        if (b) return end('budget', { budgetScope: b.scope, budgetCapUsd: b.cap });
+        // projected: a check that stops a call BEFORE its cap was reached says so, and the stop line must not say the cap
+        // was hit (bug d3a76db3 review). The run's spend pool (run-spend-pool.js) never does: it HOLDS such a call instead
+        if (b) return end('budget', { budgetScope: b.scope, budgetCapUsd: b.cap, budgetProjected: b.projected === true });
       }
       return null;
+    }
+    /* A HELD CALL WAITS FOR ROOM (bug d3a76db3, reviews of 9d4fc52b5 and a1234b154). The run's spend pool holds a call
+       ({ hold: Promise }) while the calls its family has in flight, each reserved at the most it can cost, leave no room
+       for it under the shared cap (or one of them has no price at all). It waits until a call in flight settles on
+       what it really cost, and the check runs again. A hold never outlasts a stop: it ends the moment the signal aborts. */
+    async function forSpend(s) {
+      while (s && s.hold) {
+        await new Promise(resolve => {
+          if (signal.aborted) return resolve();
+          const canHear = typeof signal.addEventListener === 'function';
+          const done = () => { if (canHear) signal.removeEventListener('abort', done); resolve(); };
+          if (canHear) signal.addEventListener('abort', done, { once: true });
+          Promise.resolve(s.hold).then(done, done);
+        });
+        if (signal.aborted) return end('cancelled');
+        s = stopForSpend();
+      }
+      return s;
     }
 
     // Admission may have promoted a Commander-configured fallback because the selected primary is definitively
@@ -1859,7 +1930,8 @@
         // fall through: the grace turn runs below. Tools stay ON THE WIRE (see GRACE TURN NEVER DISPATCHES after
         // the stream) — but any call it emits is dropped, never executed, and the run ends max_iters.
       }
-      const spendStop = stopForSpend();
+      let spendStop = stopForSpend();
+      if (spendStop && spendStop.hold) spendStop = await forSpend(spendStop);
       if (spendStop) return spendStop;
       // COMPUTE GATE: a model turn needs a compute capability (a computer in the room).
       if (capCtx && typeof capCtx.canRun === 'function' && !capCtx.canRun()) {
@@ -1932,7 +2004,8 @@
       while (true) {
         bookUsage(usage, usageModel);   // a re-entry after retry/compress/fallback: book the partial attempt BEFORE the reset
         if (signal.aborted) return end('cancelled');
-        const attemptSpendStop = stopForSpend();
+        let attemptSpendStop = stopForSpend();
+        if (attemptSpendStop && attemptSpendStop.hold) attemptSpendStop = await forSpend(attemptSpendStop);
         if (attemptSpendStop) return attemptSpendStop;
         acc.text = ''; acc.toolCalls = {}; acc.reasoning = []; streamedTextChunks = []; usage = null; lastFinishReason = null;
         usageModel = model;
@@ -2118,8 +2191,10 @@
                overflow ratio (contextLimit below) had the same stale denominator. Only a KNOWN (>0) limit
                applies — a cold catalog on the new provider keeps the old number (stale beats none), matching
                setContextLimit's own guard. */
+            callWindow = 0;   // the next call's price never leans on the window of the model we left
             if (typeof provider.contextLimit === 'function') {
               const nl = Number(provider.contextLimit(model)) || 0;
+              callWindow = nl;
               if (nl > 0) {
                 contextLimit = nl;
                 if (context && typeof context.setContextLimit === 'function') context.setContextLimit(nl);

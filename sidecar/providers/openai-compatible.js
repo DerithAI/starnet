@@ -297,7 +297,8 @@
       id,
       name: m.name || id,
       context_length: reportedWindow(m),
-      max_completion_tokens: Number(m.max_completion_tokens || m.max_output_tokens || 0) || null,
+      // an OpenRouter-shaped list (the StarNet proxy relays OpenRouter's) names it under top_provider
+      max_completion_tokens: Number(m.max_completion_tokens || m.max_output_tokens || (m.top_provider && m.top_provider.max_completion_tokens) || 0) || null,
       pricing: m.pricing || null,
       supported_parameters: params,
       supportsTools: typeof m.supportsTools === 'boolean' ? m.supportsTools : (params.length ? params.indexOf('tools') >= 0 : null),
@@ -1203,6 +1204,13 @@
       if (served) return served;
       return (shared && shared.windowFact(id)) || defaultContext;
     }
+    // the most output one call can bill (provider.js outputLimit): the catalog's max output for the model, or the
+    // max_tokens this profile sends (profile.maxOutputTokens), whichever is lower; 0 = neither is known
+    function outputLimit(id) {
+      const m = findModel(id);
+      const cat = Math.floor(Number(m && m.max_completion_tokens) || 0);
+      return (cat > 0 && maxTokens > 0) ? Math.min(cat, maxTokens) : (cat > 0 ? cat : maxTokens);
+    }
     function catalogPriceOf(id) {
       const m = findModel(id);
       if (!m || !m.pricing) return null;
@@ -1237,7 +1245,7 @@
 
     // localRuntime names the Ollama server this instance talks to, so the loop never fails a local out-of-memory
     // over to another model on the same server.
-    return { stream, listModels, warmCatalog, contextLimit, priceOf, supportsTools, reasoningEfforts, localRuntime: nativeBase || undefined };
+    return { stream, listModels, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, reasoningEfforts, localRuntime: nativeBase || undefined };
   }
 
   return { makeOpenAICompatibleProvider, _internals: { normalizeModel, reportedWindow, cleanBaseUrl, responseErrorDetail, safeErrorField, makeArgsTracker, clampToDeclared, canonicalEffort, paramNamed, supportedEffortsFrom, toolsForceNone, replayReasoningContent } };

@@ -25,6 +25,8 @@
          |     must report false (never guess true) — a false positive costs a full re-generation.
      listModels()     -> [{ id, context_length, max_completion_tokens, pricing, supportsTools }]
      contextLimit(id) -> number
+     outputLimit(id)  -> number                 // OPTIONAL: the most output tokens one call to this model can bill —
+                                                 //   the catalog's max output, or the max_tokens the adapter sends; 0 = unknown
      priceOf(id)      -> { in, out } | null      // per-million USD
 
    This module is the shared contract + a finish-reason normalizer used by adapters. */

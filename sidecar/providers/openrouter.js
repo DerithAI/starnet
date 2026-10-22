@@ -456,6 +456,8 @@
       return m;
     }
     function contextLimit(id) { const m = findModel(id); return (m && m.context_length) || 0; }
+    // the catalog's max output for this model (provider.js outputLimit: top_provider.max_completion_tokens); 0 = unknown
+    function outputLimit(id) { const m = findModel(id); return (m && Number(m.max_completion_tokens)) || 0; }
     function priceOf(id) {
       // best-effort: null until the catalog is loaded — cost.js then relies on the provider's
       // real `usage.cost` (always returned by OpenRouter), so this never blocks honest accounting.
@@ -558,7 +560,7 @@
       }
     }
 
-    return { stream, listModels, warmCatalog, contextLimit, priceOf, supportsTools, reasoningEfforts };
+    return { stream, listModels, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, reasoningEfforts };
   }
 
   return { makeOpenRouterProvider, applyCacheControl, attachCatalogCache, _internals: { normalizeReasoningEffort, reasoningEffortsForModel, clampReasoningEffortForModel, repairToolPairs } };

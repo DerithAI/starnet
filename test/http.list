@@ -42,6 +42,7 @@ test/auxmodel.e2e.test.js
 test/failreview.e2e.test.js
 test/learning-pause-midflight.e2e.test.js
 test/failreview-budget.e2e.test.js
+test/run-cap-bounds-spawn.e2e.test.js
 test/questrefresh.e2e.test.js
 test/e2e.run.test.js
 test/image-task.e2e.test.js

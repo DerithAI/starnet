@@ -40,6 +40,7 @@ const ImageTask = require('./image-task.js');
 const { makeCostEngine } = require('./cost.js');
 const { makeLedger } = require('./ledger.js');
 const { makeBudget } = require('./budget.js');
+const RunSpendPool = require('./run-spend-pool.js');   // one PER RUN cap shared by a run and every worker it starts (bug d3a76db3)
 const { makeCredits } = require('./credits.js');   // managed-credit backend adapter (inert unless STARNET_CREDITS_URL is set)
 const { makeTierList } = require('./tierlist.js');   // editorial model tier list from the linked cloud (picker badges)
 const { makeCreditsLink } = require('./credits-link.js');   // device-pairing client + durable link config (inert unless STARNET_CLOUD_URL is set)
@@ -20667,6 +20668,17 @@ async function runOnceCore(o) {
     }
     billed = adm.managed === true;
   }
+  /* THE RUN'S CAP IS ITS CREW'S CAP (bug d3a76db3: a $0.05 PER RUN cap ran $0.24 through four team.spawn workers).
+     A run starts a spend pool at its own per-run cap; a worker it delegates to arrives with that pool in
+     o.spendPool (orchestration.js passes the host-minted ctx.spendPool — a JSON body can never carry one) and JOINS
+     it, so the lead and all its workers draw from one cap and each stops at its call boundary when the pool is spent
+     (run-spend-pool.js). A lead on a flat subscription (unmetered: no default $ cap of its own) still bounds the
+     metered crew it starts by the PER RUN setting. A pool with one member decides nothing: a run that never
+     delegates is governed by its loop's own check exactly as before. */
+  const spendPoolCapUsd = (runCapUsd > 0 && isFinite(runCapUsd)) ? runCapUsd
+    : ((providerUnmetered && effectiveCaps.perRun > 0 && isFinite(effectiveCaps.perRun)) ? effectiveCaps.perRun : Infinity);
+  const spendPool = RunSpendPool.isRunSpendPool(o.spendPool) ? o.spendPool : RunSpendPool.makeRunSpendPool({ capUsd: spendPoolCapUsd });
+  spendPool.join(runId);
 
   // never for /v1 (o.toolsOptional): its taskKey is per-AGENT, so a durable brief left clarifying by one client would
   // swallow the next client's request as the answer (#96 follow-up). Each /v1 request carries its own messages.
@@ -20709,7 +20721,9 @@ async function runOnceCore(o) {
   }
 
   // ---- tools (registered fresh per run; cheap) ----
-  const registry = makeRegistry();
+  // The clock lets a tool timeout that team.spawn / team.dispatch pause while the run's spend pool holds a worker
+  // (tools/registry.js PAUSABLE DEADLINE) resume with exactly what was left (bug d3a76db3).
+  const registry = makeRegistry({ clock: { now: () => Date.now() } });
   const internalBriefTools = taskBriefState && taskBrief.status !== 'cancelled'
     ? registerTaskBriefTools(registry, taskBriefStore, taskBriefState, {
         now: () => Date.now(),
@@ -21753,6 +21767,8 @@ async function runOnceCore(o) {
     deliveryOrigin: o.deliveryOrigin || (streamId ? { streamId: streamId, sessionId: streamId, sessionTitle: o.sessionTitle || '' } : null),
     authorize: userControlAuthority.authorize,
     userControl: userControlAuthority,
+    // Host-minted: the worker runs team.spawn / dispatch / resume start join THIS run's spend pool (bug d3a76db3)
+    spendPool,
     // Delegation carries a live, MCP-only authority bridge alongside the existing consent broker.
     // The worker still applies its own equipment/profile, toolset, taint and consent gates.
     connectorAuthority: {
@@ -22109,7 +22125,20 @@ async function runOnceCore(o) {
   // The dispatch receipt names where this run's charge will show (provider/model it started on, managed or not) and the
   // per-run limit it started with, so an interrupted run can be settled by the Commander from the right dashboard.
   const runReceiptMeta = () => ({ provider: providerId, model, managed: managedRun, runCapUsd });
-  const runBudget = { check: (spentThisRun) => providerUnmetered ? null : budget.check(runId, agentId, spentThisRun, Date.now(), emit, runReceiptMeta) };
+  // The run's spend pool answers first (bug d3a76db3): once this run has workers, the lead and every worker stop at
+  // their call boundary when the shared PER RUN cap is spent, and wait (a hold) while the calls in flight leave no room.
+  // Its stop is scope 'run' with the cap of the run that started the pool, so the stop line names the cap the Commander
+  // set. nextCallUsd is the most the call about to go out can cost (loop.js: its prompt plus the most output it can
+  // bill — the model's output ceiling or a reported window's room — at catalog prices): the pool reserves it while the
+  // call is in flight.
+  const runBudget = { check: (spentThisRun, nextCallUsd) => {
+    if (providerUnmetered) return null;
+    const pooled = spendPool.admit(runId, spentThisRun, nextCallUsd);
+    if (pooled) return pooled;
+    const b = budget.check(runId, agentId, spentThisRun, Date.now(), emit, runReceiptMeta);
+    if (b) spendPool.withdraw(runId);   // stopped by a day/global pool: this run's call never goes out
+    return b;
+  } };
 
   // a task needs tool calls — refuse a model we KNOW can't call tools, up front, with an actionable message
   // (supportsTools returns null when the catalog is cold, so this never false-refuses a real model).
@@ -23403,6 +23432,12 @@ async function runOnceCore(o) {
         || (name === 'agent.run.end' && payload.reason === 'cancelled')) briefAnswerHold = null;
     }
     execution.observeToolEvent(name, payload);
+    // SPEND POOL (bug d3a76db3): each reconciled cost lands in the shared pool as it is booked, so a worker that starts
+    // while this run is mid-turn sees its latest call; the first tool call after a model call means that call is over
+    if (payload && payload.runId === runId) {
+      if (name === 'agent.cost' && !providerUnmetered) spendPool.booked(runId, Number(payload.usd) || 0);
+      else if (name === 'agent.tool_call') spendPool.idle(runId);
+    }
     // LINE WATCH: the loop's own run.start is the normal path's — it must name the bay/crate like every early-exit
     // start above does, or the floor pairs a multi-bay agent's run with its OLDEST crate and lights the wrong bay.
     // (and a voice turn's route, so COMMS can say once why a voice model was passed over)
@@ -23724,6 +23759,8 @@ async function runOnceCore(o) {
     const runUnpriced = !runUnmetered && !backfilled && Array.isArray(result && result.unpricedUsage)
       && result.unpricedUsage.some(u => ((Number(u && u.tokensIn) || 0) + (Number(u && u.tokensOut) || 0)) > 0);
     try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced }); } catch (_) {}
+    // the shared PER RUN pool takes this run's final spend before the run that started it reads the result (d3a76db3)
+    spendPool.settle(runId, runUnmetered ? 0 : finalUsd);
     // managed-credit SETTLE: reconcile the reservation to the real spend — refund the unused headroom to the
     // account (billing.js caps finalUsd at the reservation). Inert/no-op unless this run actually reserved credit.
     if (billed) { try { credits.finishRun({ runId, agentId, usd: finalUsd, tokens: finalTokens, turns: finalTurns, reason: (result && result.reason) || 'done' }); } catch (_) {} }
