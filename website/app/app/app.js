@@ -3383,7 +3383,7 @@ const App = (() => {
     if (!agent.reasoningEffort && saved.reasoningEffort) agent.reasoningEffort = saved.reasoningEffort;
     Harness.setModel(agent.model || Harness.getModel());
     Harness.setTotals(saved.usage || { tokens: 0, cost: 0, calls: 0 });
-    Workstreams.init({ workstreams: saved.workstreams, activeId: saved.activeId, generalId: saved.generalId, sessionUndo: saved.sessionUndo, deletedIds: saved.deletedIds });
+    Workstreams.init({ workstreams: saved.workstreams, activeId: saved.activeId, generalId: saved.generalId, sessionUndo: saved.sessionUndo, deletedIds: saved.deletedIds, forgetIds: saved.forgetIds });
     pendingStationDoc = saved.station || null;   // restore the built station (if any)
     pendingStationStats = saved.stationStats || null;   // restore the station-growth rollup (XP/level/confidence)
     pendingGrowthSyncAt = Math.max(0, Number((saved.stationStats && saved.stationStats.runSyncAt) || saved.updatedAt || 0));
@@ -4795,7 +4795,9 @@ const App = (() => {
       return false;
     }
     const wasActive = (id === Workstreams.activeId());
-    if (!Workstreams.del(id)) { SFX.bad(); return false; }
+    // the Commander's Delete of a conversation: the sidecar forgets it (forget: true — qa/bugs/3e926b6a). DELETE AGENT's
+    // removeByAgent and a task card's remove only hide rows.
+    if (!Workstreams.del(id, { forget: true })) { SFX.bad(); return false; }
     SFX.bad();
     if (wasActive) loadActiveStream();   // deleting the OPEN stream falls back to General
     renderRail(); persist();

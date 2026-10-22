@@ -209,7 +209,8 @@ const StationCommands = (() => {
     }
     if (act === 'session.delete') {
       if (!sc.remove || !await sc.remove(id)) throw new Error('the session could not be deleted (General cannot be deleted, and a session that is working must be stopped first)');
-      await persistWorkstreams(save => !rowOf(save) && (save.deletedIds || []).indexOf(id) >= 0);
+      // a deleted conversation is forgotten: its id is in the save's forgetIds too (qa/bugs/3e926b6a)
+      await persistWorkstreams(save => !rowOf(save) && (save.deletedIds || []).indexOf(id) >= 0 && (save.forgetIds || []).indexOf(id) >= 0);
       return { deleted: label, id };
     }
     throw new Error('unknown session action "' + act + '"');
