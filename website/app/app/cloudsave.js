@@ -27,7 +27,7 @@ const CloudSave = (() => {
     : (typeof require !== 'undefined' ? (() => { try { return require('./cloudsavecore.js'); } catch (_) { return null; } })() : null);
 
   const clientId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
-  let revision = 0, conflict = null, latestLocal = null;
+  let revision = 0, conflict = null, latestLocal = null, seeded = null;
   let timer = null;                    // debounce timer for a fresh push
   let retryTimer = null;               // backoff timer scheduling the next attempt after a failure
   let pending = null;                  // newest doc awaiting a flush (older queued docs are superseded)
@@ -175,6 +175,9 @@ const CloudSave = (() => {
           if (body.conflict) { conflict = body; markFail(); return false; }
           if (body.ok && Number.isInteger(body.revision)) {
             revision = body.revision;
+            // bug 5c019483: the station file was missing (no save, no backup) and THIS window's copy became it. Latched
+            // for the save light, which says so once: the station is back on disk because this window held it.
+            if (body.seeded === true) seeded = { revision: body.revision, at: now() };
             if (pending) pending._saveRevision = revision;
             try {
               const cachedRaw = localStorage.getItem('starnet.save');
@@ -343,8 +346,11 @@ const CloudSave = (() => {
       // either, hand boot the save-unknown sentinel so it gates instead of onboarding over a possibly-intact
       // durable save it simply couldn't read.
       if (lastPullOutcome !== 'empty' && !isSave(local)) return unknownSentinel(lastPullOutcome);
+      // 'empty': seed the server. The copy keeps its own revision: the station file has none, and savestore takes a copy
+      // over a truly missing file at a revision no other window holds (bug 5c019483), unless this computer's station was reset after
+      // the copy's station was founded (then the reply is a conflict with reset:true). Otherwise best-effort (fails soft, retries).
       revision = num(local && local._saveRevision);
-      if (isSave(local)) push(local);   // 'empty': seed the server; otherwise best-effort (fails soft, retries)
+      if (isSave(local)) push(local);
       return local;
     }
     // FORWARD-VERSION GUARD (P0.3): a durable remote from a NEWER build must NOT be adopted into the cache —
@@ -466,7 +472,8 @@ const CloudSave = (() => {
   function healthNow() {
     const s = Core ? Core.snapshot(health, now())
       : { lastPushOkAt: health.lastPushOkAt, lastPushFailAt: health.lastPushFailAt, consecutiveFailures: health.consecutiveFailures, nextRetryAt: 0, warn: false, stale: false };
-    s.conflict = conflict;
+    s.conflict = conflict;   // conflict.reset: the station file is empty because this computer's station was RESET
+    s.seeded = seeded;       // { revision, at } once this window's copy re-seeded a missing station file (bug 5c019483)
     s.degraded = degraded;   // EL-11 FIX 1: refused-by-newer-StarNet is its own persistent, renderable state
     // #121: the browser cache could not hold this page's newest save, so the station file is its only durable copy.
     // cacheFailedConfirmed is true only once the station file acknowledged exactly that save with nothing newer queued.

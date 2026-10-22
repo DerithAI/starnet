@@ -10057,21 +10057,36 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // flip the dot to a distinct amber/warn state + explain it in the title. NO new window, NO nag — just
   // an honest dot state. Never asserts durability the harness can't prove (truthful-telemetry law).
   let degradedNotified = false;   // ONE persistent notice per session for the degraded workspace (the dot carries the ongoing state)
+  let seededNotified = false;     // bug 5c019483: ONE notice when this window's copy re-seeded a missing station file
   function refreshSaveDurability(d) {
     d = d || $('#save-dot'); if (!d) return;
     let h = null;
     try { h = (typeof CloudSave !== 'undefined' && CloudSave.health) ? CloudSave.health() : null; } catch (_) { h = null; }
     d.classList.remove('stale', 'degraded');
+    if (h && h.seeded && !seededNotified) {
+      seededNotified = true;
+      try { notify('The station file on this computer was missing, so this window’s copy of your station was saved back to it.', 'warn'); } catch (_) {}
+    }
     if (h && h.conflict) {
       d.classList.add('degraded');
-      d.title = 'Another window saved newer station changes. Your work from this window was preserved separately on the station. Download a copy or reload the current station.';
+      // a reset refusal is NOT another window: this computer's station was erased or started fresh after the station this
+      // window holds was founded, so the station file stays empty and this window's copy was only set aside
+      const reset = h.conflict.reset === true;
+      // a re-seed refusal is not "newer" either: the station file went missing and ANOTHER window's copy was saved back
+      // first; which of the two copies holds more work is unknown, so neither is called newer
+      const reseeded = !reset && h.conflict.reseeded === true;
+      d.title = reset
+        ? 'This computer’s station was reset (erased, or set aside for a fresh start) after the station in this window was founded, so it was not restored. This window’s copy was kept separately on the station. Download a copy or open the fresh station.'
+        : reseeded
+        ? 'The station file on this computer was missing, and another window’s copy of this station was saved back to it first. This window’s copy was kept separately on the station. Download a copy or reload the current station.'
+        : 'Another window saved newer station changes. Your work from this window was preserved separately on the station. Download a copy or reload the current station.';
       if (!document.getElementById('save-conflict-notice')) {
         const banner = document.createElement('div'); banner.id = 'save-conflict-notice'; banner.setAttribute('role', 'alert');
         banner.style.cssText = 'position:fixed;top:8px;left:10%;right:10%;z-index:100000;padding:16px;background:#281e12;color:#fff;border:2px solid #e8b35c';
         const label = document.createElement('p'); label.textContent = d.title;
         const exportButton = document.createElement('button'); exportButton.className = 'bb'; exportButton.textContent = 'Download this window’s save';
         exportButton.onclick = () => { const blob = new Blob([JSON.stringify(CloudSave.localSnapshot() || {})], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'starnet-conflicting-save.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
-        const reload = document.createElement('button'); reload.className = 'bb'; reload.textContent = 'Reload current station'; reload.onclick = async () => { try { await CloudSave.reloadCurrent(); } catch (e) { label.textContent = e.message; } };
+        const reload = document.createElement('button'); reload.className = 'bb'; reload.textContent = reset ? 'Open the fresh station' : 'Reload current station'; reload.onclick = async () => { try { await CloudSave.reloadCurrent(); } catch (e) { label.textContent = e.message; } };
         banner.append(label, exportButton, reload); document.body.append(banner);
       }
       return;

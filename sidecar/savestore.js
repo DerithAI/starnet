@@ -10,7 +10,7 @@
        load(agentId)        -> doc | undefined        // the stored save envelope; undefined if none/corrupt
        stamp(agentId)       -> string                 // one stat: moves on every save/outside edit; '' = unknown
        loadStamped(agentId) -> { doc, stamp }         // load()'s doc + the pre-read stamp ('' unless a clean read)
-       save(agentId, doc, {compareRevision?}) -> { ok, conflict?, revision?, updatedAt }
+       save(agentId, doc, {compareRevision?}) -> { ok, conflict?, reset?, reseeded?, seeded?, revision?, updatedAt }
      }
 
    The file lives at <root>/<agentId>.save.json — a SIBLING of the notebook/channels stores, OUTSIDE the
@@ -51,7 +51,7 @@
     let tmpSeq = 0;   // deterministic process-unique tmp suffix (a single host; no pid/rng needed)
     let writes = 0;   // main-file saves made by this process: part of stamp(), so an in-process save always moves it
     const recoveredMissing = new Set();
-    const lastWritten = new Map();   // file -> { stamp, updatedAt, revision, replayAt } of this process's own last write (see save())
+    const lastWritten = new Map();   // file -> { stamp, updatedAt, revision, replayAt, seededRevision } of this process's own last write (see save())
 
     /* Rejected-save snapshots are recoveries, not history: every stale client (a reopened tab, a flaky beacon)
        used to add one forever (audit 2026-09-25 #18). Keep the newest CONFLICT_KEEP per agent — the file just
@@ -235,6 +235,26 @@
         return false;
       }
     }
+    /* THE RESET GENERATION (bug 5c019483 against #101's erase authority). ERASE EVERYTHING and START FRESH leave a clean
+       generation carrying a <root>/.fresh-start.json receipt (workspace-lineage.js FRESH_MARKER; src-tauri fresh_start.rs
+       stamps `at` as epoch-ms text, the sidecar's startFresh as an ISO time). A missing station file there is the
+       Commander's choice, not a lost file: a browser copy of the station from BEFORE that reset must never write itself
+       back. Only a station founded after it (agent.createdAt later than the receipt) may re-seed the file. A receipt that
+       cannot be read, or a copy with no founding time, proves nothing either way: refused. No receipt = no reset. */
+    const RESET_RECEIPT = '.fresh-start.json';
+    function resetRefusesSeed(doc) {
+      let raw;
+      try { raw = fs.readFileSync(pathMod.join(rootDir, RESET_RECEIPT), 'utf8'); }
+      catch (e) { return !(e && e.code === 'ENOENT'); }
+      let at = NaN;
+      try {
+        const receipt = JSON.parse(raw);
+        const v = receipt && receipt.version === 1 ? receipt.at : undefined;
+        at = typeof v === 'number' ? v : /^\d+$/.test(String(v)) ? Number(v) : Date.parse(String(v));
+      } catch (e) { at = NaN; }
+      const founded = Number(doc && doc.agent && doc.agent.createdAt);
+      return !(Number.isFinite(at) && Number.isFinite(founded) && founded > at);
+    }
     // prior (optional): what the caller already knows about THIS file's current main — { status, raw? } from its own
     // read moments ago (save() reads it for the anti-clobber gate), so the main is not read and parsed a second time.
     function writeAtomic(file, value, prior) {
@@ -326,6 +346,10 @@
         const prevUpdated = known ? known.updatedAt : (prev && typeof prev === 'object' ? num(prev.updatedAt) : 0);
         const requestUpdatedAt = num(doc.updatedAt);
         let incomingUpdated = requestUpdatedAt;
+        let seeded = false;   // this write re-seeded an empty station file from a copy (reported, so the page can say so)
+        // the revision this file's lineage was re-seeded at (0 = never): every copy based on a revision below it is from
+        // before the station file went missing. Kept in the wrapper (never the doc), so a restart still knows it.
+        let seededRevision = known ? num(known.seededRevision) : num(prev && prev.seededRevision);
         if (options.compareRevision) {
           const revision = known ? known.revision : num(prev && prev.doc && prev.doc._saveRevision);
           const expected = num(doc._saveRevision);
@@ -336,28 +360,48 @@
           const same = !known && prev && JSON.stringify(doc.updatedAt) === JSON.stringify(replayAt)
             && JSON.stringify(Object.assign({}, prev.doc, { updatedAt: replayAt, _saveRevision: expected, _saveDirty: false })) === JSON.stringify(Object.assign({}, doc, { _saveDirty: false }));
           if (same) return { ok: true, updatedAt: prevUpdated, revision };
-          if (expected !== revision) {
+          /* RE-SEED AN EMPTY STATION FILE (bug 5c019483). A copy based on a revision this file does not hold (a browser
+             save at _saveRevision 23 after the workspace was wiped, moved or reset) used to read the MISSING file as
+             revision 0 and land as a conflict snapshot — never the station — so every autosave was refused. When there is
+             truly nothing here (no main AND no .bak: 'absent'; a locked, corrupt or .bak-recovered prior is not empty)
+             the copy IS the station. A reset generation keeps its erase authority (above).
+             THE SEED REVISION is one no window can hold. A seed at revision 1 made old numbers valid again: a second,
+             stale window of the lost station frozen at R >= 1 (cloudsave keeps its revision after a conflict and stamps
+             every later autosave with it) matched once the seeding window's autosaves reached R, and its stale snapshot
+             replaced the newer station. The seed takes the clock (ms), far above any save count, and never below the
+             copy's own number + 1, so revisions keep only going up and every pre-seed copy stays a conflict. */
+          const seed = expected !== revision && prevRead.status === 'absent';
+          const reset = seed && resetRefusesSeed(doc);
+          if (expected !== revision && (!seed || reset)) {
             // Keep the rejected snapshot durably as well as the current station. Never silently
             // merge whole envelopes: removals and roster/config edits have conflicting semantics.
             const client = /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || '')) ? doc._saveClient : clock.now() + '-' + (++tmpSeq);
             const recovery = String(agentId) + '.save-conflict-' + client + '.json';
             writeAtomic(pathMod.join(rootDir, recovery), doc);
             pruneConflicts(String(agentId), recovery);
-            return { ok: false, stale: true, conflict: true, revision, recovery, updatedAt: prevUpdated };
+            const refused = { ok: false, stale: true, conflict: true, revision, recovery, updatedAt: prevUpdated };
+            if (reset) refused.reset = true;   // the station file is empty because it was RESET: no other window wrote it
+            // this copy is from before the station file was re-seeded by ANOTHER copy: that one was saved back first, which
+            // says nothing about which of the two holds newer work (the page must not call the station file newer)
+            else if (seededRevision > 0 && expected < seededRevision) refused.reseeded = true;
+            return refused;
           }
+          seeded = seed;
           incomingUpdated = Math.max(incomingUpdated, prevUpdated + 1);
-          doc = Object.assign({}, doc, { updatedAt: incomingUpdated, _saveRevision: revision + 1, _saveDirty: false });
+          const nextRevision = seed ? Math.max(expected + 1, Math.floor(num(clock.now()))) : revision + 1;
+          if (seed) seededRevision = nextRevision;
+          doc = Object.assign({}, doc, { updatedAt: incomingUpdated, _saveRevision: nextRevision, _saveDirty: false });
         }
 
         if (!options.compareRevision && (known || prev) && incomingUpdated < prevUpdated) return { ok: false, stale: true, updatedAt: prevUpdated };
         lastWritten.delete(file);
-        writeAtomic(file, { version: 1, agentId: String(agentId), updatedAt: incomingUpdated, savedAt: clock.now(), ...(options.compareRevision ? { requestUpdatedAt } : {}), doc: doc },
+        writeAtomic(file, { version: 1, agentId: String(agentId), updatedAt: incomingUpdated, savedAt: clock.now(), ...(options.compareRevision ? { requestUpdatedAt } : {}), ...(options.compareRevision && seededRevision > 0 ? { seededRevision } : {}), doc: doc },
           { status: prevRead.status, raw: prevRead.raw });
         writes++;
         recoveredMissing.delete(file);   // the main exists again and is this write
         const after = stamp(agentId);
-        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated });
-        return { ok: true, updatedAt: incomingUpdated, ...(options.compareRevision ? { revision: doc._saveRevision } : {}) };
+        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated, seededRevision: options.compareRevision ? seededRevision : 0 });
+        return { ok: true, updatedAt: incomingUpdated, ...(options.compareRevision ? { revision: doc._saveRevision } : {}), ...(seeded ? { seeded: true } : {}) };
       },
 
       // the persisted quarantine/recovery marker for this agent's save (EL-11 FIX 2/3), or undefined when there
