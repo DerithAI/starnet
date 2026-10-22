@@ -10,9 +10,12 @@
         interleaving of a cheap and a 10x heavier clone, the family passes the cap by less than the call admitted last.
      2. orchestration.js hands the HOST-minted ctx.spendPool to every run it starts — dispatch (foreground and
         background), spawn, the structured-result repair, and resume — and never invents one.
-     3. Through the real loop.js + orchestration.js + pool, wired as index.js wires them: the loop prices each call at
-        its prompt plus every output token its window leaves room for, and families of heterogeneous clones stay
-        within the cap plus one call at every cap, while clones that fit still run in parallel. */
+     3. Through the real loop.js + orchestration.js + registry + pool, wired as index.js wires them: the loop prices
+        each call at its prompt plus the most output it can bill — the model's output ceiling, or the room a REPORTED
+        window leaves (never the context manager's cold 131072 guess), whichever is lower — and families of
+        heterogeneous clones stay within the cap plus one call at every cap, while clones that fit still run in
+        parallel; a family whose calls take turns is never timed out by the waits alone (team.spawn's timeout and each
+        team.dispatch worker's slice pause while a call is held). */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('fs');
@@ -308,6 +311,10 @@ const fakeRunOnce = (impl) => {
   return fn;
 };
 const roster = new Map([['researcher', { system: 'R' }], ['analyst', { system: 'A' }]]);
+// a FOREGROUND worker is handed the lead's pool seen through its holds (run-spend-pool.js watchHolds): the same pool —
+// every booking and decision is the lead pool's own — whose holds pause the tool's clocks
+const drawsFrom = (view, pool) => isRunSpendPool(view) && view !== pool && ['join', 'booked', 'idle', 'withdraw', 'status'].every(k => view[k] === pool[k])
+  && typeof view.end === 'function';
 {
   const pool = makeRunSpendPool({ capUsd: 1 }).join('lead_run');
   const ro = fakeRunOnce();
@@ -315,7 +322,7 @@ const roster = new Map([['researcher', { system: 'R' }], ['analyst', { system: '
   await dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'find X' }, { agentId: 'analyst', prompt: 'analyze Y' }] },
     { agentId: 'agent', runId: 'lead_run', emit: () => {}, spendPool: pool });
   A.eq(ro.calls.length, 2, 'dispatch: two workers ran');
-  A.ok(ro.calls.every(c => c.spendPool === pool), 'dispatch: every worker run is handed the lead run\'s own pool');
+  A.ok(ro.calls.every(c => drawsFrom(c.spendPool, pool)), 'dispatch: every worker run draws from the lead run\'s own pool (watched for holds)');
 }
 {
   const ro = fakeRunOnce();
@@ -336,7 +343,7 @@ const roster = new Map([['researcher', { system: 'R' }], ['analyst', { system: '
     { agentId: 'agent', runId: 'lead_run', emit: () => {}, spendPool: pool });
   const repair = ro.calls.find(c => c.outputOnly === true);
   A.ok(repair, 'dispatch: the structured-result repair ran');
-  A.ok(repair && repair.spendPool === pool, 'dispatch: the repair run draws from the lead run\'s pool too');
+  A.ok(repair && drawsFrom(repair.spendPool, pool), 'dispatch: the repair run draws from the lead run\'s pool too');
 }
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-run-spend-pool-'));
 try {
@@ -356,7 +363,7 @@ try {
     const { spawnTool } = makeOrchestrationTools({ runOnce: ro, roster: () => new Map(), key: 'k', model: 'm', selfSystem: 'S', newId: counter(), subagents });
     await spawnTool.run({ tasks: [{ prompt: 'part 1' }, { prompt: 'part 2' }, { prompt: 'part 3' }] }, { agentId: 'agent', runId: 'lead_run', emit: () => {}, spendPool: pool });
     A.eq(ro.calls.length, 3, 'spawn: three clones ran');
-    A.ok(ro.calls.every(c => c.spendPool === pool), 'spawn: every clone is handed the lead run\'s pool (the d3a76db3 path)');
+    A.ok(ro.calls.every(c => drawsFrom(c.spendPool, pool)), 'spawn: every clone draws from the lead run\'s pool (the d3a76db3 path), watched for holds');
   }
   {
     const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'resume.json'), clock: { now: () => 1000 }, emit: () => {}, newId: counter() });
@@ -406,17 +413,36 @@ try {
   const turnSpawn = (n, usd) => [{ type: 'tool_start', index: 0, id: 'spawn_1', name: 'team_spawn' },
     { type: 'tool_args', index: 0, chunk: JSON.stringify({ tasks: Array.from({ length: n }, (_, i) => ({ prompt: 'part ' + (i + 1), label: 'part ' + (i + 1) })) }) },
     { type: 'usage', usage: { prompt_tokens: 4000, completion_tokens: 400, total_tokens: 4400, cost: usd } }, { type: 'done', finishReason: 'tool_calls' }];
-  // a catalog price for the priced families ($10 / $30 per million, a 200k window): the most a clone's call can cost
-  // is its prompt plus ~200k output tokens, ~$6 — more than any cap here, so these families' calls take turns
-  const PRICED = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 4096, pricing: { prompt: '0.00001', completion: '0.00003' }, supportsTools: true }];
+  // a catalog price for the priced families ($10 / $30 per million, a 200k window, no output ceiling named): the most
+  // a clone's call can cost is its prompt plus ~200k output tokens, ~$6 — more than any cap here, so these families'
+  // calls take turns
+  const PRICED = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: null, pricing: { prompt: '0.00001', completion: '0.00003' }, supportsTools: true }];
   // the same prices on an 8k window: a call costs at most ~$0.24, so calls that fit under the cap go out together
-  const PRICED_8K = [{ id: 'replay/model', context_length: 8000, max_completion_tokens: 4096, pricing: { prompt: '0.00001', completion: '0.00003' }, supportsTools: true }];
+  const PRICED_8K = [{ id: 'replay/model', context_length: 8000, max_completion_tokens: null, pricing: { prompt: '0.00001', completion: '0.00003' }, supportsTools: true }];
+  // review of 32fc352e4 — THE COLD WINDOW: priced ($5 / $30 per million) but its catalog reports NO window and no output
+  // ceiling, as the OpenAI API's /models does (gpt-5.x: a 400k window, up to 128k output). index.js sizes the context
+  // manager to its cold 131072 guess, which 32fc352e4 priced calls from.
+  const COLD = [{ id: 'replay/model', context_length: 0, max_completion_tokens: null, pricing: { prompt: '0.000005', completion: '0.00003' }, supportsTools: true }];
+  // the same model when an output ceiling is known (128k) but still no window: a call bills its prompt + at most that
+  const COLD_CEILING = [{ id: 'replay/model', context_length: 0, max_completion_tokens: 128000, pricing: { prompt: '0.000005', completion: '0.00003' }, supportsTools: true }];
+  // review of 32fc352e4 — THE MANAGED DEFAULT: a 200k-window $3 / $15 model with a 64k output ceiling (Sonnet-class) on
+  // the StarNet relay's default PER RUN $2. Reserved by its window (~$3 a call) every clone's call took its turn
+  const SONNET = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 64000, pricing: { prompt: '0.000003', completion: '0.000015' }, supportsTools: true }];
   // a catalog that prices nothing, as the e2e mock OpenRouter lists its model ($0 / $0): the call is billed only by
   // usage.cost, so every pre-call price is $0 — the "no price at all" path (counted as calls)
   const FREE = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 4096, pricing: { prompt: '0', completion: '0' }, supportsTools: true }];
   const partOf = o => { const m = /part (\d+)/.exec(JSON.stringify(o.messages || [])); return m ? Number(m[1]) : 0; };
+  // the roster a team.dispatch family delegates to (one agent per part)
+  const crew = new Map([['w1', { system: 'W' }], ['w2', { system: 'W' }], ['w3', { system: 'W' }], ['w4', { system: 'W' }]]);
+  const turnDispatch = (n, usd) => [{ type: 'tool_start', index: 0, id: 'dispatch_1', name: 'team_dispatch' },
+    { type: 'tool_args', index: 0, chunk: JSON.stringify({ parallel: true, workers: Array.from({ length: n }, (_, i) => ({ agentId: 'w' + (i + 1), prompt: 'part ' + (i + 1) })) }) },
+    { type: 'usage', usage: { prompt_tokens: 4000, completion_tokens: 400, total_tokens: 4400, cost: usd } }, { type: 'done', finishReason: 'tool_calls' }];
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function family(label, capUsd, leadUsd, workerUsd, opt) {
-    const { models, selfSystem, synthUsd, workerTurns, workerDelay, tasks } = opt || {};
+    // timeoutMs: the orchestration budget (deps.dispatchTimeoutMs) — the tool is then registered with its own timeout
+    // and the real clock, as index.js does; workerDelayMs: real time each worker's call stays in flight
+    const { models, selfSystem, synthUsd, workerTurns, workerDelay, workerDelayMs, tasks, tool, timeoutMs } = opt || {};
+    const viaDispatch = tool === 'dispatch';
     const ends = [], invalid = [];
     const newId = counter();
     let modelCalls = 0;
@@ -435,15 +461,22 @@ try {
       };
       const replay = makeReplayProvider({ turns: o.turns, models });
       // a clone that answers later (its delay in ticks before the stream starts): the cheap clone books first
-      const provider = Object.assign({}, replay, { stream: async function* (req) { modelCalls++; for (let i = 0; i < (o.delay || 0); i++) await tick(); yield* replay.stream(req); } });
+      const provider = Object.assign({}, replay, { stream: async function* (req) {
+        modelCalls++;
+        for (let i = 0; i < (o.delay || 0); i++) await tick();
+        if (o.delayMs) await sleep(o.delayMs);
+        yield* replay.stream(req);
+      } });
       // as index.js: the run's system prompt leads its messages, the context manager is the loop's ruler sized to the
-      // model's catalog window, and the budget check hands the loop's pre-call price (its second argument) to the pool
+      // model's catalog window (or the cold 131072 guess when the catalog reports none: COLD_CATALOG_CONTEXT_TOKENS), the
+      // loop is told the window the provider REPORTS (provider.contextLimit, 0 = none), and the budget check hands the
+      // loop's pre-call price (its second argument) to the pool
       const msgs = (o.system ? [{ role: 'system', content: o.system }] : []).concat(o.messages || [{ role: 'user', content: 'go' }]);
-      const ctxMgr = makeContext({ contextLimit: replay.contextLimit('replay/model') });
+      const ctxMgr = makeContext({ contextLimit: replay.contextLimit('replay/model') || 131072 });
       const res = await runAgentLoop({ messages: msgs, provider, emit, cost: makeCostEngine({ priceOf: replay.priceOf }),
         model: 'replay/model', agentId: o.agentId, runId: o.runId, limits: { maxCostUsd: capUsd, maxIters: 6, grace: false },
         budget: { check: (spent, nextCallUsd) => pool.admit(o.runId, spent, nextCallUsd) },
-        context: ctxMgr, approxTokens: ctxMgr.estimateMessages(msgs),
+        context: ctxMgr, approxTokens: ctxMgr.estimateMessages(msgs), contextLimit: replay.contextLimit('replay/model'),
         tools: o.tools || [], dispatch: o.dispatch, capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: o.agentId, room: 'office' } });
       pool.settle(o.runId, res.usd);
       const end = seq.find(e => e.name === 'agent.run.end');
@@ -454,21 +487,32 @@ try {
     const runOnce = (o) => {
       const part = partOf(o);
       return hostRun({ runId: o.runId, agentId: o.agentId || 'sub', spendPool: o.spendPool, system: o.system, messages: o.messages, part,
-        delay: workerDelay ? workerDelay(part) : 0, turns: workerTurns ? workerTurns(part) : [turnText('part done', workerUsd)] });
+        delay: workerDelay ? workerDelay(part) : 0, delayMs: workerDelayMs || 0, turns: workerTurns ? workerTurns(part) : [turnText('part done', workerUsd)] });
     };
-    const { spawnTool } = makeOrchestrationTools({ runOnce, roster: () => new Map(), key: 'k', model: 'replay/model', selfSystem: selfSystem || 'S', newId, subagents });
+    const timed = typeof timeoutMs === 'number' && timeoutMs > 0;
+    const { spawnTool, dispatchTool } = makeOrchestrationTools({ runOnce, roster: () => (viaDispatch ? crew : new Map()), key: 'k', model: 'replay/model', selfSystem: selfSystem || 'S', newId, subagents,
+      ...(timed ? { dispatchTimeoutMs: timeoutMs, now: () => Date.now() } : {}) });
+    const teamTool = viaDispatch ? dispatchTool : spawnTool;
+    const wireName = viaDispatch ? 'team_dispatch' : 'team_spawn';
     const leadPool = makeRunSpendPool({ capUsd });   // index.js mints the lead's pool and puts it on its tool ctx
     let peak = 0;
     const realAdmit = leadPool.admit;
     leadPool.admit = (...a) => { const r = realAdmit(...a); if (r === null) peak = Math.max(peak, leadPool.status().inFlight); return r; };
-    const reg = makeRegistry();
-    reg.register({ name: 'team_spawn', schema: spawnTool.schema, run: async (args) => (await spawnTool.run(args, { agentId: 'agent', runId: 'lead', emit: () => {}, spendPool: leadPool })).content });
-    await hostRun({ runId: 'lead', agentId: 'agent', spendPool: leadPool, turns: [turnSpawn(tasks || 4, leadUsd), turnText('combined brief', synthUsd === undefined ? leadUsd : synthUsd)],
-      tools: [{ type: 'function', function: { name: 'team_spawn', parameters: spawnTool.schema } }], dispatch: (c, ctx) => reg.dispatch(c, ctx) });
+    // as index.js: the run's registry has the real clock, and the tool runs on the registry's own ctx (its signal, its
+    // holdTimeout) plus the host-minted pool
+    const reg = makeRegistry(timed ? { clock: { now: () => Date.now() } } : undefined);
+    reg.register({ name: wireName, schema: teamTool.schema, ...(timed ? { timeoutMs: teamTool.timeoutMs } : {}),
+      run: async (args, rctx) => (await teamTool.run(args, { agentId: 'agent', runId: 'lead', emit: () => {}, spendPool: leadPool,
+        signal: rctx && rctx.signal, holdTimeout: rctx && rctx.holdTimeout })).content });
+    let toolResult = null;
+    const leadTurn = (viaDispatch ? turnDispatch : turnSpawn)(tasks || 4, leadUsd);
+    await hostRun({ runId: 'lead', agentId: 'agent', spendPool: leadPool, turns: [leadTurn, turnText('combined brief', synthUsd === undefined ? leadUsd : synthUsd)],
+      tools: [{ type: 'function', function: { name: wireName, parameters: teamTool.schema } }],
+      dispatch: async (c, ctx) => { const r = await reg.dispatch(c, ctx); toolResult = r; return r; } });
     const lead = ends.find(e => e.agentId === 'agent');
-    const workers = ends.filter(e => /^sub-/.test(e.agentId)).sort((a, b) => a.part - b.part);
+    const workers = ends.filter(e => e.agentId !== 'agent').sort((a, b) => a.part - b.part);
     const st = typeof leadPool.status === 'function' ? leadPool.status() : {};
-    return { lead: lead && lead.end, workers: workers.map(w => w.end), invalid, spentUsd: st.spentUsd, calls: st.calls, modelCalls, peak };
+    return { lead: lead && lead.end, workers: workers.map(w => w.end), invalid, spentUsd: st.spentUsd, calls: st.calls, modelCalls, peak, toolResult };
   }
   const { endNote: channelNote } = require('../sidecar/channels/hub.js');
   const commsLine = new Function(A.fnBody(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'chat.js'), 'utf8'), 'function budgetStopLine(') + '\nreturn budgetStopLine;')();
@@ -609,6 +653,65 @@ try {
       }
     }
   }
+  // REVIEW OF 32fc352e4 — THE COLD WINDOW: priced at $5/$30 per million with no window and no output ceiling reported
+  // (COLD), the context manager at index.js's cold 131072 guess, PER RUN $5, four output-heavy clones (a ~60k-token
+  // prompt, 100k output tokens: $0.30 + $3.00 = $3.30 a call). 32fc352e4 reserved each call at ~$2.43 from the guess
+  // and let three go out together: $9.92 for a $5 cap — $4.92 over, more than the $3.30 call admitted last.
+  const outputHeavy = () => [turnTokens('long part done', 60000, 100000)];
+  {
+    const f = await family('coldWindow', 5, 0.05, 0, { models: COLD, selfSystem: identity(240000), workerTurns: outputHeavy, synthUsd: 0.01 });
+    A.eq(f.invalid, [], 'cold window: every event passed the event contract');
+    A.ok(f.spentUsd - 5 < 3.30 - 1e-9, 'cold window: the family spent ' + money(f.spentUsd) + ' — past the $5 cap by less than the $3.30 call admitted last: ' + JSON.stringify(f.workers.map(w => w && [w.reason, w.usd])));
+    A.eq(f.peak, 1, 'cold window: a call nothing bounds has no price, so the clones\' calls took turns (counted as calls)');
+    A.eq(f.workers.map(w => w && w.reason).sort(), ['budget', 'budget', 'done', 'done'], 'cold window: two clones ran (the second with $1.65 left), two stopped on the cap the family reached');
+    A.ok(f.workers.filter(w => w && w.reason === 'budget').every(w => w.budgetScope === 'run' && w.budgetCapUsd === 5 && w.usd === 0 && w.budgetProjected === undefined), 'cold window: each stop is the $5 cap the family really reached');
+    A.eq(f.calls, f.modelCalls, 'cold window: every call that went out is counted (' + f.modelCalls + ')');
+  }
+  {
+    // the same clones once the model's 128k output ceiling is known (no window still): each call is reserved at its
+    // prompt + 128k output ($4.14), so two go out together and the family still passes the cap by less than one call
+    const f = await family('coldCeiling', 5, 0.05, 0, { models: COLD_CEILING, selfSystem: identity(240000), workerTurns: outputHeavy, workerDelay: () => 6, synthUsd: 0.01 });
+    A.eq(f.invalid, [], 'cold window, 128k ceiling: every event passed the event contract');
+    A.ok(f.spentUsd - 5 < 3.30 - 1e-9, 'cold window, 128k ceiling: the family spent ' + money(f.spentUsd) + ' — past the $5 cap by less than one $3.30 call');
+    A.eq(f.peak, 2, 'cold window, 128k ceiling: two $4.14 reservations fit under the cap at once, a third does not');
+  }
+  // REVIEW OF 32fc352e4 — THE MANAGED DEFAULT: PER RUN $2 (budgetcaps DEFAULT_MANAGED_PER_RUN_USD) on a 200k-window
+  // $3/$15 model with a 64k output ceiling, four clones whose calls cost $0.03 (3,000 prompt + 1,400 output tokens).
+  // 32fc352e4 reserved each call by its window (~$2.96, over the cap) and ran them one at a time.
+  const smallTurn = () => [turnTokens('part done', 3000, 1400)];   // $0.009 + $0.021 = $0.030
+  {
+    const f = await family('managedSonnet', 2, 0.01, 0, { models: SONNET, workerTurns: smallTurn, workerDelay: () => 6, synthUsd: 0.01 });
+    A.eq(f.invalid, [], 'managed $2: every event passed the event contract');
+    A.eq(f.workers.map(w => w && w.reason), ['done', 'done', 'done', 'done'], 'managed $2: all four clones finished');
+    A.eq(f.lead && f.lead.reason, 'done', 'managed $2: the lead took its synthesis turn and finished');
+    A.ok(near(f.spentUsd, 0.14), 'managed $2: the family spent $0.14 ($0.01 + 4 x $0.03 + $0.01): $' + f.spentUsd);
+    A.eq(f.peak, 3, 'managed $2: each call is reserved at ~$0.97 (its 64k output ceiling), so three go out at once under $2 — not one at a time');
+  }
+  // REVIEW OF 32fc352e4 — A HELD FAMILY IS NOT TIMED OUT BY ITS HOLDS. A model nothing prices (every call counted as a
+  // call: one in flight at a time), three clones whose calls each take 150ms, a 300ms team.spawn / team.dispatch
+  // budget: together the calls need 450ms, but each clone's own work is 150ms. 32fc352e4 ran the wait down the tool's
+  // registry timeout (team.spawn: every clone aborted, "timed out") and each dispatch worker's slice.
+  {
+    const f = await family('heldSpawn', 1, 0.01, 0.01, { models: FREE, tasks: 3, workerDelayMs: 150, timeoutMs: 300, synthUsd: 0.01 });
+    A.eq(f.invalid, [], 'held spawn: every event passed the event contract');
+    A.ok(f.toolResult && f.toolResult.ok === true && !/timed out/.test(String(f.toolResult.content)), 'held spawn: the 300ms team.spawn timeout did not fire on 450ms of calls taken in turns: ' + JSON.stringify(f.toolResult && [f.toolResult.ok, f.toolResult.summary, String(f.toolResult.content).slice(0, 160)]));
+    A.eq(f.workers.map(w => w && w.reason), ['done', 'done', 'done'], 'held spawn: every clone finished');
+    A.eq(f.peak, 1, 'held spawn: the clones\' calls took turns');
+    A.eq(f.lead && f.lead.reason, 'done', 'held spawn: the lead read every clone\'s result and finished');
+  }
+  {
+    const f = await family('heldDispatch', 1, 0.01, 0.01, { models: FREE, tool: 'dispatch', tasks: 3, workerDelayMs: 150, timeoutMs: 300, synthUsd: 0.01 });
+    A.eq(f.invalid, [], 'held dispatch: every event passed the event contract');
+    const rows = (() => { try { return JSON.parse(f.toolResult.content); } catch (_) { return []; } })();
+    A.eq(rows.map(r => r && r.reason), ['done', 'done', 'done'], 'held dispatch: no worker ran out of its 300ms slice while it waited for a call in flight: ' + JSON.stringify(rows.map(r => r && [r.agentId, r.reason])));
+    A.eq(f.peak, 1, 'held dispatch: the workers\' calls took turns');
+  }
+  {
+    // the clocks still bound the WORK: one clone whose own call takes 450ms is stopped by the 300ms timeout
+    const f = await family('slowSpawn', 1, 0.01, 0.01, { models: FREE, tasks: 1, workerDelayMs: 450, timeoutMs: 300, synthUsd: 0.01 });
+    A.ok(f.toolResult && /timed out/.test(String(f.toolResult.content)), 'slow spawn: a clone whose own work outlasts the budget still times out: ' + JSON.stringify(f.toolResult && String(f.toolResult.content).slice(0, 120)));
+    await sleep(300);   // the aborted clone's replay call settles before the next family
+  }
   // A $0 LEAD AND A $0 WORKER (calls, not only dollars): nothing booked a cent to reserve by, and a1234b154 let every
   // paid clone fire on that $0 — the lead's $0 turn was "no measure" and a $0 call in flight counted as nothing.
   {
@@ -662,19 +765,64 @@ try {
     A.eq(r.asks, 1, 'held + STOP: the pool is never asked again (a cancelled run is never put in flight)');
     r.release();
   }
-  {
-    // THE LOOP'S PRICE OF A CALL: its prompt at the input price plus every output token the window leaves room for
-    const provider = makeReplayProvider({ turns: [turnText('answer', 0.01)], models: PRICED_8K });
-    const ctxMgr = makeContext({ contextLimit: provider.contextLimit('replay/model') });
+  // THE LOOP'S PRICE OF A CALL, wired as index.js wires it (the loop told the window the provider REPORTS, the context
+  // manager sized to it or to the cold 131072 guess): its prompt at the input price plus the most output it can bill —
+  // the output ceiling, or the room a reported window leaves, whichever is lower — at the output price
+  async function priceOfFirstCall(models, extra) {
+    const provider = Object.assign(makeReplayProvider({ turns: [turnText('answer', 0.01)], models }), (extra && extra.provider) || {});
+    const ctxMgr = makeContext({ contextLimit: provider.contextLimit('replay/model') || 131072 });
     const msgs = [{ role: 'user', content: 'go' }];
     let priced = null;
     await runAgentLoop({ messages: msgs, provider, emit: () => {}, cost: makeCostEngine({ priceOf: provider.priceOf }),
       model: 'replay/model', agentId: 'w', runId: 'price', limits: { maxCostUsd: 1, maxIters: 3, grace: false },
       budget: { check: (spent, nextCallUsd) => { if (priced === null) priced = nextCallUsd(); return null; } },
-      context: ctxMgr, approxTokens: ctxMgr.estimateMessages(msgs), capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: 'w', room: 'office' } });
-    const p = Math.max(ctxMgr.estimateMessages(msgs), 1);
+      context: ctxMgr, approxTokens: ctxMgr.estimateMessages(msgs), contextLimit: provider.contextLimit('replay/model'),
+      capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: 'w', room: 'office' } });
+    return { priced, p: Math.max(ctxMgr.estimateMessages(msgs), 1) };
+  }
+  {
+    const { priced, p } = await priceOfFirstCall(PRICED_8K);
     const expect = p * 0.00001 + (8000 - p) * 0.00003;
     A.ok(priced !== null && Math.abs(priced - expect) < 0.001 && priced > 0.23, 'the loop prices a call at its prompt + every output token its 8k window leaves room for: $' + priced + ' (~' + money(expect) + ')');
+  }
+  {
+    // an output ceiling below the window's room bounds the output (the adapter sends it as max_tokens)
+    const { priced, p } = await priceOfFirstCall([Object.assign({}, PRICED_8K[0], { max_completion_tokens: 4096 })]);
+    const expect = p * 0.00001 + 4096 * 0.00003;
+    A.ok(priced !== null && Math.abs(priced - expect) < 0.001, 'a 4,096-token output ceiling on the 8k window: the prompt + 4,096 output tokens: $' + priced + ' (~' + money(expect) + ')');
+  }
+  {
+    // review of 32fc352e4: a window nobody reported is never priced from the context manager's 131072 guess
+    const { priced } = await priceOfFirstCall(COLD);
+    A.eq(priced, 0, 'no window reported and no output ceiling: no price (counted as a call), never the cold 131072 guess');
+    const ceiling = await priceOfFirstCall(COLD_CEILING);
+    const expect = ceiling.p * 0.000005 + 128000 * 0.00003;
+    A.ok(ceiling.priced !== null && Math.abs(ceiling.priced - expect) < 0.001 && ceiling.priced > 3.84, 'no window reported but a 128k output ceiling: the prompt + 128k output tokens: $' + ceiling.priced + ' (~' + money(expect) + ')');
+  }
+  {
+    // the SONNET row: a 200k window, a 64k output ceiling: ~$0.96 a call, not the window's ~$3
+    const { priced, p } = await priceOfFirstCall(SONNET);
+    const expect = p * 0.000003 + 64000 * 0.000015;
+    A.ok(priced !== null && Math.abs(priced - expect) < 0.001 && priced < 1, 'a 200k window with a 64k output ceiling at $3/$15: $' + priced + ' (~' + money(expect) + '), not ~$3');
+  }
+  {
+    // a FALLBACK to a model whose window is unknown: the price never leans on the window of the model it left
+    const prices = { priceOf: () => ({ in: 10, out: 30 }) };
+    const primary = { priceOf: prices.priceOf, contextLimit: () => 200000, stream: async function* () { throw new Error('Our servers are currently overloaded. Please try again later.'); yield; } };
+    const cold = { priceOf: prices.priceOf, contextLimit: () => 0, stream: async function* () {
+      yield { type: 'text', delta: 'served' }; yield { type: 'usage', usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }; yield { type: 'done', finishReason: 'stop' };
+    } };
+    const ctxMgr = makeContext({ contextLimit: 200000 });
+    const seen = [];
+    const res = await runAgentLoop({ messages: [{ role: 'user', content: 'go' }], provider: primary, emit: () => {}, cost: makeCostEngine({ priceOf: prices.priceOf }),
+      model: 'big', agentId: 'w', runId: 'fb', limits: { maxCostUsd: 1, maxIters: 3, grace: false }, context: ctxMgr, contextLimit: 200000,
+      summarize: async () => '', fallbacks: [{ provider: cold, model: 'unknown' }], sleep: async () => {},
+      budget: { check: (spent, nextCallUsd) => { seen.push(nextCallUsd()); return null; } },
+      capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: 'w', room: 'office' } });
+    A.eq(res.reason, 'done', 'fallback pricing: the cold fallback served the turn');
+    A.ok(seen.length >= 2 && seen[0] > 5 && seen[seen.length - 1] === 0, 'fallback pricing: the primary\'s call was priced by its 200k window, the fallback\'s call has no price (its window is unknown; the context manager kept 200k): ' + JSON.stringify(seen));
+  }
+  {
     const free = makeReplayProvider({ turns: [turnText('answer', 0.01)], models: FREE });
     let freePrice = null;
     await runAgentLoop({ messages: [{ role: 'user', content: 'go' }], provider: free, emit: () => {}, cost: makeCostEngine({ priceOf: free.priceOf }),

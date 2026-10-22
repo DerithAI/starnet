@@ -20716,7 +20716,9 @@ async function runOnceCore(o) {
   }
 
   // ---- tools (registered fresh per run; cheap) ----
-  const registry = makeRegistry();
+  // The clock lets a tool timeout that team.spawn / team.dispatch pause while the run's spend pool holds a worker
+  // (tools/registry.js PAUSABLE DEADLINE) resume with exactly what was left (bug d3a76db3).
+  const registry = makeRegistry({ clock: { now: () => Date.now() } });
   const internalBriefTools = taskBriefState && taskBrief.status !== 'cancelled'
     ? registerTaskBriefTools(registry, taskBriefStore, taskBriefState, {
         now: () => Date.now(),
@@ -22121,8 +22123,9 @@ async function runOnceCore(o) {
   // The run's spend pool answers first (bug d3a76db3): once this run has workers, the lead and every worker stop at
   // their call boundary when the shared PER RUN cap is spent, and wait (a hold) while the calls in flight leave no room.
   // Its stop is scope 'run' with the cap of the run that started the pool, so the stop line names the cap the Commander
-  // set. nextCallUsd is the most the call about to go out can cost (loop.js: its prompt plus every output token the
-  // window leaves room for, at catalog prices): the pool reserves it while the call is in flight.
+  // set. nextCallUsd is the most the call about to go out can cost (loop.js: its prompt plus the most output it can
+  // bill — the model's output ceiling or a reported window's room — at catalog prices): the pool reserves it while the
+  // call is in flight.
   const runBudget = { check: (spentThisRun, nextCallUsd) => {
     if (providerUnmetered) return null;
     const pooled = spendPool.admit(runId, spentThisRun, nextCallUsd);

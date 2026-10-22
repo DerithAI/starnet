@@ -974,6 +974,11 @@
     const approxTokens = o.approxTokens || 0;   // initial rough estimate; feeds the error classifier's overflow ratio
     let contextLimit = o.contextLimit || 0;     // 0 = unknown (cold catalog) -> the ratio heuristic is skipped;
                                                 // re-resolved on a provider fallback (see the fallback branch)
+    // The window the next call's PRICE may lean on (nextCallUsd): only one a provider reported for the CURRENT model —
+    // never the context manager's cold guess (index.js sizes it to 131072 when nothing reported a window), and never a
+    // window kept from the model a fallback left (contextLimit keeps that one: stale beats none for folding, not for
+    // pricing). Lowered by a provider-named window like contextLimit.
+    let callWindow = contextLimit;
     // OPTIONAL cross-run cost governor (sidecar/budget.js): consulted in the guards each turn; null = ungoverned
     // (every existing caller/test, byte-identical). The per-RUN ceiling stays maxCostUsd below.
     const budget = o.budget;
@@ -1637,6 +1642,7 @@
       const n = Math.floor(Number(limit) || 0);
       if (!(n > 0)) return;
       if (!contextLimit || n < contextLimit) contextLimit = n;
+      if (!callWindow || n < callWindow) callWindow = n;
       if (context && typeof context.setContextLimit === 'function') {
         const cur = Number(context.contextLimit) || 0;
         if (!cur || n < cur) { try { context.setContextLimit(n); } catch (e) { failNote('loop.compaction.adoptWindow', e); } }
@@ -1807,24 +1813,41 @@
       return true;
     }
 
-    /* THE MOST THE NEXT CALL CAN COST, before it goes out (bug d3a76db3, review of a1234b154). The prompt this boundary
-       would send — the local ruler (messages + tool schemas), the run-start estimate as its floor — at the current
-       model's catalog INPUT price, cache-blind (a cache read bills less), plus every output token the window leaves
-       room for (or the output ceiling a provider named, when lower) at its catalog OUTPUT price. A call bills no more
-       tokens than its window holds, so while output is priced at least as high as input this covers the whole call —
-       short only of a prompt-cache WRITE premium (up to 1.25x input) on a call that also fills its window. A model
-       nothing prices, or a window nobody knows, reads $0: no price. The run's shared spend pool (run-spend-pool.js)
-       RESERVES this for the call while it is in flight, so calls that go out together pass the cap by less than the
-       call sent last; a call with no price is counted as a call instead, and nothing goes out beside it. Handed over
-       as a function: only a pool with workers ever asks. */
+    /* THE MOST OUTPUT ONE CALL CAN BILL, when anything says (bug d3a76db3, review of 32fc352e4): the lowest of the
+       provider's own ceiling for this model (provider.outputLimit: the catalog's max output, or the max_tokens the
+       adapter sends — anthropic always sends one) and an output ceiling a provider named after a refusal (it rides
+       the request as req.maxTokens). 0 = nothing says. */
+    function outputCeilingTokens() {
+      let n = outputCapTokens > 0 ? outputCapTokens : 0;
+      if (provider && typeof provider.outputLimit === 'function') {
+        try {
+          const v = Math.floor(Number(provider.outputLimit(model)) || 0);
+          if (v > 0) n = n > 0 ? Math.min(n, v) : v;
+        } catch (e) { failNote('loop.budget.outputLimit', e); }
+      }
+      return n;
+    }
+    /* THE MOST THE NEXT CALL CAN COST, before it goes out (bug d3a76db3, reviews of a1234b154 and 32fc352e4). The
+       prompt this boundary would send — the local ruler (messages + tool schemas), the run-start estimate as its floor —
+       at the current model's catalog INPUT price, cache-blind (a cache read bills less), plus the most output the call
+       can bill at its catalog OUTPUT price: the output ceiling (outputCeilingTokens) or every token the window leaves
+       room for, whichever is lower. The window is only one a provider REPORTED for this model (callWindow), never the
+       context manager's cold 131072 guess: under a guess, a 400k-window model with a 128k output was reserved below
+       what it bills. Nothing known about either — a window nobody reported and no output ceiling (the OpenAI API's
+       /models publishes neither) — reads $0, and so does a model nothing prices: no price. The run's shared spend pool
+       (run-spend-pool.js) RESERVES this for the call while it is in flight, so calls that go out together pass the
+       cap by less than the call sent last; a call with no price is counted as a call instead, and nothing goes out
+       beside it. What this cannot cover: a prompt-cache WRITE premium (up to 1.25x input), and a prompt the provider
+       counts above the ruler when the output ceiling, not the window, is the bound. Handed over as a function: only a
+       pool with workers ever asks. */
     function nextCallUsd() {
       if (!cost || typeof cost.estimate !== 'function') return 0;
       try {
-        const windowNow = windowTokens();
-        if (!(windowNow > 0)) return 0;
         const promptTokens = Math.max(rulerTokens(messages), approxTokens);
-        let outTokens = Math.max(0, windowNow - promptTokens);
-        if (outputCapTokens > 0) outTokens = Math.min(outTokens, outputCapTokens);
+        const room = callWindow > 0 ? Math.max(0, callWindow - promptTokens) : null;   // null = no window reported
+        const ceiling = outputCeilingTokens();
+        if (room === null && !(ceiling > 0)) return 0;   // nothing bounds the output: no price, counted as a call
+        const outTokens = room === null ? ceiling : (ceiling > 0 ? Math.min(room, ceiling) : room);
         const r = cost.estimate({ prompt_tokens: promptTokens, completion_tokens: outTokens }, model);
         const v = r ? Number(r.usd) : 0;
         return (isFinite(v) && v > 0) ? v : 0;
@@ -2168,8 +2191,10 @@
                overflow ratio (contextLimit below) had the same stale denominator. Only a KNOWN (>0) limit
                applies — a cold catalog on the new provider keeps the old number (stale beats none), matching
                setContextLimit's own guard. */
+            callWindow = 0;   // the next call's price never leans on the window of the model we left
             if (typeof provider.contextLimit === 'function') {
               const nl = Number(provider.contextLimit(model)) || 0;
+              callWindow = nl;
               if (nl > 0) {
                 contextLimit = nl;
                 if (context && typeof context.setContextLimit === 'function') context.setContextLimit(nl);

@@ -15,11 +15,12 @@
      • spent — what every member has booked (its loop's own tally at each check, plus each reconciled cost the
        member books in between);
      • RESERVED — each call in flight at the most it can cost, as its loop priced it before sending (admit's third
-       argument: the prompt at the model's catalog input price plus every output token the window leaves room for
-       at its catalog output price), never less than the costliest call any member has booked so far;
-     • a call that has no such price (a model nothing prices: every price reads $0) is counted as a CALL, never as
-       $0: while one is in flight no other member's call goes out. Calls that all book $0 can never take the pool
-       around its cap.
+       argument, loop.js nextCallUsd: the prompt at the model's catalog input price plus the most output the call can
+       bill — the model's output ceiling, or every token a REPORTED window leaves room for, whichever is lower — at
+       its catalog output price), never less than the costliest call any member has booked so far;
+     • a call that has no such price (a model nothing prices, or one with neither a reported window nor an output
+       ceiling: its price reads $0) is counted as a CALL, never as $0: while one is in flight no other member's call
+       goes out. Calls that all book $0 can never take the pool around its cap.
    A member's call goes out while the family's booked spend is under the cap, and either nothing else is in flight
    or the reservations of the calls in flight leave room under the cap (a call is never counted against itself —
    the single-run bound). Otherwise the call is HELD: admit returns { hold }, the member is not in flight, and its
@@ -31,10 +32,12 @@
    call went out while it was in flight (a later one would be the last), so the final spend < cap + its own cost.
    A call with no price goes out only beside priced calls that leave room, and nothing goes out while it is in flight.
    What a reservation cannot cover: a provider billing a call above the catalog's token prices (counted once it
-   books: no later reservation is less than it), a prompt-cache write premium on a call that also fills its window
-   (loop.js nextCallUsd), and spend booked outside a model call (a tool's own paid pass, a summarizer fold), which is
-   counted when it is booked. The price of the bound is TIME: near the cap, with a model
-   whose window prices a call high, or with a model nothing prices, workers take turns instead of calling at once.
+   books: no later reservation is less than it), a prompt-cache write premium and a prompt the provider counts above
+   the loop's ruler (loop.js nextCallUsd), and spend booked outside a model call (a tool's own paid pass, a summarizer
+   fold), which is counted when it is booked. The price of the bound is TIME: near the cap, with a model whose calls
+   it must reserve high, or with a model it cannot price, workers take turns instead of calling at once. That wait is
+   not work: team.spawn's timeout and a team.dispatch worker's slice pause while a call is held (watchHolds below,
+   orchestration.js poolHoldClock), so a family is never timed out by its holds alone.
 
    A pool with one member decides nothing (admit always proceeds): a run that never delegates is governed by its
    loop's own check exactly as before. An ungoverned cap (0 / Infinity / missing) never blocks.
@@ -158,5 +161,35 @@
       && typeof p.settle === 'function');
   }
 
-  return { makeRunSpendPool, isRunSpendPool };
+  /* A HELD CALL IS NOT WORK (review of 32fc352e4). The pool trades TIME for its bound, and a wait for room must not run
+     down the clocks that bound a worker's work (team.spawn's tool timeout, a team.dispatch worker's slice), or a family
+     that finishes in parallel on its own time is timed out by the holds alone. watchHolds hands ONE member's run a view
+     of the pool that calls hooks.hold() when the pool holds that member's call and hooks.release() once the hold is
+     over — the call in flight it waited on settled, the member reached its next boundary, or its run settled; end()
+     releases a hold still open when the caller is done with the member. Everything else is the pool itself. */
+  function watchHolds(pool, hooks) {
+    if (!isRunSpendPool(pool) || !hooks) return pool;
+    let held = false;
+    const end = () => {
+      if (!held) return;
+      held = false;
+      if (typeof hooks.release === 'function') hooks.release();
+    };
+    return Object.assign({}, pool, {
+      admit(runId, spentUsd, callUsd) {
+        end();
+        const r = pool.admit(runId, spentUsd, callUsd);
+        if (r && r.hold) {
+          held = true;
+          if (typeof hooks.hold === 'function') hooks.hold();
+          Promise.resolve(r.hold).then(end, end);
+        }
+        return r;
+      },
+      settle(runId, finalUsd) { end(); return pool.settle(runId, finalUsd); },
+      end
+    });
+  }
+
+  return { makeRunSpendPool, isRunSpendPool, watchHolds };
 });
