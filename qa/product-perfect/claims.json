@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "64667daa5c1c8ee79ee53b209527e57478bbcfdd",
+    "sourceCommit": "00b4257d6656382259ff8555085c2b573d41f481",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -373,8 +373,8 @@
       },
       {
         "path": "frontend/app/cloudsave.js",
-        "bytes": 37314,
-        "sha256": "0188182c3fc52d7a2477cbbdb6d08fa3ab7a350ff66419b6edb4e241da1ed444"
+        "bytes": 38159,
+        "sha256": "d4756cfb73108555a74c5b904309e0674843d2d09c46e16437fcf534d8f6fca8"
       },
       {
         "path": "frontend/app/cloudsavecore.js",
@@ -1203,8 +1203,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 947814,
-        "sha256": "df285efbfe158116609175b3762dbc62c7cb5399d4663d158d9da5b7c077240b"
+        "bytes": 948756,
+        "sha256": "a26068d7133ef4b43d796d2837cc09891f7f4febd5c505d5ab0740c3b05da806"
       },
       {
         "path": "frontend/app/stepin.js",
