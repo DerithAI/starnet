@@ -51,14 +51,16 @@ function stripVerdict(text) {
 }
 
 /* verdictBrief(when) -> the instruction a reviewer dock receives when its lane meets a LOOP gate keyed on a
-   verdict word; '' when the gate is not verdict-keyed. Prompt text only. */
+   verdict word; '' when the gate is not verdict-keyed. Prompt text only; pipeline.js handoffPrompt keeps its first 600
+   characters. What it promises about a bare approval is chain.js bareApproval's rule (2026-10-21). */
 function verdictBrief(when) {
   if (!isVerdictWord(when)) return '';
   const other = when.toLowerCase() === 'approved' ? 'revise' : 'approved';
   return 'YOUR VERDICT DECIDES THE LOOP GATE AFTER YOU: end your reply with one final line, exactly '
     + '"VERDICT: ' + when.toLowerCase() + '" when the work should leave the loop, or "VERDICT: ' + other + '" when it should go '
     + 'back round. Nothing after that line. A reply with no VERDICT line is treated as "' + other + '". '
-    + 'When the work passes, your reply is what moves on past the gate: lead with the finished work itself (with any fixes '
+    + 'When the work passes, a reply of only the VERDICT line, or a bare approval such as "Looks good.", passes it on exactly as '
+    + 'you were handed it. Any other reply is what moves on past the gate: lead with the finished work itself (with any fixes '
     + 'applied), and keep review notes short.';
 }
 

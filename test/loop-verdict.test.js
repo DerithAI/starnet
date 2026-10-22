@@ -29,11 +29,16 @@ A.eq(V.stripVerdict('no verdict'), 'no verdict', 'a text without one is unchange
 const quoted = ['VERDICT: approved', 'line', 'line', 'line', 'line'].join(NL);
 A.eq(V.stripVerdict(quoted), quoted, 'a verdict quoted above the tail is not stripped');
 A.ok(/lead with the finished work itself/.test(V.verdictBrief('approved')), 'the reviewer is told its approving reply is what moves on');
+// (2026-10-21) ...unless it is only the VERDICT line or a bare approval: then the work it was handed moves on as it is (chain.js bareApproval)
+A.ok(/a reply of only the VERDICT line, or a bare approval such as "Looks good\.", passes it on exactly as you were handed it\. Any other reply is what moves on past the gate/.test(V.verdictBrief('approved')),
+  'the reviewer is told how to pass the work on unchanged, and that any other reply is what moves on');
+A.ok(V.verdictBrief('approved').length <= 600 && V.verdictBrief('revise').length <= 600, 'the brief fits the 600 characters handoffPrompt keeps');
 
 // the handoff prompt carries the brief as its own paragraph, and is byte-identical without it
 const base = P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky');
 A.eq(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', ''), base, 'an empty verdict brief changes nothing');
 A.ok(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', V.verdictBrief('approved')).indexOf('be picky\n\nYOUR VERDICT DECIDES') > 0, 'the verdict instruction rides after the standing brief');
+A.ok(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', V.verdictBrief('approved')).indexOf(V.verdictBrief('approved') + '\n\n') > 0, '...whole, never clipped');
 
 /* ---- 2. the gate ---- */
 const geo = (props, belts) => ({ props, belts });
@@ -223,12 +228,12 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     A.eq(upstreamOf(R2.log.find(l => l.agentId === 'publisher')), EDITED, 'an edited approval to a dock: the next stage gets the reviewer\'s version alone, unframed');
   }
   {
-    // ...and an approval that only TALKS ABOUT the work in its own words is still not the work
+    // ...and a bare approval that praises the work in approval words alone is still not the work
     const R = rig(loopFloor({ maxIter: 3, when: 'approved' }, outboxDone), {
-      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good: accurate, well sourced and clearly laid out.\nVERDICT: approved', usd: 0.01 }
+      writer: { text: RESEARCH, usd: 0.01 }, reviewer: { text: 'Looks good: accurate, well sourced and clearly written.\nVERDICT: approved', usd: 0.01 }
     });
     const res = await R.c.advance({ agentId: 'writer', text: RESEARCH, originalText: 'research rooftop solar', lineId: R.lineId, runId: 'v14' });
-    A.eq(res.text, RESEARCH, 'an approval that discusses the work to the OUTBOX: the work ships, never the discussion');
+    A.eq(res.text, RESEARCH, 'a praising bare approval to the OUTBOX: the work ships, never the praise');
   }
 
   /* ---- A VERSION THE REVIEWER CHANGED IS THE WORK (review of the terse-approval fix, 2026-10-21). A reviewer that redacted the
@@ -279,7 +284,8 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
   await changedIsTheWork('a tightened version', COPY, COPY_TIGHT);
   await changedIsTheWork('a translation', 'Our community garden welcomes everyone. Grow vegetables and flowers together. Open every Saturday at nine.',
     'Nuestro huerto comunitario da la bienvenida a todos. Cultiva verduras y flores en compañía. Abierto cada sábado a las nueve.');
-  // ...while an approval that only talks about the work, in any script, still hands on the work it approved
+  // ...while a BARE approval, in any script, still hands on the work it approved (2026-10-21: only the VERDICT line, or nothing but
+  // approval words; one that discusses the work in its own words stays the reviewer's, below)
   const WORK_HEAD_TEXT = 'THE WORK UNDER REVIEW (what the reviewer was handed):\n';
   const approvalIsNot = async (name, draft, reply) => {
     const g = await throughGate(draft, reply, 'v-' + name);
@@ -287,16 +293,21 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     A.ok(String(g.dock).indexOf(WORK_HEAD_TEXT + draft + '\n\nREVIEW:\n' + reply) >= 0, name + ' to a dock: the work, then the approval as its review (' + JSON.stringify(String(g.dock).slice(0, 80)) + ')');
   };
   await approvalIsNot('a terse Chinese approval', ZH, '看起来不错，可以发布。');
-  await approvalIsNot('a Chinese approval that discusses the work', ZH, '很好：社区花园的介绍清楚，开放时间也写明了。');
   await approvalIsNot('a terse Japanese approval', JA, 'いいと思います。');
-  await approvalIsNot('a Japanese approval that discusses the work', JA, '良いです。案内がわかりやすい。');
   await approvalIsNot('a terse approval of long copy', COPY, 'Looks good.');
-  await approvalIsNot('an approval that discusses long copy', COPY, 'Approved. Clear, upbeat and specific about what the app does.');
+  await approvalIsNot('a praising approval of long copy', COPY, 'Approved: concise, upbeat and specific.');
   await approvalIsNot('an approval of a one-line post', THANKS, 'Warm and specific, approved.');
-  await approvalIsNot('an approval that discusses research in three sentences', RESEARCH, 'The research is accurate and well sourced. All three findings are relevant and clearly stated. Approved for the designer.');
+  {
+    // the verdict brief's way to pass the work on unchanged: only the VERDICT line. The work moves on alone (no empty review)
+    const g = await throughGate(RESEARCH, '', 'v-verdict-only');
+    A.ok(g.outbox === RESEARCH && g.sendTo === RESEARCH && g.dock === RESEARCH && !/VERDICT|REVIEW:/.test(g.dockTurn),
+      'a reply of only the VERDICT line: the OUTBOX, SEND TO and a dock all get the work as it was handed (' + JSON.stringify(String(g.dock).slice(0, 60)) + ')');
+  }
+  for (const ok of ['LGTM 👍', 'Approved, ship it!', 'No changes needed.', 'Great work, thanks.', '**Looks great to me.**', 'Good to go.', '👍', '没问题，通过。', '承認します。', '좋습니다.'])
+    await approvalIsNot('the bare approval ' + JSON.stringify(ok), RESEARCH, ok);
 
-  /* ---- A REDACTION OR SUMMARY OF ANY LENGTH IS THE WORK (review of e0c1d62fd, 2026-10-21). The draft stands in only for a reply that is
-          PLAINLY a short note about the work; an unclear reply stays the reviewer's, as on trunk. The previous rule swapped a version under
+  /* ---- A REDACTION OR SUMMARY OF ANY LENGTH IS THE WORK (review of e0c1d62fd, 2026-10-21). The draft stands in only for a bare
+          approval (below: review of 000e5680a); any other reply stays the reviewer's, as on trunk. The previous rule swapped a version under
           half the draft's length (a list redaction, a cut private section, a summary), a fully redacted one-liner, and a redacted one-line
           export past its word budget back for the unredacted draft, at the OUTBOX, SEND TO and a dock. ---- */
   await changedIsTheWork('a list redaction',
@@ -315,9 +326,40 @@ const handedText = (entry) => (entry.text.split('produced:\n')[1] || '').split('
     const EXPORT_R = EXPORT.replace(/"name":"[^"]*"/g, '"name":"[redacted]"').replace(/"phone":"[^"]*"/g, '"phone":"[redacted]"');
     await changedIsTheWork('a redacted one-line export of 300 records', EXPORT, EXPORT_R, ['First0 Last0', '555-1000', 'First299 Last299', '555-1299']);
   }
-  // an unclear reply (it reuses much of the work's own words, or runs past a short note) stays the reviewer's, as on trunk
+  // a reply that is not a bare approval (it reuses the work's own words, or runs past a short note) stays the reviewer's, as on trunk
   await changedIsTheWork('an approval that reuses the work\'s own words', RESEARCH, 'Looks good: the three findings on rooftop solar are well sourced.');
   await changedIsTheWork('a multi-paragraph review', RESEARCH,
     'Strengths: every number is sourced and the California point is explained.\n\nMinor: you could name a county for the permitting delays.\n\nReady for the designer.');
+
+  /* ---- ONLY A BARE APPROVAL HANDS ON THE DRAFT (review of 000e5680a, 2026-10-21). Its "plainly a short note" rule (25 words or fewer,
+          one paragraph, under a third of its vocabulary from the draft) also caught the reviewer's own short finished version and its
+          caveats, and swapped the draft in at the OUTBOX, SEND TO and a dock: a reworded tagline, headline or subject line, a translation
+          of one sentence (or one that merges two), an approval that asks for a name or number to come out (the draft's personal data went
+          out of the line) and one that withholds the work. The reviewer's reply is now the default, as on trunk; the draft stands in only
+          on positive evidence (a bare approval, above). ---- */
+  await changedIsTheWork('a reworded tagline', 'Fresh coffee delivered to your door every morning', 'Wake up to better brew.');
+  await changedIsTheWork('a reworded headline', 'City council approves new budget for parks and libraries', 'Green spaces and books get a funding boost');
+  await changedIsTheWork('a reworded subject line', 'Subject: Update on the project timeline for next quarter', 'Heads up: launch moves to March');
+  await changedIsTheWork('a one-sentence Spanish translation', 'Our community garden opens every Saturday at nine.', 'Nuestro huerto comunitario abre cada sábado a las nueve.');
+  await changedIsTheWork('a one-sentence Chinese translation', 'Our community garden opens every Saturday at nine.', '我们的社区花园每周六九点开放。');
+  await changedIsTheWork('a translation that merges two sentences into one', 'Our garden is open to everyone. It opens every Saturday at nine.',
+    'Nuestro huerto, abierto a todos, abre cada sábado a las nueve.');
+  await changedIsTheWork('a discussing approval in Chinese', ZH, '很好：社区花园的介绍清楚，开放时间也写明了。');
+  await changedIsTheWork('a discussing approval in Japanese', JA, '良いです。案内がわかりやすい。');
+  await changedIsTheWork('an approval that discusses research in three sentences', RESEARCH,
+    'The research is accurate and well sourced. All three findings are relevant and clearly stated. Approved for the designer.');
+  // an approval with a caveat, or one that withholds the work: the reviewer's words move on and the draft's personal data never does
+  const PII_THANKS = 'Huge thanks to Wei Zhang (555-0100) for the launch help!';
+  for (const caveat of [
+    'Approved, but remove his phone number before posting.', 'Good, but drop the phone number.', 'Fine once you delete the number.',
+    'Strip the phone number, then ship it.', 'Take out the number and it is good to go.', 'Cut the phone number.', 'Hide his number first.',
+    "Don't post this as is.", 'Do not publish the phone number.', 'Not safe to share as written.', 'We cannot share his number.',
+    '可以发布，但请删掉他的电话号码。', '電話番号を消してから承認します。'])
+    await changedIsTheWork('the caveat ' + JSON.stringify(caveat), PII_THANKS, caveat, ['Wei Zhang', '555-0100']);
+  await changedIsTheWork('a withholding approval', 'Wei Zhang SSN 123-45-6789, lives at 12 Elm St Boston.', 'Nothing here is safe to share publicly.',
+    ['Wei Zhang', '123-45-6789', '12 Elm St']);
+  for (const mask of ['***', '█████', '[ ]', '___'])
+    await changedIsTheWork('a reply masked as ' + JSON.stringify(mask), PII_THANKS, mask, ['Wei Zhang', '555-0100']);
+  await changedIsTheWork('approval filler alone', PII_THANKS, 'This is it.', ['Wei Zhang', '555-0100']);
   A.report('loop-verdict');
 })();

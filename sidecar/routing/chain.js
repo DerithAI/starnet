@@ -101,9 +101,9 @@ function effectiveLimits(raw, fallback, poolCap) {
    seed, so a loop-back turn carries the work under review itself, clipped, ahead of the review.
    THE APPROVED WORK (2026-10-18): the same missing replay left a TERSE approval ("Looks good.") handing on nothing but itself — a
    designer after researcher ▸ reviewer ▸ LOOP got no research, and a gate shipping straight out delivered the approval as the
-   result. An approving reply that does not carry the work (carriesWork) now hands on the work it approved: to a dock, framed
-   with the approval as its review; out of the line, the work alone. A reply that restated the work, or is the reviewer's own
-   version of it, stays the work (R1). */
+   result. A BARE approval (bareApproval: only the VERDICT line, or nothing but approval words) now hands on the work it approved:
+   to a dock, framed with the approval as its review; out of the line, the work alone. Any other reply stays the work (R1): a
+   restatement, the reviewer's own version, a change it asks for, a review in its own words. */
 const REVIEWED_HEAD = 12000, REVIEWED_TAIL = 4000;
 function clipReviewed(s) {
   if (s.length <= REVIEWED_HEAD + REVIEWED_TAIL) return s;
@@ -119,52 +119,38 @@ function workOf(s) {
   const cut = s.lastIndexOf(REVIEW_HEAD);
   return cut >= m[0].length ? s.slice(m[0].length, cut) : s;
 }
-/* carriesWork(reply, work) -> did an APPROVING reply carry the work it passed? It does unless it is PLAINLY A SHORT NOTE about the
-   work: swapping a version the reviewer CHANGED back for the draft ships what it removed (a redacting reviewer's names, phones and
-   emails, a private section it cut) and drops its corrections, so an unclear reply stays the reviewer's, as before the fix. The
-   draft stands in only for a reply that
-   1. carries no redaction mark ([redacted], [已隐去], ***, "removed"...: a redaction is the reviewer's version at any length);
-   2. is one short paragraph: no blank line, at most two lines, at most NOTE_WORDS words (a Chinese, Japanese, Korean or Thai
-      character is half a word: those scripts put no spaces between words);
-   3. says little of the work's own: under a third of its vocabulary (words past a few English function words; in those scripts,
-      character pairs, past pairs of hiragana grammar) is the work's (an excerpt, a summary, a tightened version or a fix is the
-      work's words); and
-   4. is not the work's shape: two or more sentences, as many as the work, about its length (a translation shares no words).
-   Pure and linear; reads the first 64k characters of each. (2026-10-21 review: the earlier overlap-or-length rules swapped a
-   redaction or summary under half the draft's length, and any redacted long one-line export, back for the unredacted draft.) */
-const NOTE_WORDS = 25;
-const CJK = '\\p{sc=Han}\\p{sc=Hiragana}\\p{sc=Katakana}\\p{sc=Hangul}\\p{sc=Thai}';
-const TOKENS = new RegExp('[' + CJK + ']+|(?:(?![' + CJK + '])[\\p{L}\\p{N}])+', 'gu'), IS_CJK = new RegExp('^[' + CJK + ']', 'u');
-const tokensOf = s => String(s).slice(0, 65536).toLowerCase().match(TOKENS) || [];
-const sizeOf = t => t.reduce((n, x) => n + (IS_CJK.test(x) ? x.length / 2 : 1), 0);
-const FUNCTION_WORDS = new Set('a an and are as at be but by for from has have i in is it its of on or our so that the this to was we were with you your'.split(' '));
-function vocabOf(t) {
-  const v = new Set();
-  for (const x of t) {
-    if (!IS_CJK.test(x)) { if (!FUNCTION_WORDS.has(x)) v.add(x); continue; }
-    if (x.length === 1) { v.add(x); continue; }
-    for (let i = 0; i + 2 <= x.length; i++) { const p = x.slice(i, i + 2); if (!/^\p{sc=Hiragana}+$/u.test(p)) v.add(p); }
-  }
-  return v;
-}
-const REDACTED = /\[[^\]\n]{0,40}\]|【[^】\n]{0,40}】|\*{3,}|[█▇■]|x{4,}|\b(?:redact\w*|removed|omitted|withheld|censored|anonymi[sz]ed|scrubbed)\b|隐去|删除|屏蔽|打码|保密|伏せ|削除|非公開|비공개|삭제/iu;
-const sentencesOf = s => (String(s).slice(0, 65536).trim().match(/[.!?]['"’”)\]]*(?:\s|$)|[。！？]/gu) || []).length || 1;
-function carriesWork(reply, work) {
-  const w = tokensOf(work);
-  if (!w.length) return true;
+/* bareApproval(reply) -> is an APPROVING reply (its VERDICT line stripped) POSITIVELY a bare approval, so the work it approved moves
+   on in its place? Only two shapes are: nothing at all (only the VERDICT line, which the verdict brief offers for passing the work
+   on unchanged, or an emoji), or nothing but approval words with at least one that approves ("Looks good.", "LGTM", "Approved, ship
+   it!", "Great work.", "No changes needed.", "看起来不错，可以发布。", "いいと思います。"). Every other reply stays the work, as on trunk:
+   the reviewer's own version at any length (a reworded tagline, headline or subject line, a translation of one sentence or many, a
+   correction, a redaction, a cut), a change it asks for ("remove his phone number"), a withholding ("not safe to share") and a
+   review in its own words. One word outside the two lists ("but", "not", "don't", a noun of the work's), or a redaction mark,
+   keeps the reply; neither list holds a verb that asks for a change. (2026-10-21 reviews: rules that guessed "a short note" from
+   overlap, length and shape swapped short versions and caveats back for the draft, shipping the version the reviewer replaced and
+   the personal data it flagged.) Pure; a reply past 2k characters is never bare. */
+const APPROVE_WORDS = new Set(('accepted approve approved done excellent fine go good great happy lgtm love nice no ok okay perfect '
+  + 'post publish ready send ship solid works yes yep').split(' '));
+const APPROVAL_FILLER = new Set(('a accurate all also and are as be by changes clearly concise crisp edits engaging everything flow '
+  + 'for further here hook i is issues it job let look looking looks m me needed nicely notes on overall polished readable really '
+  + 'relevant s sharp sounds sourced specific spot strong thanks that the think this thorough tight to tone too upbeat very warm '
+  + 'well work written').split(' '));
+// Chinese, Japanese and Korean put no spaces between words: their approval phrases are matched (longest first), then their grammar
+const CJK_APPROVE = /非常好|太棒了|没有问题|没问题|不错|很好|挺好|好的|很棒|完美|可以|发布|通过|批准|同意|好|問題ありません|問題なし|大丈夫|素晴らしい|完璧|承認|いい|良い|よい|좋습니다|좋아요|좋네요|괜찮습니다|괜찮아요|승인합니다|승인|완벽합니다|완벽해요/gu;
+const CJK_FILLER = /看起来|看上去|我觉得|写得|非常|很|也|都|了|的|吧|啊|と思います|思います|とても|します|です|ます|ね|よ|아주|정말|네/gu;
+const REDACTION_MARK = /\[[^\]\n]{0,40}\]|【[^】\n]{0,40}】|\*{3,}|_{3,}|[█▇■▓▒░]/u;
+function bareApproval(reply) {
   const s = String(reply == null ? '' : reply).trim();
-  if (REDACTED.test(s)) return true;
-  if (/\n\s*\n/.test(s) || s.split('\n').filter(l => l.trim()).length > 2) return true;
-  const r = tokensOf(s), size = sizeOf(r);
-  if (size > NOTE_WORDS) return true;
-  const mine = vocabOf(r);
-  if (!mine.size) return false;   // nothing of its own ("", "OK", a thumbs-up): a note
-  const theirs = vocabOf(w);
-  let shared = 0;
-  for (const x of mine) if (theirs.has(x)) shared++;
-  if (shared * 3 >= mine.size) return true;
-  const n = sentencesOf(s), wsize = sizeOf(w);
-  return n >= 2 && n === sentencesOf(work) && size * 3 >= wsize * 2 && size * 2 <= wsize * 3;
+  if (!s) return true;
+  if (s.length > 2000 || REDACTION_MARK.test(s)) return false;
+  let approves = false, filler = false;
+  const rest = s.toLowerCase().replace(CJK_APPROVE, () => { approves = true; return ' '; }).replace(CJK_FILLER, () => { filler = true; return ' '; });
+  for (const w of rest.match(/[\p{L}\p{N}]+/gu) || []) {
+    if (APPROVE_WORDS.has(w)) approves = true;
+    else if (APPROVAL_FILLER.has(w)) filler = true;
+    else return false;
+  }
+  return approves || !filler;   // approval words, or no words at all (an emoji); filler alone ("This is it.") approves nothing
 }
 function loopDecision(step, ctx, n, visited, text, reviewed) {
   const byVerdict = Verdict.isVerdictWord(step.when);
@@ -185,11 +171,11 @@ function loopDecision(step, ctx, n, visited, text, reviewed) {
   // the done-lane crate reaches a dock (directly, or past a JOINER: next = null, the dock in afterJoin.next) — else it ships out
   const toDock = !!(step.next || (step.afterJoin && step.afterJoin.next));
   if (byVerdict && !wants) {
-    // THE APPROVED WORK (above): an approval that did not restate the work hands on the work itself, unclipped — it is the product.
+    // THE APPROVED WORK (above): a bare approval hands on the work itself, unclipped — it is the product.
     // (the frame never spells the verdict line out: that word is the gate's control signal, never part of what moves on — R1)
     const work = draft ? Verdict.stripVerdict(draft) : '';
     const notes = String(stripped == null ? '' : stripped).trim();
-    if (work.trim() && !carriesWork(notes, work)) {
+    if (work.trim() && bareApproval(notes)) {
       out = (toDock && notes)
         ? '[LOOP — ' + String(step.when).toLowerCase() + ' round the gate at ' + step.loop + ' — the reviewer passed the work on without restating it]\n'
           + WORK_HEAD + work + REVIEW_HEAD + notes
