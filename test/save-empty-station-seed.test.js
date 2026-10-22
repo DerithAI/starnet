@@ -10,13 +10,19 @@
 
    Drives the REAL path: frontend/app/cloudsave.js (vm) -> the REAL GET/POST /api/save handlers sliced out of
    sidecar/index.js -> the REAL savestore on a temp workspace, then the REAL save-light renderer from stationui.js:
-     1. an empty station file is re-seeded from the browser copy: revision 1, no conflict, the cache marked clean, the next
-        autosave and a reload carry on with no false conflict, and the save light says ONCE what happened;
+     1. an empty station file is re-seeded from the browser copy at a revision no window can hold (the clock, never below
+        the copy's own number + 1), no conflict, the cache marked clean, the next autosave and a reload carry on with no
+        false conflict, and the save light says ONCE what happened;
      2. a NON-EMPTY station file is never overwritten by a stale copy (the normal conflict and its banner stay);
      3. a RECOVERABLE station file (main gone, .bak intact; or a main that cannot be read) is never overwritten;
      4. a RESET generation (ERASE EVERYTHING / START FRESH receipt) never takes back a station founded before the reset,
         and the banner says so instead of blaming another window; a station founded after the reset still re-seeds;
-        a receipt that cannot be read, or a copy with no founding time, proves nothing and is refused. */
+        a receipt that cannot be read, or a copy with no founding time, proves nothing and is refused;
+     6. TWO WINDOWS of the lost station (review of the first fix: a seed at revision 1 made old numbers valid again): the
+        first copy seeds, a stale second window frozen at revision 5 stays refused after the seeding window's autosaves
+        pass 5 (it used to match and replace the newer station), after a sidecar restart too, and its banner says another
+        window's copy was saved back first, never that the station file is newer; a NEWER copy that lost the race is
+        told the same, and a conflict inside the re-seeded line stays the ordinary one. */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('node:fs');
@@ -103,6 +109,7 @@ const browserCopy = (over) => Object.assign({
       const resumed = await p.reconcile(JSON.parse(cache.get('starnet.save')));
       A.eq(resumed && resumed.agent && resumed.agent.name, 'NOVA', '1: boot resumes the station from the browser copy');
       A.eq(p.pullOutcome(), 'empty', '1: the station file proved empty (GET /api/save -> save:null)');
+      const seedClock = Date.now();
       A.eq(await p.flush({ force: true }), true, '1: the browser copy re-seeds the empty station file (was refused as a conflict)');
       const h = p.health();
       A.eq(h.conflict, null, '1: no conflict is latched — nobody else wrote this station');
@@ -110,10 +117,11 @@ const browserCopy = (over) => Object.assign({
       const durable = host.saveStore.load('agent');
       A.eq(durable && durable.agent && durable.agent.name, 'NOVA', '1: the station file now holds the station');
       A.eq(durable && durable.workstreams[0].history[0].content, 'the work from before the wipe', '1: with its work intact');
-      A.eq(durable && durable._saveRevision, 1, '1: as the station file\'s first revision');
-      A.ok(h.seeded && h.seeded.revision === 1, '1: health records that this window\'s copy seeded the station file (' + JSON.stringify(h.seeded) + ')');
+      const seededAt = durable && durable._saveRevision;
+      A.ok(Number.isInteger(seededAt) && seededAt > 23 && seededAt >= seedClock, '1: at a revision no window of the lost file can hold: above the copy\'s 23 and at the clock (' + seededAt + ')');
+      A.ok(h.seeded && h.seeded.revision === seededAt, '1: health records that this window\'s copy seeded the station file (' + JSON.stringify(h.seeded) + ')');
       const cached = JSON.parse(cache.get('starnet.save'));
-      A.eq([cached._saveRevision, cached._saveDirty], [1, false], '1: the browser cache is marked clean at the seeded revision');
+      A.eq([cached._saveRevision, cached._saveDirty], [seededAt, false], '1: the browser cache is marked clean at the seeded revision');
 
       const light = saveLight(p).render();
       A.eq(light.banner, null, '1: no conflict banner');
@@ -125,12 +133,12 @@ const browserCopy = (over) => Object.assign({
       next.workstreams[0].history.push({ role: 'assistant', content: 'after the re-seed' });
       cache.set('starnet.save', JSON.stringify(next)); p.push(next);
       A.eq(await p.flush({ force: true }), true, '1: the next autosave lands');
-      A.eq((host.saveStore.load('agent') || {})._saveRevision, 2, '1: at revision 2, with no false conflict');
+      A.eq((host.saveStore.load('agent') || {})._saveRevision, seededAt + 1, '1: at the next revision, with no false conflict');
 
       const reloaded = page(host, cache);
       const back = await reloaded.reconcile(JSON.parse(cache.get('starnet.save')));
       A.eq(reloaded.pullOutcome(), 'save', '1: a reload finds the station in the station file');
-      A.eq([back && back.agent && back.agent.name, reloaded.revision(), reloaded.health().conflict], ['NOVA', 2, null], '1: and resumes it at its revision with no conflict');
+      A.eq([back && back.agent && back.agent.name, reloaded.revision(), reloaded.health().conflict], ['NOVA', seededAt + 1, null], '1: and resumes it at its revision with no conflict');
       A.eq(saveLight(reloaded).render().notices.length, 0, '1: a later page that seeded nothing says nothing');
     }
 
@@ -224,7 +232,7 @@ const browserCopy = (over) => Object.assign({
       const noBirth = isoStore.save('agent', browserCopy({ agent: { id: 'agent', name: 'OLD' } }), { compareRevision: true });
       A.ok(noBirth.ok === false && noBirth.reset === true, '4: a copy with no founding time proves nothing and is refused');
       const later = isoStore.save('agent', browserCopy({ agent: { id: 'agent', name: 'VEGA', createdAt: 8000 } }), { compareRevision: true });
-      A.ok(later.ok === true && later.revision === 1 && later.seeded === true, '4: a station founded after START FRESH re-seeds (' + JSON.stringify(later) + ')');
+      A.ok(later.ok === true && later.revision > 23 && later.seeded === true, '4: a station founded after START FRESH re-seeds (' + JSON.stringify(later) + ')');
 
       // a receipt that cannot be read proves nothing either
       const torn = workspace();
@@ -233,6 +241,65 @@ const browserCopy = (over) => Object.assign({
       const t = tornStore.save('agent', browserCopy({ agent: { id: 'agent', name: 'VEGA', createdAt: 8000 } }), { compareRevision: true });
       A.ok(t.ok === false && t.reset === true, '4: an unreadable reset receipt refuses the copy (' + JSON.stringify(t) + ')');
       A.eq(tornStore.load('agent'), undefined, '4: and leaves the station file empty');
+    }
+
+    // ================= 6. TWO WINDOWS of the lost station: a stale one can never match the seeded file =================
+    {
+      const root = workspace();
+      const host = sidecar(root);
+      // window A holds the newest copy (last ACK 23); window B is a stale window of the same station, frozen at revision 5
+      const cacheA = new Map([['starnet.save', JSON.stringify(browserCopy({ _saveClient: 'window-a' }))]]);
+      const staleCopy = () => browserCopy({ _saveRevision: 5, updatedAt: 9500, _saveClient: 'window-b',
+        workstreams: [{ id: 'general', history: [{ role: 'user', content: 'the stale window\'s old world' }] }] });
+      const cacheB = new Map([['starnet.save', JSON.stringify(staleCopy())]]);
+      const a = page(host, cacheA), b = page(host, cacheB);
+      await a.reconcile(JSON.parse(cacheA.get('starnet.save')));
+      await b.reconcile(JSON.parse(cacheB.get('starnet.save')));
+      A.eq([a.pullOutcome(), b.pullOutcome(), a.revision(), b.revision()], ['empty', 'empty', 23, 5], '6: both windows booted over the empty station file with their own revisions');
+      A.eq(await a.flush({ force: true }), true, '6: window A\'s copy seeds the station file');
+      const seededAt = a.revision();
+      A.eq(await b.flush({ force: true }), false, '6: window B\'s stale copy is refused');
+      const cb = b.health().conflict;
+      A.ok(cb && cb.conflict === true && cb.reseeded === true && !cb.reset && cb.revision === seededAt,
+        '6: as a conflict that says the station file was re-seeded from another copy (' + JSON.stringify(cb) + ')');
+      A.eq(b.revision(), 5, '6: window B keeps its frozen revision (every later autosave is stamped 5)');
+      // window A keeps working: four autosaves, so a revision line restarted at 1 would now hold exactly B's 5
+      let work = JSON.parse(cacheA.get('starnet.save'));
+      for (let i = 0; i < 4; i++) {
+        work = structuredClone(work); work.updatedAt = 9100 + i; work._saveDirty = true;
+        work.workstreams[0].history.push({ role: 'assistant', content: 'window A work ' + i });
+        cacheA.set('starnet.save', JSON.stringify(work)); a.push(work);
+        A.eq(await a.flush({ force: true }), true, '6: window A autosave ' + i + ' lands');
+      }
+      A.eq(a.revision(), seededAt + 4, '6: the station file moved four revisions past the seed (to ' + a.revision() + ')');
+      const beforeB = fs.readFileSync(path.join(root, 'agent.save.json'));
+      // window B autosaves again, still at revision 5
+      const staleNext = staleCopy(); staleNext.updatedAt = 9600; cacheB.set('starnet.save', JSON.stringify(staleNext)); b.push(staleNext);
+      A.eq(await b.flush({ force: true }), false, '6: window B\'s next autosave is STILL refused (it used to match revision 5 and replace the station)');
+      A.ok(fs.readFileSync(path.join(root, 'agent.save.json')).equals(beforeB), '6: the station file is byte-for-byte window A\'s');
+      const durable = host.saveStore.load('agent');
+      A.eq(durable && durable.workstreams[0].history.slice(-1)[0].content, 'window A work 3', '6: with window A\'s latest work');
+      A.ok(conflictFiles(root).some(n => fs.readFileSync(path.join(root, n), 'utf8').indexOf('the stale window\'s old world') >= 0), '6: window B\'s copy is kept aside, never lost');
+      // window A is never told that another window wrote over it
+      work = structuredClone(work); work.updatedAt = 9200; work.workstreams[0].history.push({ role: 'assistant', content: 'window A after B' });
+      cacheA.set('starnet.save', JSON.stringify(work)); a.push(work);
+      A.eq([await a.flush({ force: true }), a.health().conflict], [true, null], '6: window A\'s next autosave lands with no conflict');
+      // a sidecar restart still knows where the re-seed began (it is in the station file's wrapper, not only in memory)
+      const restarted = sidecar(root);
+      const r = restarted.saveStore.save('agent', Object.assign(staleCopy(), { updatedAt: 9700 }), { compareRevision: true });
+      A.ok(r.ok === false && r.conflict === true && r.reseeded === true, '6: after a restart the stale copy is still refused as pre-re-seed (' + JSON.stringify(r) + ')');
+      // a NEWER copy than the one that seeded (last ACK 30) lost the race: refused too, and told the same
+      const r30 = restarted.saveStore.save('agent', browserCopy({ _saveRevision: 30, updatedAt: 9800, _saveClient: 'window-c' }), { compareRevision: true });
+      A.ok(r30.ok === false && r30.conflict === true && r30.reseeded === true, '6: a newer copy that lost the race is refused as pre-re-seed as well (' + JSON.stringify(r30) + ')');
+      A.eq((restarted.saveStore.load('agent') || {}).workstreams[0].history.slice(-1)[0].content, 'window A after B', '6: and the station file still holds window A\'s latest work');
+      // window B's save light and banner
+      const lightB = saveLight(b).render();
+      A.ok(lightB.cls === 'degraded' && !/newer/i.test(lightB.title) && /missing/i.test(lightB.title) && /another window/i.test(lightB.title) && /saved back to it first/i.test(lightB.title),
+        '6: window B is told the station file was missing and another window\'s copy was saved back first, never that it is newer (' + lightB.title + ')');
+      A.ok(lightB.banner && !/newer/i.test(lightB.banner[0]) && lightB.banner.some(t => /reload current station/i.test(t)), '6: so does its banner (' + JSON.stringify(lightB.banner) + ')');
+      // a conflict from INSIDE the re-seeded line is still the ordinary another-window conflict
+      const rd = restarted.saveStore.save('agent', browserCopy({ _saveRevision: seededAt + 1, updatedAt: 9950, _saveClient: 'window-d' }), { compareRevision: true });
+      A.ok(rd.ok === false && rd.conflict === true && !rd.reseeded && !rd.reset, '6: a copy from inside the re-seeded line conflicts as an ordinary newer save (' + JSON.stringify(rd) + ')');
     }
 
     // ================= the first save of a brand-new station is unchanged =================

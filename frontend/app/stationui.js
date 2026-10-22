@@ -10072,8 +10072,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // a reset refusal is NOT another window: this computer's station was erased or started fresh after the station this
       // window holds was founded, so the station file stays empty and this window's copy was only set aside
       const reset = h.conflict.reset === true;
+      // a re-seed refusal is not "newer" either: the station file went missing and ANOTHER window's copy was saved back
+      // first; which of the two copies holds more work is unknown, so neither is called newer
+      const reseeded = !reset && h.conflict.reseeded === true;
       d.title = reset
         ? 'This computer’s station was reset (erased, or set aside for a fresh start) after the station in this window was founded, so it was not restored. This window’s copy was kept separately on the station. Download a copy or open the fresh station.'
+        : reseeded
+        ? 'The station file on this computer was missing, and another window’s copy of this station was saved back to it first. This window’s copy was kept separately on the station. Download a copy or reload the current station.'
         : 'Another window saved newer station changes. Your work from this window was preserved separately on the station. Download a copy or reload the current station.';
       if (!document.getElementById('save-conflict-notice')) {
         const banner = document.createElement('div'); banner.id = 'save-conflict-notice'; banner.setAttribute('role', 'alert');

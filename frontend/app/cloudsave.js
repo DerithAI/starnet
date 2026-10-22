@@ -347,7 +347,7 @@ const CloudSave = (() => {
       // durable save it simply couldn't read.
       if (lastPullOutcome !== 'empty' && !isSave(local)) return unknownSentinel(lastPullOutcome);
       // 'empty': seed the server. The copy keeps its own revision: the station file has none, and savestore takes a copy
-      // over a truly missing file as its first revision (bug 5c019483), unless this computer's station was reset after
+      // over a truly missing file at a revision no other window holds (bug 5c019483), unless this computer's station was reset after
       // the copy's station was founded (then the reply is a conflict with reset:true). Otherwise best-effort (fails soft, retries).
       revision = num(local && local._saveRevision);
       if (isSave(local)) push(local);

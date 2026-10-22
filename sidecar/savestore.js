@@ -10,7 +10,7 @@
        load(agentId)        -> doc | undefined        // the stored save envelope; undefined if none/corrupt
        stamp(agentId)       -> string                 // one stat: moves on every save/outside edit; '' = unknown
        loadStamped(agentId) -> { doc, stamp }         // load()'s doc + the pre-read stamp ('' unless a clean read)
-       save(agentId, doc, {compareRevision?}) -> { ok, conflict?, reset?, seeded?, revision?, updatedAt }
+       save(agentId, doc, {compareRevision?}) -> { ok, conflict?, reset?, reseeded?, seeded?, revision?, updatedAt }
      }
 
    The file lives at <root>/<agentId>.save.json — a SIBLING of the notebook/channels stores, OUTSIDE the
@@ -51,7 +51,7 @@
     let tmpSeq = 0;   // deterministic process-unique tmp suffix (a single host; no pid/rng needed)
     let writes = 0;   // main-file saves made by this process: part of stamp(), so an in-process save always moves it
     const recoveredMissing = new Set();
-    const lastWritten = new Map();   // file -> { stamp, updatedAt, revision, replayAt } of this process's own last write (see save())
+    const lastWritten = new Map();   // file -> { stamp, updatedAt, revision, replayAt, seededRevision } of this process's own last write (see save())
 
     /* Rejected-save snapshots are recoveries, not history: every stale client (a reopened tab, a flaky beacon)
        used to add one forever (audit 2026-09-25 #18). Keep the newest CONFLICT_KEEP per agent — the file just
@@ -347,6 +347,9 @@
         const requestUpdatedAt = num(doc.updatedAt);
         let incomingUpdated = requestUpdatedAt;
         let seeded = false;   // this write re-seeded an empty station file from a copy (reported, so the page can say so)
+        // the revision this file's lineage was re-seeded at (0 = never): every copy based on a revision below it is from
+        // before the station file went missing. Kept in the wrapper (never the doc), so a restart still knows it.
+        let seededRevision = known ? num(known.seededRevision) : num(prev && prev.seededRevision);
         if (options.compareRevision) {
           const revision = known ? known.revision : num(prev && prev.doc && prev.doc._saveRevision);
           const expected = num(doc._saveRevision);
@@ -361,7 +364,12 @@
              save at _saveRevision 23 after the workspace was wiped, moved or reset) used to read the MISSING file as
              revision 0 and land as a conflict snapshot — never the station — so every autosave was refused. When there is
              truly nothing here (no main AND no .bak: 'absent'; a locked, corrupt or .bak-recovered prior is not empty)
-             the copy IS the station: it lands as revision 1. A reset generation keeps its erase authority (above). */
+             the copy IS the station. A reset generation keeps its erase authority (above).
+             THE SEED REVISION is one no window can hold. A seed at revision 1 made old numbers valid again: a second,
+             stale window of the lost station frozen at R >= 1 (cloudsave keeps its revision after a conflict and stamps
+             every later autosave with it) matched once the seeding window's autosaves reached R, and its stale snapshot
+             replaced the newer station. The seed takes the clock (ms), far above any save count, and never below the
+             copy's own number + 1, so revisions keep only going up and every pre-seed copy stays a conflict. */
           const seed = expected !== revision && prevRead.status === 'absent';
           const reset = seed && resetRefusesSeed(doc);
           if (expected !== revision && (!seed || reset)) {
@@ -373,21 +381,26 @@
             pruneConflicts(String(agentId), recovery);
             const refused = { ok: false, stale: true, conflict: true, revision, recovery, updatedAt: prevUpdated };
             if (reset) refused.reset = true;   // the station file is empty because it was RESET: no other window wrote it
+            // this copy is from before the station file was re-seeded by ANOTHER copy: that one was saved back first, which
+            // says nothing about which of the two holds newer work (the page must not call the station file newer)
+            else if (seededRevision > 0 && expected < seededRevision) refused.reseeded = true;
             return refused;
           }
           seeded = seed;
           incomingUpdated = Math.max(incomingUpdated, prevUpdated + 1);
-          doc = Object.assign({}, doc, { updatedAt: incomingUpdated, _saveRevision: revision + 1, _saveDirty: false });
+          const nextRevision = seed ? Math.max(expected + 1, Math.floor(num(clock.now()))) : revision + 1;
+          if (seed) seededRevision = nextRevision;
+          doc = Object.assign({}, doc, { updatedAt: incomingUpdated, _saveRevision: nextRevision, _saveDirty: false });
         }
 
         if (!options.compareRevision && (known || prev) && incomingUpdated < prevUpdated) return { ok: false, stale: true, updatedAt: prevUpdated };
         lastWritten.delete(file);
-        writeAtomic(file, { version: 1, agentId: String(agentId), updatedAt: incomingUpdated, savedAt: clock.now(), ...(options.compareRevision ? { requestUpdatedAt } : {}), doc: doc },
+        writeAtomic(file, { version: 1, agentId: String(agentId), updatedAt: incomingUpdated, savedAt: clock.now(), ...(options.compareRevision ? { requestUpdatedAt } : {}), ...(options.compareRevision && seededRevision > 0 ? { seededRevision } : {}), doc: doc },
           { status: prevRead.status, raw: prevRead.raw });
         writes++;
         recoveredMissing.delete(file);   // the main exists again and is this write
         const after = stamp(agentId);
-        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated });
+        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated, seededRevision: options.compareRevision ? seededRevision : 0 });
         return { ok: true, updatedAt: incomingUpdated, ...(options.compareRevision ? { revision: doc._saveRevision } : {}), ...(seeded ? { seeded: true } : {}) };
       },
 
