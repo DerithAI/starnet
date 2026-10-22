@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "64667daa5c1c8ee79ee53b209527e57478bbcfdd",
+    "sourceCommit": "db234f4f69e5c54eac3dabc8d708679e84317518",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -183,8 +183,8 @@
       },
       {
         "path": "frontend/app/apps.js",
-        "bytes": 33798,
-        "sha256": "bdf033d0c002ddbfe9f10ecf5fbdb7cd568e48a71d4b147abf84b87ac1797d3a"
+        "bytes": 33949,
+        "sha256": "a7a16deb7788c2dc9472a6c1845d9ffde3556dadb0ac60d342120d60290bae61"
       },
       {
         "path": "frontend/app/armconfirm.js",
@@ -578,8 +578,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 122796,
-        "sha256": "a10e3e379bcc5419849eab3134398e283fb3d0506fd9e66a4083e46da3712409"
+        "bytes": 138620,
+        "sha256": "03689665485d4e0ddea5abc67781ac049ba6310a1d63808e1d73499fd6b3715f"
       },
       {
         "path": "frontend/app/hint.js",
@@ -723,8 +723,8 @@
       },
       {
         "path": "frontend/app/needsyou.js",
-        "bytes": 47016,
-        "sha256": "b0bf9ce5896a84056247f91d24d10e35aa5f2db5a406bc604b8e86e72593b8ff"
+        "bytes": 47187,
+        "sha256": "dbe8c2de491f77ab0a7b5ff370c3681a372dbba92a28655f156737572d2ea6af"
       },
       {
         "path": "frontend/app/nightnudge.js",
@@ -1203,8 +1203,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 947814,
-        "sha256": "df285efbfe158116609175b3762dbc62c7cb5399d4663d158d9da5b7c077240b"
+        "bytes": 948255,
+        "sha256": "7ed135cfd8fb50f5efa4729c1d70200289087df7d378340f3cdd475e0a49b9ed"
       },
       {
         "path": "frontend/app/stepin.js",
@@ -1448,8 +1448,8 @@
       },
       {
         "path": "frontend/app/workshopstore.js",
-        "bytes": 40749,
-        "sha256": "f57eb94a8862d01a1d1f19ce8df2f76d22331dda74c4531e9fdcd29bfe7b6d56"
+        "bytes": 40216,
+        "sha256": "68ae247d1a654c378fea6ee927c37869af93770d5709a69ffca97c5b2723045d"
       },
       {
         "path": "frontend/app/worksignal.js",

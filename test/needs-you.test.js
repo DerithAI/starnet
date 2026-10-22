@@ -220,7 +220,7 @@ const WHOLE = { clientHeight: 19, scrollHeight: 19, clientWidth: 150, scrollWidt
   A.ok(/NeedsYou\.render\(\);   \/\/ ages tick, failures arrive/.test(app), 'and the 1s rail heartbeat keeps it current');
   const ny = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'needsyou.js'), 'utf8');
   A.ok(/Chat\.answerConsent\(i\.p, Workstreams\.get\(i\.wsId\), kind, 'needs-you'\)/.test(ny), 'Deny answers through the approval card\'s own path (and says it came from NEEDS YOU)');
-  A.ok(/fetch\('\/api\/cron\/run', \{ method: 'POST'[^\n]*detach: true/.test(ny), 'Retry reruns the routine for real (detached)');
+  A.ok(/Harness\.streamPost\('\/api\/cron\/run', \{ id: i\.routineId, detach: true \}\)/.test(ny), 'Retry reruns the routine for real (detached), on the page\'s one run stream');
 }
 /* ---- the rail's 1s heartbeat: an age tick never rebuilds the list (focus survives), an answer in flight stays locked ---- */
 // a host that understands exactly the markup html() writes (no DOM library in this repo's headless tests)

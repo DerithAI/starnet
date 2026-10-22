@@ -245,7 +245,8 @@ try {
   check('three approval cards appeared in COMMS', cards.length === 3, cards.length + ' cards');
   check('card 1 names the look change in the station\'s own words', /NOVA wants to change the station's look/.test(cards[0] || ''), (cards[0] || '').slice(0, 300));
   check('card 2 names the new $9 daily cap', /wants to set your spending limits: perDay \$9/.test(cards[1] || ''), (cards[1] || '').slice(0, 300));
-  check('⛔ an escalation card offers Approve once / Deny only (no Always, no Full access)', [1, 2].every(i => !/\bAlways\b|Full access/.test(cards[i] || '')) && /\bAlways\b/.test(cards[0] || ''), JSON.stringify(cards.map(c => (c || '').slice(-60))));
+  // case-insensitive: innerText reads the keys as drawn, and the terminal look sets them in caps (ALWAYS, FULL ACCESS)
+  check('⛔ an escalation card offers Approve once / Deny only (no Always, no Full access)', [1, 2].every(i => !/\bAlways\b|Full access/i.test(cards[i] || '')) && /\bAlways\b/i.test(cards[0] || ''), JSON.stringify(cards.map(c => (c || '').slice(-60))));
   check('card 3 names Full Power for what it is', /FULL POWER: every agent acts on this computer without asking/.test(cards[2] || ''), (cards[2] || '').slice(0, 300));
   for (let i = 0; i < 60 && mock.results.length < mock.script.length; i++) await sleep(500);
   check('the approved look landed', await evalJS(cdp, 'StationUI.getTheme()') === 'blue');
