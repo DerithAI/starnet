@@ -336,6 +336,14 @@
     let t = ''; try { t = typeof a.taintedBy === 'function' ? String(a.taintedBy() || '') : ''; } catch (_) { t = ''; }
     return { withholdHostPower: a.withholdHostPower === true, untrustedEntry: a.untrustedEntry === true, withholdTaste: a.withholdTaste === true, taintedBy: t };
   }
+  /* THE LEAD RUN'S PER RUN CAP COVERS ITS WORKERS (bug d3a76db3: a $0.05 cap ran $0.24 through four team.spawn clones,
+     each started with its own full ceiling). The host mints a spend pool on the lead's tool ctx; every worker, clone,
+     structured-result repair and resumed worker run is handed it and JOINS it (index.js runOnce, run-spend-pool.js),
+     so the lead and its crew draw from one cap and are stopped by it. Host context only — never a tool argument. */
+  function spendPoolOptions(ctx) {
+    const pool = ctx && ctx.spendPool;
+    return (pool && typeof pool.admit === 'function' && typeof pool.join === 'function') ? { spendPool: pool } : {};
+  }
   /* RESUME NEVER WIDENS (sweep 2026-10-02): team.resume re-runs a stored worker prompt under the RESUMING run's authority.
      The worker's own origin limits are ORed in, so a prompt written in a phone / non-owner / payload-started run keeps
      its restrictions however unrestricted the lead that resumes it is. */
@@ -886,7 +894,7 @@
           try {
             const conn = connectorOptions(ctx);
             result = await runOnce({
-              ...projectOptions(job.sessionContext || ctx), ...conn,
+              ...projectOptions(job.sessionContext || ctx), ...conn, ...spendPoolOptions(ctx),
               // THE HAND-OFF: what the earlier workers read, this one inherits; the files they saved, it may read
               ...(handoff && handoff.taint ? { initialTaint: conn.initialTaint || handoff.taint } : {}),
               ...(handoff && handoff.reads && handoff.reads.length ? { handoffReads: handoff.reads.slice() } : {}),
@@ -946,7 +954,7 @@
             const repairRunId = newId();
             const repair = await runOnce({
               outputOnly: true,
-              ...projectOptions(job.sessionContext || ctx), ...connectorOptions(ctx),
+              ...projectOptions(job.sessionContext || ctx), ...connectorOptions(ctx), ...spendPoolOptions(ctx),
               key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
               reasoningEffort: (job.ident && job.ident.reasoningEffort) || reasoningEffort,
               model: wire.model, system: workerSystem((job.ident && job.ident.system) || ''),
@@ -1172,7 +1180,7 @@
             const contractedPrompt = openingMessage(prompt, task.context, task.resultSchema);
             try {
               result = await runOnce({
-              ...projectOptions(ctx), ...connectorOptions(ctx),
+              ...projectOptions(ctx), ...connectorOptions(ctx), ...spendPoolOptions(ctx),
                 key, provider, baseUrl, reasoningEffort, model,      // the lead's OWN model - a clone of self
                 system: workerSystem(selfSystem),           // the lead's OWN identity plus settled task context
                                                             // composes its own caps for its (narrowed) toolset
@@ -1217,7 +1225,7 @@
               const repairRunId = newId();
               const repair = await runOnce({
               outputOnly: true,
-              ...projectOptions(ctx), ...connectorOptions(ctx),
+              ...projectOptions(ctx), ...connectorOptions(ctx), ...spendPoolOptions(ctx),
                 key, provider, baseUrl, reasoningEffort, model, system: workerSystem(selfSystem),
                 messages: [{ role: 'user', content: contractedPrompt }, { role: 'assistant', content: firstText },
                   { role: 'user', content: '[STRUCTURED RESULT REPAIR] The prior result failed host validation:\n- ' + errors.slice(0, 20).join('\n- ') + '\nReturn ONLY strict JSON matching: ' + JSON.stringify(task.resultSchema) }],
@@ -1421,7 +1429,7 @@
         const contractedPrompt = openingMessage(rec.prompt || '', handoffContext(rec.context), rec.resultSchema);
         try {
           result = await runOnce({
-            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec),
+            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...spendPoolOptions(ctx),
             key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
             reasoningEffort: (ident && ident.reasoningEffort) || reasoningEffort,   // Class Loadouts S1: worker's own class effort (see runWorker)
             model: wire.model,
@@ -1458,7 +1466,7 @@
           const repairRunId = newId();
           const repair = await runOnce({
               outputOnly: true,
-            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec),
+            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...spendPoolOptions(ctx),
             key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
             reasoningEffort: (ident && ident.reasoningEffort) || reasoningEffort,
             model: wire.model, system: workerSystem((ident && ident.system) || ''),
