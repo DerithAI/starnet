@@ -18,7 +18,8 @@
          – a member with nothing booked yet: the price of the call it sent, as its loop measured it before sending
            (admit's third argument: the prompt by the local ruler at the model's catalog INPUT price — output can't
            be known before the call), and never less than the largest first call a fellow worker has booked;
-         – with neither (a model nothing prices, and no fellow worker has booked): $0 — the lead's own turn is no
+         – with neither (a $0 pre-call price — a model nothing prices — and no fellow worker has booked; a priced
+           call is never counted at the lead's turn, however little is left): $0 — the lead's own turn is no
            measure of a worker's call (the lead's spawning turn carries its whole conversation; a clone's first call
            does not) — EXCEPT when what is left under the cap is already less than one such lead turn: then that turn
            is the only evidence there is, and it says a parallel call would carry the family past the cap.
@@ -75,15 +76,16 @@
     }
     function spent() { let t = 0; for (const m of members.values()) t += m.spent; return t; }
 
-    // what member `id`'s call in flight is counted at (see the header): its own cost, never another member's
+    // what member `id`'s call in flight is counted at (see the header): its own cost, never another member's. The
+    // lead-turn floor is for a call with NO price and no fellow evidence only: a priced call is counted at its price.
     function estimate(id, m, headroom) {
       if (m.calls > 0) return m.largest;
       let fellow = 0;
       for (const [j, w] of members) if (j !== id && j !== leadKey && w.calls > 0) fellow = Math.max(fellow, w.first);
-      if (fellow > 0) return Math.max(m.callUsd, fellow);
+      if (m.callUsd > 0 || fellow > 0) return Math.max(m.callUsd, fellow);
       const lead = members.get(leadKey);
       const leadCall = (lead && id !== leadKey) ? lead.largest : 0;
-      return Math.max(m.callUsd, (leadCall > 0 && headroom < leadCall) ? leadCall : 0);
+      return (leadCall > 0 && headroom < leadCall) ? leadCall : 0;
     }
 
     // a run takes part in this pool (idempotent). The run that created the pool joins first.

@@ -195,6 +195,25 @@ for (const capUsd of [0, Infinity, undefined, NaN, -1]) {
   for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0, 0.015), null, 'price: clone ' + w + ' at its own $0.015 price is admitted under $0.50 after the lead\'s $0.18 turn');
 }
 {
+  // NEAR THE CAP (review of d42d1bc7e): a priced clone is counted at its own price even when less than one lead turn
+  // is left. d42d1bc7e floored it at the lead's largest call there, so w2..w4 stopped "before the cap" at $0 although
+  // four $0.015 clones fit in the $0.25 left; the lead-turn floor is only for a call with no price at all.
+  const pool = makeRunSpendPool({ capUsd: 1 }).join('lead');
+  pool.admit('lead', 0); pool.booked('lead', 0.45);
+  pool.admit('lead', 0.45); pool.booked('lead', 0.30); pool.idle('lead');   // largest call $0.45, $0.75 booked, $0.25 left
+  for (const w of ['w1', 'w2', 'w3', 'w4']) pool.join(w);
+  for (const w of ['w1', 'w2', 'w3', 'w4']) A.eq(pool.admit(w, 0, 0.015), null, 'near cap: clone ' + w + ' at its own $0.015 price is admitted with $0.25 left, never counted at the lead\'s $0.45 turn');
+  A.eq(pool.status().inFlight, 4, 'near cap: all four priced clones are in flight');
+  // the same window with NO price: the lead's turn is still the only evidence, and it stops the second clone
+  const bare = makeRunSpendPool({ capUsd: 1 }).join('lead');
+  bare.admit('lead', 0); bare.booked('lead', 0.45);
+  bare.admit('lead', 0.45); bare.booked('lead', 0.30); bare.idle('lead');
+  for (const w of ['w1', 'w2']) bare.join(w);
+  A.eq(bare.admit('w1', 0, 0), null, 'near cap, unpriced: the first clone goes out (nothing in flight)');
+  const w2 = bare.admit('w2', 0, 0);
+  A.ok(w2 && w2.projected === true && near(w2.committedUsd, 0.45), 'near cap, unpriced: w1 in flight is counted at the lead\'s $0.45 turn (only $0.25 left): ' + JSON.stringify(w2));
+}
+{
   // a price never lowers the evidence: a fellow worker's booked first call still floors a fresh worker's count
   const pool = makeRunSpendPool({ capUsd: 0.30 }).join('lead');
   pool.admit('lead', 0); pool.booked('lead', 0.18); pool.idle('lead');
@@ -315,8 +334,12 @@ try {
     { type: 'usage', usage: { prompt_tokens: 4000, completion_tokens: 400, total_tokens: 4400, cost: usd } }, { type: 'done', finishReason: 'tool_calls' }];
   // a catalog price for the priced families ($10 / $30 per million): a clone's first call is priced from its own prompt
   const PRICED = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 4096, pricing: { prompt: '0.00001', completion: '0.00003' }, supportsTools: true }];
+  // a catalog that prices nothing, as the e2e mock OpenRouter lists its model ($0 / $0): the call is billed only by
+  // usage.cost, so every pre-call price is $0 — the "no price at all" path (the replay default catalog prices tokens
+  // at $1/M, which would price each clone's tiny prompt at a few millionths of a dollar)
+  const FREE = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 4096, pricing: { prompt: '0', completion: '0' }, supportsTools: true }];
   async function family(label, capUsd, leadUsd, workerUsd, opt) {
-    const { models, selfSystem } = opt || {};
+    const { models, selfSystem, synthUsd } = opt || {};
     const ends = [], invalid = [];
     const newId = counter();
     async function hostRun(o) {
@@ -353,7 +376,7 @@ try {
     const leadPool = makeRunSpendPool({ capUsd });   // index.js mints the lead's pool and puts it on its tool ctx
     const reg = makeRegistry();
     reg.register({ name: 'team_spawn', schema: spawnTool.schema, run: async (args) => (await spawnTool.run(args, { agentId: 'agent', runId: 'lead', emit: () => {}, spendPool: leadPool })).content });
-    await hostRun({ runId: 'lead', agentId: 'agent', spendPool: leadPool, turns: [turnSpawn(4, leadUsd), turnText('combined brief', leadUsd)],
+    await hostRun({ runId: 'lead', agentId: 'agent', spendPool: leadPool, turns: [turnSpawn(4, leadUsd), turnText('combined brief', synthUsd == null ? leadUsd : synthUsd)],
       tools: [{ type: 'function', function: { name: 'team_spawn', parameters: spawnTool.schema } }], dispatch: (c, ctx) => reg.dispatch(c, ctx) });
     const lead = ends.find(e => e.agentId === 'agent');
     const workers = ends.filter(e => /^sub-/.test(e.agentId));
@@ -364,7 +387,7 @@ try {
   const commsLine = new Function(A.fnBody(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'chat.js'), 'utf8'), 'function budgetStopLine(') + '\nreturn budgetStopLine;')();
   {
     // MIXED COSTS: the lead's spawning turn $0.18, its clones $0.02 each, PER RUN $0.50 — the job fits, so it all runs
-    const f = await family('mixed', 0.50, 0.18, 0.02);
+    const f = await family('mixed', 0.50, 0.18, 0.02, { models: FREE });
     A.eq(f.invalid, [], 'mixed: every event the family emitted passed the event contract');
     A.eq(f.workers.length, 4, 'mixed: four clones ran');
     A.eq(f.workers.map(w => w && w.reason), ['done', 'done', 'done', 'done'], 'mixed: all four clones finished — none stopped on the lead\'s $0.18 turn as a guess');
@@ -372,8 +395,9 @@ try {
     A.ok(near(f.spentUsd, 0.44), 'mixed: the family spent $0.44 ($0.18 + 4 x $0.02 + $0.18) inside its $0.50 cap: $' + f.spentUsd);
   }
   {
-    // THE REPRO (d3a76db3): every call $0.04, PER RUN $0.05 — one clone's call fits, the others stop BEFORE the cap
-    const f = await family('repro', 0.05, 0.04, 0.04);
+    // THE REPRO (d3a76db3): every call $0.04, PER RUN $0.05, a model nothing prices (as the e2e) — one clone's call
+    // fits, the others stop BEFORE the cap ($0.01 left, less than one lead turn: that turn is the only evidence)
+    const f = await family('repro', 0.05, 0.04, 0.04, { models: FREE });
     A.eq(f.invalid, [], 'repro: every event (budgetProjected included) passed the event contract');
     const stopped = f.workers.filter(w => w && w.reason === 'budget');
     A.eq([f.workers.filter(w => w && w.reason === 'done').length, stopped.length], [1, 3], 'repro: one clone ran, three stopped');
@@ -420,6 +444,17 @@ try {
     A.eq(f.workers.map(w => w && w.reason), ['done', 'done', 'done', 'done'], 'mixed priced: all four clones finished — their own small prices never stop them');
     A.eq(f.lead && f.lead.reason, 'done', 'mixed priced: the lead took its synthesis turn and finished');
     A.ok(near(f.spentUsd, 0.44), 'mixed priced: the family spent $0.44 inside its $0.50 cap: $' + f.spentUsd);
+  }
+  {
+    // NEAR THE CAP (review of d42d1bc7e): the lead's spawning turn $0.60 leaves $0.40 under PER RUN $1, less than one
+    // lead turn; four $0.02 clones (~$0.015 of input each) and a $0.10 synthesis turn need $0.78 and fit. d42d1bc7e
+    // counted each priced clone in flight at the lead's $0.60 turn and stopped three of them at $0 "before the cap".
+    const f = await family('nearCapPriced', 1, 0.60, 0.02, { models: PRICED, selfSystem: identity(6000), synthUsd: 0.10 });
+    A.eq(f.invalid, [], 'near cap priced: every event passed the event contract');
+    A.eq(f.workers.map(w => w && w.reason), ['done', 'done', 'done', 'done'], 'near cap priced: all four clones finished — none counted at the lead\'s $0.60 turn: ' + JSON.stringify(f.workers));
+    A.ok(f.workers.every(w => w && w.budgetProjected === undefined), 'near cap priced: no clone carries a projected stop');
+    A.eq(f.lead && f.lead.reason, 'done', 'near cap priced: the lead took its synthesis turn and finished');
+    A.ok(near(f.spentUsd, 0.78), 'near cap priced: the family spent $0.78 ($0.60 + 4 x $0.02 + $0.10) inside its $1 cap: $' + f.spentUsd);
   }
 
 } finally {
