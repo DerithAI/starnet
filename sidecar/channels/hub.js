@@ -955,7 +955,13 @@
       if (ok) { try { kickOutbox(); } catch (_) {} }   // a proven-healthy send is the cue to drain any backlog
       // The adapter acknowledged this message only after its durable INBOX receipt existed. If the failed answer
       // cannot enter the outbox, reject processing so that receipt remains and replays once capacity returns.
-      if (mustPersistFailure && !failurePersisted) throw new Error('failed reply could not be persisted: ' + ((failurePersistError && failurePersistError.message) || 'outbox unavailable'));
+      // `heldText` is the remainder the outbox refused: processInbound keeps it on that receipt (deliverHeld), so the
+      // replay sends this finished answer instead of running the message a second time.
+      if (mustPersistFailure && !failurePersisted) {
+        const err = new Error('failed reply could not be persisted: ' + ((failurePersistError && failurePersistError.message) || 'outbox unavailable'));
+        err.heldText = chunks.slice(failedAt).join('');
+        throw err;
+      }
       // `text` is the FINAL chunk's text — the one a keyboard was attached to, and therefore the exact string a
       // later editMessage must rebuild on top of when it stamps the chosen answer in place.
       return { ok: ok, messageId: messageId, text: chunks.length ? chunks[chunks.length - 1] : '' };
@@ -1498,9 +1504,12 @@
         if (intake && typeof intake.onAccepted === 'function') { try { intake.onAccepted({ id, durable: true, duplicate: true }); } catch (_) {} }
         return live;
       }
-      store.pushInbox({ id: id, channel: channel, message: msg });   // throws synchronously -> adapter does NOT ack
+      const receipt = store.pushInbox({ id: id, channel: channel, message: msg });   // throws synchronously -> adapter does NOT ack
       if (intake && typeof intake.onAccepted === 'function') { try { intake.onAccepted({ id, durable: true }); } catch (_) {} }
-      const running = Promise.resolve().then(() => routeInbound(msg, intake)).then((value) => {
+      // A receipt that already carries an attempt is a RE-DELIVERY of work whose run had started — from recoverInbox,
+      // or Telegram handing the same update over again. processInbound decides what that may do (attemptOf, heldOf).
+      const routed = withInbox(intake, [id], attemptOf(receipt), heldOf(receipt));
+      const running = Promise.resolve().then(() => routeInbound(msg, routed)).then((value) => {
         store.removeInbox(id);   // reply delivered OR its undelivered remainder is now durable in the outbox
         return value;
       }).finally(() => { activeInbox.delete(id); });
@@ -1509,7 +1518,84 @@
       return running;
     }
 
+    /* RECOVERY KNOWS HOW FAR THE RUN GOT (e5ecd6b8, 2026-10-21). The `recovered` flag had no reader: a crash after the
+       run had appended a line to a file replayed the whole message as a second identical user turn, the line went in
+       twice, and the chat was told "Appended one line". The durable receipt now carries an attempt marker
+       (store.markInbox: the run's id once it starts, a count of the tool steps it began), and a re-delivered receipt
+       is handled by what that proves, the same split the station's own run recovery makes (COMMS continues a run only
+       when nothing uncertain happened, and asks first otherwise):
+         no attempt              -> never reached a run: replay it as before
+         attempt, 0 tool steps   -> nothing could have happened: run it again, said so, without a second copy of the turn
+         attempt, N tool steps   -> something may already be done: do NOT run it again; tell the chat, and leave the next
+                                    run in this chat a one-shot note (interruptedAttempt) so a "continue" finishes only
+                                    what is left
+       The intake copy carries every receipt this message stands for (a merged text batch or album is one run over several
+       receipts), so the marker lands on all of them.
+       ONLY A REAL RESTART GETS THE CRASH RULE (review, 2026-10-21). A receipt also comes back inside the SAME process:
+       the full outbox refused a finished reply (flushOutbox -> recoverInbox replays it once capacity returns), or
+       processing threw. Taking that for a crash told the chat "StarNet restarted" when nothing restarted, and — with a
+       tool step counted — never delivered the answer the run had finished. So the attempt carries the store's bootId:
+       an attempt from THIS process is no restart and replays as before; and a finished reply the outbox refused is kept
+       on the receipt (held) and delivered by the replay, whatever process it lands in, without running anything. */
+    function attemptOf(receipt) {
+      const a = receipt && receipt.attempt;
+      if (!a || typeof a !== 'object' || !String(a.runId || '')) return null;
+      const here = (store && store.bootId != null) ? String(store.bootId) : '';
+      if (here && String(a.boot || '') === here) return null;   // this process left it pending: not a restart
+      return { runId: String(a.runId), tools: Math.max(0, Math.floor(Number(a.tools) || 0)) };
+    }
+    function heldOf(receipt) {
+      const h = receipt && receipt.held;
+      if (!h || typeof h !== 'object' || typeof h.text !== 'string') return null;
+      return { text: h.text, runId: String(h.runId || ''), reason: String(h.reason || ''), agentId: String(h.agentId || ''),
+        ids: Array.isArray(h.ids) ? h.ids.filter(x => typeof x === 'string' && x) : [] };
+    }
+    function withInbox(intake, ids, prior, held) {
+      const out = Object.assign({}, intake || {}, { inboxIds: ids.slice() });
+      if (prior) out.priorAttempt = prior;
+      else delete out.priorAttempt;
+      if (held) out.heldReply = held;
+      else delete out.heldReply;
+      return out;
+    }
+    function inboxIdsOf(intake) {
+      return (intake && Array.isArray(intake.inboxIds)) ? intake.inboxIds.filter(x => typeof x === 'string' && x) : [];
+    }
+    function clipAsk(text) {
+      const t = String(text || '').replace(/\s+/g, ' ').trim();
+      return t.length > 80 ? t.slice(0, 79) + '…' : t;
+    }
+    function stepsWord(n) { return n === 1 ? '1 tool step' : n + ' tool steps'; }
+    // run ids whose interruption this hub already told the chat about: a merged batch is ONE run over several receipts
+    const reportedAttempts = new Set();
+    async function reportInterruptedAttempt(chatId, agentId, msg, prior) {
+      const runId = String(prior.runId || '');
+      if (reportedAttempts.has(runId)) return;
+      // the next run in this chat reads this once (interruptedAttemptNote). Counts only — never the message text, which
+      // may be a third party's words and has no business in a system prompt.
+      if (typeof store.saveChatRecord === 'function') {
+        try { store.saveChatRecord(chatId, { interruptedAttempt: { runId: runId, tools: prior.tools } }); }
+        catch (e) { failNote('channels.hub.interruptedAttempt.save', e); }
+      }
+      const ask = clipAsk(msg && msg.text);
+      await deliver(chatId, '⚠ StarNet restarted while it was working on ' + (ask ? '"' + ask + '"' : 'your message')
+        + '. That attempt had already begun ' + stepsWord(prior.tools) + ', so part of it may already be done. It was NOT run again, '
+        + 'so nothing is done twice. Reply "continue" to finish what is left — the next run is told those steps already began.',
+        runId, 'interrupted', agentId);
+      if (reportedAttempts.size >= 500) reportedAttempts.clear();
+      reportedAttempts.add(runId);   // only once it was delivered (or durably queued): a refused notice replays with its receipt
+    }
+    function interruptedAttemptNote(a) {
+      const n = Math.max(0, Math.floor(Number(a && a.tools) || 0));
+      return '\n\nHOST NOTE — AN EARLIER REQUEST WAS INTERRUPTED: StarNet restarted while an earlier request in this chat was being '
+        + 'worked on, after that attempt had begun ' + stepsWord(n) + '. It was not run again. Any tool result of it in this conversation '
+        + 'already happened. If the Commander asks to continue it, finish only what is still missing: never repeat a step whose result '
+        + 'is already here, and check the current state before redoing a step whose result is not.';
+    }
+
     async function routeInbound(msg, intake) {
+      // work that already had a run is never merged into a newer batch: it is settled on its own, exactly once
+      if (intake && (intake.priorAttempt || intake.heldReply)) return processInbound(msg, intake);
       const gid = (msg && msg.mediaGroupId != null && String(msg.mediaGroupId))
         ? (String(msg.chatId) + '|' + String(msg.mediaGroupId)) : '';
       if (gid) return albumInbound(msg, gid, intake);
@@ -1557,11 +1643,12 @@
       const key = String(msg.chatId) + '|' + String(msg.userId || '') + '|' + String(msg.threadId || '');
       let rec = textBatches.get(key);
       if (!rec) {
-        rec = { msg: Object.assign({}, msg), intake: intake, seq: 0, resolve: null, reject: null, done: null };
+        rec = { msg: Object.assign({}, msg), intake: intake, inboxIds: inboxIdsOf(intake), seq: 0, resolve: null, reject: null, done: null };
         rec.done = new Promise((res, rej) => { rec.resolve = res; rec.reject = rej; });
         rec.done.catch(swallow('channels.hub.textBatch.done'));   // the winner never awaits rec.done — keep a loserless rejection handled
         textBatches.set(key, rec);
       } else {
+        rec.inboxIds = rec.inboxIds.concat(inboxIdsOf(intake));   // the merged run stands for every bubble's receipt
         const prior = String(rec.msg.text || '').trim();
         const next = String(msg.text || '').trim();
         rec.msg.text = prior && next ? prior + '\n' + next : (prior || next);
@@ -1575,7 +1662,7 @@
       // The batch's outcome must reach EVERY merged bubble: resolving unconditionally told the losing
       // bubbles' durable-inbox wrappers "handled" even when processing threw, so their rows were removed
       // and only the winner's original (unmerged) message survived for recovery — the rest were lost.
-      try { await processInbound(rec.msg, rec.intake); }
+      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null, null)); }
       catch (e) { rec.reject(e); throw e; }
       rec.resolve();
     }
@@ -1583,11 +1670,12 @@
     async function albumInbound(msg, gid, intake) {
       let rec = albums.get(gid);
       if (!rec) {
-        rec = { msg: Object.assign({}, msg, { media: Array.isArray(msg.media) ? msg.media.slice() : [] }), intake: intake, seq: 0, resolve: null, reject: null, done: null };
+        rec = { msg: Object.assign({}, msg, { media: Array.isArray(msg.media) ? msg.media.slice() : [] }), intake: intake, inboxIds: inboxIdsOf(intake), seq: 0, resolve: null, reject: null, done: null };
         rec.done = new Promise((res, rej) => { rec.resolve = res; rec.reject = rej; });
         rec.done.catch(swallow('channels.hub.albumBatch.done'));   // same handled-rejection guard as the text batch
         albums.set(gid, rec);
       } else {
+        rec.inboxIds = rec.inboxIds.concat(inboxIdsOf(intake));   // one run for every part's receipt
         if (Array.isArray(msg.media) && msg.media.length) rec.msg.media = rec.msg.media.concat(msg.media);
         if (!rec.msg.text && msg.text) rec.msg.text = msg.text;   // the caption rides on whichever part carried it
         if (carriesThirdPartyText(msg)) rec.msg.forwarded = true;
@@ -1597,12 +1685,30 @@
       if (albums.get(gid) !== rec || rec.seq !== mySeq) return rec.done;   // a newer part re-armed the debounce
       albums.delete(gid);
       // Same failure propagation as textInbound: every merged part's durable-inbox row must survive a throw.
-      try { await processInbound(rec.msg, rec.intake); }
+      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null, null)); }
       catch (e) { rec.reject(e); throw e; }
       rec.resolve();
     }
 
     async function processInbound(msg, intake) {
+      // the durable receipts this message stands for, and how far an earlier run of it got (attemptOf, above)
+      const inboxIds = inboxIdsOf(intake);
+      const priorAttempt = (intake && intake.priorAttempt) || null;
+      const markAttempt = (patch) => {
+        if (!inboxIds.length || typeof store.markInbox !== 'function') return;
+        for (const id of inboxIds) { try { store.markInbox(id, patch); } catch (e) { failNote('channels.hub.markInbox', e); } }
+      };
+      /* A FINISHED ANSWER THE OUTBOX REFUSED IS KEPT, NOT RE-EARNED. deliver throws (heldText = the undelivered
+         remainder) so these receipts stay; the text rides on every one of them, and their replay sends it (heldReply,
+         below) instead of running the message again — the run already happened, its tool steps included. */
+      const heldReply = (intake && intake.heldReply) || null;
+      async function deliverHeld(toChat, text, runId, reason, agentId, sendOpts, seedId, ids) {
+        try { return await deliver(toChat, text, runId, reason, agentId, sendOpts, seedId); }
+        catch (e) {
+          if (e && typeof e.heldText === 'string') markAttempt({ held: { text: e.heldText, runId: runId || '', reason: reason || '', agentId: agentId || '', ids: ids } });
+          throw e;
+        }
+      }
       if (msg && msg.directReply) {
         const directChatId = String(msg.chatId);
         noteRoute(msg);
@@ -1629,6 +1735,16 @@
       // Remember where this came from BEFORE anything can reply — the very first deliver() below (a command
       // answer, a config error) must already land in the right topic, not just the run's final reply.
       noteRoute(msg);
+      // the replay of a receipt whose run FINISHED but whose reply the full outbox refused: send that reply, run nothing
+      if (heldReply) {
+        const ids = heldReply.ids.length ? heldReply.ids : inboxIds;
+        await deliverHeld(chatId, heldReply.text, heldReply.runId, heldReply.reason || 'done', heldReply.agentId || undefined, undefined, '', ids);
+        // one run answered every receipt in ids (a merged batch): the others must not send it again
+        if (typeof store.removeInbox === 'function') {
+          for (const sid of ids) { if (inboxIds.indexOf(sid) < 0) { try { store.removeInbox(sid); } catch (e) { failNote('channels.hub.heldReply.remove', e); } } }
+        }
+        return;
+      }
       /* THEY ARE BACK. A chat marked unreachable (we were blocked or kicked) has just spoken, which is proof the
          block is over — clear the flag here rather than waiting for a `my_chat_member` we may never be sent.
          A stale unreachable flag would suppress this chat's outbox forever, which is the failure mode that made
@@ -1756,6 +1872,10 @@
       // the dock this run is AT: only when the floor's own resolution picked this agent (never inferred)
       const dockId = (routedDock && routed && String(routed) === agentId) ? routedDock : null;
 
+      // A re-delivered receipt whose run had already BEGUN tool steps before the crash is never run again from the top
+      // (attemptOf, above): before anything below can steer it into a run, supersede one, or start one.
+      if (priorAttempt && priorAttempt.tools > 0) { await reportInterruptedAttempt(chatId, agentId, msg, priorAttempt); return; }
+
       /* A FOLLOW-UP JOINS THE RUN IN FLIGHT (2026-10-11 — "they start a task and then stop repeatedly with no
          explanation as to why"). Every message used to ABORT this chat's working run and delete its partial, so a
          "also make it blue" or a "how's it going?" silently killed the task. When the host can steer (steerRun) and
@@ -1859,6 +1979,13 @@
         await deliver(chatId, '⚠ ' + (sec.error || 'No provider/model is configured yet. Open the STARNET app → Messaging tab and connect.'), '', 'error');
         return;
       }
+      // an earlier run of this message began no tool step before the crash: running it again cannot do anything twice —
+      // but the chat is told it is a second go, never left to think it is the first
+      if (priorAttempt) {
+        const ask = clipAsk(msg.text);
+        await deliver(chatId, '↻ StarNet restarted while it was working on ' + (ask ? '"' + ask + '"' : 'your message')
+          + '. It had not begun any tool step yet, so nothing can happen twice — running it again now.', priorAttempt.runId, 'command', agentId);
+      }
 
       // TYPING: from here on a real run WILL happen — light the platform's "typing…" bubble now (it also covers
       // media download/ingest, which can take seconds) and keep refreshing until the reply is built. Stopped in
@@ -1943,6 +2070,13 @@
         history = canonicalStreamId && historyFor ? historyFor(canonicalStreamId, agentId) : store.loadHistory(agentId);
         if (!Array.isArray(history)) history = [];
       } catch (_) { try { history = store.loadHistory(agentId); } catch (_) { history = []; } }
+      // A SECOND GO HAS ONE COPY OF THE TURN. The interrupted run already filed these words (the legacy history below, and
+      // its directive row in the canonical stream); with nothing after them, they are this message, not an earlier ask.
+      const storedTurn = turnText || '[the user sent a media message]';
+      if (priorAttempt && history.length) {
+        const last = history[history.length - 1];
+        if (last && last.role === 'user' && (last.content === storedTurn || last.content === turnText)) history = history.slice(0, -1);
+      }
       // "YES" TO AN OFFER IS A GO: classified on its own, "yes" is chat and the run gets no task prompt. Ask again with the
       // agent's last reply: an affirmation that answers its offer to act ("want me to draft it?") IS the directive.
       if (!isTask && history.length) {
@@ -1951,7 +2085,7 @@
           try { isTask = !!classify(msg.text || '', { priorAgentTurn: prior.content }); } catch (e) { failNote('channels.hub.classify.offer', e); }
         }
       }
-      try { store.appendTurn(agentId, 'user', turnText || '[the user sent a media message]'); } catch (e) { failNote('channels.hub.appendTurn', e); }
+      if (!priorAttempt) { try { store.appendTurn(agentId, 'user', storedTurn); } catch (e) { failNote('channels.hub.appendTurn', e); } }
       const userTurn = { role: 'user', content: turnText };
       if (mediaIngest.attachments.length) userTurn.attachments = mediaIngest.attachments;
       let messages = history.map(m => ({ role: m.role, content: m.content })).concat([userTurn]);
@@ -1972,7 +2106,13 @@
       // no floor / no brief composes the exact pre-brief system string.
       let dockBrief = null;
       if (stageBriefFor) { try { dockBrief = dockId ? stageBriefFor(agentId, dockId) : stageBriefFor(agentId); } catch (_) { dockBrief = null; } }
-      const system = dockSystem(persona, dockBrief, isTask);
+      // the one-shot note an interrupted attempt left this chat (reportInterruptedAttempt): read by this run, then cleared
+      let interruptedNote = '';
+      if (rec && rec.interruptedAttempt && typeof store.saveChatRecord === 'function') {
+        interruptedNote = interruptedAttemptNote(rec.interruptedAttempt);
+        try { store.saveChatRecord(chatId, { interruptedAttempt: null }); } catch (e) { failNote('channels.hub.interruptedAttempt.clear', e); }
+      }
+      const system = dockSystem(persona, dockBrief, isTask) + interruptedNote;
 
       // B5: if this agent runs at a bound BAY, its tools are that bay room's objects (resolveStation), not the
       // default office — so a routed agent's reach is exactly what the floor granted it. null -> office default.
@@ -1995,6 +2135,10 @@
       // agent, aged from startedAt) — a reconnect then keeps the agent's live floor/HUD state instead of clearing it.
       // abort/superseded are what halt.js's E-STOP reads; the extra fields are additive and invisible to it.
       const myRec = { runId: '', abort: null, superseded: false, halted: false, agentId: agentId, startedAt: null };
+      // tool steps this message's runs have BEGUN (entry run, every retry attempt, every line hop), stamped on its receipts
+      // as each one is announced — loop.js emits agent.tool_call before it dispatches, so the count is durable first
+      let attemptTools = 0;
+      const noteToolStep = () => { attemptTools++; markAttempt({ tools: attemptTools }); };
 
       /* AN E-STOP IS NOT A SUPERSEDE. Both set `superseded`, because both must abandon this run's now-stale
          partial reply — but a supersede means a NEWER message owns the conversation and is already running its
@@ -2044,7 +2188,7 @@
           // The reply is already being assembled here, delta by delta — so this is also where it can be SHOWN.
           // stream.push is fire-and-forget and throttled; it can never delay or fail the run.
           else if (name === 'agent.token') { state.buf += (p.delta || ''); if (stream) stream.push(state.buf); }
-          else if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; }   // counted: an 'empty' end after tools is not "nothing was done"
+          else if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; noteToolStep(); }   // counted: an 'empty' end after tools is not "nothing was done"
           else if (name === 'agent.run.error') { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; }
           else if (name === 'capdenied') state.errMsg = state.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
           else if (name === 'agent.run.end') { state.reason = p.reason; state.finishReason = p.finishReason || null; state.unpricedModel = p.unpricedModel || null; state.unpricedCapTokens = Number(p.unpricedCapTokens) || 0; state.subscriptionModel = p.subscriptionModel || null; state.subscriptionCapTokens = Number(p.subscriptionCapTokens) || 0; state.budgetScope = p.budgetScope || null; state.budgetCapUsd = (typeof p.budgetCapUsd === 'number' && isFinite(p.budgetCapUsd)) ? p.budgetCapUsd : null; state.budgetCapIsBalance = p.budgetCapIsBalance === true; if (typeof p.usd === 'number' && isFinite(p.usd)) state.usd = Math.max(state.usd || 0, p.usd); }
@@ -2073,11 +2217,16 @@
           return Promise.resolve(asked).finally(release);
         } : undefined;
 
+        // the receipt now names the run that is about to start (written AFTER the user turn was filed above)
+        markAttempt({ runId: runId });
         try {
           await runOnce({
             key: usingCodex ? '' : sec.key, model: sec.model, provider, baseUrl: sec.baseUrl || sec.base_url || '', reasoningEffort, system, messages, agentId, isTask,
             emit: sink, signal: ac.signal, runId, lineId, trigger: 'event',
             streamId: canonicalStreamId || undefined,
+            // a second go of an interrupted run reuses that run's durable directive row instead of filing the words again
+            // (runOnceCore retryDirective: matched by run id, agent, stream AND exact text, so it can only ever dedupe this)
+            retryUserRunId: (priorAttempt && attempt === 0) ? priorAttempt.runId : undefined,
             // a VOICE NOTE is a spoken turn: the voice chat model may answer it (never a work line's stage)
             voiceTurn: (!!spoken && !lineId) || undefined,
             initialTaint: entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null)),
@@ -2179,7 +2328,7 @@
               let p; try { p = redact(payload); } catch (_) { p = payload; }
               if (name === 'agent.run.end' && p && p.reason === 'cancelled') hs.stopped = true;   // STOP on this step: the line stops here, never hands its half answer on
               if (name === 'agent.token') hs.buf += (p.delta || '');
-              else if (name === 'agent.tool_call') hs.buf = '';
+              else if (name === 'agent.tool_call') { hs.buf = ''; noteToolStep(); }   // a hop's step is this message's step too
               else if (name === 'agent.run.error') hs.errMsg = p.message || 'run error';
               else if (name === 'capdenied') hs.errMsg = hs.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
               else if (name === 'agent.run.end') { if (typeof p.usd === 'number' && isFinite(p.usd)) hs.usd = p.usd; }
@@ -2309,8 +2458,8 @@
       } finally { stopTyping(); clearAck(); if (stream && withdrawn) stream.abandon(); }
       // seal() hands deliver() the streamed message so chunk 0 replaces it in place. It also closes the stream,
       // so a late token delta can never race the final text back out of order.
-      const dr = await deliver(chatId, reply, lastRunId, state.errMsg ? 'error' : (state.reason || 'done'), finalAgentId,
-        choiceEntry ? { reply_markup: keyboardFor(choiceEntry) } : undefined, stream ? stream.seal() : '');
+      const dr = await deliverHeld(chatId, reply, lastRunId, state.errMsg ? 'error' : (state.reason || 'done'), finalAgentId,
+        choiceEntry ? { reply_markup: keyboardFor(choiceEntry) } : undefined, stream ? stream.seal() : '', inboxIds);
       // Stitch the delivered message onto the keyboard's registry entry so a tap can edit THAT message in place.
       // A send that failed retires the token immediately: leaving it would let a phantom keyboard (buttons the
       // user can see from a partially-sent reply) resolve against a question they never fully received.
