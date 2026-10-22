@@ -15,7 +15,8 @@
         window leaves (never the context manager's cold 131072 guess), whichever is lower — and families of
         heterogeneous clones stay within the cap plus one call at every cap, while clones that fit still run in
         parallel; a family whose calls take turns is never timed out by the waits alone (team.spawn's timeout and each
-        team.dispatch worker's slice pause while a call is held). */
+        team.dispatch worker's slice pause while a call is held), nor stopped as stalled by the host's liveness sweep
+        (subagents.js checkStalls, run on the real clock: a held worker's stall clock stops too). */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('fs');
@@ -311,8 +312,9 @@ const fakeRunOnce = (impl) => {
   return fn;
 };
 const roster = new Map([['researcher', { system: 'R' }], ['analyst', { system: 'A' }]]);
-// a FOREGROUND worker is handed the lead's pool seen through its holds (run-spend-pool.js watchHolds): the same pool —
-// every booking and decision is the lead pool's own — whose holds pause the tool's clocks
+// a worker is handed the lead's pool seen through its holds (run-spend-pool.js watchHolds): the same pool — every
+// booking and decision is the lead pool's own — whose holds pause the tool's clocks (a foreground worker) and the
+// liveness sweep's stall clock (every worker the subagent manager runs)
 const drawsFrom = (view, pool) => isRunSpendPool(view) && view !== pool && ['join', 'booked', 'idle', 'withdraw', 'status'].every(k => view[k] === pool[k])
   && typeof view.end === 'function';
 {
@@ -354,7 +356,7 @@ try {
     const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), subagents });
     await dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'watch the feed' }], background: true }, { agentId: 'agent', runId: 'lead_run', emit: () => {}, spendPool: pool });
     for (let i = 0; i < 5 && !ro.calls.length; i++) await tick();
-    A.ok(ro.calls.length === 1 && ro.calls[0].spendPool === pool, 'background dispatch: a worker that outlives the lead\'s turn still draws from its run\'s pool');
+    A.ok(ro.calls.length === 1 && drawsFrom(ro.calls[0].spendPool, pool), 'background dispatch: a worker that outlives the lead\'s turn still draws from its run\'s pool (watched for holds: its stall clock)');
   }
   {
     const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'spawn.json'), clock: { now: () => 1000 }, emit: () => {}, newId: counter() });
@@ -376,7 +378,7 @@ try {
     const { resumeTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), subagents: reloaded });
     await resumeTool.run({ id: first.id }, { agentId: 'agent', runId: 'resuming_run', emit: () => {}, spendPool: pool });
     for (let i = 0; i < 5 && !ro.calls.length; i++) await tick();
-    A.ok(ro.calls.length === 1 && ro.calls[0].spendPool === pool, 'resume: a resumed worker draws from the RESUMING run\'s pool');
+    A.ok(ro.calls.length === 1 && drawsFrom(ro.calls[0].spendPool, pool), 'resume: a resumed worker draws from the RESUMING run\'s pool (watched for holds: its stall clock)');
   }
   {
     // the whole seam with the real pool: a fake run host that joins the pool and checks it before its one call
@@ -410,8 +412,8 @@ try {
   const turnText = (text, usd) => [{ type: 'text', delta: text }, { type: 'usage', usage: { prompt_tokens: 40, completion_tokens: 8, total_tokens: 48, cost: usd } }, { type: 'done', finishReason: 'stop' }];
   // a turn billed by its tokens alone (no provider-reported cost): the catalog prices it
   const turnTokens = (text, promptTokens, completionTokens) => [{ type: 'text', delta: text }, { type: 'usage', usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens } }, { type: 'done', finishReason: 'stop' }];
-  const turnSpawn = (n, usd) => [{ type: 'tool_start', index: 0, id: 'spawn_1', name: 'team_spawn' },
-    { type: 'tool_args', index: 0, chunk: JSON.stringify({ tasks: Array.from({ length: n }, (_, i) => ({ prompt: 'part ' + (i + 1), label: 'part ' + (i + 1) })) }) },
+  const turnSpawn = (n, usd, background) => [{ type: 'tool_start', index: 0, id: 'spawn_1', name: 'team_spawn' },
+    { type: 'tool_args', index: 0, chunk: JSON.stringify(Object.assign({ tasks: Array.from({ length: n }, (_, i) => ({ prompt: 'part ' + (i + 1), label: 'part ' + (i + 1) })) }, background ? { background: true } : {})) },
     { type: 'usage', usage: { prompt_tokens: 4000, completion_tokens: 400, total_tokens: 4400, cost: usd } }, { type: 'done', finishReason: 'tool_calls' }];
   // a catalog price for the priced families ($10 / $30 per million, a 200k window, no output ceiling named): the most
   // a clone's call can cost is its prompt plus ~200k output tokens, ~$6 — more than any cap here, so these families'
@@ -434,14 +436,18 @@ try {
   const partOf = o => { const m = /part (\d+)/.exec(JSON.stringify(o.messages || [])); return m ? Number(m[1]) : 0; };
   // the roster a team.dispatch family delegates to (one agent per part)
   const crew = new Map([['w1', { system: 'W' }], ['w2', { system: 'W' }], ['w3', { system: 'W' }], ['w4', { system: 'W' }]]);
-  const turnDispatch = (n, usd) => [{ type: 'tool_start', index: 0, id: 'dispatch_1', name: 'team_dispatch' },
-    { type: 'tool_args', index: 0, chunk: JSON.stringify({ parallel: true, workers: Array.from({ length: n }, (_, i) => ({ agentId: 'w' + (i + 1), prompt: 'part ' + (i + 1) })) }) },
+  const turnDispatch = (n, usd, background) => [{ type: 'tool_start', index: 0, id: 'dispatch_1', name: 'team_dispatch' },
+    { type: 'tool_args', index: 0, chunk: JSON.stringify(Object.assign({ parallel: true, workers: Array.from({ length: n }, (_, i) => ({ agentId: 'w' + (i + 1), prompt: 'part ' + (i + 1) })) }, background ? { background: true } : {})) },
     { type: 'usage', usage: { prompt_tokens: 4000, completion_tokens: 400, total_tokens: 4400, cost: usd } }, { type: 'done', finishReason: 'tool_calls' }];
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function family(label, capUsd, leadUsd, workerUsd, opt) {
     // timeoutMs: the orchestration budget (deps.dispatchTimeoutMs) — the tool is then registered with its own timeout
     // and the real clock, as index.js does; workerDelayMs: real time each worker's call stays in flight
-    const { models, selfSystem, synthUsd, workerTurns, workerDelay, workerDelayMs, tasks, tool, timeoutMs } = opt || {};
+    // workerStreamMs: real time each worker's call streams a token every 20ms before its answer; stallMs: the subagent
+    // manager runs on the real clock with this liveness threshold and the host's sweep (checkStalls) runs every few ms,
+    // as index.js runs it every 30s; background: the lead starts its workers with background:true and the family waits
+    // for them to settle
+    const { models, selfSystem, synthUsd, workerTurns, workerDelay, workerDelayMs, workerStreamMs, tasks, tool, timeoutMs, stallMs, background } = opt || {};
     const viaDispatch = tool === 'dispatch';
     const ends = [], invalid = [];
     const newId = counter();
@@ -457,7 +463,11 @@ try {
           if (name === 'agent.cost') pool.booked(o.runId, Number(payload.usd) || 0);
           else if (name === 'agent.tool_call') pool.idle(o.runId);
         }
-        return valid(name, payload);
+        const r = valid(name, payload);
+        // as index.js: every event of the run reaches the caller's emit too (a subagent's h.emit: its event tail and the
+        // liveness clock checkStalls reads)
+        if (typeof o.emit === 'function') o.emit(name, payload);
+        return r;
       };
       const replay = makeReplayProvider({ turns: o.turns, models });
       // a clone that answers later (its delay in ticks before the stream starts): the cheap clone books first
@@ -465,6 +475,7 @@ try {
         modelCalls++;
         for (let i = 0; i < (o.delay || 0); i++) await tick();
         if (o.delayMs) await sleep(o.delayMs);
+        for (const until = Date.now() + (o.streamMs || 0); Date.now() < until;) { yield { type: 'text', delta: '.' }; await sleep(20); }
         yield* replay.stream(req);
       } });
       // as index.js: the run's system prompt leads its messages, the context manager is the loop's ruler sized to the
@@ -474,7 +485,7 @@ try {
       const msgs = (o.system ? [{ role: 'system', content: o.system }] : []).concat(o.messages || [{ role: 'user', content: 'go' }]);
       const ctxMgr = makeContext({ contextLimit: replay.contextLimit('replay/model') || 131072 });
       const res = await runAgentLoop({ messages: msgs, provider, emit, cost: makeCostEngine({ priceOf: replay.priceOf }),
-        model: 'replay/model', agentId: o.agentId, runId: o.runId, limits: { maxCostUsd: capUsd, maxIters: 6, grace: false },
+        model: 'replay/model', agentId: o.agentId, runId: o.runId, limits: { maxCostUsd: capUsd, maxIters: 6, grace: false }, signal: o.signal,
         budget: { check: (spent, nextCallUsd) => pool.admit(o.runId, spent, nextCallUsd) },
         context: ctxMgr, approxTokens: ctxMgr.estimateMessages(msgs), contextLimit: replay.contextLimit('replay/model'),
         tools: o.tools || [], dispatch: o.dispatch, capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: o.agentId, room: 'office' } });
@@ -483,11 +494,14 @@ try {
       ends.push({ agentId: o.agentId, part: o.part, end: end && end.payload });
       return res;
     }
-    const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, label + '.json'), clock: { now: () => 1000 }, emit: () => {}, newId });
+    const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, label + '.json'), clock: { now: stallMs ? () => Date.now() : () => 1000 }, emit: () => {}, newId,
+      ...(stallMs ? { stallMs, inToolStallMs: stallMs } : {}) });
+    const staled = [];
+    const sweep = stallMs ? setInterval(() => { for (const w of subagents.checkStalls()) staled.push(w.agentId); }, Math.max(5, Math.floor(stallMs / 10))) : null;
     const runOnce = (o) => {
       const part = partOf(o);
-      return hostRun({ runId: o.runId, agentId: o.agentId || 'sub', spendPool: o.spendPool, system: o.system, messages: o.messages, part,
-        delay: workerDelay ? workerDelay(part) : 0, delayMs: workerDelayMs || 0, turns: workerTurns ? workerTurns(part) : [turnText('part done', workerUsd)] });
+      return hostRun({ runId: o.runId, agentId: o.agentId || 'sub', spendPool: o.spendPool, system: o.system, messages: o.messages, part, emit: o.emit, signal: o.signal,
+        delay: workerDelay ? workerDelay(part) : 0, delayMs: workerDelayMs || 0, streamMs: workerStreamMs || 0, turns: workerTurns ? workerTurns(part) : [turnText('part done', workerUsd)] });
     };
     const timed = typeof timeoutMs === 'number' && timeoutMs > 0;
     const { spawnTool, dispatchTool } = makeOrchestrationTools({ runOnce, roster: () => (viaDispatch ? crew : new Map()), key: 'k', model: 'replay/model', selfSystem: selfSystem || 'S', newId, subagents,
@@ -505,14 +519,18 @@ try {
       run: async (args, rctx) => (await teamTool.run(args, { agentId: 'agent', runId: 'lead', emit: () => {}, spendPool: leadPool,
         signal: rctx && rctx.signal, holdTimeout: rctx && rctx.holdTimeout })).content });
     let toolResult = null;
-    const leadTurn = (viaDispatch ? turnDispatch : turnSpawn)(tasks || 4, leadUsd);
+    const leadTurn = (viaDispatch ? turnDispatch : turnSpawn)(tasks || 4, leadUsd, background === true);
     await hostRun({ runId: 'lead', agentId: 'agent', spendPool: leadPool, turns: [leadTurn, turnText('combined brief', synthUsd === undefined ? leadUsd : synthUsd)],
       tools: [{ type: 'function', function: { name: wireName, parameters: teamTool.schema } }],
       dispatch: async (c, ctx) => { const r = await reg.dispatch(c, ctx); toolResult = r; return r; } });
+    // background workers outlive the lead's turn: wait (bounded) until each has settled
+    for (let t = 0; background && t < 1000 && ends.filter(e => e.agentId !== 'agent').length < (tasks || 4); t++) await sleep(10);
+    if (sweep) clearInterval(sweep);
     const lead = ends.find(e => e.agentId === 'agent');
     const workers = ends.filter(e => e.agentId !== 'agent').sort((a, b) => a.part - b.part);
     const st = typeof leadPool.status === 'function' ? leadPool.status() : {};
-    return { lead: lead && lead.end, workers: workers.map(w => w.end), invalid, spentUsd: st.spentUsd, calls: st.calls, modelCalls, peak, toolResult };
+    return { lead: lead && lead.end, workers: workers.map(w => w.end), invalid, spentUsd: st.spentUsd, calls: st.calls, modelCalls, peak, toolResult,
+      staled, records: subagents.list() };
   }
   const { endNote: channelNote } = require('../sidecar/channels/hub.js');
   const commsLine = new Function(A.fnBody(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'chat.js'), 'utf8'), 'function budgetStopLine(') + '\nreturn budgetStopLine;')();
@@ -710,6 +728,30 @@ try {
     // the clocks still bound the WORK: one clone whose own call takes 450ms is stopped by the 300ms timeout
     const f = await family('slowSpawn', 1, 0.01, 0.01, { models: FREE, tasks: 1, workerDelayMs: 450, timeoutMs: 300, synthUsd: 0.01 });
     A.ok(f.toolResult && /timed out/.test(String(f.toolResult.content)), 'slow spawn: a clone whose own work outlasts the budget still times out: ' + JSON.stringify(f.toolResult && String(f.toolResult.content).slice(0, 120)));
+    await sleep(300);   // the aborted clone's replay call settles before the next family
+  }
+  // REVIEW OF 8f4267c08 — A HELD CALL IS NOT A STALL. A worker whose call the pool holds emits nothing while it waits, and
+  // the host's liveness sweep (subagents.js checkStalls: no progress for 450s, swept every 30s by index.js) covers every
+  // team.spawn clone and every background team.dispatch worker. 8f4267c08 paused team.spawn's timeout and the dispatch
+  // slices during holds, but not that sweep: a clone held longer than the threshold was stopped as stalled, its work
+  // "INCOMPLETE and not accepted", in a family well under its cap. Scaled: a 150ms threshold swept every 15ms on the real
+  // clock, a model nothing prices (one call in flight at a time), three workers whose calls each stream a token every
+  // 20ms for 240ms — each worker is busy for its whole call, and every call after the first waits longer than 150ms.
+  for (const [shape, extra] of [['spawn', {}], ['background spawn', { background: true }], ['background dispatch', { tool: 'dispatch', background: true }]]) {
+    const f = await family('heldStall' + shape.replace(/ /g, ''), 1, 0.01, 0.01, Object.assign({ models: FREE, tasks: 3, workerStreamMs: 240, stallMs: 150, synthUsd: 0.01 }, extra));
+    A.eq(f.invalid, [], 'held ' + shape + ', liveness sweep: every event passed the event contract');
+    A.eq(f.staled, [], 'held ' + shape + ', liveness sweep: no worker was stopped as stalled while its call waited for room');
+    A.eq(f.records.map(r => r.status), ['done', 'done', 'done'], 'held ' + shape + ', liveness sweep: the record of every worker is done: ' + JSON.stringify(f.records.map(r => [r.agentId, r.status, r.reason])));
+    A.eq(f.workers.map(w => w && w.reason), ['done', 'done', 'done'], 'held ' + shape + ', liveness sweep: the run of every worker finished');
+    A.eq(f.peak, 1, 'held ' + shape + ', liveness sweep: the calls took turns (each later one was held past the threshold)');
+    A.eq(f.lead && f.lead.reason, 'done', 'held ' + shape + ', liveness sweep: the lead finished');
+  }
+  {
+    // the sweep still catches a worker that is really silent: one clone whose own call shows nothing for 300ms
+    const f = await family('silentStall', 1, 0.01, 0.01, { models: FREE, tasks: 1, workerDelayMs: 300, stallMs: 150, synthUsd: 0.01 });
+    A.eq(f.staled.length, 1, 'silent clone: the liveness sweep still stops a worker whose own call is silent past the threshold: ' + JSON.stringify(f.staled));
+    A.eq(f.records.map(r => r.status), ['stale'], 'silent clone: its record is stale, not done');
+    A.ok(f.toolResult && /made no progress/.test(String(f.toolResult.content)), 'silent clone: the lead is told the worker was stopped for no progress: ' + JSON.stringify(f.toolResult && String(f.toolResult.content).slice(0, 160)));
     await sleep(300);   // the aborted clone's replay call settles before the next family
   }
   // A $0 LEAD AND A $0 WORKER (calls, not only dollars): nothing booked a cent to reserve by, and a1234b154 let every

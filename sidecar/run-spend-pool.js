@@ -36,8 +36,9 @@
    the loop's ruler (loop.js nextCallUsd), and spend booked outside a model call (a tool's own paid pass, a summarizer
    fold), which is counted when it is booked. The price of the bound is TIME: near the cap, with a model whose calls
    it must reserve high, or with a model it cannot price, workers take turns instead of calling at once. That wait is
-   not work: team.spawn's timeout and a team.dispatch worker's slice pause while a call is held (watchHolds below,
-   orchestration.js poolHoldClock), so a family is never timed out by its holds alone.
+   not work: team.spawn's timeout, a team.dispatch worker's slice and the liveness sweep's stall clock of every worker
+   the subagent manager runs pause while a call is held (watchHolds below, orchestration.js poolHoldClock and
+   watchedPool, subagents.js holdStall), so a family is never timed out, nor stopped as stalled, by its holds alone.
 
    A pool with one member decides nothing (admit always proceeds): a run that never delegates is governed by its
    loop's own check exactly as before. An ungoverned cap (0 / Infinity / missing) never blocks.

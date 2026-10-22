@@ -587,7 +587,11 @@
        worker's call is held, its own slice (team.dispatch) pauses, and while ANY worker this call started is held, the
        tool's registry timeout pauses (ctx.holdTimeout, tools/registry.js) and the dispatch's wall clock does not count
        the time (heldMs). Every hold waits on a call that is in flight, so it ends; the clocks still bound each
-       worker's own time. A background worker outlives the call and is never watched. */
+       worker's own time. A background worker outlives the call, so the call's clocks never watch it.
+       THE LIVENESS SWEEP TOO (review of 8f4267c08): every worker the subagent manager runs — a team.spawn clone,
+       foreground or background, a background team.dispatch worker, a resumed worker — is swept for no progress
+       (subagents.js checkStalls), and a held call emits nothing. Its holds stop that worker's stall clock as well
+       (the handle's holdStall/releaseStall), or a clone held behind a fellow's long call was stopped as "stalled". */
     function poolHoldClock(ctx) {
       let held = 0, since = 0, total = 0, release = null;
       return {
@@ -605,13 +609,16 @@
         heldMs() { return total + (held > 0 ? Math.max(0, now() - since) : 0); }
       };
     }
-    // the pool one foreground worker run joins, seen through its holds (run-spend-pool.js watchHolds); end() in its finally
-    function watchedPool(ctx, family, slice) {
+    /* the pool one worker run joins, seen through its holds (run-spend-pool.js watchHolds); end() in its finally.
+       family: the call's poolHoldClock (foreground only); slice: the worker's own wall clock; stall: the subagent
+       manager's handle (h) of a worker it runs, whose stall clock a hold stops. */
+    function watchedPool(ctx, family, slice, stall) {
       const base = spendPoolOptions(ctx);
-      if (!base.spendPool || !family || !runSpendPool || typeof runSpendPool.watchHolds !== 'function') return { options: base, end: () => {} };
+      const sweep = (stall && typeof stall.holdStall === 'function' && typeof stall.releaseStall === 'function') ? stall : null;
+      if (!base.spendPool || !(family || slice || sweep) || !runSpendPool || typeof runSpendPool.watchHolds !== 'function') return { options: base, end: () => {} };
       const view = runSpendPool.watchHolds(base.spendPool, {
-        hold() { family.hold(); if (slice) slice.hold(); },
-        release() { family.release(); if (slice) slice.release(false); }
+        hold() { if (family) family.hold(); if (slice) slice.hold(); if (sweep) sweep.holdStall(); },
+        release() { if (family) family.release(); if (slice) slice.release(false); if (sweep) sweep.releaseStall(); }
       });
       return { options: { spendPool: view }, end: view.end };
     }
@@ -931,8 +938,9 @@
           const contractedPrompt = openingMessage(job.prompt, job.context, job.resultSchema, handoff && handoff.text);
           const previousMessages = job.sessionContext && job.sessionContext.messages || [];
           noteSessionActivity('station.dispatch_start', job, workerRunId);
-          // its slice and the dispatch's clocks pause while the run's spend pool holds its call (poolHoldClock)
-          const watched = o2.background === true ? { options: spendPoolOptions(ctx), end: () => {} } : watchedPool(ctx, family, slice);
+          // its slice and the dispatch's clocks pause while the run's spend pool holds its call (poolHoldClock); a background
+          // worker's stall clock does too (o2.stall: its subagent handle), while the call's own clocks never watch it
+          const watched = watchedPool(ctx, o2.background === true ? null : family, slice, o2.stall);
           try {
             const conn = connectorOptions(ctx);
             result = await runOnce({
@@ -995,7 +1003,7 @@
             const remaining = perWorker > 0 ? Math.max(0, perWorker - spent) : 0;
             if (perWorker > 0 && remaining <= 0) return null;
             const repairRunId = newId();
-            const repairPool = o2.background === true ? { options: spendPoolOptions(ctx), end: () => {} } : watchedPool(ctx, family, null);
+            const repairPool = watchedPool(ctx, o2.background === true ? null : family, null, o2.stall);
             let repair;
             try {
               repair = await runOnce({
@@ -1075,7 +1083,7 @@
             // parentRunId: a CANCELLED lead run cancels this worker too (subagents.cancelChildren); a lead that ends
             // normally leaves it running — outliving the call is what background:true is for.
             return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema, builder: job.builder === true, originLimits: originLimitsOf(ctx) }, async (h) => {
-              const r = await runWorker(job, { runId: h.runId, signal: h.signal, emit: h.emit, steer: h.steer, background: true });
+              const r = await runWorker(job, { runId: h.runId, signal: h.signal, emit: h.emit, steer: h.steer, background: true, stall: h });
               return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd || 0,
                 structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts,
                 taintedBy: r.taintedBy || '' };
@@ -1213,9 +1221,10 @@
         // forward ONLY lifecycle/cost onto the lead's bus so the floor materializes/pops the Meeseeks live; the
         // durable record (via h.emit) keeps the full watch tail for team.subagents/interrupt/resume.
         const childEmit = (name, payload) => { if (FORWARD[name] && ctx && typeof ctx.emit === 'function') { try { ctx.emit(name, payload); } catch (_) {} } };
-        // this call's timeout pauses while the run's spend pool holds a foreground clone's call (poolHoldClock)
+        // this call's timeout pauses while the run's spend pool holds a foreground clone's call (poolHoldClock), and every
+        // clone's stall clock (its handle h) stops while its own call is held
         const family = args.background ? null : poolHoldClock(ctx);
-        const clonePool = () => (family ? watchedPool(ctx, family, null) : { options: spendPoolOptions(ctx), end: () => {} });
+        const clonePool = (h) => watchedPool(ctx, family, null, h);
 
         const spawnOne = (task, i) => {
           const label = task.label;
@@ -1230,7 +1239,7 @@
             let result;
             const bounded = boundedDomainTask(prompt, fileProbeFor(ephemeralId, projectOptions(ctx).projectRoot));
             const contractedPrompt = openingMessage(prompt, task.context, task.resultSchema);
-            const watched = clonePool();
+            const watched = clonePool(h);
             try {
               result = await runOnce({
               ...projectOptions(ctx), ...connectorOptions(ctx), ...watched.options,
@@ -1276,7 +1285,7 @@
               const remaining = perWorker > 0 ? Math.max(0, perWorker - spent) : 0;
               if (perWorker > 0 && remaining <= 0) return null;
               const repairRunId = newId();
-              const repairPool = clonePool();
+              const repairPool = clonePool(h);
               let repair;
               try {
                 repair = await runOnce({
@@ -1484,9 +1493,11 @@
         // The durable record carries the lead's handoff `context`, so a resumed worker rebuilds the SAME
         // opening message a fresh dispatch would have — a restart never silently drops the handoff.
         const contractedPrompt = openingMessage(rec.prompt || '', handoffContext(rec.context), rec.resultSchema);
+        // its stall clock stops while the run's spend pool holds its call (watchedPool: the liveness sweep covers it too)
+        const watched = watchedPool(ctx, null, null, h);
         try {
           result = await runOnce({
-            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...spendPoolOptions(ctx),
+            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...watched.options,
             key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
             reasoningEffort: (ident && ident.reasoningEffort) || reasoningEffort,   // Class Loadouts S1: worker's own class effort (see runWorker)
             model: wire.model,
@@ -1513,7 +1524,7 @@
           });
         } catch (e) {
           return finish({ status: 'error', reason: 'error', result: 'worker run failed: ' + ((e && e.message) || e), usd: 0 });
-        }
+        } finally { watched.end(); }
         if (!result) return finish({ status: 'error', reason: 'refused', result: 'worker could not restart', usd: 0 });
         const firstText = lastAssistant(result.messages) || '(the worker returned no text)';
         const contract = await enforceStructured(rec.resultSchema, firstText, async (errors) => {
@@ -1521,9 +1532,12 @@
           const remaining = perWorker > 0 ? Math.max(0, perWorker - spent) : 0;
           if (perWorker > 0 && remaining <= 0) return null;
           const repairRunId = newId();
-          const repair = await runOnce({
+          const repairPool = watchedPool(ctx, null, null, h);
+          let repair;
+          try {
+            repair = await runOnce({
               outputOnly: true,
-            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...spendPoolOptions(ctx),
+            ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...repairPool.options,
             key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
             reasoningEffort: (ident && ident.reasoningEffort) || reasoningEffort,
             model: wire.model, system: workerSystem((ident && ident.system) || ''),
@@ -1537,7 +1551,8 @@
             maxCostUsd: perWorker > 0 ? remaining : 0,
             maxIters: lowerPositive(4, bounded ? lowerPositive(workerMaxIters, bounded.workerMaxIters) : workerMaxIters),
             maxToolCalls: bounded ? bounded.workerMaxTools : undefined, steer: h.steer
-          });
+            });
+          } finally { repairPool.end(); }
           return repair ? { text: lastAssistant(repair.messages), result: repair, runId: repairRunId } : null;
         });
         const repaired = contract.repairResult || null;
