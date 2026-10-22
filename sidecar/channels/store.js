@@ -17,7 +17,8 @@
        loadInbox(channel?)             -> [{id,channel,message,ts}] // admitted work not yet completed/queued
        pushInbox(entry)                -> item                   // idempotent durable intake receipt
        removeInbox(id)                 -> bool                   // completed (or durably queued)
-       liveInbox(id)                   -> promise | null         // the run processing this receipt in THIS process
+       markInbox(id, {runId?,tools?})  -> item | undefined       // how far its run got (the attempt a recovery reads)
+       liveInbox(id)                 -> promise | null         // the run processing this receipt in THIS process
        holdInbox(id, promise)          -> promise                // claim a receipt live until the promise settles
      }
 
@@ -386,6 +387,25 @@
         if (next.length === items.length) return false;
         writeJsonAtomic(inboxFile(), { version: 1, items: next });
         return true;
+      },
+
+      /* THE ATTEMPT MARKER (e5ecd6b8, 2026-10-21). A receipt only said "not finished", so a crash after the run had
+         already appended a line to a file replayed the whole message from scratch: the line was appended twice and the
+         chat was told it was done once. The hub stamps the receipt when its run starts (runId) and as each tool step
+         begins (tools, a running count), so a recovery can tell "never started" from "already did things". Known fields
+         only, clamped; the tool count never goes down. An unknown id is a no-op (the receipt already completed). */
+      markInbox(id, patch) {
+        const items = this.loadInbox();
+        const it = items.find(x => x.id === String(id));
+        if (!it) return undefined;
+        const p = patch || {};
+        const prev = (it.attempt && typeof it.attempt === 'object') ? it.attempt : {};
+        const next = { runId: String(prev.runId || '').slice(0, 200), tools: Math.max(0, Math.floor(Number(prev.tools) || 0)) };
+        if (p.runId != null && String(p.runId)) next.runId = String(p.runId).slice(0, 200);
+        if (p.tools != null) next.tools = Math.max(next.tools, Math.min(1000000, Math.max(0, Math.floor(Number(p.tools) || 0))));
+        it.attempt = next;
+        writeJsonAtomic(inboxFile(), { version: 1, items: items });
+        return it;
       },
 
       liveInbox(id) { return liveClaims.get(String(id)) || null; },
