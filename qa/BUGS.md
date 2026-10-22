@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**46** open (open+claimed) of 378 total — 0 P0 · 6 P1 · 40 P2
+**45** open (open+claimed) of 378 total — 0 P0 · 5 P1 · 40 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -142,7 +142,6 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | open | providers | [The PER RUN dollar cap does not bound team.spawn workers, so a 5-cent cap ran 24 cents](bugs/d3a76db3-the-per-run-dollar-cap-does-not-bound-team-spawn.md) | sweep/providers | — |
 | P1 | open | sessions | [A deleted session keeps reaching the model: its words ride every later run's RECENT ACTIVITY and recall_conversation returns it](bugs/3e926b6a-a-deleted-session-keeps-reaching-the-model-its-w.md) | sweep/sessions | — |
 | P1 | open | sessions | [An empty station file never re-seeds from the browser save and the banner blames another window](bugs/5c019483-an-empty-station-file-never-re-seeds-from-the-br.md) | sweep/onboarding | — |
-| P1 | open | world | [A renderer-posted routing plan grants headless runs any tools it names — no cross-check against the saved station, and it persists across restart](bugs/a9a4f53c-a-renderer-posted-routing-plan-grants-headless-r.md) | sweep/world | — |
 | P1 | fixed | autonomy | [A routine run killed between fire and settlement leaves the routine reporting the previous run's ok and absent from its own history](bugs/0de13603-a-routine-run-killed-between-fire-and-settlement.md) | sweep/autonomy | 124feb5b0 |
 | P1 | fixed | autonomy | [Agent loop pause leaves cancelled iteration running and lease held](bugs/c66e8c39-agent-loop-pause-leaves-cancelled-iteration-runn.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P1 | fixed | autonomy | [Ambiguous permission and routine acknowledgements report unproven changes](bugs/95d13aaf-ambiguous-permission-and-routine-acknowledgement.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
@@ -296,6 +295,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | P1 | fixed | voice | [transcribe() never checks r.ok, so any non-JSON /api/stt error (stale-token 403, 5xx, HTML) is laundered into a confirmed-empty transcript and the spoken senten](bugs/1aa7faf6-transcribe.md) | sweep/voice | 50a8b07b |
 | P1 | fixed | voice | [Voice.init (agent focus / persona change / dossier apply) calls reflectToggle without clearing fbNotified, permanently wiping the pinned degrade tooltip while t](bugs/562c293e-voice-init.md) | sweep/voice | 50a8b07b |
 | P1 | fixed | world | [A Meeseeks helper sprite whose terminal `task` event is lost stays asserted LIVE forever — the ledger has no TTL, no snapshot reconcile, and no reset on NEW AGE](bugs/c96c4d41-a-meeseeks-helper-sprite-whose-terminal-task-eve.md) | sweep/world | meeseeks layer removed 2026-07-30 (agent/meeseeks-visual) |
+| P1 | fixed | world | [A renderer-posted routing plan grants headless runs any tools it names — no cross-check against the saved station, and it persists across restart](bugs/a9a4f53c-a-renderer-posted-routing-plan-grants-headless-r.md) | sweep/world | 71e0c668d |
 | P1 | fixed | world | [Agent-built work lines report ready before routing publication](bugs/39136a7a-agent-built-work-lines-report-ready-before-routi.md) | agent/runtime-triage-1011 | dd731e1a191197de95a7ab1c04a9847e9f0e4cdd |
 | P1 | fixed | world | [Agents cross walls beside hallway openings](bugs/49192a68-agents-cross-walls-beside-hallway-openings.md) | wall-clearance-0916 | 2dbc0ef5a |
 | P1 | fixed | world | [Approved agent sprites remain behind preview switch in normal desktop](bugs/84e26970-approved-agent-sprites-remain-behind-preview-swi.md) | agent/release-0120-prep-0915 | df4d1ba25 |
@@ -520,7 +520,7 @@ User/owner reports: **115** · source fixed: **98** · installer verified: **6**
 | sessions | 7 |
 | skills | 3 |
 | onboarding | 3 |
-| world | 2 |
+| world | 1 |
 | voice | 2 |
 | release | 6 |
 

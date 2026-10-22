@@ -4,10 +4,10 @@ slug: a-renderer-posted-routing-plan-grants-headless-r
 title: A renderer-posted routing plan grants headless runs any tools it names — no cross-check against the saved station, and it persists across restart
 surface: world
 severity: P1
-status: open
+status: fixed
 found: 2026-10-20
 lane: sweep/world
-fix:
+fix: 71e0c668d
 origin: audit
 ---
 
@@ -45,4 +45,4 @@ _Found by the `sweep/world` lane (renderer-authority failure state), 2026-10-20.
 
 ## Verdict
 
-_Filled in when the bug leaves the backlog._
+Fixed. A bay's room for headless runs is read off the saved station (the save file, validated and re-read when it changes); the posted routing plan only names which dock a run is at. An agent the saved floor crews in no bay keeps its own office, whatever bay a plan names for it; an agent it crews gets that bay's saved room, and a restart re-reads the same save. A bay placed since the last save grants its room once that save lands. Regression: `test/routing.saved-station-grants.e2e.test.js` (real sidecar, dev channel, tools read off the provider wire) is red on the old wiring and green after; the router's reading is pinned in `test/routing.b5.test.js`. The interactive `/api/run` path named under Evidence is not changed here.
