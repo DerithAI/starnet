@@ -236,10 +236,26 @@ async function stopChild(child, ws, timing) {
 // ---- bootstrap ---------------------------------------------------------------------------------
 function loadRegistry() { try { return require(path.join(REPO, 'sidecar', 'providers', 'registry.js')); } catch (_) { return null; } }
 
+/* The prior-station evidence the app's Recovery Mode reads (sidecar/workspace-lineage.js, with the sidecar's own
+   candidate roots): legacy roots, update snapshots, a pending migration, state whose save is gone. The app offers that
+   recovery only while there is NO save, so a save written here would hide the prior station from it for good. */
+function priorStationEvidence(ws, env) {
+  try {
+    const lineage = require(path.join(REPO, 'sidecar', 'workspace-lineage.js'));
+    const safety = require(path.join(REPO, 'sidecar', 'workspace-safety.js'));
+    const dev = /^(1|true|yes|on)$/i.test(String((('STARNET_DEV' in env) ? env.STARNET_DEV : env.SKYNET_DEV) || '').trim());   // the sidecar's DEV_MODE: no sideways look
+    const roots = dev ? [] : safety.workspaceCandidates({ path, env, platform: process.platform, homedir: () => os.homedir() })
+      .concat([path.join(REPO, 'sidecar', 'workspaces'), path.join(REPO, 'workspaces')]);
+    return !!lineage.inspectWorkspaceLineage({ fs, path, platform: process.platform, workspaceRoot: ws, candidateRoots: roots }).priorInstallEvidence;
+  } catch (_) { return false; }
+}
+
 /* Write the roster + save the desktop's onboarding would have produced (core.bootstrapDocs). Refuses to touch a
-   workspace that already holds a station. Returns { wrote, provider, model, reason }. */
+   workspace that already holds a station, and (unless the operator named the workspace) one where the app would offer
+   to recover a prior station. Returns { wrote, refused?, provider, model, reason }. */
 function bootstrapWorkspace(ws, opts, env) {
   if (hasStation(ws)) return { wrote: false, reason: 'workspace already holds a station' };
+  if (!opts.workspace && priorStationEvidence(ws, env)) return { wrote: false, refused: true, reason: 'this computer has a station from an earlier StarNet install — open the StarNet app to recover it before setting up a new one' };
   const reg = loadRegistry();
   const profiles = reg ? reg.listProviderProfiles() : [];
   const inferred = core.inferProvider({
@@ -478,6 +494,7 @@ async function resolveStation(opts, env) {
   if (path.resolve(ws) === path.resolve(desktopWs) && desktop.ownerAlive) throw stationError('the desktop app owns ' + ws + ' (pid ' + desktop.ownerPid + '); refusing to boot a second station on it');
   // the dashboard sets a new station up itself (the awakening); a headless run gets the one-agent station it needs
   const boot = opts.cmd === 'dash' ? { wrote: false } : bootstrapWorkspace(ws, opts, env);
+  if (boot.refused) throw stationError(boot.reason);
   if (boot.wrote) log('· bootstrapped ' + ws + ' — agent ' + opts.name + ' (full power)' + (boot.provider ? ' · provider ' + boot.provider + ' from ' + boot.providerSource : ' · no provider credential found in the environment') + (boot.model ? ' · model ' + boot.model : ' · no model (pass --model or set STARNET_DEFAULT_MODEL)'));
   log('· booting a station on ' + ws);
   const sp = await spawnSidecar(ws, env, null);
@@ -502,7 +519,7 @@ async function main() {
     const desktop = discoverDesktop(desktopWorkspaces(process.env));
     if (path.resolve(ws) === path.resolve(desktop.workspace) && desktop.ownerAlive) { log('starnet: the desktop app is running on ' + ws + ' — nothing to bootstrap'); return 0; }
     const r = bootstrapWorkspace(ws, opts, process.env);
-    if (!r.wrote) { log('starnet: ' + ws + ' — ' + r.reason); return 0; }
+    if (!r.wrote) { log('starnet: ' + ws + ' — ' + r.reason); return r.refused ? core.EXIT.STATION : 0; }
     log('starnet: bootstrapped ' + ws + '\n  agent    ' + opts.name + ' (approvalMode full)\n  provider ' + (r.provider || 'openrouter (no credential found in the environment yet)') + (r.providerSource ? ' — from ' + r.providerSource : '') + '\n  model    ' + (r.model || '(none — pass --model or set STARNET_DEFAULT_MODEL)'));
     return 0;
   }
