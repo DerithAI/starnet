@@ -905,6 +905,12 @@ const Harness = (() => {
     const m = catalogModel(id);
     return (m && m.context_length) || 0;
   }
+  // the window a RUN on this route works in (the sidecar's /api/models runWindow: the model's own, stopped at a
+  // long-context price tier the spend caps do not price); 0 = the catalog did not say
+  function runWindowOf(id) {
+    const m = catalogModel(id);
+    return (m && m.runWindow) || 0;
+  }
 
   /* Context-window occupancy for ONE conversation — the question the bottom-bar gauge actually asks
      ("MEMORY OF THIS CHAT"), so it is answered per (agentId, streamId), never per agent alone.
@@ -975,7 +981,8 @@ const Harness = (() => {
       supported_parameters: params,
       reasoningEfforts: Array.isArray(m && m.reasoningEfforts) ? m.reasoningEfforts.slice() : [],
       defaultReasoningLevel: (m && m.defaultReasoningLevel) || null,
-      reasoningNote: (m && typeof m.reasoningNote === 'string' && m.reasoningNote) || null
+      reasoningNote: (m && typeof m.reasoningNote === 'string' && m.reasoningNote) || null,
+      runWindow: (m && +m.runWindow) || 0
     };
   }
 
@@ -2065,7 +2072,7 @@ const Harness = (() => {
     canRestartEngine: () => !!tauriCoreNow(),
     isDesktop: () => DESKTOP,   // lets the UI tell a desktop keychain-store failure (token saved locally) from a browser no-op
     getSelectionRevision, getKey, setKey, setKeyPool, validateAndSetKeyPool, keyPoolSize, storeChannelToken, getModel, setModel, getProv, setProv, getBaseUrl, setBaseUrl, getReasoningEffort, setReasoningEffort, clearLegacyReasoningOff, normalizeReasoningEffort, init, configured, refreshCreditsConfigured, creditsEpoch: () => creditsEpoch, hasStoredCredential, setDesktopConfigured,
-    listModels, probeProvider, validateAndSetKey, priceOf, contextLimitOf, contextState, contextRevision: () => contextRev, chat, cancel, haltAll, consent, consentAck, consentArgs, consentAnswer, summonAck, notebook,
+    listModels, probeProvider, validateAndSetKey, priceOf, contextLimitOf, runWindowOf, contextState, contextRevision: () => contextRev, chat, cancel, haltAll, consent, consentAck, consentArgs, consentAnswer, summonAck, notebook,
     runStreamState: () => runStream.state(),   // the page's ONE run stream: { open, id, runs, unsupported, heldBack }
     streamPost,   // a run a button starts (Run now / Retry / an app refresh / a workshop build), on the page's ONE run stream
     runRecoveries, prepareAutomaticRecovery, resolveRunRecovery, prepareReviewedRecovery,

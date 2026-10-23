@@ -9880,8 +9880,15 @@ const Chat = (() => {
     // persistent server-side context to fold on demand between runs. Auto-compaction runs INSIDE a run when the
     // live prompt crosses the threshold. This is the honest status; see the slash-parity report for the rationale.
     if (cs && cs.limit) {
-      const pct = Math.round(((cs.used || 0) / cs.limit) * 100);
-      localLine('Chat memory: ' + (cs.used || 0) + ' / ' + cs.limit + ' tokens used (' + pct + '% — a token is roughly ¾ of a word). When it nears full, older turns are folded into a summary automatically during the next run; there is nothing you need to do.');
+      // a run on a model that bills a dearer rate past a prompt size works in a window stopped at it (the sidecar's
+      // runWindow, context-cost-1023): measure against THAT window, the one a run folds in, never the 1M it could hold
+      const run = (typeof Harness !== 'undefined' && Harness.runWindowOf) ? (Number(Harness.runWindowOf(cs.model)) || 0) : 0;
+      const tier = run > 0 && run < cs.limit;
+      const win = tier ? run : cs.limit;
+      const pct = Math.round(((cs.used || 0) / win) * 100);
+      localLine('Chat memory: ' + (cs.used || 0) + ' / ' + win + ' tokens used (' + pct + '% — a token is roughly ¾ of a word). '
+        + (tier ? 'The model can hold ' + cs.limit + ', but it bills a higher rate for a prompt over ' + run + ' tokens, so a run works in ' + run + '. ' : '')
+        + 'When it nears full, older turns are folded into a summary automatically during the next run; there is nothing you need to do.');
     } else {
       localLine('Chat memory is managed automatically: when a conversation grows past what the model can hold, older turns are folded into a summary during the next run. There is nothing you need to do.');
     }

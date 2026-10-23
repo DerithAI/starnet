@@ -430,9 +430,11 @@ try {
   // review of 32fc352e4 — THE MANAGED DEFAULT: a 200k-window $3 / $15 model with a 64k output ceiling (Sonnet-class) on
   // the StarNet relay's default PER RUN $2. Reserved by its window (~$3 a call) every clone's call took its turn
   const SONNET = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 64000, pricing: { prompt: '0.000003', completion: '0.000015' }, supportsTools: true }];
-  // a catalog that prices nothing, as the e2e mock OpenRouter lists its model ($0 / $0): the call is billed only by
-  // usage.cost, so every pre-call price is $0 — the "no price at all" path (counted as calls)
-  const FREE = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 4096, pricing: { prompt: '0', completion: '0' }, supportsTools: true }];
+  // a catalog that prices nothing (its row names no pricing): the call is billed only by usage.cost, so every pre-call
+  // price is $0 — the "no price at all" path (counted as calls)
+  const FREE = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 4096, supportsTools: true }];
+  // a model its catalog prices at a KNOWN $0 (an OpenRouter :free row: $0 / $0): priced at about $0, never "no price"
+  const KNOWN_FREE = [{ id: 'replay/model', context_length: 200000, max_completion_tokens: 4096, pricing: { prompt: '0', completion: '0' }, supportsTools: true }];
   const partOf = o => { const m = /part (\d+)/.exec(JSON.stringify(o.messages || [])); return m ? Number(m[1]) : 0; };
   // the roster a team.dispatch family delegates to (one agent per part)
   const crew = new Map([['w1', { system: 'W' }], ['w2', { system: 'W' }], ['w3', { system: 'W' }], ['w4', { system: 'W' }]]);
@@ -872,6 +874,22 @@ try {
       budget: { check: (spent, nextCallUsd) => { if (freePrice === null) freePrice = nextCallUsd(); return null; } },
       context: makeContext({ contextLimit: 200000 }), capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: 'w', room: 'office' } });
     A.eq(freePrice, 0, 'a model nothing prices reads $0: no price (the pool counts the call as a call)');
+  }
+  // A MODEL ITS CATALOG PRICES AT A KNOWN $0 (an OpenRouter :free row) IS PRICED, NOT UNPRICED (lane context-cost-1023).
+  // Counted as a call, it held every other member's call under any finite pool cap (a saved PER RUN, a line hop
+  // ceiling, a StarNet-managed run's reserve): a free team ran one call at a time with nothing on screen saying why.
+  {
+    const { priced } = await priceOfFirstCall(KNOWN_FREE);
+    A.ok(priced > 0 && priced < 1e-6, 'a known-$0 model reads a token price above $0 (reserved as a call about $0), not "no price": ' + priced);
+    const cold = await priceOfFirstCall([Object.assign({}, KNOWN_FREE[0], { context_length: 0, max_completion_tokens: null })]);
+    A.ok(cold.priced > 0 && cold.priced < 1e-6, 'a known-$0 model with no window and no output ceiling is still priced about $0: ' + cold.priced);
+  }
+  for (const tool of ['spawn', 'dispatch']) {
+    const f = await family('knownFree' + tool, 0.05, 0, 0, { models: KNOWN_FREE, tool, tasks: 2, workerDelay: () => 6, synthUsd: 0 });
+    A.eq(f.invalid, [], 'known $0 ' + tool + ': every event passed the event contract');
+    A.eq(f.workers.map(w => w && w.reason), ['done', 'done'], 'known $0 ' + tool + ': both members finished');
+    A.eq(f.peak, 2, 'known $0 ' + tool + ': under a $0.05 cap the calls of both members are in flight together, not one at a time');
+    A.eq(f.calls, f.modelCalls, 'known $0 ' + tool + ': every call is still counted (' + f.modelCalls + ')');
   }
 
 } finally {

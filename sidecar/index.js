@@ -151,6 +151,7 @@ const {
   attachCatalogCache
 } = require('./providers/factory.js');
 const { makeCatalogCache, runWindow: catalogRunWindow } = require('./providers/catalog-cache.js');
+const { promptTierCeiling } = require('./providers/prices.js');
 /* RESTRICTED GOOGLE DATA NEVER RIDES THE STARNET RELAY (mcp/google-relay-guard.js). Every provider this process
    builds for StarNet Managed ('starnet' — the one StarNet-operated path model traffic can take) streams through
    the guard, so primary runs, fallbacks and auxiliary passes all send a copy with Gmail/Drive tool results
@@ -14650,6 +14651,10 @@ async function applyVoiceTurnRoute(o) {
   const swapping = credentialOk && !(sameProvider && setting.model === mainModel);
   const tEntry = swapping ? await voiceCatalogEntry(tProvider, setting.model, tKey, tBaseUrl) : null;
   const limit = (tEntry && Number(tEntry.context_length)) || 0;
+  // the voice run works in its model's price-tier window (runOnceCore runWindowCeiling), so "fits without a fold" is
+  // measured against that window: a conversation the voice run would fold stays on the agent's model
+  const tierCeiling = promptTierCeiling(tProvider, setting.model, !!(getProviderProfile(tProvider) || {}).unmetered);
+  const runLimit = (tierCeiling > 0 && limit > tierCeiling) ? tierCeiling : limit;
   let promptTokens = 0;
   if (limit) {
     const est = makeContext(Object.assign({ contextLimit: limit }, RUN_CONTEXT_DEFAULTS));
@@ -14657,7 +14662,7 @@ async function applyVoiceTurnRoute(o) {
   }
   const facts = {
     setting, main: { provider: mainProvider, model: mainModel },
-    target: { credentialOk, contextLimit: limit, efforts: tEntry && tEntry.reasoningEfforts },
+    target: { credentialOk, contextLimit: runLimit, efforts: tEntry && tEntry.reasoningEfforts },
     promptTokens, compactAt: RUN_CONTEXT_DEFAULTS.compactAt
   };
   let plan = voiceChatRoute.planVoiceRoute(facts);
@@ -22464,7 +22469,14 @@ async function runOnceCore(o) {
   const knownRunWindow = CONTEXT_LIMIT_OVERRIDE ? 0 : await catalogRunWindow(provider, model);
   // RUN_CONTEXT_DEFAULTS (context.js): fold at 65% of the window; the verbatim tail is a TOKEN budget (20% of the
   // window), not six turns — six turns of big results outweighed a 64k window and a fold freed nothing.
-  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || knownRunWindow || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
+  // THE WINDOW STOPS AT THE PRICE TIER (context-cost-1023): a model that bills a dearer rate above a prompt size the
+  // spend caps do not price (prices.js promptTierCeiling: Haiku 5.5 100K, Gemini Pro and grok 200k) works in a window of
+  // that size, so its turns fold before they cross it. The manager reads it on every use, so a fallback's route and model
+  // bring their own ceiling even when the fallback's catalog is cold. An unmetered run (a flat subscription, a local
+  // model: exempt from every $ cap, runBudget below) and an OpenRouter run (its billed usage.cost prices every tier) keep
+  // the model's whole window.
+  const runWindowCeiling = () => promptTierCeiling(activeProviderId, model, providerUnmetered);
+  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || knownRunWindow || COLD_CATALOG_CONTEXT_TOKENS, windowCeiling: runWindowCeiling }, RUN_CONTEXT_DEFAULTS));
   // PER-RUN TOOL-OUTPUT CAP, scaled to the window. The flat 120KB cap (~30k tokens) sat far BELOW the compaction
   // threshold (0.65 × window — ~130k tokens on a 200k model), so the one event that resets the budget
   // (agent.compact, see loopEmit) could never fire: after ~120KB of reads the agent went blind — every later
@@ -26735,7 +26747,16 @@ async function handleProviderModels(req, res) {
   if (!getProviderProfile(id)) return json(404, { models: [], error: 'unknown provider' });
   try {
     const models = await listModelsForProvider(id, { baseUrl });
-    json(200, { provider: id, models: models.map(publicModel) });
+    // runWindow (context-cost-1023): the window a run on THIS route works in — the model's own, stopped at the
+    // long-context price tier the spend caps do not price (prices.js promptTierCeiling, as runOnceCore sizes the run's
+    // context manager). /compress names it, so "Chat memory" never measures against a 1M window a run folds inside 200k.
+    const unmetered = !!(getProviderProfile(id) || {}).unmetered;
+    json(200, { provider: id, models: models.map(m => {
+      const row = publicModel(m);
+      const tier = promptTierCeiling(id, row.id, unmetered);
+      if (row.context_length > 0) row.runWindow = (tier > 0 && tier < row.context_length) ? tier : row.context_length;
+      return row;
+    }) });
   } catch (e) {
     json(200, { provider: id, models: [], error: (e && e.message) || 'model catalog unavailable', code: (e && e.code) || '' });
   }
