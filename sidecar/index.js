@@ -267,6 +267,7 @@ const engineCredential = require('./engine-credential.js');                     
 const channelSecretsMod = require('./channels/secrets.js');                        // T1.4: token-vs-config split + keychain migration
 const { makeConnectGateway } = require('./channels/discord.gateway.js');           // P2-E: the real Discord gateway WS client (inbound)
 const { makeSseHub, runTeeView } = require('./channels/sse.js');
+const { makeRunStreams, runStreamOf } = require('./run-streams.js');   // ONE stream per page for every run it watches (2026-10-21)
 const { makeHandoffHost } = require('./browser-handoff.js');   // STEP-IN: the agent hands its live browser to the Commander
 const { makeHandoffRoutes, makeSigninStore, nudgeLine: handoffNudgeLine } = require('./browser-handoff-routes.js');
 const { makeBrowserViews, makeViewRoutes } = require('./browser-view.js');   // BROWSER window: watch a run's browser, browse yourself
@@ -1727,6 +1728,9 @@ function attachStreamKeepAlive(res) {
   if (t && typeof t.unref === 'function') t.unref();
   return () => clearInterval(t);
 }
+// THE PAGE'S ONE RUN STREAM (2026-10-21, sidecar/run-streams.js): every run a page watches rides one response, so a browser's
+// six connections per host are never spent one per live run. Same heartbeat as the per-run streams above.
+const runStreams = makeRunStreams({ uuid: () => crypto.randomUUID(), keepAliveMs: STREAM_KA_MS });
 
 // durable per-workstream CONVERSATION transcript (P0.1): segmented append-only + fsync/read-back proven, a SIBLING of
 // the fs jail. runStore answers "what happened" (one line per run); this keeps WHAT WAS SAID — a server-
@@ -12013,6 +12017,8 @@ const ROUTES = [
   { m: 'POST', qsplit: '/api/local-voice/warm', h: media.handleLocalVoiceWarm },
   { m: 'POST', exact: '/api/local-voice/transcribe', h: media.handleLocalVoiceTranscribe },
   { m: 'POST', exact: '/api/run', h: handleRun, errorPolicy: runFailPolicy },
+  { m: 'GET', exact: '/api/run/stream', h: handleRunStream },   // the page's ONE stream for every run it watches (run-streams.js)
+  { m: 'POST', exact: '/api/run/stream/withdraw', h: handleRunStreamWithdraw },   // the page stopped watching one run
   { m: 'POST', exact: '/api/run-recoveries/resolve', h: handleRunRecoveryResolve },
   { m: 'POST', exact: '/api/run-recoveries/continue', h: handleRunRecoveryContinue },
   { m: 'POST', exact: '/api/tts', h: media.handleTts, errorPolicy: media.ttsFailOpenPolicy },
@@ -16627,6 +16633,11 @@ async function handleCronRun(req, res) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ error: (!model ? 'choose a model for this routine agent first' : cronCredentialError(provider)) }));
   }
+  // ONE STREAM PER PAGE (run-streams.js): a page that names its run stream gets this POST answered at once and the run's
+  // lines on that stream — a routine started from NEEDS YOU or an app no longer holds a connection for its whole run
+  const sink = pageRunSink(body, res);
+  if (sink === false) return;
+  const lines = runLineWriter(res, sink);
 
   // COMMAND ROUTINE: "Run Now" must behave exactly like the scheduled fire, which the cron driver's runOnce
   // wrapper redirects to runSlashRoutine. This path calls runOnce DIRECTLY, so without the same redirect a
@@ -16634,24 +16645,25 @@ async function handleCronRun(req, res) {
   // doing two different things depending on who started it. Placed AFTER the credential gate above so both
   // paths gate identically (see runSlashRoutine's note on that shared limit).
   if (assembledPrompt.charAt(0) === '/') {
-    res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
     const runIdC = crypto.randomUUID();
+    openRunAnswer(res, sink, { runId: runIdC });
     cronDriver.leases.set(job.id, { runId: runIdC, startedAt: Date.now(), heartbeatAt: Date.now(), ac: new AbortController(), isOnce: false });
-    const busC = { emit: (name, payload) => { try { res.write(JSON.stringify({ name, payload: redact(payload) }) + '\n'); } catch (_) {} } };
+    const busC = { emit: (name, payload) => { try { lines.write(name, redact(payload)); } catch (_) {} } };
     const emitC = wrapEmitDiag(makeEmitter(busC, e => { if (e) console.warn('[event]', e.kind, e.event, (e.errors || []).join(';')); }));
     try { cronEmit('cron.fire', { jobId: job.id, runId: runIdC, scheduledFor: Date.now() }); } catch (_) {}
     let out;
     try { out = await runSlashRoutine(assembledPrompt, { agentId: job.agentId, runId: runIdC, emit: emitC }); }
     catch (e) { out = { ok: false, text: 'that command failed: ' + ((e && e.message) || e) }; }
     cronDriver.settleRun(job.id, runIdC, { reason: out.ok ? 'done' : 'error', errMsg: out.ok ? null : out.text, buf: out.text || '' }, null);
-    try { res.end(); } catch (_) {}
+    lines.end();
     return;
   }
 
-  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-  const kaOff = attachStreamKeepAlive(res);   // hold-open heartbeat: a long tool phase must not leave the stream byte-silent
-  const ac = new AbortController();
   const runId = crypto.randomUUID();
+  openRunAnswer(res, sink, { runId });
+  // hold-open heartbeat: a long tool phase must not leave the stream byte-silent (a page's shared stream keeps its own)
+  const kaOff = sink ? () => {} : attachStreamKeepAlive(res);
+  const ac = new AbortController();
   runs.set(runId, ac);
   runsMeta.set(runId, { agentId: job.agentId, startedAt: Date.now(), source: 'cron' });
   // Register the manual run in the DRIVER's lease map (the other half of the one-run-per-routine fix): the
@@ -16665,10 +16677,13 @@ async function handleCronRun(req, res) {
   // window that asked for it must not cancel it (it stays stoppable through its lease, like a scheduled fire).
   // Without detach:true, Run Now keeps its law: the watcher leaving cancels the run.
   const detached = body.detach === true;
-  if (!detached) res.on('close', () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
+  // on the page's shared stream (run-streams.js) the watcher leaving is that stream closing, or this run withdrawn — never
+  // this POST's own response, which closes as soon as its receipt is sent
+  if (!detached && sink) sink.onGone(() => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
+  else if (!detached) res.on('close', () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
   // detached: the watcher leaving changes nothing — the run stays in runs/runsMeta (live in the snapshot, busy, and
   // stoppable on its own) until its own finally below removes it
-  const bus = { emit: (name, payload) => { try { res.write(JSON.stringify({ name, payload: redact(payload) }) + '\n'); } catch (_) {} } };
+  const bus = { emit: (name, payload) => { try { lines.write(name, redact(payload)); } catch (_) {} } };
   const emit = wrapEmitDiag(makeEmitter(bus, e => { if (e) console.warn('[event]', e.kind, e.event, (e.errors || []).join(';')); }));
   // tee: stream every event to the watching browser AND capture the outcome so the last-run record is honest.
   const state = { buf: '', errMsg: null, reason: null, transient: false, usd: 0, toolsRan: 0 };   // toolsRan: an empty reply after work is not 'nothing was done'
@@ -16834,7 +16849,7 @@ async function handleCronRun(req, res) {
     // write retains the receipt; a late zombie cannot overwrite its replacement.
     cronDriver.settleRun(job.id, runId, state, null);
     kaOff();
-    try { res.end(); } catch (_) {}
+    lines.end();
   }
 }
 
@@ -18324,16 +18339,19 @@ async function handleWorkshopShiftNow(req, res) {
   let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { res.writeHead(400); return res.end('bad json'); }
   const agentId = String(body.agentId || '');
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'choose a valid agent' })); }
-  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-  const kaOff = attachStreamKeepAlive(res);   // hold-open heartbeat (mirrors /api/run): shifts run whole tool phases silently
-  const bus = { emit: (name, payload) => { try { res.write(JSON.stringify({ name, payload: redact(payload) }) + '\n'); } catch (_) {} } };
+  const sink = pageRunSink(body, res);   // the page's ONE run stream, when it named one (run-streams.js)
+  if (sink === false) return;
+  openRunAnswer(res, sink);
+  const kaOff = sink ? () => {} : attachStreamKeepAlive(res);   // hold-open heartbeat (mirrors /api/run): shifts run whole tool phases silently
+  const lines = runLineWriter(res, sink);
+  const bus = { emit: (name, payload) => { try { lines.write(name, redact(payload)); } catch (_) {} } };
   const emit = wrapEmitDiag(makeEmitter(bus, e => { if (e) console.warn('[event]', e.kind, e.event, (e.errors || []).join(';')); }));
   let result;
   try { result = await runWorkshopShift(agentId, { emit: emit, broadcast: true }); }
   catch (e) { result = { fired: false, reason: 'error: ' + ((e && e.message) || e) }; }
   kaOff();
-  try { res.write(JSON.stringify({ name: 'workshop.shift.result', payload: result }) + '\n'); } catch (_) {}
-  try { res.end(); } catch (_) {}
+  lines.write('workshop.shift.result', result);
+  lines.end();
 }
 
 /* POST /api/workshop/implement { agentId, runId, note? } — BUILD what a plan deliverable describes. `note` is what
@@ -18347,16 +18365,19 @@ async function handleWorkshopImplement(req, res) {
   const runId = String(body.runId || '');
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'choose a valid agent' })); }
   if (!runId) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'no deliverable named' })); }
-  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-  const kaOff = attachStreamKeepAlive(res);
-  const bus = { emit: (name, payload) => { try { res.write(JSON.stringify({ name, payload: redact(payload) }) + '\n'); } catch (_) {} } };
+  const sink = pageRunSink(body, res);   // the page's ONE run stream, when it named one (run-streams.js)
+  if (sink === false) return;
+  openRunAnswer(res, sink);
+  const kaOff = sink ? () => {} : attachStreamKeepAlive(res);
+  const lines = runLineWriter(res, sink);
+  const bus = { emit: (name, payload) => { try { lines.write(name, redact(payload)); } catch (_) {} } };
   const emit = wrapEmitDiag(makeEmitter(bus, e => { if (e) console.warn('[event]', e.kind, e.event, (e.errors || []).join(';')); }));
   let result;
   try { result = await runImplementBuild(agentId, runId, { emit: emit, broadcast: true, note: body.note }); }
   catch (e) { result = { fired: false, reason: 'error: ' + ((e && e.message) || e) }; }
   kaOff();
-  try { res.write(JSON.stringify({ name: 'workshop.implement.result', payload: result }) + '\n'); } catch (_) {}
-  try { res.end(); } catch (_) {}
+  lines.write('workshop.implement.result', result);
+  lines.end();
 }
 
 /* THE AUTHORING ROUTES. Without these there was no way to make an extension except to find a folder and
@@ -19787,6 +19808,51 @@ async function handleSkillCandidateAction(req, res) {
 }
 
 /* ------------------------------- the run endpoint ------------------------------- */
+/* GET /api/run/stream — the page's ONE stream for every run it watches (sidecar/run-streams.js says why: a browser's six
+   connections per host were spent one per live run, so a sixth paused run left none for Approve/Deny). The page opens
+   it when its first run starts, names it on each POST /api/run, and closes it a few seconds after its last run ends;
+   the stream closing stops every run still on it, as each run's own response closing did. Token-gated like every
+   /api route. */
+function handleRunStream(req, res) {
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+  runStreams.open(res);
+}
+// POST /api/run/stream/withdraw { stream, key } — the page stopped watching one run (a Stop before its run id was known, or
+// any other abort of that run's fetch): the same page-gone path its own response closing took. A key not yet on the stream
+// is remembered, so that run is refused when its POST arrives.
+async function handleRunStreamWithdraw(req, res) {
+  let body;
+  try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (_) { res.writeHead(400); return res.end('bad json'); }
+  respondJson(res, 200, runStreams.withdraw(body.stream, body.key));
+}
+/* The run a POST starts rides the page's stream when the body names one ({ stream: { id, key } }): every route that streams
+   a run to the page (/api/run, a routine's Run now, a workshop build) answers its POST at once and writes the run's lines
+   there. null: no stream named, so this response IS the run's stream, as always. false: refused — already answered 409,
+   before any work: the station does not hold that stream (it restarted, the page's connection dropped) or the page
+   withdrew this run before it arrived. */
+function pageRunSink(body, res) {
+  const via = runStreamOf(body);
+  if (!via) return null;
+  const sink = runStreams.attach(via.id, via.key);
+  if (sink) return sink;
+  respondJson(res, 409, runStreams.has(via.id)
+    ? { error: 'this run was withdrawn by its page before it started', code: 'run_withdrawn' }
+    : { error: 'this page\'s run stream is not open on the station (it restarted, or the connection dropped)', code: 'run_stream_gone' });
+  return false;
+}
+// a run's lines for a streaming route: onto the page's stream (sink) or this response, exactly one {name,payload} per line
+function runLineWriter(res, sink) {
+  return {
+    write: (name, payload) => { try { if (sink) sink.write(name, payload); else res.write(JSON.stringify({ name, payload }) + '\n'); } catch (_) {} },
+    end: () => { if (sink) sink.end(); else { try { res.end(); } catch (_) {} } }
+  };
+}
+// open a streaming route's answer: a receipt when the run rides the page's stream, else this response's NDJSON head
+function openRunAnswer(res, sink, receipt) {
+  if (sink) return respondJson(res, 200, Object.assign({ ok: true, stream: sink.streamId }, receipt || {}));
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+}
+
 async function handleRun(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req, 2 << 20, res)); }
@@ -19887,6 +19953,14 @@ async function handleRun(req, res) {
   if (!model) { res.writeHead(400); return res.end('no model selected — pick a model for ' + oauthLabel(runProvider) + ' first'); }
   if (!providerHasCredential(runProvider, key, baseUrl)) { res.writeHead(400); return res.end('missing key/model — ' + providerCredentialError(runProvider)); }
 
+  /* ONE STREAM PER PAGE (2026-10-21, sidecar/run-streams.js). A page that names its run stream gets this POST answered at
+     once and the run's events on that stream, so a paused run no longer holds one of the browser's six connections to the
+     station. Without one (a script, a test, an older page) this response IS the run's stream, as always. A stream the
+     station does not hold (it restarted, the page's connection dropped) or a key the page already withdrew (its Stop beat
+     this POST) refuses the run here, before any work and before a continuation is spent. */
+  const sink = pageRunSink(body, res);
+  if (sink === false) return;
+
   // Consume a continuation before opening the response stream or doing provider/tool work. The durable start
   // record is intentionally one-way: losing this response may require another review, but retrying cannot run
   // the same continuation twice and duplicate an external effect.
@@ -19894,18 +19968,15 @@ async function handleRun(req, res) {
   let recovery = null;
   if (body && body.recovery) {
     const accepted = consumeRunRecoveryContinuation(body.recovery, agentId, runId);
-    if (!accepted.ok) { res.writeHead(accepted.code || 409); return res.end(accepted.error || 'continuation blocked'); }
+    if (!accepted.ok) { if (sink) sink.release(); res.writeHead(accepted.code || 409); return res.end(accepted.error || 'continuation blocked'); }
     recovery = accepted.plan;
   }
 
-  res.writeHead(200, {
-    'Content-Type': 'application/x-ndjson; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'X-Accel-Buffering': 'no'
-  });
+  openRunAnswer(res, sink, { runId });   // a receipt when the run's events ride the page's stream, else this response is the stream
   // hold-open heartbeat: a lead awaiting team.dispatch produces NO events for minutes (only child lifecycle
-  // is forwarded) — the blank line keeps the watched run's socket provably alive through that silence.
-  const kaOff = attachStreamKeepAlive(res);
+  // is forwarded) — the blank line keeps the watched run's socket provably alive through that silence. (A page's shared
+  // stream carries its own heartbeat.)
+  const kaOff = sink ? () => {} : attachStreamKeepAlive(res);
 
   const ac = new AbortController();
   runs.set(runId, ac);
@@ -19930,8 +20001,15 @@ async function handleRun(req, res) {
   // the approvals it was still waiting on — the abort below denies them, and the conversation must say so after a reload.
   // Registered FIRST: listeners run in order, so it reads the signal before the disconnect law aborts it.
   let leadOver = false;   // this run's own finally ran: a close after it is just the stream's normal end
-  res.on('close', () => { if (!leadOver && !ac.signal.aborted && !internal) { try { notePageClosed(runId, pending); } catch (e) { failNote('run.pageClosed.note', e); } } });
-  res.on('close', () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
+  if (!sink) {
+    res.on('close', () => { if (!leadOver && !ac.signal.aborted && !internal) { try { notePageClosed(runId, pending); } catch (e) { failNote('run.pageClosed.note', e); } } });
+    res.on('close', () => { ac.abort(); runs.delete(runId); runsMeta.delete(runId); });
+  } else sink.onGone(() => {
+    // on the page's shared stream (run-streams.js) the page leaving is that stream closing, or this run withdrawn: the same two
+    // steps in the same order. Never this POST's own response, which closes as soon as its receipt is sent.
+    if (!leadOver && !ac.signal.aborted && !internal) { try { notePageClosed(runId, pending); } catch (e) { failNote('run.pageClosed.note', e); } }
+    ac.abort(); runs.delete(runId); runsMeta.delete(runId);
+  });
 
   // the "bus" writes one validated, REDACTED NDJSON line per event (key-shaped secrets are scrubbed even
   // if a tool ever echoes one back); makeEmitter validates against the frozen registry first.
@@ -19939,7 +20017,10 @@ async function handleRun(req, res) {
   let leadStarted = false, leadEnded = false;
   const bus = { emit: (name, payload) => {
     if (payload && payload.runId === runId) { if (name === 'agent.run.start') leadStarted = true; else if (name === 'agent.run.end') leadEnded = true; }
-    try { res.write(JSON.stringify({ name, payload: redact(payload) }) + '\n'); } catch (_) {}
+    try {
+      if (sink) sink.write(name, redact(payload));
+      else res.write(JSON.stringify({ name, payload: redact(payload) }) + '\n');
+    } catch (_) {}
   } };
   const emit = wrapEmitDiag(makeEmitter(bus, e => { if (e) console.warn('[event]', e.kind, e.event, (e.errors || []).join(';')); }));
 
@@ -20220,7 +20301,8 @@ async function handleRun(req, res) {
     const ps = pendingSummonByRun.get(runId);   // settle any summon request still open → null (no agent created)
     if (ps) { for (const f of ps.values()) { try { f(null); } catch (_) {} } pendingSummonByRun.delete(runId); }
     kaOff();
-    try { res.end(); } catch (_) {}
+    if (sink) sink.end();   // the run's last line on the page's stream (a page that left already took it off)
+    else { try { res.end(); } catch (_) {} }
   }
 }
 

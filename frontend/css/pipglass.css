@@ -1116,10 +1116,23 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { flex-basis: 0; }
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding-right: 0; }
 }
-/* a laptop window draws + NEW as the + key at every rail width (the 1440px rule above): its hidden label spaces nothing */
+/* a laptop window draws + NEW as the + key at every rail width (the 1440px rule above): its hidden label spaces nothing.
+   + ADD takes the same key there, so the key keeps its size when the tab changes */
 @media (max-width: 1440px) {
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head #ws-new { letter-spacing: 0; }
+  /* at + NEW's own specificity (the 1440px rule above), so on a narrow rail the strip's own square key wins for both */
+  body.glass-demo:not(.hud-mode) #left .ws-head #ws-addproject:not([hidden]) {
+    font-size: 0 !important; letter-spacing: 0; min-width: 32px; display: inline-flex; align-items: center; justify-content: center;
+  }
+  body.glass-demo:not(.hud-mode) #left .ws-head #ws-addproject::before { content: '+'; font-size: 20px; line-height: 1; }
 }
+/* the SESSIONS / PROJECTS switch (Andrew 10-23: "i saw a UI glitch in sessions and projects"): at a laptop window the
+   hidden + NEW still drew in PROJECTS (the 1440px rule's display: inline-flex outranks [hidden]) as a second + box over the
+   PROJECTS tab; the tabs crossfaded for 0.12s, so mid-switch both read as open; + ADD's label was 14px to + NEW's 16px,
+   so the key changed size with the tab */
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject)[hidden] { display: none !important; }
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { transition: none; }
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head #ws-addproject { font-size: 16px; }
 
 /* ---- ONE RAIL GUTTER (Andrew 10-21: "my only complaint is that some of it is misaligned like this"). Every block in the
    CREW rail spans one column, its edges 10px in from the rail's at every TEXT SIZE: the crew cards, the SESSIONS / PROJECTS
@@ -1139,6 +1152,46 @@ body.glass-demo:not(.hud-mode) #screen-game #left > h3 {
     linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / calc(100% - 2 * var(--rail-gut-u)) 1px no-repeat,
     linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / 1px 8px no-repeat,
     linear-gradient(var(--pg-line), var(--pg-line)) right var(--rail-gut-u) bottom 0 / 1px 8px no-repeat;
+}
+
+/* ---- PROJECTS in the session rows' language (Andrew 10-23: "i saw a UI glitch in sessions and projects"). The project
+   rows were never brought over: they still wore the oldest base .ws-row box (a black fill with a 2px left bar running down
+   the list), a 10px path cut by VT323's flat "…" bar, and a 9px boxed GIT chip. Now they rest quiet on hairlines like the
+   session rows, on the rail gutter (6px + the list's 4px), the entered project wears the selection mesh, the path reads
+   at the rail's meta size and fades where it runs out, and git is a word, not a chip ---- */
+body.glass-demo:not(.hud-mode) #screen-game #left #projects { row-gap: 6px; }   /* the inbox session list's rhythm */
+body.glass-demo:not(.hud-mode) #screen-game #left #projects > .ws-row.proj-row {
+  --pip-fill: var(--pg-dither), rgba(var(--ph-rgb), .06);
+  position: relative; margin: 0 2px 0 6px; padding: 8px 10px 9px;
+  border: 1px solid transparent; border-radius: 2px; background: transparent; box-shadow: none;
+}
+body.glass-demo:not(.hud-mode) #screen-game #left #projects > .ws-row.proj-row + .ws-row.proj-row::before {
+  content: ''; position: absolute; left: 10px; right: 10px; top: -1px; height: 1px; background: rgba(var(--ph-rgb), .1); pointer-events: none;
+}
+body.glass-demo:not(.hud-mode) #screen-game #left #projects > .ws-row.proj-row:is(:hover, :focus-visible) { background: rgba(var(--ph-rgb), .07); }
+body.glass-demo:not(.hud-mode) #screen-game #left #projects > .ws-row.proj-row:is(.project-selected, [aria-current="page"]) { background: var(--pip-fill); }
+body.glass-demo:not(.hud-mode) #screen-game #left #projects > .ws-row.proj-row:is(.project-selected, [aria-current="page"], :hover, :focus-visible)::before,
+body.glass-demo:not(.hud-mode) #screen-game #left #projects > .ws-row.proj-row:is(.project-selected, [aria-current="page"], :hover, :focus-visible) + .ws-row.proj-row::before { opacity: 0; }
+body.glass-demo:not(.hud-mode) #screen-game #left #projects .proj-row .ws-title { font-size: 17px; white-space: nowrap; overflow: hidden; }
+body.glass-demo:not(.hud-mode) #screen-game #left #projects :is(.proj-path, .proj-sess-n) { font-size: 15px; letter-spacing: .2px; color: var(--cg-mute); opacity: 1; }
+body.glass-demo:not(.hud-mode) #screen-game #left #projects :is(.proj-git-badge, .proj-tag) {
+  font-size: 15px; letter-spacing: .4px; line-height: inherit; padding: 0; border: 0; border-radius: 0; background: none;
+}
+body.glass-demo:not(.hud-mode) #screen-game #left #projects .proj-git-badge { text-transform: lowercase; color: var(--cg-mute); }
+@supports (animation-timeline: scroll()) {
+  body.glass-demo:not(.hud-mode) #screen-game #left #projects :is(.proj-row .ws-title, .proj-path) { text-overflow: clip; animation: sn-cut-line 1s linear both; animation-timeline: scroll(self inline); }
+}
+/* the session search's placeholder on a narrow rail: "search sessions + transcripts" ran out as "search sessions + tra"
+   and VT323's flat "…" bar (it read as a typo). Where the whole line can't fit (about 236px of field at its 0.3px
+   tracking), the empty field shows "search sessions" instead; the input keeps its full placeholder as its accessible name */
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search { container: rail-search / inline-size; }
+@container rail-search (max-width: 250px) {
+  /* !important: readability.css pins the placeholder's colour with one; the label wears that colour (--text at .85) */
+  body.glass-demo:not(.hud-mode) #screen-game #left #ws-search::placeholder { color: transparent !important; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-rail-search label:has(> #ws-search:placeholder-shown)::after {
+    content: 'search sessions'; position: absolute; left: 31px; top: 0; bottom: 0; display: flex; align-items: center;
+    font-size: 16px; letter-spacing: .3px; color: var(--text); opacity: .85; white-space: nowrap; pointer-events: none;
+  }
 }
 
 /* ---- the search field is a prompt: a typed > in front (no caret: the trimmed pass) ---- */

@@ -3306,9 +3306,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       const nowBtn = wsLive.querySelector('#ag-ws-now');
       if (nowBtn) nowBtn.addEventListener('click', () => {
         nowBtn.disabled = true; nowBtn.textContent = 'building…';
-        Harness.api.post('/api/workshop/shift', { agentId: aid })
-          .then(({ j: res }) => {
-            const p = (res && res.payload) || res || {};
+        // the shift is a run: its lines ride the page's ONE run stream (Harness.streamPost) and its outcome is the
+        // workshop.shift.result line at the end — never a connection of its own held for the whole build
+        let shift = null;
+        Harness.streamPost('/api/workshop/shift', { agentId: aid }, { onEvent: (name, payload) => { if (name === 'workshop.shift.result') shift = payload; } })
+          .then(async r => { if (!r.ok) throw new Error((r.j && r.j.error) || 'http ' + r.status); await r.done; return shift; })
+          .then(res => {
+            const p = res || {};
             if (p.reason === 'built') notify('⚒ built — it’s waiting as a new session in your rail', 'gold');
             else if (p.reason === 'no-capability') notify('couldn’t build — no model/key available for unattended runs', 'bad');
             else if (p.reason === 'empty-backlog') notify('nothing queued to build', 'warn');

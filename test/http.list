@@ -63,6 +63,7 @@ test/e2e.trigger-fullaccess-taint.test.js
 test/e2e.pathtrust.test.js
 test/e2e.subagent-background.test.js
 test/e2e.approval-lifecycle.test.js
+test/e2e.run-stream-pool.test.js
 test/e2e.run-truth-1017.test.js
 test/google-signin.e2e.test.js
 test/google-files.e2e.test.js
