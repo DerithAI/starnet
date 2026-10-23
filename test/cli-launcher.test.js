@@ -16,6 +16,13 @@ if (probe.error || probe.stdout.trim() !== 'ok') {
   process.exit(0);
 }
 A.ok(!/\r/.test(fs.readFileSync(SRC, 'utf8')), 'the launcher has LF line endings (a CR breaks sh on macOS)');
+/* …and keeps them in EVERY checkout: a Windows build runner with core.autocrlf=true would otherwise write it CRLF into
+   the installer, and Git Bash (which finds this extensionless file on PATH first) dies on "$'\r': command not found". */
+{
+  const ca = spawnSync('git', ['check-attr', 'eol', '--', 'bin/starnet'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
+  if (ca.status === 0) A.eq(String(ca.stdout).trim(), 'bin/starnet: eol: lf', '.gitattributes pins bin/starnet to LF whatever core.autocrlf says');
+  else console.log('cli-launcher.test: not a git checkout — the .gitattributes check skipped');
+}
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-launcher-'));
 const layouts = {
   mac: ['StarNet.app/Contents/Resources/bin', 'StarNet.app/Contents/MacOS/node'],
