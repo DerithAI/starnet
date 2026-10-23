@@ -2672,7 +2672,12 @@
       if (!chatId || !status) return;
       const gone = status === 'kicked' || status === 'left';
       if (!gone) return;                                    // added/promoted/restricted: nothing to stop doing
-      try { if (typeof store.saveChatRecord === 'function') store.saveChatRecord(chatId, { unreachable: true }); } catch (e) { failNote('channels.hub.chatRecord.save', e); }
+      /* A GROUP THAT REMOVED US IS NO LONGER ADMITTED. The owner's /allow admitted the room as it was; whoever adds the
+         bot back later (any group admin) must not re-open the owner's station to it without a fresh /allow there. Only
+         an admission THIS channel granted is withdrawn — the chat map is shared across platforms (chatAdmitted). */
+      const patch = { unreachable: true };
+      if (String((ev && ev.chatType) || '') === 'group' && chatAdmitted(chatId)) patch.admittedOn = '';
+      try { if (typeof store.saveChatRecord === 'function') store.saveChatRecord(chatId, patch); } catch (e) { failNote('channels.hub.chatRecord.save', e); }
       try { console.error('[' + channel + '] chat ' + chatId + ' has ' + (status === 'kicked' ? 'blocked or banned' : 'removed') + ' this bot — queued replies for it are being dropped'); } catch (_) {}
       if (typeof store.loadOutbox !== 'function' || typeof store.removeOutbox !== 'function') return;
       let items = [];
