@@ -506,7 +506,7 @@ async function main() {
   let opts;
   try { opts = core.parseArgs(process.argv.slice(2), process.env, { tty: !!(process.stdin.isTTY && process.stdout.isTTY) }); }
   catch (e) { log('starnet: ' + e.message + '\n'); log(core.USAGE); return core.EXIT.USAGE; }
-  if (opts.version) { let v = 'dev'; try { v = require(path.join(REPO, 'package.json')).version; } catch (_) {} process.stdout.write('starnet ' + v + '\n'); return 0; }
+  if (opts.version) { process.stdout.write('starnet ' + require('./lib/version.js').cliVersion(REPO) + '\n'); return 0; }
   if (opts.help) { process.stdout.write(core.USAGE + '\n'); return 0; }
   if (opts.promptFromStdin) {
     opts.prompt = await new Promise(r => { let s = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', d => { s += d; }); process.stdin.on('end', () => r(s)); });

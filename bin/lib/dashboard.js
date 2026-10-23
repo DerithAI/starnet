@@ -716,8 +716,7 @@ function runDashboard(station, opts) {
     paint();
   }
   async function showVersion() {
-    let cli = 'dev';
-    try { cli = require('../../package.json').version; } catch (_) {}
+    const cli = require('./version.js').cliVersion(require('node:path').join(__dirname, '..', '..'));
     const r = await get('/api/version');
     const v = (r.ok && r.status === 200 && r.json) || {};
     ui.overlay = { title: 'VERSION', items: [['starnet', cli], ['station', v.harness ? 'harness ' + v.harness + (v.app ? ' · app ' + v.app : '') : 'did not say (' + (r.error || 'HTTP ' + r.status) + ')'], ['node', (v.node ? v.node + ' (station) · ' : '') + process.version + ' (here)']], foot: 'any key closes this' };
