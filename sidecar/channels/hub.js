@@ -238,16 +238,18 @@
   //   absent   — read-only, open to every admitted sender (status, agents, whoami, tools, help, start)
   // Commander-defined commands (userCommandNames) are owner-only too — they run the owner's own aliases.
   const COMMANDS = [
+    // `aliases` — the desktop registry's other spellings of the SAME command (sidecar/slash.js; pinned by
+    // test/channels.desktop-commands.test.js). Parsed to the canonical name, so the owner gate below reads one rule.
     { command: 'status', description: 'What this chat is doing right now' },
     { command: 'stop', description: 'Stop the run in progress', owner: 'always' },
-    { command: 'new', description: 'Forget this chat\'s history and start fresh', owner: 'always' },
-    { command: 'agents', description: 'List agents (→ marks the one you are talking to)' },
+    { command: 'new', description: 'Forget this chat\'s history and start fresh', owner: 'always', aliases: ['reset'] },
+    { command: 'agents', description: 'List agents (→ marks the one you are talking to)', aliases: ['tasks'] },
     { command: 'talk', description: 'Switch this chat to another agent', usage: '/talk <name>', owner: 'always' },
     { command: 'model', description: 'Show or change the current agent\'s model', usage: '/model [id]', owner: 'write' },
     { command: 'usage', description: 'Real spend from the station ledger', slash: true, owner: 'always' },
     { command: 'tools', description: 'The tools this agent can actually call', slash: true },
-    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true, owner: 'always' },
-    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always' },
+    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true, owner: 'always', aliases: ['routines'] },
+    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always', aliases: ['build-away', 'buildaway'] },
     { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]', owner: 'write' },
     { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]', owner: 'write' },
     // A group is closed until the paired owner sends /allow IN it (2026-10-19). The adapter lets exactly these two
@@ -262,6 +264,7 @@
   ];
   const SLASH_CMDS = COMMANDS.reduce((m, c) => { if (c.slash) m[c.command] = 1; return m; }, {});
   const KNOWN_CMDS = COMMANDS.reduce((m, c) => { m[c.command] = 1; return m; }, {});
+  const ALIAS_CMDS = COMMANDS.reduce((m, c) => { for (const a of (c.aliases || [])) m[a] = c.command; return m; }, {});
   const OWNER_CMDS = COMMANDS.reduce((m, c) => { if (c.owner) m[c.command] = c.owner; return m; }, {});
   // Does this parsed command need the bound owner? Pure, exported for the policy test.
   function commandNeedsOwner(parsed) {
@@ -301,6 +304,7 @@
     let head = (sp === -1 ? s.slice(1) : s.slice(1, sp)).toLowerCase();
     const at = head.indexOf('@');                 // '/talk@mybot' -> 'talk'
     if (at !== -1) head = head.slice(0, at);
+    if (head && !KNOWN_CMDS[head] && ALIAS_CMDS[head]) head = ALIAS_CMDS[head];   // '/reset' -> 'new', '/routines' -> 'routine'
     if (!head || !KNOWN_CMDS[head]) return null;   // not a control command -> treat as a normal message
     const arg = sp === -1 ? '' : s.slice(sp + 1).trim();
     return { cmd: head, arg: arg };
@@ -486,6 +490,9 @@
     const runSlashFn = typeof o.runSlash === 'function' ? o.runSlash : null;
     // names of the Commander's own commands, so this hub can recognise one without owning the list
     const userCommandNames = typeof o.userCommandNames === 'function' ? o.userCommandNames : (() => []);
+    // desktopCommand(token) -> true when the shared registry's BUILT-IN table knows this name or alias (slash.resolve):
+    // a desktop palette command this hub has no row for (/version, /q, /retry…). Optional; absent = the old fall-through.
+    const desktopCommandFn = typeof o.desktopCommand === 'function' ? o.desktopCommand : null;
     // The composition root may mint this only for an authenticated Telegram owner DM. It deliberately lives at
     // the hub edge so every other channel and every Telegram group message stays on its ordinary policy.
     const ownerTrustedFor = typeof o.ownerTrusted === 'function' ? o.ownerTrusted : (() => false);
@@ -1093,6 +1100,20 @@
       if (typeof store.getChatRecord !== 'function') return false;
       try { const r = store.getChatRecord(String(chatId)); return !!(r && r.admittedOn === channel); }
       catch (_) { return false; }
+    }
+
+    // '/version', '/v@starnetbot args' -> { name, line } when the injected registry check knows the name, else null
+    // (the same head grammar parseUserCommand reads: "/tmp/notes.md" is a path, never a command)
+    function parseDesktopCommand(text) {
+      const s = String(text == null ? '' : text).trim();
+      const m = /^\/([A-Za-z0-9_-]+)(?:@[A-Za-z0-9_]+)?(?=\s|$)/.exec(s);
+      if (!m) return null;
+      const name = m[1].toLowerCase();
+      let known = false;
+      try { known = desktopCommandFn(name) === true; } catch (e) { failNote('channels.hub.desktopCommand', e); known = false; }
+      if (!known) return null;
+      const rest = s.slice(m[0].length).trim();
+      return { name: name, line: '/' + name + (rest ? ' ' + rest : '') };
     }
 
     // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
@@ -1857,6 +1878,24 @@
           ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
           : String((r && r.text) || '');
         await deliver(chatId, body || ('/' + userCmd.name + ' had nothing to report.'), '', 'command');
+        return;
+      }
+
+      /* A DESKTOP COMMAND typed here (bug 6cd531b1): "/version", "/q", "/retry" are the shared registry's own built-ins
+         with no row in this hub's table, so they fell through to the model — a paid run whose answer was a guess at
+         what the command does. The registry answers instead (for a desktop-only command: "That command only works in
+         the StarNet desktop app."), for free. Owner-only like the Commander's own commands: every one of them acts
+         on the owner's station. Same provenance rule: a forwarded "/version" is a third party's words. */
+      const deskCmd = (runSlashFn && desktopCommandFn && !carriesThirdPartyText(msg)) ? parseDesktopCommand(msg.text) : null;
+      if (deskCmd) {
+        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + deskCmd.name), '', 'command'); return; }
+        let r;
+        try { r = await runSlashFn(deskCmd.line, { agentId: currentBoundAgent(chatId, boundAgentId, sec), ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec }); }
+        catch (e) { try { console.error('[' + channel + '] desktop command threw:', (e && e.message) || e); } catch (_) {} r = null; }
+        const body = (r && Array.isArray(r.lines) && r.lines.length)
+          ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
+          : String((r && r.text) || '');
+        await deliver(chatId, body || ('⚠ Could not run /' + deskCmd.name + ' right now — try again in a moment.'), '', 'command');
         return;
       }
 

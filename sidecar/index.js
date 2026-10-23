@@ -10496,7 +10496,7 @@ function startTelegram(token, key, model, agentCfg) {
     channel: 'telegram', runOnce: runOnce, store: channelStore, steerRun: channelSteerRun,
     historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
-    userCommandNames: () => userCommandEntries().map(c => c.name),
+    userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     // Only the adapter can mint owner trust: its owner is claimed from an admitted DM and group traffic never
     // claims it. A token-reachable group member therefore stays an ordinary channel caller.
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
@@ -10780,7 +10780,7 @@ function startTelegramBot(botId) {
     channel: 'telegram:' + botId, runOnce: runOnce, store: botStore, steerRun: channelSteerRun,
     historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
-    userCommandNames: () => userCommandEntries().map(c => c.name),
+    userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
       && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
     // the paired owner in ANY chat (owner-only control commands; see hub.js COMMANDS `owner`) — same adapter-minted id
@@ -10947,7 +10947,7 @@ function startDiscord(token, key, model, agentCfg) {
       // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
       // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
       runSlash: (input, sctx) => runSlashForChannel(input, sctx),
-      userCommandNames: () => userCommandEntries().map(c => c.name)
+      userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand
     },
     adapter: {
       fetch: globalThis.fetch, token: token, clock: { now: () => Date.now() },
@@ -11041,7 +11041,7 @@ function getDevHub() {
     channel: 'dev', maxMessageLength: 4000, agentPrefix: 'dev_', textBatchWaitMs: 0,
     ownerSurface: true,   // DEV_MODE-only local route behind the launch token: every inbound is the Commander
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
-    userCommandNames: () => userCommandEntries().map(c => c.name),
+    userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     runOnce: runOnce, store: channelStore,
     historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
     send: (chatId, text) => devCaptureReply(chatId, text),
@@ -11239,7 +11239,7 @@ function startGenericChannel(id, token, key, model, agentCfg) {
       // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
       // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
       runSlash: (input, sctx) => runSlashForChannel(input, sctx),
-      userCommandNames: () => userCommandEntries().map(c => c.name)
+      userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand
     },
     adapter: adapterOpts
   });
@@ -19243,6 +19243,13 @@ async function runSlashRoutine(line, opts) {
   if (body) { try { emit('agent.token', { agentId: agentId, runId: runId, delta: body }); } catch (_) {} }
   try { emit('agent.run.end', { agentId: agentId, runId: runId, reason: 'done', turns: 0, usd: 0 }); } catch (_) {}
   return { ok: !!(r && r.ok !== false), text: body };
+}
+
+/* Does the shared registry's BUILT-IN table know this token (a name or an alias)? What a channel hub answers as a
+   desktop command instead of handing it to the model as paid chat (bug 6cd531b1). Built-ins only: a skill or recipe
+   name typed on a phone stays ordinary text, exactly as before. */
+function isDesktopSlashCommand(token) {
+  try { return !!slash.resolve('/' + String(token || '')); } catch (_) { return false; }
 }
 
 async function runSlashForChannel(input, ctx) {
