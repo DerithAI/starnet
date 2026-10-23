@@ -1127,6 +1127,52 @@ const engineKeys = engineCredential.makeEngineKeys({
     try { return [ENGINE_KEYS_FILE, ENGINE_KEYS_FILE + '.bak'].every(f => JSON.stringify(JSON.parse(fs.readFileSync(f, 'utf8'))) === want); } catch (_) { return false; }
   }
 });
+/* #137 THE DESKTOP'S ENDPOINTS, KEPT ACROSS RESTARTS. On the desktop app the OS keychain holds provider KEYS; a provider's
+   ENDPOINT (a CUSTOM base URL, an Ollama that is not on this machine) reaches the station only when the app pushes it
+   (POST /api/key), and runtimeBaseUrls is memory. Every app restart (an update included) and every sidecar respawn
+   therefore started a station with no endpoint: a routine due at launch, and any routine, Run Now, line hop, channel or
+   phone run before the window handed the endpoint over again, failed "no CUSTOM base URL is saved on this station". So
+   a station whose shell pushes its provider config (the per-launch IPC token is set) keeps the endpoints it was pushed
+   (URLs only, never a key) in .secrets/ (station-recovery skips it, /api/file cannot reach it) and reads them back at
+   boot, before the scheduler's launch catch-up. Only the endpoints of the Commander's OWN servers (CUSTOM, Ollama) are
+   kept: a cloud provider has a working default, and its endpoint override stays as it was (this session only).
+   Main AND .bak are written and read back: an endpoint the Commander replaced or cleared (a URL can carry a token in
+   its query) must not survive in the recovery copy. */
+const DESKTOP_ENDPOINTS_FILE = path.join(WORKSPACES, '.secrets', 'provider-endpoints.json');
+const SHELL_PUSHES_PROVIDER_CONFIG = !!String(ENV('IPC_TOKEN') || '').trim();
+const KEPT_ENDPOINT_PROVIDERS = new Set(['custom', 'ollama']);
+let desktopEndpointsOnDisk = '{}';
+function desktopEndpointsHeld() {
+  const out = {};
+  for (const id of Object.keys(runtimeBaseUrls).sort()) {
+    const u = String(runtimeBaseUrls[id] || '').trim();
+    if (u && KEPT_ENDPOINT_PROVIDERS.has(id)) out[id] = u;
+  }
+  return out;
+}
+(function loadDesktopEndpoints() {
+  if (!SHELL_PUSHES_PROVIDER_CONFIG) return;
+  const saved = loadResilient(DESKTOP_ENDPOINTS_FILE, 'desktop-endpoints');
+  const urls = saved && typeof saved === 'object' ? saved.baseUrls : null;
+  if (!urls || typeof urls !== 'object' || Array.isArray(urls)) return;
+  for (const p of Object.keys(urls)) {
+    const id = normalizeProviderIdFromRegistry(p, '');
+    const u = typeof urls[p] === 'string' ? urls[p].trim() : '';
+    if (KEPT_ENDPOINT_PROVIDERS.has(id) && getProviderProfile(id) && u && !runtimeBaseUrls[id]) runtimeBaseUrls[id] = u;
+  }
+  desktopEndpointsOnDisk = JSON.stringify(desktopEndpointsHeld());
+})();
+// called on every endpoint push; writes only when the set changed. The pushed endpoint is live either way; a failed
+// write is logged (saveCredentialRemovalVerified) and retried by the next change.
+function saveDesktopEndpoints() {
+  if (!SHELL_PUSHES_PROVIDER_CONFIG) return true;
+  const baseUrls = desktopEndpointsHeld();
+  const want = JSON.stringify(baseUrls);
+  if (want === desktopEndpointsOnDisk) return true;
+  const ok = saveCredentialRemovalVerified(DESKTOP_ENDPOINTS_FILE, { version: 1, baseUrls: baseUrls }, null, 'desktop-endpoints');
+  if (ok) desktopEndpointsOnDisk = want;
+  return ok;
+}
 function reportDomainStoreIssue(tag) {
   return function onDomainStoreIssue(status, detail) {
     const file = detail && detail.file;
@@ -14980,6 +15026,7 @@ function setProviderRuntimeConfig(provider, patch) {
     const baseUrl = String(patch.baseUrl || '').trim();
     if (baseUrl) runtimeBaseUrls[id] = baseUrl;
     else delete runtimeBaseUrls[id];
+    saveDesktopEndpoints();   // #137: the station keeps the endpoint across an app restart or a respawn
   }
   if (Object.prototype.hasOwnProperty.call(patch, 'keyPool')) {
     const pool = providerRuntimeKeyPool(id, Array.isArray(patch.keyPool) ? patch.keyPool : []);
@@ -15199,11 +15246,16 @@ async function handleServiceKeyUpsert(req, res) {
     unattendedReason: catalog && catalog.unattendedReason
   }, Date.now(), { reservedEnv: SERVICEKEYS_RESERVED_ENV });
   if (r.error) return json(400, { error: r.error });
+  const prev = (Array.isArray(serviceKeys) ? serviceKeys : []).find(row => row && row.id === r.record.id);
   serviceKeys = r.list.map(applyServiceKeyCatalogPolicy);
   const record = serviceKeys.find(row => row.id === r.record.id) || r.record;
   if (!record.ref) serviceKeyRefs.drop(record.id);   // a pasted key replaced a 1Password reference: forget the value read for it
   applyServiceKeysEnv();
-  const saved = saveServiceKeys();   // verified read-back; on false the key is LIVE but not durable — say so honestly
+  // A key this save REPLACES (rotated, or swapped for a 1Password reference) must not survive in any copy on disk: the
+  // ordinary resilient save keeps the previous file as the recovery copy. Write both copies and read both back, the
+  // same way a removal is saved. Verified read-back either way; on false the key is LIVE but not durable — say so.
+  const replacesKey = !!(prev && prev.key && prev.key !== record.key);
+  const saved = replacesKey ? saveServiceKeyRemoval(serviceKeys) : saveServiceKeys();
   // A 1Password reference is READ now (the Commander is here to unlock and approve), so the row says at once whether it
   // works. Saved either way: a locked vault is a state to fix, not a reason to lose the reference.
   if (record.ref) await serviceKeyRefs.refresh(record, { timeoutMs: 60000 });
@@ -21006,7 +21058,7 @@ async function runOnceCore(o) {
   // offer (disabled, or its gear absent) is never served either.
   let runRecipes = [];
   const openrouterToolKey = providerId === 'openrouter' ? runKey : runtimeKey;
-  const studioRoute = ImageTask.resolveRoute({
+  const studioInput = {
     providerId: providerUsesCodex(providerId) ? 'codex' : providerId, runKey, providerBaseUrl: baseUrl,
     managedKey: providerRuntimeKey('starnet', ''),
     managedBaseUrl: providerRuntimeBaseUrl('starnet', ''),
@@ -21017,7 +21069,19 @@ async function runOnceCore(o) {
     // the station's ChatGPT sign-in renders gpt-image-2 on the plan (image.js codex-responses); a known-dead
     // sign-in is not a route, so the blocker names the real fix instead of a 401 mid-run
     codexSignedIn: !!(codexTokens && codexTokens.access_token) && !codexAuthDead
-  });
+  };
+  let studioRoute = ImageTask.resolveRoute(studioInput);
+  // #146: any OTHER OpenRouter key the station holds (the key a browser page saved in Settings, engine-credential.js;
+  // an OPENROUTER_API_KEY env) fills the gap only when no image route exists at all. The desktop keychain push /
+  // OPENROUTER_KEY above keep their rank, and StarNet credits, an OpenAI key or a ChatGPT sign-in that already rendered
+  // images keep rendering (and billing) exactly where they did.
+  const stationOpenRouterFill = providerRuntimeKey('openrouter', '');
+  if (!studioRoute.ok && stationOpenRouterFill && stationOpenRouterFill !== runtimeKey) {
+    studioRoute = ImageTask.resolveRoute(Object.assign({}, studioInput, {
+      stationOpenRouterKey: stationOpenRouterFill,
+      stationOpenRouterBaseUrl: providerRuntimeBaseUrl('openrouter', '', stationOpenRouterFill)
+    }));
+  }
   // web_search/web_fetch (DDG/Jina, OR fallback) + web_request. `accessSurface` is host authority: it comes
   // from the run host, never from tool args. An authenticated owner DM has the same stored-key reach as the
   // desktop; an ordinary autonomous caller remains restricted to explicitly unattended-approved keys.

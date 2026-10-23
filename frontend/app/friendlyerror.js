@@ -92,7 +92,7 @@
        The copy names the meter that was actually spent — the ChatGPT subscription, NOT API billing — and the
        door is PROVIDERS, where a different key or provider can pick the work up now. retryable:false, so the
        row offers no ↻ Try again. */
-    quota_exhausted: { retryable: false, action: 'settings', msg: "This provider's plan allowance is used up — it resets on the provider's own schedule (a ChatGPT subscription resets weekly, not in seconds). To keep working now, switch to another provider or key under SETTINGS → AI & MODELS." },
+    quota_exhausted: { retryable: false, action: 'settings', msg: "This provider's plan allowance is used up — it resets on the provider's own schedule (a ChatGPT plan's short window comes back within hours, its weekly one within a week — not in seconds). To keep working now, switch to another provider or key under SETTINGS → AI & MODELS." },
     // auth: the pure message is context-blind (classify time can't know if ChatGPT is already connected). It names the
     // one honest next step; the action BUTTON (actionButton) tailors the door — "add a key" vs "sign in with ChatGPT".
     auth:          { retryable: false, action: 'settings', msg: 'No model is connected yet — add a provider key (or sign in with ChatGPT) to let it run.' },
@@ -197,12 +197,21 @@
      quota verdict on one is a spent plan allowance that resets on the provider's own schedule: never "out of credit — top
      it up" (there is no balance to top up). */
   const SUBSCRIPTION_IDS = ['codex', 'grok', 'kimi'];
-  function quotaMessage(provider) {
+  /* bug 06331054: a ChatGPT plan has a short rolling window (hours) AND a weekly one, so "resets weekly" sent a user whose
+     short window was spent away for days. Name both, and quote the provider's own reset time when the error carries one
+     ("Resets in 3 days", "try again in 4h 12m") — only its numbers and units, never other words from the error. */
+  function quotaResetIn(raw) {
+    const m = String(raw || '').match(/\b(?:resets?|try again) in\s+((?:\d+(?:\.\d+)?\s*(?:weeks?|w|days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,]*(?:and\s+)?){1,4})/i);
+    return m ? m[1].replace(/[\s,]*(?:and\s*)?$/i, '').replace(/\s+/g, ' ').trim() : '';
+  }
+  function quotaMessage(provider, raw) {
     const nm = SUBSCRIPTION_IDS.indexOf(provider) >= 0 ? PROVIDER_PROSE[provider] : null;
-    if (!nm) return KINDS.quota_exhausted.msg;
+    const when = quotaResetIn(raw);
+    const said = when ? (nm || 'The provider') + ' says it resets in ' + when + '. ' : '';
+    if (!nm) return KINDS.quota_exhausted.msg.replace('To keep working now', said + 'To keep working now');
     return 'Your ' + nm + " plan allowance is used up — it resets on " + nm + "'s own schedule"
-      + (provider === 'codex' ? ' (a ChatGPT subscription resets weekly, not in seconds)' : ', not in seconds')
-      + '. To keep working now, switch to another provider or key under SETTINGS → AI & MODELS.';
+      + (provider === 'codex' ? ' (a few hours for the short window, up to a week for the weekly one)' : ', not in seconds')
+      + '. ' + said + 'To keep working now, switch to another provider or key under SETTINGS → AI & MODELS.';
   }
   function providerFromRaw(raw) {
     const low = String(raw || '').toLowerCase();
@@ -727,7 +736,7 @@
       // OpenRouter's free-model daily cap is not a plan: the levers are a paid model, credits, or tomorrow
       const msg = DAILY_FREE_CAP_RE.test(raw.toLowerCase())
         ? "OpenRouter's daily limit for free models is used up — it resets tomorrow (UTC), not in seconds. To keep working now, pick a paid model in the COMMS model dock, or add credits on OpenRouter to raise the free limit."
-        : quotaMessage(provider);
+        : quotaMessage(provider, raw);
       return { userMessage: msg, kind: kind, retryable: k.retryable, action: k.action, provider: provider, raw: raw };
     }
     if (kind === 'spend_unknown') {

@@ -37,6 +37,13 @@
     || ((s) => ({ text: repairToolCallArguments(s), closedOpenString: false }));
   // API error classification (L3): makes `transient` on agent.run.error honest. Degrades to non-retryable if absent.
   const classifyApiError = (errorClass && errorClass.classifyApiError) || (() => ({ retryable: false, message: '' }));
+  // the transport code a failed outbound call carries (ECONNREFUSED / ENOTFOUND …); '' when none
+  const transportCodeOf = (errorClass && errorClass._internals && errorClass._internals.transportCode)
+    || (err => (err && (err.code || err.errno || (err.cause && err.cause.code))) || '');
+  // bug 8873fd77: a refused or unresolvable endpoint (nothing listening — Ollama not started — or no network) retries in
+  // the 'timeout' class, but the retry line must not send the Commander looking at a slow provider: it says unreachable
+  const retryReasonOf = (reason, err) => (reason === 'timeout' && /ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(String(transportCodeOf(err) || '')))
+    ? 'unreachable' : String(reason || 'transient');
   const continuation = outputContinuation || {
     maxFor: () => 0, shouldContinue: () => false, prompt: () => '',
     novelText: (_before, after) => ({ text: String(after == null ? '' : after), removed: 0 }),
@@ -2238,7 +2245,7 @@
           // policy shrank it to fit), it is the last local rung, so the total is n. (A server-stated Retry-After is
           // honored outside the budget and is not predictable here, so it keeps the rung count.)
           const patienceSpent = decision.ladderMs > 0 && ladderWaitMs >= STREAM_RETRY_PATIENCE_MS;
-          emitRetry({ attempt: retriesUsed, reason: String(decision.reason || 'transient'), delayMs: decision.delayMs, maxAttempts: patienceSpent ? Math.min(retriesUsed, MAX_STREAM_RETRIES) : MAX_STREAM_RETRIES,
+          emitRetry({ attempt: retriesUsed, reason: retryReasonOf(decision.reason, streamErr), delayMs: decision.delayMs, maxAttempts: patienceSpent ? Math.min(retriesUsed, MAX_STREAM_RETRIES) : MAX_STREAM_RETRIES,
             stage: sawStreamEvent ? 'mid_stream' : 'pre_stream', retryAfterMs: cls.retryAfterMs, waitedMs: waitedBefore, patienceMs: STREAM_RETRY_PATIENCE_MS });
           if (sleep) { const backoff = startWaiting('retry_backoff', false); try { await sleep(decision.delayMs); } catch (_) {} backoff.stop(); }
           if (signal.aborted) break;   // a cancel during the backoff ends cleanly below
