@@ -21112,8 +21112,10 @@ async function runOnceCore(o) {
     renewToken: studioRoute.protocol === 'codex-responses' ? forceRefreshCodexAccessToken : undefined } : null, fsp, pathMod: path, root: WORKSPACES, imageModel: String(ENV('IMAGE_MODEL') || '').trim() || undefined, auxVision: auxVisionCall, signal, onUsage: recordMediaUsage,
     // vision-input 2026-10-23: the run's own model is the studio route's vision model only while its catalog does not call
     // it text-only; on false, image.js asks its default vision model instead of sending the picture to a model that
-    // answers 404 "No endpoints found that support image input" on every image_analyze / browser.vision call
-    runModelSeesImages: () => ((auxVisionProvider && typeof auxVisionProvider.supportsImages === 'function') ? auxVisionProvider.supportsImages(model) : null),
+    // answers 404 "No endpoints found that support image input" on every image_analyze / browser.vision call. `m` is the
+    // model image.js will post (the `model` copied above), never the live `model`: promoteToolCapable / onFallback move
+    // that one later, and judging it sent the picture to the original text-only model.
+    runModelSeesImages: (m) => ((auxVisionProvider && typeof auxVisionProvider.supportsImages === 'function') ? auxVisionProvider.supportsImages(m) : null),
     // #118: the host list above (plan route only) and the run's own model, read at tool time (a Codex run only)
     codexHostModels: studioRoute.protocol === 'codex-responses' ? codexHostModels : undefined, codexRunModel: () => (usingCodex ? model : ''),
     // issue #77: the SAME path-trust guard fs.* gets (runPathTrust is bound below; this thunk only runs at tool time), so a

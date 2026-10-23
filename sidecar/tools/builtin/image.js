@@ -25,8 +25,8 @@
 
    makeImageTools({ openrouter:{apiKey, model?, baseUrl?}, fsp, pathMod, root, fetchImpl?, imageModel?, visionModel?,
                     auxVision?, runModelSeesImages? })   // auxVision: async ({ messages, timeoutMs }) -> text (session-provider one-shot)
-                    // runModelSeesImages: () => true|false|null — the run provider's supportsImages(model); false keeps
-                    // the run model off the vision route (DEFAULT_VISION_MODEL answers instead)
+                    // runModelSeesImages: (model) => true|false|null — the run provider's supportsImages(model), asked
+                    // about the model this route would post; false keeps it off the vision route (DEFAULT_VISION_MODEL answers)
      -> { generateTool, analyzeTool, register(reg), _internals }
 
    Node 18+ (global fetch). No dependencies. Reuses the fs.js workspace jail so a generated/analyzed path
@@ -417,16 +417,18 @@
       : (configuredImageModel || DEFAULT_IMAGE_MODEL);
     /* The vision model is the RUN's own model (or.model) by default — but never one the run's catalog calls text-only
        (2026-10-23, StarNet Cloud logs: image_analyze / browser.vision sent the picture to the run's text-only model on the
-       studio route and got 404 "No endpoints found that support image input", every call). deps.runModelSeesImages() is
-       the run provider's supportsImages(model): false = the catalog says text-only, so this route asks the default vision
-       model instead; true or null (unknown) keeps the run model, exactly as before. Read per call: the catalog warms late. */
+       studio route and got 404 "No endpoints found that support image input", every call). deps.runModelSeesImages(runModel)
+       is the run provider's supportsImages about THIS model (the one posted below; the host's live model can move on after
+       this route was built, and a check of that one judged a model this route never posts): false = the catalog says
+       text-only, so this route asks the default vision model instead; true or null (unknown) keeps the run model, exactly
+       as before. Read per call: the catalog warms late. */
     function visionModelNow() {
       if (deps.visionModel) return String(deps.visionModel);
       const runModel = String(or.model || '').trim();
       if (!runModel) return DEFAULT_VISION_MODEL;
       let sees = null;
       if (typeof deps.runModelSeesImages === 'function') {
-        try { sees = deps.runModelSeesImages(); } catch (e) { require('../../failopen.js').note('image.run-model-sees-images', e); sees = null; }
+        try { sees = deps.runModelSeesImages(runModel); } catch (e) { require('../../failopen.js').note('image.run-model-sees-images', e); sees = null; }
       }
       return sees === false ? DEFAULT_VISION_MODEL : runModel;
     }
