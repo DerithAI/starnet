@@ -35,7 +35,8 @@ const { makeSaveStore } = require('../sidecar/savestore.js');
 const repo = path.join(__dirname, '..');
 const read = rel => fs.readFileSync(path.join(repo, rel), 'utf8');
 const indexSrc = read('sidecar/index.js');
-const handlers = ['function crewLooksOf(save)', 'function seedSaveMemos(agentId, doc)', 'function serveSaveLoad(req, res)', 'async function handleSaveWrite(req, res)']
+const handlers = ['function crewLooksOf(save)', 'function seedSaveMemos(agentId, doc)', 'function serveSaveLoad(req, res)', 'async function handleSaveWrite(req, res)',
+  'function serveSaveConflicts(req, res)', 'async function handleSaveConflictRestore(req, res)']
   .map(h => { const b = fnBody(indexSrc, h); A.ok(b.startsWith(h) && b.length < 6000, 'sliced exactly ' + h); return b; });
 const cloudsaveSrc = read('frontend/app/cloudsave.js');
 const ui = read('frontend/app/stationui.js');
@@ -51,9 +52,10 @@ const conflictFiles = root => fs.readdirSync(root).filter(n => n.indexOf('agent.
 function sidecar(root, storeFs) {
   const saveStore = makeSaveStore({ fs: storeFs || fs, pathMod: path, root, clock: { now: () => Date.now() } });
   const api = vm.runInNewContext("let _remoteLooksMemo = { stamp: '', looks: null };\nlet _stationEpochMemo = { stamp: '', epoch: 1 };\n" + handlers.join('\n') +
-    '\n({ serveSaveLoad, handleSaveWrite })', {
+    '\n({ serveSaveLoad, handleSaveWrite, serveSaveConflicts, handleSaveConflictRestore })', {
     saveStore, workspaceDegraded: false, growthRatings: { latestTs: () => 0 }, readBody: async req => req.body, failNote: () => {},
     observeDeletedSessions: () => [],   // the deleted-session ledger feed every landed station save calls (qa/bugs/3e926b6a)
+    require: m => { if (m === './save-restore.js') return require('../sidecar/save-restore.js'); throw new Error('unexpected require ' + m); },
     publicWorkspaceLineage: () => ({ version: 1, priorInstallEvidence: false, onboardingAllowed: true, evidence: [] }), URL
   });
   async function call(fn, req) {
@@ -63,6 +65,8 @@ function sidecar(root, storeFs) {
   }
   return {
     saveStore,
+    conflicts: () => call(api.serveSaveConflicts, { url: '/api/save/conflicts' }).then(r => r.json()),
+    restore: file => call(api.handleSaveConflictRestore, { body: JSON.stringify({ file }) }).then(r => r.json()),
     fetch: (url, opts) => (opts && opts.method === 'POST')
       ? call(api.handleSaveWrite, { body: opts.body })
       : call(api.serveSaveLoad, { url: String(url) })
@@ -223,6 +227,15 @@ const browserCopy = (over) => Object.assign({
       await after.reconcile(browserCopy({ agent: { id: 'agent', name: 'VEGA', createdAt: 8000 } }));
       A.eq(await after.flush({ force: true }), true, '4: a station founded after the erase re-seeds the empty station file');
       A.eq(((host.saveStore.load('agent') || {}).agent || {}).name, 'VEGA', '4: as the station file\'s first revision');
+      // the copy kept aside from before the erase is erased work (#101): listed, never offered back at boot, never restored
+      const kept = conflictFiles(root)[0];
+      const listed = await host.conflicts();
+      const pre = (listed.conflicts || []).find(x => x.file === kept);
+      A.ok(pre && pre.restorable === 0 && pre.predatesReset === true, '4: the pre-erase copy is never offered back (' + JSON.stringify(listed) + ')');
+      const refusedRestore = await host.restore(kept);
+      A.ok(refusedRestore.ok === false && refusedRestore.predatesReset === true, '4: a restore of it is refused (' + JSON.stringify(refusedRestore) + ')');
+      A.eq(((host.saveStore.load('agent') || {}).agent || {}).name, 'VEGA', '4: and the fresh station is untouched');
+      A.ok(!light.banner.some(t => /restore this window/i.test(t)), '4: the reset banner offers no restore (' + JSON.stringify(light.banner) + ')');
 
       // START FRESH through the sidecar (workspace-lineage.js startFresh): at = an ISO timestamp
       const iso = workspace();
@@ -298,6 +311,7 @@ const browserCopy = (over) => Object.assign({
       A.ok(lightB.cls === 'degraded' && !/newer/i.test(lightB.title) && /missing/i.test(lightB.title) && /another window/i.test(lightB.title) && /saved back to it first/i.test(lightB.title),
         '6: window B is told the station file was missing and another window\'s copy was saved back first, never that it is newer (' + lightB.title + ')');
       A.ok(lightB.banner && !/newer/i.test(lightB.banner[0]) && lightB.banner.some(t => /reload current station/i.test(t)), '6: so does its banner (' + JSON.stringify(lightB.banner) + ')');
+      A.ok(lightB.banner.some(t => /restore this window/i.test(t)), '6: and it offers to bring this window\'s sessions into the station (' + JSON.stringify(lightB.banner) + ')');
       // a conflict from INSIDE the re-seeded line is still the ordinary another-window conflict
       const rd = restarted.saveStore.save('agent', browserCopy({ _saveRevision: seededAt + 1, updatedAt: 9950, _saveClient: 'window-d' }), { compareRevision: true });
       A.ok(rd.ok === false && rd.conflict === true && !rd.reseeded && !rd.reset, '6: a copy from inside the re-seeded line conflicts as an ordinary newer save (' + JSON.stringify(rd) + ')');

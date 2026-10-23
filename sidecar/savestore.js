@@ -74,6 +74,8 @@
       let removed = 0;
       for (const r of rows.slice(CONFLICT_KEEP)) {
         try { fs.unlinkSync(pathMod.join(rootDir, r.n)); removed++; } catch (e) { failNote('savestore.conflict-prune.unlink', e); }
+        // a window that conflicts again overwrites its snapshot, and the atomic write leaves the prior one as .bak
+        try { fs.unlinkSync(pathMod.join(rootDir, r.n + '.bak')); } catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.conflict-prune.unlink-bak', e); }
       }
       return removed;
     }
@@ -372,7 +374,17 @@
              copy's own number + 1, so revisions keep only going up and every pre-seed copy stays a conflict. */
           const seed = expected !== revision && prevRead.status === 'absent';
           const reset = seed && resetRefusesSeed(doc);
-          if (expected !== revision && (!seed || reset)) {
+          /* THIS WINDOW'S OWN UNACKNOWLEDGED WRITE (support report 2026-10-21). A window gives up on a save after its
+             acknowledgement deadline, but a busy station may still write it. The window keeps the old revision, so
+             its next save arrives "behind" a head it wrote itself and was refused as another window's change. A
+             window's id (_saveClient) is minted per page load, and a window only learns revisions from its own ACKs,
+             so when the head is the write THIS process made for this same id (`known`: nothing moved the file since),
+             every revision since `expected` is this window's own. Accept the save when it is also NEWER than that
+             write's request (a delayed older request never replaces a newer one). A head this process cannot vouch
+             for — an outside edit, a restart — stays a conflict: preserved, and restorable from the station. */
+          const ownHead = !!known && expected < revision && /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || ''))
+            && doc._saveClient === known.client && num(requestUpdatedAt) > num(known.replayAt);
+          if (expected !== revision && !ownHead && (!seed || reset)) {
             // Keep the rejected snapshot durably as well as the current station. Never silently
             // merge whole envelopes: removals and roster/config edits have conflicting semantics.
             const client = /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || '')) ? doc._saveClient : clock.now() + '-' + (++tmpSeq);
@@ -400,7 +412,7 @@
         writes++;
         recoveredMissing.delete(file);   // the main exists again and is this write
         const after = stamp(agentId);
-        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated, seededRevision: options.compareRevision ? seededRevision : 0 });
+        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated, seededRevision: options.compareRevision ? seededRevision : 0, client: doc._saveClient });
         return { ok: true, updatedAt: incomingUpdated, ...(options.compareRevision ? { revision: doc._saveRevision } : {}), ...(seeded ? { seeded: true } : {}) };
       },
 
@@ -420,6 +432,41 @@
           fs.unlinkSync(recoveryFile(saveFile(agentId)));
           return true;
         } catch (_) { return false; }
+      },
+
+      // PRESERVED WINDOW SAVES (support report 2026-10-21): the snapshots a refused save leaves beside the station
+      // file, newest first, so their sessions can be brought back. Read-only: a snapshot that does not parse is
+      // skipped, never removed. `name` is a bare file name in the save root.
+      conflicts(agentId) {
+        saveFile(agentId);   // validates the id before the name is used as a prefix
+        const prefix = String(agentId) + '.save-conflict-';
+        let names = [];
+        try { names = fs.readdirSync(rootDir).filter(n => typeof n === 'string' && n.indexOf(prefix) === 0 && /\.json$/.test(n)); }
+        catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.conflicts.list', e); return []; }
+        const rows = [];
+        for (const name of names) {
+          let mtimeMs = 0, doc;
+          try { mtimeMs = Number(fs.statSync(pathMod.join(rootDir, name)).mtimeMs) || 0; } catch (e) { failNote('savestore.conflicts.stat', e); }
+          try { doc = JSON.parse(fs.readFileSync(pathMod.join(rootDir, name), 'utf8')); } catch (e) { failNote('savestore.conflicts.read', e); continue; }
+          if (doc && typeof doc === 'object' && !Array.isArray(doc)) rows.push({ name, mtimeMs, doc });
+        }
+        return rows.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+      },
+      // true when a station copy is from BEFORE this computer's station was reset (the same proof that refuses it as a
+      // re-seed). A preserved copy like that is erased work: it is never offered back or restored (#101 erase authority).
+      predatesReset(doc) { return resetRefusesSeed(doc); },
+
+      // a durable copy of the current station file under <agentId>.save-before-<label>.json, taken before a restore
+      // rewrites it. Returns the copy's name, or null when there is no station file to copy.
+      backup(agentId, label) {
+        const file = saveFile(agentId);
+        if (!/^[A-Za-z0-9_-]{1,80}$/.test(String(label || ''))) throw new Error('backup: a label of [A-Za-z0-9_-] is required');
+        let raw;
+        try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { if (e && e.code === 'ENOENT') return null; throw e; }
+        const name = String(agentId) + '.save-before-' + label + '.json';
+        ensureRoot();
+        writeDurable(pathMod.join(rootDir, name), raw);
+        return name;
       },
 
       _internals: { saveFile, AID_RE, num, readTagged, recoveryFile }

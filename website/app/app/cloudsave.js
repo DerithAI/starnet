@@ -64,6 +64,8 @@ const CloudSave = (() => {
   let lastPullOutcome = 'unreachable';   // until a pull settles, we have proven nothing
   // starnet-releases#4 Blocker 2: the catch-up a growthStale refusal asked for (resolves true once the re-synced save is queued)
   let staleCatchUp = null;
+  // a restore into the station was accepted and this page is reloading onto it: it saves nothing more (restoreConflict)
+  let retired = false;
 
   function now() { return Date.now(); }
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
@@ -160,7 +162,7 @@ const CloudSave = (() => {
     // doc in `pending` and re-arm rather than hammering the sidecar every debounce. `force` skips this hold.
     if (!force && Core && isSave(pending) && !Core.retryDue(health, now())) { scheduleRetry(); return Promise.resolve(false); }
     const doc = pending, docCacheFailed = pendingCacheFailed, docSeq = pendingSeq, sentRaw = pendingRaw; pending = null; pendingRaw = null; pendingCacheFailed = false;
-    if (!isSave(doc)) return Promise.resolve(false);
+    if (!isSave(doc) || retired) return Promise.resolve(false);
     const attempt = postNow(doc)
       .then(({ response: r, body }) => {
         // a non-ok HTTP status (e.g. 409 stale, 500) is a FAILURE, not a success — fetch only rejects on
@@ -268,7 +270,7 @@ const CloudSave = (() => {
   //   opts.raw (idle CPU piece 3, 2026-10-20): the exact string Save.write produced for this doc. The clone is then one parse
   //   of it instead of a stringify + parse, and the ACK can tell the cache still holds this doc by comparing strings.
   function push(doc, opts) {
-    if (!isSave(doc)) return;
+    if (!isSave(doc) || retired) return;
     const raw = opts && typeof opts.raw === 'string' ? opts.raw : null;
     doc = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(doc));
     doc._saveRevision = revision;
@@ -513,6 +515,34 @@ const CloudSave = (() => {
     localStorage.removeItem('starnet.save');
     location.reload();
   }
-  return { localSnapshot: () => latestLocal, memorySave, reloadCurrent, revision: () => revision, push, pull, reconcile, flush, flushForUpdate, installUnloadFlush, health: healthNow, isFutureSentinel, isUnknownSentinel, markDegraded, recoveryNotice, lineage, ackRecovery, pullOutcome: () => lastPullOutcome, _isSave: isSave, _isFutureSave: isFutureSave };
+
+  // PRESERVED WINDOW SAVES (support report 2026-10-21): what a refused save left on the station, newest first, each with
+  // how many sessions a restore would bring back. [] when the station cannot say (never a guess).
+  async function conflicts() {
+    try {
+      const r = await fetch(ENDPOINT + '/conflicts', { cache: 'no-store' });
+      const j = r.ok ? await r.json() : null;
+      return j && Array.isArray(j.conflicts) ? j.conflicts : [];
+    } catch (_) { return []; }
+  }
+  // bring that preserved save's sessions into the station (the sidecar adds, never removes), then reload onto it. When it
+  // is THIS window's own preserved save, its newest state is sent first so the restore carries it. After the station
+  // accepts, this page writes nothing more: its snapshot predates the restore (`retired`).
+  async function restoreConflict(file) {
+    if (conflict && conflict.recovery === file) {
+      if (typeof App !== 'undefined' && App.persist) App.persist();
+      await flush({ force: true });
+    }
+    const r = await fetch(ENDPOINT + '/conflicts/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
+    const j = await r.json().catch(() => null);
+    if (!j || j.ok !== true) throw new Error((j && j.error) || 'The station could not restore that save.');
+    retired = true; pending = null; pendingRaw = null;
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    try { localStorage.removeItem('starnet.save'); } catch (_) {}
+    location.reload();
+    return j;
+  }
+  return { localSnapshot: () => latestLocal, memorySave, reloadCurrent, conflicts, restoreConflict, revision: () => revision, push, pull, reconcile, flush, flushForUpdate, installUnloadFlush, health: healthNow, isFutureSentinel, isUnknownSentinel, markDegraded, recoveryNotice, lineage, ackRecovery, pullOutcome: () => lastPullOutcome, _isSave: isSave, _isFutureSave: isFutureSave };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = CloudSave;
