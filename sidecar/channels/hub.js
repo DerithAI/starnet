@@ -238,16 +238,18 @@
   //   absent   — read-only, open to every admitted sender (status, agents, whoami, tools, help, start)
   // Commander-defined commands (userCommandNames) are owner-only too — they run the owner's own aliases.
   const COMMANDS = [
+    // `aliases` — the desktop registry's other spellings of the SAME command (sidecar/slash.js; pinned by
+    // test/channels.desktop-commands.test.js). Parsed to the canonical name, so the owner gate below reads one rule.
     { command: 'status', description: 'What this chat is doing right now' },
     { command: 'stop', description: 'Stop the run in progress', owner: 'always' },
-    { command: 'new', description: 'Forget this chat\'s history and start fresh', owner: 'always' },
-    { command: 'agents', description: 'List agents (→ marks the one you are talking to)' },
+    { command: 'new', description: 'Forget this chat\'s history and start fresh', owner: 'always', aliases: ['reset'] },
+    { command: 'agents', description: 'List agents (→ marks the one you are talking to)', aliases: ['tasks'] },
     { command: 'talk', description: 'Switch this chat to another agent', usage: '/talk <name>', owner: 'always' },
     { command: 'model', description: 'Show or change the current agent\'s model', usage: '/model [id]', owner: 'write' },
     { command: 'usage', description: 'Real spend from the station ledger', slash: true, owner: 'always' },
     { command: 'tools', description: 'The tools this agent can actually call', slash: true },
-    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true, owner: 'always' },
-    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always' },
+    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true, owner: 'always', aliases: ['routines'] },
+    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always', aliases: ['build-away', 'buildaway'] },
     { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]', owner: 'write' },
     { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]', owner: 'write' },
     // A group is closed until the paired owner sends /allow IN it (2026-10-19). The adapter lets exactly these two
@@ -262,6 +264,7 @@
   ];
   const SLASH_CMDS = COMMANDS.reduce((m, c) => { if (c.slash) m[c.command] = 1; return m; }, {});
   const KNOWN_CMDS = COMMANDS.reduce((m, c) => { m[c.command] = 1; return m; }, {});
+  const ALIAS_CMDS = COMMANDS.reduce((m, c) => { for (const a of (c.aliases || [])) m[a] = c.command; return m; }, {});
   const OWNER_CMDS = COMMANDS.reduce((m, c) => { if (c.owner) m[c.command] = c.owner; return m; }, {});
   // Does this parsed command need the bound owner? Pure, exported for the policy test.
   function commandNeedsOwner(parsed) {
@@ -279,6 +282,27 @@
   function helpText() {
     return 'Commands:\n' + COMMANDS.map(c => (c.usage || '/' + c.command) + ' — ' + c.description).join('\n');
   }
+  /* A STEERING NOTE IS NOT PROSE (bug e903a199, 2026-10-23). The loop echoes a folded note as one token delta,
+     '\n[steering] <note>\n' (loop.js foldSteerNotes, and the NOT-applied notice at the run's end). COMMS draws that line
+     as its own steer row; buffered raw here it reached the phone as an internal marker glued between the answer before
+     the note and the answer after it. joinReplyDelta keeps both answers and every word of the note, but writes the
+     note as a readable line of its own ('↪ <note>', the same arrow the steer acknowledgement uses), with one blank line
+     on either side — the model's own paragraph break after it is folded in rather than stacked.
+     ONE LINE: this hub posts its notes flattened (steerNoteWire, the rule COMMS's steerWire keeps), but a note posted by
+     any other client may still carry a line break — the echo is matched whole and its note drawn on the one line. */
+  const STEER_ECHO_RE = /^\n\[steering\] ([\s\S]*?)\n?$/;
+  const AFTER_STEER_RE = /(?:^|\n)↪ [^\n]*\n\n$/;
+  // a steering note as the run gets it: one line, however many bubbles or line breaks it was typed in
+  function steerNoteWire(text) { return String(text == null ? '' : text).replace(/\s*\r?\n\s*/g, ' ').trim(); }
+  function joinReplyDelta(buf, delta) {
+    const b = String(buf == null ? '' : buf), d = String(delta == null ? '' : delta);
+    const m = STEER_ECHO_RE.exec(d);
+    if (m) return (b.trim() ? b.replace(/\s+$/, '') + '\n\n' : '') + '↪ ' + steerNoteWire(m[1]) + '\n\n';
+    if (AFTER_STEER_RE.test(b)) return b + d.replace(/^\s+/, '');
+    return b + d;
+  }
+  // the registry's NOTE commands (slash.js steer, queue/q, background/bg/btw) -> what the words after them are for here
+  const NOTE_CMDS = Object.freeze({ steer: 'steer', queue: 'queue', q: 'queue', background: 'background', bg: 'background', btw: 'background' });
   function parseCommand(text) {
     const s = String(text == null ? '' : text).trim();
     if (s[0] !== '/') return null;
@@ -286,6 +310,7 @@
     let head = (sp === -1 ? s.slice(1) : s.slice(1, sp)).toLowerCase();
     const at = head.indexOf('@');                 // '/talk@mybot' -> 'talk'
     if (at !== -1) head = head.slice(0, at);
+    if (head && !KNOWN_CMDS[head] && ALIAS_CMDS[head]) head = ALIAS_CMDS[head];   // '/reset' -> 'new', '/routines' -> 'routine'
     if (!head || !KNOWN_CMDS[head]) return null;   // not a control command -> treat as a normal message
     const arg = sp === -1 ? '' : s.slice(sp + 1).trim();
     return { cmd: head, arg: arg };
@@ -455,6 +480,10 @@
     // Canonical transcript projection. Ordinary channel chats share the durable workstream ledger used by
     // desktop COMMS; the legacy channel history remains an offline fallback only.
     const historyFor = typeof o.historyFor === 'function' ? o.historyFor : null;
+    // observeInto(streamId, agentId, text, taint) files an OVERHEARD group line (/mention observe) as a run-less user row
+    // in that canonical stream — the one historyFor replays. Without it a hub with historyFor never shows the agent what
+    // it overheard, so observe is offered only where it can be kept (observeKept below).
+    const observeInto = typeof o.observeInto === 'function' ? o.observeInto : null;
     // ONE-RESOLVER LAW: any telemetry that attributes an inbound message to an agent (workitem crates, queue
     // HUD) must come from THIS hub's resolution, never a parallel guess. onResolved fires once per real message
     // (never for /commands) with the exact agentId the run will execute as, in onInbound's first synchronous
@@ -471,6 +500,9 @@
     const runSlashFn = typeof o.runSlash === 'function' ? o.runSlash : null;
     // names of the Commander's own commands, so this hub can recognise one without owning the list
     const userCommandNames = typeof o.userCommandNames === 'function' ? o.userCommandNames : (() => []);
+    // desktopCommand(token) -> true when the shared registry's BUILT-IN table knows this name or alias (slash.resolve):
+    // a desktop palette command this hub has no row for (/version, /q, /retry…). Optional; absent = the old fall-through.
+    const desktopCommandFn = typeof o.desktopCommand === 'function' ? o.desktopCommand : null;
     // The composition root may mint this only for an authenticated Telegram owner DM. It deliberately lives at
     // the hub edge so every other channel and every Telegram group message stays on its ordinary policy.
     const ownerTrustedFor = typeof o.ownerTrusted === 'function' ? o.ownerTrusted : (() => false);
@@ -1080,6 +1112,20 @@
       catch (_) { return false; }
     }
 
+    // '/version', '/v@starnetbot args' -> { name, line } when the injected registry check knows the name, else null
+    // (the same head grammar parseUserCommand reads: "/tmp/notes.md" is a path, never a command)
+    function parseDesktopCommand(text) {
+      const s = String(text == null ? '' : text).trim();
+      const m = /^\/([A-Za-z0-9_-]+)(?:@[A-Za-z0-9_]+)?(?=\s|$)/.exec(s);
+      if (!m) return null;
+      const name = m[1].toLowerCase();
+      let known = false;
+      try { known = desktopCommandFn(name) === true; } catch (e) { failNote('channels.hub.desktopCommand', e); known = false; }
+      if (!known) return null;
+      const rest = s.slice(m[0].length).trim();
+      return { name: name, line: '/' + name + (rest ? ' ' + rest : '') };
+    }
+
     // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
     // live floor plan, which is content-per-message and not a stable "who am I talking to"). Used by /agents,
     // /talk confirmations, and /model to name the target honestly.
@@ -1139,7 +1185,11 @@
       if (SLASH_CMDS[cmd]) {
         if (!runSlashFn) { await deliver(chatId, '⚠ ' + '/' + cmd + ' is not available on this channel.', '', 'command'); return; }
         let r;
-        try { r = await runSlashFn('/' + cmd + (arg ? ' ' + arg : ''), { agentId: boundId, ownerTrusted: !!ownerTrusted }); }
+        // deliveryOrigin: the SAME shape a run from this chat carries (runOnce below), so a "/routine add" typed here
+        // reports back to this chat exactly like a routine the agent creates when asked in words (bug 3b958e41)
+        const sctx = { agentId: boundId, ownerTrusted: !!ownerTrusted,
+          deliveryOrigin: { channel: channel, chatId: String(chatId), threadId: (routes.get(String(chatId)) || {}).threadId || null } };
+        try { r = await runSlashFn('/' + cmd + (arg ? ' ' + arg : ''), sctx); }
         catch (e) { try { console.error('[' + channel + '] /' + cmd + ' threw:', (e && e.message) || e); } catch (_) {} r = null; }
         if (!r) { await deliver(chatId, '⚠ Could not run /' + cmd + ' right now — try again in a moment.', '', 'command'); return; }
         const body = (r.lines && r.lines.length)
@@ -1287,6 +1337,8 @@
           : (/^(off|no|disable|disabled|false|0)$/i.test(arg) ? 'off'
           : (/^(observe|watch|listen|follow|context)$/i.test(arg) ? 'observe' : null));
         if (want === null) { await deliver(chatId, 'Usage: /mention on  ·  /mention observe  ·  /mention off', '', 'command'); return; }
+        // never confirm a promise this hub cannot keep (see observeTurn): nothing is saved, so nothing changes
+        if (want === 'observe' && !observeKept()) { await deliver(chatId, '⚠ This channel cannot keep what I overhear, so /mention observe is not available here — I still ' + describe[state] + '.', '', 'command'); return; }
         // requireMention and observeUnmentioned are written TOGETHER, always. Two independent toggles would let a
         // chat end up "answer everything AND observe", which would file every message twice.
         const patch = { requireMention: want !== 'off', observeUnmentioned: want === 'observe' };
@@ -1474,8 +1526,19 @@
       if (!body) return;
       const who = String(msg.userName || '').trim();
       const agentId = currentBoundAgent(chatId, boundAgentId, sec);
-      try { store.appendTurn(agentId, 'user', who ? (who + ': ' + body) : body); } catch (e) { failNote('channels.hub.appendTurn', e); }
+      const line = who ? (who + ': ' + body) : body;
+      try { store.appendTurn(agentId, 'user', line); } catch (e) { failNote('channels.hub.appendTurn', e); }
+      /* THE RUN READS THE CANONICAL STREAM (historyFor), not the store file above — filed only there, the overheard room
+         never reached the model and "I read the rest of the room" was a promise nobody kept. Filed into the SAME stream
+         the next addressed run replays, with the provenance an addressed message from this room would carry: clean,
+         unless it is a forwarded third party's words (initialTaint's rule below). */
+      if (historyFor && observeInto) {
+        const sid = resolvedStreamId(chatId);
+        if (sid) { try { observeInto(sid, agentId, line, carriesThirdPartyText(msg) ? 'forwarded message' : null); } catch (e) { failNote('channels.hub.observeInto', e); } }
+      }
     }
+    // can an overheard line reach the model on this hub? (legacy history is what a hub without historyFor replays)
+    function observeKept() { return !historyFor || !!observeInto; }
 
     // ---- ALBUM (media-group) BATCHING --------------------------------------------------------------------
     // A Telegram album arrives as N SEPARATE messages sharing one media_group_id (caption usually on only one).
@@ -1803,7 +1866,28 @@
       // through the SAME deliver() path so chunking/limits apply. Channel-agnostic: this lives in the hub, so
       // Telegram/Discord/any future adapter get identical behavior.
       // A FORWARDED "/away on" is a third party's words, not the Commander's command — never parse it as one.
-      const parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+      let parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+      /* THE COMMANDER'S OWN /allow OR /deny KEEPS RUNNING IN A DM. Both became built-ins in 0.14.0 and the built-ins are
+         parsed first, so a command of that name the Commander defined earlier silently stopped running over messaging
+         ("/allow and /deny are for groups"). The built-in means something only in a group; in a direct chat theirs
+         runs, exactly as before (the user-command path below, owner-gated the same way). */
+      if (parsed && (parsed.cmd === 'allow' || parsed.cmd === 'deny') && String(msg.chatType || '') !== 'group' && runSlashFn) {
+        let theirs = false;
+        try { theirs = (userCommandNames() || []).some(n => String(n).toLowerCase() === parsed.cmd); } catch (e) { failNote('channels.hub.userCommandNames', e); }
+        if (theirs) parsed = null;
+      }
+      // "/deny @spammer" in a group is another bot's command (a moderation bot's), never ours: ours takes no argument
+      // unless it names this bot — "/deny@thisbot …" (the adapter has already checked the suffix is us) or
+      // "/deny @thisbot" (the adapter marks it argNamesUs). Taken as ours it admitted or closed the owner's station for a
+      // room. Silent — answering would put us in their conversation — with ONE exception: the OWNER's /deny in a room
+      // we answer in. An ignored close fails open, so the owner is told the room is still open and how to close it.
+      if (parsed && (parsed.cmd === 'allow' || parsed.cmd === 'deny') && parsed.arg && String(msg.chatType || '') === 'group'
+          && !/^\s*\/[A-Za-z]+@/.test(String(msg.text || '')) && msg.argNamesUs !== true) {
+        if (parsed.cmd === 'deny' && senderIsOwner && chatAdmitted(chatId)) {
+          await deliver(chatId, '⚠ That /deny had something after it, so I left it alone — this group is still admitted. Send /deny on its own to remove me.', '', 'command');
+        }
+        return;
+      }
       if (parsed) {
         // OWNER GATE: a non-owner may talk to the agent, never reconfigure the station. Refused for free, before
         // any handler, write or slash-registry call — and said plainly, so the member knows it is a policy.
@@ -1842,6 +1926,45 @@
           ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
           : String((r && r.text) || '');
         await deliver(chatId, body || ('/' + userCmd.name + ' had nothing to report.'), '', 'command');
+        return;
+      }
+
+      /* A DESKTOP COMMAND typed here (bug 6cd531b1): "/version", "/q", "/retry" are the shared registry's own built-ins
+         with no row in this hub's table, so they fell through to the model — a paid run whose answer was a guess at
+         what the command does. The registry answers instead (for a desktop-only command: "That command only works in
+         the StarNet desktop app."), for free. Owner-only like the Commander's own commands: every one of them acts
+         on the owner's station. Same provenance rule: a forwarded "/version" is a third party's words. */
+      let deskCmd = (runSlashFn && desktopCommandFn && !carriesThirdPartyText(msg)) ? parseDesktopCommand(msg.text) : null;
+      /* THE NOTE COMMANDS are the exception: the words after /steer, /queue (/q) and /background (/bg, /btw) are the
+         sender's own note, and this hub HAS a way to act on one — sent as a plain follow-up it joins the task already
+         running here (the live steer below) or starts one. So the command word is stripped and the note goes on exactly
+         as if typed on its own (same sender, same gates). The one refusal is the desktop's own: a /steer with nothing
+         running never mints a paid run out of a steering note. */
+      if (deskCmd && NOTE_CMDS[deskCmd.name]) {
+        const noteText = deskCmd.line.slice(deskCmd.name.length + 1).trim();
+        if (!noteText) {
+          const joins = !!steerRun && msg.chatType !== 'group';
+          await deliver(chatId, '/' + deskCmd.name + ' needs your note after it. Or just send the note as a message'
+            + (joins ? ' — while a task is running here it joins that task at its next step.' : '.'), '', 'command');
+          return;
+        }
+        const lr = inflight.get(chatId);
+        if (NOTE_CMDS[deskCmd.name] === 'steer' && !(lr && !lr.superseded && !lr.halted)) {
+          await deliver(chatId, 'Nothing is running here to steer — send your note as a message to start a task.', '', 'command');
+          return;
+        }
+        msg = Object.assign({}, msg, { text: noteText });
+        deskCmd = null;
+      }
+      if (deskCmd) {
+        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + deskCmd.name), '', 'command'); return; }
+        let r;
+        try { r = await runSlashFn(deskCmd.line, { agentId: currentBoundAgent(chatId, boundAgentId, sec), ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec }); }
+        catch (e) { failNote('channels.hub.desktopCommand.run', e); r = null; }
+        const body = (r && Array.isArray(r.lines) && r.lines.length)
+          ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
+          : String((r && r.text) || '');
+        await deliver(chatId, body || ('⚠ Could not run /' + deskCmd.name + ' right now — try again in a moment.'), '', 'command');
         return;
       }
 
@@ -1912,7 +2035,9 @@
           && msg.chatType !== 'group' && !msg.edited && !carriesThirdPartyText(msg)
           && !(Array.isArray(msg.media) && msg.media.length) && !(msg.replyTo && Array.isArray(msg.replyTo.media) && msg.replyTo.media.length)
           && String(msg.text || '').trim() && !STOP_WORDS_RE.test(String(msg.text || ''))) {
-        const note = String(msg.text).trim();
+        // ONE LINE ON THE WIRE: two quick bubbles arrive here joined by a newline (the text batch), and every reader of
+        // the loop's '\n[steering] <note>\n' echo — this hub, COMMS, the phone relay — reads one line
+        const note = steerNoteWire(msg.text);
         let steered = false;
         try { const r = await steerRun(liveRun.runId, note); steered = !!(r && r.ok); letPrevFinish = !steered && !!r && r.status === 409; }
         catch (e) { failNote('channels.hub.steer', e); steered = false; }
@@ -2193,7 +2318,7 @@
           if (name === 'agent.run.start') state.runId = p.runId || state.runId;
           // The reply is already being assembled here, delta by delta — so this is also where it can be SHOWN.
           // stream.push is fire-and-forget and throttled; it can never delay or fail the run.
-          else if (name === 'agent.token') { state.buf += (p.delta || ''); if (stream) stream.push(state.buf); }
+          else if (name === 'agent.token') { state.buf = joinReplyDelta(state.buf, p.delta); if (stream) stream.push(state.buf); }
           else if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; noteToolStep(); }   // counted: an 'empty' end after tools is not "nothing was done"
           else if (name === 'agent.run.error') { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; }
           else if (name === 'capdenied') state.errMsg = state.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
@@ -2333,7 +2458,7 @@
             const hopSink = (name, payload) => {
               let p; try { p = redact(payload); } catch (_) { p = payload; }
               if (name === 'agent.run.end' && p && p.reason === 'cancelled') hs.stopped = true;   // STOP on this step: the line stops here, never hands its half answer on
-              if (name === 'agent.token') hs.buf += (p.delta || '');
+              if (name === 'agent.token') hs.buf = joinReplyDelta(hs.buf, p.delta);
               else if (name === 'agent.tool_call') { hs.buf = ''; noteToolStep(); }   // a hop's step is this message's step too
               else if (name === 'agent.run.error') hs.errMsg = p.message || 'run error';
               else if (name === 'capdenied') hs.errMsg = hs.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
@@ -2592,7 +2717,12 @@
       if (!chatId || !status) return;
       const gone = status === 'kicked' || status === 'left';
       if (!gone) return;                                    // added/promoted/restricted: nothing to stop doing
-      try { if (typeof store.saveChatRecord === 'function') store.saveChatRecord(chatId, { unreachable: true }); } catch (e) { failNote('channels.hub.chatRecord.save', e); }
+      /* A GROUP THAT REMOVED US IS NO LONGER ADMITTED. The owner's /allow admitted the room as it was; whoever adds the
+         bot back later (any group admin) must not re-open the owner's station to it without a fresh /allow there. Only
+         an admission THIS channel granted is withdrawn — the chat map is shared across platforms (chatAdmitted). */
+      const patch = { unreachable: true };
+      if (String((ev && ev.chatType) || '') === 'group' && chatAdmitted(chatId)) patch.admittedOn = '';
+      try { if (typeof store.saveChatRecord === 'function') store.saveChatRecord(chatId, patch); } catch (e) { failNote('channels.hub.chatRecord.save', e); }
       try { console.error('[' + channel + '] chat ' + chatId + ' has ' + (status === 'kicked' ? 'blocked or banned' : 'removed') + ' this bot — queued replies for it are being dropped'); } catch (_) {}
       if (typeof store.loadOutbox !== 'function' || typeof store.removeOutbox !== 'function') return;
       let items = [];
@@ -2610,5 +2740,5 @@
     };
   }
 
-  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, joinReplyDelta, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, NOTE_CMDS, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

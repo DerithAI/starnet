@@ -10542,9 +10542,9 @@ function startTelegram(token, key, model, agentCfg) {
   let adapterRef = null;
   const hub = makeChannelHub({
     channel: 'telegram', runOnce: runOnce, store: channelStore, steerRun: channelSteerRun,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
-    userCommandNames: () => userCommandEntries().map(c => c.name),
+    userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     // Only the adapter can mint owner trust: its owner is claimed from an admitted DM and group traffic never
     // claims it. A token-reachable group member therefore stays an ordinary channel caller.
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
@@ -10634,7 +10634,7 @@ function startTelegram(token, key, model, agentCfg) {
       catch (_) { return false; }
     },
     ownerUserId: (channelSecrets.telegram && channelSecrets.telegram.ownerId) || '',
-    onOwnerClaim: (uid) => { try { persistOwnerClaim('telegram', uid); } catch (_) {} },
+    onOwnerClaim: (uid) => { try { persistOwnerClaim('telegram', uid); } catch (_) {} publishCommandMenu(adapterRef, 'telegram'); },   // the owner's DM gets their own commands' menu
     ownerAdmission: (message) => telegramOwnerAdmission((channelSecrets && channelSecrets.telegram) || {}, message),
     onInbound: (m) => {
       // WORK-ITEM INTERCEPT: an admitted message becomes a box that rides the player-laid belts to the
@@ -10724,12 +10724,21 @@ function startTelegram(token, key, model, agentCfg) {
    reserved — the hub's table AND the slash registry's builtins/aliases — because a built-in always wins its name.
    Read at connect, like the rest of the menu: an edit to usercommands.json runs at once but lists on the next
    connect. Bot API cap: 100 rows. */
-function channelMenuCommands() {
+/* WHO CAN READ WHICH MENU (2026-10-23). A bot's default and all-groups menus are readable by anyone who opens a DM
+   with it or shares a group with it, while the Commander's descriptions are their own notes ("deploy main to
+   10.0.0.5"). So: `publicRows` lists their commands by NAME with one generic line (groups still tap them; they run
+   for the owner only), and the descriptions they wrote are published only into the owner's own DM. The default scope
+   (every DM, a stranger's included) lists the built-ins only — a stranger's DM can run none of the Commander's
+   commands. The owner scope is a 'chat' scope on the owner's id (a private chat's id IS the user's id); an unpaired
+   bot has none yet, and the owner claim republishes (onOwnerClaim). */
+const USER_MENU_PUBLIC_LINE = 'One of the owner\'s own commands (owner only)';
+function channelMenuCommands(opts) {
   const base = menuCommands();
   const reserved = HUB_COMMANDS.map(c => c.command);
   for (const c of slash.BUILTIN_COMMANDS) { reserved.push(c.name); for (const a of (c.aliases || [])) reserved.push(a); }
   let mine = [];
   try { mine = userMenuEntries(userCommandStore.load(), reserved); } catch (_) { mine = []; }
+  if (opts && opts.publicRows) mine = mine.map(r => ({ command: r.command, description: USER_MENU_PUBLIC_LINE }));
   return base.concat(mine).slice(0, 100);
 }
 // Publish the bot's "/" menu from the hub's OWN command table, so Telegram can never offer a command the hub
@@ -10741,11 +10750,15 @@ function publishCommandMenu(adapter, label) {
   // Telegram resolves its most-specific command scope first. Publish the same table for default + all groups so
   // a forum topic never loses the command menu to an older/narrower BotFather scope. Other adapters ignore the
   // optional scope argument and keep their original single publish.
-  const list = channelMenuCommands();
-  Promise.all([
-    Promise.resolve(adapter.setCommands(list)),
-    Promise.resolve(adapter.setCommands(list, { scope: { type: 'all_group_chats' } }))
-  ])
+  const ownerList = channelMenuCommands();   // scopes: see WHO CAN READ WHICH MENU above
+  let ownerId = '';
+  try { ownerId = String((adapter._internals && adapter._internals.owner) || ''); } catch (_) { ownerId = ''; }
+  const publishes = [
+    Promise.resolve(adapter.setCommands(menuCommands().slice(0, 100))),
+    Promise.resolve(adapter.setCommands(channelMenuCommands({ publicRows: true }), { scope: { type: 'all_group_chats' } }))
+  ];
+  if (/^\d{1,20}$/.test(ownerId)) publishes.push(Promise.resolve(adapter.setCommands(ownerList, { scope: { type: 'chat', chatId: ownerId } })));
+  Promise.all(publishes)
     .then((results) => { for (const r of results) if (r && r.ok === false) console.warn('[' + label + '] command menu not published: ' + (r.error || 'unknown')); })
     .catch(swallow('channels.menu'));
 }
@@ -10826,9 +10839,9 @@ function startTelegramBot(botId) {
   const botStore = makeBotScopedStore(botId);
   const hub = makeChannelHub({
     channel: 'telegram:' + botId, runOnce: runOnce, store: botStore, steerRun: channelSteerRun,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
-    userCommandNames: () => userCommandEntries().map(c => c.name),
+    userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
       && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
     // the paired owner in ANY chat (owner-only control commands; see hub.js COMMANDS `owner`) — same adapter-minted id
@@ -10916,6 +10929,7 @@ function startTelegramBot(botId) {
     onOwnerClaim: (uid) => {
       const ok = persistTelegramBotOwnerClaim(botId, uid);
       console.log('  · telegram bot ' + (rec.username ? '@' + rec.username : botId) + ' owner claimed (userId ' + String(uid) + ')' + (ok ? '' : ' — NOT persisted; re-claims on restart'));
+      publishCommandMenu(adapterRef, 'telegram:' + botId);   // the owner's DM gets their own commands' menu
     },
     ownerAdmission: (message) => telegramOwnerAdmission(recOf(), message),
     onInbound: (m) => { Promise.resolve(hub.onInbound(m)).catch(e => console.warn('[telegram:' + botId + '] inbound error:', (e && e.message) || e)); },
@@ -10970,7 +10984,7 @@ function startDiscord(token, key, model, agentCfg) {
   const wired = wireChannel(channelRegistry.get('discord'), {
     hub: {
       runOnce: runOnce, store: channelStore, steerRun: channelSteerRun,
-      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
       secrets: () => {
         const d = (channelSecrets && channelSecrets.discord) || {};
         const provider = normalizeProvider(d.provider);
@@ -10995,7 +11009,7 @@ function startDiscord(token, key, model, agentCfg) {
       // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
       // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
       runSlash: (input, sctx) => runSlashForChannel(input, sctx),
-      userCommandNames: () => userCommandEntries().map(c => c.name)
+      userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand
     },
     adapter: {
       fetch: globalThis.fetch, token: token, clock: { now: () => Date.now() },
@@ -11089,9 +11103,9 @@ function getDevHub() {
     channel: 'dev', maxMessageLength: 4000, agentPrefix: 'dev_', textBatchWaitMs: 0,
     ownerSurface: true,   // DEV_MODE-only local route behind the launch token: every inbound is the Commander
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
-    userCommandNames: () => userCommandEntries().map(c => c.name),
+    userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     runOnce: runOnce, store: channelStore,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     send: (chatId, text) => devCaptureReply(chatId, text),
     secrets: devHubSecrets,
     persona: DEV_PERSONA, classify: Classify.isTaskDirective, redact: redact, emit: chanEmit, taskIntent: TaskIntent,
@@ -11263,7 +11277,7 @@ function startGenericChannel(id, token, key, model, agentCfg) {
   const wired = wireChannel(desc, {
     hub: {
       runOnce: runOnce, store: channelStore, steerRun: channelSteerRun,
-      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
       secrets: () => {
         const r = (channelSecrets && channelSecrets[id]) || {};
         const p = normalizeProvider(r.provider);
@@ -11287,7 +11301,7 @@ function startGenericChannel(id, token, key, model, agentCfg) {
       // it a "/standup" here fell through to the MODEL as paid chat, and /usage, /tools, /routine and /away answered
       // "not available on this channel" (2026-10-18). Owner-only either way: the hub gates both on isOwner.
       runSlash: (input, sctx) => runSlashForChannel(input, sctx),
-      userCommandNames: () => userCommandEntries().map(c => c.name)
+      userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand
     },
     adapter: adapterOpts
   });
@@ -13172,7 +13186,7 @@ function getSampleHub() {
     channel: 'sample', maxMessageLength: 4000, agentPrefix: 'smp_', textBatchWaitMs: 0,
     ownerSurface: true,   // the Commander's own sample-crate route behind the launch token
     runOnce: runOnce, store: channelStore,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     /* THE SAMPLE IS UNADDRESSED, EVERY TIME. This route's whole claim is "a REAL run on the REAL UNADDRESSED
        dispatch path" — the FILTER/SPLITTER must sort it. The hub's ordinary chat→agent bookkeeping saved a
        binding for chatId 'sample' on the first run, so from the SECOND sample on resolveTarget took its
@@ -13510,7 +13524,7 @@ function makeTriggerHub(hooks) {
     store: new Proxy(channelStore, { get: (t, k) => k === 'loadHistory' ? (agentId) => hooks.turns(agentId).slice(-40)
       : k === 'appendTurn' ? (agentId, role, content) => { hooks.turns(agentId).push({ role: role, content: content }); }
       : k === 'clearHistory' ? () => {} : (typeof t[k] === 'function' ? t[k].bind(t) : t[k]) }),
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     bindChats: false,   // every fire is UNADDRESSED: the line's own doors decide the dock, never a remembered chat binding
     send: (chatId, text) => { hooks.send(text); return Promise.resolve({ ok: true }); },
     secrets: () => ({}),
@@ -19303,6 +19317,21 @@ async function runSlashRoutine(line, opts) {
   return { ok: !!(r && r.ok !== false), text: body };
 }
 
+/* /mention observe: a group line the bot overheard, filed as a run-less user row in the chat's canonical stream — the
+   stream a channel hub's historyFor replays — so the next addressed run actually sees it. `taint` is the hub's verdict
+   (null for a member's own words, a source for a forwarded one); passing it, null included, stamps the row's provenance. */
+function channelObserveInto(streamId, agentId, text, taint) {
+  transcriptStore.append({ streamId: String(streamId), agentId: String(agentId || ''), role: 'user', taint: taint || null, content: String(text || '') });
+  return true;
+}
+
+/* Does the shared registry's BUILT-IN table know this token (a name or an alias)? What a channel hub answers as a
+   desktop command instead of handing it to the model as paid chat (bug 6cd531b1). Built-ins only: a skill or recipe
+   name typed on a phone stays ordinary text, exactly as before. */
+function isDesktopSlashCommand(token) {
+  try { return !!slash.resolve('/' + String(token || '')); } catch (_) { return false; }
+}
+
 async function runSlashForChannel(input, ctx) {
   ctx = ctx || {};
   const agentId = /^[A-Za-z0-9_-]{1,40}$/.test(String(ctx.agentId || '')) ? String(ctx.agentId) : 'agent';
@@ -19336,7 +19365,9 @@ async function runSlashForChannel(input, ctx) {
   // plainly rather than returning an empty reply that reads like a failure.
   if (out.directive.type !== 'server') return { ok: false, text: 'That command only works in the StarNet desktop app.' };
   let r;
-  try { r = await slashActions.run(out.directive.action, out.directive.args, { agentId: agentId, placed: placed }); }
+  // the chat a messaging hub ran this from (hub.js: { channel, chatId, threadId }) — /routine add delivers there
+  const dOrigin = (ctx.deliveryOrigin && typeof ctx.deliveryOrigin === 'object' && ctx.deliveryOrigin.channel && ctx.deliveryOrigin.chatId) ? ctx.deliveryOrigin : null;
+  try { r = await slashActions.run(out.directive.action, out.directive.args, dOrigin ? { agentId: agentId, placed: placed, deliveryOrigin: dOrigin } : { agentId: agentId, placed: placed }); }
   catch (e) { return { ok: false, text: 'That command failed: ' + ((e && e.message) || e) }; }
   return r || { ok: false, text: 'No answer.' };
 }
