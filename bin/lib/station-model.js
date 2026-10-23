@@ -11,6 +11,8 @@
    never as done. Text in a conversation is the real streamed tokens; nothing here writes a reply. */
 'use strict';
 
+const { fileArg } = require('./mouse.js');
+
 const SLOTS = 14;            // activity history width
 const SLOT_MS = 2000;        // one activity bar = 2 s of the agent's events
 const RUN_FLOOR = 0.6;       // a slot with a run open but nothing done in it (above it, the agent did something)
@@ -166,6 +168,8 @@ function makeStation() {
         model: String(p.model || ''), seenStart: false, text: null, tools: new Map(), cli: false };
       st.runs.set(runId, run);
     }
+    // where it works, when the station says (an older one does not: then the run's record says, once it ends)
+    if (typeof p.projectRoot === 'string') run.projectRoot = p.projectRoot;
     if (via === 'event' && !run.seenStart) {
       run.seenStart = true;
       Object.assign(run, { streamId: String(p.streamId || run.streamId), trigger: String(p.trigger || run.trigger), surface: String(p.surface || run.surface), lineId: String(p.lineId || run.lineId), dockId: String(p.dockId || run.dockId), prompt: String(p.prompt || run.prompt), model: String(p.model || run.model) });
@@ -251,7 +255,7 @@ function makeStation() {
         const a = agent(run.agentId);
         if (run.text) run.text.live = false;
         run.text = null;
-        const t = log(a, { k: 'tool', runId: run.runId, name: toolName(p.name), args: oneLine(argDigest(p.argsSummary, toolName(p.name), nameOf), 300), running: true, res: '', at: now });
+        const t = log(a, { k: 'tool', runId: run.runId, name: toolName(p.name), args: oneLine(argDigest(p.argsSummary, toolName(p.name), nameOf), 300), file: fileArg(toolName(p.name), p.argsSummary), root: run.projectRoot, running: true, res: '', at: now });
         if (p.callId) run.tools.set(String(p.callId), t);
         a.now = t.name + (t.args ? ' ' + t.args : '');
         a.bucket += 3;

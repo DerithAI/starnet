@@ -49,7 +49,9 @@ function observerView(name, payload, ctx) {
     case 'agent.run.start': {
       const v = Object.assign(base, {
         model: str(p.model), trigger: str(p.trigger || c.trigger), surface: str(c.surface),
-        streamId: str(p.streamId || c.streamId), lineId: str(c.lineId), dockId: str(p.dockId || c.dockId)
+        streamId: str(p.streamId || c.streamId), lineId: str(c.lineId), dockId: str(p.dockId || c.dockId),
+        // the trusted project the run works in ('' = the agent's own workspace): a terminal opens the files it writes there
+        projectRoot: str(c.projectRoot)
       });
       const prompt = typeof c.prompt === 'function' ? c.prompt() : c.prompt;
       if (prompt) v.prompt = clip(prompt, CLIP.prompt);

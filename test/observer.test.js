@@ -14,6 +14,7 @@ const { makeObserver, observerView, serveObserver, lastUserText, CLIP } = requir
   const ctx = { runId: 'r1', agentId: 'astra', streamId: 'cli-astra', surface: 'interactive', trigger: 'directive', lineId: '', dockId: '', prompt: () => 'fix the login redirect' };
   const start = observerView('agent.run.start', { agentId: 'astra', runId: 'r1', trigger: 'directive', model: 'm/x' }, ctx);
   A.eq([start.runId, start.agentId, start.model, start.streamId, start.surface, start.prompt], ['r1', 'astra', 'm/x', 'cli-astra', 'interactive', 'fix the login redirect'], 'run.start carries the run, the conversation, the surface and the asking prompt');
+  A.eq([start.projectRoot, observerView('agent.run.start', { agentId: 'astra', runId: 'r2' }, Object.assign({}, ctx, { projectRoot: 'C:\\Code\\App' })).projectRoot], ['', 'C:\\Code\\App'], 'run.start says the trusted project the run works in (\'\' = the agent\'s own workspace), so a terminal opens the files it writes where they are');
   A.eq(observerView('agent.token', { runId: 'r1', agentId: 'astra', delta: '' }, ctx), null, 'an empty token delta is never sent');
   A.eq(observerView('agent.token', { runId: 'r1', agentId: 'astra', delta: 'Hi' }, ctx).delta, 'Hi', 'a token delta is sent as streamed');
   const long = 'x'.repeat(5000);

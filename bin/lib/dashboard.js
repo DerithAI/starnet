@@ -26,6 +26,7 @@ const tui = require('./tui.js');
 const sixel = require('./sixel.js');
 const camfeed = require('./camfeed.js');
 const folderLib = require('./folder.js');
+const mouse = require('./mouse.js');
 
 function runDashboard(station, opts) {
   const o = opts || {};
@@ -49,7 +50,10 @@ function runDashboard(station, opts) {
     // the folder this terminal works in: project = the trusted project every message works in; trust = the card asking
     // to trust the folder it was started in
     project: null, trust: null,
-    lastSent: {}   // agentId -> { text, shown }: what /retry sends again
+    lastSent: {},   // agentId -> { text, shown }: what /retry sends again
+    // the page in the COMMS frame ('' = the conversation; stat · crew · work) and what it read off the station; the agent
+    // whose menu card is open
+    page: '', pageScroll: 0, pageData: {}, agentMenu: ''
   };
   const mine = new Map();       // requests this terminal holds open: id -> { req, agentId, kind }
   let feedReq = null, cursor = '', feedRetry = null, stopped = false;
@@ -418,6 +422,175 @@ function runDashboard(station, opts) {
     loadLines().then(paint, () => {});
   }
 
+  // ---- THE PAGES: STAT · CREW · COMMS · WORK · SKILLS (the tab rule, f1-f5, /stat /crew /work) ---------------------------
+  // what a page shows that the live feed does not carry is read when it opens, and again while it stays open
+  let CronHuman = null;
+  const appModule = name => require(require('node:path').join(__dirname, '..', '..', 'frontend', 'app', name));
+  async function loadUsage() {
+    const a = model.state.agents.get(ui.focus);
+    const r = await client.request('POST', '/api/slash/dispatch', { input: '/usage', agentId: a ? a.id : 'agent', client: 'terminal' }, { timeoutMs: 20000 });
+    const d = r.ok && r.status === 200 && r.json && r.json.ok && r.json.directive;
+    ui.pageData.usage = d && d.type === 'say'
+      ? { title: String(d.title || ''), lines: (Array.isArray(d.lines) && d.lines.length ? d.lines : String(d.text || '').split('\n')).map(String).filter(l => l.trim()) }
+      : { error: 'the station did not say its spend (' + ((r.json && r.json.error) || r.error || 'HTTP ' + r.status) + ')' };
+  }
+  async function loadRoutines() {
+    const r = await get('/api/cron', 10000);
+    if (!(r.ok && r.status === 200 && r.json)) { ui.pageData.cron = { error: 'the routines could not be read (' + (r.error || 'HTTP ' + r.status) + ') — their state is unknown' }; return; }
+    try { CronHuman = CronHuman || appModule('cronhuman.js'); } catch (_) { CronHuman = null; }
+    const nameOf = id => { const a = model.state.agents.get(String(id || '')); return a ? a.name : ''; };
+    const jobs = (Array.isArray(r.json.jobs) ? r.json.jobs : []).filter(j => j && j.id).map(j => {
+      const shown = String(j.scheduleDisplay || j.schedule || '');
+      const next = Date.parse(j.nextRunAt) || Number(j.nextRunAt) || 0;
+      return { name: String(j.name || j.id), when: (CronHuman ? CronHuman.describeDisplay(shown) : shown) || 'no schedule', agent: nameOf(j.agentId),
+        enabled: j.enabled !== false, inFlight: !!j.inFlight, next: next > now() ? 'in ' + require('./station-model.js').fmtShort(next - now()) : '' };
+    });
+    ui.pageData.cron = { enabled: !!r.json.enabled, halted: !!r.json.halted, jobs };
+  }
+  async function loadAway() {
+    const a = model.state.agents.get(ui.focus);
+    if (!a) { ui.pageData.away = { error: 'no agent shown' }; return; }
+    const r = await client.request('POST', '/api/slash/dispatch', { input: '/away list', agentId: a.id, client: 'terminal' }, { timeoutMs: 20000 });
+    const d = r.ok && r.status === 200 && r.json && r.json.ok && r.json.directive;
+    ui.pageData.away = d && d.type === 'say'
+      ? { agent: a.name, title: String(d.title || ''), lines: (Array.isArray(d.lines) ? d.lines : String(d.text || '').split('\n')).map(String).filter(l => l.trim()) }
+      : { agent: a.name, error: 'the away shift could not be read (' + ((r.json && r.json.error) || r.error || 'HTTP ' + r.status) + ')' };
+  }
+  function loadPage() {
+    if (ui.page === 'stat') return loadUsage().catch(() => {});
+    if (ui.page === 'work') return Promise.all([loadRoutines(), loadAway()]).catch(() => {});
+    return Promise.resolve();
+  }
+  function openPage(p) {
+    if (ui.wake) return;
+    ui.agentMenu = ''; ui.overlay = null; ui.pageScroll = 0; ui.picker = null;
+    if (p === 'skills') { ui.page = ''; return openSkillsPicker(''); }
+    ui.page = p === 'comms' ? '' : p;
+    if (ui.page === 'stat') ui.pageData.usage = { loading: true };
+    if (ui.page === 'work') { ui.pageData.cron = ui.pageData.cron || { loading: true }; ui.pageData.away = { loading: true }; }
+    paint();
+    loadPage().then(paint, () => {});
+  }
+  // a chat opened from anywhere: the agent's conversation in COMMS
+  function openChat(id) {
+    if (!model.state.agents.has(id)) return;
+    if (ui.focus !== id) { ui.focus = id; ui.scroll = 0; }
+    ui.page = ''; ui.agentMenu = ''; ui.overlay = null; ui.picker = null;
+    paint();
+  }
+  // THE AGENT MENU: o open chat · m model · n new chat · h history · s stop (a card at the foot of COMMS)
+  function openMenu(id) {
+    if (ui.wake || !model.state.agents.has(id)) return;
+    ui.agentMenu = id; ui.overlay = null;
+    paint();
+  }
+  function menuKey(k) {
+    const id = ui.agentMenu;
+    ui.agentMenu = '';
+    if (k === 'escape' || !model.state.agents.has(id)) return paint();
+    if (k === 'o') return openChat(id);
+    // the rest act on the agent shown in COMMS, as their slash commands do: show it first
+    openChat(id);
+    if (k === 'm') return openModelPicker('');
+    if (k === 'n') return newConversation();
+    if (k === 'h') return openResumePicker();
+    if (k === 's') return stopAgent(id);
+  }
+  // a letter the open ask or the folder card answers (the keyboard's y a n v, a click on its [Y] [A] [N] [V])
+  function answerKey(ch) {
+    const q = model.front();
+    if (q && !q.question && /^[ynv]$/.test(ch)) { answer(ch); return true; }
+    if (q && !q.question && ch === 'a' && ONCE_ONLY_TOOLS.indexOf(q.tool) < 0) { answer('a'); return true; }
+    if (!q && ui.trust && !ui.wake && /^[yn]$/.test(ch)) { answerTrust(ch); return true; }
+    return false;
+  }
+
+  // ---- THE MOUSE (bin/lib/mouse.js): a click acts on what the screen drew under it, as its key would --------------------
+  let lastHits = [], lastAreas = {}, lastScreen = [];
+  const inArea = (a, x, y) => !!a && x >= a.x0 && x < a.x1 && y >= a.y0 && y < a.y1;
+  function openExternal(url) {
+    const { spawn } = require('node:child_process');
+    // never through a shell: a link is the program's argument, whatever characters it carries
+    const [cmd, args] = process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+    try { const c = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }); c.on('error', () => flash('could not open a browser for ' + url, 'bad', 8000)); c.unref(); } catch (_) { flash('could not open a browser for ' + url, 'bad', 8000); }
+  }
+  const openUrl = o.openUrl || openExternal;
+  // a file an agent wrote, on the station's own page for it (signed, so the browser needs no key). Its folder is the run's:
+  // the trusted project the live feed said it works in; from an older station, the one its record names once it ends (while
+  // it runs, only a run this terminal started is known for sure)
+  async function openFile(act) {
+    const a = model.state.agents.get(act.agentId);
+    if (!folderLib.isLocalHost(client.host)) return flash('a file opens only from a station on this computer');
+    let tickets;
+    try { tickets = require(require('node:path').join(__dirname, '..', '..', 'sidecar', 'apitickets.js')); } catch (_) { return flash('this starnet cannot sign a file link (the station’s ticket module is missing)', 'bad', 8000); }
+    let project = typeof act.root === 'string' ? act.root : null;
+    if (project === null) {
+      const r = act.runId ? await get('/api/runs?agent=*&runId=' + encodeURIComponent(act.runId), 8000) : null;
+      const rec = r && r.ok && r.status === 200 && r.json && Array.isArray(r.json.runs) ? r.json.runs.find(x => x && x.runId === act.runId) : null;
+      const run = model.state.runs.get(String(act.runId));
+      if (rec) project = String(rec.projectRoot || '');
+      else if (run && a && (run.streamId === streamOf(a.id) || run.streamId.indexOf(core.cliStreamId(a.id)) === 0)) project = ui.project ? ui.project.root : '';
+    }
+    if (project === null) return flash('that run is still going — its file opens once the station has recorded where it worked', 'am', 7000);
+    openUrl(mouse.fileUrl(client.base, tickets, client.token(), { agent: act.agentId, path: act.path, project, now: now() }));
+    flash('opening ' + act.path + ' (' + (project ? folderLib.shortPath(project, 40) : (a ? a.name : act.agentId) + '’s workspace') + ') in your browser', 'ok', 6000);
+  }
+  function onMouse(ev) {
+    if (stopped) return;
+    if (ev.kind === 'wheel') {
+      const d = ev.dir === 'up' ? 1 : -1;
+      if (ui.picker) { const n = tui.pickerView(ui.picker).length; ui.picker.sel = Math.max(0, Math.min(n - 1, (ui.picker.sel | 0) - d)); return paint(); }
+      if (!inArea(lastAreas.comms, ev.x, ev.y)) return;
+      if (ui.overlay) ui.overlay.scroll = Math.max(0, (ui.overlay.scroll | 0) - 3 * d);
+      else if (ui.page) ui.pageScroll = Math.max(0, (ui.pageScroll | 0) - 3 * d);
+      else ui.scroll = Math.max(0, ui.scroll + 3 * d);
+      return paint();
+    }
+    if (ev.kind !== 'down') return;
+    const h = mouse.hitAt(lastHits, ev.x, ev.y);
+    const act = h && h.act;
+    ui.quitArmed = 0;
+    // ctrl+click: a link drawn there, or the file a tool line names
+    if (ev.ctrl && ev.button === 'left') {
+      if (act && act.t === 'file') { openFile(act).catch(() => {}); return; }
+      const url = mouse.urlAt(lastScreen[ev.y], ev.x, ch => tui.width(ch));
+      if (url) { openUrl(url); flash('opening ' + url + ' in your browser', 'ok', 5000); }
+      return;
+    }
+    if (ev.button === 'right') { if (act && act.t === 'agent') openMenu(act.id); return; }
+    if (ev.button !== 'left') return;
+    if (!act) {
+      // a click anywhere off a list laid over COMMS closes it, as any key does
+      if (ui.overlay) { ui.overlay = null; paint(); }
+      return;
+    }
+    if (ui.overlay && act.t !== 'tab') { ui.overlay = null; paint(); return; }
+    switch (act.t) {
+      case 'tab': return act.here && act.page === 'comms' && ui.focus && !ui.overlay && !ui.picker ? openMenu(ui.focus) : openPage(act.page);
+      case 'page': return openPage(act.page);
+      case 'agent':
+        // the agent already in COMMS (on COMMS): its menu; any other, its chat
+        if (!ui.page && act.id === ui.focus && !ui.picker && !ui.wake) return openMenu(act.id);
+        return ui.wake ? undefined : openChat(act.id);
+      case 'needs': { const q = model.front(); if (q) openChat(q.agentId); return; }
+      case 'model': return openModelPicker('');
+      case 'menu': return menuKey(act.key);
+      case 'key': if (!answerKey(act.key)) paint(); return;
+      case 'answer': { const q = model.front(); if (q && q.question && q.question.options[act.i] != null) answerQuestion(q.question.options[act.i]); return; }
+      case 'wake': if (ui.wake && ui.wake.ask && ui.wake.ask.options[act.i]) wakeAnswer(Object.assign({}, ui.wake.ask.options[act.i])); return;
+      case 'enter': onKey('\r', { name: 'return', sequence: '\r' }); return;
+      case 'pick': {
+        const p = ui.picker, list = p ? tui.pickerView(p) : [];
+        const it = list[act.i];
+        if (it && p.onPick && !p.loading) { ui.picker = null; p.onPick(it); }
+        return paint();
+      }
+      case 'flow': ui.page = ''; ui.input = '/flow run ' + (/\s/.test(act.name) ? act.name.split(/\s+/)[0] : act.name) + ' '; flash('type the job for ' + act.name + ' and press enter', 'ok', 6000); return;
+      case 'file': return;   // a plain click on a file line: nothing (ctrl+click opens it)
+    }
+  }
+  const mouseReader = mouse.makeReader(onMouse, () => onKey('\x1b', { name: 'escape', sequence: '\x1b' }));
+
   // ---- input ------------------------------------------------------------------------------------------------
   function historyStep(d) {
     const h = ui.history;
@@ -430,6 +603,7 @@ function runDashboard(station, opts) {
   function submit(raw) {
     const text = String(raw || '').trim();
     ui.overlay = null;
+    if (text) ui.page = '';   // what you send is answered in COMMS: the page gives way to it
     ui.histAt = null; ui.histDraft = '';
     if (!text) return;
     if (ui.history[ui.history.length - 1] !== text) { ui.history.push(text); if (ui.history.length > 200) ui.history.shift(); }
@@ -451,6 +625,7 @@ function runDashboard(station, opts) {
     const parts = text.split(/\s+/), cmd = parts[0].toLowerCase();
     if (cmd === '/help' || cmd === '/?') { ui.overlay = { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' }; return paint(); }
     if (cmd === '/quit' || cmd === '/exit') return quit(true);
+    if (cmd === '/stat' || cmd === '/crew' || cmd === '/work' || cmd === '/comms') return openPage(cmd.slice(1));
     if (cmd === '/model' || cmd === '/models') return openModelPicker(parts.slice(1).join(' '));
     if (cmd === '/new' || cmd === '/clear') return newConversation();
     if (cmd === '/resume' || cmd === '/conversations') return openResumePicker();
@@ -692,13 +867,25 @@ function runDashboard(station, opts) {
     }
     stop(0);
   }
+  const F_PAGES = { f1: 'stat', f2: 'crew', f3: 'comms', f4: 'work', f5: 'skills' };
   function onKey(str, key) {
     const k = key || {};
+    if (mouseReader(str, k)) return;   // a mouse report, put back together from the keys Node split it into
     if (k.ctrl && k.name === 'c') return quit(false);
     if (k.ctrl && k.name === 'l') { redrawAll(); return; }
     ui.quitArmed = 0;
+    if (F_PAGES[k.name] && !ui.pasting) return openPage(F_PAGES[k.name]);
     if (ui.picker) return pickerKey(str, k);
-    if (k.name === 'escape') { ui.input = ''; ui.overlay = null; ui.scroll = 0; return paint(); }
+    // the agent menu: its letters act on it (with nothing typed), esc closes it, any other key closes it and goes on
+    if (ui.agentMenu && !ui.pasting) {
+      if (k.name === 'escape') return menuKey('escape');
+      const ch = typeof str === 'string' ? str.toLowerCase() : '';
+      const a = model.state.agents.get(ui.agentMenu);
+      if (!ui.input && /^[omnh]$/.test(ch)) return menuKey(ch);
+      if (!ui.input && ch === 's' && a && a.runs.size) return menuKey('s');
+      ui.agentMenu = '';
+    }
+    if (k.name === 'escape') { ui.input = ''; ui.overlay = null; ui.scroll = 0; ui.page = ''; return paint(); }
     // a PASTE is text (bracketed paste, ESC[?2004h): its newlines stay in the message — nothing is sent or answered mid-paste
     if (k.name === 'paste-start') { ui.pasting = true; return; }
     if (k.name === 'paste-end') { ui.pasting = false; return paint(); }
@@ -712,8 +899,14 @@ function runDashboard(station, opts) {
     if (k.name === 'tab') { focusStep(k.shift ? -1 : 1); return paint(); }
     if (k.name === 'up') { historyStep(-1); return paint(); }
     if (k.name === 'down') { historyStep(1); return paint(); }
-    if (k.name === 'pageup') { ui.scroll += 8; return paint(); }
-    if (k.name === 'pagedown') { ui.scroll = Math.max(0, ui.scroll - 8); return paint(); }
+    // pgup / pgdn scroll what is shown: a list laid over COMMS, the page, or the conversation
+    if (k.name === 'pageup' || k.name === 'pagedown') {
+      const d = k.name === 'pageup' ? 1 : -1;
+      if (ui.overlay) ui.overlay.scroll = Math.max(0, (ui.overlay.scroll | 0) - 8 * d);
+      else if (ui.page) ui.pageScroll = Math.max(0, (ui.pageScroll | 0) - 8 * d);
+      else ui.scroll = Math.max(0, ui.scroll + 8 * d);
+      return paint();
+    }
     if (k.name === 'return' || k.name === 'enter') { const t = ui.input; ui.input = ''; submit(t); return paint(); }
     if (k.name === 'backspace') { ui.input = ui.input.slice(0, -1); return paint(); }
     if (k.sequence && /^\x1b\[[?\d;]*[ct]$/.test(k.sequence)) return;   // a late reply to the startup probe
@@ -722,9 +915,7 @@ function runDashboard(station, opts) {
     if (!ch) return;
     ui.overlay = null;
     const q = model.front();
-    if (!ui.input && q && !q.question && /^[ynv]$/i.test(ch)) { answer(ch.toLowerCase()); return; }
-    if (!ui.input && q && !q.question && /^a$/i.test(ch) && ONCE_ONLY_TOOLS.indexOf(q.tool) < 0) { answer('a'); return; }
-    if (!ui.input && !q && ui.trust && !ui.wake && /^[yn]$/i.test(ch)) { answerTrust(ch.toLowerCase()); return; }
+    if (!ui.input && /^[ynva]$/i.test(ch) && answerKey(ch.toLowerCase())) return;
     if (!ui.input && q && q.question && /^[1-6]$/.test(ch) && q.question.options[Number(ch) - 1]) { answerQuestion(q.question.options[Number(ch) - 1]); return; }
     if (ui.input.length < 4000) ui.input += ch;
     paint();
@@ -742,6 +933,7 @@ function runDashboard(station, opts) {
     const size = { cols: Math.max(20, (out.columns || 80) - 1), rows: out.rows || 24 };
     const skip = ui.logoImage ? ui.logoImage.cols : 0, skipRows = ui.logoImage ? ui.logoImage.rows : 0;
     const screen = tui.render(model, ui, size, t);
+    lastHits = screen.hits || []; lastAreas = screen.areas || {}; lastScreen = screen;   // what a click lands on
     const av = screen.avatar;   // where the camera feed goes, when the card is up
     // every rendered row is padded to the full width, so no erase-to-end is needed (or wanted). A row beside the logo
     // image starts to its right, a row beside the feed is written either side of it: an image's cells are never
@@ -769,8 +961,11 @@ function runDashboard(station, opts) {
     prevRows = rows;
     if (s) try { out.write(s); } catch (_) {}
   }
+  // the mouse, wherever the terminal reports it (STARNET_MOUSE=0 keeps the terminal's own selection; shift+drag selects
+  // text while it is on, in most terminals)
+  const mouseOn = env.STARNET_MOUSE !== '0';
   function enterScreen() {
-    out.write('\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H');   // …and bracketed paste on, so a paste arrives marked
+    out.write('\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H' + (mouseOn ? mouse.ENABLE : ''));   // …and bracketed paste on, so a paste arrives marked
     readline.emitKeypressEvents(inp);
     if (inp.isTTY && typeof inp.setRawMode === 'function') inp.setRawMode(true);
     inp.on('keypress', onKey);
@@ -812,7 +1007,7 @@ function runDashboard(station, opts) {
     try { out.removeListener('resize', onResize); } catch (_) {}
     try { if (inp.isTTY && typeof inp.setRawMode === 'function') inp.setRawMode(false); } catch (_) {}
     try { inp.pause(); } catch (_) {}
-    try { out.write('\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1049l'); } catch (_) {}
+    try { out.write((mouseOn ? mouse.DISABLE : '') + '\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1049l'); } catch (_) {}
   }
   const onExit = () => { if (!stopped) leaveScreen(); };
   function stop(code) {
@@ -854,6 +1049,7 @@ function runDashboard(station, opts) {
     every(6000, () => loadLines().catch(() => {}));
     every(20000, () => loadRoster().then(() => { if (ui.images && model.state.order.some(id => !feed.hasSkin(id))) return loadSkins(); }));
     every(60000, loadStats);   // the level the stat bar shows
+    every(15000, () => (ui.page ? loadPage() : null));   // an open page keeps what it read off the station current
     timers.push(setInterval(paint, 100));   // the working spinner turns at 10 frames a second (paint writes only rows that changed)
     checkOnboarding().catch(() => {});   // a station with no agent yet: the awakening, here
   })().catch(e => { stop(0); process.stderr.write('starnet: ' + ((e && e.message) || e) + '\n'); });

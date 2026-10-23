@@ -102,13 +102,15 @@ const HELP = [
   ['message', 'talk to the agent shown in COMMS'],
   ['@name message', 'talk to another agent (it queues if busy)'],
   ['/model [name]', 'show or switch the shown agent\'s model'],
-  ['/new', 'start a fresh conversation with it'],
-  ['/resume', 'go back to an earlier conversation'],
+  ['/new  /resume', 'a fresh conversation · back to an earlier one'],
   ['y  a  n  v', 'answer the open ask: once, always, no, view'],
   ['1-6 or text', 'answer an open question'],
   ['tab  shift+tab', 'switch the agent shown in COMMS'],
-  ['↑  ↓', 'your earlier messages'],
-  ['pgup  pgdn', 'scroll COMMS'],
+  ['↑ ↓  pgup pgdn', 'your earlier messages · scroll COMMS'],
+  ['f1 – f5', 'the pages on the tab rule · /stat /crew /work'],
+  ['click', 'an agent opens its chat · a tab, its page'],
+  ['right-click', 'an agent: its menu (model, new chat, stop…)'],
+  ['ctrl+click', 'opens a link, or a file an agent wrote'],
   ['/stop', 'stop the shown agent\'s runs'],
   ['/retry', 'send your last message again'],
   ['/status', 'the agent, its model, its folder, the station'],
@@ -117,11 +119,9 @@ const HELP = [
   ['/routine', 'scheduled routines: list, create, pause'],
   ['/cron  on · off', 'the routines scheduler: its state, arm it'],
   ['/away', 'work it builds on its own away shift'],
-  ['/flow', 'list workflows'],
-  ['/flow run name text', 'send one job down a workflow'],
+  ['/flow [run name text]', 'list workflows · send one job down one'],
   ['/version', 'the CLI and the station'],
-  ['/help', 'this list'],
-  ['ctrl+c', 'quit']
+  ['/help  ctrl+c', 'this list · quit']
 ];
 
 // the wordmark in neon red; the star in its A gets a hotter glint
@@ -153,9 +153,14 @@ function edgeR(g, xr, y, segs) { const w = segs.reduce((n, s) => n + width(s[0])
 function render(model, ui, size, now) {
   const W = Math.max(20, size.cols | 0), H = Math.max(8, size.rows | 0);
   const g = makeGrid(W, H);
+  // THE MOUSE (bin/lib/mouse.js): every span drawn that a click can act on, { x0, x1 (exclusive), y, act }, and the panes
+  // the wheel scrolls. The dashboard reads them off the screen it last painted, so a click lands on what is drawn there.
+  const hits = [], areas = {};
+  const hit = (x0, x1, y, act) => { if (act && y >= 0 && x1 > x0) hits.push({ x0, x1, y, act }); };
   if (W < 46 || H < 16) {
     g.put(0, 0, trunc('starnet needs at least 46×16 — this terminal is ' + W + '×' + H, W), 'am');
-    return g.out();
+    const small = g.out(); small.hits = hits; small.areas = areas;
+    return small;
   }
   const blink = ui.still || Math.floor(now / 530) % 2 === 0;
   const head = model.header(now);
@@ -176,7 +181,12 @@ function render(model, ui, size, now) {
       const w = form.reduce((n, s) => n + width(s[0]), 0);
       let x = W - w;
       if (x < xMin) continue;
-      for (const [t, s] of form) x = g.put(x, y, t, s);
+      for (const seg of form) {
+        const x0 = x;
+        x = g.put(x, y, seg[0], seg[1]);
+        if (seg === needs && head.needs) hit(x0, x, y, { t: 'needs' });
+        else if (seg === working) hit(x0, x, y, { t: 'page', page: 'crew' });
+      }
       return W - w;
     }
     return -1;
@@ -188,7 +198,9 @@ function render(model, ui, size, now) {
     let x = g.put(x0, y, 'NOW    ', 'lbl b');
     for (const r of busy) {
       if (x > W - 12) break;
+      const xn = x;
       x = g.put(x, y, r.name, 'hi b');
+      hit(xn, x, y, { t: 'agent', id: r.id });
       x = g.put(x, y, ' › ', 'dim');
       x = g.put(x, y, trunc(r.now || 'working', Math.max(8, Math.min(48, W - x - 3))), r.status.key === 'needs' ? 'am' : 'fg');
       x = g.put(x, y, '    ', '');
@@ -196,6 +208,7 @@ function render(model, ui, size, now) {
   }
   // FLOWS: the station's lines and their last job
   function drawFlows(x0, y) {
+    hit(x0, W, y, { t: 'page', page: 'work' });   // the line opens WORK, where every flow is listed whole
     let x = g.put(x0, y, 'FLOWS  ', 'lbl b');
     flows.forEach((f, i) => {
       const run = f.state === 'running';
@@ -287,7 +300,9 @@ function render(model, ui, size, now) {
       if (meter) meter.forEach((v, k) => g.put(sw - 8 + k, yy, '▌', v > RUN_FLOOR ? 'ph' : 'rule'));
       else if (tag) g.putR(sw - 2, yy, tag[0], tag[1]);
       if (foc) { g.put(1, yy, '▌', 'ph b'); g.hl(yy, 1, sw - 1, 'sel'); }
+      hit(1, sw - 1, yy, { t: 'agent', id: r.id });   // a click opens its chat (on the one already open: its menu)
     });
+    areas.crew = { x0: 0, x1: sw, y0: top, y1: bot + 1 };
     if (card) {
       // the rule carries its name and what it is doing, the camera's REC light at its end; under it, the feed
       g.put(0, listBot, '├' + '─'.repeat(sw - 2) + '┤', 'rule');
@@ -310,45 +325,76 @@ function render(model, ui, size, now) {
 
   // ---- COMMS: the focused agent's conversation, framed; the open ask's card sits at its foot ------------------------------
   const cx0 = sw, cx1 = W - 1;
+  // THE PAGES (Andrew 10-22, with the mouse): STAT · CREW · COMMS · WORK · SKILLS on the tab rule, each one the whole of this
+  // frame. COMMS is the conversation; SKILLS is the skills list (/skills); the awakening has none of them.
+  const page = wk ? '' : PAGES.indexOf(ui.page) >= 0 ? ui.page : '';
   frame(g, cx0, top, cx1, bot, 'rule');
   // with the tab rule above, the frames carry no titles of their own (the rule says each place once)
   if (tabsRow < 0) {
     if (wk) edgeL(g, cx0 + 2, top, [[wk.stage.title || 'THE AWAKENING', 'ph b']].concat(wk.stage.detail ? [[' · ' + wk.stage.detail, 'dim']] : []));
+    else if (page) edgeL(g, cx0 + 2, top, [[page.toUpperCase(), 'ph b']]);
     else edgeL(g, cx0 + 2, top, focusRow ? [['COMMS', 'ph b'], [' ▸ ', 'rule'], [focusRow.name, 'hi b']] : [['COMMS', 'ph b']]);
   }
   const right = [];
-  if (focusRow && focusRow.model && cx1 - cx0 > 60) right.push([focusRow.model, 'dim']);
-  if (ui.scroll > 0) right.push([(right.length ? '  ' : '') + '↑ ' + ui.scroll, 'am']);
-  if (!side && focusRow && !ui.wake) right.push([(right.length ? '  ' : '') + (rows.indexOf(focusRow) + 1) + '/' + rows.length, 'dim']);
-  if (right.length) edgeR(g, cx1 - 1, top, right);
+  const showModel = !page && focusRow && focusRow.model && cx1 - cx0 > 60;
+  if (showModel) right.push([focusRow.model, 'dim']);
+  if (!page && ui.scroll > 0) right.push([(right.length ? '  ' : '') + '↑ ' + ui.scroll, 'am']);
+  if (!page && !side && focusRow && !ui.wake) right.push([(right.length ? '  ' : '') + (rows.indexOf(focusRow) + 1) + '/' + rows.length, 'dim']);
+  if (right.length) {
+    edgeR(g, cx1 - 1, top, right);
+    // the model's name opens /model
+    const xs = cx1 - 1 - (right.reduce((n, s) => n + width(s[0]), 0) + 2) + 1;
+    if (showModel && !wk) hit(xs, xs + width(focusRow.model), top, { t: 'model' });
+  }
   // the trusted project every message from here works in, on the frame's foot (said whatever the width)
   if (ui.project && ui.project.label) edgeL(g, cx0 + 2, bot, [[trunc(ui.project.label, Math.max(8, cx1 - cx0 - 8)), 'dim']]);
   const ix0 = cx0 + 2, ix1 = cx1 - 2, iy0 = top + 1, iy1 = bot - 1;
   const cw = Math.min(ix1 - ix0 + 1, 96);
-  // an agent's ask first (a run is waiting on it); else the folder card, when the folder `starnet` started in is not trusted
-  const card = wk ? (wk.ask ? wakeCardLines(wk.ask, cw, now, ui.still) : []) : front ? cardLines(front, model, cw, H) : ui.trust ? trustLines(ui.trust, cw) : [];
+  // the agent menu you opened first; then an agent's ask (a run is waiting on it); else the folder card, when the folder
+  // `starnet` started in is not trusted
+  const menuAgent = !wk && ui.agentMenu ? model.state.agents.get(ui.agentMenu) : null;
+  const menuRow = menuAgent ? rows.find(r => r.id === menuAgent.id) : null;
+  const card = wk ? (wk.ask ? wakeCardLines(wk.ask, cw, now, ui.still) : []) : menuRow ? menuLines(menuAgent, menuRow, now, ui.still)
+    : front ? cardLines(front, model, cw, H) : ui.trust ? trustLines(ui.trust, cw) : [];
   const cardTop = iy1 - card.length + 1;
   const paneBot = card.length ? cardTop - 1 : iy1 + 1;
-  if (ui.picker) drawPicker(g, ui.picker, iy0, paneBot, ix0, ix1, blink);
+  if (ui.picker) drawPicker(g, ui.picker, iy0, paneBot, ix0, ix1, blink, hit);
   else if (ui.overlay) drawOverlay(g, ui.overlay, iy0, paneBot, ix0, ix1, tabsRow >= 0);
+  else if (page === 'stat') drawStatPage(g, ui, head, rows, flows, iy0, paneBot, ix0, ix1, hit);
+  else if (page === 'crew') drawCrewPage(g, model, rows, focusRow, ui, iy0, paneBot, ix0, ix1, now, hit);
+  else if (page === 'work') drawWorkPage(g, flows, focusRow, ui, iy0, paneBot, ix0, ix1, now, hit);
   else if (wk) drawWake(g, wk, iy0, paneBot, ix0, ix1, ui, now);
   else if (!focusRow) g.put(ix0, iy0, trunc(head.feed === 'connecting' ? 'connecting to the station…' : 'no agents on this station yet', ix1 - ix0 + 1), 'dim');
-  else drawPane(g, focusRow ? model.logOf(focusRow.id) : [], focusRow, iy0, paneBot, ix0, ix1, ui, now);
-  if (card.length) drawCard(g, card, cardTop, ix0, cw, blink);
+  else drawPane(g, focusRow ? model.logOf(focusRow.id) : [], focusRow, iy0, paneBot, ix0, ix1, ui, now, hit);
+  if (card.length) drawCard(g, card, cardTop, ix0, cw, blink, hit);
+  areas.comms = { x0: cx0, x1: cx1 + 1, y0: top, y1: bot + 1 };
 
   // ---- THE TAB RULE: the places on this screen, the one you are in hanging from the rule in a filled label ---------------
   if (tabsRow >= 0) {
     // a list laid over COMMS (/help) is the place you are in: the tab names it, so the list keeps the row
-    const here = ui.overlay && !ui.picker ? [ui.overlay.title, ''] : wk ? [wk.stage.title || 'THE AWAKENING', wk.stage.detail || ''] : [focusRow ? 'COMMS ▸ ' + focusRow.name : 'COMMS', ''];
-    const tabs = (side ? [['CREW', ' ' + rows.length]] : []).concat([['@here']]).concat(flows.length && !wk ? [['FLOWS', ' ' + flows.length]] : []);
+    // every tab is a page a click opens (the awakening's rule names its stage only). [id, label, count]
+    const skillsOpen = !!(ui.picker && ui.picker.kind === 'skills');
+    const hereId = wk || (ui.overlay && !ui.picker) ? 'comms' : skillsOpen ? 'skills' : page || 'comms';
+    const hereText = ui.overlay && !ui.picker ? ui.overlay.title : wk ? wk.stage.title || 'THE AWAKENING'
+      : hereId === 'comms' ? (focusRow ? 'COMMS ▸ ' + focusRow.name : 'COMMS') : hereId.toUpperCase();
+    const detail = wk ? wk.stage.detail || '' : '';
+    const all = wk ? (side ? [['crew', 'CREW', ' ' + rows.length]] : []).concat([['comms', 'COMMS', '']])
+      : [['stat', 'STAT', ''], ['crew', 'CREW', ' ' + rows.length], ['comms', 'COMMS', ''], ['work', 'WORK', flows.length ? ' ' + flows.length : ''], ['skills', 'SKILLS', '']];
+    // the place you are in keeps at least 8 cells of its name; a tab that leaves it less is left off, from the right
+    const tw = t => t[0] === hereId ? 0 : 1 + width(t[1]) + width(t[2]) + 1;
+    const fixedW = list => 2 + list.reduce((n, t) => n + tw(t) + 3, 0) + 4 + (detail ? width(detail) + 2 : 0);
+    const tabs = all.slice();
+    while (tabs.length > 1 && W - fixedW(tabs) < 8) { const i = tabs.map(t => t[0] !== hereId).lastIndexOf(true); if (i < 0) break; tabs.splice(i, 1); }
     let x = g.put(0, tabsRow, '──', 'rule');
     for (const t of tabs) {
-      if (t[0] === '@here') {
+      const xt = x;
+      if (t[0] === hereId) {
         x = g.put(x, tabsRow, '┘', 'rule');
-        x = g.put(x, tabsRow, ' ' + trunc(here[0], Math.max(8, W - x - 30)) + ' ', 'ink b hifill');
+        x = g.put(x, tabsRow, ' ' + trunc(hereText, Math.max(8, W - fixedW(tabs))) + ' ', 'ink b hifill');
         x = g.put(x, tabsRow, '└', 'rule');
-        if (here[1]) x = g.put(x, tabsRow, ' ' + trunc(here[1], Math.max(4, W - x - 24)) + ' ', 'dim');
-      } else { x = g.put(x, tabsRow, ' ' + t[0], 'dim b'); x = g.put(x, tabsRow, t[1] + ' ', 'dim'); }
+        if (detail) x = g.put(x, tabsRow, ' ' + trunc(detail, Math.max(4, W - x - 6)) + ' ', 'dim');
+      } else { x = g.put(x, tabsRow, ' ' + t[1], 'dim b'); x = g.put(x, tabsRow, t[2] + ' ', 'dim'); }
+      if (!wk) hit(xt, x, tabsRow, { t: 'tab', page: t[0], here: t[0] === hereId });
       x = g.put(x, tabsRow, '───', 'rule');
     }
     while (x < W) x = g.put(x, tabsRow, '─', 'rule');
@@ -358,14 +404,16 @@ function render(model, ui, size, now) {
     const sep = ['│', 'rule'];
     const parts = [];
     const st = ui.stats;   // the station's growth, read from its save (Xp.compute): level and how far into it
-    if (st && st.level) parts.push([[' LV ' + st.level + ' ', 'ink b hifill'], [' ', '']].concat(Array.from({ length: 10 }, (_, k) => ['▌', k < Math.round((st.frac || 0) * 10) ? 'ph' : 'rule'])).concat([['  XP ' + st.inLevel + '/' + st.span + '  ', 'dim']]));
+    // each part opens where it is said in full: the level and the spend on STAT, the crew on CREW, an ask at its agent
+    const part = (segs, act) => { segs.act = act; parts.push(segs); };
+    if (st && st.level) part([[' LV ' + st.level + ' ', 'ink b hifill'], [' ', '']].concat(Array.from({ length: 10 }, (_, k) => ['▌', k < Math.round((st.frac || 0) * 10) ? 'ph' : 'rule'])).concat([['  XP ' + st.inLevel + '/' + st.span + '  ', 'dim']]), { t: 'page', page: 'stat' });
     // the awakening before its agent exists has no crew to count
     if (!(wk && !wk.crew)) {
-      parts.push([['  CREW ' + rows.length + ' ', 'fg b']]);
-      parts.push([[(head.working ? spin(now, ui.still) + ' ' : '○ ') + head.working + ' WORKING ', head.working ? 'ph b' : 'dim']].map(s => ['  ' + s[0], s[1]]));
-      parts.push([[(head.needs ? '▲ ' : '△ ') + head.needs + ' NEEDS YOU ', head.needs ? 'am b' : 'dim']].map(s => ['  ' + s[0], s[1]]));
+      part([['  CREW ' + rows.length + ' ', 'fg b']], { t: 'page', page: 'crew' });
+      part([[(head.working ? spin(now, ui.still) + ' ' : '○ ') + head.working + ' WORKING ', head.working ? 'ph b' : 'dim']].map(s => ['  ' + s[0], s[1]]), { t: 'page', page: 'crew' });
+      part([[(head.needs ? '▲ ' : '△ ') + head.needs + ' NEEDS YOU ', head.needs ? 'am b' : 'dim']].map(s => ['  ' + s[0], s[1]]), head.needs ? { t: 'needs' } : null);
     }
-    parts.push([['  ' + costText(head.cost).toUpperCase() + ' ', 'fg']]);
+    part([['  ' + costText(head.cost).toUpperCase() + ' ', 'fg']], { t: 'page', page: 'stat' });
     const d = new Date(now), clock = ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ' ';
     const room = W - width(clock) - 1;
     let x = 0, drawn = 0;
@@ -373,7 +421,9 @@ function render(model, ui, size, now) {
       const w = segs.reduce((n, s) => n + width(s[0]), 0) + (drawn ? 1 : 0);
       if (x + w > room) return;   // what does not fit is left out whole, never cut
       if (drawn++) x = g.put(x, statY, sep[0], sep[1]);
+      const xs = x;
       for (const [t, s] of segs) x = g.put(x, statY, t, s);
+      if (!wk) hit(xs, x, statY, segs.act);
     });
     g.putR(W, statY, clock, 'ink b hifill');
   }
@@ -394,18 +444,136 @@ function render(model, ui, size, now) {
     const t = wk
       ? (wk.ask ? ((wk.ask.options || []).length ? '1-' + wk.ask.options.length + ' pick · ' : '') + (wk.ask.custom ? 'or type your own + enter · ' : '') + 'ctrl+c pauses setup'
         : wk.typing ? 'any key shows the rest' : 'ctrl+c pauses setup')
+      : menuRow ? 'o open chat · m model · n new chat · h history' + (menuAgent.runs && menuAgent.runs.size ? ' · s stop' : '') + ' · esc close'
       : front
       ? (front.question ? (front.question.options.length ? '1-' + front.question.options.length + ' pick · ' : '') + 'type an answer + enter · esc clears' : 'y allow once · ' + (canAlways(front) ? 'a always · ' : '') + 'n deny · v ' + (front.view ? 'hide' : 'view') + ' · ' + (narrow ? 'tab agent' : 'tab next agent'))
       : ui.trust ? 'y trust this folder · n not now · or just type to talk'
-        : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  ctrl+c quit';
+        : page ? PAGE_HINT[page] + '  ·  esc back to COMMS  ·  f1-f5 pages'
+          : narrow ? 'tab agent · /model · /new · /help · ctrl+c quit' : 'tab next agent  ·  ↑ ↓ history  ·  /model  ·  /new  ·  /resume  ·  /help  ·  f1-f5 pages  ·  ctrl+c quit';
     g.put(0, hintY, trunc(t, W), 'dim');
   }
   const out = g.out();
   out.avatar = avatar;
+  out.hits = hits;
+  out.areas = areas;
   return out;
 }
 
 const AGENT_ROWS = 9;   // the titled rule above it + its 8-row scene
+
+// ---- THE PAGES: STAT, CREW and WORK, each the whole COMMS frame (SKILLS is the /skills list; COMMS the conversation) ----
+const PAGES = ['stat', 'crew', 'work'];
+const PAGE_HINT = {
+  stat: 'the station: its level, spend, crew and work',
+  crew: 'click an agent to open its chat · right-click one for its menu',
+  work: 'click a workflow to send it a job'
+};
+const padR = (s, n) => s + ' '.repeat(Math.max(0, n - width(s)));
+// a page's rows from `top`, scrolled by ui.pageScroll: { label, segs, act, on, strip } (null = a blank row). A labelled row
+// keeps a 12-cell label column; a strip runs the frame's width; a row with an act is clicked as a whole
+function drawPageRows(g, list, ui, top, bot, x0, x1, hit) {
+  const H = bot - top;
+  if (H <= 0) return;
+  ui.pageScroll = Math.min(Math.max(0, ui.pageScroll | 0), Math.max(0, list.length - H));
+  list.slice(ui.pageScroll, ui.pageScroll + H).forEach((r, i) => {
+    if (!r) return;
+    const y = top + i;
+    if (r.strip) { g.put(x0 - 1, y, padR(' ' + r.strip, x1 - x0 + 3), r.st || 'lbl b sel'); return; }
+    let x = x0;
+    if (r.label != null) { g.put(x0, y, trunc(r.label, 11), 'lbl b'); x = x0 + 12; }
+    for (const [t, s] of r.segs) { const room = x1 + 1 - x; if (room <= 0) break; x = g.put(x, y, trunc(t, room), s); }
+    if (r.on) { g.put(x0 - 1, y, '▌', 'ph b'); g.hl(y, x0, x1 + 1, 'sel'); }
+    if (r.act) hit(x0 - 1, x1 + 1, y, r.act);
+  });
+}
+// text the station wrote, wrapped under a label (the label on its first row only)
+function labelled(L, label, lines, style, w) {
+  let first = true;
+  for (const t of lines) for (const ln of wrap(String(t), w)) { L.push({ label: first ? label : '', segs: [[ln, style]] }); first = false; }
+}
+// STAT: the station's level (its save's growth record, read by the app's xp.js), its spend, its crew and work, and the
+// ledger's own words (/usage). Nothing here is counted by the terminal that the station did not say.
+function drawStatPage(g, ui, head, rows, flows, top, bot, x0, x1, hit) {
+  const L = [], w = Math.max(10, x1 - x0 + 1 - 12);
+  const st = ui.stats;
+  if (st && st.level) {
+    const lit = Math.max(0, Math.min(10, Math.round((st.frac || 0) * 10)));
+    L.push({ label: 'LEVEL', segs: [[' LV ' + st.level + ' ', 'ink b hifill'], ['  ', ''], ['▌'.repeat(lit), 'ph'], ['▌'.repeat(10 - lit), 'rule'], ['  XP ' + st.inLevel + '/' + st.span, 'hi'], ['  · ' + st.toNext + ' XP to level ' + (st.level + 1), 'dim']] });
+    L.push({ label: '', segs: [[st.lifetimeXp + ' XP in all · ' + st.tasksDone + ' task' + (st.tasksDone === 1 ? '' : 's') + ' shipped', 'fg']] });
+    L.push({ label: 'CONFIDENCE', segs: [[st.known ? st.confLabel + ' · ' + st.band : 'calibrating', st.known ? 'hi' : 'dim'], ['  · ▲ ' + st.positiveFeedback + '  ▼ ' + st.negativeFeedback + ' rated', 'dim']] });
+  } else L.push({ label: 'LEVEL', segs: [['not recorded on this station yet', 'dim']] });
+  L.push(null);
+  L.push({ label: 'SPEND', segs: [[costText(head.cost), 'hi']].concat(head.cost && head.cost.cap ? [['  · capped at $' + head.cost.cap.toFixed(2) + ' a day', 'dim']] : []) });
+  L.push({ label: 'CREW', act: { t: 'page', page: 'crew' }, segs: [[rows.length + ' agent' + (rows.length === 1 ? '' : 's'), 'hi'], ['  · ' + head.working + ' working · ' + head.needs + ' need' + (head.needs === 1 ? 's' : '') + ' you', 'dim']] });
+  const running = flows.filter(f => f.state === 'running').length, shipped = flows.reduce((n, f) => n + (Number(f.shipped) || 0), 0);
+  L.push({ label: 'WORK', act: { t: 'page', page: 'work' }, segs: [[flows.length + ' workflow' + (flows.length === 1 ? '' : 's'), 'hi'], ['  · ' + running + ' running · ' + shipped + ' shipped', 'dim']] });
+  L.push({ label: 'STATION', segs: [[ui.stationLabel || '', 'fg']] });
+  L.push(null);
+  const u = ui.pageData && ui.pageData.usage;
+  if (!u || u.loading) L.push({ label: 'USAGE', segs: [['reading the station ledger…', 'dim']] });
+  else if (u.error) L.push({ label: 'USAGE', segs: [[u.error, 'am']] });
+  else labelled(L, 'USAGE', (u.title ? [u.title] : []).concat(u.lines || []), 'fg', w);
+  drawPageRows(g, L, ui, top, bot, x0, x1, hit);
+}
+// CREW: every agent on one line — its state, its model, what it is doing — who waits on you first. A click opens its chat.
+function drawCrewPage(g, model, rows, focusRow, ui, top, bot, x0, x1, now, hit) {
+  const Wd = x1 - x0 + 1, nameW = 18, stW = 14, modelW = Wd >= 100 ? 30 : Wd >= 72 ? 18 : 0;
+  const L = [{ segs: [['  ' + padR('NAME', nameW), 'dim b'], [padR('STATE', stW), 'dim b']].concat(modelW ? [[padR('MODEL', modelW), 'dim b']] : []).concat([['NOW', 'dim b']]) }];
+  const order = rows.filter(r => r.status.key === 'needs').concat(rows.filter(r => r.status.key === 'working'), rows.filter(r => r.status.key !== 'needs' && r.status.key !== 'working'));
+  for (const r of order) {
+    const a = model.state.agents.get(r.id) || {};
+    const [lamp, lc] = lampOf(r.status, true, now, ui.still);
+    const [word, wc, more] = stateWords(r.status, now, ui.still);
+    const said = word.replace(/^\S+ /, '') + (more ? ' ' + more : '');
+    L.push({ on: r === focusRow, act: { t: 'agent', id: r.id }, segs: [[lamp + ' ', lc], [padR(trunc(r.name, nameW - 1), nameW), r === focusRow || r.status.key !== 'idle' ? 'hi b' : 'fg'], [padR(trunc(said, stW - 1), stW), wc]]
+      .concat(modelW ? [[padR(trunc((a.provider ? a.provider + ' · ' : '') + (a.model || '—'), modelW - 1), modelW), 'dim']] : [])
+      .concat([[r.now || '', r.status.key === 'needs' ? 'am' : 'fg']]) });
+  }
+  drawPageRows(g, L, ui, top, bot, x0, x1, hit);
+}
+// WORK: the station's workflows (a click readies a job for one), its routines (the scheduler's own list) and the away shift
+// of the agent shown (/away list)
+function drawWorkPage(g, flows, focusRow, ui, top, bot, x0, x1, now, hit) {
+  const L = [], D = ui.pageData || {}, w = Math.max(10, x1 - x0 - 1);
+  L.push({ strip: 'WORKFLOWS ' + flows.length });
+  if (!flows.length) L.push({ segs: [['none yet · build a line in the app (INBOX → steps → OUTBOX)', 'dim']] });
+  for (const f of flows) {
+    const run = f.state === 'running';
+    const lamp = run ? spin(now, ui.still) : f.state === 'done' ? '✓' : f.state === 'failed' || f.state === 'interrupted' ? '✗' : '○';
+    const said = run ? (f.agents.length ? f.agents.join(', ') + ' · ' : '') + f.text.replace(/^[A-Z0-9 ]+ · /, '') : f.text;
+    L.push({ act: { t: 'flow', name: f.name }, segs: [[lamp + ' ', run ? 'ph b' : f.state === 'done' ? 'ok' : lamp === '✗' ? 'bad' : 'dim'], [padR(trunc(f.name, 27), 28), run ? 'hi b' : 'fg'], [said, run ? 'ph' : 'dim'], [f.shipped ? '  · ' + f.shipped + ' shipped' : '', 'dim']] });
+  }
+  L.push(null);
+  const c = D.cron;
+  L.push({ strip: 'ROUTINES' + (c && c.jobs ? ' ' + c.jobs.length + ' · scheduler ' + (c.halted ? 'stopped (E-STOP)' : c.enabled ? 'on' : 'off') : '') });
+  if (!c || c.loading) L.push({ segs: [['reading the routines…', 'dim']] });
+  else if (c.error) L.push({ segs: [[c.error, 'am']] });
+  else if (!c.jobs.length) L.push({ segs: [['none yet · /routine creates one', 'dim']] });
+  else for (const j of c.jobs) {
+    L.push({ segs: [[(j.inFlight ? spin(now, ui.still) : j.enabled ? '●' : '○') + ' ', j.inFlight ? 'ph b' : j.enabled ? 'ok' : 'dim'], [padR(trunc(j.name, 27), 28), j.enabled ? 'hi' : 'dim'], [j.when, 'fg'],
+      [(j.agent ? ' · ' + j.agent : '') + (j.inFlight ? ' · running now' : j.enabled ? (j.next ? ' · next ' + j.next : '') : ' · paused'), 'dim']] });
+  }
+  L.push(null);
+  const a = D.away;
+  L.push({ strip: 'AWAY SHIFT' + (a && a.agent ? ' · ' + a.agent : focusRow ? ' · ' + focusRow.name : '') });
+  if (!a || a.loading) L.push({ segs: [['reading the away shift…', 'dim']] });
+  else if (a.error) L.push({ segs: [[a.error, 'am']] });
+  else for (const t of (a.title ? [a.title] : []).concat(a.lines || [])) for (const ln of wrap(String(t), w)) L.push({ segs: [[ln, t === a.title ? 'hi b' : 'fg']] });
+  drawPageRows(g, L, ui, top, bot, x0, x1, hit);
+}
+// THE AGENT MENU (a right-click on an agent, or a click on the one already shown): what you can do with it, a card at the
+// foot of COMMS — each line a click, or the letter in brackets
+function menuLines(a, row, now, still) {
+  const lines = [{ kind: 'top', title: String(a.name).toUpperCase(), glyph: '▸ ' }];
+  const [word, wc, more] = stateWords(row.status, now, still);
+  lines.push({ kind: 'body', segs: [[(a.provider ? a.provider + ' · ' : '') + (a.model || 'no model set'), 'dim'], ['   ' + word + (more ? ' ' + more : ''), wc]] });
+  const n = a.runs ? a.runs.size : 0;
+  const items = [['o', 'OPEN CHAT', 'talk to ' + a.name + ' in COMMS'], ['m', 'MODEL', 'switch the model it runs on'], ['n', 'NEW CHAT', 'start a fresh conversation with it'], ['h', 'HISTORY', 'its earlier conversations from this terminal']];
+  if (n) items.push(['s', 'STOP', 'stop its ' + n + ' run' + (n === 1 ? '' : 's')]);
+  for (const [k, label, what] of items) lines.push({ kind: 'body', act: { t: 'menu', key: k }, segs: [[padR('[' + k.toUpperCase() + '] ' + label, 15), 'am b'], [what, 'fg']] });
+  lines.push({ kind: 'bottom', keys: [['CLICK ONE OR PRESS ITS KEY', 'am'], ['[ESC] CLOSE', 'am b', { t: 'menu', key: 'escape' }]] });
+  return lines;
+}
 // what the agent in the card is doing, in words on its rule: [word, style, a second word]
 function stateWords(s, now, still) {
   if (s.key === 'working') return [spin(now, still) + ' working', 'ph b', fmtDur(now - (s.since || now))];
@@ -509,7 +677,7 @@ function paneRows(log, focusRow, tw, now) {
       const segs = [['↳ ', 'dim'], [e.name, 'ph'], ['  ' + e.args, 'fg']];
       if (e.running) segs.push(['  ' + ['·  ', '·· ', '···'][Math.floor(now / 320) % 3], 'dim']);
       else if (e.res) segs.push(['  · ' + e.res, e.ok === false ? 'bad' : 'dim']);
-      out.push({ label: '', segs });
+      out.push({ label: '', segs, file: e.file || '', runId: e.runId || '', root: e.root });   // a file tool's line: ctrl+click opens the file
       return;
     }
     let label = '', lc = '', tc = 'fg', text = e.text, note = '';
@@ -543,7 +711,7 @@ function paneRows(log, focusRow, tw, now) {
   return out;
 }
 // the conversation inside [x0, x1] (inclusive), rows top..bot-1, newest at the bottom; scrolls by ui.scroll
-function drawPane(g, log, focusRow, top, bot, x0, x1, ui, now) {
+function drawPane(g, log, focusRow, top, bot, x0, x1, ui, now, hit) {
   const H = bot - top;
   if (H <= 0) return;
   // the label column fits the agent's name and any command whose answer is shown (/routine, /version …)
@@ -559,6 +727,7 @@ function drawPane(g, log, focusRow, top, bot, x0, x1, ui, now) {
     if (r.label) g.put(x0, yy, trunc(r.label, L - 1), r.lc);
     let x = x0 + L;
     for (const [t, s] of r.segs) { const room = x1 + 1 - x; if (room <= 0) break; x = g.put(x, yy, trunc(t, room), s); }
+    if (r.file && hit && focusRow) hit(x0 + L, x, yy, Object.assign({ t: 'file', path: r.file, runId: r.runId, agentId: focusRow.id }, typeof r.root === 'string' ? { root: r.root } : {}));
   });
 }
 /* A PICKER (/model, /resume): a filterable list inside the COMMS frame. p: { title, note, filter, sel, items: [{ cols:
@@ -568,7 +737,7 @@ function pickerView(p) {
   const terms = String(p.filter || '').toLowerCase().split(/\s+/).filter(Boolean);
   return (p.items || []).filter(it => terms.every(t => String(it.search || '').indexOf(t) >= 0));
 }
-function drawPicker(g, p, top, bot, x0, x1, blink) {
+function drawPicker(g, p, top, bot, x0, x1, blink, hit) {
   let y = top;
   let x = g.put(x0, y, p.title || 'PICK', 'hi b');
   if (p.note) g.putR(x1 + 1, y, trunc(p.note, Math.max(0, x1 - x - 3)), 'dim');
@@ -590,19 +759,26 @@ function drawPicker(g, p, top, bot, x0, x1, blink) {
     let xx = x0 + 2;
     for (const [t, s] of it.cols) { if (xx > x1) break; xx = g.put(xx, yy, trunc(t, Math.max(0, x1 + 1 - xx)), on ? 'hi b' : s); }
     if (on) { g.put(x0 - 1 < 0 ? x0 : x0 - 1, yy, '▌', 'ph b'); g.hl(yy, x0, x1 + 1, 'sel'); }
+    if (hit) hit(x0, x1 + 1, yy, { t: 'pick', i: start + i });   // a click chooses it, as enter does
   });
   g.put(x0, bot - 1, trunc(p.foot || '↑ ↓ pick · enter choose · esc close · type to filter', x1 - x0 + 1), 'dim');
 }
+// a list laid over COMMS (/help, /status): from o.scroll on, as many as fit; the foot says what is above and below (the
+// wheel and pgup / pgdn move it), never a list silently cut short
 function drawOverlay(g, o, top, bot, x0, x1, titled) {
   let y = top;
   if (!titled) g.put(x0, y++, o.title, 'hi b');
-  const wide = x1 - x0 >= 66;
-  for (const [k, d] of o.items) {
-    if (y >= bot - 1) break;
+  const wide = x1 - x0 >= 66, per = wide ? 1 : 2;
+  const fit = Math.max(1, Math.floor((bot - 1 - y) / per));
+  o.scroll = Math.max(0, Math.min(o.items.length - fit, o.scroll | 0));
+  const shown = o.items.slice(o.scroll, o.scroll + fit);
+  for (const [k, d] of shown) {
     if (wide) { g.put(x0 + 2, y, trunc(k, 22), 'ph'); g.put(x0 + 26, y, trunc(d, x1 - x0 - 25), 'fg'); y++; }
-    else { g.put(x0 + 2, y++, trunc(k, x1 - x0 - 1), 'ph'); if (y < bot - 1) g.put(x0 + 4, y++, trunc(d, x1 - x0 - 3), 'fg'); }
+    else { g.put(x0 + 2, y++, trunc(k, x1 - x0 - 1), 'ph'); g.put(x0 + 4, y++, trunc(d, x1 - x0 - 3), 'fg'); }
   }
-  if (o.foot && y < bot) g.put(x0 + 2, bot - 1, trunc(o.foot, x1 - x0 - 1), 'dim');
+  const above = o.scroll, below = o.items.length - o.scroll - shown.length;
+  const more = (above ? '↑ ' + above + ' above · ' : '') + (below ? '↓ ' + below + ' more · ' : '') + (above || below ? 'the wheel or pgup pgdn scrolls · ' : '');
+  if ((o.foot || more) && y <= bot - 1) g.put(x0 + 2, bot - 1, trunc(more + (o.foot || ''), x1 - x0 - 1), more ? 'am' : 'dim');
 }
 
 // the open ask as card rows: [{ text, style, kind }], for a card `cw` cells wide
@@ -613,7 +789,7 @@ function cardLines(q, model, cw, H) {
   const inner = cw - 4;
   if (q.question) {
     wrap(q.question.text, inner).slice(0, 3).forEach(t => lines.push({ kind: 'body', segs: [[t, 'hi']] }));
-    q.question.options.forEach((o, i) => lines.push({ kind: 'body', segs: [[(i + 1) + '  ', 'am b'], [o + (o === q.question.recommended ? '  (suggested)' : ''), 'fg']] }));
+    q.question.options.forEach((o, i) => lines.push({ kind: 'body', act: { t: 'answer', i }, segs: [[(i + 1) + '  ', 'am b'], [o + (o === q.question.recommended ? '  (suggested)' : ''), 'fg']] }));
   } else {
     lines.push({ kind: 'body', segs: [[q.tool, 'ph b'], ['  ' + q.summary, 'hi']] });
     if (q.view) {
@@ -639,7 +815,7 @@ function trustLines(t, cw) {
   if (t.folder && t.folder !== t.root) lines.push({ kind: 'body', segs: [['you are in ' + t.folder.slice(String(t.root).replace(/[\\/]+$/, '').length + 1) + ' · the whole project is trusted', 'dim']] });
   wrap('the crew can read and change files here · it joins PROJECTS in the app', cw - 4).forEach(s => lines.push({ kind: 'body', segs: [[s, 'fg']] }));
   wrap('not now: each agent works in its own workspace', cw - 4).forEach(s => lines.push({ kind: 'body', segs: [[s, 'dim']] }));
-  lines.push({ kind: 'bottom', keys: [['[Y] TRUST', 'am b'], ['[N] NOT NOW', 'am b']] });
+  lines.push({ kind: 'bottom', keys: [['[Y] TRUST', 'am b', { t: 'key', key: 'y' }], ['[N] NOT NOW', 'am b', { t: 'key', key: 'n' }]] });
   return lines;
 }
 /* THE AWAKENING in COMMS (bin/lib/awaken.js): who said each line (STARNET before the agent exists, then the agent; YOU
@@ -679,21 +855,22 @@ function wakeCardLines(ask, cw, now, still) {
   const opts = ask.options || [];
   const lines = [{ kind: 'top', title: ask.waiting ? 'SIGN IN' : opts.length ? 'YOUR CHOICE' : 'YOUR ANSWER' }];
   if (ask.waiting) lines.push({ kind: 'body', segs: [[spin(now, still) + ' ' + ask.waiting, 'am']] });
-  opts.forEach((o, i) => lines.push({ kind: 'body', segs: [[(i + 1) + '  ', 'am b'], [String(o.label || ''), o.skip ? 'dim' : 'fg']] }));
+  opts.forEach((o, i) => lines.push({ kind: 'body', act: { t: 'wake', i }, segs: [[(i + 1) + '  ', 'am b'], [String(o.label || ''), o.skip ? 'dim' : 'fg']] }));
   if (ask.custom) lines.push({ kind: 'body', segs: [['›  ', 'am'], ['or type ' + (ask.customLabel || 'your own answer') + ' and press enter' + (ask.optional && !opts.some(o => o.skip) ? ' (enter alone skips)' : ''), 'dim']] });
   const keys = [];
   if (opts.length) keys.push(['[1-' + opts.length + '] PICK', 'am b']);
-  if (ask.custom) keys.push(['[ENTER] SEND WHAT YOU TYPED', 'am b']);
+  if (ask.custom) keys.push(['[ENTER] SEND WHAT YOU TYPED', 'am b', { t: 'enter' }]);
   lines.push({ kind: 'bottom', keys });
   return lines;
 }
-function drawCard(g, lines, y0, x0, cw, blink) {
+function drawCard(g, lines, y0, x0, cw, blink, hit) {
   const xr = x0 + cw - 1;
+  const at = hit || (() => {});
   lines.forEach((l, i) => {
     const y = y0 + i;
     if (l.kind === 'top') {
       let x = g.put(x0, y, '┌─ ', 'am');
-      x = g.put(x, y, '▲ ', blink ? 'am b' : 'am faint');
+      x = g.put(x, y, l.glyph || '▲ ', l.glyph || blink ? 'am b' : 'am faint');
       if (l.title) x = g.put(x, y, l.title + ' ', 'hi b');
       else { x = g.put(x, y, String(l.name).toUpperCase(), 'hi b'); x = g.put(x, y, ' ASKS ', 'am b'); }
       while (x < xr) x = g.put(x, y, '─', 'am');
@@ -702,15 +879,18 @@ function drawCard(g, lines, y0, x0, cw, blink) {
       g.put(x0, y, '│', 'am'); g.put(xr, y, '│', 'am');
       let x = x0 + 2;
       for (const [t, s] of l.segs) { const room = xr - 1 - x; if (room <= 0) break; x = g.put(x, y, trunc(t, room), s); }
+      at(x0 + 1, xr, y, l.act);   // an option, or a menu line: the whole line is the click
     } else {
       let x = g.put(x0, y, '└─ ', 'am');
-      if (l.keys) l.keys.forEach(([t, s], j) => { if (j) x = g.put(x, y, '   ', 'am'); x = g.put(x, y, t, s); });
+      // each key is a button: a click on it is the key pressed
+      const key = (t, s, act) => { const xs = x; x = g.put(x, y, t, s); at(xs, x, y, act); };
+      if (l.keys) l.keys.forEach(([t, s, act], j) => { if (j) x = g.put(x, y, '   ', 'am'); key(t, s, act); });
       else if (l.question) x = g.put(x, y, 'PICK A NUMBER OR TYPE AN ANSWER', 'am b');
       else {
-        x = g.put(x, y, '[Y] ALLOW ONCE', 'am b'); x = g.put(x, y, '   ', 'am');
-        if (l.always) { x = g.put(x, y, '[A] ALWAYS', 'am b'); x = g.put(x, y, '   ', 'am'); }
-        x = g.put(x, y, '[N] DENY', 'am b'); x = g.put(x, y, '   ', 'am');
-        x = g.put(x, y, l.view ? '[V] HIDE' : '[V] VIEW', 'am b');
+        key('[Y] ALLOW ONCE', 'am b', { t: 'key', key: 'y' }); x = g.put(x, y, '   ', 'am');
+        if (l.always) { key('[A] ALWAYS', 'am b', { t: 'key', key: 'a' }); x = g.put(x, y, '   ', 'am'); }
+        key('[N] DENY', 'am b', { t: 'key', key: 'n' }); x = g.put(x, y, '   ', 'am');
+        key(l.view ? '[V] HIDE' : '[V] VIEW', 'am b', { t: 'key', key: 'v' });
       }
       x = g.put(x, y, ' ', 'am');
       const tl = l.more > 0 ? ' +' + l.more + ' more ' : '';
@@ -785,4 +965,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, trustLines, wakeCardLines, pickerView, stateWords };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, trustLines, wakeCardLines, menuLines, pickerView, stateWords, PAGES };
