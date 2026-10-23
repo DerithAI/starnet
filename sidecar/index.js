@@ -26580,7 +26580,16 @@ async function handleProviderModels(req, res) {
   if (!getProviderProfile(id)) return json(404, { models: [], error: 'unknown provider' });
   try {
     const models = await listModelsForProvider(id, { baseUrl });
-    json(200, { provider: id, models: models.map(publicModel) });
+    // runWindow (context-cost-1023): the window a run on THIS route works in — the model's own, stopped at the
+    // long-context price tier the spend caps do not price (prices.js promptTierCeiling, as runOnceCore sizes the run's
+    // context manager). /compress names it, so "Chat memory" never measures against a 1M window a run folds inside 200k.
+    const unmetered = !!(getProviderProfile(id) || {}).unmetered;
+    json(200, { provider: id, models: models.map(m => {
+      const row = publicModel(m);
+      const tier = promptTierCeiling(id, row.id, unmetered);
+      if (row.context_length > 0) row.runWindow = (tier > 0 && tier < row.context_length) ? tier : row.context_length;
+      return row;
+    }) });
   } catch (e) {
     json(200, { provider: id, models: [], error: (e && e.message) || 'model catalog unavailable', code: (e && e.code) || '' });
   }
