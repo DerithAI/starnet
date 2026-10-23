@@ -8,6 +8,7 @@ The lighter, sharper update. StarNet now uses a fraction of the CPU it did: an i
 
 - **A still station draws 30 times a second instead of 60.** The moment anything moves (an agent walking or typing, a crate on a belt, the camera, your mouse) it goes straight back to 60, and 144 while you pan. Minimized or in the tray it still draws nothing.
 - **The idle camera settles.** When the camera has finished a move it stops instead of creeping, so the floor's shadows and belts stop redrawing every frame.
+- **Pulsing lights no longer redraw the whole window.** A blinking cursor, a failed session's dot or the dock's glow used to make the entire window, frosted glass and all, redraw at your screen's full refresh rate, all day long. They now pulse in small steps, and the window only redraws when a step changes.
 - **Background work is almost gone.** An idle station used to re-read and re-parse your whole station file dozens of times a minute. It now reads from memory: on a large station the background process went from about 10–30% of a CPU core to under 1%, and the short freezes that came with it are gone.
 - **Polls slow down while you're away.** When the window is hidden or you've stepped away, StarNet checks for updates every 30 seconds instead of every second, and catches up the instant you're back. What you see on screen keeps its normal pace.
 - **Less waste per frame:** lighting, the starfield, walking paths and the review crates no longer rebuild work they already did.
@@ -33,6 +34,7 @@ The lighter, sharper update. StarNet now uses a fraction of the CPU it did: an i
 
 - **The QUEST LOG is a battle pass:** an ASCII tier track, rank titles, a daily streak, a season and weekly challenges aimed at your real goal.
 - **StarNet in the terminal.** `starnet` opens a dashboard of your station: your crew, live runs, approvals with an always-allow key, slash commands and your skills, and it works in the folder you launched it from (asking first if that folder isn't trusted). `starnet -p "…"` runs one task headlessly, now with the agent's full tools.
+- **The CLI has the station's terminal look:** a tab line under the logo that shows where you are, your crew grouped as NEEDS YOU, WORKING and STANDING BY, and a stat bar along the bottom with your station's level and XP, the crew, spend and the clock.
 - **Agents can show you pictures in COMMS.** An image an agent made or found appears as the picture, not a link.
 - **Scheduled routines can make images** when you turn on ▣ ALLOW IMAGES, and a chat-bound routine's reply carries its images and files to Telegram.
 - **Your own /commands work in group chats** as /command@yourbot and appear in Telegram's "/" menu, and also on Discord, Slack, Matrix and Signal.
