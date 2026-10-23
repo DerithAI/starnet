@@ -18,6 +18,7 @@
    stops it, and the quit key says so first. */
 'use strict';
 
+const os = require('node:os');
 const http = require('node:http');
 const readline = require('node:readline');
 const core = require('./cli-core.js');
@@ -1010,6 +1011,11 @@ function runDashboard(station, opts) {
     try { out.write((mouseOn ? mouse.DISABLE : '') + '\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1049l'); } catch (_) {}
   }
   const onExit = () => { if (!stopped) leaveScreen(); };
+  /* A SIGTERM (the desktop app's boot reaper on macOS, a `kill`, an update) or a SIGHUP kills node WITHOUT 'exit', so
+     onExit never ran and the terminal stayed on the alternate screen with mouse reporting on. Give it back, then end
+     with the signal's conventional code (128 + its number); starnet.js still stops a station it booted. */
+  const SIGNALS = ['SIGTERM', 'SIGHUP'];
+  const onSignal = sig => stop(128 + ((os.constants.signals && os.constants.signals[sig]) || 15));
   function stop(code) {
     if (stopped) return;
     stopped = true;
@@ -1020,12 +1026,14 @@ function runDashboard(station, opts) {
     for (const m of mine.values()) { try { if (m.req) m.req.destroy(); } catch (_) {} }
     leaveScreen();
     process.removeListener('exit', onExit);
+    for (const s of SIGNALS) process.removeListener(s, onSignal);
     resolveExit(code || 0);
   }
 
   // ---- go ----------------------------------------------------------------------------------------------------
   (async () => {
     process.on('exit', onExit);
+    for (const s of SIGNALS) process.on(s, onSignal);
     term = await probeTerminal(400);
     buildImage();
     enterScreen();

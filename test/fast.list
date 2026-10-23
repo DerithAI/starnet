@@ -1189,6 +1189,7 @@ test/cli.test.js
 test/cli.stop-child.test.js
 test/cli-desktop-closed.test.js
 test/cli-dashboard.test.js
+test/cli-dashboard-signal.test.js
 test/cli-launcher.test.js
 test/cli-link.test.js
 test/cli-path-hook.test.js
