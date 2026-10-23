@@ -191,7 +191,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   A.ok(logo.word.every((l, i) => tui.toPlain(ascii[i]).indexOf(l.trim()) >= 0) && starCell && /logohi/.test(starCell[1]), 'STARNET_LOGO=ascii draws the drawn-letter version, the star in its A glinting');
   // THE PIP-BOY CHROME (Andrew's pick 10-22): a tab rule under the logo names the places once, the one you are in hanging
   // from it; the frames under it carry no titles; CREW is grouped by kind under strips; a stat bar runs along the foot
-  A.ok(/^── CREW 3 ───┘ COMMS ▸ ASTRA └─+$/.test(text[3]), 'the tab rule under the logo: CREW 3, and COMMS ▸ ASTRA hanging from it as the place you are in: ' + text[3]);
+  A.ok(/^── STAT ─── CREW 3 ───┘ COMMS ▸ ASTRA └─── WORK ─── SKILLS ─+$/.test(text[3]), 'the tab rule under the logo: CREW 3, and COMMS ▸ ASTRA hanging from it as the place you are in: ' + text[3]);
   const tabSeg = rows[3].find(([t]) => /COMMS ▸ ASTRA/.test(t));
   A.ok(tabSeg && /ink/.test(tabSeg[1]) && /hifill/.test(tabSeg[1]), 'the tab you are in is a filled label');
   const crewTop = text.findIndex(l => /^╭─+╮╭─/.test(l));
@@ -303,7 +303,13 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   }
   A.ok(/needs at least/.test(tui.toPlain(screen(m, {}, 40, 10, T0)[0])), 'a terminal too small says so');
   const help = screen(m, { overlay: { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' } }, 110, 34, T0).map(tui.toPlain);
-  A.ok(/┘ COMMANDS └/.test(help[3]) && help.some(l => /\/flow run name text/.test(l)), '/help lists every command, even beside an open ask (the tab names the list, so the list keeps the row)');
+  A.ok(/┘ COMMANDS └/.test(help[3]) && help.some(l => /right-click +an agent: its menu/.test(l)), '/help, beside an open ask: the tab names the list, so the list keeps the row');
+  const footY = help.findIndex(l => /↓ \d+ more · the wheel or pgup pgdn scrolls · any key closes this/.test(l));
+  A.ok(footY > 0 && footY < help.findIndex(l => /ASTRA ASKS/.test(l)), 'what does not fit is said, never cut silently: ' + help[footY]);
+  const ov = { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this', scroll: 99 };
+  const helpEnd = screen(m, { overlay: ov }, 110, 34, T0).map(tui.toPlain);
+  A.ok(helpEnd.some(l => /\/flow \[run name text\]/.test(l)) && helpEnd.some(l => /\/help  ctrl\+c +this list · quit/.test(l)) && helpEnd.some(l => /↑ \d+ above/.test(l)) && ov.scroll === tui.HELP.length - 20, 'scrolled to its end, every command is there');
+  A.ok(!screen(crew(), { overlay: { title: 'COMMANDS', items: tui.HELP, foot: 'any key closes this' } }, 110, 40, T0).map(tui.toPlain).some(l => /more · /.test(l)), 'a list that fits says nothing more');
   A.eq(tui.colorLevel({ NO_COLOR: '1', COLORTERM: 'truecolor' }, true), 0, 'NO_COLOR wins');
   A.eq(tui.colorLevel({ COLORTERM: 'truecolor' }, true), 3, '24-bit where the terminal says so');
   A.eq(tui.colorLevel({}, false), 0, 'no TTY, no color');
@@ -365,7 +371,7 @@ function screen(m, ui, cols, rows, now) { return tui.render(m, Object.assign({ f
   const m = crew();
   const img = screen(m, { logoImage: { cols: 58, rows: 4 } }, 120, 30, T0).map(tui.toPlain);
   A.ok(img.slice(0, 4).every(l => l.slice(0, 58).trim() === ''), "the image's cells stay blank (the image is painted there, never written over)");
-  A.ok(/0 working/.test(img[0].slice(61)) && /^── CREW 3 /.test(img[4]) && /^╭─+╮╭─/.test(img[5]), 'the counts sit beside the image, the crew list under it: ' + img[0].slice(55, 120));
+  A.ok(/0 working/.test(img[0].slice(61)) && /^── STAT ─── CREW 3 /.test(img[4]) && /^╭─+╮╭─/.test(img[5]), 'the counts sit beside the image, the crew list under it: ' + img[0].slice(55, 120));
   A.ok(!img.some(l => l.indexOf(require('../bin/lib/logo.js').word[1].trim()) >= 0), 'with the image, the text logo is not drawn');
 }
 
@@ -605,6 +611,118 @@ async function awakenRun(o) {
   const aw = require('../bin/lib/awaken.js').makeAwakening({ st, io, mods: M, now: () => (clock += 300), sleep: () => new Promise(r => setImmediate(r)) });
   const res = await aw.run({ save: o.save || null, resume: !!o.resume, privateStation: true });
   return { res, calls, said, save: () => save };
+}
+
+// ---- THE MOUSE (Andrew 10-22: "the crew agents can be clickable to open chats, we can also add actual different menus") ----
+{
+  const mouse = require('../bin/lib/mouse.js');
+  // Node's keypress reader splits an SGR report into '\x1b[<' and one key per character: the reader puts it back together
+  const evs = [];
+  const feed = mouse.makeReader(e => evs.push(e));
+  const keys = s => { const out = [feed('', { sequence: '\x1b[<' })]; for (const ch of s) out.push(feed(ch, { sequence: ch })); return out; };
+  A.ok(keys('0;12;7M').every(Boolean) && keys('0;12;7m').every(Boolean), 'every key of a mouse report is the mouse\'s: none reaches the prompt');
+  A.eq(evs.map(e => [e.kind, e.button, e.x, e.y]), [['down', 'left', 11, 6], ['up', 'left', 11, 6]], 'a press and its release, at the cell (counted from 0)');
+  keys('64;30;9M'); keys('65;30;9M'); keys('2;5;5M'); keys('16;5;5M');
+  A.eq(evs.slice(2).map(e => e.kind === 'wheel' ? 'wheel ' + e.dir : e.button + (e.ctrl ? '+ctrl' : '')), ['wheel up', 'wheel down', 'right', 'left+ctrl'], 'the wheel, the right button and ctrl+click');
+  A.ok(!feed('a', { sequence: 'a', name: 'a' }) && feed('', { sequence: '\x1b[<' }) && !feed('x', { sequence: 'x', name: 'x' }), 'an ordinary key is the person\'s, even one after a broken report');
+  A.ok(feed('', { sequence: '\x1b[<3;4;5M' }) && evs[evs.length - 1].x === 3, 'a report that arrives whole is read the same');
+  // an Esc pressed just before a click: Node holds a lone Esc for its next bytes and hands over '\x1b\x1b[<' (seen live 10-22:
+  // the click after closing /skills was typed into its filter as "0;39;36M")
+  let escs = 0;
+  const feed2 = mouse.makeReader(e => evs.push(e), () => escs++);
+  const glued = [feed2('', { sequence: '\x1b\x1b[<' })].concat([...'0;39;36M'].map(ch => feed2(ch, { sequence: ch })));
+  A.ok(glued.every(Boolean) && escs === 1 && evs[evs.length - 1].x === 38 && evs[evs.length - 1].y === 35, 'an Esc glued to a click is still the Esc, and the click is still a click — nothing reaches the prompt');
+  A.eq(mouse.parse('35;10;10', true), null, 'motion is never acted on (never asked for)');
+
+  // the screen says what a click lands on
+  const m = crew();
+  m.apply('agent.run.start', { runId: 'r1', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'fix it' }, T0);
+  m.apply('permission.prompt', { runId: 'r1', agentId: 'astra', promptId: 'p1', tool: 'fs.write', argsSummary: 'auth.js (+2 −1)' }, T0 + 2);
+  const s = screen(m, { stats: { level: 3, inLevel: 12, span: 40, frac: 0.3 } }, 110, 34, T0 + 3000);
+  const text = s.map(tui.toPlain);
+  const at = (re, y) => { const x = text[y].search(re); return x < 0 ? null : mouse.hitAt(s.hits, x + 1, y); };
+  const novaY = text.findIndex(l => /○ NOVA/.test(l));
+  A.eq((mouse.hitAt(s.hits, 8, novaY) || {}).act, { t: 'agent', id: 'agent' }, 'a click on a crew row is that agent');
+  for (const [name, page] of [['STAT', 'stat'], ['CREW 3', 'crew'], ['WORK', 'work'], ['SKILLS', 'skills']]) A.eq((at(new RegExp(' ' + name + ' '), 3) || {}).act, { t: 'tab', page, here: false }, 'the tab rule\'s ' + name + ' opens its page');
+  A.eq((at(/COMMS ▸ ASTRA/, 3) || {}).act, { t: 'tab', page: 'comms', here: true }, 'the tab you are in is a click too (its agent\'s menu)');
+  const cardY = text.findIndex(l => /\[Y\] ALLOW ONCE/.test(l));
+  A.ok(['Y] ALLOW', 'A] ALWAYS', 'N] DENY', 'V] VIEW'].every(k => { const h = at(new RegExp(k.replace(/[\]]/g, '\\$&')), cardY); return h && h.act.t === 'key' && h.act.key === k[0].toLowerCase(); }), 'each key on the ask card is a button for that key');
+  A.eq([(at(/LV 3/, 33) || {}).act, (at(/CREW 3 /, 33) || {}).act, (at(/NEEDS YOU/, 33) || {}).act], [{ t: 'page', page: 'stat' }, { t: 'page', page: 'crew' }, { t: 'needs' }], 'the stat bar: the level opens STAT, the crew CREW, NEEDS YOU the agent asking');
+  A.eq((at(/m\/a/, 4) || {}).act, { t: 'model' }, 'the model\'s name on the COMMS frame opens /model');
+  A.ok(s.areas.comms && s.areas.comms.x0 === 30 && s.areas.crew && s.areas.crew.x1 === 30, 'the panes the wheel scrolls are known');
+  A.ok(!mouse.hitAt(s.hits, 60, 15), 'empty space is no click');
+
+  // links and files
+  A.eq(mouse.urlAt([['⠋ see (https://example.com/a?b=1).', 'fg']], 12, ch => tui.width(ch)), 'https://example.com/a?b=1', 'a link said in parentheses is read off the row as drawn, its own characters only');
+  A.eq(mouse.urlAt([['javascript:alert(1) ftp://x', 'fg']], 3, ch => tui.width(ch)), '', 'only http and https open');
+  A.eq(mouse.fileArg('fs.write', '{"path":"notes\\\\plan.md","content":"# a very long fi'), 'notes\\plan.md', 'a file tool\'s path, read even from arguments cut short');
+  A.eq(mouse.fileArg('shell.exec', '{"path":"x"}'), '', 'only a file tool names a file');
+  const tickets = require('../sidecar/apitickets.js');
+  const u = new URL(mouse.fileUrl('http://127.0.0.1:9', tickets, 'k3y', { agent: 'astra', path: 'notes/plan.md', project: 'C:\\Code\\App', now: T0 }));
+  A.ok(u.pathname === '/api/file' && u.searchParams.get('agent') === 'astra' && u.searchParams.get('path') === 'notes/plan.md' && u.searchParams.get('project') === 'C:\\Code\\App' && u.searchParams.get('view') === 'doc'
+    && tickets.verify('k3y', u.searchParams.get('ticket'), 'file', tickets.scopeFile('astra', 'notes/plan.md'), { now: T0 + 1000 }).ok, 'a file link carries the station\'s own signed ticket for exactly that file (a text file opens as its reading page)');
+  m.apply('agent.tool_call', { runId: 'r1', agentId: 'astra', callId: 'c9', name: 'fs_write', argsSummary: '{"path":"auth.js","content":"x"}' }, T0 + 50);
+  const s2 = screen(m, { focus: 'astra' }, 110, 34, T0 + 3000);
+  const fy = s2.map(tui.toPlain).findIndex(l => /↳ fs\.write/.test(l));
+  A.eq(((mouse.hitAt(s2.hits, 45, fy) || {}).act || {}).t === 'file' && mouse.hitAt(s2.hits, 45, fy).act, { t: 'file', path: 'auth.js', runId: 'r1', agentId: 'astra' }, 'a file tool\'s line in COMMS is the file (ctrl+click opens it); from a station that did not say where the run works, no folder is assumed');
+  const m3 = crew();
+  m3.apply('agent.run.start', { runId: 'r3', agentId: 'astra', trigger: 'directive', surface: 'interactive', prompt: 'notes', projectRoot: 'C:\\Code\\App' }, T0);
+  m3.apply('agent.tool_call', { runId: 'r3', agentId: 'astra', callId: 'c1', name: 'fs_write', argsSummary: '{"path":"docs/notes.md","content":"x"}' }, T0 + 5);
+  const s3 = screen(m3, { focus: 'astra' }, 110, 34, T0 + 3000);
+  const f3 = s3.map(tui.toPlain).findIndex(l => /↳ fs\.write/.test(l));
+  A.eq((mouse.hitAt(s3.hits, 45, f3) || {}).act, { t: 'file', path: 'docs/notes.md', runId: 'r3', agentId: 'astra', root: 'C:\\Code\\App' }, 'a run the feed says works in a project: its file is that project\'s, known while it still runs');
+}
+
+// ---- THE PAGES: STAT · CREW · WORK in the COMMS frame, and the agent menu -----------------------------------------------------
+{
+  const mouse = require('../bin/lib/mouse.js');
+  const m = crew();
+  m.apply('agent.run.start', { runId: 'r2', agentId: 'cypher', trigger: 'schedule', surface: 'autonomous', prompt: 'nightly tests' }, T0);
+  m.apply('agent.tool_call', { runId: 'r2', agentId: 'cypher', callId: 'c1', name: 'shell_exec', argsSummary: '{"command":"npm test"}' }, T0 + 5);
+  m.applyBudget({ spentToday: 0.42 });
+  m.applyLines({ lines: [{ lineId: 'L1', shipped: 2 }] }, [{ id: 'j1', line: 'L1', name: 'RELEASE', status: 'done', startedAt: T0 - 60000, endedAt: T0 - 30000, steps: 3 }]);
+  const stats = { level: 3, inLevel: 12, span: 40, frac: 0.3, toNext: 28, lifetimeXp: 132, tasksDone: 5, known: false, confLabel: '—', band: 'calibrating', positiveFeedback: 2, negativeFeedback: 0 };
+  const stat = screen(m, { page: 'stat', stats, pageData: { usage: { title: 'Spend', lines: ['Today: $0.42 across 3 runs'] } } }, 110, 34, T0 + 3000);
+  const st = stat.map(tui.toPlain);
+  A.ok(/┘ STAT └/.test(st[3]) && / CREW 3 .* COMMS .* WORK 1 .* SKILLS /.test(st[3]), 'STAT is the tab you are in, the others beside it: ' + st[3]);
+  A.ok(st.some(l => /│ LEVEL +LV 3 +▌{10} +XP 12\/40 +· 28 XP to level 4/.test(l)) && st.some(l => /132 XP in all · 5 tasks shipped/.test(l)) && st.some(l => /CONFIDENCE +calibrating/.test(l)), 'STAT: the level as the station records it, all of it');
+  A.ok(st.some(l => /SPEND +\$0\.42 today/.test(l)) && st.some(l => /CREW +3 agents +· 1 working · 0 need you/.test(l)) && st.some(l => /WORK +1 workflow +· 0 running · 2 shipped/.test(l)) && st.some(l => /USAGE +Spend/.test(l)) && st.some(l => /Today: \$0\.42 across 3 runs/.test(l)), 'STAT: spend, crew, work, and the ledger in its own words');
+  const crewY = st.findIndex(l => /│ CREW +3 agents/.test(l));
+  A.eq((mouse.hitAt(stat.hits, 50, crewY) || {}).act, { t: 'page', page: 'crew' }, 'its CREW line opens CREW');
+  A.ok(!st.some(l => /YOU +fix it/.test(l)) && /esc back to COMMS/.test(st[32]), 'a page takes the whole frame, and the key line says how back');
+  A.ok(screen(m, { page: 'stat', pageData: {} }, 110, 34, T0).map(tui.toPlain).some(l => /LEVEL +not recorded on this station yet/.test(l)), 'a station that records no level says so — never a made-up LV 1');
+
+  const cp = screen(m, { page: 'crew', focus: 'astra' }, 110, 34, T0 + 3000);
+  const ct = cp.map(tui.toPlain);
+  const hy = ct.findIndex(l => /NAME +STATE +MODEL +NOW/.test(l));
+  A.ok(hy > 3 && /⠋ CYPHER +working 3s +m\/c +shell\.exec npm test/.test(ct[hy + 1]) && /○ ASTRA +idle +openrouter · m\/a/.test(ct.find((l, i) => i > hy && /ASTRA/.test(l)) || ''), 'CREW: every agent on one line — state, model, what it does — the working first: ' + ct[hy + 1]);
+  const ay = ct.findIndex((l, i) => i > hy && /ASTRA/.test(l));
+  A.eq((mouse.hitAt(cp.hits, 60, ay) || {}).act, { t: 'agent', id: 'astra' }, 'a click on a CREW line is its agent (its chat)');
+
+  const wp = screen(m, { page: 'work', focus: 'astra', pageData: { cron: { enabled: true, halted: false, jobs: [{ name: 'nightly digest', when: 'every day at 7:00 AM', agent: 'Cypher', enabled: true, next: 'in 3h' }, { name: 'weekly report', when: 'every Monday', agent: '', enabled: false }] }, away: { agent: 'Astra', title: 'Away workshop — 1 queued', lines: ['1. the pricing page', 'Build while away: OFF.'] } } }, 110, 34, T0 + 3000);
+  const wt = wp.map(tui.toPlain);
+  A.ok(wt.some(l => /^│ WORKFLOWS 1 +│/.test(l.slice(29))) || wt.some(l => / WORKFLOWS 1 /.test(l)), 'WORK: the workflows under their strip');
+  const fy = wt.findIndex((l, i) => i > 3 && /✓ RELEASE/.test(l));
+  A.eq((mouse.hitAt(wp.hits, 60, fy) || {}).act, { t: 'flow', name: 'RELEASE' }, 'a click on a workflow readies a job for it');
+  A.ok(wt.some(l => / ROUTINES 2 · scheduler on /.test(l)) && wt.some(l => /● nightly digest +every day at 7:00 AM · Cypher · next in 3h/.test(l)) && wt.some(l => /○ weekly report +every Monday · paused/.test(l)), 'WORK: the routines as the scheduler lists them, paused ones said so');
+  A.ok(wt.some(l => / AWAY SHIFT · Astra /.test(l)) && wt.some(l => /Away workshop — 1 queued/.test(l)) && wt.some(l => /Build while away: OFF\./.test(l)), 'WORK: the away shift of the agent shown, in the station\'s words');
+  A.ok(screen(m, { page: 'work', pageData: { cron: { error: 'the routines could not be read (HTTP 500) — their state is unknown' } } }, 110, 34, T0).map(tui.toPlain).some(l => /their state is unknown/.test(l)), 'a routines read that failed says their state is unknown, never "none"');
+
+  const sk = screen(m, { picker: { kind: 'skills', title: 'SKILLS · Astra', filter: '', sel: 0, items: [{ name: 'plan', search: 'plan', cols: [['/plan', 'ph']] }] } }, 110, 34, T0).map(tui.toPlain);
+  A.ok(/┘ SKILLS └/.test(sk[3]), 'the skills list is the SKILLS tab');
+  const narrow = screen(m, { page: 'crew' }, 84, 30, T0).map(tui.toPlain);
+  A.ok(narrow.some(l => /╭─ CREW ─/.test(l)), 'a terminal too short for the tab rule names the page on its frame');
+
+  // THE AGENT MENU
+  const mm = screen(m, { agentMenu: 'cypher', focus: 'astra' }, 110, 34, T0 + 3000);
+  const mt = mm.map(tui.toPlain);
+  const top = mt.findIndex(l => /┌─ ▸ CYPHER ─/.test(l));
+  A.ok(top > 0 && /m\/c +⠋ working 3s/.test(mt[top + 1]) && /\[O\] OPEN CHAT +talk to CYPHER in COMMS/.test(mt[top + 2]) && /\[M\] MODEL/.test(mt[top + 3]) && /\[N\] NEW CHAT/.test(mt[top + 4]) && /\[H\] HISTORY/.test(mt[top + 5]) && /\[S\] STOP +stop its 1 run/.test(mt[top + 6]) && /CLICK ONE OR PRESS ITS KEY +\[ESC\] CLOSE/.test(mt[top + 7]), 'the agent menu is a card at the foot of COMMS: its model and state, then what you can do with it');
+  A.eq([2, 3, 4, 5, 6].map(i => (mouse.hitAt(mm.hits, 50, top + i) || {}).act.key), ['o', 'm', 'n', 'h', 's'], 'each line of the menu is a click');
+  A.ok(/^o open chat · m model · n new chat · h history · s stop · esc close/.test(mt[32]), 'the key line says its letters');
+  const idle = screen(m, { agentMenu: 'astra' }, 110, 34, T0).map(tui.toPlain);
+  A.ok(!idle.some(l => /\[S\] STOP/.test(l)), 'an agent with nothing running is offered no STOP');
+  A.ok(tui.HELP.some(([k]) => k === 'right-click') && tui.HELP.some(([k]) => k === 'f1 – f5') && tui.HELP.length <= 23, '/help says the mouse and the pages, in no more rows than before');
 }
 const awakenTests = (async () => {
   const opt = re => ({ re }), typed = t => ({ type: t });
