@@ -6984,13 +6984,17 @@ async function deliverCronResult(job, result) {
      delivers byte-identically to before. */
   let chatBody = String(result.text || ''), chatText = text, attach = { files: [], dropped: [] }, named = [], runs = [];
   if (result.outcome !== 'failed') {
-    const parsed = RoutineMedia.parseReply(result.text);
+    const candidates = RoutineMedia.parseReply(result.text).files;
     try { runs = runStore.list(null, { streamId: 'cron-' + result.runId, limit: 50 }) || []; } catch (_) { runs = []; }
-    named = parsed.files;
+    // A named path is an instruction only if the file is really there: read it first (before any word is sent), so a
+    // line naming nothing on the station ("MEDIA: N/A") stays in the message as written, with no missing-file note.
+    const found = candidates.length ? (await RoutineMedia.readNamed(candidates, RoutineMedia.fireAgents(runs, job.agentId), readChannelUpload)).found : [];
+    named = found.map(f => f.path);
     // generated images ride unasked only for a routine holding ALLOW IMAGES (the studio grant) — never for one that
     // makes pictures for another purpose (routine-media.js pickFiles)
-    attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId, generatedImages: Array.isArray(job.unattendedGrants) && job.unattendedGrants.indexOf('studio') >= 0 });
+    attach = RoutineMedia.pickFiles({ named: found, runs: runs, agentId: job.agentId, generatedImages: Array.isArray(job.unattendedGrants) && job.unattendedGrants.indexOf('studio') >= 0 });
     if (named.length) {
+      const parsed = RoutineMedia.parseReply(result.text, named);
       chatBody = parsed.text;
       chatText = '✦ ' + (job.name || 'Routine') + (parsed.text.trim() ? '\n\n' + parsed.text : '') + supersededNote;
     }

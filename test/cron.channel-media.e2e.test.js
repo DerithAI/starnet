@@ -10,7 +10,9 @@
      1. an ATTACH line in the routine's reply uploads that workspace file as a photo, and the line itself is not
         part of the delivered text (default ASK posture — the delivery needs no approval nobody can give);
      2. an image the run GENERATED rides the delivery even when the reply names nothing;
-     3. a named file that cannot be read never vanishes silently — the chat is told which file did not come;
+     3. a named file that cannot be read never vanishes silently: its line stays in the message as the routine wrote it,
+        and the station claims nothing about it (review 2026-10-23: a digest's "MEDIA: N/A" label is not a file, so a
+        line is stripped — and a missing file said out loud — only when the file was really read on the station);
      4. a routine that delivers to a chat is told how to attach; a routine that stays on the station is not. */
 'use strict';
 
@@ -121,6 +123,7 @@ async function startModel() {
       const toolDone = (body.messages || []).some(m => m && m.role === 'tool');
       if (blob.includes('ROUTINE_ATTACH')) return sse(res, [{ content: "Here is today's chart.\nATTACH: charts/today.png" }]);
       if (blob.includes('ROUTINE_MISSING')) return sse(res, [{ content: 'Chart attached.\nATTACH: charts/missing.png' }]);
+      if (blob.includes('ROUTINE_LABELS')) return sse(res, [{ content: 'LABELS_START\nMEDIA: N/A\n- MEDIA: TV/radio\nMEDIA: Reuters.com\nLABELS_END' }]);
       if (blob.includes('ROUTINE_LONG')) return sse(res, [{ content: 'LONG_START\n' + Array.from({ length: 220 }, (_, i) => 'finding ' + i + ': the overnight digest line with details').join('\n') + '\nLONG_END' }]);
       if (blob.includes('ROUTINE_RENDER')) {
         if (!toolDone) return sse(res, [{ tool_calls: [{ index: 0, id: 'render', type: 'function', function: { name: 'image_generate', arguments: JSON.stringify({ prompt: 'a red sunrise over the station' }) } }] }], 'tool_calls');
@@ -207,13 +210,25 @@ async function waitFor(pred, ms, label) {
     A.ok(attachReq && /ATTACH: /.test(sysOf(attachReq)), 'a routine that delivers to a chat is told how to attach a file');
     A.ok(attachReq && /Telegram/.test(sysOf(attachReq)), 'and names the chat platform it delivers to');
 
-    /* ---- 3. a named file that cannot be read -> the chat is told, nothing pretends ---- */
+    /* ---- 3. a named file that cannot be read -> its line stays visible, nothing pretends ---- */
     const missingJob = await routine('Missing chart', 'ROUTINE_MISSING send me the chart');
     mark = telegram.calls.length;
     await runNow(missingJob);
-    const note = await waitFor(() => telegram.calls.slice(mark).find(c => c.method === 'sendMessage' && /could not be attached/.test(String(c.fields.text || ''))), 10000, 'the missing-file note');
-    A.ok(/charts\/missing\.png/.test(String(note.fields.text)), 'the note names the file that did not come');
+    const missingMsg = await waitFor(() => telegram.calls.slice(mark).find(c => c.method === 'sendMessage' && String(c.fields.text || '').indexOf('Chart attached.') >= 0), 10000, 'the missing-chart message');
+    A.ok(String(missingMsg.fields.text).indexOf('ATTACH: charts/missing.png') >= 0, 'the line naming the file stays in the message, so the Commander sees which file was meant');
+    await sleep(500);
     A.ok(!telegram.calls.slice(mark).some(c => c.method === 'sendPhoto' || c.method === 'sendDocument'), 'nothing was uploaded for an unreadable path');
+    A.ok(!telegram.calls.slice(mark).some(c => /could not be attached|saved in the workspace/.test(String(c.fields.text || ''))), 'and the station never claims a file it never saw is saved on it');
+
+    /* ---- 3b. a digest's uppercase field labels are its words, not files (review 2026-10-23) ---- */
+    const labelsJob = await routine('Media monitor', 'ROUTINE_LABELS write the media digest');
+    mark = telegram.calls.length;
+    await runNow(labelsJob);
+    const labels = await waitFor(() => telegram.calls.slice(mark).find(c => c.method === 'sendMessage' && String(c.fields.text || '').indexOf('LABELS_END') >= 0), 10000, 'the media digest');
+    const plain = t => String(t || '').replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    A.ok(['MEDIA: N/A', 'MEDIA: TV/radio', 'MEDIA: Reuters.com'].every(l => plain(labels.fields.text).indexOf(l) >= 0), 'every "MEDIA:" label line arrives as written: ' + JSON.stringify(String(labels.fields.text)));
+    await sleep(500);
+    A.ok(!telegram.calls.slice(mark).some(c => /could not be attached/.test(String(c.fields.text || ''))), 'with no missing-file note');
 
     /* ---- 5. a LONG report reaches the chat whole, split under the platform's limit (live-caught 2026-10-20) ----
        The delivery sent the routine's reply as ONE message: a digest past 4096 characters was refused by the Bot API
