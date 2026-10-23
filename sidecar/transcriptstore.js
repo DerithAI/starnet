@@ -319,7 +319,7 @@
       if (typeof io.streams === 'function') {
         // the segment summaries count and preview every row: a deleted session drops out, and one re-opened after its
         // delete is listed from the rows said since (history() already forgets the rest)
-        try { return quietPreviews(deletedAt ? liveStreams(io.streams({ limit: 100, previewChars: previewMax }) || [], previewMax).slice(0, limit) : (io.streams({ limit: limit, previewChars: previewMax }) || [])); } catch (e) { failNote('transcript.io', e); }
+        try { return globalPreview(deletedAt ? liveStreams(io.streams({ limit: 100, previewChars: previewMax }) || [], previewMax).slice(0, limit) : (io.streams({ limit: limit, previewChars: previewMax }) || []), previewMax); } catch (e) { failNote('transcript.io', e); }
       }
       const by = new Map();
       for (let i = 0; i < rows.length; i++) {
@@ -339,13 +339,27 @@
       out.sort((a, b) => (b.lastAt - a.lastAt) || (a.streamId < b.streamId ? -1 : a.streamId > b.streamId ? 1 : 0));
       return out.slice(0, limit);
     }
-    // a 'global' listing whose stored preview is a pre-stamp self-talk prompt (a segment summary keeps the latest user
-    // row, whitespace collapsed) lists with no preview rather than quote it
-    function quietPreviews(list) {
+    /* 'global' is where the station's self-talk is filed, so its listing preview is never the segment summary's: that
+       keeps the latest user row cut to 160 characters, and a pre-stamp title prompt or goal judge whose opening is a long
+       first message loses the very marker that names it as self-talk — the listing then quoted that session's opening
+       line, even a deleted session's. The preview is re-read from the stream's own newest rows (deletes honoured), the
+       newest that is not self-talk; none among them lists with no preview. */
+    const GLOBAL_PREVIEW_SCAN = 200;
+    function globalPreview(list, previewMax) {
       return list.map(s => {
-        const p = s && s.streamId === 'global' ? str(s.preview) : '';
-        if (!p || !(p.indexOf('Assistant reply (context only):') >= 0 || p.startsWith('INTERNAL —') || (p.startsWith('Goal: ') && p.indexOf('Is the goal satisfied') >= 0))) return s;
-        return Object.assign({}, s, { preview: '', previewTaint: '', previewTaintKnown: false });
+        if (!s || s.streamId !== 'global') return s;
+        const e = Object.assign({}, s, { preview: '', previewTaint: '', previewTaintKnown: false });
+        const recent = history('global', { limit: GLOBAL_PREVIEW_SCAN });
+        for (let i = recent.length - 1; i >= 0; i--) {
+          const r = recent[i];
+          const preview = selfTalk(r) ? '' : conversationPreview(r);
+          if (!preview) continue;
+          // the segment summary's own bound (160), so a listing reads the same as before for every ordinary row
+          e.preview = preview.replace(/\s+/g, ' ').trim().slice(0, Math.min(160, previewMax));
+          e.previewTaint = r.taint || ''; e.previewTaintKnown = r.taintKnown === true || !!r.taint;
+          break;
+        }
+        return e;
       });
     }
     function liveStreams(list, previewMax) {

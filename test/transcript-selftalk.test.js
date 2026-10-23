@@ -85,5 +85,50 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
   await readers('ram', () => ({ readAll() { return []; }, append() {} }));
   await readers('segmented', dir => makeSegmentedTranscriptIo({ fs, path, root: path.join(dir, 'history'), segmentBytes: 600, recentPerStream: 3 }));
 
+  // ---------------- 4. BROWSE: the 'global' listing never previews self-talk ----------------
+  // A 0.13.5 title prompt / goal judge whose basis is a long first message: the segment summary cuts the preview at
+  // 160 characters, so the marker that names it self-talk is gone from the cut text. The listing must still not quote
+  // it — not even a DELETED session's opening line — and must still preview a real Commander row.
+  async function browse(label, makeIo, legacy) {
+    const dir = temp('browse-' + label);
+    try {
+      const clock = clockAt(100);
+      const deleted = {};
+      const store = makeTranscriptStore({ io: makeIo(dir), clock, deletedAt: id => deleted[id] || 0 });
+      const say = (streamId, role, content, extra) => { clock.set(clock.now() + 10); return store.append(Object.assign({ streamId, agentId: 'agent', role, content, taint: null }, extra || {})); };
+      const opening = 'I need help drafting the letter to my landlord about the mold in the bedroom and the rent I withheld in March, please keep this private between us and do not mention my employer';
+      A.ok(opening.length > 160, label + ': the basis is longer than the summary preview');
+      say('global', 'user', 'remember the walrus password rotation');            // the Commander's own global words
+      say('ws_secret', 'user', opening);
+      say('global', 'user', legacy(opening));                                     // pre-stamp self-talk
+      say('global', 'assistant', 'Landlord Mold Letter');
+      deleted.ws_secret = clock.now() + 1;                                         // the session is deleted
+      clock.set(clock.now() + 100);
+      say(undefined, 'user', 'other basis\n\nAssistant reply (context only): x', { dispatchState: 'internal' });   // new self-talk
+      say(undefined, 'assistant', 'Other Title', { dispatchState: 'internal' });
+
+      const g = store.streams({ limit: 20 }).find(s => s.streamId === 'global');
+      A.ok(g && !/landlord|Goal:/.test(g.preview), label + ': the global listing never previews the self-talk prompt: ' + JSON.stringify(g && g.preview));
+      A.eq(g && g.preview, 'remember the walrus password rotation', label + ': it previews the newest real Commander row');
+      A.ok(!store.streams({ limit: 20 }).some(s => s.streamId === 'ws_secret'), label + ': the deleted session is not listed');
+      const tool = makeRecallTool({ transcriptStore: store, ownStreamOnly: () => false }).recallTool;
+      const listing = (await tool.run({}, { streamId: 'ws_other' })).content;
+      A.ok(!/landlord|mold/.test(listing), label + ': recall browse never quotes the deleted session\'s opening line: ' + listing);
+      A.ok(/\[global\][^\n]*walrus password rotation/.test(listing), label + ': recall browse lists global with the real row: ' + listing);
+
+      // a long real global row reads exactly as the summary always cut it (160 characters, whitespace collapsed)
+      const long = 'Please   keep a running list of every invoice\nwe send to the walrus importer, ' + 'x'.repeat(200);
+      say('global', 'user', long);
+      const g2 = store.streams({ limit: 20 }).find(s => s.streamId === 'global');
+      A.eq(g2 && g2.preview, long.replace(/\s+/g, ' ').trim().slice(0, 160), label + ': an ordinary global preview is unchanged');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+  const titlePrompt = basis => basis + '\n\nAssistant reply (context only): Sure, here is a draft of the letter';
+  const goalPrompt = basis => 'Goal:\n' + basis + '\n\nAgent\'s most recent response:\nDraft done.\n\nIs the goal satisfied — done or continue?';
+  const segIo = dir => makeSegmentedTranscriptIo({ fs, path, root: path.join(dir, 'history'), segmentBytes: 600, recentPerStream: 3 });
+  await browse('ram-title', () => ({ readAll() { return []; }, append() {} }), titlePrompt);
+  await browse('segmented-title', segIo, titlePrompt);
+  await browse('segmented-goal', segIo, goalPrompt);
+
   A.report('transcript-selftalk');
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });
