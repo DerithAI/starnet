@@ -675,6 +675,7 @@ test/chat-code-url-link.test.js
 test/chat-code-copy.test.js
 test/mint.test.js
 test/ctxgauge.test.js
+test/ctx-gauge-run-window.test.js
 test/ctx-model-catalog.test.js
 test/ctx-conversation-scope.test.js
 test/floorstats.test.js
