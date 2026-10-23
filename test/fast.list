@@ -344,6 +344,7 @@ test/skills.trust-origin.test.js
 test/skills.review-approval.test.js
 test/skills.worker-shared-approval.test.js
 test/skills.package-hardening.test.js
+test/skills.pin-lock.test.js
 test/slash.test.js
 test/slash-actions.test.js
 test/slash.parity.test.js
