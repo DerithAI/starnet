@@ -235,7 +235,8 @@ module.exports = (async () => {
       normalizeProvider: p => String(p || 'openrouter').toLowerCase(), providerUsesCodex: () => false, CODEX_DEFAULT_MODEL: 'gpt-x', CRON_DEFAULT_MODEL: 'cron-x',
       providerRuntimeKey: () => 'k', providerRuntimeBaseUrl: () => '', getProviderProfile: () => ({}), providerHasCredential: () => true,
       voiceCatalogEntry: async () => null, makeContext: () => ({ estimateMessages: () => 0, estimateTokens: () => 0 }), RUN_CONTEXT_DEFAULTS: {},
-      voiceChatRoute: require('../sidecar/voice-chat-route.js'), console: { warn() {}, log() {} }
+      voiceChatRoute: require('../sidecar/voice-chat-route.js'), console: { warn() {}, log() {} },
+      promptTierCeiling: require('../sidecar/providers/prices.js').promptTierCeiling   // the price-tier window cap applyVoiceTurnRoute reads (context-cost lane)
     }));
     const swapped = await voice({ provider: 'openrouter', model: 'openai/gpt-6-sol' });
     A.eq(swapped.fallbackProviders && swapped.fallbackProviders[0] && swapped.fallbackProviders[0].model, 'anthropic/claude-haiku-4.5',
