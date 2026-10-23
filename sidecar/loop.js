@@ -1534,6 +1534,7 @@
       if (reason === 'cancelled' && abortedWait) out.cancelledWhile = Object.assign({}, abortedWait);   // #99: what the cancel interrupted
       if (extra && extra.failureStage) out.failureStage = String(extra.failureStage).slice(0, 80);
       if (extra && extra.failureCode) out.failureCode = String(extra.failureCode).slice(0, 80);
+      if (extra && extra.failureUnsupportedPart === true) out.failureUnsupportedPart = true;
       if (accUsed > 0) out.acceptanceNudges = accUsed;   // SOP: how many times the host sent the model back to its checks
       return out;
     }
@@ -2291,7 +2292,9 @@
             + '\n\n[response interrupted — ' + (fatal.reason ? 'provider error: ' + String(fatal.reason).slice(0, 60) : 'provider stream failed') + '; this answer is incomplete]';
         }
         emit('agent.run.error', { agentId, runId, message: fatal.message || 'model call failed', transient: !!fatal.retryable });
-        return end('error', { failureStage: 'provider_stream', failureCode: fatal.reason || 'provider_failure' });
+        // failureUnsupportedPart: the model refused a PART of this request (image input, tool use), not the request —
+        // the classifier's own fact, carried so the run-end failure review knows a plain text request still reaches it
+        return end('error', { failureStage: 'provider_stream', failureCode: fatal.reason || 'provider_failure', failureUnsupportedPart: fatal.reason === 'model_not_found' && fatal.unsupportedPart === true });
       }
 
       // cancellation mid-stream: keep partial text, then stop. A continuation call buffered its opening bytes for

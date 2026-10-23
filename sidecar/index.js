@@ -24293,9 +24293,11 @@ async function runOnceCore(o) {
   // failure-review: reflection's exact gate shape on the FAILURE side — o.reflect (real-work hosts only; delegated
   // workers stay off), the live config master-switch, the personalization PAUSE (checked here so a paused station
   // never even offers the candidate — runFailureReview re-checks the same authority), a salience floor (≥1 tool
-  // call or ≥2 turns: an instant stub teaches nothing), the in-flight guard, and its own per-agent cooldown.
+  // call or ≥2 turns: an instant stub teaches nothing), the in-flight guard, and its own per-agent cooldown. A run the
+  // PROVIDER refused (Failreview.providerRefused) is never reviewed on it: same content, same refusal (xai-403-1023).
   const _gateFailReview = !!(o.reflect && memoryConfig.failureReviewEnabled && _auxFail
       && Failreview.failureSalient({ toolTrace: execution.toolTraceList(), turns: (result && result.turns) || 0 })
+      && !Failreview.providerRefused({ failureStage: execution.failureStage(), failureCode: execution.failureCode(), unsupportedPart: !!(result && result.failureUnsupportedPart) }, { separateModel: !!reflectModel })
       && personalizationStore.read().enabled
       && !failReviewingNow.has(agentId) && (Date.now() - (lastFailReviewAt.get(agentId) || 0) >= memoryConfig.failureReviewCooldownMs));
   const _gateStudy = !!(Study && o.reflect && memoryConfig.studyEnabled && isTask && _auxDone && !_lineHop && Study.studySalient(result.messages, o.recurring)

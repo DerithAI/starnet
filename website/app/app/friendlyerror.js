@@ -431,6 +431,16 @@
      "image_url is only supported by certain models" (400). */
   const IMAGE_INPUT_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`|image_url is only supported by certain models/;
   const IMAGE_INPUT_MSG = "This model can't see images — pick a vision model from the model dock in COMMS, then send again.";
+  /* mirrored from errorClass.js (namesUpstream): a 403 that names the UPSTREAM provider ("[…; provider xAI]" from the
+     openai-compatible adapter, or OpenRouter's "Provider returned error") is that provider refusing this request — the
+     router accepted our key (a rejected key is a 401 naming nobody). xai-403-1023. */
+  const UPSTREAM_NAMED_RE = /provider returned error|[\[;] ?provider [^\];]+\]/;
+  // the upstream's name as the adapter's own allowlisted fact carries it — a plain brand name or nothing
+  function upstreamName(raw) {
+    const m = String(raw || '').match(/[\[;] ?provider ([^\];]+)\]/i);
+    const nm = m ? m[1].trim() : '';
+    return /^[A-Za-z0-9][A-Za-z0-9 .()-]{0,39}$/.test(nm) ? nm : '';
+  }
   // a provider adapter's own failure sentence ("openrouter http 403 — …", "openai-compatible http 403 - …")
   const PROVIDER_HTTP_RE = /\b(?:openrouter|anthropic|gemini|codex|openai-compatible|grok \(xai\)|kimi for coding|xai) http \d{3}\b/;
   // the ONE sentence both classifier paths use for "no model is picked": the sidecar guard and the page preflight
@@ -491,6 +501,7 @@
       // …but a PROVIDER's own "Forbidden" (its adapter label names it) is the provider's refusal, never this page's token
       if (s === 403 && (/sidecar http/.test(low) || (/\bforbidden\b/.test(low) && !PROVIDER_HTTP_RE.test(low)))) return 'stale_session';
       if (s === 403 && REGION_REFUSAL_RE.test(low)) return 'model_not_found';
+      if (s === 403 && !NO_CREDIT_RE.test(low) && UPSTREAM_NAMED_RE.test(low)) return 'model_not_found';
       if (s === 401 || s === 403) return NO_CREDIT_RE.test(low) ? 'billing' : 'auth';
       if (s === 402) return /(resets? at|retry[- ]?after|rate limit)/.test(low) ? 'rate_limit' : 'billing';
       if (s === 404) return 'model_not_found';
@@ -726,6 +737,19 @@
         userMessage = 'The provider rejected the API key — check it, or paste a new one under SETTINGS → AI & MODELS.';
       }
       return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, provider: providerFromRaw(raw), raw: raw };
+    }
+    /* an UPSTREAM provider's 403 (xai-403-1023): the router (StarNet Cloud or OpenRouter) passed the request on, so the
+       account and credits checks were met, and the provider behind it refused this request (xAI's safety check answers
+       this way; the managed proxy keeps no reason). Say exactly that, never "your key" (a StarNet-credits user has
+       none) — the model dock door stays (another model may answer); a region refusal keeps the model-unavailable copy. */
+    if (kind === 'model_not_found') {
+      const low = raw.toLowerCase();
+      if (/\bhttp 403\b/.test(low) && UPSTREAM_NAMED_RE.test(low) && !REGION_REFUSAL_RE.test(low)) {
+        const who = upstreamName(raw);
+        const userMessage = (who ? who + ', the provider serving this model,' : 'The provider serving this model')
+          + ' refused this request (HTTP 403), so the model did not answer. This is not a problem with your account or credits. Try rephrasing it, or pick a different model from the model dock in COMMS.';
+        return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, raw: raw };
+      }
     }
     // billing: name the account that is out of credit when the error proves which provider it was (org P03) — a wallet
     // provider only: a sign-in subscription was turned into quota_exhausted above

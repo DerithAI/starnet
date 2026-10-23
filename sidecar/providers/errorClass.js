@@ -5,7 +5,7 @@
    nothing useful. This pure classifier maps any provider error to a reason + the action it implies.
 
    classifyApiError(err, { provider, model, approxTokens, liveApproxTokens, contextLimit, numMessages })
-     -> { reason, retryable, shouldRotateCredential, shouldFallback, shouldCompress, statusCode, message }
+     -> { reason, retryable, shouldRotateCredential, shouldFallback, shouldCompress, statusCode, unsupportedPart, message }
 
    Reasons: auth · billing · rate_limit · quota_exhausted · overloaded · server_error · timeout ·
             context_overflow · output_cap · model_not_found · content_policy_blocked · format_error ·
@@ -281,6 +281,27 @@
   const IMAGE_INPUT_REFUSED_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`|image_url is only supported by certain models/;
   function isImageInputRefusal(text) { return IMAGE_INPUT_REFUSED_RE.test(String(text || '').toLowerCase()); }
   const IMAGE_INPUT_FIX = ' — this model cannot take image input: pick a vision model in the COMMS model dock (or remove the image), then send again.';
+  /* A 403 THAT NAMES THE UPSTREAM PROVIDER is that provider refusing THIS request, never our credential (xai-403-1023:
+     26 managed completions answered 403 "provider xAI · Provider returned error", and a StarNet-credits user, who has no
+     key, was told the provider rejected the API key). A router that rejects OUR key answers 401 and names no provider;
+     once it names the upstream (the adapter's err.upstreamProvider, error.provider, error.metadata.provider_name, the
+     "[…; provider X]" fact the openai-compatible adapter writes, or OpenRouter's own "Provider returned error" wrapper),
+     our key got through and the upstream turned the request down. */
+  const UPSTREAM_NAMED_RE = /provider returned error|[\[;] ?provider [^\];]+\]/;
+  function namesUpstream(err, low) {
+    if (err && typeof err.upstreamProvider === 'string' && err.upstreamProvider) return true;
+    const body = extractBody(err);
+    const e = body && (body.error || body);
+    if (e && typeof e === 'object' && (e.provider || (e.metadata && (e.metadata.provider_name || e.metadata.provider)))) return true;
+    return UPSTREAM_NAMED_RE.test(low);
+  }
+  /* A model_not_found about a PART OF THIS REQUEST, not the model: OpenRouter's capability routing answers 404 "No
+     endpoints found that support image input" (a tool screenshot sent to a model that cannot read images — 14 in the
+     xai-403-1023 cloud log), "… that support tool use", "… that can handle the requested parameters". The same model
+     answers a request without that part. Never set for "No endpoints found for <model>", "matching your data policy",
+     "No allowed providers", a region or an upstream 403: those refuse every request to that model. Surfaced as the
+     classification's `unsupportedPart` fact (the failure review keys on it: its plain text request has no such part). */
+  const UNSUPPORTED_PART_RE = /no endpoints found that (?:support|can handle)\b/;
   const TOOL_GEN_FAILED_RE = /tool_use_failed|failed to call a function|tool call validation failed/;
   function classify400(low, code, ctx) {
     const c = String(code || '').toLowerCase();
@@ -361,6 +382,9 @@
       // a 403 the UPSTREAM gave for this region (OpenAI behind OpenRouter: unsupported_country_region_territory) is the
       // model being unavailable here — the key is fine, and another model/provider may answer (shouldFallback)
       if (status === 403 && REGION_REFUSAL_RE.test(low)) return 'model_not_found';
+      // an upstream provider's 403 (namesUpstream): a safety wording was content_policy_blocked above; anything else is
+      // this model unavailable for this request — no resend, a configured fallback may answer, no credential rotation
+      if (status === 403 && !NO_CREDIT_RE.test(low) && namesUpstream(err, low)) return 'model_not_found';
       if (status === 401 || status === 403) return NO_CREDIT_RE.test(low) ? 'billing' : 'auth';
       if (status === 402) return /(resets? at|retry[- ]?after|rate limit)/.test(low) ? 'rate_limit' : 'billing';
       if (status === 404) return 'model_not_found';
@@ -456,6 +480,9 @@
       resetAtMs: wait.resetAtMs,         // H6.1: server-stated absolute reset (epoch ms), or null
       // output_cap only: the output ceiling the provider named; the loop retries the turn with max_tokens at it.
       allowedMaxTokens: reason === 'output_cap' ? parseOutputCap(low) : null,
+      // model_not_found only: the model cannot take a PART of this request (image input, tool use, a parameter) —
+      // a request without that part still reaches it (UNSUPPORTED_PART_RE). False for every other verdict.
+      unsupportedPart: reason === 'model_not_found' && UNSUPPORTED_PART_RE.test(low),
       // `reason` above was already picked from the RAW message, so annotating here cannot move the verdict — it
       // only makes the text a human can act on ("fetch failed" -> "fetch failed (ENOTFOUND api.openai.com)").
       // This is the message the loop emits as agent.run.error, which is what lands in the diagnostics ring.
