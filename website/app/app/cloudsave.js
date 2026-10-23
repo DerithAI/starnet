@@ -66,6 +66,13 @@ const CloudSave = (() => {
   let staleCatchUp = null;
   // a restore into the station was accepted and this page is reloading onto it: it saves nothing more (restoreConflict)
   let retired = false;
+  /* WHERE THIS PAGE'S NEWEST SAVE IS (review 10-23 #1): the push seq of the newest doc the station file accepted, and of the
+     newest doc a conflict refusal preserved beside it (in conflict.recovery). A restore may only retire this page when its
+     newest push is in one of the two: otherwise the reload would drop it. */
+  let landedSeq = 0, preservedSeq = 0;
+  // RESTORE BACKUP (backup.js importFile) asked to put a station back: every save carries _saveRestore until one lands, so a
+  // reset generation's empty station file takes the Commander's chosen backup (savestore: explicitRestore)
+  let restoreArmed = false;
 
   function now() { return Date.now(); }
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
@@ -163,7 +170,7 @@ const CloudSave = (() => {
     if (!force && Core && isSave(pending) && !Core.retryDue(health, now())) { scheduleRetry(); return Promise.resolve(false); }
     const doc = pending, docCacheFailed = pendingCacheFailed, docSeq = pendingSeq, sentRaw = pendingRaw; pending = null; pendingRaw = null; pendingCacheFailed = false;
     if (!isSave(doc) || retired) return Promise.resolve(false);
-    const attempt = postNow(doc)
+    const attempt = postNow(restoreArmed ? Object.assign({}, doc, { _saveRestore: true }) : doc)
       .then(({ response: r, body }) => {
         // a non-ok HTTP status (e.g. 409 stale, 500) is a FAILURE, not a success — fetch only rejects on
         // network error, so we must inspect r.ok ourselves or we'd stamp health OK on a rejected write.
@@ -174,9 +181,11 @@ const CloudSave = (() => {
         // Malformed replies prove nothing. Keep the snapshot pending until an explicit ok:true.
         if (body && typeof body === 'object') {
           degraded = (body.ok === false && body.degraded === true);   // any parsed answer re-proves (or clears) the degraded verdict
-          if (body.conflict) { conflict = body; markFail(); return false; }
+          if (body.conflict) { conflict = body; if (body.recovery) preservedSeq = Math.max(preservedSeq, docSeq); markFail(); return false; }
           if (body.ok && Number.isInteger(body.revision)) {
             revision = body.revision;
+            landedSeq = Math.max(landedSeq, docSeq);
+            restoreArmed = false;
             // bug 5c019483: the station file was missing (no save, no backup) and THIS window's copy became it. Latched
             // for the save light, which says so once: the station is back on disk because this window held it.
             if (body.seeded === true) seeded = { revision: body.revision, at: now() };
@@ -269,8 +278,10 @@ const CloudSave = (() => {
   //   browser's error name, so the UI says "full" only when the browser reported its quota.
   //   opts.raw (idle CPU piece 3, 2026-10-20): the exact string Save.write produced for this doc. The clone is then one parse
   //   of it instead of a stringify + parse, and the ACK can tell the cache still holds this doc by comparing strings.
+  //   opts.restore: RESTORE BACKUP's write of the chosen backup (see restoreArmed).
   function push(doc, opts) {
     if (!isSave(doc) || retired) return;
+    if (opts && opts.restore === true) restoreArmed = true;
     const raw = opts && typeof opts.raw === 'string' ? opts.raw : null;
     doc = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(doc));
     doc._saveRevision = revision;
@@ -517,29 +528,43 @@ const CloudSave = (() => {
   }
 
   // PRESERVED WINDOW SAVES (support report 2026-10-21): what a refused save left on the station, newest first, each with
-  // how many sessions a restore would bring back. [] when the station cannot say (never a guess).
-  async function conflicts() {
+  // how many sessions a restore would bring back; the station stops at the first one that would bring any back. `skip`:
+  // [{ file, savedAt }] this page dismissed — not read again unless that file was written since. [] when the station cannot
+  // say (never a guess).
+  async function conflicts(skip) {
     try {
-      const r = await fetch(ENDPOINT + '/conflicts', { cache: 'no-store' });
+      const list = (Array.isArray(skip) ? skip : []).filter(s => s && typeof s.file === 'string' && /^[A-Za-z0-9_.-]{1,120}$/.test(s.file) && Number.isFinite(Number(s.savedAt)))
+        .slice(-50).map(s => s.file + '@' + Math.floor(Number(s.savedAt)));
+      const r = await fetch(ENDPOINT + '/conflicts' + (list.length ? '?skip=' + encodeURIComponent(list.join(',')) : ''), { cache: 'no-store' });
       const j = r.ok ? await r.json() : null;
       return j && Array.isArray(j.conflicts) ? j.conflicts : [];
     } catch (_) { return []; }
   }
-  // bring that preserved save's sessions into the station (the sidecar adds, never removes), then reload onto it. When it
-  // is THIS window's own preserved save, its newest state is sent first so the restore carries it. After the station
-  // accepts, this page writes nothing more: its snapshot predates the restore (`retired`).
+  /* bring that preserved save's sessions into the station (the sidecar adds, never removes), then reload onto it. After the
+     station accepts, this page writes nothing more: its snapshot predates the restore (`retired`).
+     NEVER AT THE COST OF THIS WINDOW'S OWN WORK (review 10-23 #1): this window's newest state is always sent first, and the
+     restore goes ahead only when that save landed in the station file or was preserved beside it (its own conflict file).
+     A refused save that preserved nothing (a growth-stale refusal, an outage) stops the restore, as reloadCurrent() does:
+     the browser cache and the queued save are kept. */
   async function restoreConflict(file) {
-    if (conflict && conflict.recovery === file) {
-      if (typeof App !== 'undefined' && App.persist) App.persist();
-      await flush({ force: true });
-    }
+    if (typeof App !== 'undefined' && App.persist) App.persist();
+    let confirmed = await flush({ force: true });
+    // a growth-stale refusal asked for a rating catch-up: once it has queued the re-synced save, send that once
+    const catchUp = staleCatchUp; staleCatchUp = null;
+    if (!confirmed && catchUp && await catchUp && isSave(pending)) confirmed = await flush({ force: true });
+    if (activeFlushes.size) throw new Error('This window changed while saving. Try restoring again after your work finishes.');
+    const newest = pushSeq;
+    const safe = !isSave(pending) && (newest === 0 || landedSeq >= newest || (preservedSeq >= newest && !!(conflict && conflict.recovery)));
+    if (!safe) throw new Error('Could not save this window first, so nothing was restored and nothing was lost. Download this window’s save, or try again in a moment.');
     const r = await fetch(ENDPOINT + '/conflicts/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
     const j = await r.json().catch(() => null);
     if (!j || j.ok !== true) throw new Error((j && j.error) || 'The station could not restore that save.');
-    retired = true; pending = null; pendingRaw = null;
+    retired = true;
     if (timer) { clearTimeout(timer); timer = null; }
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    try { localStorage.removeItem('starnet.save'); } catch (_) {}
+    // a change made WHILE the restore ran is in no file yet: keep its browser copy, which the reload preserves as this
+    // window's work (a dirty copy on an older revision is pushed and kept beside the station, never dropped)
+    if (pushSeq === newest) { pending = null; pendingRaw = null; try { localStorage.removeItem('starnet.save'); } catch (_) {} }
     location.reload();
     return j;
   }

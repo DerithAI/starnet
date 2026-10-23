@@ -10069,9 +10069,21 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // PRESERVED SESSIONS AT BOOT (support report 2026-10-21): a window's refused save stays on the station after that window
   // is gone. When the newest one still holds sessions this station lacks (the sidecar counts them), say so once and
   // offer to bring them back. Nothing shows when the station cannot say, or when nothing would come back.
+  // NOT NOW STICKS (review 10-23 #3a): the dismissed copy (file + savedAt) is remembered in this page's UI store and never
+  // offered again, unless that file is written again or a newer preserved copy appears.
+  function dismissedPreserved() {
+    const list = store && Array.isArray(store.preservedDismissed) ? store.preservedDismissed : [];
+    return list.filter(x => x && typeof x.file === 'string' && Number.isFinite(Number(x.savedAt)));
+  }
+  function dismissPreserved(offer) {
+    const list = dismissedPreserved().filter(x => x.file !== offer.file);
+    list.push({ file: offer.file, savedAt: Number(offer.savedAt) || 0 });
+    store.preservedDismissed = list.slice(-50);
+    save();
+  }
   async function offerPreservedSaves() {
     if (typeof CloudSave === 'undefined' || !CloudSave.conflicts || document.getElementById('save-conflict-notice')) return;
-    const offer = (await CloudSave.conflicts()).find(c => c && c.file && Number(c.restorable) > 0);
+    const offer = (await CloudSave.conflicts(dismissedPreserved())).find(c => c && c.file && Number(c.restorable) > 0);
     if (!offer || document.getElementById('save-conflict-notice') || document.getElementById('save-preserved-notice')) return;
     const n = Number(offer.restorable);
     const when = offer.savedAt ? new Date(offer.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'earlier';
@@ -10081,7 +10093,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     label.textContent = 'A window’s save preserved on the station (' + when + ') holds work in ' + n + (n === 1 ? ' session' : ' sessions') + ' that this station doesn’t have. Restoring brings it into the station; nothing in the station is removed, and the station file is copied aside first.';
     const restore = document.createElement('button'); restore.className = 'bb'; restore.textContent = 'Restore ' + n + (n === 1 ? ' session' : ' sessions');
     restore.onclick = async () => { restore.disabled = true; try { await CloudSave.restoreConflict(offer.file); } catch (e) { label.textContent = e.message; restore.disabled = false; } };
-    const later = document.createElement('button'); later.className = 'bb'; later.textContent = 'Not now'; later.onclick = () => banner.remove();
+    const later = document.createElement('button'); later.className = 'bb'; later.textContent = 'Not now'; later.onclick = () => { dismissPreserved(offer); banner.remove(); };
     banner.append(label, restore, later); document.body.append(banner);
   }
   function refreshSaveDurability(d) {
@@ -10101,10 +10113,20 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // a re-seed refusal is not "newer" either: the station file went missing and ANOTHER window's copy was saved back
       // first; which of the two copies holds more work is unknown, so neither is called newer
       const reseeded = !reset && h.conflict.reseeded === true;
+      // this window's OWN copy re-seeded the missing station file, but its acknowledgement never arrived before the station
+      // restarted, so its later saves are behind its own write (review 10-23 #6): never blamed on another window
+      const ownSeed = !reset && !reseeded && h.conflict.ownSeed === true;
+      // a copy from before this computer's station was reset, while the station is from after it: erased work, which the
+      // station refuses to restore, so no Restore key is offered (review 10-23 #5)
+      const erased = !reset && h.conflict.predatesReset === true;
       d.title = reset
         ? 'This computer’s station was reset (erased, or set aside for a fresh start) after the station in this window was founded, so it was not restored. This window’s copy was kept separately on the station. Download a copy or open the fresh station.'
+        : erased
+        ? 'This window holds a station from before this computer’s station was reset, so its changes were not saved into the current station. This window’s copy was kept separately on the station. Download a copy or reload the current station.'
         : reseeded
         ? 'The station file on this computer was missing, and another window’s copy of this station was saved back to it first. This window’s copy was kept separately on the station. Download a copy or reload the current station.'
+        : ownSeed
+        ? 'The station file on this computer was missing, and this window’s copy was saved back to it, but the station restarted before this window heard back. This window’s later changes were kept separately on the station. Download a copy or reload the current station.'
         : 'Another window saved newer station changes. Your work from this window was preserved separately on the station. Download a copy or reload the current station.';
       if (!document.getElementById('save-conflict-notice')) {
         const banner = document.createElement('div'); banner.id = 'save-conflict-notice'; banner.setAttribute('role', 'alert');
@@ -10114,11 +10136,12 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         exportButton.onclick = () => { const blob = new Blob([JSON.stringify(CloudSave.localSnapshot() || {})], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'starnet-conflicting-save.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
         const reload = document.createElement('button'); reload.className = 'bb'; reload.textContent = reset ? 'Open the fresh station' : 'Reload current station'; reload.onclick = async () => { try { await CloudSave.reloadCurrent(); } catch (e) { label.textContent = e.message; } };
         // the preserved copy's sessions go INTO the station (added, never removing any), then this window reloads onto it
-        // never after a RESET: the station was erased on purpose, and this copy is from before it
+        // never after a RESET, and never for erased work: the station was erased on purpose, and this copy is from before it
+        // (the station refuses that restore, so the key is never shown for it)
         const file = h.conflict.recovery;
         const restore = document.createElement('button'); restore.className = 'bb'; restore.textContent = 'Restore this window’s sessions';
         restore.onclick = async () => { restore.disabled = true; try { await CloudSave.restoreConflict(file); } catch (e) { label.textContent = e.message; restore.disabled = false; } };
-        banner.append(label); if (file && !reset && CloudSave.restoreConflict) banner.append(restore); banner.append(exportButton, reload); document.body.append(banner);
+        banner.append(label); if (file && !reset && !erased && CloudSave.restoreConflict) banner.append(restore); banner.append(exportButton, reload); document.body.append(banner);
       }
       return;
     }
