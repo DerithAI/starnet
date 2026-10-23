@@ -17,6 +17,7 @@ test/contract.test.js
 test/events-contract.test.js
 test/clock-rng.test.js
 test/context.test.js
+test/context.price-tier-window.test.js
 test/redact.known-values.test.js
 test/redact.masked-keys.test.js
 test/redact.linear.test.js

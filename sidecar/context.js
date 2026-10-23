@@ -872,7 +872,18 @@
 
   function makeContext(opts) {
     opts = opts || {};
-    let contextLimit = opts.contextLimit || 0;         // 0 = unknown (never auto-compact); mutable — see setContextLimit
+    /* WINDOW CEILING (context-cost-1023). opts.windowCeiling — tokens, or a function read LIVE (the run's model changes on
+       a fallback) — caps the window this manager works in: the fold threshold, the token tail and everything the host
+       scales off `contextLimit`. index.js passes the model's long-context PRICE-TIER boundary (prices.js
+       promptTierTokens), so a 1M-window Gemini Pro run works in 200k and every turn stays at the rate the spend caps
+       price. 0 / unset = no ceiling: the window is the model's real one, exactly as before. Only ever LOWERS a window. */
+    const ceilingOf = typeof opts.windowCeiling === 'function' ? opts.windowCeiling : () => opts.windowCeiling;
+    function capWindow(n) {
+      let c = 0;
+      try { c = Math.floor(Number(ceilingOf()) || 0); } catch (_) { c = 0; }   // a throwing ceiling never wedges a run
+      return (n > 0 && c > 0 && c < n) ? c : n;
+    }
+    let contextLimit = capWindow(opts.contextLimit || 0);   // 0 = unknown (never auto-compact); mutable — see setContextLimit
     const compactAt = opts.compactAt || 0.65;
     /* TAIL UNIT. keepTailTurns counts TURNS (an assistant message plus its tool results = 1; any other message =
        1) — six messages used to be two tool turns, far too short a verbatim window for an agentic run. Callers
@@ -1025,7 +1036,7 @@
        `contextLimit` property is kept in sync so host-side consumers (e.g. the tool-output cap) read the live
        value. */
     function setContextLimit(n) {
-      n = Math.max(0, Math.floor(Number(n) || 0));
+      n = capWindow(Math.max(0, Math.floor(Number(n) || 0)));   // the NEW model's tier ceiling (read live) still applies
       if (n > 0) { contextLimit = n; api.contextLimit = n; }
       return contextLimit;
     }
