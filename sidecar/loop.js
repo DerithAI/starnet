@@ -1318,7 +1318,8 @@
        but the call's full usage arrives only as the stream ends, so a cancel that cut an attempt off after it began
        streaming leaves that call booked short (nothing, or Anthropic's message_start input only). Returned as
        `streamCut` on a cancelled result, so the run record says its spend is a floor (or unknown), never a known
-       figure. A cancel before the first byte, between calls, or after a stream had closed does not set it. */
+       figure. A cancel before the first byte, between calls, or after a stream had closed does not set it, nor does
+       a cut call its adapter said bills nothing per call ({ type:'billing', perCall:false }: a subscription sign-in). */
     let streamCut = false;
     function waitClock() {
       try { const t = Number(clock.now()); return isFinite(t) ? t : 0; }
@@ -2020,6 +2021,7 @@
         let sawTruncation = false;
         let sawStreamEvent = false;   // any event from this attempt's stream: provider.retry `stage` + the waiting phase
         let streamClosed = false;     // the provider's stream ran to its own end (not cut off by a cancel)
+        let billedPerCall = true;     // false once the adapter says this call bills nothing per call (a subscription sign-in)
         /* The wait this attempt opens ends at the first visible output (a streamed token) or when the attempt
            settles. A retried attempt announces itself with an immediate sinceMs:0 beat, so a "retry in 30s"
            line is replaced the moment the retry actually goes out instead of lingering until the next tick. */
@@ -2036,6 +2038,7 @@
           for await (const ev of provider.stream(req)) {
             if (signal.aborted) break;
             if (ev.type === 'waiting') { waiting.note(ev.phase, ev.note); continue; }   // the adapter's wait facts, not stream output (#99)
+            if (ev.type === 'billing') { if (ev.perCall === false) billedPerCall = false; continue; }   // the adapter's billing fact for this call, not stream output (80de2a75)
             if (!sawStreamEvent) { sawStreamEvent = true; waiting.phase('streaming'); }
             if (ev.type === 'text') {
               const delta = String(ev.delta == null ? '' : ev.delta);
@@ -2065,7 +2068,8 @@
           streamClosed = !signal.aborted;
         } catch (e) { streamErr = e; }
         finally { waiting.stop(); }
-        if (signal.aborted && sawStreamEvent && !streamClosed) streamCut = true;
+        // a call that bills nothing per call (claude-cli on a subscription sign-in) cost nothing when cut: never a floor
+        if (signal.aborted && sawStreamEvent && !streamClosed && billedPerCall) streamCut = true;
         if (!streamErr) {
           // TRUNCATED STREAM (truthful-telemetry law). The response body ended CLEANLY mid-generation: the
           // adapter observed neither its protocol's end-of-stream sentinel nor a finish_reason. There is no

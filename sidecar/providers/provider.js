@@ -13,6 +13,10 @@
          |     hands them back to the same adapter on the next request. This exists because signed thinking
          |     blocks must be replayed VERBATIM beside that turn's tool_calls or the provider rejects the turn.
          |     Reasoning is NEVER a 'text' event — the loop concatenates those into the delivered answer.
+         | { type:'reasoning' }                 // OPTIONAL, no block: reasoning (billed output the Commander does not
+         |                                       //   see) is streaming. Counts as stream output for a Stop's spend truth.
+         | { type:'billing',    perCall:false } // OPTIONAL, before a call's first event: this call bills nothing per
+         |                                       //   call (claude-cli subscription sign-in), so a Stop that cuts it cost $0
          | { type:'usage',      usage }          // prompt_tokens, completion_tokens, total_tokens,
          |                                       //   prompt_tokens_details.cached_tokens, reasoning_tokens, cost
          | { type:'done',       finishReason, truncated? }   // finishReason normalized via normalizeFinish()
