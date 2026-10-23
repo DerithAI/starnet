@@ -203,6 +203,21 @@
       return at > 0 && num(r.ts) <= at;
     }
     function keep(list) { return deletedAt ? list.filter(r => !forgotten(r)) : list; }
+    /* THE STATION'S SELF-TALK IS NOT DIALOGUE (bug 4dee26ba). A reason-only internal call with no workstream (the quiet
+       title, the goal judge, pitch, autopilot, …) is filed in 'global'. Its rows are stamped dispatchState 'internal'
+       (runOnce), and the readers that hand rows to a model as conversation (search, around) skip them, so recall never
+       quotes them as the Commander's words — and a deleted session's opening lines never live on there through the
+       title prompt. Rows a station wrote before the stamp existed are recognised by the fixed shapes of those prompts,
+       in 'global' only (the same words in a named session are the Commander's). Nothing is deleted. */
+    function selfTalk(r) {
+      if (!r) return false;
+      if (r.dispatchState === 'internal') return true;
+      if (r.streamId !== 'global' || r.role !== 'user') return false;
+      const c = str(r.content);
+      return c.indexOf('\n\nAssistant reply (context only): ') >= 0 || c.startsWith('INTERNAL —')
+        || (c.startsWith('Goal:\n') && /Is the goal satisfied — done or continue\?$/.test(c));
+    }
+    function hidden(r) { return forgotten(r) || selfTalk(r); }
 
     // in-memory mirror loaded once; append keeps RAM + disk in lockstep so history() is O(n) over RAM.
     let rows = [];
@@ -275,14 +290,14 @@
       const all = o.scope === 'all';
       const want = normStream(streamId);
       if (typeof io.search === 'function') {
-        // the segment index ranks among the rows it may return (exclude), so a deleted session never takes a slot
-        try { return keep(io.search(want, query, { limit: limit, scope: all ? 'all' : 'stream', exclude: deletedAt ? forgotten : undefined }) || []); } catch (e) { failNote('transcript.io', e); }
+        // the segment index ranks among the rows it may return (exclude), so a deleted session or self-talk never takes a slot
+        try { return (io.search(want, query, { limit: limit, scope: all ? 'all' : 'stream', exclude: hidden }) || []).filter(r => !hidden(r)); } catch (e) { failNote('transcript.io', e); }
       }
       const scored = [];
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
         if (!all && r.streamId !== want) continue;
-        if (forgotten(r)) continue;
+        if (hidden(r)) continue;
         // a null-prototype map: `{}`['constructor'] is Object, so that query word "matched" every row with a string score
         const tf = Object.create(null); for (const t of tokenize(r.content)) tf[t] = (tf[t] || 0) + 1;
         let distinct = 0, freq = 0;
@@ -304,7 +319,7 @@
       if (typeof io.streams === 'function') {
         // the segment summaries count and preview every row: a deleted session drops out, and one re-opened after its
         // delete is listed from the rows said since (history() already forgets the rest)
-        try { return deletedAt ? liveStreams(io.streams({ limit: 100, previewChars: previewMax }) || [], previewMax).slice(0, limit) : (io.streams({ limit: limit, previewChars: previewMax }) || []); } catch (e) { failNote('transcript.io', e); }
+        try { return quietPreviews(deletedAt ? liveStreams(io.streams({ limit: 100, previewChars: previewMax }) || [], previewMax).slice(0, limit) : (io.streams({ limit: limit, previewChars: previewMax }) || [])); } catch (e) { failNote('transcript.io', e); }
       }
       const by = new Map();
       for (let i = 0; i < rows.length; i++) {
@@ -314,7 +329,7 @@
         if (!e) { e = { streamId: r.streamId, turns: 0, lastAt: 0, preview: '' }; by.set(r.streamId, e); }
         e.turns++;
         if (r.ts >= e.lastAt) e.lastAt = r.ts;
-        const preview = conversationPreview(r);
+        const preview = selfTalk(r) ? '' : conversationPreview(r);
         if (preview) {
           e.preview = preview.replace(/\s+/g, ' ').trim().slice(0, previewMax);
           e.previewTaint = r.taint || ''; e.previewTaintKnown = r.taintKnown === true || !!r.taint;
@@ -323,6 +338,15 @@
       const out = Array.from(by.values());
       out.sort((a, b) => (b.lastAt - a.lastAt) || (a.streamId < b.streamId ? -1 : a.streamId > b.streamId ? 1 : 0));
       return out.slice(0, limit);
+    }
+    // a 'global' listing whose stored preview is a pre-stamp self-talk prompt (a segment summary keeps the latest user
+    // row, whitespace collapsed) lists with no preview rather than quote it
+    function quietPreviews(list) {
+      return list.map(s => {
+        const p = s && s.streamId === 'global' ? str(s.preview) : '';
+        if (!p || !(p.indexOf('Assistant reply (context only):') >= 0 || p.startsWith('INTERNAL —') || (p.startsWith('Goal: ') && p.indexOf('Is the goal satisfied') >= 0))) return s;
+        return Object.assign({}, s, { preview: '', previewTaint: '', previewTaintKnown: false });
+      });
     }
     function liveStreams(list, previewMax) {
       const out = [];
@@ -353,10 +377,10 @@
       const want = normStream(streamId);
       const at = num(ts);
       if (typeof io.around === 'function') {
-        try { return keep(io.around(want, ts, { window: win, rowId: o.rowId }) || []); } catch (e) { failNote('transcript.io', e); }
+        try { return (io.around(want, ts, { window: win, rowId: o.rowId }) || []).filter(r => !hidden(r)); } catch (e) { failNote('transcript.io', e); }
       }
       const mine = [];
-      for (let i = 0; i < rows.length; i++) { if (rows[i].streamId === want && !forgotten(rows[i])) mine.push(rows[i]); }
+      for (let i = 0; i < rows.length; i++) { if (rows[i].streamId === want && !hidden(rows[i])) mine.push(rows[i]); }
       if (!mine.length) return [];
       // the row closest to the anchor (mine is append-ordered, so ties resolve to the earliest match — stable).
       let anchor = 0, best = Infinity;
