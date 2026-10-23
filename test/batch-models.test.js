@@ -60,9 +60,23 @@ module.exports = (async () => {
 
   /* ---------- 2. the sidecar's model-list route + catalog snapshots (sliced out of index.js) ---------- */
   const index = read('sidecar', 'index.js');
+  /* The provider.js helpers a slice may call are exactly the names index.js IMPORTS (review 2026-10-23): a sandbox
+     handed provider.isBatchOnlyModel directly stayed green after the import was dropped, while the real route threw
+     a ReferenceError (strict mode) and every picker showed "catalog unavailable". */
+  const helpers = {};
+  {
+    const imp = /const \{([^}]*)\} = require\('\.\/providers\/provider\.js'\)/.exec(index);
+    A.ok(!!imp, 'index.js destructures its provider.js helpers in one require');
+    for (const part of (imp ? imp[1].split(',') : [])) {
+      const [from, as] = part.split(':').map(s => s.trim());
+      if (from && typeof provider[from] === 'function') helpers[as || from] = provider[from];
+    }
+    A.ok(typeof helpers.isBatchOnlyModel === 'function' && typeof helpers.chatModelId === 'function',
+      'index.js imports isBatchOnlyModel and chatModelId from provider.js: ' + Object.keys(helpers).join(', '));
+  }
   {
     const region = sliceTop(index, 'async function listModelsForProvider(providerId, opts) {', 'listModelsForProvider');
-    const listed = providerId => vm.runInNewContext(region + '\nlistModelsForProvider(' + JSON.stringify(providerId) + ', {});', {
+    const listed = providerId => vm.runInNewContext(region + '\nlistModelsForProvider(' + JSON.stringify(providerId) + ', {});', Object.assign({}, helpers, {
       normalizeProvider: p => String(p || 'openrouter'),
       getProviderProfile: () => ({}),
       providerRuntimeBaseUrl: () => 'https://example.invalid/v1',
@@ -74,9 +88,8 @@ module.exports = (async () => {
       providerUsesCodex: () => false,
       providerUsesDeviceOAuth: () => false,
       selectProvider: () => ({ listModels: async () => CATALOG.map(m => Object.assign({}, m)).concat([{ id: 'mymodel:batch' }]) }),
-      ImageTask: require('../sidecar/image-task.js'),
-      isBatchOnlyModel: provider.isBatchOnlyModel
-    });
+      ImageTask: require('../sidecar/image-task.js')
+    }));
     const managed = await listed('starnet');
     A.ok(!ids(managed).some(id => /:batch$/.test(id)), 'GET /api/models/starnet offers no :batch row: ' + ids(managed).join(', '));
     A.ok(ids(managed).indexOf('anthropic/claude-haiku-4.5') >= 0 && ids(managed).indexOf('meta-llama/llama-5-8b:free') >= 0, 'base rows and :free variants stay offered');
@@ -88,12 +101,11 @@ module.exports = (async () => {
   {
     const region = sliceTop(index, 'function warmModelCatalog() {', 'warmModelCatalog') +
       sliceTop(index, 'async function warmModelCatalogSet() {', 'warmModelCatalogSet');
-    const sandbox = {
+    const sandbox = Object.assign({}, helpers, {
       orModelCatalogIds: [], _modelCatalogWarming: false,
       makeOpenRouterProvider: () => ({ listModels: async () => CATALOG.map(m => Object.assign({}, m)) }),
-      providerRuntimeBaseUrl: () => '', OPENROUTER_BASE: 'https://openrouter.ai/api/v1',
-      isBatchOnlyModel: provider.isBatchOnlyModel
-    };
+      providerRuntimeBaseUrl: () => '', OPENROUTER_BASE: 'https://openrouter.ai/api/v1'
+    });
     vm.runInNewContext('var orModelCatalogIds = [], _modelCatalogWarming = false;\n' + region + '\nthis.warmModelCatalog = warmModelCatalog; this.warmModelCatalogSet = warmModelCatalogSet; this.snap = () => orModelCatalogIds;', sandbox);
     await sandbox.warmModelCatalog();
     const snap = sandbox.snap();
@@ -102,17 +114,134 @@ module.exports = (async () => {
     A.ok(set && set.has('openai/gpt-6-sol') && !set.has('openai/gpt-6-sol:batch'), 'the fallback-chain validation catalog holds no :batch id, so saving one warns');
   }
 
-  /* ---------- 3. the run seam: a saved :batch id runs on its base model (source lock — runOnceCore is huge) ---------- */
+  /* ---------- 3. the run seam: a saved :batch id runs on its base model (runOnceCore is too big to slice whole) ---------- */
   {
-    A.ok(/const \{[^}]*\bchatModelId\b[^}]*\} = require\('\.\/providers\/provider\.js'\)/.test(index), 'index.js imports chatModelId from provider.js');
-    const at = index.indexOf("let model = String((o && o.model) || '').trim() || (rosterIdent && rosterIdent.model");
-    A.ok(at >= 0, 'runOnceCore still resolves its model in one place');
-    const after = index.slice(at, at + 1600);
-    A.ok(/\n  model = chatModelId\(providerId, model\);/.test(after), 'runOnceCore maps a batch-only id to its base model right after resolving it (before any event names it)');
-    A.ok(after.indexOf('model = chatModelId(providerId, model)') < after.indexOf("emit('agent.run.start'") || after.indexOf("emit('agent.run.start'") < 0, 'the mapping happens before the run announces its model');
-    const fb = index.indexOf('const fallbackModels = (Array.isArray(o.fallbackModels) ? o.fallbackModels : effectiveFallbackChain())');
-    A.ok(fb >= 0, 'the run still builds its fallback chain in one place');
-    A.ok(/chatModelId\(/.test(index.slice(fb, fb + 400)), 'a saved fallback chain\'s :batch id runs on its base model too');
+    const core = index.indexOf('async function runOnceCore(o) {');
+    A.ok(core >= 0, 'index.js still defines runOnceCore');
+    const at = index.indexOf("let model = String((o && o.model) || '').trim() || (rosterIdent && rosterIdent.model", core);
+    A.ok(at > core, 'runOnceCore still resolves its model in one place');
+    const mapAt = index.indexOf('\n  model = chatModelId(providerId, model);', at);
+    A.ok(mapAt > at && mapAt - at < 1600, 'runOnceCore maps a batch-only id to its base model right after resolving it');
+    // the first thing that names the model to the page is the run's agent.run.start: searched over the WHOLE body
+    const firstStart = index.indexOf("emit('agent.run.start'", core);
+    A.ok(firstStart > mapAt, 'the mapping happens before runOnceCore\'s first agent.run.start names the model (start at ' + firstStart + ', map at ' + mapAt + ')');
+    A.ok(index.slice(core, mapAt).indexOf('emit(') < 0, 'no event leaves runOnceCore before the model is mapped');
+
+    // the fallback chains, EXECUTED: the statements cut out of runOnceCore and run against each chain source
+    const fbStart = index.indexOf('  const fallbackModels = (Array.isArray(o.fallbackModels) ? o.fallbackModels : effectiveFallbackChain())', core);
+    const fbEnd = index.indexOf("? fallbackModels.splice(0).map(m => ({ provider: 'openrouter', model: m })) : [];", fbStart);
+    A.ok(fbStart > core && fbEnd > fbStart && fbEnd - fbStart < 1200, 'the run still builds its fallback chain in one place');
+    const chainSrc = index.slice(fbStart, fbEnd + "? fallbackModels.splice(0).map(m => ({ provider: 'openrouter', model: m })) : [];".length);
+    const chain = (providerId, o, saved, env) => vm.runInNewContext(
+      chainSrc + '\n({ fallbackModels, savedProviderFallbacks });',
+      Object.assign({}, helpers, { providerId, o, fallbackSaved: saved, effectiveFallbackChain: () => (saved != null ? saved : env) }));
+    let r = chain('anthropic', {}, ['anthropic/claude-haiku-4.5:batch'], []);
+    A.eq(JSON.stringify(r.savedProviderFallbacks), JSON.stringify([{ provider: 'openrouter', model: 'anthropic/claude-haiku-4.5' }]),
+      'a non-OpenRouter station\'s SAVED chain (OpenRouter routes) runs its :batch id on the base model');
+    r = chain('starnet', {}, ['openai/gpt-6-sol:batch', 'openai/gpt-6-sol'], []);
+    A.eq(JSON.stringify(r.fallbackModels), JSON.stringify(['openai/gpt-6-sol', 'openai/gpt-6-sol']), 'a managed station\'s saved chain maps too');
+    r = chain('starnet', { fallbackModels: ['anthropic/claude-haiku-4.5:batch'] }, null, []);
+    A.eq(JSON.stringify(r.fallbackModels), JSON.stringify(['anthropic/claude-haiku-4.5']), 'a per-run chain on a managed run maps by the run\'s provider');
+    r = chain('ollama', { fallbackModels: ['mymodel:batch'] }, null, []);
+    A.eq(JSON.stringify(r.fallbackModels), JSON.stringify(['mymodel:batch']), 'a per-run chain on a local provider keeps its own tags');
+    r = chain('ollama', {}, null, ['mymodel:batch']);
+    A.eq(JSON.stringify(r.fallbackModels), JSON.stringify(['mymodel:batch']), 'an env default chain on a local provider keeps its own tags');
+
+    // a provider fallback (the voice route's agent route, a /api/run fallbackProviders entry) runs its base model too
+    const pfStart = index.indexOf('    const fbProviderId = normalizeProvider(fb.provider || providerId);', core);
+    const pfEnd = index.indexOf('\n', index.indexOf('    const fbModel = ', pfStart));
+    A.ok(pfStart > core && pfEnd > pfStart && pfEnd - pfStart < 400, 'the provider-fallback loop still resolves each entry\'s model in one place');
+    const pf = (fb, providerId) => vm.runInNewContext(index.slice(pfStart, pfEnd) + '\n({ fbProviderId, fbModel });',
+      Object.assign({}, helpers, { fb, providerId, normalizeProvider: p => String(p || '').toLowerCase() }));
+    A.eq(pf({ provider: 'starnet', model: 'anthropic/claude-haiku-4.5:batch' }, 'openrouter').fbModel, 'anthropic/claude-haiku-4.5', 'a provider fallback\'s :batch id runs on its base model');
+    A.eq(pf({ provider: 'ollama', model: 'mymodel:batch' }, 'openrouter').fbModel, 'mymodel:batch', 'a local provider fallback keeps its tag');
+  }
+
+  /* ---------- 3b. the one-shot paths that read the roster without runOnceCore (review 2026-10-23), EXECUTED ----------
+     Telegram agent-bot setup (probeChannelRunConfig), NOT RIGHT? / SET IT UP FOR ME (stationOneShot), skill evaluation
+     and restored verdict reviews (sampleRunConfigFor) all resolve the model through channelRunConfigFor or, with no
+     roster, devHubSecrets, then hand it straight to provider.stream. A fake adapter answers ':batch' with the real 404. */
+  {
+    const sent = [];
+    const fakeProvider = {
+      priceOf: () => null,
+      async *stream(req) {
+        sent.push(req.model);
+        if (/:batch$/.test(req.model)) { const e = new Error('404 ' + req.model + ' cannot be used with the chat/completions endpoint (adapter AnthropicBatchAdapter).'); e.code = 'model_not_found'; throw e; }
+        yield { type: 'text', delta: 'OK' }; yield { type: 'done' };
+      }
+    };
+    const roster = new Map();
+    const env = {};
+    const region = ['function stationDefaultFor(id, ident) {', 'function channelRunConfigFor(agentId, candidate) {',
+      'async function probeChannelRunConfig(config, timeoutMs) {', 'function devHubSecrets() {', 'function sampleRunConfigFor(agentId) {',
+      'function providerForRunConfig(c, reasoningEffort) {', 'async function stationOneShot(prompt, tag, failLead) {']
+      .map(m => sliceTop(index, m, m.replace(/\(.*$/, ''))).join('\n');
+    const sb = Object.assign({}, helpers, {
+      agentRoster: roster, process: { env }, AbortController, setTimeout, clearTimeout, crypto: require('crypto'),
+      normalizeProvider: p => String(p || 'openrouter').toLowerCase(),
+      providerRuntimeKey: () => 'k', providerRuntimeBaseUrl: () => '', providerHasCredential: () => true,
+      providerCredentialError: () => 'not configured', resolveReasoningEffort: (p, v) => v || 'medium',
+      extraAccountProviderFor: () => null, providerUsesCodex: () => false, providerUsesDeviceOAuth: () => false,
+      selectProvider: () => fakeProvider, redact: s => s,
+      budget: { check: () => null }, stationOneShots: new Set(), makeCostEngine: () => ({ reconcile: () => ({ usd: 0 }) }),
+      ledger: { record() {} }, getProviderProfile: () => ({}), failNote() {}
+    });
+    vm.runInNewContext(region + '\nthis.api = { channelRunConfigFor, probeChannelRunConfig, sampleRunConfigFor, stationOneShot };', sb);
+    const api = sb.api;
+    roster.set('agent', { provider: 'starnet', model: 'anthropic/claude-haiku-4.5:batch', name: 'Overseer' });
+    roster.set('cypher', { provider: 'openrouter', model: 'openai/gpt-6-sol:batch', name: 'Cypher' });
+    roster.set('scout', { provider: 'openrouter', model: '', name: 'Scout' });   // unpinned: follows the station default
+    roster.set('local', { provider: 'ollama', model: 'mymodel:batch', name: 'Local' });
+
+    A.eq(api.channelRunConfigFor('cypher').model, 'openai/gpt-6-sol', 'a pinned agent\'s :batch roster model resolves to its base model');
+    A.eq(api.channelRunConfigFor('scout').model, 'anthropic/claude-haiku-4.5', 'an unpinned agent following a :batch station default resolves to the base model');
+    A.eq(api.channelRunConfigFor('local').model, 'mymodel:batch', 'a local model tagged :batch is untouched');
+
+    const probe = await api.probeChannelRunConfig(api.channelRunConfigFor('cypher'), 5000);
+    A.ok(probe.ok === true && probe.model === 'openai/gpt-6-sol', 'Telegram agent-bot setup proves the base model instead of refusing setup: ' + JSON.stringify(probe));
+    A.eq(sent[sent.length - 1], 'openai/gpt-6-sol', 'the setup probe sends the base id to chat/completions');
+
+    const one = await api.stationOneShot({ system: 's', user: 'u' }, 'notright', 'the fix suggestion failed');
+    A.ok(one.ok === true && one.model === 'anthropic/claude-haiku-4.5', 'NOT RIGHT? / SET IT UP FOR ME run on the base station model, never a 502: ' + JSON.stringify(one));
+    A.eq(sent[sent.length - 1], 'anthropic/claude-haiku-4.5', 'the station one-shot sends the base id');
+    A.eq(api.sampleRunConfigFor('agent').model, 'anthropic/claude-haiku-4.5', 'skill evaluation and restored verdict reviews read the base model (sampleRunConfigFor)');
+
+    // a headless host with no roster falls back to the environment default
+    roster.clear();
+    env.SKYNET_DEFAULT_MODEL = 'anthropic/claude-haiku-4.5:batch';
+    A.eq(api.sampleRunConfigFor('agent').model, 'anthropic/claude-haiku-4.5', 'a headless host\'s :batch env default model resolves to its base model');
+    A.ok(!sent.some(m => /:batch$/.test(m)), 'no one-shot ever sent a :batch id: ' + sent.join(', '));
+  }
+
+  /* ---------- 3c. LIVE DOCTOR probes the model a run really uses; the voice route resolves like runOnceCore ---------- */
+  {
+    const ld = index.indexOf('async function handleLiveDoctor(req, res) {');
+    A.ok(ld >= 0, 'index.js still defines handleLiveDoctor');
+    const s = index.indexOf('  const providerId = normalizeProvider((rec && rec.provider)', ld);
+    const e = index.indexOf('\n', index.indexOf('  const model = ', s));
+    A.ok(s > ld && e > s && e - s < 600, 'LIVE DOCTOR resolves its selected model in one place');
+    const doctor = rec => vm.runInNewContext(index.slice(s, e) + '\n({ providerId, model });',
+      Object.assign({}, helpers, { rec, runtimeKey: 'k', codexTokens: null, normalizeProvider: p => String(p || '').toLowerCase() }));
+    A.eq(doctor({ provider: 'starnet', model: 'anthropic/claude-haiku-4.5:batch' }).model, 'anthropic/claude-haiku-4.5', 'LIVE DOCTOR probes the base model a real run uses, never reports the :batch id as failing');
+    A.eq(doctor({ provider: 'ollama', model: 'mymodel:batch' }).model, 'mymodel:batch', 'LIVE DOCTOR keeps a local tag');
+    const body = index.slice(ld, ld + 4000);
+    A.ok(/provider\.stream\(\{ model, messages: \[\{ role: 'user', content: 'Reply exactly OK\.' \}\]/.test(body), 'the doctor\'s probe streams that same resolved model');
+
+    const region = sliceTop(index, 'async function applyVoiceTurnRoute(o) {', 'applyVoiceTurnRoute');
+    const voiceRoster = new Map([['agent', { provider: 'starnet', model: 'anthropic/claude-haiku-4.5:batch' }]]);
+    const voice = (setting) => vm.runInNewContext(region + '\napplyVoiceTurnRoute({ agentId: "agent", messages: [] });', Object.assign({}, helpers, {
+      effectiveVoiceChat: () => require('../sidecar/voice-chat-route.js').cleanSetting(setting), agentRoster: voiceRoster,
+      normalizeProvider: p => String(p || 'openrouter').toLowerCase(), providerUsesCodex: () => false, CODEX_DEFAULT_MODEL: 'gpt-x', CRON_DEFAULT_MODEL: 'cron-x',
+      providerRuntimeKey: () => 'k', providerRuntimeBaseUrl: () => '', getProviderProfile: () => ({}), providerHasCredential: () => true,
+      voiceCatalogEntry: async () => null, makeContext: () => ({ estimateMessages: () => 0, estimateTokens: () => 0 }), RUN_CONTEXT_DEFAULTS: {},
+      voiceChatRoute: require('../sidecar/voice-chat-route.js'), console: { warn() {}, log() {} }
+    }));
+    const swapped = await voice({ provider: 'openrouter', model: 'openai/gpt-6-sol' });
+    A.eq(swapped.fallbackProviders && swapped.fallbackProviders[0] && swapped.fallbackProviders[0].model, 'anthropic/claude-haiku-4.5',
+      'a voice turn\'s agent-route fallback names the base model, not the :batch id that would 404');
+    const same = await voice({ provider: 'starnet', model: 'anthropic/claude-haiku-4.5' });
+    A.ok(!same.voiceRoute.used && same.voiceRoute.model === 'anthropic/claude-haiku-4.5', 'a voice model equal to the agent\'s base model stays on the agent route: ' + JSON.stringify(same.voiceRoute));
   }
 
   /* ---------- 4. the model dock (modeldock.js, executed) ---------- */
