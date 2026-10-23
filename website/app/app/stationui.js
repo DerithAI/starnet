@@ -9930,7 +9930,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     if (typeof CtxGauge === 'undefined') return;
     const cs = access.context ? access.context() : ((typeof Harness !== 'undefined' && Harness.contextState) ? Harness.contextState() : null);
     if (!cs) return;
-    const s = CtxGauge.compute(cs.used, cs.limit, { measured: cs.measured !== false, projected: !!cs.projected });
+    // measured against the window a RUN works in (cs.runWindow: the model's window stopped at a long-context price tier,
+    // final-polish 10-23), the one a run folds in, as /compress does; never the 1M a 200k-tier run folds inside
+    const tier = cs.runWindow > 0 && cs.limit > 0 && cs.runWindow < cs.limit;
+    const s = CtxGauge.compute(cs.used, tier ? cs.runWindow : cs.limit, { measured: cs.measured !== false, projected: !!cs.projected });
     g.dataset.level = s.level;
     // ASCII cell bar (asciifx.js): the gauge ticks in whole ▮/▯ cells instead of sliding — deliberate,
     // chunky, CRT-honest. Same real numbers (CtxGauge.compute), only the presentation is quantized;
@@ -9982,7 +9985,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
          (s.projected
            ? ', estimated for this chat’s next message from a real measurement of this model. It becomes exact the moment the agent replies.'
            : ', measured on this chat’s last request.') +
-         ' How much of this conversation the model can still hold; when it fills, older turns are folded into a summary automatically.')
+         (tier
+           ? ' The model can hold ' + CtxGauge.fmtTokens(cs.limit) + ', but it bills a higher rate for a prompt over ' + CtxGauge.fmtTokens(cs.runWindow) + ' tokens, so a run works in ' + CtxGauge.fmtTokens(cs.runWindow) + '.'
+           : '') +
+         ' How much of this conversation a run can still hold; when it nears full, older turns are folded into a summary automatically.')
       : (s.limit ? 'measuring… send a message and this fills in' : 'measuring this model’s memory size…'));
     // This runs every second. Writing `title` here would recreate the OS tooltip after Tooltip.adopt()
     // removed it, while the pointer was already resting on the gauge (no second pointerover to re-adopt).

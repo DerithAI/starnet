@@ -12569,7 +12569,7 @@ const ROUTES = [
   { m: 'POST', exact: '/api/notebook/restore', h: handleNotebookRestore },
   { m: 'GET', prefix: '/api/notebook', h: serveNotebook },
   { m: 'POST', exact: '/api/save/recovery-ack', h: handleSaveRecoveryAck },
-  { m: 'GET', exact: '/api/save/conflicts', h: serveSaveConflicts },
+  { m: 'GET', qsplit: '/api/save/conflicts', h: serveSaveConflicts },   // qsplit, not exact: the boot offer sends ?after=<ms> (an exact miss fell through to serveSaveLoad)
   { m: 'POST', exact: '/api/save/conflicts/restore', h: handleSaveConflictRestore },
   { m: 'GET', prefix: '/api/save', h: serveSaveLoad },
   { m: 'POST', qsplit: '/api/save', h: handleSaveWrite },   // qsplit, not exact: the unload beacon carries ?ticket= (apiauth.ticketOk)
