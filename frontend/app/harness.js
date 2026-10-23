@@ -958,6 +958,9 @@ const Harness = (() => {
         if (p === 'openrouter') list = await fetchModelCatalog(OR + '/models', 'data');
         else list = [];
       }
+      // OpenRouter's catalog (and the managed one, which passes it through) lists batch-only '<id>:batch' rows that
+      // chat/completions refuses with a 404: never offer one (the sidecar route drops them too; the direct fallback above does not)
+      if (p === 'openrouter' || p === 'starnet') list = list.filter(m => !/:batch$/i.test(m.id));
       list.sort((a, b) => a.id.localeCompare(b.id));
       // scope the catalog to the provider it was fetched FOR — never to a shared map another
       // provider's warm can overwrite (see modelsByProv above).
