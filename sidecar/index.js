@@ -24175,7 +24175,7 @@ async function runOnceCore(o) {
   // PROVIDER refused (Failreview.providerRefused) is never reviewed on it: same content, same refusal (xai-403-1023).
   const _gateFailReview = !!(o.reflect && memoryConfig.failureReviewEnabled && _auxFail
       && Failreview.failureSalient({ toolTrace: execution.toolTraceList(), turns: (result && result.turns) || 0 })
-      && !Failreview.providerRefused({ failureStage: execution.failureStage(), failureCode: execution.failureCode() }, { separateModel: !!reflectModel })
+      && !Failreview.providerRefused({ failureStage: execution.failureStage(), failureCode: execution.failureCode(), unsupportedPart: !!(result && result.failureUnsupportedPart) }, { separateModel: !!reflectModel })
       && personalizationStore.read().enabled
       && !failReviewingNow.has(agentId) && (Date.now() - (lastFailReviewAt.get(agentId) || 0) >= memoryConfig.failureReviewCooldownMs));
   const _gateStudy = !!(Study && o.reflect && memoryConfig.studyEnabled && isTask && _auxDone && !_lineHop && Study.studySalient(result.messages, o.recurring)

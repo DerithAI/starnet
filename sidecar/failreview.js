@@ -52,13 +52,17 @@
      failed run — the second request of each 403 pair in the cloud logs. Account/credential refusals (auth, billing,
      quota_exhausted) fail any model on the same provider credential; a model refusal (content_policy_blocked,
      model_not_found) fails the same model again, so it skips unless a separate aux model (opts.separateModel) reads it.
-     format_error is NOT here: the review is a plain text request without the tools or media a 400 may have refused. */
+     format_error is NOT here: the review is a plain text request without the tools or media a 400 may have refused.
+     For the same reason a model_not_found on a PART of the request (run.unsupportedPart — the classifier's fact for
+     "No endpoints found that support image input / tool use": a tool screenshot sent to a model that cannot read
+     images) keeps its review: the same model answered this run's earlier turns and the review carries no such part. */
   const ACCOUNT_REFUSALS = { auth: 1, billing: 1, quota_exhausted: 1 };
   const MODEL_REFUSALS = { content_policy_blocked: 1, model_not_found: 1 };
   function providerRefused(run, opts) {
     if (!run || String(run.failureStage || '') !== 'provider_stream') return false;
     const code = String(run.failureCode || '');
     if (ACCOUNT_REFUSALS[code] === 1) return true;
+    if (code === 'model_not_found' && run.unsupportedPart === true) return false;
     return MODEL_REFUSALS[code] === 1 && !(opts && opts.separateModel);
   }
 

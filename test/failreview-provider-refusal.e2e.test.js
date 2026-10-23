@@ -9,6 +9,9 @@
              'error' after exactly ONE refused request (no resend), and NO failure-review request follows.
      ARM 2 — CONTROL, same station: a task that failed on a 400 the provider gave on its request shape still gets its
              one failure review (the gate is selective, not off).
+     ARM 3 — CONTROL: a tool turn, then a 404 "No endpoints found that support image input" (the model cannot read the
+             screenshot the loop sent it — 14 of these in the same cloud log). model_not_found, but about a PART of the
+             request: the review is a plain text request the same model answers, so it still gets its one review.
 
    No aux model is configured, so the review would ride the run's own model — the case in the logs. Zero network. */
 'use strict';
@@ -21,6 +24,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const RUN_MODEL = 'x-ai/grok-fixture';
 const REFUSE_MARK = 'REFUSEDRUN';
 const SHAPE_MARK = 'SHAPERUN';
+const IMAGE_MARK = 'IMAGEPARTRUN';
 
 function sse(res, deltas, usage, finishReason) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -52,7 +56,7 @@ function startMock() {
         };
         state.calls.push(rec);
         if (rec.failReview) { sse(res, [{ content: 'LESSON: Registry pushes need the upload token refreshed before each batch of retries' }], { prompt_tokens: 6, completion_tokens: 4, total_tokens: 10 }, 'stop'); return; }
-        if (rec.main && !rec.toolTurnDone && (raw.indexOf(REFUSE_MARK) >= 0 || raw.indexOf(SHAPE_MARK) >= 0)) {
+        if (rec.main && !rec.toolTurnDone && (raw.indexOf(REFUSE_MARK) >= 0 || raw.indexOf(SHAPE_MARK) >= 0 || raw.indexOf(IMAGE_MARK) >= 0)) {
           // one real tool turn first: the failed run has a tool trace, so the review's salience floor is met
           sse(res, [{ tool_calls: [{ index: 0, id: 'inspect_once', type: 'function', function: { name: 'station_inspect', arguments: '{}' } }] }],
             { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 }, 'tool_calls');
@@ -63,6 +67,13 @@ function startMock() {
           rec.status = 403;
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'Provider returned error', code: 403, metadata: { provider_name: 'xAI' } } }));
+          return;
+        }
+        if (rec.main && raw.indexOf(IMAGE_MARK) >= 0) {
+          // what OpenRouter answers when the routed model cannot take an image the request carries
+          rec.status = 404;
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'No endpoints found that support image input', code: 404 } }));
           return;
         }
         if (rec.main && raw.indexOf(SHAPE_MARK) >= 0) {
@@ -130,6 +141,19 @@ async function settle(state, stableMs, maxMs) {
       A.eq(end && end.payload && end.payload.reason, 'error', 'the control run ended with reason error');
       await settle(mock.state);
       A.eq(frCalls().length - before, 1, 'the control failure (format_error) still fired exactly one failure review');
+    }
+
+    // ---- ARM 3 — control: a capability 404 (image input) is model_not_found on a request PART; its review still runs ----
+    {
+      const before = frCalls().length;
+      const ev = await driveRun(fixture, 'fr-image', IMAGE_MARK + ' inspect the station then push the registry update');
+      const end = endOf(ev);
+      A.eq(end && end.payload && end.payload.reason, 'error', 'the image-input run ended with reason error');
+      const errEv = ev.filter(e => e.name === 'agent.run.error').pop();
+      A.ok(errEv && /openrouter http 404/.test(String(errEv.payload && errEv.payload.message)), 'the run error carries the adapter 404 sentence (' + JSON.stringify(errEv && errEv.payload) + ')');
+      await settle(mock.state);
+      A.eq(mock.state.calls.filter(c => c.main && c.status === 404).length, 1, 'the image-input request was sent exactly once');
+      A.eq(frCalls().length - before, 1, 'the image-input 404 (model_not_found on a request part) still fired exactly one failure review (got ' + (frCalls().length - before) + ')');
     }
   } finally { await fixture.dispose(); try { mock.server.close(); } catch (_) {} }
 

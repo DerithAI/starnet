@@ -82,6 +82,9 @@ const REJECTED = /rejected the API key/i;
     A.ok(!REJECTED.test(v.userMessage), label + ': never "the provider rejected the API key" (' + v.userMessage + ')');
     A.ok(/xAI/.test(v.userMessage) && /refused this request/.test(v.userMessage), label + ': names the provider that refused this request (' + v.userMessage + ')');
     A.ok(!/Provider returned error|upstream_error|\[request/.test(v.userMessage), label + ': no raw upstream text in the headline (' + v.userMessage + ')');
+    // a StarNet-credits user has no key: the copy must not assume one
+    A.ok(!/\byour (?:api )?key\b/i.test(v.userMessage), label + ': never assumes the user has a key (' + v.userMessage + ')');
+    A.ok(/not a problem with your account or credits/.test(v.userMessage), label + ': says the account and credits were not the problem (' + v.userMessage + ')');
     const or = F.friendlyError('openrouter http 403 — Provider returned error');
     A.eq(or.kind, 'model_not_found', label + ': OpenRouter "Provider returned error" 403 is not auth (got ' + or.kind + ')');
     A.ok(!REJECTED.test(or.userMessage) && /refused this request/.test(or.userMessage), label + ': OpenRouter upstream 403 says the request was refused (' + or.userMessage + ')');
@@ -99,6 +102,42 @@ const REJECTED = /rejected the API key/i;
     A.ok(/isn't available/.test(region.userMessage), label + ': region refusal keeps the model-unavailable copy (' + region.userMessage + ')');
   }
 
+  /* ---- 4b. a CAPABILITY 404 is model_not_found too, but it is about a PART of this request (image input, tool use, a
+     parameter), not the model refusing to answer: the classifier flags it (unsupportedPart) so the failure review —
+     a plain text request with no tools or media — still runs. The same cloud log carries 14 "support image input"
+     404s: a tool screenshot sent to a model that cannot read images. Every refusal the review WOULD repeat stays unflagged. ---- */
+  {
+    const at = (status, body, mk) => thrown((mk === 'or'
+      ? makeOpenRouterProvider({ key: 'sk-or-v1-fixture', baseUrl: 'https://or.test/api/v1', fetch: jsonFetch(status, body) })
+      : makeOpenAICompatibleProvider({ key: 'fixture-link-token', baseUrl: 'https://managed.example.test/v1', fetch: jsonFetch(status, body) })), REQ);
+    const parts = ['No endpoints found that support image input', 'No endpoints found that support tool use',
+      'No endpoints found that can handle the requested parameters.', 'No endpoints found that support the provided \'tool_choice\' value.'];
+    for (const m of parts) {
+      for (const mk of ['managed', 'or']) {
+        const err = await at(404, mk === 'or' ? { error: { message: m, code: 404 } } : { error: { message: m, type: 'upstream_error', code: '404', request_id: 'r3' } }, mk);
+        const cls = classifyApiError(err, { model: REQ.model });
+        A.eq(cls.reason, 'model_not_found', mk + ' 404 "' + m + '": model_not_found (got ' + cls.reason + ')');
+        A.eq(cls.unsupportedPart, true, mk + ' 404 "' + m + '": flagged as a part of this request the model cannot take');
+      }
+    }
+    const refusals = [
+      ['managed xAI 403', managedErr],
+      ['OpenRouter xAI 403', await at(403, { error: { message: 'Provider returned error', code: 403, metadata: { provider_name: 'xAI' } } }, 'or')],
+      ['OpenRouter region 403', await at(403, { error: { message: 'Provider returned error', code: 403, metadata: { provider_name: 'OpenAI', raw: '{"error":{"code":"unsupported_country_region_territory"}}' } } }, 'or')],
+      ['model gone 404', await at(404, { error: { message: 'No endpoints found for x-ai/grok-9.', code: 404 } }, 'or')],
+      ['no allowed providers 404', await at(404, { error: { message: 'No allowed providers are available for the selected model.', code: 404 } }, 'or')],
+      ['data policy 404', await at(404, { error: { message: 'No endpoints found matching your data policy (Free model publication). Configure: https://openrouter.ai/settings/privacy', code: 404 } }, 'or')],
+      ['managed data policy 404', await at(404, { error: { message: 'No endpoints found matching your data policy (Free model publication).', type: 'upstream_error', code: '404', request_id: 'r4' } }, 'managed')]
+    ];
+    for (const [label, err] of refusals) {
+      const cls = classifyApiError(err, { model: REQ.model });
+      A.eq(cls.reason, 'model_not_found', label + ': model_not_found (got ' + cls.reason + ')');
+      A.eq(cls.unsupportedPart, false, label + ': a refusal of the model itself, not of a request part');
+    }
+    // the flag never leaks onto another reason (a policy block or a bad key whose words mention images/tools)
+    A.eq(classifyApiError(Object.assign(new Error('openrouter http 401 — No endpoints found that support image input'), { status: 401 }), {}).unsupportedPart, false, 'a 401 is never flagged');
+  }
+
   // ---- 5. the failure review skips a run the provider refused (the second request of each pair) ----
   const PS = 'provider_stream';
   for (const code of ['auth', 'billing', 'quota_exhausted']) {
@@ -108,6 +147,12 @@ const REJECTED = /rejected the API key/i;
   for (const code of ['content_policy_blocked', 'model_not_found']) {
     A.ok(Failreview.providerRefused({ failureStage: PS, failureCode: code }), code + ': the same model would refuse the same content — no review');
     A.ok(!Failreview.providerRefused({ failureStage: PS, failureCode: code }, { separateModel: true }), code + ': a separate aux model may read it — the review may run');
+  }
+  // a capability 404 (image input, tool use): the plain-text review does not send the part the model could not take
+  A.ok(!Failreview.providerRefused({ failureStage: PS, failureCode: 'model_not_found', unsupportedPart: true }), 'model_not_found on a request part (image input / tool use): the plain-text review still runs');
+  A.ok(Failreview.providerRefused({ failureStage: PS, failureCode: 'model_not_found', unsupportedPart: false }), 'model_not_found with no request part named: still skipped');
+  for (const code of ['auth', 'billing', 'quota_exhausted', 'content_policy_blocked']) {
+    A.ok(Failreview.providerRefused({ failureStage: PS, failureCode: code, unsupportedPart: true }), code + ': the request-part flag only ever excuses model_not_found');
   }
   for (const code of ['format_error', 'rate_limit', 'server_error', 'timeout', 'unknown', 'provider_failure', '']) {
     A.ok(!Failreview.providerRefused({ failureStage: PS, failureCode: code }), code + ': not a refusal the review would repeat');
@@ -121,8 +166,15 @@ const REJECTED = /rejected the API key/i;
     const at = src.indexOf('const _gateFailReview = ');
     A.ok(at > 0, 'the fail-review gate exists');
     const gate = src.slice(at, src.indexOf(';\n', at));
-    A.ok(/!Failreview\.providerRefused\(\{\s*failureStage: execution\.failureStage\(\), failureCode: execution\.failureCode\(\)\s*\}, \{ separateModel: !!reflectModel \}\)/.test(gate),
-      'the gate skips a provider refusal, with the aux tier as the separate model (' + gate.slice(0, 120) + '…)');
+    A.ok(/!Failreview\.providerRefused\(\{\s*failureStage: execution\.failureStage\(\), failureCode: execution\.failureCode\(\),\s*unsupportedPart: !!\(result && result\.failureUnsupportedPart\)\s*\}, \{ separateModel: !!reflectModel \}\)/.test(gate),
+      'the gate skips a provider refusal, with the run\'s request-part fact and the aux tier as the separate model (' + gate.slice(0, 160) + '…)');
+  }
+  // ...and the loop hands that fact up from the classification it ended on (loop.js end() at provider_stream)
+  {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'loop.js'), 'utf8');
+    A.ok(/end\('error', \{ failureStage: 'provider_stream', failureCode: fatal\.reason \|\| 'provider_failure', failureUnsupportedPart: fatal\.reason === 'model_not_found' && fatal\.unsupportedPart === true \}\)/.test(src),
+      'loop.js: the provider_stream end carries the request-part fact, only for model_not_found');
+    A.ok(/if \(extra && extra\.failureUnsupportedPart === true\) out\.failureUnsupportedPart = true;/.test(src), 'loop.js: end() returns the request-part fact on the run result');
   }
 
   A.report('provider-403-upstream-refusal.test');

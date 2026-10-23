@@ -5,7 +5,7 @@
    nothing useful. This pure classifier maps any provider error to a reason + the action it implies.
 
    classifyApiError(err, { provider, model, approxTokens, liveApproxTokens, contextLimit, numMessages })
-     -> { reason, retryable, shouldRotateCredential, shouldFallback, shouldCompress, statusCode, message }
+     -> { reason, retryable, shouldRotateCredential, shouldFallback, shouldCompress, statusCode, unsupportedPart, message }
 
    Reasons: auth · billing · rate_limit · quota_exhausted · overloaded · server_error · timeout ·
             context_overflow · output_cap · model_not_found · content_policy_blocked · format_error ·
@@ -284,6 +284,13 @@
     if (e && typeof e === 'object' && (e.provider || (e.metadata && (e.metadata.provider_name || e.metadata.provider)))) return true;
     return UPSTREAM_NAMED_RE.test(low);
   }
+  /* A model_not_found about a PART OF THIS REQUEST, not the model: OpenRouter's capability routing answers 404 "No
+     endpoints found that support image input" (a tool screenshot sent to a model that cannot read images — 14 in the
+     xai-403-1023 cloud log), "… that support tool use", "… that can handle the requested parameters". The same model
+     answers a request without that part. Never set for "No endpoints found for <model>", "matching your data policy",
+     "No allowed providers", a region or an upstream 403: those refuse every request to that model. Surfaced as the
+     classification's `unsupportedPart` fact (the failure review keys on it: its plain text request has no such part). */
+  const UNSUPPORTED_PART_RE = /no endpoints found that (?:support|can handle)\b/;
   const TOOL_GEN_FAILED_RE = /tool_use_failed|failed to call a function|tool call validation failed/;
   function classify400(low, code, ctx) {
     const c = String(code || '').toLowerCase();
@@ -456,6 +463,9 @@
       resetAtMs: wait.resetAtMs,         // H6.1: server-stated absolute reset (epoch ms), or null
       // output_cap only: the output ceiling the provider named; the loop retries the turn with max_tokens at it.
       allowedMaxTokens: reason === 'output_cap' ? parseOutputCap(low) : null,
+      // model_not_found only: the model cannot take a PART of this request (image input, tool use, a parameter) —
+      // a request without that part still reaches it (UNSUPPORTED_PART_RE). False for every other verdict.
+      unsupportedPart: reason === 'model_not_found' && UNSUPPORTED_PART_RE.test(low),
       // `reason` above was already picked from the RAW message, so annotating here cannot move the verdict — it
       // only makes the text a human can act on ("fetch failed" -> "fetch failed (ENOTFOUND api.openai.com)").
       // This is the message the loop emits as agent.run.error, which is what lands in the diagnostics ring.
