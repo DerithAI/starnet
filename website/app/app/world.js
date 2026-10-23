@@ -2469,7 +2469,7 @@ const World = (() => {
     return true;
   }
   function toCanvas(ev) {
-    const r = cv.getBoundingClientRect();
+    const r = U.pointerRect(cv);   // clientX's px, also on WebKit under TEXT SIZE (U.pointerRect)
     return { x: (ev.clientX - r.left) * (cv.width / r.width), y: (ev.clientY - r.top) * (cv.height / r.height) };
   }
   // Output pixel -> pre-CRT scene pixel. Match the renderer's six-step inverse,
@@ -11880,7 +11880,7 @@ const World = (() => {
     const p = geo && geo.props && geo.props.find(q => q.t === t);
     if (!p || !cv) return null;
     const wx = (p.x + (p.w || 1) / 2) * T, wy = (p.y + (p.h || 1) / 2) * T;
-    const r = cv.getBoundingClientRect();
+    const r = U.pointerRect(cv);
     const c = curvePoint({ x: wx * scale + panX, y: wy * scale + panY });
     return {
       id: p.id,
@@ -11897,7 +11897,7 @@ const World = (() => {
     if (p) { const s = specOf(p.t) || {}; wx = (p.x + (p.w || s.w || 1) / 2) * T; wy = (p.y + (p.h || s.h || 1) / 2) * T; }
     else if (agent && aid === agent.id && desk && !deskPropId) { wx = (desk.tx + desk.w / 2) * T; wy = (desk.ty + desk.h / 2) * T; }
     else return null;
-    const r = cv.getBoundingClientRect();
+    const r = U.pointerRect(cv);
     const c = curvePoint({ x: wx * scale + panX, y: wy * scale + panY });
     return { propId: p ? p.id : null, clientX: r.left + c.x * (r.width / cv.width), clientY: r.top + c.y * (r.height / cv.height) };
   };
@@ -12423,7 +12423,7 @@ const World = (() => {
       if (!cv || !geo || !geo.props) return null;
       const p = geo.props.find(q => q.t === t);
       if (!p) return null;
-      const r = cv.getBoundingClientRect();
+      const r = U.pointerRect(cv);
       const kx = r.width / cv.width, ky = r.height / cv.height;
       const toScr = (wx, wy) => { const c = curvePoint({ x: wx * scale + panX, y: wy * scale + panY }); return { x: r.left + c.x * kx, y: r.top + c.y * ky }; };
       const a = toScr(p.x * T, p.y * T), b = toScr((p.x + (p.w || 1)) * T, (p.y + (p.h || 1)) * T);

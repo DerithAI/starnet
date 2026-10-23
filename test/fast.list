@@ -1013,6 +1013,7 @@ test/brand-wordmark-mask.test.js
 test/personalization-authority-wiring.test.js
 test/sprite-loading.test.js
 test/textsize-screen-space.test.js
+test/webkit-zoom-pointer.test.js
 test/mobile-control-reachability.test.js
 test/mobile-topbar-glass-cascade.test.js
 test/station-tooltip.test.js
