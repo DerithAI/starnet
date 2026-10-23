@@ -270,6 +270,20 @@
   const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?|credit balance is too low|key limit exceeded/;
 
   const REGION_REFUSAL_RE = /unsupported_country_region_territory|country,? region,? or territory not supported|not available in your (?:country|region)/;
+  /* A 403 THAT NAMES THE UPSTREAM PROVIDER is that provider refusing THIS request, never our credential (xai-403-1023:
+     26 managed completions answered 403 "provider xAI · Provider returned error", and a StarNet-credits user, who has no
+     key, was told the provider rejected the API key). A router that rejects OUR key answers 401 and names no provider;
+     once it names the upstream (the adapter's err.upstreamProvider, error.provider, error.metadata.provider_name, the
+     "[…; provider X]" fact the openai-compatible adapter writes, or OpenRouter's own "Provider returned error" wrapper),
+     our key got through and the upstream turned the request down. */
+  const UPSTREAM_NAMED_RE = /provider returned error|[\[;] ?provider [^\];]+\]/;
+  function namesUpstream(err, low) {
+    if (err && typeof err.upstreamProvider === 'string' && err.upstreamProvider) return true;
+    const body = extractBody(err);
+    const e = body && (body.error || body);
+    if (e && typeof e === 'object' && (e.provider || (e.metadata && (e.metadata.provider_name || e.metadata.provider)))) return true;
+    return UPSTREAM_NAMED_RE.test(low);
+  }
   const TOOL_GEN_FAILED_RE = /tool_use_failed|failed to call a function|tool call validation failed/;
   function classify400(low, code, ctx) {
     const c = String(code || '').toLowerCase();
@@ -347,6 +361,9 @@
       // a 403 the UPSTREAM gave for this region (OpenAI behind OpenRouter: unsupported_country_region_territory) is the
       // model being unavailable here — the key is fine, and another model/provider may answer (shouldFallback)
       if (status === 403 && REGION_REFUSAL_RE.test(low)) return 'model_not_found';
+      // an upstream provider's 403 (namesUpstream): a safety wording was content_policy_blocked above; anything else is
+      // this model unavailable for this request — no resend, a configured fallback may answer, no credential rotation
+      if (status === 403 && !NO_CREDIT_RE.test(low) && namesUpstream(err, low)) return 'model_not_found';
       if (status === 401 || status === 403) return NO_CREDIT_RE.test(low) ? 'billing' : 'auth';
       if (status === 402) return /(resets? at|retry[- ]?after|rate limit)/.test(low) ? 'rate_limit' : 'billing';
       if (status === 404) return 'model_not_found';
