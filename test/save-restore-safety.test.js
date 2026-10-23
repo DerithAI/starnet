@@ -9,7 +9,7 @@
      2.  a stale pre-reset window can never overwrite the fresh station: every first save on an empty file takes the clock
          revision (proof6), a pre-reset copy at revision 0 is refused on the empty file, an explicit RESTORE BACKUP and a
          station founded after the reset still save, and the wire flag never reaches the station file;
-     3a. the boot offer's "Not now" sticks for that preserved file (until it is written again);
+     3a. the boot offer's "Not now" sticks: a watermark at that copy's time (a copy written after it is offered again);
      3c. a session the sidecar's deleted-session ledger holds is never counted or restored;
      3d. the boot offer's cost: nothing preserved reads nothing; a snapshot is read once; the station is never deep-cloned;
          the review's 3.2 MiB / 20-file scenario stays far below its 787 ms;
@@ -251,7 +251,7 @@ function stationUi(cloudSave, uiStore) {
       const notNow = banner.children.find(n => n.textContent === 'Not now');
       notNow.onclick();
       A.eq(view.nodes.has('save-preserved-notice'), false, '3a: Not now closes it');
-      A.ok(Array.isArray(uiStore.preservedDismissed) && uiStore.preservedDismissed.some(x => x.file === pre.recovery), '3a: and remembers that preserved file (' + JSON.stringify(uiStore.preservedDismissed) + ')');
+      A.ok(uiStore.preservedDismissedAt >= Math.floor(fs.statSync(path.join(root, pre.recovery)).mtimeMs), '3a: and remembers that copy\'s time (' + uiStore.preservedDismissedAt + ')');
       const again = stationUi(page(host, new Map()), uiStore);   // the next boot, same browser
       A.eq(await again.offer(), null, '3a: the next boot does not offer the dismissed copy again');
       // the same window conflicts again (its file is written again): offered again
@@ -268,7 +268,7 @@ function stationUi(cloudSave, uiStore) {
     {
       const root = workspace();
       const deleted = new Set(['purged-from-save-list']);
-      const host = sidecar(root, { tombstones: { deletedAt: id => (deleted.has(id) ? 123 : 0) } });
+      const host = sidecar(root, { tombstones: { deletedAt: id => (deleted.has(id) ? 123 : 0), forgotten: (id, ts) => deleted.has(id) && Number(ts) <= 123 } });
       host.saveStore.save('agent', stationDoc(), { compareRevision: true });   // its deletedIds no longer lists the session (cap / NEW AGENT)
       const pre = host.saveStore.save('agent', stationDoc({ _saveRevision: 0, updatedAt: 1500, _saveClient: 'window-d',
         workstreams: [{ id: 'general', title: null, history: [turn('user', 'hi')] }, { id: 'purged-from-save-list', title: 'Payroll', history: [turn('user', 'salaries')] }, { id: 'kept', title: 'K', history: [turn('user', 'k')] }] }), { compareRevision: true });
@@ -307,7 +307,7 @@ function stationUi(cloudSave, uiStore) {
       A.ok(found && found.file === 'agent.save-conflict-old-0.json' && found.restorable === 1, '3d: the oldest copy\'s session is found, newest first (' + JSON.stringify(found) + ')');
       A.eq(reads.snapshot, 6, '3d: every snapshot was read exactly once across ' + calls + ' boot request(s)');
       reads.station = 0; reads.snapshot = 0;
-      const settled = await host.conflicts('/api/save/conflicts?skip=' + encodeURIComponent('agent.save-conflict-old-0.json@' + Math.floor(found.savedAt)));
+      const settled = await host.conflicts('/api/save/conflicts?after=' + Math.floor(found.savedAt));
       A.eq([settled.conflicts, reads.station, reads.snapshot], [[], 0, 0], '3d: settled + dismissed copies: nothing is read again');
       // the station is never deep-cloned: an untouched session is the station's own object
       const pr = plan(st, { generalId: 'general', workstreams: [{ id: 'new', history: [turn('user', 'n')] }] });

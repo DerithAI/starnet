@@ -100,11 +100,56 @@ assert.equal(restorable(station, { workstreams: 'not a list' }), 0);
   assert.equal(at('born-empty').history.length, 1, '3b: an empty session never active since it was created (so never cleared) gets the turns');
   assert.deepEqual([p.added, p.extended.sort(), p.copied], [[], ['born-empty', 'new-empty', 'renamed'], []]);
   assert.equal(restorable(st, kept), 3, '3b: the offer counts exactly what a restore brings back');
-  // 3c: the sidecar's deleted-session ledger (opts.isDeleted) wins like the save's own deletedIds
+  // 3c: the sidecar's deleted-session ledger (opts.forgotten = sessionTombstones.forgotten) wins like the save's own deletedIds
   const withDeleted = { generalId: 'g', workstreams: [{ id: 'ledger-deleted', history: [turn('user', 'x')] }, { id: 'renamed~restored', history: [turn('user', 'y')] }] };
-  const del = id => id === 'ledger-deleted';
-  assert.deepEqual(plan(st, withDeleted, { isDeleted: del }).added, ['renamed~restored'], '3c: a ledger-deleted session is never added');
-  assert.equal(restorable(st, withDeleted, { isDeleted: del }), 1, '3c: nor counted');
+  const del = (id, ts) => id === 'ledger-deleted' && ts <= 5000;
+  assert.deepEqual(plan(st, withDeleted, { forgotten: del }).added, ['renamed~restored'], '3c: a ledger-deleted session is never added');
+  assert.equal(restorable(st, withDeleted, { forgotten: del }), 1, '3c: nor counted');
+}
+
+// review 10-23 r2 #3: the ledger is TIME-SCOPED (session-tombstones.js forgotten(id, ts) = ts <= deletedAt). A session revived
+// after its delete (Workstreams.adopt revive: the briefing, a project's home session) keeps its ledger stamp by design:
+// the station holds it live, so a stale window's newer turns in it come back; a session the station lacks comes back only
+// when the window worked in it AFTER the delete
+{
+  const deletedAt = { R: 3000, gone: 3000, 'back-later': 3000 };
+  const forgotten = (id, ts) => (deletedAt[id] || 0) > 0 && Number(ts) <= deletedAt[id];
+  const st = { generalId: 'g', deletedIds: [], workstreams: [{ id: 'g', title: null, history: [turn('user', 'hi')] },
+    { id: 'R', title: 'Briefing', createdAt: 1000, lastActiveAt: 4000, history: [turn('user', 'r1')] }] };
+  const kept = { generalId: 'g', workstreams: [{ id: 'g', title: null, history: [turn('user', 'hi')] },
+    { id: 'R', title: 'Briefing', createdAt: 1000, lastActiveAt: 4500, history: [turn('user', 'r1'), turn('user', 'r2 typed in the stale window')] },
+    { id: 'gone', title: 'Deleted', createdAt: 1000, lastActiveAt: 2500, history: [turn('user', 'said before the delete')] },
+    { id: 'back-later', title: 'Reopened there', createdAt: 1000, lastActiveAt: 3500, history: [turn('user', 'said after the delete')] }] };
+  const p = plan(st, kept, { forgotten });
+  assert.deepEqual(p.extended, ['R'], 'r2 #3: a revived session the station holds live is extended (never "deleted")');
+  assert.deepEqual(p.doc.workstreams.find(w => w.id === 'R').history.map(t => t.content), ['r1', 'r2 typed in the stale window']);
+  assert.deepEqual(p.added, ['back-later'], 'r2 #3: a session worked in after its delete comes back; one last used before it stays deleted');
+  assert.equal(restorable(st, kept, { forgotten }), 2, 'r2 #3: the offer counts exactly those');
+  // the save's own deletedIds still wins outright (it carries no time, and only lists rows the station removed)
+  assert.deepEqual(plan(Object.assign({}, st, { deletedIds: ['back-later'] }), kept, { forgotten }).added, [], 'r2 #3: deletedIds still wins');
+}
+
+// review 10-23 r2 #2: the clear checkpoint is TIME-SCOPED. A window behind the clear that kept working in the session AFTER
+// it brings back only what it added after the cleared turns; what it held when the session was cleared stays cleared
+{
+  const cleared = [turn('user', 'o1 (cleared)'), turn('assistant', 'o2 (cleared)')];
+  const st = { generalId: 'g', deletedIds: [], workstreams: [{ id: 'g', title: null, history: [turn('user', 'hi')] },
+    { id: 'X', title: 'Payroll', createdAt: 1000, lastActiveAt: 2000, history: [] },
+    { id: 'Y', title: 'Continued', createdAt: 1000, lastActiveAt: 2600, history: [turn('user', 'station after the clear')] }],
+    sessionUndo: { kind: 'clear', at: 2000, activeId: 'X', rows: [{ id: 'X', history: cleared }, { id: 'Y', history: cleared }] } };
+  const behind = { generalId: 'g', workstreams: [{ id: 'g', title: null, history: [turn('user', 'hi')] },
+    { id: 'X', title: 'Payroll', createdAt: 1000, lastActiveAt: 3000, history: cleared.concat([turn('user', 'b1 typed AFTER the clear')]) },
+    { id: 'Y', title: 'Continued', createdAt: 1000, lastActiveAt: 3000, history: [cleared[0], turn('user', 'y1 typed AFTER the clear')] }] };
+  const p = plan(st, behind);
+  const at = id => p.doc.workstreams.find(w => w.id === id);
+  assert.deepEqual(at('X').history.map(t => t.content), ['b1 typed AFTER the clear'], 'r2 #2: the post-clear turn comes back; the cleared ones do not');
+  assert.deepEqual(at('Y~restored').history.map(t => t.content), ['y1 typed AFTER the clear'], 'r2 #2: beside a continued session, the copy holds only post-clear turns');
+  assert.equal(at('Y').history.length, 1, 'r2 #2: the station\'s continued session is untouched');
+  assert.ok(!JSON.stringify(p.doc.workstreams).includes('(cleared)'), 'r2 #2: no cleared turn is in any restored session');
+  assert.equal(restorable(st, behind), 2);
+  // a copy last active at or before the clear brings nothing back for that session
+  const before = { generalId: 'g', workstreams: [{ id: 'X', title: 'Payroll', lastActiveAt: 2000, history: cleared.concat([turn('user', 'typed before the clear')]) }] };
+  assert.equal(restorable(st, before), 0, 'r2 #2: a copy from before the clear brings nothing back');
 }
 
 // the store lists preserved saves newest first and copies the station file aside before a restore

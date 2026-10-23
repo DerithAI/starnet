@@ -27336,51 +27336,54 @@ async function handleSaveRecoveryAck(req, res) {
   try { json(200, { ok: true, cleared: !!saveStore.clearRecoveryNotice(agent) }); }
   catch (e) { json(200, { ok: false, error: (e && e.message) || 'ack failed' }); }
 }
-// GET /api/save/conflicts[?skip=<file>@<savedAt>,...] — the window saves a refused write preserved beside the station file,
-// for the boot offer (support report 2026-10-21): newest first, each with how many of its sessions a restore would bring
-// back, STOPPING at the first one that would bring any back. Read-only; never the docs themselves.
+// GET /api/save/conflicts[?after=<ms>] — the window saves a refused write preserved beside the station file, for the boot
+// offer (support report 2026-10-21): newest first, each with how many of its sessions a restore would bring back, STOPPING
+// at the first one that would bring any back. Read-only; never the docs themselves.
 // COST (review 10-23 #3d: every boot parsed every snapshot and deep-cloned the station per file, 787 ms of sidecar thread):
-// nothing preserved = one readdir; the station is read only when a snapshot is; a snapshot the page dismissed (skip, same
-// savedAt) or one already found to bring nothing back (unchanged since) is never read again; after the first snapshot, no
-// further one is read once ~30 ms have passed (`more: true`: the next boot carries on past the ones settled here).
-// DELETED sessions: the sidecar's own uncapped ledger (session-tombstones.js) is consulted, not only the save's capped list.
+// nothing preserved = one readdir; the station is read only when a snapshot is; a snapshot found to bring nothing back
+// (all there, deleted on purpose, or erased work) is SETTLED in the store's durable memo and not read again while it is
+// unchanged, across app launches too (r2 #4/#5); after the first snapshot, no further one is read once ~30 ms of snapshot
+// reading have passed (`more: true`: the page asks again and carries on past the ones settled here).
+// NOT NOW is a watermark (r2 #6): `after` = the newest dismissed copy's time; nothing saved at or before it is offered.
+// DELETED sessions: the sidecar's own uncapped ledger (session-tombstones.js) is consulted, time-scoped, not only the
+// save's capped list.
 function serveSaveConflicts(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
-  const started = Date.now();
   try {
-    const u = new URL(req.url, 'http://127.0.0.1');
-    const skip = new Map();
-    for (const part of String(u.searchParams.get('skip') || '').split(',').slice(0, 200)) {
-      const i = part.lastIndexOf('@');
-      if (i > 0) skip.set(part.slice(0, i), Math.floor(Number(part.slice(i + 1))));
-    }
-    const files = saveStore.conflictFiles('agent').filter(f => !(skip.has(f.name) && skip.get(f.name) >= Math.floor(f.mtimeMs)) && !saveStore.settledConflict(f));
+    const after = Math.floor(Number(new URL(req.url, 'http://127.0.0.1').searchParams.get('after')) || 0);
+    const all = saveStore.conflictFiles('agent');
+    const settled = saveStore.settledConflicts('agent');
+    const files = all.filter(f => Math.floor(f.mtimeMs) > after && !settled(f));
     if (!files.length) return json(200, { conflicts: [] });
     const state = saveStore.loadState('agent');
     if (state.status === 'unreadable') return json(503, { error: 'Saved station is temporarily unreadable. Retry to recover it.', unreadable: true });
     const restore = require('./save-restore.js');
-    const tombs = (typeof sessionTombstones !== 'undefined' && sessionTombstones && typeof sessionTombstones.deletedAt === 'function') ? sessionTombstones : null;
-    const isDeleted = tombs ? (id => tombs.deletedAt(id) > 0) : null;
-    const conflicts = [];
-    let more = false;
+    const tombs = (typeof sessionTombstones !== 'undefined' && sessionTombstones && typeof sessionTombstones.forgotten === 'function') ? sessionTombstones : null;
+    const forgotten = tombs ? ((id, ts) => tombs.forgotten(id, ts)) : null;
+    const conflicts = [], settle = [];
+    let more = false, read = 0;
+    const started = Date.now();   // the budget is for snapshots: a big station's own read never spends it (r2 #5)
     for (const f of files) {
-      if (conflicts.length && Date.now() - started > 30) { more = true; break; }
+      if (read && Date.now() - started > 30) { more = !!state.doc; break; }   // no station = nothing settles: never "more"
+      read++;
       const doc = saveStore.readConflict('agent', f.name);
-      if (!doc) continue;
+      if (!doc) { if (state.doc) settle.push(f); continue; }   // gone, or does not parse: nothing it could offer
       // a copy from before a station RESET, while the station is from after it, is erased work: listed, never offered back
       const predatesReset = saveStore.predatesReset(doc, state.doc);
-      const n = state.doc && !predatesReset ? restore.restorable(state.doc, doc, { isDeleted }) : 0;
+      const n = state.doc && !predatesReset ? restore.restorable(state.doc, doc, { forgotten }) : 0;
       conflicts.push({ file: f.name, savedAt: f.mtimeMs, sessions: Array.isArray(doc.workstreams) ? doc.workstreams.length : 0,
         restorable: n, ...(predatesReset ? { predatesReset: true } : {}) });
       if (n > 0) break;
-      if (state.doc && !predatesReset) saveStore.settleConflict(f);   // nothing to bring back into this station: not read again until it changes
+      if (state.doc) settle.push(f);   // nothing to bring back into this station (erased work included): settled
     }
+    if (settle.length) saveStore.settleConflicts('agent', settle, all.map(f => f.name));
     json(200, { conflicts, ...(more ? { more: true } : {}) });
   } catch (e) { json(503, { error: 'Could not read the preserved saves. Retry.', unreadable: true }); }
 }
 // POST /api/save/conflicts/restore { file } — bring that preserved save's sessions into the station. Additive only
 // (save-restore.js): nothing the station holds is removed. The station file is copied aside first, and the merged save
 // is written as the station's next revision, so any open window's next save is refused and preserved, never lost.
+// Afterwards that copy holds nothing the station lacks: it is settled for the boot offer (r2 #5).
 async function handleSaveConflictRestore(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
@@ -27391,19 +27394,22 @@ async function handleSaveConflictRestore(req, res) {
     const state = saveStore.loadState('agent');
     if (state.status === 'unreadable') return json(200, { ok: false, error: 'the station file is unreadable right now', unreadable: true });
     if (!state.doc) return json(200, { ok: false, error: 'there is no station file to restore into' });
+    const row = saveStore.conflictFiles('agent').find(f => f.name === file);   // its stat BEFORE the read: what gets settled
     const preserved = saveStore.readConflict('agent', file);
     if (!preserved) return json(200, { ok: false, error: 'that preserved save is gone' });
     if (saveStore.predatesReset(preserved, state.doc)) return json(200, { ok: false, error: 'that copy is from before this computer’s station was reset', predatesReset: true });
-    // a session the Commander deleted stays deleted: the sidecar's own uncapped ledger, not only the save's capped list
-    const tombs = (typeof sessionTombstones !== 'undefined' && sessionTombstones && typeof sessionTombstones.deletedAt === 'function') ? sessionTombstones : null;
-    const r = require('./save-restore.js').plan(state.doc, preserved, { isDeleted: tombs ? (id => tombs.deletedAt(id) > 0) : null });
-    if (!r.added.length && !r.extended.length && !r.copied.length) return json(200, { ok: true, added: 0, extended: 0, copied: 0, revision: Number(state.doc._saveRevision) || 0 });
+    // a session the Commander deleted stays deleted: the sidecar's own uncapped ledger (time-scoped), not only the save's list
+    const tombs = (typeof sessionTombstones !== 'undefined' && sessionTombstones && typeof sessionTombstones.forgotten === 'function') ? sessionTombstones : null;
+    const r = require('./save-restore.js').plan(state.doc, preserved, { forgotten: tombs ? ((id, ts) => tombs.forgotten(id, ts)) : null });
+    const settle = () => { try { if (row) saveStore.settleConflicts('agent', [row]); } catch (e) { failNote('save.restore.settle', e); } };
+    if (!r.added.length && !r.extended.length && !r.copied.length) { settle(); return json(200, { ok: true, added: 0, extended: 0, copied: 0, revision: Number(state.doc._saveRevision) || 0 }); }
     const at = Date.now();
     const backup = saveStore.backup('agent', 'restore-' + at);
     const doc = Object.assign(r.doc, { updatedAt: Math.max(at, (Number(state.doc.updatedAt) || 0) + 1), _saveClient: 'restore-' + at, _saveDirty: false });
     const result = saveStore.save('agent', doc, { compareRevision: true });
     if (!result || result.ok !== true) return json(200, { ok: false, error: result && result.conflict ? 'the station changed during the restore; try again' : 'the station refused the restore', backup });
     try { seedSaveMemos('agent', doc); } catch (e) { failNote('save.restore.seed-memos', e); }
+    settle();
     json(200, { ok: true, added: r.added.length, extended: r.extended.length, copied: r.copied.length, revision: result.revision, backup });
   } catch (e) { json(200, { ok: false, error: (e && e.message) || 'restore failed' }); }
 }
