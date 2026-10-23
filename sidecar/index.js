@@ -19285,7 +19285,9 @@ async function runSlashForChannel(input, ctx) {
   // plainly rather than returning an empty reply that reads like a failure.
   if (out.directive.type !== 'server') return { ok: false, text: 'That command only works in the StarNet desktop app.' };
   let r;
-  try { r = await slashActions.run(out.directive.action, out.directive.args, { agentId: agentId, placed: placed }); }
+  // the chat a messaging hub ran this from (hub.js: { channel, chatId, threadId }) — /routine add delivers there
+  const dOrigin = (ctx.deliveryOrigin && typeof ctx.deliveryOrigin === 'object' && ctx.deliveryOrigin.channel && ctx.deliveryOrigin.chatId) ? ctx.deliveryOrigin : null;
+  try { r = await slashActions.run(out.directive.action, out.directive.args, dOrigin ? { agentId: agentId, placed: placed, deliveryOrigin: dOrigin } : { agentId: agentId, placed: placed }); }
   catch (e) { return { ok: false, text: 'That command failed: ' + ((e && e.message) || e) }; }
   return r || { ok: false, text: 'No answer.' };
 }

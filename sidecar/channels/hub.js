@@ -1175,7 +1175,11 @@
       if (SLASH_CMDS[cmd]) {
         if (!runSlashFn) { await deliver(chatId, '⚠ ' + '/' + cmd + ' is not available on this channel.', '', 'command'); return; }
         let r;
-        try { r = await runSlashFn('/' + cmd + (arg ? ' ' + arg : ''), { agentId: boundId, ownerTrusted: !!ownerTrusted }); }
+        // deliveryOrigin: the SAME shape a run from this chat carries (runOnce below), so a "/routine add" typed here
+        // reports back to this chat exactly like a routine the agent creates when asked in words (bug 3b958e41)
+        const sctx = { agentId: boundId, ownerTrusted: !!ownerTrusted,
+          deliveryOrigin: { channel: channel, chatId: String(chatId), threadId: (routes.get(String(chatId)) || {}).threadId || null } };
+        try { r = await runSlashFn('/' + cmd + (arg ? ' ' + arg : ''), sctx); }
         catch (e) { try { console.error('[' + channel + '] /' + cmd + ' threw:', (e && e.message) || e); } catch (_) {} r = null; }
         if (!r) { await deliver(chatId, '⚠ Could not run /' + cmd + ' right now — try again in a moment.', '', 'command'); return; }
         const body = (r.lines && r.lines.length)

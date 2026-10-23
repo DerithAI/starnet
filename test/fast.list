@@ -952,6 +952,7 @@ test/channels.outbox.test.js
 test/channels.inbox-recovery.test.js
 test/channels.commands.test.js
 test/channels.desktop-commands.test.js
+test/channels.routine-add-origin.test.js
 test/channels.parity.test.js
 test/channels.buttons.test.js
 test/channels.sse.test.js
