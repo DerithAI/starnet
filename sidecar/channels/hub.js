@@ -301,6 +301,8 @@
     if (AFTER_STEER_RE.test(b)) return b + d.replace(/^\s+/, '');
     return b + d;
   }
+  // the registry's NOTE commands (slash.js steer, queue/q, background/bg/btw) -> what the words after them are for here
+  const NOTE_CMDS = Object.freeze({ steer: 'steer', queue: 'queue', q: 'queue', background: 'background', bg: 'background', btw: 'background' });
   function parseCommand(text) {
     const s = String(text == null ? '' : text).trim();
     if (s[0] !== '/') return null;
@@ -1925,7 +1927,28 @@
          what the command does. The registry answers instead (for a desktop-only command: "That command only works in
          the StarNet desktop app."), for free. Owner-only like the Commander's own commands: every one of them acts
          on the owner's station. Same provenance rule: a forwarded "/version" is a third party's words. */
-      const deskCmd = (runSlashFn && desktopCommandFn && !carriesThirdPartyText(msg)) ? parseDesktopCommand(msg.text) : null;
+      let deskCmd = (runSlashFn && desktopCommandFn && !carriesThirdPartyText(msg)) ? parseDesktopCommand(msg.text) : null;
+      /* THE NOTE COMMANDS are the exception: the words after /steer, /queue (/q) and /background (/bg, /btw) are the
+         sender's own note, and this hub HAS a way to act on one — sent as a plain follow-up it joins the task already
+         running here (the live steer below) or starts one. So the command word is stripped and the note goes on exactly
+         as if typed on its own (same sender, same gates). The one refusal is the desktop's own: a /steer with nothing
+         running never mints a paid run out of a steering note. */
+      if (deskCmd && NOTE_CMDS[deskCmd.name]) {
+        const noteText = deskCmd.line.slice(deskCmd.name.length + 1).trim();
+        if (!noteText) {
+          const joins = !!steerRun && msg.chatType !== 'group';
+          await deliver(chatId, '/' + deskCmd.name + ' needs your note after it. Or just send the note as a message'
+            + (joins ? ' — while a task is running here it joins that task at its next step.' : '.'), '', 'command');
+          return;
+        }
+        const lr = inflight.get(chatId);
+        if (NOTE_CMDS[deskCmd.name] === 'steer' && !(lr && !lr.superseded && !lr.halted)) {
+          await deliver(chatId, 'Nothing is running here to steer — send your note as a message to start a task.', '', 'command');
+          return;
+        }
+        msg = Object.assign({}, msg, { text: noteText });
+        deskCmd = null;
+      }
       if (deskCmd) {
         if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + deskCmd.name), '', 'command'); return; }
         let r;
@@ -2710,5 +2733,5 @@
     };
   }
 
-  return { makeChannelHub, dockSystem, joinReplyDelta, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, joinReplyDelta, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, NOTE_CMDS, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

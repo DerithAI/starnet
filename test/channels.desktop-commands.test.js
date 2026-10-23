@@ -58,6 +58,13 @@ const msg = (userId, text, chatType) => ({ channel: 'telegram', chatId: chatType
     }
     A.eq(parseCommand('/routines@starnetbot list'), { cmd: 'routine', arg: 'list' }, '@suffix and argument survive the alias');
     A.eq(parseCommand('/reset'), { cmd: 'new', arg: '' }, '/reset is /new');
+    // the note commands' table names exactly the registry's steer / queue / background and every alias of them
+    const NOTE = require('../sidecar/channels/hub.js')._internals.NOTE_CMDS;
+    for (const canon of ['steer', 'queue', 'background']) {
+      const hit = slash.resolve('/' + canon);
+      for (const t of [canon].concat((hit && hit.command.aliases) || [])) A.eq(NOTE[t], canon, 'the hub reads /' + t + ' as the registry\'s /' + canon);
+    }
+    for (const t of Object.keys(NOTE)) { const r = slash.resolve('/' + t); A.ok(r && r.command.name === NOTE[t], '/' + t + ' is the registry\'s own name for /' + NOTE[t]); }
   }
 
   // ---- 2. the owner's DM: aliases run their command, desktop built-ins answer from the registry — zero model runs ----
@@ -69,13 +76,13 @@ const msg = (userId, text, chatType) => ({ channel: 'telegram', chatId: chatType
     await t.hub.onInbound(msg('boss', '/reset'));
     await t.hub.onInbound(msg('boss', '/version'));
     await t.hub.onInbound(msg('boss', '/v'));
-    await t.hub.onInbound(msg('boss', '/q do this next'));
+    await t.hub.onInbound(msg('boss', '/debug now'));
     await t.hub.onInbound(msg('boss', '/retry'));
     A.eq(t.runs, [], 'no desktop command name became a paid model run: ' + JSON.stringify(t.runs));
     A.eq(t.slashCalls.slice(0, 2), ['/routine', '/away'], 'the aliases reach the registry under their canonical names');
     A.ok(/Ultron/.test(t.sends[2]), '/tasks lists the agents like /agents: ' + JSON.stringify(t.sends[2]));
     A.eq(t.cleared.length, 1, '/reset cleared this chat like /new');
-    A.eq(t.slashCalls.slice(2), ['/version', '/v', '/q do this next', '/retry'], 'desktop built-ins are handed to the registry as typed');
+    A.eq(t.slashCalls.slice(2), ['/version', '/v', '/debug now', '/retry'], 'desktop built-ins are handed to the registry as typed');
     A.eq(t.sends.slice(4), [DESKTOP_ONLY, DESKTOP_ONLY, DESKTOP_ONLY, DESKTOP_ONLY], 'and answered with the registry\'s desktop-only line');
   }
 
@@ -105,7 +112,54 @@ const msg = (userId, text, chatType) => ({ channel: 'telegram', chatId: chatType
     A.eq(t.runs, ['/version'], 'no desktopCommand -> unchanged');
   }
 
-  // ---- 6. every production hub that has the registry also has the check (source pin; index.js is never required) ----
+  // ---- 6. THE NOTE COMMANDS (/steer, /queue /q, /background /bg /btw): the words after them are the owner's own, and
+  //         this hub HAS a way to act on them — a follow-up joins the running task (the live steer), or starts one. They
+  //         used to reach that path; the desktop-only refusal must never swallow the note. ----
+  {
+    let release, n = 0;
+    const gate = new Promise(r => { release = r; });
+    const steers = [];
+    const t = build({
+      runOnce: async (o) => {
+        t.runs.push(o.messages[o.messages.length - 1].content);
+        o.emit('agent.run.start', { agentId: o.agentId, runId: o.runId });
+        if (t.runs.length === 1) await gate;
+        o.emit('agent.token', { agentId: o.agentId, runId: o.runId, delta: 'done' });
+        o.emit('agent.run.end', { agentId: o.agentId, runId: o.runId, reason: 'done' });
+      },
+      steerRun: async (runId, text) => { steers.push(text); return { ok: true }; },
+      newId: () => 'n' + (++n)
+    });
+    const first = t.hub.onInbound(msg('boss', 'write me a poem'));
+    await new Promise(r => setTimeout(r, 30));
+    await t.hub.onInbound(msg('boss', '/steer make it about the sea'));
+    await t.hub.onInbound(msg('boss', '/q also cover the costs'));
+    await t.hub.onInbound(msg('boss', '/btw@starnetbot and the risks'));
+    A.eq(steers, ['make it about the sea', 'also cover the costs', 'and the risks'], 'mid-run, each note joins the running task, command word stripped');
+    A.ok(t.sends.length === 3 && t.sends.every(s => /^↪ Added to the task/.test(s)), 'and says so: ' + JSON.stringify(t.sends));
+    A.eq(t.slashCalls, [], 'the registry is never asked: nothing answers "desktop app only"');
+    release(); await first;
+    A.eq(t.runs, ['write me a poem'], 'no note became a run of its own while the task was working');
+
+    // idle: /steer has nothing to steer (the desktop's own rule — a note never mints a paid run); /q and /btw send it now
+    const before = t.sends.length;
+    await t.hub.onInbound(msg('boss', '/steer make it blue'));
+    A.ok(/Nothing is running here to steer/.test(t.sends[before] || ''), 'idle /steer says so, for free: ' + JSON.stringify(t.sends[before]));
+    A.eq(t.runs.length, 1, 'and runs nothing');
+    await t.hub.onInbound(msg('boss', '/q check the weather'));
+    await t.hub.onInbound(msg('boss', '/background summarize the meeting'));
+    A.eq(t.runs.slice(1), ['check the weather', 'summarize the meeting'], 'idle /q and /background run the owner\'s words, never the command word');
+
+    // no note at all: a messenger-true line, never "only works in the desktop app"
+    const at = t.sends.length;
+    await t.hub.onInbound(msg('boss', '/steer'));
+    await t.hub.onInbound(msg('boss', '/q'));
+    A.ok(/\/steer needs your note after it/.test(t.sends[at] || '') && /\/q needs your note after it/.test(t.sends[at + 1] || ''), 'bare note commands explain themselves: ' + JSON.stringify(t.sends.slice(at)));
+    A.ok(t.sends.slice(at).every(s => s !== DESKTOP_ONLY), 'never the desktop-only refusal');
+    A.eq(t.slashCalls, [], 'still no registry call');
+  }
+
+  // ---- 7. every production hub that has the registry also has the check (source pin; index.js is never required) ----
   {
     const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
     const runSlashSites = (idx.match(/runSlash: \(input, sctx\) => runSlashForChannel\(input, sctx\)/g) || []).length;
