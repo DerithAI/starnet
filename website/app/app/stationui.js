@@ -10069,21 +10069,26 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // PRESERVED SESSIONS AT BOOT (support report 2026-10-21): a window's refused save stays on the station after that window
   // is gone. When the newest one still holds sessions this station lacks (the sidecar counts them), say so once and
   // offer to bring them back. Nothing shows when the station cannot say, or when nothing would come back.
-  // NOT NOW STICKS (review 10-23 #3a): the dismissed copy (file + savedAt) is remembered in this page's UI store and never
-  // offered again, unless that file is written again or a newer preserved copy appears.
-  function dismissedPreserved() {
-    const list = store && Array.isArray(store.preservedDismissed) ? store.preservedDismissed : [];
-    return list.filter(x => x && typeof x.file === 'string' && Number.isFinite(Number(x.savedAt)));
-  }
+  // NOT NOW STICKS (review 10-23 #3a, r2 #6): a watermark, the newest dismissed copy's time, kept in this page's UI store.
+  // No copy saved at or before it is offered again (an OLDER copy holding the very sessions just declined included); a copy
+  // written after it (a newer one, or the same file written again) is.
+  function dismissedPreservedAt() { const t = Number(store && store.preservedDismissedAt); return Number.isFinite(t) && t > 0 ? t : 0; }
   function dismissPreserved(offer) {
-    const list = dismissedPreserved().filter(x => x.file !== offer.file);
-    list.push({ file: offer.file, savedAt: Number(offer.savedAt) || 0 });
-    store.preservedDismissed = list.slice(-50);
+    store.preservedDismissedAt = Math.max(dismissedPreservedAt(), Math.floor(Number(offer.savedAt) || 0));
     save();
   }
+  // the station reads preserved copies under a time budget and says `more` when it stopped before finding one: ask again
+  // (a short pause between asks keeps the station free), until it finds one or has read them all
+  const preservedPause = ms => new Promise(r => (typeof setTimeout === 'function' ? setTimeout(r, ms) : r()));
   async function offerPreservedSaves() {
     if (typeof CloudSave === 'undefined' || !CloudSave.conflicts || document.getElementById('save-conflict-notice')) return;
-    const offer = (await CloudSave.conflicts(dismissedPreserved())).find(c => c && c.file && Number(c.restorable) > 0);
+    let offer = null;
+    for (let ask = 0; ask < 25 && !offer; ask++) {
+      if (ask) await preservedPause(800);
+      const list = await CloudSave.conflicts(dismissedPreservedAt());
+      offer = list.find(c => c && c.file && Number(c.restorable) > 0) || null;
+      if (!list.more) break;
+    }
     if (!offer || document.getElementById('save-conflict-notice') || document.getElementById('save-preserved-notice')) return;
     const n = Number(offer.restorable);
     const when = offer.savedAt ? new Date(offer.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'earlier';
@@ -10113,8 +10118,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // a re-seed refusal is not "newer" either: the station file went missing and ANOTHER window's copy was saved back
       // first; which of the two copies holds more work is unknown, so neither is called newer
       const reseeded = !reset && h.conflict.reseeded === true;
-      // this window's OWN copy re-seeded the missing station file, but its acknowledgement never arrived before the station
-      // restarted, so its later saves are behind its own write (review 10-23 #6): never blamed on another window
+      // this window's OWN copy re-seeded the missing station file and is still the station's newest save, but its
+      // acknowledgement never arrived, so its later saves are behind its own write (review 10-23 #6): never blamed on another
+      // window. Said without naming a cause the page cannot see (r2, proofE: no restart is implied)
       const ownSeed = !reset && !reseeded && h.conflict.ownSeed === true;
       // a copy from before this computer's station was reset, while the station is from after it: erased work, which the
       // station refuses to restore, so no Restore key is offered (review 10-23 #5)
@@ -10126,7 +10132,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         : reseeded
         ? 'The station file on this computer was missing, and another window’s copy of this station was saved back to it first. This window’s copy was kept separately on the station. Download a copy or reload the current station.'
         : ownSeed
-        ? 'The station file on this computer was missing, and this window’s copy was saved back to it, but the station restarted before this window heard back. This window’s later changes were kept separately on the station. Download a copy or reload the current station.'
+        ? 'The station file on this computer was missing, and this window’s copy was saved back to it, but this window never heard back that it was. This window’s later changes were kept separately on the station. Download a copy or reload the current station.'
         : 'Another window saved newer station changes. Your work from this window was preserved separately on the station. Download a copy or reload the current station.';
       if (!document.getElementById('save-conflict-notice')) {
         const banner = document.createElement('div'); banner.id = 'save-conflict-notice'; banner.setAttribute('role', 'alert');

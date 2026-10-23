@@ -70,9 +70,12 @@ const CloudSave = (() => {
      newest doc a conflict refusal preserved beside it (in conflict.recovery). A restore may only retire this page when its
      newest push is in one of the two: otherwise the reload would drop it. */
   let landedSeq = 0, preservedSeq = 0;
-  // RESTORE BACKUP (backup.js importFile) asked to put a station back: every save carries _saveRestore until one lands, so a
-  // reset generation's empty station file takes the Commander's chosen backup (savestore: explicitRestore)
-  let restoreArmed = false;
+  /* RESTORE BACKUP (backup.js importFile) asked to put a station back: the saves from that import on carry _saveRestore, so a
+     reset generation's empty station file takes the Commander's chosen backup (savestore: explicitRestore). Only until the
+     station ANSWERS one of them (review 10-23 r2 #1): landed, refused as a conflict (the file was not empty, so there was
+     nothing to put back), or refused for any other reason. A page armed for its whole life could otherwise write a pre-reset
+     station over a fresh one long after a later START FRESH. A send that got no answer (an outage) keeps it armed. */
+  let restoreArmed = false, restoreSeq = 0;
 
   function now() { return Date.now(); }
   function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
@@ -170,7 +173,8 @@ const CloudSave = (() => {
     if (!force && Core && isSave(pending) && !Core.retryDue(health, now())) { scheduleRetry(); return Promise.resolve(false); }
     const doc = pending, docCacheFailed = pendingCacheFailed, docSeq = pendingSeq, sentRaw = pendingRaw; pending = null; pendingRaw = null; pendingCacheFailed = false;
     if (!isSave(doc) || retired) return Promise.resolve(false);
-    const attempt = postNow(restoreArmed ? Object.assign({}, doc, { _saveRestore: true }) : doc)
+    const armed = restoreArmed && docSeq >= restoreSeq;
+    const attempt = postNow(armed ? Object.assign({}, doc, { _saveRestore: true }) : doc)
       .then(({ response: r, body }) => {
         // a non-ok HTTP status (e.g. 409 stale, 500) is a FAILURE, not a success — fetch only rejects on
         // network error, so we must inspect r.ok ourselves or we'd stamp health OK on a rejected write.
@@ -180,12 +184,12 @@ const CloudSave = (() => {
         // write landed. Parse the body: ok:false is a FAILED push, and degraded:true latches its own state.
         // Malformed replies prove nothing. Keep the snapshot pending until an explicit ok:true.
         if (body && typeof body === 'object') {
+          if (armed && typeof body.ok === 'boolean') restoreArmed = false;   // the station answered the import's save: disarmed
           degraded = (body.ok === false && body.degraded === true);   // any parsed answer re-proves (or clears) the degraded verdict
           if (body.conflict) { conflict = body; if (body.recovery) preservedSeq = Math.max(preservedSeq, docSeq); markFail(); return false; }
           if (body.ok && Number.isInteger(body.revision)) {
             revision = body.revision;
             landedSeq = Math.max(landedSeq, docSeq);
-            restoreArmed = false;
             // bug 5c019483: the station file was missing (no save, no backup) and THIS window's copy became it. Latched
             // for the save light, which says so once: the station is back on disk because this window held it.
             if (body.seeded === true) seeded = { revision: body.revision, at: now() };
@@ -281,7 +285,7 @@ const CloudSave = (() => {
   //   opts.restore: RESTORE BACKUP's write of the chosen backup (see restoreArmed).
   function push(doc, opts) {
     if (!isSave(doc) || retired) return;
-    if (opts && opts.restore === true) restoreArmed = true;
+    if (opts && opts.restore === true) { restoreArmed = true; restoreSeq = pushSeq + 1; }   // this push and every later one
     const raw = opts && typeof opts.raw === 'string' ? opts.raw : null;
     doc = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(doc));
     doc._saveRevision = revision;
@@ -528,16 +532,18 @@ const CloudSave = (() => {
   }
 
   // PRESERVED WINDOW SAVES (support report 2026-10-21): what a refused save left on the station, newest first, each with
-  // how many sessions a restore would bring back; the station stops at the first one that would bring any back. `skip`:
-  // [{ file, savedAt }] this page dismissed — not read again unless that file was written since. [] when the station cannot
-  // say (never a guess).
-  async function conflicts(skip) {
+  // how many sessions a restore would bring back; the station stops at the first one that would bring any back. `after`
+  // (ms): the newest copy this page said "Not now" to — nothing saved at or before it is offered again (review 10-23 r2
+  // #6). The list's `more` is true when the station stopped reading for time before it found one: ask again. [] when the
+  // station cannot say (never a guess).
+  async function conflicts(after) {
     try {
-      const list = (Array.isArray(skip) ? skip : []).filter(s => s && typeof s.file === 'string' && /^[A-Za-z0-9_.-]{1,120}$/.test(s.file) && Number.isFinite(Number(s.savedAt)))
-        .slice(-50).map(s => s.file + '@' + Math.floor(Number(s.savedAt)));
-      const r = await fetch(ENDPOINT + '/conflicts' + (list.length ? '?skip=' + encodeURIComponent(list.join(',')) : ''), { cache: 'no-store' });
+      const since = Math.floor(Number(after) || 0);
+      const r = await fetch(ENDPOINT + '/conflicts' + (since > 0 ? '?after=' + since : ''), { cache: 'no-store' });
       const j = r.ok ? await r.json() : null;
-      return j && Array.isArray(j.conflicts) ? j.conflicts : [];
+      const list = j && Array.isArray(j.conflicts) ? j.conflicts : [];
+      list.more = !!(j && j.more === true);
+      return list;
     } catch (_) { return []; }
   }
   /* bring that preserved save's sessions into the station (the sidecar adds, never removes), then reload onto it. After the
@@ -559,6 +565,10 @@ const CloudSave = (() => {
     const r = await fetch(ENDPOINT + '/conflicts/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
     const j = await r.json().catch(() => null);
     if (!j || j.ok !== true) throw new Error((j && j.error) || 'The station could not restore that save.');
+    // NOTHING CAME BACK (review 10-23 r2 #2): the station already holds everything in that copy that may come back (or it was
+    // deleted or cleared on purpose). This window is not retired or reloaded and keeps its browser copy: a restore that
+    // brought nothing back is never the moment this window's own work is dropped.
+    if (!(num(j.added) + num(j.extended) + num(j.copied))) throw new Error('Nothing was restored: the station already has every session in that save that can come back (a session deleted or cleared on purpose stays that way). This window was left as it is.');
     retired = true;
     if (timer) { clearTimeout(timer); timer = null; }
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
