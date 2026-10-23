@@ -23675,6 +23675,11 @@ async function runOnceCore(o) {
   let finalCompletionEvidence = null;
   // Hold a successful user-facing Task Brief end until the final text is known; a question maps to the
   // contract's additive `clarifying` terminal (neither product nor slag — every success path keys on 'done').
+  /* A STOP MID-ANSWER IS NOT A KNOWN $0 (bug 80de2a75). The provider bills a model call from its first streamed byte, but
+     the call's cost is booked only from its usage chunk, which a Stop/E-STOP mid-stream never receives. True from the
+     first streamed output (a token, or the heartbeat's 'streaming' phase) until a usage chunk lands (cost.estimate);
+     a run that ends cancelled while it is true records its spend as unknown (run row spendUnknown, ledger row a floor). */
+  let streamUnbilled = false;
   const loopEmit = (name, payload) => {
     // TOOL-OUTPUT BUDGET RESET: the per-run budget exists so a few big reads/fetches can't blow the context
     // window. A compaction has just FOLDED those tool results out of the prompt — the bytes are no longer in
@@ -23692,6 +23697,10 @@ async function runOnceCore(o) {
       if ((name === 'agent.token' && payload.delta) || name === 'agent.tool_call' || name === 'agent.tool_result'
         || (name === 'agent.cost' && ((Number(payload.tokensOut) || 0) > 0 || (Number(payload.reasoningTokens) || 0) > 0))
         || (name === 'agent.run.end' && payload.reason === 'cancelled')) briefAnswerHold = null;
+    }
+    if (payload && payload.runId === runId) {
+      if ((name === 'agent.token' && payload.delta) || (name === 'agent.waiting' && payload.phase === 'streaming')) streamUnbilled = true;
+      else if (name === 'cost.estimate') streamUnbilled = false;
     }
     execution.observeToolEvent(name, payload);
     // SPEND POOL (bug d3a76db3): each reconciled cost lands in the shared pool as it is booked, so a worker that starts
@@ -24020,7 +24029,10 @@ async function runOnceCore(o) {
     const backfilled = Math.max(0, ((result && result.usd) || 0) - (mediaUsd || 0)) === 0 && finalUsd > (mediaUsd || 0);
     const runUnpriced = !runUnmetered && !backfilled && Array.isArray(result && result.unpricedUsage)
       && result.unpricedUsage.some(u => ((Number(u && u.tokensIn) || 0) + (Number(u && u.tokensOut) || 0)) > 0);
-    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced }); } catch (_) {}
+    // stopped while a streamed call's usage was still owed (streamUnbilled above, or #99's record of a wait already streaming)
+    const cancelUnbilled = !runUnmetered && !!result && result.reason === 'cancelled'
+      && (streamUnbilled || !!(result.cancelledWhile && result.cancelledWhile.phase === 'streaming'));
+    try { ledger.record({ runId, agentId, turns: finalTurns, usd: finalUsd, tokens: finalTokens, cachedTokens: finalCachedTokens, model: finalModel, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced || cancelUnbilled }); } catch (_) {}
     // the shared PER RUN pool takes this run's final spend before the run that started it reads the result (d3a76db3)
     spendPool.settle(runId, runUnmetered ? 0 : finalUsd);
     // managed-credit SETTLE: reconcile the reservation to the real spend — refund the unused headroom to the
@@ -24040,7 +24052,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, unpriced: runUnpriced, spendUnknown: cancelUnbilled, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
