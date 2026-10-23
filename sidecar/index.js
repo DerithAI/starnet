@@ -6941,11 +6941,12 @@ async function cronSendPart(adapter, chatId, text, route) {
   return sent;
 }
 // The delivery of a routine's newest result names the older ones that will not come (cron-store supersedeDeliveries).
+// It promises no place to find them: HISTORY lists only a routine's latest runs, and a script-only routine records
+// no run rows at all — the note says only what is certain.
 function cronSupersededNote(n) {
   n = Math.max(0, parseInt(n, 10) || 0);
   if (!n) return '';
-  return '\n\n(' + n + ' earlier result' + (n === 1 ? '' : 's') + ' of this routine did not reach this chat and ' + (n === 1 ? 'is' : 'are')
-    + ' not being resent — ' + (n === 1 ? 'it is' : 'they are') + ' kept on the station in AUTOMATE › SCHEDULES › HISTORY.)';
+  return '\n\n(' + n + ' earlier result' + (n === 1 ? '' : 's') + ' of this routine ' + (n === 1 ? 'was' : 'were') + ' not delivered and will not be resent.)';
 }
 
 async function deliverCronResult(job, result) {

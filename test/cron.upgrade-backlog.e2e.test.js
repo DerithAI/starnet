@@ -9,7 +9,7 @@
    off the bytes the Bot API received:
      1. no stuck digest from the old version reaches the chat;
      2. each routine's fresh result arrives whole, its parts contiguous (never interleaved with the other routine);
-     3. each delivery says how many earlier results are not coming, and where they are kept. */
+     3. each delivery says how many earlier results are not coming (and promises no place it cannot back). */
 'use strict';
 
 const A = require('./_assert.js');
@@ -166,9 +166,10 @@ function seedStore(file) {
     const whole = tag => texts.filter(t => owner(t) === tag[0]).join('\n');
     A.ok(whole('ALPHA').indexOf('ALPHA finding 199:') >= 0 && whole('ALPHA').indexOf('ALPHA_END') > whole('ALPHA').indexOf('ALPHA_START'), 'the fresh Alpha digest arrives whole, in order');
     A.ok(whole('BRAVO').indexOf('BRAVO finding 199:') >= 0 && whole('BRAVO').indexOf('BRAVO_END') > whole('BRAVO').indexOf('BRAVO_START'), 'the fresh Bravo digest arrives whole, in order');
-    A.ok(/3 earlier results of this routine did not reach this chat/.test(whole('ALPHA')), 'Alpha says its 3 earlier results are not coming');
-    A.ok(/2 earlier results of this routine did not reach this chat/.test(whole('BRAVO')), 'Bravo says its 2 earlier results are not coming');
-    A.ok(/AUTOMATE › SCHEDULES › HISTORY/.test(whole('ALPHA')), 'and where they are kept');
+    A.ok(/3 earlier results of this routine were not delivered and will not be resent/.test(whole('ALPHA')), 'Alpha says its 3 earlier results are not coming');
+    A.ok(/2 earlier results of this routine were not delivered and will not be resent/.test(whole('BRAVO')), 'Bravo says its 2 earlier results are not coming');
+    // HISTORY lists only the latest runs and a script routine records none: the note promises no place it cannot back
+    A.ok(texts.every(t => !/HISTORY|kept on the station/.test(t)), 'and promises no place to find them');
     A.eq(sends.length, texts.filter(t => owner(t)).length, 'nothing else was sent (' + sends.length + ' messages)');
 
     const after = (await sidecar.json('GET', '/api/cron')).body.jobs;
