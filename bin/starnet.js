@@ -92,7 +92,10 @@ function listeningPortOf(pid) {
    sidecar's own fail-closed claim (sidecar/workspace-owner.js); a live pid + its listening port is a station
    we can attach to. Read-only — nothing here writes into the desktop's workspace. */
 function discoverDesktop(ws) {
-  const out = { workspace: ws, ownerPid: 0, ownerAlive: false, port: 0, source: '' };
+  /* station: the workspace holds one; appRan: the desktop app has run on it (the shell's own startup.log or
+     last-run-version sits beside it) — so its keys live in the app's keychain, not in this terminal */
+  const out = { workspace: ws, ownerPid: 0, ownerAlive: false, port: 0, source: '', station: hasStation(ws),
+    appRan: exists(path.join(path.dirname(ws), 'startup.log')) || exists(path.join(path.dirname(ws), 'last-run-version')) };
   let claim = null;
   try { claim = JSON.parse(fs.readFileSync(path.join(ws, '.starnet-workspace-owner.json'), 'utf8')); } catch (_) { return out; }
   out.ownerPid = Number(claim && claim.pid) || 0;
@@ -527,7 +530,7 @@ async function main() {
     const code = (e && e.exitCode) || core.EXIT.RUN_FAILED;
     if (opts.json) process.stdout.write(JSON.stringify({ ok: false, reason: 'error', proven: false, exitCode: code, error: String((e && e.message) || e) }) + '\n');
     log('starnet: ' + String((e && e.message) || e));
-    if (opts.cmd === 'status' && code === core.EXIT.STATION && !opts.json) log('(no station reachable — run `starnet -p "…"` to boot one, or start the desktop app)');
+    if (opts.cmd === 'status' && code === core.EXIT.STATION && !opts.json && String(e && e.message) !== core.DESKTOP_CLOSED) log('(no station reachable — run `starnet -p "…"` to boot one, or start the desktop app)');
     return code;
   } finally {
     if (station && station.child) await stopChild(station.child, station.workspace);

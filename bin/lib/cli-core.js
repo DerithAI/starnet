@@ -194,7 +194,13 @@ function parseArgs(argv, env, ctx) {
      2. an explicit --port/env port that is NOT reachable is an error, not a spawn (the operator named a station);
      3. a live desktop owner whose port we could not resolve → refuse to spawn INTO that workspace (one
         sidecar per WORKSPACES dir is a hard invariant) — unless the operator picked another workspace;
-     4. --no-spawn → refuse; otherwise → spawn. */
+     4. the desktop app's station (desktop.station: it holds a save; desktop.appRan: the app has run there) with
+        the app CLOSED → refuse, unless the operator picked another workspace or passed --spawn. The app keeps
+        that station's keys, key pools, bot tokens and credits token in the OS keychain and gives them only to
+        the sidecar it spawns: a terminal-booted one would be a keyless copy of the real station (agents fail,
+        bots stay offline, routines fire and fail);
+     5. --no-spawn → refuse; otherwise → spawn. */
+const DESKTOP_CLOSED = 'StarNet isn\'t running — open the StarNet app first (it holds your keys), then run starnet again';
 function chooseStation(input) {
   const o = input || {};
   if (o.forceSpawn) return o.noSpawn ? { mode: 'refuse', reason: '--spawn and --no-spawn contradict each other' } : { mode: 'spawn', forced: true };
@@ -207,6 +213,7 @@ function chooseStation(input) {
   if (d.ownerAlive && !d.port && !o.workspaceOverride) {
     return { mode: 'refuse', reason: 'the desktop app owns the default workspace (pid ' + d.ownerPid + ') but its port could not be discovered — pass --port <n> to attach, or --workspace <dir> to boot a separate station' };
   }
+  if (d.station && d.appRan && !d.ownerAlive && !o.workspaceOverride) return { mode: 'refuse', reason: DESKTOP_CLOSED };
   if (o.noSpawn) return { mode: 'refuse', reason: 'no station reachable and --no-spawn was given' };
   return { mode: 'spawn' };
 }
@@ -538,7 +545,7 @@ function splitSse(buf) {
 function cliStreamId(agentId) { return ('cli-' + String(agentId || 'agent').replace(/[^A-Za-z0-9_-]/g, '')).slice(0, 64); }
 
 module.exports = {
-  EXIT, USAGE, DEFAULT_PORT, DEFAULT_AGENT_ID, HEADLESS_PLACED, RUN_STOP_REASONS,
+  EXIT, USAGE, DEFAULT_PORT, DEFAULT_AGENT_ID, DESKTOP_CLOSED, HEADLESS_PLACED, RUN_STOP_REASONS,
   parseArgs, chooseStation, parseListeningPort, parseStartupLog, pickAgent, buildRunBody,
   makeRunTracker, exitCodeForReason, bootstrapDocs, inferProvider, jsonResult, splitNdjson, splitSse, cliStreamId, isTaskText
 };
