@@ -706,6 +706,7 @@ test/cron-human.test.js
 test/cron-store.test.js
 test/mint-ledger.test.js
 test/cron.dispatch.test.js
+test/cron.delivery-backlog.test.js
 test/cron.chain.test.js
 test/cron.tick.test.js
 test/cron.hardening.test.js

@@ -287,8 +287,10 @@ function intervalJob(id, everyStr) {
     A.eq(s.getStore().filter(j => j.repeat.completed === 1).length, 200, 'every burst completion is durably accounted once');
   }
   {
+    // Results for ONE chat collapse to the newest (cron.delivery-backlog.test.js), so only results bound for
+    // DIFFERENT destinations can fill the outbox — backpressure still holds for those.
     const j = intervalJob('backlog', 'every 1m');
-    const waiting = i => ({ runId: 'old-' + i, state: 'pending', result: 'result-' + i, nextAttemptAt: cron._internals.iso(T0 + 999999) });
+    const waiting = i => ({ runId: 'old-' + i, state: 'pending', result: 'result-' + i, nextAttemptAt: cron._internals.iso(T0 + 999999), deliver: 'origin', origin: { channel: 'telegram', chatId: String(1000 + i) } });
     j.deliveryBacklog = Array.from({ length: 99 }, (_, i) => waiting(i)); j.finalization = waiting(99);
     const s = setup([j]); s.clock.set(T0 + 60000);
     const tick = s.driver.applyTick(s.clock.now());
@@ -297,6 +299,18 @@ function intervalJob(id, everyStr) {
     A.eq(s.runs.length, 0, 'a full outbox starts no additional paid work');
     const restarted = cronStore.loadEnvelope(JSON.stringify(cronStore.toEnvelope(s.getStore()))).jobs;
     A.eq(cronStore.pendingDeliveries(restarted[0]).length, 100, 'every pending result survives a serialized restart');
+  }
+  {
+    // the same full outbox bound for ONE chat (0.13.x left exactly this behind) collapses and the routine fires again
+    const j = intervalJob('backlog-one-chat', 'every 1m');
+    const waiting = i => ({ runId: 'old-' + i, state: 'pending', result: 'result-' + i, nextAttemptAt: cron._internals.iso(T0 + 999999), deliver: 'origin', origin: { channel: 'telegram', chatId: '777' } });
+    j.deliveryBacklog = Array.from({ length: 99 }, (_, i) => waiting(i)); j.finalization = waiting(99);
+    const s = setup([j]); s.clock.set(T0 + 60000);
+    const tick = s.driver.applyTick(s.clock.now());
+    A.eq(tick.deferred, [], 'a one-chat outbox collapses to its newest result instead of blocking the routine');
+    A.eq(cronStore.pendingDeliveries(s.getJob(j.id)).map(f => f.runId), ['old-99'], 'only the newest result still waits for the chat');
+    A.eq(s.getJob(j.id).finalization.superseded, 99, 'and it carries how many earlier results it replaces');
+    s.runs.forEach(r => r.resolve()); await flush();
   }
 
   A.report('cron.dispatch');

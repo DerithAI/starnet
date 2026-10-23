@@ -421,6 +421,52 @@
     });
   }
 
+  /* ONE CURRENT RESULT PER CHAT (upgrade review 2026-10-23). 0.13.x sent a routine's reply as one message, so every
+     digest past Telegram's 4096 / Discord's 2000 characters stayed `pending` for good (retried, never expired) and
+     each later fire queued another behind it. 0.14 splits long replies, so all of those became deliverable at once:
+     the first boot sent weeks of old digests in a burst. A chat gets the routine's NEWEST result per destination;
+     the older idle ones are closed as 'superseded' (they stay in the routine's run history) and the newest carries
+     the count, so the delivery says how many earlier results did not come. `busy` = run ids whose send is in
+     flight or whose acknowledgement is not yet on disk — those are never superseded (they may already have
+     landed). Returns the SAME array when nothing changes. Pure: `now` is injected. */
+  function deliveryDestination(f) {
+    const o = (f && f.origin) || {};
+    return [String((f && f.deliver) || 'local'), o.target || '', o.channel || '', o.chatId || '', o.threadId || '', o.sessionId || '', o.streamId || ''].join('\u0001');
+  }
+  function supersedeDeliveries(jobs, id, ctx) {
+    ctx = ctx || {};
+    const job = getJob(jobs, id);
+    const pending = pendingDeliveries(job);
+    if (pending.length < 2) return jobs;
+    const busy = (Array.isArray(ctx.busy) ? ctx.busy : []).map(String);
+    const newest = new Map();   // destination -> its newest pending receipt (pendingDeliveries is oldest-first)
+    for (const f of pending) newest.set(deliveryDestination(f), f);
+    const drop = new Map();     // superseded receipt -> the receipt that replaces it
+    for (const f of pending) {
+      const keep = newest.get(deliveryDestination(f));
+      if (keep !== f && busy.indexOf(String(f.runId)) < 0) drop.set(f, keep);
+    }
+    if (!drop.size) return jobs;
+    const gained = new Map();   // a superseded receipt hands on the count it was already carrying
+    for (const [f, keep] of drop) gained.set(keep, (gained.get(keep) || 0) + 1 + (Number(f.superseded) || 0));
+    const at = iso(ctx.now || 0);
+    const mark = f => {
+      if (drop.has(f)) return Object.assign({}, f, { state: 'superseded', supersededAt: at, supersededBy: String(drop.get(f).runId || ''), nextAttemptAt: null });
+      if (gained.has(f)) return Object.assign({}, f, { superseded: (Number(f.superseded) || 0) + gained.get(f) });
+      return f;
+    };
+    return mapJob(jobs, id, (j) => {
+      const next = Object.assign({}, j);
+      if (j.finalization) next.finalization = mark(j.finalization);
+      if (Array.isArray(j.deliveryBacklog)) next.deliveryBacklog = j.deliveryBacklog.map(mark).filter(f => f && f.state === 'pending');
+      return next;
+    });
+  }
+  /* A routine the Commander PAUSED keeps its undelivered results until it is resumed — pausing it must not be the
+     moment its old results start arriving. A completed one-shot, an exhausted repeat and an auto-paused routine are
+     not 'paused' (their last result is the notice the Commander needs) and deliver as before. */
+  function deliveriesHeld(job) { return !!(job && job.enabled === false && job.state === 'paused'); }
+
   function markBlockedConfig(jobs, id, info, ctx) {
     info = info || {}; ctx = ctx || {};
     const now = ctx.now || 0;
@@ -644,6 +690,8 @@
     markRun: markRun,
     markDelivery: markDelivery,
     pendingDeliveries: pendingDeliveries,
+    supersedeDeliveries: supersedeDeliveries,
+    deliveriesHeld: deliveriesHeld,
     MAX_PENDING_DELIVERIES: MAX_PENDING_DELIVERIES,
     markBlockedConfig: markBlockedConfig,
     clearBlockedConfig: clearBlockedConfig,
