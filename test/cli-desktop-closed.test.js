@@ -64,6 +64,13 @@ function cli(args, env, timeoutMs) {
     A.eq(fs.readdirSync(ws).sort().join(','), before, 'nothing was written into the app\'s workspace');
     A.eq(fs.readFileSync(path.join(ws, 'agent.save.json'), 'utf8'), save, 'the save is untouched');
 
+    // --spawn alone boots the DEFAULT workspace — which is this same station — so it is refused too, naming --workspace
+    const f = await cli(['--spawn', '-p', 'say hello', '--timeout', '5'], env, 60000);
+    A.eq(f.code, 3, '--spawn: exit 3, the app\'s station is not booted keyless either (stderr: ' + f.err.trim().split('\n').slice(-3).join(' | ') + ')');
+    A.ok(/open the StarNet app/i.test(f.err) && /--workspace <dir>/.test(f.err), '--spawn: it says to open the app, or to name a separate --workspace');
+    A.ok(!/booting a station/.test(f.err), '--spawn: no station was booted');
+    A.eq(fs.readdirSync(ws).sort().join(','), before, '--spawn: nothing was written into the app\'s workspace');
+
     const d = await cli(['status'], env, 30000);
     A.eq(d.code, 3, 'status: exit 3, no station reachable');
     A.ok(/open the StarNet app/i.test(d.err) && !/to boot one/.test(d.err), 'status says to open the app, never to boot the station from the terminal (' + d.err.trim() + ')');

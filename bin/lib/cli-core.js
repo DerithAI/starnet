@@ -84,7 +84,8 @@ const USAGE = [
   '  --workspace <dir>  workspace to boot when no station is reachable (env STARNET_WORKSPACES)',
   '  --name <NAME>      agent name used by a first-time bootstrap (default OVERSEER)',
   '  --no-spawn         never boot a station; fail (exit 3) if none is reachable',
-  '  --spawn            always boot a private station for this run (never attach to a running one)',
+  '  --spawn            always boot a station for this run (never attach to a running one); the desktop app\'s own',
+  '                     station is never booted from here while the app is closed: add --workspace <dir> for a separate one',
   '',
   'Exit codes: 0 done · 1 run failed · 2 usage · 3 no station / not configured · 4 cancelled · 5 stopped early · 6 nothing to answer',
   '',
@@ -195,25 +196,31 @@ function parseArgs(argv, env, ctx) {
      3. a live desktop owner whose port we could not resolve → refuse to spawn INTO that workspace (one
         sidecar per WORKSPACES dir is a hard invariant) — unless the operator picked another workspace;
      4. the desktop app's station (desktop.station: it holds a save; desktop.appRan: the app has run there) with
-        the app CLOSED → refuse, unless the operator picked another workspace or passed --spawn. The app keeps
+        the app CLOSED → refuse, unless the operator picked another workspace. The app keeps
         that station's keys, key pools, bot tokens and credits token in the OS keychain and gives them only to
         the sidecar it spawns: a terminal-booted one would be a keyless copy of the real station (agents fail,
-        bots stay offline, routines fire and fail);
+        bots stay offline, routines fire and fail). --spawn alone gets the same refusal: with no --workspace it
+        boots the default workspace, which IS that station (it holds a save), so the reason names --workspace;
      5. --no-spawn → refuse; otherwise → spawn. */
 const DESKTOP_CLOSED = 'StarNet isn\'t running — open the StarNet app first (it holds your keys), then run starnet again';
+const DESKTOP_CLOSED_SPAWN = DESKTOP_CLOSED + ' (--spawn would boot that same station without them; add --workspace <dir> for a separate terminal-only station)';
 function chooseStation(input) {
   const o = input || {};
-  if (o.forceSpawn) return o.noSpawn ? { mode: 'refuse', reason: '--spawn and --no-spawn contradict each other' } : { mode: 'spawn', forced: true };
+  const d = o.desktop || {};
+  const desktopClosed = !!(d.station && d.appRan && !d.ownerAlive && !o.workspaceOverride);
+  if (o.forceSpawn) {
+    if (o.noSpawn) return { mode: 'refuse', reason: '--spawn and --no-spawn contradict each other' };
+    return desktopClosed ? { mode: 'refuse', reason: DESKTOP_CLOSED_SPAWN } : { mode: 'spawn', forced: true };
+  }
   const cands = Array.isArray(o.candidates) ? o.candidates : [];
   const hit = cands.find(c => c && c.reachable);
   if (hit) return { mode: 'attach', port: hit.port, source: hit.source };
   const named = cands.find(c => c && (c.source === 'flag' || c.source === 'env'));
   if (named) return { mode: 'refuse', reason: 'no station is answering on port ' + named.port + ' (from ' + (named.source === 'flag' ? '--port' : 'STARNET_PORT') + ')' };
-  const d = o.desktop || {};
   if (d.ownerAlive && !d.port && !o.workspaceOverride) {
     return { mode: 'refuse', reason: 'the desktop app owns the default workspace (pid ' + d.ownerPid + ') but its port could not be discovered — pass --port <n> to attach, or --workspace <dir> to boot a separate station' };
   }
-  if (d.station && d.appRan && !d.ownerAlive && !o.workspaceOverride) return { mode: 'refuse', reason: DESKTOP_CLOSED };
+  if (desktopClosed) return { mode: 'refuse', reason: DESKTOP_CLOSED };
   if (o.noSpawn) return { mode: 'refuse', reason: 'no station reachable and --no-spawn was given' };
   return { mode: 'spawn' };
 }
@@ -545,7 +552,7 @@ function splitSse(buf) {
 function cliStreamId(agentId) { return ('cli-' + String(agentId || 'agent').replace(/[^A-Za-z0-9_-]/g, '')).slice(0, 64); }
 
 module.exports = {
-  EXIT, USAGE, DEFAULT_PORT, DEFAULT_AGENT_ID, DESKTOP_CLOSED, HEADLESS_PLACED, RUN_STOP_REASONS,
+  EXIT, USAGE, DEFAULT_PORT, DEFAULT_AGENT_ID, DESKTOP_CLOSED, DESKTOP_CLOSED_SPAWN,HEADLESS_PLACED, RUN_STOP_REASONS,
   parseArgs, chooseStation, parseListeningPort, parseStartupLog, pickAgent, buildRunBody,
   makeRunTracker, exitCodeForReason, bootstrapDocs, inferProvider, jsonResult, splitNdjson, splitSse, cliStreamId, isTaskText
 };
