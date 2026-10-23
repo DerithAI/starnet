@@ -1393,3 +1393,4 @@ test/type-floor.test.js
 test/css-parse.test.js
 test/one-gutter.test.js
 test/dockglow-seen.test.js
+test/vision-input.test.js

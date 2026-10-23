@@ -21183,10 +21183,17 @@ async function runOnceCore(o) {
     pendingMediaCosts.push(Object.assign({ model: mediaModel }, cost));
   };
   let auxVisionProvider = null;
+  // the run's PRIMARY provider: the catalog the studio route's pinned vision model (`model` below) came from. Bound with
+  // auxVisionProvider before the loop; onFallback moves only auxVisionProvider (vision-input 2026-10-23).
+  let studioModelProvider = null;
   const auxVisionCall = async (req) => {
     if (!auxVisionProvider) throw new Error('session provider not ready');
-    // a provider that cannot take an image would answer about a picture it never saw (QA 2026-10-02; Claude Code can since 10-08)
-    if (typeof auxVisionProvider.supportsImages === 'function' && !auxVisionProvider.supportsImages()) throw new Error('no vision route: this agent\'s model cannot see images — connect an OpenRouter key in SETTINGS › AI & MODELS for image analysis');
+    // a provider that cannot take an image would answer about a picture it never saw (QA 2026-10-02; Claude Code can since 10-08).
+    // supportsImages(model) is false only when the catalog says this model is text-only (or it refused an image); null =
+    // unknown, which still tries — the adapters strip images only for a known text-only model (vision-input 2026-10-23).
+    // The fix it names works on every route: "connect an OpenRouter key" could not (a StarNet-credits run's studio route is
+    // the managed link whatever station key exists — image-task resolveRoute — and an OpenRouter run has its key already).
+    if (typeof auxVisionProvider.supportsImages === 'function' && auxVisionProvider.supportsImages(model) === false) throw new Error('no vision route: this agent\'s model cannot see images — the Commander can pick a vision model in the COMMS model dock');
     const ac = new AbortController();
     const t = setTimeout(() => { try { ac.abort(); } catch (_) {} }, Math.max(5000, Number(req && req.timeoutMs) || 55000));
     // the RUN's stop ends this call too (it ran on for up to 55 s after STOP), and its usage is booked like any media
@@ -21212,6 +21219,14 @@ async function runOnceCore(o) {
   const imageTools = makeImageTools({ openrouter: studioRoute.ok ? { apiKey: studioRoute.key, model, baseUrl: studioRoute.baseUrl, provider: studioRoute.provider, protocol: studioRoute.protocol,
     getToken: studioRoute.protocol === 'codex-responses' ? ensureCodexAccessToken : undefined,
     renewToken: studioRoute.protocol === 'codex-responses' ? forceRefreshCodexAccessToken : undefined } : null, fsp, pathMod: path, root: WORKSPACES, imageModel: String(ENV('IMAGE_MODEL') || '').trim() || undefined, auxVision: auxVisionCall, signal, onUsage: recordMediaUsage,
+    // vision-input 2026-10-23: the run's own model is the studio route's vision model only while its catalog does not call
+    // it text-only; on false, image.js asks its default vision model instead of sending the picture to a model that
+    // answers 404 "No endpoints found that support image input" on every image_analyze / browser.vision call. `m` is the
+    // model image.js will post (the `model` copied above), never the live `model`: promoteToolCapable / onFallback move
+    // that one later, and judging it sent the picture to the original text-only model. It is asked of the PRIMARY provider
+    // (studioModelProvider), never the live one: after a provider fallback the new catalog does not list `m` (null), and
+    // the picture went to the known text-only model again.
+    runModelSeesImages: (m) => ((studioModelProvider && typeof studioModelProvider.supportsImages === 'function') ? studioModelProvider.supportsImages(m) : null),
     // #118: the host list above (plan route only) and the run's own model, read at tool time (a Codex run only)
     codexHostModels: studioRoute.protocol === 'codex-responses' ? codexHostModels : undefined, codexRunModel: () => (usingCodex ? model : ''),
     // issue #77: the SAME path-trust guard fs.* gets (runPathTrust is bound below; this thunk only runs at tool time), so a
@@ -22254,7 +22269,7 @@ async function runOnceCore(o) {
     provider = selectProvider({ provider: providerId, fetch: globalThis.fetch, key: runKey, baseUrl, reasoningEffort });
   }
   let activeProviderId = providerId;
-  auxVisionProvider = provider;   // late-bind the aux vision route to the run's real provider (see makeImageTools above)
+  auxVisionProvider = provider; studioModelProvider = provider;   // late-bind the aux vision route + the studio model's catalog to the run's real provider (see makeImageTools above)
   let cost = makeCostEngine({ priceOf: provider.priceOf });
 
   // Settings selects from the OpenRouter catalog. Its saved model strings therefore name OpenRouter routes,
@@ -22317,7 +22332,7 @@ async function runOnceCore(o) {
       if (warm) {
         activePrimaryKey = warm;
         provider = selectProvider({ provider: providerId, fetch: globalThis.fetch, key: warm, baseUrl, reasoningEffort });
-        auxVisionProvider = provider;
+        auxVisionProvider = provider; studioModelProvider = provider;
         ordered.splice(ordered.indexOf(warm), 1);
         ordered.push(runKey);   // the cooling primary becomes the LAST resort rather than the first try
       }
@@ -22337,7 +22352,7 @@ async function runOnceCore(o) {
     const onAccount = a => a.id ? selectProvider({ provider: providerId, configDir: a.dir, reasoningEffort }) : selectProvider({ provider: providerId, reasoningEffort });
     const first = byKey.get(ordered[0]);
     activePrimaryKey = first.credKey;
-    if (first.id) { provider = onAccount(first); auxVisionProvider = provider; }
+    if (first.id) { provider = onAccount(first); auxVisionProvider = provider; studioModelProvider = provider; }
     rotationFallbacks = ordered.slice(1).map(k => { const a = byKey.get(k); return { provider: onAccount(a), providerId, model, credKey: k, account: a.label }; });
   }
   if (oauthAccounts && oauthAccounts.length > 1) {

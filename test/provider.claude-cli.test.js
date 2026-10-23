@@ -387,8 +387,8 @@ const result = (extra) => Object.assign({ type: 'result', subtype: 'success', is
     A.eq(typeof p.supportsImages === 'function' ? p.supportsImages() : 'missing', true, 'the Claude Code provider reports an image channel');
     const idx = fs.readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
     const aux = idx.slice(idx.indexOf('const auxVisionCall = async (req) => {'), idx.indexOf('const imageTools = makeImageTools('));
-    A.ok(/!auxVisionProvider\.supportsImages\(\)\) throw new Error\('no vision route/.test(aux) && aux.indexOf('supportsImages') < aux.indexOf('.stream('),
-      'the aux vision route refuses a provider that cannot see images BEFORE asking it to describe one');
+    A.ok(/auxVisionProvider\.supportsImages\(model\) === false\) throw new Error\('no vision route/.test(aux) && aux.indexOf('supportsImages') < aux.indexOf('.stream('),
+      'the aux vision route refuses a provider that cannot see images BEFORE asking it to describe one (unknown = null still tries)');
     A.ok(aux.includes('AbortSignal.any([ac.signal, signal])') && aux.includes('signal: callSignal'), 'QA 10-02: the aux vision call ends when its run is stopped');
     A.ok(aux.includes("ev.type === 'usage') usage = ev.usage") && aux.includes('recordMediaUsage(usage, model)') && !aux.includes("ev.type === 'done') break"), 'QA 10-02: its usage is booked like media spend (read to the end of the stream)');
   }

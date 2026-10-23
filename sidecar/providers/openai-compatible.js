@@ -307,7 +307,10 @@
       supportsReasoning: typeof m.supportsReasoning === 'boolean' ? m.supportsReasoning : ((declared && declared.some(e => e !== 'none')) ? true : null),
       reasoningEfforts: declared ? declared : (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts.slice() : []),
       reasoningEffortsDeclared: !!declared,
-      defaultReasoningLevel: (defaultLevel && declared && declared.indexOf(defaultLevel) >= 0) ? defaultLevel : null
+      defaultReasoningLevel: (defaultLevel && declared && declared.indexOf(defaultLevel) >= 0) ? defaultLevel : null,
+      // image input as the row states it (the StarNet managed list relays OpenRouter's architecture.input_modalities);
+      // null when the row says nothing, which is every vendor /v1/models list — those keep sending images as before
+      supportsImages: provider.imageInputOf(m)
     };
   }
 
@@ -667,8 +670,12 @@
       maybeRewarmCatalog();
       const dropped = droppedParams.get(String(req.model || ''));
       const skip = p => !!(dropped && dropped.has(p));
+      // A model the catalog (or its own earlier refusal) calls text-only gets each image as a short note instead: the
+      // managed route answers an image to such a model with 404 "No endpoints found that support image input". Unknown
+      // capability (every vendor list that states none) keeps them, exactly as before.
+      const sent = supportsImages(req.model) === false ? provider.withoutImageParts(req.messages || [], req.model) : (req.messages || []);
       // ONE pre-send normalization (provider.js prepareWireMessages) — for this wire, exactly repairToolPairs.
-      const prepared = provider.prepareWireMessages(req.messages || [], 'chat');
+      const prepared = provider.prepareWireMessages(sent, 'chat');
       // Keep the profile's SYSTEM projection even after nativeWire falls back to /v1. Do not
       // infer this policy from a model name or change generic/hosted Chat Completions requests.
       // Every other route: ONE role projection (provider.chatRoleProjection) — a Claude model keeps its continuation
@@ -1060,6 +1067,8 @@
             detail += ' — the endpoint did not accept the model id "' + sent + '"; check the exact id in your endpoint\'s model list.';
           }
         }
+        // the model refused image input: text-only for this process, so the next request to it goes without the image
+        if (errorClass.isImageInputRefusal(detail)) provider.noteImageRefusal(baseUrl, body.model);
         const err = new Error(errLabel + ' http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;
@@ -1247,6 +1256,13 @@
       if (f && typeof f.supportsTools === 'boolean') return f.supportsTools;
       return profileSupportsTools;
     }
+    // Image input: false once this model refused an image on this endpoint, else the catalog row's word, else null —
+    // unknown, and an unknown model is sent images exactly as before.
+    function supportsImages(id) {
+      if (provider.refusedImages(baseUrl, id)) return false;
+      const m = findModel(id);
+      return (m && typeof m.supportsImages === 'boolean') ? m.supportsImages : null;
+    }
     function reasoningEfforts(id) {
       const m = findModel(id);
       // declared levels are exact; a declared "no dial" offers only 'none' (= send nothing)
@@ -1259,7 +1275,7 @@
 
     // localRuntime names the Ollama server this instance talks to, so the loop never fails a local out-of-memory
     // over to another model on the same server.
-    return { stream, listModels, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, reasoningEfforts, localRuntime: nativeBase || undefined };
+    return { stream, listModels, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, supportsImages, reasoningEfforts, localRuntime: nativeBase || undefined };
   }
 
   return { makeOpenAICompatibleProvider, _internals: { normalizeModel, reportedWindow, cleanBaseUrl, responseErrorDetail, safeErrorField, makeArgsTracker, clampToDeclared, canonicalEffort, paramNamed, supportedEffortsFrom, toolsForceNone, replayReasoningContent } };

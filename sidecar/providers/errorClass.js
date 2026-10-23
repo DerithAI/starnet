@@ -270,6 +270,17 @@
   const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?|credit balance is too low|key limit exceeded/;
 
   const REGION_REFUSAL_RE = /unsupported_country_region_territory|country,? region,? or territory not supported|not available in your (?:country|region)/;
+  /* A MODEL THAT CANNOT SEE IMAGES was sent one (2026-10-23, StarNet Cloud logs: OpenRouter 404 "No endpoints found
+     that support image input", 14 managed completions in two bursts). Resending the same request repeats the refusal,
+     so it is never retryable; another model may see images, so a configured fallback is still worth taking
+     (model_not_found). The adapters (openrouter.js, openai-compatible.js) also remember the model as text-only, so the
+     NEXT request to it goes without the image. Mirrored in frontend/app/friendlyerror.js — keep the two in step.
+     Vendor wordings: OpenRouter/StarNet "no endpoints found that support image input"; DeepSeek "unknown variant
+     `image_url`"; OpenAI's own text-only models (o1-mini, o3-mini, gpt-3.5-turbo, whose /v1/models states no
+     modalities, so the image is sent) 400 "Invalid content type. image_url is only supported by certain models." */
+  const IMAGE_INPUT_REFUSED_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`|image_url is only supported by certain models/;
+  function isImageInputRefusal(text) { return IMAGE_INPUT_REFUSED_RE.test(String(text || '').toLowerCase()); }
+  const IMAGE_INPUT_FIX = ' — this model cannot take image input: pick a vision model in the COMMS model dock (or remove the image), then send again.';
   const TOOL_GEN_FAILED_RE = /tool_use_failed|failed to call a function|tool call validation failed/;
   function classify400(low, code, ctx) {
     const c = String(code || '').toLowerCase();
@@ -339,6 +350,9 @@
        refusal never arrives as 429/5xx; it comes as 400/403/422 or with no status at all. */
     const transportStatus = status === 429 || (status >= 500 && status < 600) || status === 408;
     if (!transportStatus && /content[ _]?policy|moderation|flagged|safety|content_filter/.test(low)) return 'content_policy_blocked';
+    // 1a. an image sent to a model that cannot see it: whatever status carried it (OpenRouter 404, a vendor 400),
+    //     the same request is refused again — never a malformed request to fold or a key to rotate
+    if (!transportStatus && IMAGE_INPUT_REFUSED_RE.test(low)) return 'model_not_found';
     // 1b. OUTPUT cap — BEFORE the overflow patterns, whose `maximum.*tokens` matches this refusal's wording and
     //     used to fold history for nothing, retry the identical max_tokens, and kill the run.
     if ((!status || status === 400 || status === 422) && parseOutputCap(low) > 0) return 'output_cap';
@@ -427,6 +441,9 @@
         + ' — this machine does not trust the provider\'s certificate. Behind a corporate proxy or an antivirus HTTPS scanner, '
         + 'point NODE_EXTRA_CA_CERTS at its root certificate and restart StarNet; for a self-hosted endpoint, give it a valid certificate. ['
         + message + ']';
+    } else if (reason === 'model_not_found' && IMAGE_INPUT_REFUSED_RE.test(low)) {
+      // the provider's words stay first (the UI routes on the adapter label + status); the fix rides after them
+      text += IMAGE_INPUT_FIX;
     }
     return {
       reason,
@@ -446,6 +463,6 @@
     };
   }
 
-  return { classifyApiError, REASONS, transportDetail, annotateTransport,
+  return { classifyApiError, REASONS, transportDetail, annotateTransport, isImageInputRefusal,
     _internals: { extractStatus, extractCode, extractMessage, classify400, pickReason, extractRetryAfter, transportCode, parseOutputCap, isTlsFailure, isLocalError } };
 });

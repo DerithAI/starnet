@@ -59,7 +59,9 @@
         supported_parameters: Array.isArray(m.supported_parameters) ? m.supported_parameters.slice() : [],
         supportsTools: !!(m.supported_parameters && m.supported_parameters.indexOf('tools') >= 0),
         supportsReasoning: !!(m.supported_parameters && (m.supported_parameters.indexOf('reasoning') >= 0 || m.supported_parameters.indexOf('reasoning_effort') >= 0 || m.supported_parameters.indexOf('include_reasoning') >= 0)),
-        reasoningEfforts: normalizeEffortList(m.reasoningEfforts || m.reasoning_efforts || m.supportedReasoningEfforts || m.supported_reasoning_efforts)
+        reasoningEfforts: normalizeEffortList(m.reasoningEfforts || m.reasoning_efforts || m.supportedReasoningEfforts || m.supported_reasoning_efforts),
+        // architecture.input_modalities: true/false when the catalog says, null when it does not (provider.imageInputOf)
+        supportsImages: provider.imageInputOf(m)
       }));
     } catch (e) { return []; }
   }
@@ -324,7 +326,10 @@
       // Strict upstreams behind OpenRouter must never see StarNet's own bookkeeping keys on a message (ts, streamId,
       // agentId, sourceRunId, error, stopped, attachments) — only Chat Completions message keys leave, projected
       // BEFORE applyCacheControl so its cache_control anchors are stamped inside the content parts of clean copies.
-      const body = { model: req.model, messages: applyCacheControl(provider.chatWireMessages(chatRoleProjection(provider.prepareWireMessages(req.messages, 'chat'), req.model)), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
+      // A model the catalog (or its own earlier refusal) calls text-only gets each image as a short note instead: OpenRouter
+      // refuses the whole request otherwise (404 "No endpoints found that support image input"). Unknown keeps them.
+      const sent = supportsImages(req.model) === false ? provider.withoutImageParts(req.messages, req.model) : req.messages;
+      const body = { model: req.model, messages: applyCacheControl(provider.chatWireMessages(chatRoleProjection(provider.prepareWireMessages(sent, 'chat'), req.model)), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
       if (effort !== 'none' || allowed.length > 1) body.reasoning = { effort };
       if (req.tools && req.tools.length) {
         // Grammar-safe property keys on every tool (OpenRouter fronts Anthropic/Bedrock, which 400 the whole request
@@ -468,6 +473,12 @@
     }
     // true/false once the catalog is warm; null = unknown (cold catalog) so callers don't false-refuse.
     function supportsTools(id) { const m = findModel(id); return m ? !!m.supportsTools : null; }
+    // Image input: false once this model refused an image here, else the catalog's word (true/false), else null (unknown).
+    function supportsImages(id) {
+      if (provider.refusedImages(baseUrl, id)) return false;
+      const m = findModel(id);
+      return (m && typeof m.supportsImages === 'boolean') ? m.supportsImages : null;
+    }
     function reasoningEfforts(id) { return reasoningEffortsForModel(id, findModel(id), learnedFor(id)); }
     function learnedFor(id) { return LEARNED_EFFORTS.get(baseUrl + '\n' + String(id || '')) || null; }
 
@@ -546,6 +557,8 @@
             continue;
           }
         }
+        // the model refused image input: text-only for this process, so the next request to it goes without the image
+        if (errorClass.isImageInputRefusal(detail)) provider.noteImageRefusal(baseUrl, body.model);
         const err = new Error('openrouter http ' + res.status + ' — ' + detail);
         err.status = res.status;
         err.headers = res.headers;   // H6.1: let classifyApiError read Retry-After / X-RateLimit-Reset off the real response
@@ -560,7 +573,7 @@
       }
     }
 
-    return { stream, listModels, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, reasoningEfforts };
+    return { stream, listModels, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, supportsImages, reasoningEfforts };
   }
 
   return { makeOpenRouterProvider, applyCacheControl, attachCatalogCache, _internals: { normalizeReasoningEffort, reasoningEffortsForModel, clampReasoningEffortForModel, repairToolPairs } };
