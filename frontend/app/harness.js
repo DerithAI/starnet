@@ -406,8 +406,13 @@ const Harness = (() => {
       try { if (isReq) again = u.clone(); } catch (_) { again = null; }
       const body = init && init.body;
       const replayable = again != null && !(body && typeof body.getReader === 'function');
-      return ensureApiToken().then(t => rawFetch(u, withApiToken(init, t)).then(res =>
-        staleToken.settle(res, t, replayable ? fresh => rawFetch(again, withApiToken(init, fresh)) : null)));
+      return ensureApiToken().then(t => rawFetch(u, withApiToken(init, t)).then(res => {
+        noteStationReply(true);   // #137: the first answer after a silence re-hands the desktop endpoints
+        return staleToken.settle(res, t, replayable ? fresh => rawFetch(again, withApiToken(init, fresh)) : null);
+      }, e => {
+        if (!(e && e.name === 'AbortError')) noteStationReply(false);   // no answer at all (a caller's abort is not one)
+        throw e;
+      }));
     };
     window.__STARNET_FETCH_HARDENED__ = true;
   }
@@ -421,6 +426,7 @@ const Harness = (() => {
     // leave configured('starnet') false forever anywhere that isn't Tauri — including every dev session.
     await refreshCreditsConfigured();
     if (!DESKTOP) { syncEngineKeysOnBoot(); return; }   // #89: never awaited — boot must not wait on it
+    pushDesktopEndpoints();   // #137: never awaited — the sidecar keeps no endpoint across an app restart
     let loaded = false;
     try {
       const status = await invoke('harness_provider_key_status');
@@ -710,6 +716,54 @@ const Harness = (() => {
       if (c.key || c.keyPool.length || c.baseUrl || engineSyncState(p).pending) jobs.push(syncEngineKey(p, true));
     }
     return Promise.all(jobs);
+  }
+  /* #137 DESKTOP ENDPOINT HAND-OVER. On the desktop app the OS keychain holds provider KEYS only; a provider's endpoint
+     (a CUSTOM base URL, an Ollama that is not on this machine) lives in this window's storage and in the sidecar's
+     MEMORY. Every app restart (an update included) or sidecar respawn therefore left the station with no endpoint:
+     chat kept working (each run carries its baseUrl) while every scheduled routine, Run Now, line hop, channel and
+     phone run failed "no CUSTOM base URL is saved on this station". So once per page boot (init), after ENGINE
+     RESTART, and on the first answer after this page saw the station stop answering (a respawn), the page hands the
+     station every endpoint it holds — with NO key, so the keychain is never touched (harness_store_provider_key writes
+     the keychain only when a key is given). Never rejects and never awaited by boot; a failed hand-over is logged and
+     tried again at the next come-back. */
+  function desktopEndpointsHeld() {
+    const held = new Map();
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = String(localStorage.key(i) || '');
+        const p = k === LS.baseUrl ? 'openrouter' : (k.indexOf(LS.baseUrl + '.') === 0 ? normalizeProviderId(k.slice(LS.baseUrl.length + 1)) : '');
+        // starnet's endpoint is the linked account's (the sidecar resolves it); the shell would file it under openrouter
+        if (!p || p === 'starnet' || held.has(p)) continue;
+        const u = String(readScoped(LS.baseUrl, p) || '').trim();
+        if (u) held.set(p, u);
+      }
+    } catch (_) { /* storage unavailable: no endpoint saved here to hand over */ }
+    return held;
+  }
+  let endpointHandOver = null;
+  function pushDesktopEndpoints() {
+    if (!DESKTOP) return Promise.resolve([]);
+    if (endpointHandOver) return endpointHandOver;   // one hand-over in flight at a time
+    const jobs = [];
+    desktopEndpointsHeld().forEach((baseUrl, provider) => {
+      jobs.push(Promise.resolve().then(() => invoke('harness_store_provider_key', { provider, baseUrl }))
+        .then(() => ({ provider, ok: true }), e => {
+          console.warn('[harness] ' + provider + ': could not hand the station its endpoint: ' + ((e && e.message) || e));
+          return { provider, ok: false };
+        }));
+    });
+    endpointHandOver = Promise.all(jobs).then(out => { endpointHandOver = null; return out; });
+    return endpointHandOver;
+  }
+  // the /api fetch wrapper reports each call: false = the station did not answer at all (a refused connection while it
+  // respawns), true = it answered. The first answer after a silence re-hands the endpoints the respawned sidecar lost.
+  let stationSilent = false;
+  function noteStationReply(answered) {
+    if (!DESKTOP) return;
+    if (!answered) { stationSilent = true; return; }
+    if (!stationSilent) return;
+    stationSilent = false;
+    pushDesktopEndpoints();
   }
   // #62: no provider key contains whitespace — a key pasted out of a narrow SSH terminal can carry a line wrap (or a
   // zero-width char from a web page) in its MIDDLE, which .trim() never removed. Strip them all (the sidecar does too).
@@ -1933,6 +1987,7 @@ const Harness = (() => {
     if (!core) return Promise.resolve(false);
     if (restartInflight) return restartInflight;
     restartInflight = Promise.resolve().then(() => core.invoke('starnet_restart_sidecar')).then(up => up === true, () => false)
+      .then(up => { if (up) pushDesktopEndpoints(); return up; })   // #137: the respawned sidecar starts with no endpoint
       .finally(() => { restartInflight = null; });
     return restartInflight;
   }
