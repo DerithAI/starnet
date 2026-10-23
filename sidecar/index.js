@@ -21077,6 +21077,9 @@ async function runOnceCore(o) {
     pendingMediaCosts.push(Object.assign({ model: mediaModel }, cost));
   };
   let auxVisionProvider = null;
+  // the run's PRIMARY provider: the catalog the studio route's pinned vision model (`model` below) came from. Bound with
+  // auxVisionProvider before the loop; onFallback moves only auxVisionProvider (vision-input 2026-10-23).
+  let studioModelProvider = null;
   const auxVisionCall = async (req) => {
     if (!auxVisionProvider) throw new Error('session provider not ready');
     // a provider that cannot take an image would answer about a picture it never saw (QA 2026-10-02; Claude Code can since 10-08).
@@ -21114,8 +21117,10 @@ async function runOnceCore(o) {
     // it text-only; on false, image.js asks its default vision model instead of sending the picture to a model that
     // answers 404 "No endpoints found that support image input" on every image_analyze / browser.vision call. `m` is the
     // model image.js will post (the `model` copied above), never the live `model`: promoteToolCapable / onFallback move
-    // that one later, and judging it sent the picture to the original text-only model.
-    runModelSeesImages: (m) => ((auxVisionProvider && typeof auxVisionProvider.supportsImages === 'function') ? auxVisionProvider.supportsImages(m) : null),
+    // that one later, and judging it sent the picture to the original text-only model. It is asked of the PRIMARY provider
+    // (studioModelProvider), never the live one: after a provider fallback the new catalog does not list `m` (null), and
+    // the picture went to the known text-only model again.
+    runModelSeesImages: (m) => ((studioModelProvider && typeof studioModelProvider.supportsImages === 'function') ? studioModelProvider.supportsImages(m) : null),
     // #118: the host list above (plan route only) and the run's own model, read at tool time (a Codex run only)
     codexHostModels: studioRoute.protocol === 'codex-responses' ? codexHostModels : undefined, codexRunModel: () => (usingCodex ? model : ''),
     // issue #77: the SAME path-trust guard fs.* gets (runPathTrust is bound below; this thunk only runs at tool time), so a
@@ -22158,7 +22163,7 @@ async function runOnceCore(o) {
     provider = selectProvider({ provider: providerId, fetch: globalThis.fetch, key: runKey, baseUrl, reasoningEffort });
   }
   let activeProviderId = providerId;
-  auxVisionProvider = provider;   // late-bind the aux vision route to the run's real provider (see makeImageTools above)
+  auxVisionProvider = provider; studioModelProvider = provider;   // late-bind the aux vision route + the studio model's catalog to the run's real provider (see makeImageTools above)
   let cost = makeCostEngine({ priceOf: provider.priceOf });
 
   // Settings selects from the OpenRouter catalog. Its saved model strings therefore name OpenRouter routes,
@@ -22220,7 +22225,7 @@ async function runOnceCore(o) {
       if (warm) {
         activePrimaryKey = warm;
         provider = selectProvider({ provider: providerId, fetch: globalThis.fetch, key: warm, baseUrl, reasoningEffort });
-        auxVisionProvider = provider;
+        auxVisionProvider = provider; studioModelProvider = provider;
         ordered.splice(ordered.indexOf(warm), 1);
         ordered.push(runKey);   // the cooling primary becomes the LAST resort rather than the first try
       }
@@ -22240,7 +22245,7 @@ async function runOnceCore(o) {
     const onAccount = a => a.id ? selectProvider({ provider: providerId, configDir: a.dir, reasoningEffort }) : selectProvider({ provider: providerId, reasoningEffort });
     const first = byKey.get(ordered[0]);
     activePrimaryKey = first.credKey;
-    if (first.id) { provider = onAccount(first); auxVisionProvider = provider; }
+    if (first.id) { provider = onAccount(first); auxVisionProvider = provider; studioModelProvider = provider; }
     rotationFallbacks = ordered.slice(1).map(k => { const a = byKey.get(k); return { provider: onAccount(a), providerId, model, credKey: k, account: a.label }; });
   }
   if (oauthAccounts && oauthAccounts.length > 1) {

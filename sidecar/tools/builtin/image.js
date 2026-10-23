@@ -418,7 +418,7 @@
     /* The vision model is the RUN's own model (or.model) by default — but never one the run's catalog calls text-only
        (2026-10-23, StarNet Cloud logs: image_analyze / browser.vision sent the picture to the run's text-only model on the
        studio route and got 404 "No endpoints found that support image input", every call). deps.runModelSeesImages(runModel)
-       is the run provider's supportsImages about THIS model (the one posted below; the host's live model can move on after
+       is the run's primary provider's supportsImages (the catalog this model came from, not a fallback provider's) about THIS model (the one posted below; the host's live model can move on after
        this route was built, and a check of that one judged a model this route never posts): false = the catalog says
        text-only, so this route asks the default vision model instead; true or null (unknown) keeps the run model, exactly
        as before. Read per call: the catalog warms late. */
