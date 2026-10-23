@@ -200,7 +200,7 @@ const kimiRegion = require('./providers/kimi-region.js');
 const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } = require('./spend.js');
 const { makeEmitter } = require('../shared/emitter.js');
 const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
-const { runContextNote, crewCallFence } = require('./providers/provider.js');   // lean-prompt: the per-run <run_context> note and the trailing <crew_call> note (adapters share their predicates)
+const { runContextNote, crewCallFence, isBatchOnlyModel, chatModelId } = require('./providers/provider.js');   // lean-prompt: the per-run <run_context> note and the trailing <crew_call> note (adapters share their predicates)
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
 const EarlierConversation = require('./earlier-conversation.js');     // the turns COMMS's history window dropped, carried verbatim
 const { setStationSecretSource } = require('./child-env.js');   // station-secret-free env for every helper process
@@ -2289,7 +2289,7 @@ function warmModelCatalog() {
     ms => {
       if (ms && ms.length) {
         // snapshot the ids so the channel /model command can validate an id synchronously (see setAgentModelFromChannel)
-        try { orModelCatalogIds = ms.map(x => String((x && (x.id || x.model || x.name)) || '')).filter(Boolean); } catch (_) {}
+        try { orModelCatalogIds = ms.map(x => String((x && (x.id || x.model || x.name)) || '')).filter(id => id && !isBatchOnlyModel('openrouter', id)); } catch (_) {}
       }
       return ms;
     }
@@ -2914,7 +2914,9 @@ function channelRunConfigFor(agentId, candidate) {
   const hero = stationDefaultFor(id, ident);
   const followsStation = !!hero;
   const provider = normalizeProvider(followsStation ? (hero.provider || ident.provider) : ident.provider);
-  const model = String((followsStation ? hero.model : ident.model) || '').trim();
+  // a batch-only '<id>:batch' an older build saved runs on its base model here too, as in runOnceCore: the Telegram setup
+  // probe, NOT RIGHT? / SET IT UP FOR ME, skill evaluation and restored reviews stream this model without runOnceCore
+  const model = chatModelId(provider, String((followsStation ? hero.model : ident.model) || '').trim());
   if (!model) return { ok: false, error: 'target agent ' + id + ' has no roster model' + (id !== 'agent' ? ' and the station default (the Overseer) has none' : '') };
   /* A browser build may hand the channel route a candidate key/base URL that has not entered the desktop
      runtime store. Accept it ONLY when the caller says it belongs to the SAME provider as the roster. This is
@@ -11032,7 +11034,7 @@ function devHubSecrets() {
   const provider = 'openrouter';
   const key = providerRuntimeKey(provider, '');
   const baseUrl = providerRuntimeBaseUrl(provider, '');
-  const model = String(process.env.SKYNET_DEFAULT_MODEL || process.env.STARNET_DEFAULT_MODEL || '').trim();
+  const model = chatModelId(provider, String(process.env.SKYNET_DEFAULT_MODEL || process.env.STARNET_DEFAULT_MODEL || '').trim());   // a batch-only id runs on its base model
   return { key, model, provider, baseUrl, configured: providerHasCredential(provider, key, baseUrl), reasoningEffort: resolveReasoningEffort(provider, ''), agentId: undefined, system: undefined };
 }
 function getDevHub() {
@@ -14433,7 +14435,7 @@ async function warmModelCatalogSet() {
     const models = await provider.listModels();   // cache hit after boot warmup; a cold fetch is bounded by the provider
     if (!Array.isArray(models) || !models.length) return null;
     const s = new Set();
-    for (const m of models) { if (m && m.id) s.add(String(m.id)); }
+    for (const m of models) { if (m && m.id && !isBatchOnlyModel('openrouter', m.id)) s.add(String(m.id)); }
     return s.size ? s : null;
   } catch (_) { return null; }
 }
@@ -14532,8 +14534,8 @@ async function applyVoiceTurnRoute(o) {
   const rosterIdent = agentRoster.get(String(o.agentId || 'agent')) || null;
   // the agent's own route, resolved exactly as runOnceCore resolves it
   const mainProvider = normalizeProvider(o.provider || (rosterIdent && rosterIdent.provider) || '');
-  const mainModel = String(o.model || '').trim() || (rosterIdent && rosterIdent.model ? String(rosterIdent.model).trim() : '')
-    || (providerUsesCodex(mainProvider) ? CODEX_DEFAULT_MODEL : CRON_DEFAULT_MODEL);
+  const mainModel = chatModelId(mainProvider, String(o.model || '').trim() || (rosterIdent && rosterIdent.model ? String(rosterIdent.model).trim() : '')
+    || (providerUsesCodex(mainProvider) ? CODEX_DEFAULT_MODEL : CRON_DEFAULT_MODEL));
   const mainBaseUrl = o.baseUrl || o.base_url || '';
   const tProvider = setting.model ? normalizeProvider(setting.provider || mainProvider) : mainProvider;
   const sameProvider = tProvider === mainProvider;
@@ -20600,6 +20602,11 @@ async function runOnceCore(o) {
   // applied default) > provider default. An explicit per-run choice still wins; the roster only fills a gap.
   const reasoningEffort = resolveReasoningEffort(providerId, o.reasoningEffort || o.reasoning_effort || (o.reasoning && o.reasoning.effort) || (rosterIdent && rosterIdent.reasoningEffort));
   let model = String((o && o.model) || '').trim() || (rosterIdent && rosterIdent.model ? String(rosterIdent.model).trim() : '') || (usingCodex ? CODEX_DEFAULT_MODEL : CRON_DEFAULT_MODEL);
+  // A batch-only variant ('<id>:batch') an older build offered and saved can never run on chat/completions (404 on every
+  // run); run its base model instead. The sidecar never rewrites the saved roster or routine record (the page's model
+  // dock does move ITS selection to the base row and saves it: modeldock.js catalogEquivalent); this run's own events,
+  // history and cost name the model it really used.
+  model = chatModelId(providerId, model);
   const runKey = providerRuntimeKey(providerId, key);
   const baseUrl = providerRuntimeBaseUrl(providerId, o.baseUrl || o.base_url || '', runKey);   // #89: a page copy's endpoint rides only its own key
   const streamId = o.streamId || null;   // M-mem.2b (browser run only; the headless hub omits it → global memory)
@@ -22159,8 +22166,9 @@ async function runOnceCore(o) {
   // SETTINGS→Models persisted chain (effectiveFallbackChain: saved-or-env); env SKYNET_FALLBACK_MODELS remains the
   // default when nothing is saved. On overload/5xx/404/auth/billing/rate_limit the loop retries the turn on the
   // next model instead of dying (errorClass shouldFallback/shouldRotateCredential). Empty = off.
+  // a saved chain names OpenRouter routes (see above): its batch-only ids run on their base models, like the primary's
   const fallbackModels = (Array.isArray(o.fallbackModels) ? o.fallbackModels : effectiveFallbackChain())
-    .map(s => String(s || '').trim()).filter(Boolean);
+    .map(s => chatModelId(Array.isArray(o.fallbackModels) || fallbackSaved == null ? providerId : 'openrouter', String(s || '').trim())).filter(Boolean);
   const savedProviderFallbacks = !Array.isArray(o.fallbackModels) && fallbackSaved != null && providerId !== 'openrouter' && providerId !== 'starnet'
     ? fallbackModels.splice(0).map(m => ({ provider: 'openrouter', model: m })) : [];
   for (let i = fallbackModels.length - 1; i >= 0; i--) if (fallbackModels[i] === model) fallbackModels.splice(i, 1);
@@ -22242,7 +22250,7 @@ async function runOnceCore(o) {
   for (const fb of rawProviderFallbacks) {
     if (!fb || typeof fb !== 'object') continue;
     const fbProviderId = normalizeProvider(fb.provider || providerId);
-    const fbModel = String(fb.model || '').trim();
+    const fbModel = chatModelId(fbProviderId, String(fb.model || '').trim());   // a batch-only id runs on its base model, like the primary's
     if (!fbModel || (fbProviderId === providerId && fbModel === model)) continue;
     const fbBaseUrl = providerRuntimeBaseUrl(fbProviderId, fb.baseUrl || fb.base_url || '');
     const fbKey = providerRuntimeKey(fbProviderId, fb.key || fb.apiKey || fb.api_key || '');
@@ -25468,7 +25476,7 @@ async function handleLiveDoctor(req, res) {
 
   // SELECTED MODEL: one tiny inference through the exact provider adapter + credential source a normal run uses.
   const providerId = normalizeProvider((rec && rec.provider) || (runtimeKey ? 'openrouter' : (codexTokens && codexTokens.access_token ? 'codex' : 'openrouter')));
-  const model = String((rec && rec.model) || '').trim();
+  const model = chatModelId(providerId, String((rec && rec.model) || '').trim());   // the model a run really uses (a saved :batch id runs on its base)
   const reasoningEffort = resolveReasoningEffort(providerId, rec && rec.reasoningEffort);
   targets.push({ kind: 'provider', id: providerId, label: providerId + (model ? ' / ' + model : ''), probe: async () => {
     const profile = getProviderProfile(providerId);
@@ -26552,7 +26560,8 @@ async function listModelsForProvider(providerId, opts) {
     provider = selectProvider({ provider: id, fetch: globalThis.fetch, key, baseUrl });
   }
   const models = await provider.listModels();
-  return models.filter(item => ImageTask.isAgentModel(id, item && item.id));
+  // a batch-only variant (providers/provider.js isBatchOnlyModel) can never run a chat turn: no picker or CLI offers one
+  return models.filter(item => ImageTask.isAgentModel(id, item && item.id) && !isBatchOnlyModel(id, item && item.id));
 }
 
 async function handleProviderModels(req, res) {
