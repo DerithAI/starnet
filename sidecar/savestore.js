@@ -51,6 +51,7 @@
     let tmpSeq = 0;   // deterministic process-unique tmp suffix (a single host; no pid/rng needed)
     let writes = 0;   // main-file saves made by this process: part of stamp(), so an in-process save always moves it
     const recoveredMissing = new Set();
+    const settledBy = new Map();   // agentId -> { receipt, files: Map(name -> 'mtimeMs:size') }: the boot offer's settled memo (settleConflicts)
     const lastWritten = new Map();   // file -> { stamp, updatedAt, revision, replayAt, seededRevision } of this process's own last write (see save())
 
     /* Rejected-save snapshots are recoveries, not history: every stale client (a reopened tab, a flaky beacon)
@@ -76,6 +77,21 @@
         try { fs.unlinkSync(pathMod.join(rootDir, r.n)); removed++; } catch (e) { failNote('savestore.conflict-prune.unlink', e); }
         // a window that conflicts again overwrites its snapshot, and the atomic write leaves the prior one as .bak
         try { fs.unlinkSync(pathMod.join(rootDir, r.n + '.bak')); } catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.conflict-prune.unlink-bak', e); }
+      }
+      return removed;
+    }
+    // the restore backups beside the station file, newest restore first by the time in the name; the copy just written is
+    // always kept. Best-effort: a failed prune never fails the restore.
+    function pruneRestoreBackups(agentId, keepName) {
+      if (typeof fs.readdirSync !== 'function' || typeof fs.unlinkSync !== 'function') return 0;
+      const re = new RegExp('^' + agentId + '\\.save-before-restore-(\\d+)\\.json$');
+      let rows;
+      try { rows = fs.readdirSync(rootDir).map(n => { const m = typeof n === 'string' ? re.exec(n) : null; return m ? { n, t: Number(m[1]) } : null; }).filter(Boolean); }
+      catch (e) { failNote('savestore.restore-backup-prune.list', e); return 0; }
+      rows.sort((a, b) => (a.n === keepName ? -1 : b.n === keepName ? 1 : 0) || (b.t - a.t) || (a.n < b.n ? 1 : a.n > b.n ? -1 : 0));
+      let removed = 0;
+      for (const r of rows.slice(RESTORE_BACKUP_KEEP)) {
+        try { fs.unlinkSync(pathMod.join(rootDir, r.n)); removed++; } catch (e) { failNote('savestore.restore-backup-prune.unlink', e); }
       }
       return removed;
     }
@@ -244,19 +260,61 @@
        back. Only a station founded after it (agent.createdAt later than the receipt) may re-seed the file. A receipt that
        cannot be read, or a copy with no founding time, proves nothing either way: refused. No receipt = no reset. */
     const RESET_RECEIPT = '.fresh-start.json';
-    function resetRefusesSeed(doc) {
+    // the reset receipt's time: null = no receipt (no reset), NaN = a receipt that cannot be read (proves nothing)
+    function resetReceiptAt() {
       let raw;
       try { raw = fs.readFileSync(pathMod.join(rootDir, RESET_RECEIPT), 'utf8'); }
-      catch (e) { return !(e && e.code === 'ENOENT'); }
-      let at = NaN;
+      catch (e) { return (e && e.code === 'ENOENT') ? null : NaN; }
       try {
         const receipt = JSON.parse(raw);
         const v = receipt && receipt.version === 1 ? receipt.at : undefined;
-        at = typeof v === 'number' ? v : /^\d+$/.test(String(v)) ? Number(v) : Date.parse(String(v));
-      } catch (e) { at = NaN; }
-      const founded = Number(doc && doc.agent && doc.agent.createdAt);
-      return !(Number.isFinite(at) && Number.isFinite(founded) && founded > at);
+        return typeof v === 'number' ? v : /^\d+$/.test(String(v)) ? Number(v) : Date.parse(String(v));
+      } catch (e) { return NaN; }
     }
+    function foundedAt(doc) { return Number(doc && doc.agent && doc.agent.createdAt); }
+    // true when a station founded at `founded` is not provably from after the reset (`at` from resetReceiptAt)
+    function predatesReceipt(founded, at) { return at !== null && !(Number.isFinite(at) && Number.isFinite(founded) && founded > at); }
+    function resetRefusesSeed(doc) { return predatesReceipt(foundedAt(doc), resetReceiptAt()); }
+    /* ERASED WORK (review 10-23 #5): a preserved copy from before the reset is erased work only while the CURRENT station is
+       from after it (founded after the receipt). When the station itself predates the receipt (a backup of the old station
+       was restored into the fresh one), its copies are its own lineage: ordinary preserved work. stationFounded undefined =
+       there is no station file. */
+    function erasedWork(copyFounded, stationFounded) {
+      const at = resetReceiptAt();
+      return predatesReceipt(copyFounded, at) && !(stationFounded !== undefined && predatesReceipt(stationFounded, at));
+    }
+    // restore backups (<agent>.save-before-restore-<ms>.json) are kept for the newest few restores only (review 10-23 #7)
+    const RESTORE_BACKUP_KEEP = 3;
+    /* THE BOOT OFFER'S SETTLED MEMO, DURABLE (review 10-23 r2 #4/#5). The boot offer reads preserved snapshots newest first
+       under a time budget. A snapshot that brings nothing back into the station (all of it is there, deleted on purpose, or
+       erased work from before a reset) is SETTLED: not read again while it is unchanged (same name, mtime and size). An
+       in-process memo was not enough: every app launch is a fresh sidecar, so a big station re-read the same settled newest
+       snapshot on every launch, spent the budget and never reached an older one holding real lost work. The memo lives in
+       <agent>.save-offer-settled.json beside the snapshots (not station state: START FRESH leaves it, like the snapshots).
+       A verdict stays true while the station only moves forward. It is dropped whole when that may no longer hold: the
+       reset receipt changed (part of the key), or a write took the station somewhere it was not (unsettle() from save():
+       a write on a missing, corrupt or .bak-recovered file, an explicit RESTORE BACKUP, a different station founding). */
+    function settledFile(agentId) { return pathMod.join(rootDir, String(agentId) + '.save-offer-settled.json'); }
+    function receiptKey() { return String(resetReceiptAt()); }
+    function settledMemo(agentId) {
+      const receipt = receiptKey();
+      let m = settledBy.get(agentId);
+      if (m && m.receipt === receipt) return m;
+      m = { receipt, files: new Map() };
+      try {
+        const v = JSON.parse(fs.readFileSync(settledFile(agentId), 'utf8'));
+        if (v && v.version === 1 && v.receipt === receipt && v.files && typeof v.files === 'object')
+          for (const name of Object.keys(v.files)) if (typeof v.files[name] === 'string') m.files.set(name, v.files[name]);
+      } catch (e) { if (!e || (e.code !== 'ENOENT' && !(e instanceof SyntaxError))) failNote('savestore.offer-settled.read', e); }
+      settledBy.set(agentId, m);
+      return m;
+    }
+    function unsettle(agentId) {
+      settledBy.delete(agentId);
+      try { if (typeof fs.unlinkSync === 'function') fs.unlinkSync(settledFile(agentId)); }
+      catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.offer-settled.unlink', e); }
+    }
+    function sameFounding(a, b) { return a === b || (Number.isNaN(a) && Number.isNaN(b)); }
     // prior (optional): what the caller already knows about THIS file's current main — { status, raw? } from its own
     // read moments ago (save() reads it for the anti-clobber gate), so the main is not read and parsed a second time.
     function writeAtomic(file, value, prior) {
@@ -352,7 +410,15 @@
         // the revision this file's lineage was re-seeded at (0 = never): every copy based on a revision below it is from
         // before the station file went missing. Kept in the wrapper (never the doc), so a restart still knows it.
         let seededRevision = known ? num(known.seededRevision) : num(prev && prev.seededRevision);
+        // the window (_saveClient) whose copy re-seeded the file, so its own late-acknowledged seed is never blamed on another window
+        let seededClient = known ? known.seededClient : (prev && typeof prev.seededClient === 'string' ? prev.seededClient : undefined);
+        let explicitRestore = false;
         if (options.compareRevision) {
+          /* AN EXPLICIT BACKUP RESTORE (backup.js importFile: CloudSave.push(doc, { restore: true }) stamps _saveRestore). The
+             Commander chose to put that station back, so a reset generation's erase authority does not refuse it. A wire flag
+             only: it never reaches the station file. */
+          explicitRestore = doc._saveRestore === true;
+          if (Object.prototype.hasOwnProperty.call(doc, '_saveRestore')) { doc = Object.assign({}, doc); delete doc._saveRestore; }
           const revision = known ? known.revision : num(prev && prev.doc && prev.doc._saveRevision);
           const expected = num(doc._saveRevision);
           // A replay of an acknowledged request (including a beacon racing fetch) is idempotent. The two JSON texts
@@ -372,8 +438,12 @@
              every later autosave with it) matched once the seeding window's autosaves reached R, and its stale snapshot
              replaced the newer station. The seed takes the clock (ms), far above any save count, and never below the
              copy's own number + 1, so revisions keep only going up and every pre-seed copy stays a conflict. */
-          const seed = expected !== revision && prevRead.status === 'absent';
-          const reset = seed && resetRefusesSeed(doc);
+          const absent = prevRead.status === 'absent';
+          const seed = expected !== revision && absent;
+          /* A RESET GENERATION REFUSES EVERY PRE-RESET COPY ON THE EMPTY FILE (review 10-23 #2), not only a seed: a copy at
+             _saveRevision 0 founded before the receipt used to land as an ordinary first save. Only an explicit backup
+             restore (above) or a station founded after the receipt writes the empty file. */
+          const reset = absent && !explicitRestore && resetRefusesSeed(doc);
           /* THIS WINDOW'S OWN UNACKNOWLEDGED WRITE (support report 2026-10-21). A window gives up on a save after its
              acknowledgement deadline, but a busy station may still write it. The window keeps the old revision, so
              its next save arrives "behind" a head it wrote itself and was refused as another window's change. A
@@ -384,7 +454,7 @@
              for — an outside edit, a restart — stays a conflict: preserved, and restorable from the station. */
           const ownHead = !!known && expected < revision && /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || ''))
             && doc._saveClient === known.client && num(requestUpdatedAt) > num(known.replayAt);
-          if (expected !== revision && !ownHead && (!seed || reset)) {
+          if (reset || (expected !== revision && !ownHead && !seed)) {
             // Keep the rejected snapshot durably as well as the current station. Never silently
             // merge whole envelopes: removals and roster/config edits have conflicting semantics.
             const client = /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || '')) ? doc._saveClient : clock.now() + '-' + (++tmpSeq);
@@ -393,26 +463,48 @@
             pruneConflicts(String(agentId), recovery);
             const refused = { ok: false, stale: true, conflict: true, revision, recovery, updatedAt: prevUpdated };
             if (reset) refused.reset = true;   // the station file is empty because it was RESET: no other window wrote it
-            // this copy is from before the station file was re-seeded by ANOTHER copy: that one was saved back first, which
-            // says nothing about which of the two holds newer work (the page must not call the station file newer)
-            else if (seededRevision > 0 && expected < seededRevision) refused.reseeded = true;
+            else {
+              // this copy is from before the station file was re-seeded: by ANOTHER copy (saved back first, which says nothing
+              // about which of the two holds newer work: the page must not call the station file newer), or by THIS window's
+              // own copy whose acknowledgement it never heard (review 10-23 #6: never blamed on another window)
+              // ownSeed only while the head IS that own write (its writer's _saveClient rides the stored doc): once another window
+              // saved on top of it, this window is simply behind another window's newer save (review 10-23 r2, proofE)
+              if (seededRevision > 0 && expected < seededRevision) {
+                const headClient = known ? known.client : (prev && prev.doc ? prev.doc._saveClient : undefined);
+                if (seededClient && seededClient === doc._saveClient) { if (headClient === doc._saveClient) refused.ownSeed = true; }
+                else refused.reseeded = true;
+              }
+              // a copy from before this computer's station was reset, while the station is from after it: erased work, which a
+              // restore refuses, so the page never offers one (review 10-23 #5)
+              const stationFounded = known ? known.founded : foundedAt(prev && prev.doc);
+              if (erasedWork(foundedAt(doc), stationFounded)) refused.predatesReset = true;
+            }
             return refused;
           }
           seeded = seed;
           incomingUpdated = Math.max(incomingUpdated, prevUpdated + 1);
-          const nextRevision = seed ? Math.max(expected + 1, Math.floor(num(clock.now()))) : revision + 1;
-          if (seed) seededRevision = nextRevision;
+          /* EVERY write to an EMPTY file takes the clock revision (review 10-23 #2), never below the copy's own number + 1. A
+             brand-new station's first save used to restart the line at revision 1, so a stale window of the station that was
+             there before (a reset, a wipe), frozen at revision R, matched once the new station reached R and replaced it. A
+             first save is still not called a re-seed: `seeded`/seededRevision stay the seed path's. */
+          const nextRevision = absent ? Math.max(expected + 1, Math.floor(num(clock.now()))) : revision + 1;
+          if (seed) { seededRevision = nextRevision; seededClient = /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || '')) ? doc._saveClient : undefined; }
           doc = Object.assign({}, doc, { updatedAt: incomingUpdated, _saveRevision: nextRevision, _saveDirty: false });
         }
 
         if (!options.compareRevision && (known || prev) && incomingUpdated < prevUpdated) return { ok: false, stale: true, updatedAt: prevUpdated };
+        // this write may take the station somewhere it was not (see settledMemo): the boot offer's verdicts start over
+        const priorFounded = known ? known.founded : foundedAt(prev && prev.doc);
+        if (prevRead.status !== 'ok' || explicitRestore || !sameFounding(priorFounded, foundedAt(doc))) unsettle(String(agentId));
         lastWritten.delete(file);
-        writeAtomic(file, { version: 1, agentId: String(agentId), updatedAt: incomingUpdated, savedAt: clock.now(), ...(options.compareRevision ? { requestUpdatedAt } : {}), ...(options.compareRevision && seededRevision > 0 ? { seededRevision } : {}), doc: doc },
+        writeAtomic(file, { version: 1, agentId: String(agentId), updatedAt: incomingUpdated, savedAt: clock.now(), ...(options.compareRevision ? { requestUpdatedAt } : {}), ...(options.compareRevision && seededRevision > 0 ? { seededRevision } : {}),
+          ...(options.compareRevision && seededRevision > 0 && seededClient ? { seededClient } : {}), doc: doc },
           { status: prevRead.status, raw: prevRead.raw });
         writes++;
         recoveredMissing.delete(file);   // the main exists again and is this write
         const after = stamp(agentId);
-        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated, seededRevision: options.compareRevision ? seededRevision : 0, client: doc._saveClient });
+        if (after) lastWritten.set(file, { stamp: after, updatedAt: incomingUpdated, revision: num(doc._saveRevision), replayAt: options.compareRevision ? requestUpdatedAt : incomingUpdated, seededRevision: options.compareRevision ? seededRevision : 0,
+          seededClient: options.compareRevision && seededRevision > 0 ? seededClient : undefined, client: doc._saveClient, founded: foundedAt(doc) });
         return { ok: true, updatedAt: incomingUpdated, ...(options.compareRevision ? { revision: doc._saveRevision } : {}), ...(seeded ? { seeded: true } : {}) };
       },
 
@@ -438,6 +530,16 @@
       // file, newest first, so their sessions can be brought back. Read-only: a snapshot that does not parse is
       // skipped, never removed. `name` is a bare file name in the save root.
       conflicts(agentId) {
+        const rows = [];
+        for (const f of this.conflictFiles(agentId)) {
+          const doc = this.readConflict(agentId, f.name);
+          if (doc) rows.push({ name: f.name, mtimeMs: f.mtimeMs, doc });
+        }
+        return rows;
+      },
+      // the same list WITHOUT reading any snapshot (one readdir + a stat each): [{ name, mtimeMs, size }], newest first. The
+      // boot offer reads snapshots one at a time from this and stops early (review 10-23 #3d).
+      conflictFiles(agentId) {
         saveFile(agentId);   // validates the id before the name is used as a prefix
         const prefix = String(agentId) + '.save-conflict-';
         let names = [];
@@ -445,19 +547,57 @@
         catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.conflicts.list', e); return []; }
         const rows = [];
         for (const name of names) {
-          let mtimeMs = 0, doc;
-          try { mtimeMs = Number(fs.statSync(pathMod.join(rootDir, name)).mtimeMs) || 0; } catch (e) { failNote('savestore.conflicts.stat', e); }
-          try { doc = JSON.parse(fs.readFileSync(pathMod.join(rootDir, name), 'utf8')); } catch (e) { failNote('savestore.conflicts.read', e); continue; }
-          if (doc && typeof doc === 'object' && !Array.isArray(doc)) rows.push({ name, mtimeMs, doc });
+          let mtimeMs = 0, size = 0;
+          try { const s = fs.statSync(pathMod.join(rootDir, name)); mtimeMs = Number(s.mtimeMs) || 0; size = Number(s.size) || 0; } catch (e) { failNote('savestore.conflicts.stat', e); }
+          rows.push({ name, mtimeMs, size });
         }
         return rows.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
       },
-      // true when a station copy is from BEFORE this computer's station was reset (the same proof that refuses it as a
-      // re-seed). A preserved copy like that is erased work: it is never offered back or restored (#101 erase authority).
-      predatesReset(doc) { return resetRefusesSeed(doc); },
+      // the boot offer's settled memo (see settledMemo above; review 10-23 #3d, r2 #4/#5): settledConflicts(agentId) -> a
+      // predicate over conflictFiles() rows, true for a snapshot found to bring nothing back and unchanged since.
+      // settleConflicts(agentId, rows, present) records rows and persists the memo once, keeping only names still `present`
+      // (conflictFiles() names). The banner's own restore and POST .../restore never consult it.
+      settledConflicts(agentId) {
+        saveFile(agentId);
+        const m = settledMemo(String(agentId));
+        return f => !!f && m.files.get(f.name) === num(f.mtimeMs) + ':' + num(f.size);
+      },
+      settleConflicts(agentId, rows, present) {
+        saveFile(agentId);
+        const m = settledMemo(String(agentId));
+        let changed = false;
+        for (const f of Array.isArray(rows) ? rows : []) {
+          if (!f || typeof f.name !== 'string') continue;
+          const key = num(f.mtimeMs) + ':' + num(f.size);
+          if (m.files.get(f.name) !== key) { m.files.set(f.name, key); changed = true; }
+        }
+        if (Array.isArray(present)) { const keep = new Set(present); for (const name of Array.from(m.files.keys())) if (!keep.has(name)) { m.files.delete(name); changed = true; } }
+        if (!changed) return false;
+        const files = {};
+        for (const [name, key] of m.files) files[name] = key;
+        try { ensureRoot(); writeDurable(settledFile(agentId), JSON.stringify({ version: 1, receipt: m.receipt, files })); return true; }
+        catch (e) { failNote('savestore.offer-settled.write', e); return false; }   // the in-process memo still holds it
+      },
+      // one preserved snapshot by its bare file name (this agent's conflict grammar only), or undefined when it is gone or
+      // does not parse (never removed).
+      readConflict(agentId, name) {
+        saveFile(agentId);
+        const prefix = String(agentId) + '.save-conflict-';
+        if (typeof name !== 'string' || name.indexOf(prefix) !== 0 || !/^[A-Za-z0-9_.-]+\.json$/.test(name) || name.indexOf('..') >= 0) return undefined;
+        let doc;
+        try { doc = JSON.parse(fs.readFileSync(pathMod.join(rootDir, name), 'utf8')); }
+        catch (e) { if (!e || e.code !== 'ENOENT') failNote('savestore.conflicts.read', e); return undefined; }
+        return (doc && typeof doc === 'object' && !Array.isArray(doc)) ? doc : undefined;
+      },
+      // true when a preserved station copy is ERASED WORK: from before this computer's station was reset (the same proof
+      // that refuses it as a re-seed) while the current `station` is from after the reset. Erased work is never offered back
+      // or restored (#101 erase authority). A station that itself predates the reset (a restored backup of the old station)
+      // makes its copies ordinary preserved work (review 10-23 #5). No `station` = there is no station file.
+      predatesReset(doc, station) { return erasedWork(foundedAt(doc), station && typeof station === 'object' ? foundedAt(station) : undefined); },
 
       // a durable copy of the current station file under <agentId>.save-before-<label>.json, taken before a restore
-      // rewrites it. Returns the copy's name, or null when there is no station file to copy.
+      // rewrites it. Returns the copy's name, or null when there is no station file to copy. Restore backups
+      // (label restore-<ms>) keep only the newest RESTORE_BACKUP_KEEP, and never drop the one just written (review 10-23 #7).
       backup(agentId, label) {
         const file = saveFile(agentId);
         if (!/^[A-Za-z0-9_-]{1,80}$/.test(String(label || ''))) throw new Error('backup: a label of [A-Za-z0-9_-] is required');
@@ -466,6 +606,7 @@
         const name = String(agentId) + '.save-before-' + label + '.json';
         ensureRoot();
         writeDurable(pathMod.join(rootDir, name), raw);
+        if (/^restore-\d+$/.test(String(label))) pruneRestoreBackups(String(agentId), name);
         return name;
       },
 
