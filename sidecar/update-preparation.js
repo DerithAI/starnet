@@ -2,9 +2,11 @@
 'use strict';
 
 /* A pre-update bundle is one JSON string (every payload base64 inside it); V8 caps a string at ~536.8M chars, which a
-   station with ~400 MB of included files used to exceed, so the in-app update could never pass this step. 256 MiB of
-   files is ~358M base64 chars: room under the cap for the JSON framing, the browser state and the skipped list. What
-   does not fit is listed in the bundle (report.skipped) and in the receipt (tooLarge). */
+   station with ~400 MB of included files used to exceed, so the in-app update could never pass this step. The capture
+   is bounded twice: 256 MiB of file contents, and the bundle's whole JSON text at station-recovery's BUNDLE_MAX_CHARS
+   (each file row's framing is charged too, so a station of 500k small node_modules files fits as well). What does not
+   fit is listed in the bundle (report.skipped: the largest 1000 by name, the rest per folder) and in the receipt
+   (tooLarge). This only governs updates made FROM a build carrying it: 0.13.x prepares with its own, unbounded copy. */
 const SNAPSHOT_BUDGET_BYTES = 256 * 1024 * 1024;
 
 /* PRE-UPDATE RECOVERY POINTS ARE PRUNED (bug 31db37b0). Every INSTALL UPDATE attempt — retries and failed installs too —
@@ -69,6 +71,8 @@ function makeUpdatePreparation(deps) {
   const onFreeze = typeof d.onFreeze === 'function' ? d.onFreeze : function () {};
   const onThaw = typeof d.onThaw === 'function' ? d.onThaw : function () {};
   const snapshotBudget = Number.isFinite(d.snapshotBudgetBytes) && d.snapshotBudgetBytes >= 0 ? d.snapshotBudgetBytes : SNAPSHOT_BUDGET_BYTES;
+  // the bundle's JSON-text limit: station-recovery's own default unless a test scales it down
+  const snapshotBudgetChars = Number.isFinite(d.snapshotBudgetChars) && d.snapshotBudgetChars > 0 ? d.snapshotBudgetChars : undefined;
   const keepSnapshots = Number.isFinite(d.keepSnapshots) ? Math.max(1, d.keepSnapshots) : KEEP_SNAPSHOTS;
   const snapshotsDir = path.join(path.dirname(workspaceRoot), 'update-snapshots');
   if (!fs || !path || !recovery || typeof recovery.capture !== 'function' || typeof writeDurable !== 'function') {
@@ -109,15 +113,17 @@ function makeUpdatePreparation(deps) {
     return true;
   }
 
-  // { files, bytes, paths } of what the budget left out; the paths list is capped (a node_modules can be 100k files) and
-  // the full list stays inside the bundle's report.skipped
+  // { files, bytes, paths } of what the budget left out. The bundle lists the largest left-out files by name and folds
+  // the rest into one row per folder ({ path: 'agent/webapp/**', files, bytes }); the receipt keeps the 200 largest rows
   const TOO_LARGE = String(recovery.BUDGET_SKIP_REASON || 'too large for the pre-update recovery point');
   function tooLargeSummary(bundle) {
     const rows = (bundle && bundle.report && Array.isArray(bundle.report.skipped) ? bundle.report.skipped : []).filter(s => s && s.reason === TOO_LARGE);
     rows.sort((a, b) => (Number(b.bytes) || 0) - (Number(a.bytes) || 0));
     return {
-      reason: TOO_LARGE, files: rows.length, bytes: rows.reduce((n, s) => n + (Number(s.bytes) || 0), 0),
-      paths: rows.slice(0, 200).map(s => ({ path: String(s.path), bytes: Number(s.bytes) || 0 }))
+      reason: TOO_LARGE, files: rows.reduce((n, s) => n + (Number(s.files) || 1), 0), bytes: rows.reduce((n, s) => n + (Number(s.bytes) || 0), 0),
+      paths: rows.slice(0, 200).map(s => Number(s.files) > 0
+        ? { path: String(s.path), bytes: Number(s.bytes) || 0, files: Number(s.files) }
+        : { path: String(s.path), bytes: Number(s.bytes) || 0 })
     };
   }
 
@@ -160,7 +166,8 @@ function makeUpdatePreparation(deps) {
         now: createdAt,
         appVersion: appVersion(),
         lastCompletedMutation: 'http:' + completedMutations,
-        maxBytes: snapshotBudget
+        maxBytes: snapshotBudget,
+        maxChars: snapshotBudgetChars
       });
       const written = recovery.writeBundleAtomic({ bundle: bundle, file: bundleFile, allowIncomplete: true });
       bundle = null;   // the read-back below holds a second whole copy: never keep both alive at once

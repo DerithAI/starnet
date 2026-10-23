@@ -366,6 +366,7 @@ test/update-state-parity.test.js
 test/update-continuity.test.js
 test/update-preparation.test.js
 test/update-snapshot-budget.test.js
+test/update-snapshot-framing.test.js
 test/update-snapshot-prune.test.js
 test/update-drain-wiring.test.js
 test/updates-install.test.js
