@@ -209,13 +209,32 @@
        quotes them as the Commander's words — and a deleted session's opening lines never live on there through the
        title prompt. Rows a station wrote before the stamp existed are recognised by the fixed shapes of those prompts,
        in 'global' only (the same words in a named session are the Commander's). Nothing is deleted. */
-    function selfTalk(r) {
-      if (!r) return false;
-      if (r.dispatchState === 'internal') return true;
-      if (r.streamId !== 'global' || r.role !== 'user') return false;
+    function legacyPrompt(r) {
+      if (!r || r.streamId !== 'global' || r.role !== 'user') return false;
       const c = str(r.content);
       return c.indexOf('\n\nAssistant reply (context only): ') >= 0 || c.startsWith('INTERNAL —')
         || (c.startsWith('Goal:\n') && /Is the goal satisfied — done or continue\?$/.test(c));
+    }
+    /* A pre-stamp self-talk REPLY (the title itself, the goal judge's verdict restating the goal) has no shape of its
+       own: it is known by its run, the sourceRunId of a recognised prompt. Learned from every row this store loads,
+       appends or reads back, and once from disk (learnFromDisk) before the first search or scroll that can reach
+       'global' rows RAM never held. */
+    const selfTalkRuns = new Set();
+    function learn(r) { if (r && r.sourceRunId && legacyPrompt(r)) selfTalkRuns.add(str(r.sourceRunId)); }
+    let learnedFromDisk = false;
+    function learnFromDisk() {
+      if (learnedFromDisk || typeof io.search !== 'function') return;
+      learnedFromDisk = true;
+      // the segment index offers every 'global' row holding one of the prompts' fixed words to `exclude` before it
+      // ranks it: exclude learns it and declines it, so nothing is ranked or returned
+      try { io.search('global', 'context internal satisfied', { limit: 1, scope: 'stream', exclude: r => { learn(r); return true; } }); }
+      catch (e) { failNote('transcript.io', e); }
+    }
+    function selfTalk(r) {
+      if (!r) return false;
+      if (r.dispatchState === 'internal') return true;
+      if (r.streamId === 'global' && r.sourceRunId && selfTalkRuns.has(str(r.sourceRunId))) return true;
+      return legacyPrompt(r);
     }
     function hidden(r) { return forgotten(r) || selfTalk(r); }
 
@@ -231,6 +250,7 @@
     }
     catch (e) { rows = []; }
     // trim the boot load per-stream too, so a huge bounded-boot load of one stream can't start us over the cap.
+    for (const r of rows) learn(r);   // before the trims: a prompt the boot load held still names its run's reply
     trimStreamRam();   // no arg => sweep every over-cap stream once
     trimGlobalRam();
 
@@ -291,6 +311,7 @@
       const want = normStream(streamId);
       if (typeof io.search === 'function') {
         // the segment index ranks among the rows it may return (exclude), so a deleted session or self-talk never takes a slot
+        if (all || want === 'global') learnFromDisk();
         try { return (io.search(want, query, { limit: limit, scope: all ? 'all' : 'stream', exclude: hidden }) || []).filter(r => !hidden(r)); } catch (e) { failNote('transcript.io', e); }
       }
       const scored = [];
@@ -391,7 +412,8 @@
       const want = normStream(streamId);
       const at = num(ts);
       if (typeof io.around === 'function') {
-        try { return (io.around(want, ts, { window: win, rowId: o.rowId }) || []).filter(r => !hidden(r)); } catch (e) { failNote('transcript.io', e); }
+        if (want === 'global') learnFromDisk();
+        try { const got = io.around(want, ts, { window: win, rowId: o.rowId }) || []; got.forEach(learn); return got.filter(r => !hidden(r)); } catch (e) { failNote('transcript.io', e); }
       }
       const mine = [];
       for (let i = 0; i < rows.length; i++) { if (rows[i].streamId === want && !hidden(rows[i])) mine.push(rows[i]); }
@@ -465,6 +487,7 @@
         /* ordinary transcript writes remain fail-open; recovery-owned finalization uses appendStrict below */
       }
       rows.push(stored);
+      learn(stored);
       trimStreamRam(stored.streamId);   // bound THIS stream's RAM only (per-stream fairness; disk keeps full log)
       trimGlobalRam();                  // and bound the aggregate across thousands of short streams
       return stored;

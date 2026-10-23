@@ -89,7 +89,7 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
   // A 0.13.5 title prompt / goal judge whose basis is a long first message: the segment summary cuts the preview at
   // 160 characters, so the marker that names it self-talk is gone from the cut text. The listing must still not quote
   // it — not even a DELETED session's opening line — and must still preview a real Commander row.
-  async function browse(label, makeIo, legacy) {
+  async function browse(label, makeIo, legacy, reply) {
     const dir = temp('browse-' + label);
     try {
       const clock = clockAt(100);
@@ -100,9 +100,26 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       A.ok(opening.length > 160, label + ': the basis is longer than the summary preview');
       say('global', 'user', 'remember the walrus password rotation');            // the Commander's own global words
       say('ws_secret', 'user', opening);
-      say('global', 'user', legacy(opening));                                     // pre-stamp self-talk
-      say('global', 'assistant', 'Landlord Mold Letter');
+      // pre-stamp self-talk: the prompt AND its reply, one run id, no dispatchState (what a 0.13.5 station filed)
+      say('global', 'user', legacy(opening), { sourceRunId: 'run_legacy_selftalk' });
+      const replyRow = say('global', 'assistant', reply, { sourceRunId: 'run_legacy_selftalk' });
+      say('global', 'assistant', 'the walrus rotation is due Friday, mold aside', { sourceRunId: 'run_real_global' });   // a real reply
       deleted.ws_secret = clock.now() + 1;                                         // the session is deleted
+      // REPLIES: the title / the goal judge's verdict restating the goal never come back from recall, nor scroll
+      const replies = st => {
+        const hits = st.search('ws_other', 'landlord mold letter rent withheld', { scope: 'all', limit: 50 }).map(h => h.content);
+        A.ok(!hits.some(c => /landlord/i.test(c)), label + ': search (scope all) never returns the legacy self-talk reply: ' + JSON.stringify(hits));
+        A.ok(hits.includes('the walrus rotation is due Friday, mold aside'), label + ': a real global reply is still found: ' + JSON.stringify(hits));
+        const win = st.around('global', replyRow.ts, { window: 10 }).map(r => r.content);
+        A.ok(!win.some(c => /landlord/i.test(c)) && win.includes('remember the walrus password rotation'), label + ': scroll around it skips the reply and keeps the real rows: ' + JSON.stringify(win));
+      };
+      replies(store);
+      if (!/^ram/.test(label)) {
+        // after a restart, with the prompt row no longer in RAM (the reply's run is known only from disk)
+        const reopened = makeTranscriptStore({ io: makeIo(dir), clock, deletedAt: id => deleted[id] || 0, ramPerStream: 1 });
+        A.ok(!reopened.history('global', { limit: 1 }).some(r => r.sourceRunId === 'run_legacy_selftalk' && r.role === 'user'), label + ': the reopened store does not hold the prompt in RAM');
+        replies(reopened);
+      }
       clock.set(clock.now() + 100);
       say(undefined, 'user', 'other basis\n\nAssistant reply (context only): x', { dispatchState: 'internal' });   // new self-talk
       say(undefined, 'assistant', 'Other Title', { dispatchState: 'internal' });
@@ -126,9 +143,12 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
   const titlePrompt = basis => basis + '\n\nAssistant reply (context only): Sure, here is a draft of the letter';
   const goalPrompt = basis => 'Goal:\n' + basis + '\n\nAgent\'s most recent response:\nDraft done.\n\nIs the goal satisfied — done or continue?';
   const segIo = dir => makeSegmentedTranscriptIo({ fs, path, root: path.join(dir, 'history'), segmentBytes: 600, recentPerStream: 3 });
-  await browse('ram-title', () => ({ readAll() { return []; }, append() {} }), titlePrompt);
-  await browse('segmented-title', segIo, titlePrompt);
-  await browse('segmented-goal', segIo, goalPrompt);
+  const titleReply = 'Landlord Mold Letter Withheld Rent';
+  const goalReply = 'continue — the letter to the landlord about the mold and the withheld rent is not drafted yet';
+  await browse('ram-title', () => ({ readAll() { return []; }, append() {} }), titlePrompt, titleReply);
+  await browse('ram-goal', () => ({ readAll() { return []; }, append() {} }), goalPrompt, goalReply);
+  await browse('segmented-title', segIo, titlePrompt, titleReply);
+  await browse('segmented-goal', segIo, goalPrompt, goalReply);
 
   A.report('transcript-selftalk');
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });
