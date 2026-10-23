@@ -35,7 +35,20 @@
   const MAX_FILES = comms.MAX_FILES;
   const kindForMime = comms.kindForMime;
   // A whole line that is only the instruction: optional bullet, the word, then the path (optionally `quoted`).
-  const ATTACH_LINE = /^\s*(?:[-*•]\s*)?(?:ATTACH|MEDIA)\s*:\s*[`"']?([^`"'\r\n]+?)[`"']?\s*$/i;
+  const ATTACH_LINE = /^\s*(?:[-*•]\s*)?(ATTACH|MEDIA)\s*:\s*([`"']?)([^`"'\r\n]+?)\2\s*$/i;
+  /* PROSE IS NOT AN INSTRUCTION (upgrade review 2026-10-23). Every chat routine's reply goes through here, including
+     routines written long before this existed, and digests carry lines like "- Media: TV coverage was strong" or
+     "Attach: invoice before replying". Read as files, those lines vanished from the message and the chat got a false
+     "could not be attached" note. A line is a file instruction only when its path LOOKS like a workspace path (one
+     token, with a folder or an extension, not a web address) AND it is written the way the [DELIVERY] note teaches
+     (the uppercase word) or marks the path as code/quoted. Anything else is the routine's words and stays. */
+  function attachPath(keyword, quote, raw) {
+    const p = String(raw || '').trim();
+    if (!p || /^[a-z][a-z0-9+.-]*:\/\//i.test(p)) return '';
+    if (!quote && /\s/.test(p)) return '';
+    if (!(/[\\/]/.test(p) || /\.[A-Za-z0-9]{1,10}$/.test(p))) return '';
+    return (quote || keyword === keyword.toUpperCase()) ? p : '';
+  }
 
   /* parseReply(text) -> { text, files }
      Pulls the ATTACH lines out of a reply. `text` is the reply without them (trailing blank lines trimmed);
@@ -47,10 +60,10 @@
     const kept = [];
     for (const line of src.split(/\r?\n/)) {
       const m = ATTACH_LINE.exec(line);
-      if (!m) { kept.push(line); continue; }
+      const p = m ? attachPath(m[1], m[2], m[3]) : '';
+      if (!p) { kept.push(line); continue; }
       found = true;
-      const p = m[1].trim();
-      if (p && files.indexOf(p) < 0) files.push(p);
+      if (files.indexOf(p) < 0) files.push(p);
     }
     if (!found) return { text: src, files: [] };
     return { text: kept.join('\n').replace(/\s+$/, ''), files: files };

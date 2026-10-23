@@ -23,8 +23,18 @@ const { MAX_FILES } = require('../sidecar/tools/builtin/comms.js');
     A.eq(p1.files, ['charts/today.png'], 'and its path is collected');
 
     const p2 = M.parseReply('Two views:\r\n- attach: `a/one.png`\r\n* MEDIA: "b/two.jpg"\r\nATTACH: a/one.png\r\nEnd.');
-    A.eq(p2.files, ['a/one.png', 'b/two.jpg'], 'bullets, quotes, backticks, MEDIA: and any case are read; duplicates collapse');
+    A.eq(p2.files, ['a/one.png', 'b/two.jpg'], 'bullets, quotes, backticks, MEDIA: and a lowercase word with a quoted path are read; duplicates collapse');
     A.eq(p2.text, 'Two views:\nEnd.', 'all instruction lines are gone, the prose remains');
+
+    // upgrade review 2026-10-23: digests written long before ATTACH existed carry these as PROSE
+    const prose = 'Morning brief\n- Media: TV coverage was strong\nAttach: invoice before replying\nMEDIA: CNN, BBC and Reuters\n'
+      + 'Attach: invoice.pdf\n* media: photos.zip\nMEDIA: https://example.com/a.png\nATTACH: see the chart\nDone.';
+    const p5 = M.parseReply(prose);
+    A.eq(p5.files, [], 'prose "Media:" / "Attach:" lines name no files');
+    A.eq(p5.text, prose, 'and the reply is delivered byte-identical, every line kept');
+    const p6 = M.parseReply('Report\n- MEDIA: reports/q3 summary.pdf\nATTACH: `reports/q3 summary.pdf`');
+    A.eq(p6.files, ['reports/q3 summary.pdf'], 'a path with a space is read only when quoted');
+    A.eq(p6.text, 'Report\n- MEDIA: reports/q3 summary.pdf', 'the unquoted line stays as words');
 
     const p3 = M.parseReply('Mention of ATTACH: in a sentence stays: see ATTACH: x.png inline');
     A.eq(p3.files, [], 'ATTACH inside a sentence is prose, not an instruction');
