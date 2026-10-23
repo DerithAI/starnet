@@ -245,29 +245,48 @@ async function drain(p, req) {
     const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
     const aux = idx.slice(idx.indexOf('const auxVisionCall = async (req) => {'), idx.indexOf('const imageTools = makeImageTools('));
     const wire = idx.slice(idx.indexOf('const imageTools = makeImageTools('), idx.indexOf('const imageTools = makeImageTools(') + 2600);
-    A.ok(wire.includes("runModelSeesImages: (m) => ((auxVisionProvider && typeof auxVisionProvider.supportsImages === 'function') ? auxVisionProvider.supportsImages(m) : null)"),
-      'index.js: makeImageTools asks the RUN adapter\'s supportsImages about the model image.js posts, at tool time');
+    A.ok(wire.includes("runModelSeesImages: (m) => ((studioModelProvider && typeof studioModelProvider.supportsImages === 'function') ? studioModelProvider.supportsImages(m) : null)"),
+      'index.js: makeImageTools asks the run\'s PRIMARY adapter\'s supportsImages about the model image.js posts, at tool time');
     /* Model drift (final review 2026-10-23): index.js hands makeImageTools the run's `model` BY VALUE (the studio route's
        vision model), but promoteToolCapable and onFallback reassign the run's `let model` afterwards. A capability check
        that read the LIVE model judged a different model than the one image.js posts: a run that began on a text-only model
        and moved to a vision model sent the picture to the ORIGINAL text-only model -> 404. The REAL index.js thunk runs
-       here against a mutable `model`, and no image request may name a model the catalog calls text-only. */
+       here against a mutable `model`, and no image request may name a model the catalog calls text-only.
+       Provider drift (hostile review 2026-10-23): onFallback also moves `auxVisionProvider` to the fallback provider, whose
+       catalog does not list the pinned studio model (null = "unknown, keep it"), so the picture went to the known text-only
+       model again: one wasted 404 when the fallback model sees, "vision failed on both routes" when it does not. The pinned
+       model is judged by the catalog it came from (studioModelProvider, the run's primary, never moved by onFallback). */
     {
       const m = /\n\s*runModelSeesImages:\s*(.+),[ \t]*\r?\n/.exec(wire);
       A.ok(!!m, 'index.js: the runModelSeesImages wiring is found');
-      for (const [label, startModel, driftTo, expectModel] of [
-        ['text-only run moves to a vision model', 'vendor/text-only', 'vendor/sees', 'google/gemini-2.5-flash'],
-        ['vision run moves to a text-only model', 'vendor/sees', 'vendor/text-only', 'vendor/sees']
+      // a second provider's catalog (a provider fallback: o.fallbackProviders, saved provider fallbacks, the voice route)
+      const P2_CATALOG = [
+        { id: 'p2/sees', context_length: 64000, architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] }, pricing: { prompt: '0', completion: '0' }, supported_parameters: ['tools'] },
+        { id: 'p2/text-only', context_length: 64000, architecture: { input_modalities: ['text'], output_modalities: ['text'] }, pricing: { prompt: '0', completion: '0' }, supported_parameters: ['tools'] }
+      ];
+      const p2Adapter = makeOpenAICompatibleProvider({ key: 'fixture-only', baseUrl: 'https://fallback.provider.test/v1',
+        fetch: async () => new Response(JSON.stringify({ data: P2_CATALOG }), { status: 200, headers: { 'Content-Type': 'application/json' } }) });
+      await p2Adapter.listModels();
+      A.eq([p2Adapter.supportsImages('p2/sees'), p2Adapter.supportsImages('p2/text-only'), p2Adapter.supportsImages('vendor/text-only')], [true, false, null],
+        'provider drift fixture: the fallback catalog does not list the primary\'s model');
+      const knownTextOnly = (id) => runAdapter.supportsImages(id) === false || p2Adapter.supportsImages(id) === false;
+      for (const [label, startModel, driftTo, driftProvider, expectModel] of [
+        ['text-only run moves to a vision model', 'vendor/text-only', 'vendor/sees', null, 'google/gemini-2.5-flash'],
+        ['vision run moves to a text-only model', 'vendor/sees', 'vendor/text-only', null, 'vendor/sees'],
+        ['text-only run falls back to another provider\'s vision model', 'vendor/text-only', 'p2/sees', p2Adapter, 'google/gemini-2.5-flash'],
+        ['text-only run falls back to another provider\'s text-only model', 'vendor/text-only', 'p2/text-only', p2Adapter, 'google/gemini-2.5-flash'],
+        ['vision run falls back to another provider\'s text-only model', 'vendor/sees', 'p2/text-only', p2Adapter, 'vendor/sees']
       ]) {
         if (!m) break;
-        const host = vm.createContext({ auxVisionProvider: runAdapter, model: startModel });   // runOnceCore's `let model`
+        // runOnceCore's bindings: `let model`, and both provider slots bound to the run's primary before the loop
+        const host = vm.createContext({ auxVisionProvider: runAdapter, studioModelProvider: runAdapter, model: startModel });
         const thunk = vm.runInContext('(' + m[1] + ')', host);
         const posts = [];
         const fetchImpl = async (url, init) => {
           const body = JSON.parse(init.body);
           const hasImage = imagePartsIn(body) > 0;
           posts.push({ model: body.model, hasImage });
-          if (hasImage && runAdapter.supportsImages(body.model) === false) {
+          if (hasImage && knownTextOnly(body.model)) {
             const err = { error: { message: 'No endpoints found that support image input' } };
             return { status: 404, ok: false, json: async () => err, text: async () => JSON.stringify(err), headers: { get: () => 'application/json' } };
           }
@@ -276,15 +295,26 @@ async function drain(p, req) {
         const T = makeImageTools({ openrouter: { apiKey: 'managed-fixture', model: host.model, baseUrl: 'https://managed.studio.test/v1', provider: 'starnet', protocol: 'openrouter-chat' },
           fsp, pathMod: path, root: VI_WORKSPACES, fetchImpl, auxVision: async () => { throw new Error('aux must not be needed'); }, runModelSeesImages: thunk });
         host.model = driftTo;   // promoteToolCapable / onFallback: model = toolModelRoute.model / next.model
+        if (driftProvider) host.auxVisionProvider = driftProvider;   // onFallback: auxVisionProvider = next.provider
         let a = null, b = null, err = null;
         try {
           a = await T.analyzeTool.run({ image: PNG_FULL, prompt: 'what is it?' }, { agentId: 'lead' });
           b = await T.browserVision({ imageBase64: PNG_B64, question: 'what is on screen?' });
         } catch (e) { err = e; }
         A.ok(!err && a && /red square/.test(a.content) && /red square/.test(b), 'model drift (' + label + '): both tools answer (' + (err && err.message) + ')');
-        A.ok(!posts.some(x => x.hasImage && runAdapter.supportsImages(x.model) === false), 'model drift (' + label + '): NO image request names a text-only model (' + JSON.stringify(posts) + ')');
+        A.ok(!posts.some(x => x.hasImage && knownTextOnly(x.model)), 'model drift (' + label + '): NO image request names a text-only model (' + JSON.stringify(posts) + ')');
         A.eq(posts.map(x => x.model), [expectModel, expectModel], 'model drift (' + label + '): the check judges the model image.js posts, so both tools ask ' + expectModel);
       }
+      // the binding the vm context above stands in for: studioModelProvider is bound with the run's primary before the loop
+      // (every `auxVisionProvider = provider;` there), and onFallback moves only auxVisionProvider
+      const fbAt = idx.indexOf('onFallback: ({ reason, rotate, credKey');
+      const onFb = fbAt < 0 ? '' : idx.slice(fbAt, idx.indexOf('credPool.penalize(credKey, ttlMs);', fbAt));
+      A.ok(/auxVisionProvider = provider;/.test(onFb) && !/studioModelProvider\s*=/.test(onFb), 'index.js: onFallback moves auxVisionProvider, never studioModelProvider');
+      const declAt = idx.indexOf('let studioModelProvider = null;'), auxDeclAt = idx.indexOf('let auxVisionProvider = null;');
+      A.ok(declAt > 0 && idx.indexOf('let studioModelProvider', declAt + 1) < 0 && Math.abs(declAt - auxDeclAt) < 1200,
+        'index.js: studioModelProvider is declared once, beside auxVisionProvider (strict mode: an undeclared assignment throws)');
+      const binds = (onFb ? idx.replace(onFb, '') : idx).split(/\r?\n/).filter(l => /auxVisionProvider = provider;/.test(l));
+      A.ok(binds.length >= 3 && binds.every(l => /studioModelProvider = provider;/.test(l)), 'index.js: every pre-loop auxVisionProvider bind also binds studioModelProvider (' + binds.length + ' sites)');
     }
     A.ok(/no vision route: this agent\\'s model cannot see images — [^']*pick a vision model in the COMMS model dock'/.test(aux) && !/new Error\('no vision route[^\n]*connect an OpenRouter key/.test(aux),
       'index.js: the aux guard names the COMMS model dock, never "connect an OpenRouter key" (a dead end on a credits run)');
