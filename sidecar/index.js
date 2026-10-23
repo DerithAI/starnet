@@ -15193,11 +15193,16 @@ async function handleServiceKeyUpsert(req, res) {
     unattendedReason: catalog && catalog.unattendedReason
   }, Date.now(), { reservedEnv: SERVICEKEYS_RESERVED_ENV });
   if (r.error) return json(400, { error: r.error });
+  const prev = (Array.isArray(serviceKeys) ? serviceKeys : []).find(row => row && row.id === r.record.id);
   serviceKeys = r.list.map(applyServiceKeyCatalogPolicy);
   const record = serviceKeys.find(row => row.id === r.record.id) || r.record;
   if (!record.ref) serviceKeyRefs.drop(record.id);   // a pasted key replaced a 1Password reference: forget the value read for it
   applyServiceKeysEnv();
-  const saved = saveServiceKeys();   // verified read-back; on false the key is LIVE but not durable — say so honestly
+  // A key this save REPLACES (rotated, or swapped for a 1Password reference) must not survive in any copy on disk: the
+  // ordinary resilient save keeps the previous file as the recovery copy. Write both copies and read both back, the
+  // same way a removal is saved. Verified read-back either way; on false the key is LIVE but not durable — say so.
+  const replacesKey = !!(prev && prev.key && prev.key !== record.key);
+  const saved = replacesKey ? saveServiceKeyRemoval(serviceKeys) : saveServiceKeys();
   // A 1Password reference is READ now (the Commander is here to unlock and approve), so the row says at once whether it
   // works. Saved either way: a locked vault is a state to fix, not a reason to lose the reference.
   if (record.ref) await serviceKeyRefs.refresh(record, { timeoutMs: 60000 });
