@@ -918,6 +918,7 @@ test/channels.owner-pairing-all.test.js
 test/channels.owner-gates.test.js
 test/channels.group-user-commands.test.js
 test/channels.group-allow.test.js
+test/channels.observe-canonical.test.js
 test/channels.telegram.pairing-ux.test.js
 test/channels.telegram.test.js
 test/channels.telegram.format.test.js

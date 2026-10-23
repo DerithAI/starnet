@@ -10494,7 +10494,7 @@ function startTelegram(token, key, model, agentCfg) {
   let adapterRef = null;
   const hub = makeChannelHub({
     channel: 'telegram', runOnce: runOnce, store: channelStore, steerRun: channelSteerRun,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
     userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     // Only the adapter can mint owner trust: its owner is claimed from an admitted DM and group traffic never
@@ -10778,7 +10778,7 @@ function startTelegramBot(botId) {
   const botStore = makeBotScopedStore(botId);
   const hub = makeChannelHub({
     channel: 'telegram:' + botId, runOnce: runOnce, store: botStore, steerRun: channelSteerRun,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
     userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
@@ -10922,7 +10922,7 @@ function startDiscord(token, key, model, agentCfg) {
   const wired = wireChannel(channelRegistry.get('discord'), {
     hub: {
       runOnce: runOnce, store: channelStore, steerRun: channelSteerRun,
-      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
       secrets: () => {
         const d = (channelSecrets && channelSecrets.discord) || {};
         const provider = normalizeProvider(d.provider);
@@ -11043,7 +11043,7 @@ function getDevHub() {
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
     userCommandNames: () => userCommandEntries().map(c => c.name), desktopCommand: isDesktopSlashCommand,
     runOnce: runOnce, store: channelStore,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     send: (chatId, text) => devCaptureReply(chatId, text),
     secrets: devHubSecrets,
     persona: DEV_PERSONA, classify: Classify.isTaskDirective, redact: redact, emit: chanEmit, taskIntent: TaskIntent,
@@ -11215,7 +11215,7 @@ function startGenericChannel(id, token, key, model, agentCfg) {
   const wired = wireChannel(desc, {
     hub: {
       runOnce: runOnce, store: channelStore, steerRun: channelSteerRun,
-      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+      historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
       secrets: () => {
         const r = (channelSecrets && channelSecrets[id]) || {};
         const p = normalizeProvider(r.provider);
@@ -13120,7 +13120,7 @@ function getSampleHub() {
     channel: 'sample', maxMessageLength: 4000, agentPrefix: 'smp_', textBatchWaitMs: 0,
     ownerSurface: true,   // the Commander's own sample-crate route behind the launch token
     runOnce: runOnce, store: channelStore,
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     /* THE SAMPLE IS UNADDRESSED, EVERY TIME. This route's whole claim is "a REAL run on the REAL UNADDRESSED
        dispatch path" — the FILTER/SPLITTER must sort it. The hub's ordinary chat→agent bookkeeping saved a
        binding for chatId 'sample' on the first run, so from the SECOND sample on resolveTarget took its
@@ -13458,7 +13458,7 @@ function makeTriggerHub(hooks) {
     store: new Proxy(channelStore, { get: (t, k) => k === 'loadHistory' ? (agentId) => hooks.turns(agentId).slice(-40)
       : k === 'appendTurn' ? (agentId, role, content) => { hooks.turns(agentId).push({ role: role, content: content }); }
       : k === 'clearHistory' ? () => {} : (typeof t[k] === 'function' ? t[k].bind(t) : t[k]) }),
-    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
+    historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }), observeInto: channelObserveInto,
     bindChats: false,   // every fire is UNADDRESSED: the line's own doors decide the dock, never a remembered chat binding
     send: (chatId, text) => { hooks.send(text); return Promise.resolve({ ok: true }); },
     secrets: () => ({}),
@@ -19243,6 +19243,14 @@ async function runSlashRoutine(line, opts) {
   if (body) { try { emit('agent.token', { agentId: agentId, runId: runId, delta: body }); } catch (_) {} }
   try { emit('agent.run.end', { agentId: agentId, runId: runId, reason: 'done', turns: 0, usd: 0 }); } catch (_) {}
   return { ok: !!(r && r.ok !== false), text: body };
+}
+
+/* /mention observe: a group line the bot overheard, filed as a run-less user row in the chat's canonical stream — the
+   stream a channel hub's historyFor replays — so the next addressed run actually sees it. `taint` is the hub's verdict
+   (null for a member's own words, a source for a forwarded one); passing it, null included, stamps the row's provenance. */
+function channelObserveInto(streamId, agentId, text, taint) {
+  transcriptStore.append({ streamId: String(streamId), agentId: String(agentId || ''), role: 'user', taint: taint || null, content: String(text || '') });
+  return true;
 }
 
 /* Does the shared registry's BUILT-IN table know this token (a name or an alias)? What a channel hub answers as a

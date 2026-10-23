@@ -474,6 +474,10 @@
     // Canonical transcript projection. Ordinary channel chats share the durable workstream ledger used by
     // desktop COMMS; the legacy channel history remains an offline fallback only.
     const historyFor = typeof o.historyFor === 'function' ? o.historyFor : null;
+    // observeInto(streamId, agentId, text, taint) files an OVERHEARD group line (/mention observe) as a run-less user row
+    // in that canonical stream — the one historyFor replays. Without it a hub with historyFor never shows the agent what
+    // it overheard, so observe is offered only where it can be kept (observeKept below).
+    const observeInto = typeof o.observeInto === 'function' ? o.observeInto : null;
     // ONE-RESOLVER LAW: any telemetry that attributes an inbound message to an agent (workitem crates, queue
     // HUD) must come from THIS hub's resolution, never a parallel guess. onResolved fires once per real message
     // (never for /commands) with the exact agentId the run will execute as, in onInbound's first synchronous
@@ -1327,6 +1331,8 @@
           : (/^(off|no|disable|disabled|false|0)$/i.test(arg) ? 'off'
           : (/^(observe|watch|listen|follow|context)$/i.test(arg) ? 'observe' : null));
         if (want === null) { await deliver(chatId, 'Usage: /mention on  ·  /mention observe  ·  /mention off', '', 'command'); return; }
+        // never confirm a promise this hub cannot keep (see observeTurn): nothing is saved, so nothing changes
+        if (want === 'observe' && !observeKept()) { await deliver(chatId, '⚠ This channel cannot keep what I overhear, so /mention observe is not available here — I still ' + describe[state] + '.', '', 'command'); return; }
         // requireMention and observeUnmentioned are written TOGETHER, always. Two independent toggles would let a
         // chat end up "answer everything AND observe", which would file every message twice.
         const patch = { requireMention: want !== 'off', observeUnmentioned: want === 'observe' };
@@ -1514,8 +1520,19 @@
       if (!body) return;
       const who = String(msg.userName || '').trim();
       const agentId = currentBoundAgent(chatId, boundAgentId, sec);
-      try { store.appendTurn(agentId, 'user', who ? (who + ': ' + body) : body); } catch (e) { failNote('channels.hub.appendTurn', e); }
+      const line = who ? (who + ': ' + body) : body;
+      try { store.appendTurn(agentId, 'user', line); } catch (e) { failNote('channels.hub.appendTurn', e); }
+      /* THE RUN READS THE CANONICAL STREAM (historyFor), not the store file above — filed only there, the overheard room
+         never reached the model and "I read the rest of the room" was a promise nobody kept. Filed into the SAME stream
+         the next addressed run replays, with the provenance an addressed message from this room would carry: clean,
+         unless it is a forwarded third party's words (initialTaint's rule below). */
+      if (historyFor && observeInto) {
+        const sid = resolvedStreamId(chatId);
+        if (sid) { try { observeInto(sid, agentId, line, carriesThirdPartyText(msg) ? 'forwarded message' : null); } catch (e) { failNote('channels.hub.observeInto', e); } }
+      }
     }
+    // can an overheard line reach the model on this hub? (legacy history is what a hub without historyFor replays)
+    function observeKept() { return !historyFor || !!observeInto; }
 
     // ---- ALBUM (media-group) BATCHING --------------------------------------------------------------------
     // A Telegram album arrives as N SEPARATE messages sharing one media_group_id (caption usually on only one).
