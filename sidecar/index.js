@@ -6986,7 +6986,9 @@ async function deliverCronResult(job, result) {
     const parsed = RoutineMedia.parseReply(result.text);
     try { runs = runStore.list(null, { streamId: 'cron-' + result.runId, limit: 50 }) || []; } catch (_) { runs = []; }
     named = parsed.files;
-    attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId });
+    // generated images ride unasked only for a routine holding ALLOW IMAGES (the studio grant) — never for one that
+    // makes pictures for another purpose (routine-media.js pickFiles)
+    attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId, generatedImages: Array.isArray(job.unattendedGrants) && job.unattendedGrants.indexOf('studio') >= 0 });
     if (named.length) {
       chatBody = parsed.text;
       chatText = '✦ ' + (job.name || 'Routine') + (parsed.text.trim() ? '\n\n' + parsed.text : '') + supersededNote;

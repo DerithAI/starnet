@@ -242,7 +242,8 @@ async function waitFor(pred, ms, label) {
        this half runs under the Commander's live Full Access switch — the delivery path is the same either way. */
     const bypass = await sidecar.json('POST', '/api/permissions/bypass', { on: true });
     A.eq(bypass.status, 200, 'Full Access switched on for the render routine');
-    const renderJob = await routine('Morning render', 'ROUTINE_RENDER make me a sunrise picture');
+    const renderJob = await routine('Morning render', 'ROUTINE_RENDER make me a sunrise picture', { unattendedGrants: ['studio'] });
+    A.eq(renderJob.unattendedGrants, ['studio'], 'the render routine holds ALLOW IMAGES');
     mark = telegram.calls.length;
     const events = await runNow(renderJob);
     const ended = events.filter(e => e.name === 'agent.run.end').pop();
@@ -250,6 +251,19 @@ async function waitFor(pred, ms, label) {
     const rendered = await waitFor(() => telegram.calls.slice(mark).find(c => c.method === 'sendPhoto'), 10000, 'the generated image to arrive');
     A.ok(rendered.files[0] && rendered.files[0].bytes.equals(Buffer.from(RENDER_PNG_B64, 'base64')), 'the photo is the image the run generated');
     A.ok(telegram.calls.slice(mark).some(c => c.method === 'sendMessage' && String(c.fields.text || '').indexOf('Fresh render for today.') >= 0), 'with the routine\'s words');
+
+    /* ---- 2b. a routine WITHOUT ALLOW IMAGES that makes pictures for another purpose keeps its chat words-only ----
+       (upgrade review 2026-10-23: a 0.13.x Full Access routine rendering wallpapers into a folder never posted them) */
+    const wallpaperJob = await routine('Wallpapers', 'ROUTINE_RENDER render wallpapers into the wallpapers folder');
+    A.eq(wallpaperJob.unattendedGrants || [], [], 'the wallpaper routine holds no images grant');
+    mark = telegram.calls.length;
+    const wpEvents = await runNow(wallpaperJob);
+    const wpEnded = wpEvents.filter(e => e.name === 'agent.run.end').pop();
+    A.eq(wpEnded && wpEnded.payload && wpEnded.payload.reason, 'done', 'the wallpaper routine completed (and generated its image)');
+    await waitFor(() => telegram.calls.slice(mark).some(c => c.method === 'sendMessage' && String(c.fields.text || '').indexOf('Fresh render for today.') >= 0), 10000, 'the wallpaper routine\'s words');
+    await sleep(500);
+    A.ok(!telegram.calls.slice(mark).some(c => c.method === 'sendPhoto' || c.method === 'sendDocument' || c.method === 'sendMediaGroup'), 'its generated image is not posted to the chat');
+    A.ok(!telegram.calls.slice(mark).some(c => /could not be attached/.test(String(c.fields.text || ''))), 'and no missing-file note is invented');
     await sidecar.json('POST', '/api/permissions/bypass', { on: false });
   } catch (error) {
     error.message += '\nBot API calls:\n' + telegram.calls.map(c => '  ' + c.method + ' ' + JSON.stringify(c.fields).slice(0, 200)

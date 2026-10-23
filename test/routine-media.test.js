@@ -54,12 +54,18 @@ const { MAX_FILES } = require('../sidecar/tools/builtin/comms.js');
     A.eq(named.files.map(f => f.path), ['charts/today.png'], 'a named file wins over generated images');
     A.eq(named.files[0].agents, ['writer', 'agent'], 'it is looked up in every agent of the fire, newest first');
 
-    const auto = M.pickFiles({ named: [], runs: runs, agentId: 'agent' });
+    const auto = M.pickFiles({ named: [], runs: runs, agentId: 'agent', generatedImages: true });
     A.eq(auto.files.map(f => f.path), ['images/draft.png', 'images/final.png'], 'with nothing named, the generated images ride in the order they were made');
     A.eq(auto.files.map(f => f.agents[0]), ['agent', 'writer'], 'each read from the workspace of the agent that made it');
     A.ok(auto.files.every(f => f.path !== 'notes.md'), 'a plain written file is never auto-sent — only images');
 
-    const none = M.pickFiles({ named: [], runs: [{ agentId: 'agent', artifacts: [{ kind: 'file', path: 'x.md' }] }], agentId: 'agent' });
+    // upgrade review 2026-10-23: only a routine granted ALLOW IMAGES has its generated pictures sent unasked; a
+    // routine that makes images for another purpose (wallpapers into a folder) keeps its chat words-only
+    const ungranted = M.pickFiles({ named: [], runs: runs, agentId: 'agent' });
+    A.eq(ungranted.files, [], 'without the images grant, generated images stay on the station');
+    A.eq(M.pickFiles({ named: ['charts/today.png'], runs: runs, agentId: 'agent' }).files.map(f => f.path), ['charts/today.png'], 'a file the reply names still rides without the grant');
+
+    const none = M.pickFiles({ named: [], runs: [{ agentId: 'agent', artifacts: [{ kind: 'file', path: 'x.md' }] }], agentId: 'agent', generatedImages: true });
     A.eq(none.files, [], 'a run that generated no image attaches nothing (the old delivery, unchanged)');
 
     const many = M.pickFiles({ named: ['1.png', '2.png', '3.png', '4.png', '5.png', '6.png'], runs: [], agentId: 'agent' });

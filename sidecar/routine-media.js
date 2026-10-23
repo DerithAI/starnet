@@ -15,8 +15,9 @@
      1. ATTACH lines in the final reply — "ATTACH: charts/today.png", one per line. The agent's explicit choice,
         and the lines are removed from the delivered text (they are an instruction to the station, not prose).
         "MEDIA:" is read the same way: it is the reference harness's spelling and models carry it over.
-     2. Otherwise the images the fire itself GENERATED (image_generate artifacts on its run rows), so a routine
-        whose model forgot the convention still delivers the picture it paid for.
+     2. Otherwise — only for a routine granted ALLOW IMAGES (the studio grant) — the images the fire itself GENERATED
+        (image_generate artifacts on its run rows), so a routine whose model forgot the convention still delivers the
+        picture it paid for. A routine without that grant that makes images for another purpose keeps its chat words-only.
    Neither applies to a chat the fire already sent its own files to with channel.send (possible under Full Access —
    filesAlreadySent): the same picture must not arrive twice.
 
@@ -85,11 +86,15 @@
     }));
   }
 
-  /* pickFiles({ named, runs, agentId }) -> { files:[{ path, agents:[agentId…] }], dropped:[path…] }
+  /* pickFiles({ named, runs, agentId, generatedImages }) -> { files:[{ path, agents:[agentId…] }], dropped:[path…] }
      runs = the fire's run rows ({ agentId, artifacts }), NEWEST first. A named path is tried in the workspace of
      every agent that ran in this fire, newest first (on a work line the delivered words are the LAST stage's),
-     then the routine's own agent. With nothing named, each image the fire generated is read from the workspace of
-     the agent that generated it, in the order they were made. `dropped` is what the cap left behind. */
+     then the routine's own agent. With nothing named and `generatedImages` true, each image the fire generated is
+     read from the workspace of the agent that generated it, in the order they were made. `dropped` is what the cap
+     left behind.
+     `generatedImages` is the host's answer to "does this routine hold the ALLOW IMAGES (studio) grant": a routine
+     that makes pictures for some other purpose ("render wallpapers into /wallpapers") never had them posted to its
+     chat before 0.14, and must not start now (upgrade review 2026-10-23). Absent -> false. */
   function pickFiles(o) {
     o = o || {};
     const runs = Array.isArray(o.runs) ? o.runs.filter(r => r && typeof r === 'object') : [];
@@ -101,6 +106,8 @@
     let all;
     if (named.length) {
       all = named.map(p => ({ path: p, agents: agents.slice() }));
+    } else if (o.generatedImages !== true) {
+      all = [];
     } else {
       all = [];
       for (const r of runs.slice().reverse()) {
