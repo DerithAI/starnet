@@ -123,7 +123,11 @@ const { makeCostEngine } = require('../sidecar/cost.js');
   {
     const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
     A.ok(/const \{ promptTierTokens \} = require\('\.\/providers\/prices\.js'\);/.test(src), 'index.js imports promptTierTokens');
-    A.ok(src.indexOf('const runWindowCeiling = () => promptTierTokens(model);') > 0, 'the ceiling reads the run\'s live model (swapped by onFallback)');
+    A.ok(src.indexOf('const runWindowCeiling = () => providerUnmetered ? 0 : promptTierTokens(model);') > 0,
+      'the ceiling reads the run\'s live model (swapped by onFallback); an unmetered run (subscription / local: no $ caps) keeps its real window');
+    const ceilAt = src.indexOf('const runWindowCeiling = ');
+    A.ok(ceilAt > src.indexOf('let providerUnmetered = ') && src.indexOf('if (typeof next.unmetered === \'boolean\') providerUnmetered = next.unmetered;') > ceilAt,
+      'providerUnmetered is the run\'s live binding (declared before the ceiling, swapped by onFallback after it)');
     A.ok(src.indexOf('const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || knownRunWindow || COLD_CATALOG_CONTEXT_TOKENS, windowCeiling: runWindowCeiling }, RUN_CONTEXT_DEFAULTS));') > 0,
       'the run\'s context manager is built with the ceiling');
   }

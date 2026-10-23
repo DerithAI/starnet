@@ -22303,8 +22303,9 @@ async function runOnceCore(o) {
   // window), not six turns — six turns of big results outweighed a 64k window and a fold freed nothing.
   // THE WINDOW STOPS AT THE PRICE TIER (context-cost-1023): a model that bills a dearer rate above a prompt size the
   // spend caps do not price (prices.js promptTierTokens: Haiku 5.5 100K, Gemini Pro and grok 200k) works in a window of
-  // that size, so its turns fold before they cross it. Read live: a fallback's model brings its own ceiling.
-  const runWindowCeiling = () => promptTierTokens(model);
+  // that size, so its turns fold before they cross it. Read live: a fallback's model brings its own ceiling. An unmetered
+  // run (a flat subscription, a local model: exempt from every $ cap, runBudget below) has no tier to stay under.
+  const runWindowCeiling = () => providerUnmetered ? 0 : promptTierTokens(model);
   const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || knownRunWindow || COLD_CATALOG_CONTEXT_TOKENS, windowCeiling: runWindowCeiling }, RUN_CONTEXT_DEFAULTS));
   // PER-RUN TOOL-OUTPUT CAP, scaled to the window. The flat 120KB cap (~30k tokens) sat far BELOW the compaction
   // threshold (0.65 × window — ~130k tokens on a 200k model), so the one event that resets the budget
