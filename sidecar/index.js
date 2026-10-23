@@ -6966,8 +6966,40 @@ function cronPreflightConfig(job) {
   return { ok: true };
 }
 
+/* ONE ROUTINE DELIVERY PER CHAT AT A TIME (upgrade review 2026-10-23). A long reply goes out in parts, one awaited send
+   each; two routines delivering to the same chat at once (a recovery pass runs several receipts together) interleaved
+   their parts. Each chat is a FIFO: a delivery waits for the one ahead of it to finish, words and files both. */
+const cronChatTails = new Map();
+function cronChatTurn(key, fn) {
+  const run = (cronChatTails.get(key) || Promise.resolve()).then(fn);
+  const tail = run.then(() => {}, () => {});
+  cronChatTails.set(key, tail);
+  tail.then(() => { if (cronChatTails.get(key) === tail) cronChatTails.delete(key); });
+  return run;
+}
+// Telegram answers a burst with 429 + retry_after: wait it out once for THIS part (a short, bounded wait) rather than
+// fail the delivery, whose retry would resend every part that already landed.
+async function cronSendPart(adapter, chatId, text, route) {
+  let sent = await adapter.send(chatId, text, route);
+  const wait = Number(sent && sent.ok === false && sent.retryable ? sent.retryAfter : 0);
+  if (wait > 0 && wait <= 30) {
+    await new Promise(r => setTimeout(r, wait * 1000 + 250));
+    sent = await adapter.send(chatId, text, route);
+  }
+  return sent;
+}
+// The delivery of a routine's newest result names the older ones that will not come (cron-store supersedeDeliveries).
+// It promises no place to find them: HISTORY lists only a routine's latest runs, and a script-only routine records
+// no run rows at all — the note says only what is certain.
+function cronSupersededNote(n) {
+  n = Math.max(0, parseInt(n, 10) || 0);
+  if (!n) return '';
+  return '\n\n(' + n + ' earlier result' + (n === 1 ? '' : 's') + ' of this routine ' + (n === 1 ? 'was' : 'were') + ' not delivered and will not be resent.)';
+}
+
 async function deliverCronResult(job, result) {
   if (!job || !result || result.outcome === 'silent') return { ok: true, skipped: true };
+  const supersededNote = cronSupersededNote(result.superseded);
   if (job.noAgent) {
     try {
       const streamId = 'cron-' + result.runId;
@@ -6978,9 +7010,9 @@ async function deliverCronResult(job, result) {
       if (!recorded.some(t => t.role === 'assistant')) transcriptStore.append({ streamId, agentId: job.agentId, role: 'assistant', taint: 'scheduled script output', content: result.outcome === 'failed' ? String(result.error || 'script failed') : String(result.text || '') });
     } catch (e) { failNote('cron.script.transcript', e); }
   }
-  const text = result.outcome === 'failed'
+  const text = (result.outcome === 'failed'
     ? ('✦ ' + (job.name || 'Routine') + ' failed\n\n' + String(result.error || 'The run failed.'))
-    : ('✦ ' + (job.name || 'Routine') + '\n\n' + String(result.text || '(completed with no text)'));
+    : ('✦ ' + (job.name || 'Routine') + '\n\n' + String(result.text || '(completed with no text)'))) + supersededNote;
   const mode = String(job.deliver || 'local').trim(), targets = [];
   if (mode === 'origin' && job.origin && job.origin.target) targets.push(String(job.origin.target));
   else if (mode === 'origin' && job.origin && job.origin.channel && job.origin.chatId) targets.push('@origin');
@@ -7000,13 +7032,19 @@ async function deliverCronResult(job, result) {
      delivers byte-identically to before. */
   let chatBody = String(result.text || ''), chatText = text, attach = { files: [], dropped: [] }, named = [], runs = [];
   if (result.outcome !== 'failed') {
-    const parsed = RoutineMedia.parseReply(result.text);
+    const candidates = RoutineMedia.parseReply(result.text).files;
     try { runs = runStore.list(null, { streamId: 'cron-' + result.runId, limit: 50 }) || []; } catch (_) { runs = []; }
-    named = parsed.files;
-    attach = RoutineMedia.pickFiles({ named: named, runs: runs, agentId: job.agentId });
+    // A named path is an instruction only if the file is really there: read it first (before any word is sent), so a
+    // line naming nothing on the station ("MEDIA: N/A") stays in the message as written, with no missing-file note.
+    const found = candidates.length ? (await RoutineMedia.readNamed(candidates, RoutineMedia.fireAgents(runs, job.agentId), readChannelUpload)).found : [];
+    named = found.map(f => f.path);
+    // generated images ride unasked only for a routine holding ALLOW IMAGES (the studio grant) — never for one that
+    // makes pictures for another purpose (routine-media.js pickFiles)
+    attach = RoutineMedia.pickFiles({ named: found, runs: runs, agentId: job.agentId, generatedImages: Array.isArray(job.unattendedGrants) && job.unattendedGrants.indexOf('studio') >= 0 });
     if (named.length) {
+      const parsed = RoutineMedia.parseReply(result.text, named);
       chatBody = parsed.text;
-      chatText = '✦ ' + (job.name || 'Routine') + (parsed.text.trim() ? '\n\n' + parsed.text : '');
+      chatText = '✦ ' + (job.name || 'Routine') + (parsed.text.trim() ? '\n\n' + parsed.text : '') + supersededNote;
     }
   }
   let failed = 0, firstError = '';
@@ -7018,38 +7056,40 @@ async function deliverCronResult(job, result) {
     const channel = String(rec.channel || 'telegram'), live = liveChannelFor(channel);
     if (!(live && live.adapter)) { failed++; firstError = firstError || channel + ' is not connected'; continue; }
     const chatId = String(rec.chatId || target), route = rec.threadId ? { threadId: rec.threadId } : undefined;
-    try {
-      // A routine's reply is as long as the model made it, and the adapter sends ONE message (the hub chunks chat
-      // replies before calling it). Sent whole, a digest past Telegram's 4096 was refused "message is too long" on the
-      // fire and on every retry — the chat never saw it (2026-10-20). Split it under the platform's ceiling, in order.
-      const desc = channelRegistry.get(channel.split(':')[0]);
-      const parts = hubChunkText(redact(chatText), Number(desc && desc.maxMessageLength) > 200 ? Number(desc.maxMessageLength) : 1900);
-      for (let i = 0; i < parts.length; i++) {
-        const sent = await live.adapter.send(chatId, parts[i], route);
-        if (sent && sent.ok === false) throw new Error((sent.error || 'send failed') + (i ? ' (after ' + i + ' of ' + parts.length + ' parts)' : ''));
+    await cronChatTurn(channel + '\u0001' + chatId + '\u0001' + String(rec.threadId || ''), async () => {
+      try {
+        // A routine's reply is as long as the model made it, and the adapter sends ONE message (the hub chunks chat
+        // replies before calling it). Sent whole, a digest past Telegram's 4096 was refused "message is too long" on the
+        // fire and on every retry — the chat never saw it (2026-10-20). Split it under the platform's ceiling, in order.
+        const desc = channelRegistry.get(channel.split(':')[0]);
+        const parts = hubChunkText(redact(chatText), Number(desc && desc.maxMessageLength) > 200 ? Number(desc.maxMessageLength) : 1900);
+        for (let i = 0; i < parts.length; i++) {
+          const sent = await cronSendPart(live.adapter, chatId, parts[i], route);
+          if (sent && sent.ok === false) throw new Error((sent.error || 'send failed') + (i ? ' (after ' + i + ' of ' + parts.length + ' parts)' : ''));
+        }
+        deliveredTargets.add(target);
+        if (job.attachToSession) {
+          channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
+          channelStore.appendTurn(job.agentId, 'assistant', chatBody);
+        }
+      } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); return; }
+      // The words landed, so this target is delivered: a file that fails is told to the chat, never retried (a retry
+      // would resend the message), and never silent — the Commander would be waiting for a picture that is not coming.
+      // A Full Access fire may already have put its own files here with channel.send — never the same picture twice.
+      if ((attach.files.length || (named.length && attach.dropped.length)) && !RoutineMedia.filesAlreadySent(runs, target, chatId)) {
+        const files = await RoutineMedia.sendFiles(attach.files, {
+          read: readChannelUpload,
+          send: (item) => typeof live.adapter.sendMedia === 'function'
+            ? live.adapter.sendMedia(chatId, item, route)
+            : Promise.resolve({ ok: false, error: channel + ' cannot carry files' })
+        });
+        for (const f of files.failed) console.warn('[cron] routine ' + job.id + ' file "' + f.path + '" not attached [' + channel + ']: ' + f.error);
+        const missed = files.failed.map(f => f.path).concat(named.length ? attach.dropped : []);
+        if (missed.length) {
+          try { await live.adapter.send(chatId, RoutineMedia.missedNote(missed), route); } catch (e) { failNote('cron.delivery.missedNote', e); }
+        }
       }
-      deliveredTargets.add(target);
-      if (job.attachToSession) {
-        channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
-        channelStore.appendTurn(job.agentId, 'assistant', chatBody);
-      }
-    } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); continue; }
-    // The words landed, so this target is delivered: a file that fails is told to the chat, never retried (a retry
-    // would resend the message), and never silent — the Commander would be waiting for a picture that is not coming.
-    // A Full Access fire may already have put its own files here with channel.send — never the same picture twice.
-    if ((attach.files.length || (named.length && attach.dropped.length)) && !RoutineMedia.filesAlreadySent(runs, target, chatId)) {
-      const files = await RoutineMedia.sendFiles(attach.files, {
-        read: readChannelUpload,
-        send: (item) => typeof live.adapter.sendMedia === 'function'
-          ? live.adapter.sendMedia(chatId, item, route)
-          : Promise.resolve({ ok: false, error: channel + ' cannot carry files' })
-      });
-      for (const f of files.failed) console.warn('[cron] routine ' + job.id + ' file "' + f.path + '" not attached [' + channel + ']: ' + f.error);
-      const missed = files.failed.map(f => f.path).concat(named.length ? attach.dropped : []);
-      if (missed.length) {
-        try { await live.adapter.send(chatId, RoutineMedia.missedNote(missed), route); } catch (e) { failNote('cron.delivery.missedNote', e); }
-      }
-    }
+    });
   }
   return { ok: failed === 0, error: firstError || null, deliveredTargets: Array.from(deliveredTargets) };
 }
@@ -16096,8 +16136,10 @@ function lifecycleArmedSnapshot(now) {
   // scheduler (or an armed one with zero jobs) is honestly not armed: nothing would tick after window close.
   let routines = { armed: false, count: 0, healthy: false, halted: false };
   try {
-    // Completed/paused routines need a live ticker only while a result still awaits delivery.
-    const jobs = Array.isArray(cronJobs) ? cronJobs.filter(job => job && (job.enabled !== false || cronStore.pendingDeliveries(job).length > 0)) : [];
+    // Completed/auto-paused routines need a live ticker only while a result still awaits delivery. A routine the
+    // Commander PAUSED holds its results until resumed (cronStore.deliveriesHeld), so nothing of it would run.
+    const jobs = Array.isArray(cronJobs) ? cronJobs.filter(job => job && (job.enabled !== false ||
+      (!cronStore.deliveriesHeld(job) && cronStore.pendingDeliveries(job).length > 0))) : [];
     // A durable E-STOP halt (cron.halt.json) freezes the timer — a halted scheduler is NOT doing background
     // work, so it must not hold the process alive after window close (same truthfulness rule as night shift).
     const armed = !!cronArmed && !cronHalted && jobs.length > 0;
@@ -16666,7 +16708,7 @@ async function handleCronRun(req, res) {
   let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { res.writeHead(400); return res.end('bad json'); }
   const job = cronStore.getJob(cronJobs, String(body.id || ''));
   if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'no such routine' })); }
-  if (cronStore.pendingDeliveries(job).length >= cronStore.MAX_PENDING_DELIVERIES) {
+  if (cronStore.undeliveredCount(job) >= cronStore.MAX_PENDING_DELIVERIES) {
     res.writeHead(409, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ error: 'delivery backlog is full — reconnect the destination before running again' }));
   }
