@@ -13,7 +13,8 @@
        store refuses to compact: a partial view must never be written back as the whole library;
      • append() is a durable JSONL append, never a rotation;
      • needsCompaction() asks for a rewrite while a legacy .1 archive exists, or once the live file passes
-       compactBytes AND twice its size right after the last rewrite (a large library is not rewritten per append);
+       compactBytes AND twice its size right after the last rewrite (a large library is not rewritten per append),
+       capped at 12 MiB so a downgrade to v0.13.5 (16 MiB read window) still reads the whole file (DOWNGRADE_SAFE_BYTES);
      • rewrite(entries) atomically replaces the live file, then removes the legacy .1 (its records were loaded
        and are part of the rewrite).
 
@@ -24,6 +25,13 @@ const { appendJsonlDurable, tailLines } = require('./logbound.js');
 
 const DEFAULT_COMPACT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_READ_MAX_BYTES = 256 * 1024 * 1024;
+/* ROLLBACK SAFETY: v0.13.5 reads only the last 16 MiB (its LOG_MAX_BYTES) of skills.jsonl and then boot-compacts that
+   partial view, so a live file past 16 MiB loses the skills at its head for good if the Commander downgrades. The
+   hysteresis (2x the last compacted size) alone let an 8 MiB library grow to 16 MiB and a 10 MiB one to 20 MiB, so
+   the threshold is capped at DOWNGRADE_SAFE_BYTES. A library that is itself near or over the cap (nothing can keep that
+   one inside the old window) is compacted once per GROWTH_STEP_BYTES of appends, never on every write. */
+const DOWNGRADE_SAFE_BYTES = 12 * 1024 * 1024;
+const GROWTH_STEP_BYTES = 1024 * 1024;
 
 function makeSkillsIo(deps) {
   const fs = deps.fs, file = deps.file, archive = deps.file + '.1';
@@ -113,7 +121,9 @@ function makeSkillsIo(deps) {
     needsCompaction() {
       if (sizeOf(archive) >= 0) return true;
       const size = sizeOf(file);
-      return size !== null && size > Math.max(compactBytes, compactedSize * 2);
+      let limit = Math.max(compactBytes, compactedSize * 2);
+      if (limit > DOWNGRADE_SAFE_BYTES) limit = Math.max(DOWNGRADE_SAFE_BYTES, compactedSize + GROWTH_STEP_BYTES);
+      return size !== null && size > limit;
     },
     rewrite(entries) {
       const list = Array.isArray(entries) ? entries : [];

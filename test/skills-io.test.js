@@ -20,7 +20,9 @@
      • a usage row carries no `name`, so an older StarNet skips it instead of replacing the skill;
      • the package mirror view() hydrates holds only accepted bytes (a refused edit never reaches SKILL.md), and a use
        repairs a mirror this process has not written from the current record (after a failed write, or a boot);
-     • a large library is not rewritten on every append (hysteresis); a torn row is reported, not silent. */
+     • a large library is not rewritten on every append (hysteresis); a torn row is reported, not silent;
+     • rollback safety: between compactions the live file stays inside v0.13.5's 16 MiB read window (a library that is
+       itself over the 12 MiB cap is compacted once per growth step, never per write). */
 'use strict';
 const A = require('./_assert.js');
 const fs = require('fs');
@@ -456,6 +458,45 @@ const seed = (s) => { for (const n of names) A.ok(s.write({ agentId: 'a', name: 
   A.ok(/const skillsIo = makeSkillsIo\(\{ fs, file: SKILLS_FILE/.test(src), 'index.js builds skillsIo with makeSkillsIo');
   A.ok(!/(rotateJsonl|readBoundedJsonl|loadBounded|rotateIfLarge)\(\s*(\{[^}]*\}\s*,\s*)?SKILLS_FILE/.test(src), 'SKILLS_FILE is never rotated or tail-read');
   A.ok(/skillStore\.markUsed\(/.test(src), 'the run end still records uses');
+}
+
+// ---- 12. rollback safety: the live file never outgrows v0.13.5's read window between compactions ----
+// v0.13.5 reads only the last 16 MiB (LOG_MAX_BYTES) of skills.jsonl and boot-compacts that partial view, so a live
+// file past 16 MiB loses the skills at its head for good if the Commander downgrades. Real defaults (the host's
+// SKILLS_COMPACT_BYTES is 4 MiB), sizes from an injected fs so no 16 MiB file is written.
+{
+  const MiB = 1024 * 1024, WINDOW_0135 = 16 * MiB;
+  const sizes = {};
+  const fakeFs = {
+    statSync(f) { if (sizes[f] == null) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return { size: sizes[f] }; },
+    unlinkSync() { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
+  };
+  const live = path.join(tmp, 'window', 'skills.jsonl');
+  const mk = () => makeSkillsIo({ fs: fakeFs, file: live, writeDurable() {}, compactBytes: 4 * MiB });
+  const compactTo = (io, bytes) => { io.rewrite([{ name: 'x', body: 'y'.repeat(Math.max(0, bytes - 23)) }]); sizes[live] = bytes; };
+  // the largest live size that does NOT ask for a compaction, after a compaction down to `lib` bytes
+  const ceiling = (lib) => {
+    const io = mk(); compactTo(io, lib);
+    let lo = lib, hi = 64 * MiB;
+    while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); sizes[live] = mid; if (io.needsCompaction()) hi = mid; else lo = mid; }
+    return lo;
+  };
+  for (const lib of [0.5, 2, 5, 6, 8, 10, 11, 12].map(x => Math.round(x * MiB))) {
+    A.ok(ceiling(lib) < WINDOW_0135, 'window: a ' + (lib / MiB) + ' MiB library is compacted before the live file reaches 0.13.5\'s 16 MiB window (ceiling ' + (ceiling(lib) / MiB).toFixed(2) + ' MiB)');
+  }
+  A.eq(ceiling(1 * MiB), 4 * MiB, 'window: a small library keeps the 4 MiB threshold');
+  A.eq(ceiling(3 * MiB), 6 * MiB, 'window: hysteresis (2x the compacted size) is unchanged below the cap');
+  // a library that is itself over the cap: compacted once per growth step, never on every write
+  for (const lib of [12.5, 13, 20].map(x => Math.round(x * MiB))) {
+    const io = mk(); compactTo(io, lib);
+    A.ok(!io.needsCompaction(), 'window: right after compacting a ' + (lib / MiB) + ' MiB library, the next write does not compact again');
+    sizes[live] = lib + 64 * 1024;
+    A.ok(!io.needsCompaction(), 'window: nor after 64 KiB of appends (' + (lib / MiB) + ' MiB library)');
+    A.ok(ceiling(lib) - lib >= 512 * 1024 && ceiling(lib) - lib <= 4 * MiB, 'window: a ' + (lib / MiB) + ' MiB library is re-compacted after a bounded growth step (' + ((ceiling(lib) - lib) / MiB).toFixed(2) + ' MiB)');
+  }
+  // after a restart (no compaction yet in this process) the boot threshold is the plain 4 MiB
+  const fresh = mk(); sizes[live] = 4 * MiB + 1;
+  A.ok(fresh.needsCompaction(), 'window: a fresh boot compacts a live file past 4 MiB');
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
