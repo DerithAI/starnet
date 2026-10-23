@@ -494,7 +494,7 @@
     // HTTP status from "sidecar HTTP <status>" or an explicit status arg
     const s = status || (low.match(/\b(?:http|status)\s+(\d{3})\b/) ? Number(RegExp.$1) : null);
     // an image refused by a model that cannot see it, whatever status carried it (errorClass.js reads it the same way)
-    if (IMAGE_INPUT_RE.test(low) && !(s === 429 || s === 408 || (s >= 500 && s < 600))) return 'model_not_found';
+    if (IMAGE_INPUT_RE.test(low) && s !== 401 && !(s === 429 || s === 408 || (s >= 500 && s < 600))) return 'model_not_found';
     if (s) {
       // OUR OWN sidecar's token gate (crash+respawn → stale X-StarNet-Token): a "sidecar HTTP 403" throw or a
       // "forbidden token/origin/host" body means reload for the fresh boot token — never the provider-key door.

@@ -373,7 +373,8 @@
     if (!transportStatus && /content[ _]?policy|moderation|flagged|safety|content_filter/.test(low)) return 'content_policy_blocked';
     // 1a. an image sent to a model that cannot see it: whatever status carried it (OpenRouter 404, a vendor 400),
     //     the same request is refused again — never a malformed request to fold or a key to rotate
-    if (!transportStatus && IMAGE_INPUT_REFUSED_RE.test(low)) return 'model_not_found';
+    //     (a 401 is always our credential: it stays auth whatever its text says)
+    if (!transportStatus && status !== 401 && IMAGE_INPUT_REFUSED_RE.test(low)) return 'model_not_found';
     // 1b. OUTPUT cap — BEFORE the overflow patterns, whose `maximum.*tokens` matches this refusal's wording and
     //     used to fold history for nothing, retry the identical max_tokens, and kill the run.
     if ((!status || status === 400 || status === 422) && parseOutputCap(low) > 0) return 'output_cap';
