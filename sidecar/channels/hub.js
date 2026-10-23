@@ -1860,7 +1860,16 @@
       // through the SAME deliver() path so chunking/limits apply. Channel-agnostic: this lives in the hub, so
       // Telegram/Discord/any future adapter get identical behavior.
       // A FORWARDED "/away on" is a third party's words, not the Commander's command — never parse it as one.
-      const parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+      let parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+      /* THE COMMANDER'S OWN /allow OR /deny KEEPS RUNNING IN A DM. Both became built-ins in 0.14.0 and the built-ins are
+         parsed first, so a command of that name the Commander defined earlier silently stopped running over messaging
+         ("/allow and /deny are for groups"). The built-in means something only in a group; in a direct chat theirs
+         runs, exactly as before (the user-command path below, owner-gated the same way). */
+      if (parsed && (parsed.cmd === 'allow' || parsed.cmd === 'deny') && String(msg.chatType || '') !== 'group' && runSlashFn) {
+        let theirs = false;
+        try { theirs = (userCommandNames() || []).some(n => String(n).toLowerCase() === parsed.cmd); } catch (e) { failNote('channels.hub.userCommandNames', e); }
+        if (theirs) parsed = null;
+      }
       // "/deny @spammer" in a group is another bot's command (a moderation bot's), never ours: ours takes no argument
       // unless it names this bot ("/deny@thisbot …", which the adapter has already checked is us). Taken as ours it
       // admitted or closed the owner's station for a room. Silent — answering would put us in their conversation.
