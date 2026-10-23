@@ -9942,7 +9942,9 @@ const Chat = (() => {
         const models = Array.isArray(j.byModel) ? j.byModel.slice(0, 3).map(m => (m.model || '?') + ' (' + (m.spendLabel && !(m.usd > 0) ? m.spendLabel : U.usd(m.usd || 0) + (m.spendLabel ? ', ' + m.spendLabel : '')) + ')') : [];
         const succ = (j.successPct == null) ? '' : ', ' + j.successPct + '% completed';
         return localLine('Insights (lifetime run history for ' + agentId + '): ' + (j.totalRuns || 0) + ' run' + (j.totalRuns === 1 ? '' : 's')
-          + ', ' + U.usd(j.totalUsd || 0) + (j.unpricedRuns ? ' (+ ' + j.unpricedRuns + ' run' + (j.unpricedRuns === 1 ? '' : 's') + ' with no published price)' : '') + ', ' + (j.totalTokens || 0) + ' tokens'
+          + ', ' + (j.usageMissingRuns ? 'at least ' : '') + U.usd(j.totalUsd || 0) + (j.unpricedRuns ? ' (+ ' + j.unpricedRuns + ' run' + (j.unpricedRuns === 1 ? '' : 's') + ' with no published price)' : '')
+          + (j.usageMissingRuns ? ' (' + j.usageMissingRuns + ' run' + (j.usageMissingRuns === 1 ? '' : 's') + ' stopped mid-answer before usage arrived)' : '')
+          + (j.spendUnknownRuns ? ' (+ ' + j.spendUnknownRuns + ' run' + (j.spendUnknownRuns === 1 ? '' : 's') + ' with spend unknown)' : '') + ', ' + (j.totalTokens || 0) + ' tokens'
           + (j.avgUsdPerRun ? ', ' + U.usd(j.avgUsdPerRun) + '/run' : '') + succ
           + (models.length ? '. Top models: ' + models.join(', ') : '') + '.');
       }
