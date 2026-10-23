@@ -21081,8 +21081,10 @@ async function runOnceCore(o) {
     if (!auxVisionProvider) throw new Error('session provider not ready');
     // a provider that cannot take an image would answer about a picture it never saw (QA 2026-10-02; Claude Code can since 10-08).
     // supportsImages(model) is false only when the catalog says this model is text-only (or it refused an image); null =
-    // unknown, which still tries — the adapters strip images only for a known text-only model (vision-input 2026-10-23)
-    if (typeof auxVisionProvider.supportsImages === 'function' && auxVisionProvider.supportsImages(model) === false) throw new Error('no vision route: this agent\'s model cannot see images — connect an OpenRouter key in SETTINGS › AI & MODELS for image analysis');
+    // unknown, which still tries — the adapters strip images only for a known text-only model (vision-input 2026-10-23).
+    // The fix it names works on every route: "connect an OpenRouter key" could not (a StarNet-credits run's studio route is
+    // the managed link whatever station key exists — image-task resolveRoute — and an OpenRouter run has its key already).
+    if (typeof auxVisionProvider.supportsImages === 'function' && auxVisionProvider.supportsImages(model) === false) throw new Error('no vision route: this agent\'s model cannot see images — the Commander can pick a vision model in the COMMS model dock');
     const ac = new AbortController();
     const t = setTimeout(() => { try { ac.abort(); } catch (_) {} }, Math.max(5000, Number(req && req.timeoutMs) || 55000));
     // the RUN's stop ends this call too (it ran on for up to 55 s after STOP), and its usage is booked like any media
@@ -21108,6 +21110,10 @@ async function runOnceCore(o) {
   const imageTools = makeImageTools({ openrouter: studioRoute.ok ? { apiKey: studioRoute.key, model, baseUrl: studioRoute.baseUrl, provider: studioRoute.provider, protocol: studioRoute.protocol,
     getToken: studioRoute.protocol === 'codex-responses' ? ensureCodexAccessToken : undefined,
     renewToken: studioRoute.protocol === 'codex-responses' ? forceRefreshCodexAccessToken : undefined } : null, fsp, pathMod: path, root: WORKSPACES, imageModel: String(ENV('IMAGE_MODEL') || '').trim() || undefined, auxVision: auxVisionCall, signal, onUsage: recordMediaUsage,
+    // vision-input 2026-10-23: the run's own model is the studio route's vision model only while its catalog does not call
+    // it text-only; on false, image.js asks its default vision model instead of sending the picture to a model that
+    // answers 404 "No endpoints found that support image input" on every image_analyze / browser.vision call
+    runModelSeesImages: () => ((auxVisionProvider && typeof auxVisionProvider.supportsImages === 'function') ? auxVisionProvider.supportsImages(model) : null),
     // #118: the host list above (plan route only) and the run's own model, read at tool time (a Codex run only)
     codexHostModels: studioRoute.protocol === 'codex-responses' ? codexHostModels : undefined, codexRunModel: () => (usingCodex ? model : ''),
     // issue #77: the SAME path-trust guard fs.* gets (runPathTrust is bound below; this thunk only runs at tool time), so a
