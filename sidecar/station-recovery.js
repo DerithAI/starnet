@@ -243,6 +243,41 @@ function walkFiles(root, fs, path, unreadable) {
   return out;
 }
 
+/* THE PRE-UPDATE BYTE BUDGET (update-path 10-23). A bundle is ONE JSON string, every payload base64 inside it, and V8 caps
+   a string at ~536.8M chars: a station holding more than ~400 MB of included files threw RangeError in JSON.stringify,
+   so every in-app update stopped at "no verified recovery point" with no way past it. capture({ maxBytes }) — passed by
+   the pre-update preparation only; an explicit export still takes everything — fills the budget in priority order and
+   NEVER reads a file that does not fit:
+     0  the saves + the roster (the station itself)
+     1  every other station store: top-level files, dot-state (.run-journal, .spend-pending …), station directories
+        (channels, connectors, transcript-history-v2, skill-packages …)
+     2  agents' own workspace files, shadow-Git checkpoints and archived workspaces
+   smallest first inside a tier, so what is left out is the LARGEST files of the lowest tier. Each one is listed in
+   report.skipped as BUDGET_SKIP_REASON with its size: the bundle never implies a byte-complete station. */
+const BUDGET_SKIP_REASON = 'too large for the pre-update recovery point';
+const STATION_DIRS = new Set(require('./workspace-reserved.js').STATION_DIRS.map(x => x.toLowerCase()));
+function budgetTier(rel) {
+  const p = slash(rel).toLowerCase();
+  if (p === 'agent.roster.json' || /^[^/]+\.save\.json$/.test(p)) return 0;
+  if (p.indexOf('/') < 0) return 1;
+  const top = p.split('/')[0];
+  if (top === '.checkpoints' || top === '_archive') return 2;
+  if (top.charAt(0) === '.' || STATION_DIRS.has(top)) return 1;
+  return 2;
+}
+// the set of rels that do NOT fit `maxBytes` (sizes from the walk's lstat; nothing is read here)
+function budgetOverflow(items, maxBytes) {
+  const size = it => (it.st && Number(it.st.size)) || 0;
+  const order = items.slice().sort((a, b) => budgetTier(a.rel) - budgetTier(b.rel) || size(a) - size(b) || String(a.rel).localeCompare(String(b.rel)));
+  const over = new Set();
+  let used = 0;
+  for (const it of order) {
+    const n = size(it);
+    if (used + n <= maxBytes) used += n; else over.add(it.rel);
+  }
+  return { over, order };
+}
+
 function completeness(files, browser) {
   const have = new Set();
   for (const f of files) for (const c of f.categories || []) have.add(c);
@@ -260,13 +295,31 @@ function capture(opts) {
   const files = [];
   const skipped = [];
   const reauthentication = [];
-  for (const item of walkFiles(root, fs, path, skipped)) {
-    const policy = classifyPolicy(item.rel, item.st);
+  // the browser-owned state rides in the same JSON string, so it is taken out of the file budget first
+  const browserStore = isObj(o.browserStore) ? o.browserStore : {};
+  const maxBytes = Number.isFinite(o.maxBytes) && o.maxBytes >= 0 ? o.maxBytes : null;
+  let budget = maxBytes;
+  if (budget != null) {
+    for (const key of Object.keys(browserStore)) budget -= Buffer.byteLength(String(browserStore[key]), 'utf8');
+    budget = Math.max(0, budget);
+  }
+  let walked = walkFiles(root, fs, path, skipped).map(item => Object.assign(item, { policy: classifyPolicy(item.rel, item.st) }));
+  let over = null;
+  if (budget != null) {
+    const plan = budgetOverflow(walked.filter(item => item.policy.action !== 'skip'), budget);
+    over = plan.over;
+    // read in priority order, so the guard below (a .bak promotion can differ in size) only ever drops the LOWER rows
+    walked = walked.filter(item => item.policy.action === 'skip').concat(plan.order);
+  }
+  let used = 0;
+  for (const item of walked) {
+    const policy = item.policy;
     if (policy.action === 'skip') {
       skipped.push({ path: item.rel, reason: policy.reason });
       if (policy.reauth) reauthentication.push(policy.reauth);
       continue;
     }
+    if (over && over.has(item.rel)) { skipped.push({ path: item.rel, reason: BUDGET_SKIP_REASON, bytes: Number(item.st && item.st.size) || 0 }); continue; }
     let data;
     try { data = fs.readFileSync(item.abs); }
     catch (e) {
@@ -307,11 +360,12 @@ function capture(opts) {
       redactedFields = clean.redacted;
       reauthentication.push(...clean.reauthentication);
     }
+    if (budget != null && used + data.length > budget) { skipped.push({ path: item.rel, reason: BUDGET_SKIP_REASON, bytes: data.length }); continue; }
+    used += data.length;
     files.push({ path: item.rel, bytes: data.length, sha256: sha256(data), encoding: 'base64', data: data.toString('base64'), categories: categoriesFor(item.rel), redactedFields });
   }
 
   const browser = [];
-  const browserStore = isObj(o.browserStore) ? o.browserStore : {};
   for (const key of Object.keys(browserStore).sort()) {
     if (!/^(?:starnet|skynet)\./i.test(key)) { skipped.push({ path: 'browser:' + key, reason: 'foreign browser key' }); continue; }
     if (browserKeyIsSecret(key)) {
@@ -500,8 +554,8 @@ function semanticFingerprint(bundle) {
 }
 
 module.exports = {
-  SCHEMA, VERSION, REQUIRED_CATEGORIES,
+  SCHEMA, VERSION, REQUIRED_CATEGORIES, BUDGET_SKIP_REASON,
   capture, validate, writeBundleAtomic, readBundle, restore, semanticFingerprint,
   browserKeyIsSecret, categoriesFor,
-  _internals: { sanitizeManagedJson, classifyPolicy, completeness, sha256 }
+  _internals: { sanitizeManagedJson, classifyPolicy, completeness, sha256, budgetTier }
 };

@@ -1,6 +1,12 @@
 /* sidecar/update-preparation.js — fail-closed pre-installer mutation barrier + verified recovery point. */
 'use strict';
 
+/* A pre-update bundle is one JSON string (every payload base64 inside it); V8 caps a string at ~536.8M chars, which a
+   station with ~400 MB of included files used to exceed, so the in-app update could never pass this step. 256 MiB of
+   files is ~358M base64 chars: room under the cap for the JSON framing, the browser state and the skipped list. What
+   does not fit is listed in the bundle (report.skipped) and in the receipt (tooLarge). */
+const SNAPSHOT_BUDGET_BYTES = 256 * 1024 * 1024;
+
 function makeUpdatePreparation(deps) {
   const d = deps || {};
   const fs = d.fs;
@@ -16,6 +22,7 @@ function makeUpdatePreparation(deps) {
   const appVersion = typeof d.appVersion === 'function' ? d.appVersion : function () { return 'unknown'; };
   const onFreeze = typeof d.onFreeze === 'function' ? d.onFreeze : function () {};
   const onThaw = typeof d.onThaw === 'function' ? d.onThaw : function () {};
+  const snapshotBudget = Number.isFinite(d.snapshotBudgetBytes) && d.snapshotBudgetBytes >= 0 ? d.snapshotBudgetBytes : SNAPSHOT_BUDGET_BYTES;
   if (!fs || !path || !recovery || typeof recovery.capture !== 'function' || typeof writeDurable !== 'function') {
     throw new Error('update-preparation: fs, path, recovery, and writeDurable are required');
   }
@@ -54,6 +61,18 @@ function makeUpdatePreparation(deps) {
     return true;
   }
 
+  // { files, bytes, paths } of what the budget left out; the paths list is capped (a node_modules can be 100k files) and
+  // the full list stays inside the bundle's report.skipped
+  const TOO_LARGE = String(recovery.BUDGET_SKIP_REASON || 'too large for the pre-update recovery point');
+  function tooLargeSummary(bundle) {
+    const rows = (bundle && bundle.report && Array.isArray(bundle.report.skipped) ? bundle.report.skipped : []).filter(s => s && s.reason === TOO_LARGE);
+    rows.sort((a, b) => (Number(b.bytes) || 0) - (Number(a.bytes) || 0));
+    return {
+      reason: TOO_LARGE, files: rows.length, bytes: rows.reduce((n, s) => n + (Number(s.bytes) || 0), 0),
+      paths: rows.slice(0, 200).map(s => ({ path: String(s.path), bytes: Number(s.bytes) || 0 }))
+    };
+  }
+
   function safeTarget(value) { return String(value || 'unknown').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80) || 'unknown'; }
 
   async function prepare(opts) {
@@ -87,14 +106,16 @@ function makeUpdatePreparation(deps) {
       const id = String(createdAt) + '-' + String(newId()).replace(/[^A-Za-z0-9_-]+/g, '').slice(0, 80);
       const dir = path.join(path.dirname(workspaceRoot), 'update-snapshots');
       const bundleFile = path.join(dir, 'pre-' + safeTarget(o.targetVersion) + '-' + id + '.starnet-backup.json');
-      const bundle = recovery.capture({
+      let bundle = recovery.capture({
         workspaceRoot: workspaceRoot,
         browserStore: o.browserStore && typeof o.browserStore === 'object' ? o.browserStore : {},
         now: createdAt,
         appVersion: appVersion(),
-        lastCompletedMutation: 'http:' + completedMutations
+        lastCompletedMutation: 'http:' + completedMutations,
+        maxBytes: snapshotBudget
       });
       const written = recovery.writeBundleAtomic({ bundle: bundle, file: bundleFile, allowIncomplete: true });
+      bundle = null;   // the read-back below holds a second whole copy: never keep both alive at once
       const readBack = recovery.readBundle(bundleFile);
       const fingerprint = recovery.semanticFingerprint(readBack);
       if (readBack.manifestSha256 !== written.manifestSha256) throw new Error('snapshot manifest read-back mismatch');
@@ -110,6 +131,8 @@ function makeUpdatePreparation(deps) {
         requirements: readBack.report && readBack.report.requirements || [],
         // entries the capture could not read (#91: vanished/locked/unresolvable) — the receipt never implies a byte-complete station
         unreadable: (readBack.report && Array.isArray(readBack.report.skipped) ? readBack.report.skipped : []).filter(s => /^unreadable: /.test(String(s && s.reason))),
+        // files left out because the recovery point is one bounded JSON string (largest agent workspace files first)
+        tooLarge: tooLargeSummary(readBack),
         browserKeys: Array.isArray(readBack.browser) ? readBack.browser.length : 0
       };
       writeDurable({ fs: fs, path: path }, receiptFile, JSON.stringify(nextReceipt, null, 2) + '\n');
@@ -139,4 +162,4 @@ function makeUpdatePreparation(deps) {
   return { beginRequest: beginRequest, prepare: prepare, cancel: cancel, status: status, isFrozen: function () { return frozen; } };
 }
 
-module.exports = { makeUpdatePreparation: makeUpdatePreparation };
+module.exports = { makeUpdatePreparation: makeUpdatePreparation, SNAPSHOT_BUDGET_BYTES: SNAPSHOT_BUDGET_BYTES };
