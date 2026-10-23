@@ -32,6 +32,29 @@ try {
     const r = spawnSync('sh', [path.join(b, 'starnet'), '--version'], { encoding: 'utf8' });
     A.eq((r.stdout || '').trim(), name + ' node: starnet.js --version', name + ': the launcher runs the bundle\'s own node, arguments passed through' + (r.stderr ? ' (' + r.stderr.trim() + ')' : ''));
   }
+  /* THROUGH A LINK — the way a terminal actually reaches it on a Mac: sidecar/cli-link.js puts a SYMLINK at
+     ~/.local/bin/starnet → StarNet.app/Contents/Resources/bin/starnet, and a PATH lookup hands the launcher the LINK's
+     path as $0. The launcher must follow it to the bundle (an absolute link, a relative one, and a link to a link), or
+     it looks for node beside ~/.local/bin and dies with "node: not found". Real `ln -s` on macOS/Linux; on Windows Git's
+     sh makes MSYS symlinks (winsymlinks:sys — no admin rights needed), which `[ -h ]` and readlink see the same way. */
+  const mac = path.join(root, 'mac', layouts.mac[0], 'starnet');
+  const home = path.join(root, 'home', '.local', 'bin');
+  fs.mkdirSync(home, { recursive: true });
+  const links = [
+    ['absolute link', 'starnet', mac],
+    ['relative link', 'starnet-rel', path.relative(home, mac).split(path.sep).join('/')],
+    ['link to a link', 'starnet-chain', 'starnet']
+  ];
+  const lnEnv = Object.assign({}, process.env, { MSYS: 'winsymlinks:sys' });
+  let linked = 0;
+  for (const [what, name, target] of links) {
+    const ln = spawnSync('sh', ['-c', 'cd "$1" && ln -s "$2" "$3" && [ -h "$3" ]', 'sh', home, target, name], { encoding: 'utf8', env: lnEnv });
+    if (ln.status !== 0) { console.log('cli-launcher.test: cannot make a symlink here (' + what + ') — that case skipped: ' + String(ln.stderr || '').trim()); continue; }
+    linked++;
+    const r = spawnSync('sh', [path.join(home, name), '-p', 'hi'], { encoding: 'utf8' });
+    A.eq((r.stdout || '').trim(), 'mac node: starnet.js -p', what + ' in ~/.local/bin: the launcher follows it to the app bundle and runs ITS node' + (r.stderr ? ' (' + r.stderr.trim() + ')' : ''));
+  }
+  if (!linked) console.log('cli-launcher.test: no symlinks on this machine — the link cases were skipped');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
