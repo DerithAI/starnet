@@ -1895,7 +1895,7 @@
         if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + deskCmd.name), '', 'command'); return; }
         let r;
         try { r = await runSlashFn(deskCmd.line, { agentId: currentBoundAgent(chatId, boundAgentId, sec), ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec }); }
-        catch (e) { try { console.error('[' + channel + '] desktop command threw:', (e && e.message) || e); } catch (_) {} r = null; }
+        catch (e) { failNote('channels.hub.desktopCommand.run', e); r = null; }
         const body = (r && Array.isArray(r.lines) && r.lines.length)
           ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
           : String((r && r.text) || '');
