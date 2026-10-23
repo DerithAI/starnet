@@ -20994,12 +20994,15 @@ async function runOnceCore(o) {
   // them below. skill.view resolves library:<slug> against exactly this list, so a recipe the index did not
   // offer (disabled, or its gear absent) is never served either.
   let runRecipes = [];
-  const openrouterToolKey = providerId === 'openrouter' ? runKey : runtimeKey;
+  // #146: the station's OpenRouter key is whichever one the station holds (desktop keychain push, operator env var, or
+  // the key a browser page saved — engine-credential.js), the same resolver the station OpenAI key below uses
+  const stationOpenRouterKey = providerRuntimeKey('openrouter', '');
+  const openrouterToolKey = providerId === 'openrouter' ? runKey : stationOpenRouterKey;
   const studioRoute = ImageTask.resolveRoute({
     providerId: providerUsesCodex(providerId) ? 'codex' : providerId, runKey, providerBaseUrl: baseUrl,
     managedKey: providerRuntimeKey('starnet', ''),
     managedBaseUrl: providerRuntimeBaseUrl('starnet', ''),
-    stationOpenRouterKey: runtimeKey,
+    stationOpenRouterKey,
     stationOpenRouterBaseUrl: providerRuntimeBaseUrl('openrouter', ''),
     stationOpenAIKey: providerRuntimeKey('openai', ''),
     stationOpenAIBaseUrl: providerRuntimeBaseUrl('openai', ''),
