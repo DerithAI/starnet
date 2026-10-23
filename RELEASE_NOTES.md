@@ -2,7 +2,7 @@
 
 **Before you update:** save a station backup first (SETTINGS › APP & BACKUP › STATION BACKUP). If agents are working when you install, choose WAIT FOR AGENTS.
 
-The lighter, sharper update. StarNet now uses a fraction of the CPU it did: an idle station draws half as often while nothing on screen moves, and the background work that ran every few seconds is nearly gone. Agents got a round of fixes for the things that made them look worse than the model behind them. The QUEST LOG becomes a battle pass, StarNet comes to the terminal with its own CLI, and there is a long list of fixes.
+The lighter, sharper update. StarNet does far less work you never see: the background work that ran every few seconds is nearly gone, pulsing lights no longer redraw the whole window at full speed, and a station where nothing moves draws half as often. Agents got a round of fixes for the things that made them look worse than the model behind them. The QUEST LOG becomes a battle pass, StarNet comes to the terminal with its own CLI, and there is a long list of fixes.
 
 ## Lighter on your PC
 
@@ -34,6 +34,7 @@ The lighter, sharper update. StarNet now uses a fraction of the CPU it did: an i
 
 - **The QUEST LOG is a battle pass:** an ASCII tier track, rank titles, a daily streak, a season and weekly challenges aimed at your real goal.
 - **StarNet in the terminal.** `starnet` opens a dashboard of your station: your crew, live runs, approvals with an always-allow key, slash commands and your skills, and it works in the folder you launched it from (asking first if that folder isn't trusted). `starnet -p "…"` runs one task headlessly, now with the agent's full tools.
+- **The CLI works with your mouse:** click an agent to open its chat, and move between STAT, CREW, COMMS, WORK and SKILLS from the tab line.
 - **The CLI has the station's terminal look:** a tab line under the logo that shows where you are, your crew grouped as NEEDS YOU, WORKING and STANDING BY, and a stat bar along the bottom with your station's level and XP, the crew, spend and the clock.
 - **Agents can show you pictures in COMMS.** An image an agent made or found appears as the picture, not a link.
 - **Scheduled routines can make images** when you turn on ▣ ALLOW IMAGES, and a chat-bound routine's reply carries its images and files to Telegram.
@@ -45,6 +46,8 @@ The lighter, sharper update. StarNet now uses a fraction of the CPU it did: an i
 
 ## Fixes
 
+- With many conversations waiting on approvals at once, Approve/Deny, new runs and NEEDS YOU no longer stall.
+- BUILD only lights up for a station gap you haven't seen yet, and SESSIONS and PROJECTS switch cleanly (no phantom + key, readable paths).
 - A new chat's first message runs in that chat and survives a restart.
 - If StarNet crashes while answering a phone message, it doesn't repeat what the agent already did; it tells you the run was interrupted.
 - Away autonomy you chose at setup acts on what you told it, instead of waiting for runs first.
