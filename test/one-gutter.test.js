@@ -51,20 +51,29 @@ A.ok(/\.ws-needs \.ny-panel \{[^}]*margin: 0 10px 6px; margin-right: max\(0px, 1
 /* ---- 2. the SESSIONS / PROJECTS strip and its + key ---- */
 const head = rule(glass, P + '#left .ws-head');
 A.ok(/padding: 14px var\(--rail-gut-u, 10px\) 0/.test(head || ''), 'the strip\'s rule ends on the rail\'s gutter at every TEXT SIZE');
-A.ok(/flex: 0 0 var\(--rail-gut-u, 10px\)/.test(rule(glass, P + '#left .ws-head .ws-view::before') || ''), 'the first tab starts on the content line, 10px in from the rule\'s end');
+A.eq(decl(rule(glass, P + '#left .ws-head .ws-view::before'), 'content'), 'none', 'no stub-and-tick before the first tab: it starts on the cards\' left edge (Andrew 10-23 circled it)');
 const tab = rule(glass, P + '#left .ws-head .ws-tab'), key = rule(glass, P + '#left .ws-head :is(#ws-new, #ws-addproject)');
 const acts = rule(glass, P + '#left .ws-head .ws-head-acts');
 A.eq(decl(key, 'height'), decl(tab, 'height'), '+ NEW / + ADD is the tabs\' own height (it was 26px beside their 32px)');
-A.eq([decl(acts, 'align-items'), /padding: 0 var\(--rail-gut-u, 10px\) 0 10px/.test(acts || ''), decl(key, 'margin-bottom')], ['flex-end', true, '-1px'],
-  'the key stands on the line (no 5px below it) with its bottom edge laid on the rule, its right edge on the content line');
+A.eq([decl(acts, 'align-items'), decl(acts, 'padding'), decl(acts, 'background'), decl(key, 'margin-bottom')], ['flex-end', '0 0 0 10px', 'none', '-1px'],
+  'the key stands on the line with its bottom edge laid on the rule and ends on the cards\' right edge, no end tick after it');
+A.ok(decl(tab, 'border-bottom-width') === '0' && /--tab-rule: linear-gradient\(var\(--pip-line\), var\(--pip-line\)\) left bottom \/ 100% 1px no-repeat border-box/.test(tab || '') && decl(tab, 'background') === 'var(--tab-rule)',
+  'a resting tab draws its stretch of the rule as a line across its whole box (a bottom border beside transparent sides notched every tab edge)');
+A.ok(!/margin-right: -1px/.test(rule(glass, P + '#left .ws-head .ws-view::after') || ''), 'the rule\'s pieces meet edge to edge (an overlap doubled the translucent line into a bright dot)');
 A.ok(/@container pip-tabs \(max-width: 330px\) \{[\s\S]*?:is\(#ws-new, #ws-addproject\):not\(\[hidden\]\) \{\s*font-size: 0 !important; letter-spacing: 0;/.test(glass),
   'the square + key\'s hidden label spaces nothing (its 1.6px tracking pushed the + 4px left of centre)');
 A.ok(/@media \(max-width: 1440px\) \{\s*body\.glass-demo:not\(\.hud-mode\) #screen-game #left \.ws-head #ws-new \{ letter-spacing: 0; \}/.test(glass), '…and so does the laptop window\'s + key at any rail width');
-A.ok(/@container pip-tabs \(max-width: 205px\) \{[^}]*\}[^}]*\.ws-view::before \{ flex-basis: 0; \}\s*body[^{]*\.ws-head-acts \{ padding-right: 0; \}/.test(glass),
-  'on the narrowest strip the first tab and the key go flush to the rule\'s ends, on the cards\' edges');
 const h3 = rule(glass, P + '#left > h3');
-A.ok(/padding-left: calc\(20px \/ var\(--sn-unzoom, 1\)\); padding-right: var\(--rail-gut-u\)/.test(h3 || '') && (h3.match(/var\(--rail-gut-u\)/g) || []).length >= 5,
+A.ok(/padding-left: calc\(20px \/ var\(--sn-unzoom, 1\)\); padding-right: var\(--rail-gut-u\)/.test(h3 || '') && /left var\(--rail-gut-u\) bottom 0 \/ calc\(100% - 2 \* var\(--rail-gut-u\)\) 1px no-repeat/.test(h3 || ''),
   'CREW starts on the portraits\' line, its keys and its rule end on the rail\'s gutter');
+A.ok(!/1px 8px no-repeat/.test(h3 || ''), 'the CREW rule is plain: no end ticks rising at either end');
+A.eq([decl(h3, 'display'), decl(rule(glass, P + '#left > h3 .crew-h3-right'), 'grid-row'), decl(rule(glass, P + '#left > h3 #crew-sum'), 'grid-column')], ['grid', '1', '1 / -1'],
+  'on a narrow rail the CREW keys keep the title\'s row and the count line takes the full width (beside the keys it ran under them)');
+A.ok(/@container crew-head \(min-width: 340px\) \{\s*body[^{]*#left > h3 \.crew-h3-right \{ grid-row: 1 \/ span 2; \}\s*body[^{]*#left > h3 #crew-sum \{ grid-column: 1; \}/.test(glass),
+  'where the head has room the keys sit centred beside the title and the count line');
+const hk = rule(glass, P + '#left > h3 .crew-hide');
+A.eq([decl(hk, 'width'), decl(hk, 'height'), decl(hk, 'border-color'), decl(hk, 'background')], ['28px', '28px', decl(key, 'border').replace(/^1px solid /, ''), decl(key, 'background')],
+  'the CREW keys are square and wear the + key\'s own box');
 
 /* ---- 3. the windows: one 10px gutter ---- */
 const W = 'body.glass-demo:not(.hud-mode) #terms ';
@@ -121,5 +130,31 @@ A.ok(/@container rail-search \(max-width: 250px\) \{[\s\S]*?#ws-search::placehol
   'a narrow rail\'s empty search reads "search sessions", not "search sessions + tra" and a flat bar');
 A.ok(!/placeholder="Find an agent…"/.test(read('frontend/index.html')) && !/placeholder="Find an agent…"/.test(read('frontend/app/workflowpanel.js')),
   'no placeholder ends on "…" (VT323 draws it as one flat bar)');
+
+/* ---- 7. the rail's icons (Andrew 10-23: "maybe the little icons could still be slightly cleaner like the + the magnifying
+   glass and the other icon on the top right"): one pixel set, drawn 1:1, centred in its key ---- */
+const icons = rule(glass, P + '#left');
+for (const name of ['lens', 'fold', 'plus', 'close']) {
+  const v = decl(icons, '--pip-ico-' + name) || '';
+  const d = (v.match(/path d='([^']*)'/) || [])[1] || '';
+  A.ok(/viewBox='0 0 14 14' shape-rendering='crispEdges'/.test(v) && !/stroke|circle/.test(v), name + ': a 14px pixel map with crisp edges (a smooth 1.6px stroke was soft at 1x)');
+  // every rect on whole pixels; the ink box centred in the 14px map, so a centred map centres the ink
+  const rects = [...d.matchAll(/M(\d+) (\d+)h(\d+)v(\d+)h-(\d+)z/g)].map(m => m.slice(1, 6).map(Number));
+  A.ok(rects.length > 0 && d.replace(/M\d+ \d+h\d+v\d+h-\d+z/g, '') === '' && rects.every(r => r[4] === r[2]), name + ': drawn only in whole-pixel rects');
+  const x0 = Math.min(...rects.map(r => r[0])), x1 = Math.max(...rects.map(r => r[0] + r[2])), y0 = Math.min(...rects.map(r => r[1])), y1 = Math.max(...rects.map(r => r[1] + r[3]));
+  A.eq([x0, y0], [14 - x1, 14 - y1], name + ': its ink is centred in the map');
+}
+A.eq([decl(rule(glass, P + '#left > h3 #crew-search-toggle'), '--pip-ico'), decl(rule(glass, P + '#left > h3 #crew-hide'), '--pip-ico'),
+  decl(rule(glass, P + '#left .ws-head :is(#ws-new, #ws-addproject)'), '--pip-ico'), decl(rule(glass, P + '#left #crew-search-close'), '--pip-ico')],
+  ['var(--pip-ico-lens)', 'var(--pip-ico-fold)', 'var(--pip-ico-plus)', 'var(--pip-ico-close)'], 'each key draws its icon from the one set');
+const ico = rule(glass, [P + '#left > h3 .crew-hide::before', P + '#left .ws-head :is(#ws-new, #ws-addproject)::before', P + '#left #crew-search-close::before'].join(',\n'));
+A.eq([decl(ico, 'position'), decl(ico, 'inset'), decl(ico, 'margin'), decl(ico, 'width'), decl(ico, 'height'), decl(ico, 'mask')],
+  ['absolute', '0', 'auto', '14px', '14px', 'var(--pip-ico) 0 0 / 14px 14px no-repeat'],
+  'an icon sits dead centre in its key, 1:1 (the hidden glyph text took a grid row under the lens and fold and lifted them 3px)');
+A.eq(decl(rule(glass, [P + '#left > h3 .crew-hide', P + '#left .ws-head :is(#ws-new, #ws-addproject)', P + '#left #crew-search-close'].join(',\n')), 'position'), 'relative', '…of its own key');
+A.ok(!/content: '\+'/.test(glass), 'the + is drawn, never a font glyph of another weight');
+A.eq(decl(rule(glass, P + '#left #crew-search-close'), 'font-size'), '0', 'the agent finder\'s close key hides its fallback-font ✕ for the drawn one');
+A.ok(/#crew-search-close::before \{\s*--ico-px: calc\(14px \* var\(--sn-unzoom, 1\)\);\s*width: var\(--ico-px\); height: var\(--ico-px\); -webkit-mask-size: var\(--ico-px\) var\(--ico-px\); mask-size: var\(--ico-px\) var\(--ico-px\);/.test(glass),
+  'the finder row is zoomed with the rail, so its icon is sized back to 14 device px at every TEXT SIZE');
 
 A.report('one-gutter.test');

@@ -442,7 +442,7 @@ body.glass-demo:not(.hud-mode) #chat-panel .workshop-return .ws-pane { border-ra
   /* at laptop widths + NEW becomes a square + key (its label stays the accessible name; the tooltip names it) */
   /* font-size 0 must beat readability.css's control floor (!important) — this key shows an icon, its label stays the accessible name */
   body.glass-demo:not(.hud-mode) #left .ws-head #ws-new { font-size: 0 !important; min-width: 32px; padding: 4px 0; display: inline-flex; align-items: center; justify-content: center; }
-  body.glass-demo:not(.hud-mode) #left .ws-head #ws-new::before { content: '+'; font-size: 20px; line-height: 1; }
+  body.glass-demo:not(.hud-mode) #left .ws-head #ws-new::before { content: ''; }
 }
 
 /* ============================================================
@@ -1019,12 +1019,40 @@ body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide {
 }
 body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide:is(:hover, :focus-visible),
 body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-search-toggle[aria-expanded="true"] { color: var(--ph-bright); border-color: var(--ph); background: rgba(var(--ph-rgb), .1); }
-body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide::before {
-  content: ''; width: 14px; height: 14px; background: currentColor;
-  -webkit-mask: var(--pip-ico) center / contain no-repeat; mask: var(--pip-ico) center / contain no-repeat;
+
+/* ---- THE RAIL'S ICONS: one pixel set (Andrew 10-23: "maybe the little icons could still be slightly cleaner like the +
+   the magnifying glass and the other icon on the top right"). The lens and fold were smooth 1.6px strokes, soft at 1x; the
+   + was a font glyph of another weight; the agent finder's close key a fallback-font ✕. Now each is a 14px pixel map drawn
+   1:1 (crispEdges, 2px strokes) on the key's own colour, and sits dead centre in its key: placed absolutely, because the
+   key's hidden glyph text took a grid row under the lens and fold and lifted them 3px ---- */
+body.glass-demo:not(.hud-mode) #screen-game #left {
+  --pip-ico-lens: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' shape-rendering='crispEdges'%3E%3Cpath d='M2 0h6v1h-6zM1 1h8v1h-8zM0 2h3v1h-3zM7 2h3v1h-3zM0 3h2v4h-2zM8 3h2v4h-2zM0 7h3v1h-3zM7 7h3v1h-3zM1 8h9v1h-9zM2 9h6v1h-6zM9 9h2v1h-2zM9 10h3v1h-3zM10 11h3v1h-3zM11 12h3v1h-3zM12 13h2v1h-2z'/%3E%3C/svg%3E");
+  --pip-ico-fold: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' shape-rendering='crispEdges'%3E%3Cpath d='M1 1h2v12h-2zM10 2h3v1h-3zM9 3h3v1h-3zM8 4h3v1h-3zM7 5h3v1h-3zM6 6h3v2h-3zM7 8h3v1h-3zM8 9h3v1h-3zM9 10h3v1h-3zM10 11h3v1h-3z'/%3E%3C/svg%3E");
+  --pip-ico-plus: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' shape-rendering='crispEdges'%3E%3Cpath d='M6 2h2v4h-2zM2 6h10v2h-10zM6 8h2v4h-2z'/%3E%3C/svg%3E");
+  --pip-ico-close: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' shape-rendering='crispEdges'%3E%3Cpath d='M2 2h2v1h-2zM10 2h2v1h-2zM3 3h2v1h-2zM9 3h2v1h-2zM4 4h2v1h-2zM8 4h2v1h-2zM5 5h4v1h-4zM6 6h2v2h-2zM5 8h4v1h-4zM4 9h2v1h-2zM8 9h2v1h-2zM3 10h2v1h-2zM9 10h2v1h-2zM2 11h2v1h-2zM10 11h2v1h-2z'/%3E%3C/svg%3E");
 }
-body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-search-toggle { --pip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='black' stroke-width='1.6'%3E%3Ccircle cx='5.8' cy='5.8' r='4.3'/%3E%3Cpath d='M9 9l4.2 4.2'/%3E%3C/svg%3E"); }
-body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-hide { --pip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='black' stroke-width='1.6'%3E%3Cpath d='M1.5 1v12'/%3E%3Cpath d='M10.5 3 6 7l4.5 4'/%3E%3C/svg%3E"); }
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-search-toggle { --pip-ico: var(--pip-ico-lens); }
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-hide { --pip-ico: var(--pip-ico-fold); }
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject) { --pip-ico: var(--pip-ico-plus); }
+body.glass-demo:not(.hud-mode) #screen-game #left #crew-search-close { --pip-ico: var(--pip-ico-close); font-size: 0; }
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide,
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject),
+body.glass-demo:not(.hud-mode) #screen-game #left #crew-search-close { position: relative; }
+/* the + key's ::before exists only where the strip draws it as the square key (its content is set there) */
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide::before,
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject)::before,
+body.glass-demo:not(.hud-mode) #screen-game #left #crew-search-close::before {
+  position: absolute; inset: 0; width: 14px; height: 14px; margin: auto; background: currentColor;
+  -webkit-mask: var(--pip-ico) 0 0 / 14px 14px no-repeat; mask: var(--pip-ico) 0 0 / 14px 14px no-repeat;
+}
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide::before,
+body.glass-demo:not(.hud-mode) #screen-game #left #crew-search-close::before { content: ''; }
+/* the agent finder's row is zoomed with the rail (the CREW head and the strip are not), so its icon is sized back to 14
+   device px: TEXT SIZE 90 resampled the 14px map to an uneven 9px ✕ */
+body.glass-demo:not(.hud-mode) #screen-game #left #crew-search-close::before {
+  --ico-px: calc(14px * var(--sn-unzoom, 1));
+  width: var(--ico-px); height: var(--ico-px); -webkit-mask-size: var(--ico-px) var(--ico-px); mask-size: var(--ico-px) var(--ico-px);
+}
 
 /* ---- the selection: the row is coloured, nothing is drawn around it (Andrew 10-18: first "maybe we overdid it with the
    corner L i kind of think it looks tacky", then "it should be simple as just being colored rather than having an entire
@@ -1065,31 +1093,33 @@ body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog::
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.asking .crew-prog { display: none; }
 @keyframes pip-meter { from { transform: translateX(-45px); } to { transform: translateX(297px); } }
 
-/* ---- SESSIONS / PROJECTS: the Pip-Boy tab strip. One rule runs across the rail on its gutter (end ticks at both ends); the
-   open tab is boxed above it, open at the bottom; + NEW / + ADD is a key the tabs' own height standing on the rule, its top
-   and bottom on theirs (Andrew 10-21 circled the old shorter key floating 6px above the line). The first tab and the key
-   sit on the rail's content line, 10px in from the rule's ends (ONE RAIL GUTTER, below) ---- */
+/* ---- SESSIONS / PROJECTS: the Pip-Boy tab strip. One plain rule runs across the rail on its gutter; the open tab is
+   boxed above it, open at the bottom; + NEW / + ADD is a key the tabs' own height standing on the rule, its top and bottom
+   on theirs (Andrew 10-21 circled the old shorter key floating 6px above the line). The first tab starts and the key ends
+   on the cards' edges, the key on the CREW keys' edge too; no end ticks (Andrew 10-23 circled the stub-and-tick at each
+   end and the key stopping short of them: "needs to look and appear cleaner") ---- */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head {
   background: none; border: 0; box-shadow: none; padding: 14px var(--rail-gut-u, 10px) 0; gap: 0; align-items: flex-end; flex-wrap: nowrap;
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view { display: flex; flex: 1 1 auto; gap: 0; align-items: flex-end; min-width: 0; }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before {
-  content: ''; flex: 0 0 var(--rail-gut-u, 10px); align-self: stretch; border-bottom: 1px solid var(--pip-line);
-  background: linear-gradient(var(--pip-line), var(--pip-line)) left bottom / 1px 7px no-repeat;
-}
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { content: none; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::after { content: ''; flex: 1 1 auto; align-self: stretch; border-bottom: 1px solid var(--pip-line); }
+/* a resting tab draws its stretch of the rule as a 1px background line across its whole border box: a bottom border
+   beside transparent side borders splits its corners diagonally, so each stretch began and ended on a half-faded pixel (a
+   notch in the line at every tab edge). No bottom border on any tab, 1px of padding in its place, so a tab is the same box
+   selected or not */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab {
-  min-height: 0; height: 32px; padding: 0 14px; border: 1px solid transparent; border-bottom-color: var(--pip-line); border-radius: 0;
-  background: none; box-shadow: none; text-shadow: none; letter-spacing: 2px;
+  --tab-rule: linear-gradient(var(--pip-line), var(--pip-line)) left bottom / 100% 1px no-repeat border-box;
+  min-height: 0; height: 32px; padding: 0 14px 1px; border: 1px solid transparent; border-bottom-width: 0; border-radius: 0;
+  background: var(--tab-rule); box-shadow: none; text-shadow: none; letter-spacing: 2px;
 }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab:not(.on):is(:hover, :focus-visible) { opacity: 1; background: rgba(var(--ph-rgb), .05); border-color: transparent; border-bottom-color: var(--pip-line); }
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab:not(.on):is(:hover, :focus-visible) { opacity: 1; background: var(--tab-rule), rgba(var(--ph-rgb), .05); border-color: transparent; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab.on {
-  border-color: var(--ph); border-bottom-color: transparent; color: var(--ph-bright);
+  border-color: var(--ph); color: var(--ph-bright); box-shadow: none;
   background: linear-gradient(rgba(var(--ph-rgb), .13), rgba(var(--ph-rgb), .02)); text-shadow: 0 0 6px rgba(var(--ph-rgb), .45);
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts {
-  display: flex; align-items: flex-end; align-self: stretch; gap: 6px; padding: 0 var(--rail-gut-u, 10px) 0 10px; border-bottom: 1px solid var(--pip-line);
-  background: linear-gradient(var(--pip-line), var(--pip-line)) right bottom / 1px 7px no-repeat;
+  display: flex; align-items: flex-end; align-self: stretch; gap: 6px; padding: 0 0 0 10px; border-bottom: 1px solid var(--pip-line); background: none;
 }
 /* 32px like the tabs; the -1px lays the key's bottom edge ON the rule (the acts' border) instead of a second line above it */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject) {
@@ -1101,20 +1131,16 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addp
    not the window's: tighter tabs and + NEW / + ADD as the square + key, and on the narrowest tighter still */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs / inline-size; }
 @container pip-tabs (max-width: 330px) {
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 7px; letter-spacing: .6px; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 7px 1px; letter-spacing: .6px; }
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding-left: 6px; }
-  /* letter-spacing 0: the hidden "+ NEW" label's 1.6px spacing still took 8px beside the drawn +, pushing it 4px off centre */
+  /* the hidden "+ NEW" label spaces nothing (letter-spacing 0); the drawn + sits in the key's centre (THE RAIL'S ICONS) */
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject):not([hidden]) {
     font-size: 0 !important; letter-spacing: 0; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
   }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject)::before { content: '+'; font-size: 20px; line-height: 1; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject)::before { content: ''; }
 }
-/* the narrowest strip has no room for the content line's 10px: the first tab and the key go flush to the rule's ends,
-   on the edge the cards below share */
 @container pip-tabs (max-width: 205px) {
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 5px; letter-spacing: .2px; }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { flex-basis: 0; }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding-right: 0; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 5px 1px; letter-spacing: .2px; }
 }
 /* a laptop window draws + NEW as the + key at every rail width (the 1440px rule above): its hidden label spaces nothing.
    + ADD takes the same key there, so the key keeps its size when the tab changes */
@@ -1124,7 +1150,7 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs
   body.glass-demo:not(.hud-mode) #left .ws-head #ws-addproject:not([hidden]) {
     font-size: 0 !important; letter-spacing: 0; min-width: 32px; display: inline-flex; align-items: center; justify-content: center;
   }
-  body.glass-demo:not(.hud-mode) #left .ws-head #ws-addproject::before { content: '+'; font-size: 20px; line-height: 1; }
+  body.glass-demo:not(.hud-mode) #left .ws-head #ws-addproject::before { content: ''; }
 }
 /* the SESSIONS / PROJECTS switch (Andrew 10-23: "i saw a UI glitch in sessions and projects"): at a laptop window the
    hidden + NEW still drew in PROJECTS (the 1440px rule's display: inline-flex outranks [hidden]) as a second + box over the
@@ -1146,12 +1172,24 @@ body.glass-demo:not(.hud-mode) #screen-game #crew { scrollbar-gutter: stable; }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row { margin-right: 0; }
 body.glass-demo:not(.hud-mode) #screen-game #left :is(#workstreams, #projects) { padding-left: 4px; padding-right: 0; scrollbar-gutter: stable; }
 body.glass-demo:not(.hud-mode) #screen-game #left :is(#workstreams, #projects) > .ws-row { margin-right: 2px; }
+/* the CREW head (Andrew 10-23: "needs to look and appear cleaner"): its rule plain from edge to edge, no end ticks; the two
+   keys square and in the + key's own box. Where the head has room the keys sit centred beside the title and the count line;
+   on a narrower rail they keep the title's row and the count line takes the full width under them (beside the keys it ran
+   under them) */
 body.glass-demo:not(.hud-mode) #screen-game #left > h3 {
   padding-left: calc(20px / var(--sn-unzoom, 1)); padding-right: var(--rail-gut-u);
-  background:
-    linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / calc(100% - 2 * var(--rail-gut-u)) 1px no-repeat,
-    linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / 1px 8px no-repeat,
-    linear-gradient(var(--pg-line), var(--pg-line)) right var(--rail-gut-u) bottom 0 / 1px 8px no-repeat;
+  background: linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / calc(100% - 2 * var(--rail-gut-u)) 1px no-repeat;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; row-gap: 1px; align-items: center;
+  container: crew-head / inline-size;
+}
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-h3-right { grid-column: 2; grid-row: 1; margin-left: 0; }
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-sum { grid-column: 1 / -1; grid-row: 2; }
+@container crew-head (min-width: 340px) {
+  body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-h3-right { grid-row: 1 / span 2; }
+  body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-sum { grid-column: 1; }
+}
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide {
+  width: 28px; height: 28px; border-color: rgba(var(--ph-rgb), .45); border-radius: 2px; background: rgba(var(--ph-rgb), .06);
 }
 
 /* ---- PROJECTS in the session rows' language (Andrew 10-23: "i saw a UI glitch in sessions and projects"). The project
