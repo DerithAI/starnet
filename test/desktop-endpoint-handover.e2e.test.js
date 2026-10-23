@@ -9,8 +9,13 @@
    `invoke` does what the Rust shell's harness_store_provider_key does: the keychain only when a key is given, then
    POST /api/key with the per-launch IPC token):
      · before the hand-over a CUSTOM routine's Run Now is refused with the #137 sentence (the reproduction)
-     · the boot hand-over pushes each saved endpoint WITHOUT a key (the keychain is never touched) and the routine runs
-     · a sidecar respawn loses it again; the page's "no answer, then an answer" re-hands it and the routine runs
+     · the boot hand-over pushes each endpoint slot WITHOUT a key (the keychain is never touched; a cleared slot goes
+       as a clear) and the routine runs
+     · the station KEEPS what it was handed (.secrets/provider-endpoints.json, main + .bak): a sidecar respawn runs the
+       routine with no page at all, and a routine that came due while the app was closed runs in the launch catch-up,
+       before any window could hand anything over
+     · the page's "no answer, then an answer" re-syncs once; a cleared endpoint stays cleared across a restart and
+       leaves no copy on disk
      · a browser page never uses this path (its endpoint rides the engine-key copy, #89) */
 'use strict';
 const A = require('./_assert.js');
@@ -124,22 +129,60 @@ async function waitFor(fn, label) {
 
     // boot hand-over
     const out = await desk.api.pushDesktopEndpoints();
-    A.eq(out.map(o => o.provider).sort(), ['custom', 'ollama'], 'the boot hand-over pushes every saved endpoint and nothing else');
+    A.eq(out.map(o => o.provider).sort(), ['custom', 'ollama', 'openai'], 'the boot hand-over pushes every endpoint slot this window holds (never starnet)');
     A.ok(out.every(o => o.ok), 'every push landed');
     A.ok(desk.invokes.every(c => c.cmd === 'harness_store_provider_key' && !Object.prototype.hasOwnProperty.call(c.args, 'key')), 'no push carries a key');
     A.eq(keychainWrites.length, 0, 'the keychain is never touched by the hand-over');
     A.eq(desk.invokes.find(c => c.args.provider === 'custom').args.baseUrl, endpoint, 'the CUSTOM push carries the saved endpoint');
+    A.eq((desk.invokes.find(c => c.args.provider === 'openai') || { args: {} }).args.baseUrl, '', 'a cleared slot is handed over as a clear');
 
     const after = await runNow();
     A.ok(ranDone(after), 'after the boot hand-over the CUSTOM routine runs to done: ' + after.text.slice(0, 400));
     A.ok(chats.length > 0, 'the routine reached the saved CUSTOM endpoint');
 
-    // a sidecar respawn loses the in-memory endpoint again ...
+    // the station keeps what it was handed: URLs only, main AND .bak
+    const endpointsFile = path.join(fixture.workspace, '.secrets', 'provider-endpoints.json');
+    const onDisk = f => { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return ''; } };
+    for (const f of [endpointsFile, endpointsFile + '.bak']) {
+      const saved = (() => { try { return JSON.parse(onDisk(f)); } catch (_) { return null; } })();
+      A.eq(saved && saved.baseUrls, { custom: endpoint, ollama: 'http://192.168.1.50:11434' }, path.basename(f) + ' holds the handed endpoints (and no cleared one)');
+    }
+
+    // #137 respawn: the respawned sidecar reads its copy back — no page, no refused fetch, no hand-over needed
+    const pushesBeforeRespawn = desk.invokes.length;
     await fixture.restart();
     const respawned = await runNow();
-    A.eq(respawned.status, 400, 'a respawned sidecar starts with no endpoint (memory only)');
+    A.ok(ranDone(respawned), 'a respawned sidecar still has the endpoint: the CUSTOM routine runs to done: ' + respawned.text.slice(0, 300));
+    A.eq(desk.invokes.length, pushesBeforeRespawn, 'with no push from any page');
 
-    // ... an answer with no silence before it does not push; a silence then an answer re-hands it
+    // #137 launch catch-up: a routine that came due while the app was closed fires in the sidecar's boot reconcile,
+    // before any window exists — it must run on the kept endpoint, never stop "no CUSTOM base URL is saved"
+    A.eq((await fixture.json('POST', '/api/cron/arm', { enabled: true })).status, 200, 'the scheduler is armed');
+    await fixture.stop();
+    const cronFile = path.join(fixture.workspace, 'cron.jobs.json');
+    const doc = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
+    const job = (Array.isArray(doc.jobs) ? doc.jobs : (Array.isArray(doc) ? doc : [])).find(j => j && j.id === jobId);
+    A.ok(job, 'the routine is in cron.jobs.json');
+    job.nextRunAt = new Date(Date.now() - 3 * 3600e3).toISOString();   // the app was closed past the due time
+    fs.writeFileSync(cronFile, JSON.stringify(doc));
+    try { fs.unlinkSync(cronFile + '.bak'); } catch (_) {}
+    const chatsBeforeLaunch = chats.length;
+    const launchAt = Date.now();
+    await fixture.start();
+    let launched = null;
+    for (let i = 0; i < 200; i++) {
+      const list = await fixture.json('GET', '/api/cron');
+      launched = ((list.body && list.body.jobs) || []).find(j => j.id === jobId) || null;
+      if (launched && launched.state === 'blocked_config') break;
+      if (launched && launched.lastStatus && Date.parse(launched.lastRunAt || 0) >= launchAt - 1000 && launched.state !== 'running') break;
+      await sleep(100);
+    }
+    A.ok(launched && launched.state !== 'blocked_config', 'the launch catch-up is not blocked: ' + JSON.stringify(launched && { state: launched.state, lastError: launched.lastError }));
+    A.eq(launched && launched.lastStatus, 'ok', 'the launch catch-up ran to ok on the kept endpoint');
+    A.ok(chats.length > chatsBeforeLaunch, 'and reached the CUSTOM endpoint with no page pushing anything');
+    A.eq((await fixture.json('POST', '/api/cron/arm', { enabled: false })).status, 200, 'the scheduler is disarmed again');
+
+    // ... an answer with no silence before it does not push; a silence then an answer re-syncs once
     const pushes = desk.invokes.length;
     desk.api.noteStationReply(true);
     await sleep(50);
@@ -148,14 +191,26 @@ async function waitFor(fn, label) {
     desk.api.noteStationReply(false);
     A.eq(desk.invokes.length, pushes, 'nothing is pushed while the station is silent');
     desk.api.noteStationReply(true);
-    await waitFor(() => desk.settled() === pushes + 2, 'the come-back hand-over');
-    A.eq(desk.invokes.length, pushes + 2, 'the first answer after a silence re-hands each endpoint once');
+    await waitFor(() => desk.settled() === pushes + 3, 'the come-back hand-over');
+    A.eq(desk.invokes.length, pushes + 3, 'the first answer after a silence re-syncs each endpoint slot once');
     desk.api.noteStationReply(true);
     await sleep(50);
-    A.eq(desk.invokes.length, pushes + 2, 'later answers do not push again');
+    A.eq(desk.invokes.length, pushes + 3, 'later answers do not push again');
     const back = await runNow();
-    A.ok(ranDone(back), 'after the come-back hand-over the CUSTOM routine runs to done again');
+    A.ok(ranDone(back), 'after the come-back re-sync the CUSTOM routine runs to done again');
     A.eq(keychainWrites.length, 0, 'the keychain is still untouched');
+
+    // a window that CLEARED its endpoints: the station forgets them, across a restart, in both copies on disk
+    const cleared = page({ desktop: true, storage: { 'starnet.byok.baseUrl.custom': '', 'starnet.byok.baseUrl.ollama': '' }, shell });
+    A.ok((await cleared.api.pushDesktopEndpoints()).every(o => o.ok), 'the clears landed');
+    await fixture.restart();
+    const gone = await runNow();
+    A.eq(gone.status, 400, 'a cleared CUSTOM endpoint stays cleared after a restart');
+    A.ok(/no CUSTOM base URL is saved on this station/.test(String(gone.body && gone.body.error)), 'and the refusal says so: ' + gone.text);
+    for (const f of [endpointsFile, endpointsFile + '.bak']) {
+      A.ok(!onDisk(f).includes(endpoint) && !onDisk(f).includes('192.168.1.50'), path.basename(f) + ' keeps no cleared endpoint');
+    }
+    A.eq(keychainWrites.length, 0, 'the keychain is never touched');
 
     // a failed push never rejects; it says what failed
     const broken = page({ desktop: true, storage: { 'starnet.byok.baseUrl.custom': endpoint }, shell: async () => { throw new Error('sidecar not up'); } });

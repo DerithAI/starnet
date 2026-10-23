@@ -1127,6 +1127,46 @@ const engineKeys = engineCredential.makeEngineKeys({
     try { return [ENGINE_KEYS_FILE, ENGINE_KEYS_FILE + '.bak'].every(f => JSON.stringify(JSON.parse(fs.readFileSync(f, 'utf8'))) === want); } catch (_) { return false; }
   }
 });
+/* #137 THE DESKTOP'S ENDPOINTS, KEPT ACROSS RESTARTS. On the desktop app the OS keychain holds provider KEYS; a provider's
+   ENDPOINT (a CUSTOM base URL, an Ollama that is not on this machine) reaches the station only when the app pushes it
+   (POST /api/key), and runtimeBaseUrls is memory. Every app restart (an update included) and every sidecar respawn
+   therefore started a station with no endpoint: a routine due at launch, and any routine, Run Now, line hop, channel or
+   phone run before the window handed the endpoint over again, failed "no CUSTOM base URL is saved on this station". So
+   a station whose shell pushes its provider config (the per-launch IPC token is set) keeps the endpoints it was pushed
+   (URLs only, never a key) in .secrets/ (station-recovery skips it, /api/file cannot reach it) and reads them back at
+   boot, before the scheduler's launch catch-up. Main AND .bak are written and read back: an endpoint the Commander
+   replaced or cleared (a URL can carry a token in its query) must not survive in the recovery copy. */
+const DESKTOP_ENDPOINTS_FILE = path.join(WORKSPACES, '.secrets', 'provider-endpoints.json');
+const SHELL_PUSHES_PROVIDER_CONFIG = !!String(ENV('IPC_TOKEN') || '').trim();
+let desktopEndpointsOnDisk = '{}';
+function desktopEndpointsHeld() {
+  const out = {};
+  for (const id of Object.keys(runtimeBaseUrls).sort()) { const u = String(runtimeBaseUrls[id] || '').trim(); if (u) out[id] = u; }
+  return out;
+}
+(function loadDesktopEndpoints() {
+  if (!SHELL_PUSHES_PROVIDER_CONFIG) return;
+  const saved = loadResilient(DESKTOP_ENDPOINTS_FILE, 'desktop-endpoints');
+  const urls = saved && typeof saved === 'object' ? saved.baseUrls : null;
+  if (!urls || typeof urls !== 'object' || Array.isArray(urls)) return;
+  for (const p of Object.keys(urls)) {
+    const id = normalizeProviderIdFromRegistry(p, '');
+    const u = typeof urls[p] === 'string' ? urls[p].trim() : '';
+    if (id && getProviderProfile(id) && u && !runtimeBaseUrls[id]) runtimeBaseUrls[id] = u;
+  }
+  desktopEndpointsOnDisk = JSON.stringify(desktopEndpointsHeld());
+})();
+// called on every endpoint push; writes only when the set changed. The pushed endpoint is live either way; a failed
+// write is logged (saveCredentialRemovalVerified) and retried by the next change.
+function saveDesktopEndpoints() {
+  if (!SHELL_PUSHES_PROVIDER_CONFIG) return true;
+  const baseUrls = desktopEndpointsHeld();
+  const want = JSON.stringify(baseUrls);
+  if (want === desktopEndpointsOnDisk) return true;
+  const ok = saveCredentialRemovalVerified(DESKTOP_ENDPOINTS_FILE, { version: 1, baseUrls: baseUrls }, null, 'desktop-endpoints');
+  if (ok) desktopEndpointsOnDisk = want;
+  return ok;
+}
 function reportDomainStoreIssue(tag) {
   return function onDomainStoreIssue(status, detail) {
     const file = detail && detail.file;
@@ -14974,6 +15014,7 @@ function setProviderRuntimeConfig(provider, patch) {
     const baseUrl = String(patch.baseUrl || '').trim();
     if (baseUrl) runtimeBaseUrls[id] = baseUrl;
     else delete runtimeBaseUrls[id];
+    saveDesktopEndpoints();   // #137: the station keeps the endpoint across an app restart or a respawn
   }
   if (Object.prototype.hasOwnProperty.call(patch, 'keyPool')) {
     const pool = providerRuntimeKeyPool(id, Array.isArray(patch.keyPool) ? patch.keyPool : []);
