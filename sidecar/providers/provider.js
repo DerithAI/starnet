@@ -811,8 +811,26 @@
     });
   }
 
+  /* BATCH-ONLY VARIANTS (fix 2026-10-23). OpenRouter's /models, and the StarNet managed catalog that passes it through,
+     lists '<id>:batch' rows (75 of 468 on 2026-10-23, every one beside its '<id>' row, at half its price) that only a
+     batch adapter serves: chat/completions answers 404 "<id>:batch cannot be used with the chat/completions endpoint".
+     Every StarNet turn runs on chat/completions, so such a row is never offered, and an id an older build let a user
+     save runs on its base model (the variant suffix is a routing option on that model, as gemini.js routedToNative
+     reads ':free'). The catalog marks batch rows by the suffix alone. Scoped to the providers whose catalog is
+     OpenRouter's: elsewhere 'name:tag' is a local model tag (Ollama). Callers pass a normalized provider id. */
+  const OPENROUTER_CATALOG_PROVIDERS = ['openrouter', 'starnet'];
+  const BATCH_VARIANT = /:batch$/i;
+  function isBatchOnlyModel(providerId, model) {
+    return OPENROUTER_CATALOG_PROVIDERS.indexOf(String(providerId || '').trim().toLowerCase()) >= 0
+      && BATCH_VARIANT.test(String(model || '').trim());
+  }
+  // The id a chat run sends for `model`: the base model of a batch-only variant, anything else unchanged.
+  function chatModelId(providerId, model) {
+    return isBatchOnlyModel(providerId, model) ? String(model).trim().replace(BATCH_VARIANT, '') : model;
+  }
+
   return { EVENT_TYPES, FINISH, normalizeFinish, timeouts, runtime, repairToolPairs, preserveClaudeContinuations,
     RUN_CONTEXT_OPEN, RUN_CONTEXT_CLOSE, runContextNote, isRunContextNote, CREW_CALL_OPEN, CREW_CALL_CLOSE, crewCallFence, isCrewCallNote,
     HOST_NOTE_TAGS, isHostNote, isClaudeModel, userSideHostNotes, chatRoleProjection, inertHostTags, inertHostFences,
-    prepareWireMessages, remapToolCallIds, ANTHROPIC_TOOL_ID, chatWireMessages, CHAT_WIRE_KEYS };
+    prepareWireMessages, remapToolCallIds, ANTHROPIC_TOOL_ID, chatWireMessages, CHAT_WIRE_KEYS, isBatchOnlyModel, chatModelId };
 });
