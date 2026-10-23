@@ -92,7 +92,10 @@ function listeningPortOf(pid) {
    sidecar's own fail-closed claim (sidecar/workspace-owner.js); a live pid + its listening port is a station
    we can attach to. Read-only — nothing here writes into the desktop's workspace. */
 function discoverDesktop(ws) {
-  const out = { workspace: ws, ownerPid: 0, ownerAlive: false, port: 0, source: '' };
+  /* station: the workspace holds one; appRan: the desktop app has run on it (the shell's own startup.log or
+     last-run-version sits beside it) — so its keys live in the app's keychain, not in this terminal */
+  const out = { workspace: ws, ownerPid: 0, ownerAlive: false, port: 0, source: '', station: hasStation(ws),
+    appRan: exists(path.join(path.dirname(ws), 'startup.log')) || exists(path.join(path.dirname(ws), 'last-run-version')) };
   let claim = null;
   try { claim = JSON.parse(fs.readFileSync(path.join(ws, '.starnet-workspace-owner.json'), 'utf8')); } catch (_) { return out; }
   out.ownerPid = Number(claim && claim.pid) || 0;
@@ -233,10 +236,26 @@ async function stopChild(child, ws, timing) {
 // ---- bootstrap ---------------------------------------------------------------------------------
 function loadRegistry() { try { return require(path.join(REPO, 'sidecar', 'providers', 'registry.js')); } catch (_) { return null; } }
 
+/* The prior-station evidence the app's Recovery Mode reads (sidecar/workspace-lineage.js, with the sidecar's own
+   candidate roots): legacy roots, update snapshots, a pending migration, state whose save is gone. The app offers that
+   recovery only while there is NO save, so a save written here would hide the prior station from it for good. */
+function priorStationEvidence(ws, env) {
+  try {
+    const lineage = require(path.join(REPO, 'sidecar', 'workspace-lineage.js'));
+    const safety = require(path.join(REPO, 'sidecar', 'workspace-safety.js'));
+    const dev = /^(1|true|yes|on)$/i.test(String((('STARNET_DEV' in env) ? env.STARNET_DEV : env.SKYNET_DEV) || '').trim());   // the sidecar's DEV_MODE: no sideways look
+    const roots = dev ? [] : safety.workspaceCandidates({ path, env, platform: process.platform, homedir: () => os.homedir() })
+      .concat([path.join(REPO, 'sidecar', 'workspaces'), path.join(REPO, 'workspaces')]);
+    return !!lineage.inspectWorkspaceLineage({ fs, path, platform: process.platform, workspaceRoot: ws, candidateRoots: roots }).priorInstallEvidence;
+  } catch (_) { return false; }
+}
+
 /* Write the roster + save the desktop's onboarding would have produced (core.bootstrapDocs). Refuses to touch a
-   workspace that already holds a station. Returns { wrote, provider, model, reason }. */
+   workspace that already holds a station, and (unless the operator named the workspace) one where the app would offer
+   to recover a prior station. Returns { wrote, refused?, provider, model, reason }. */
 function bootstrapWorkspace(ws, opts, env) {
   if (hasStation(ws)) return { wrote: false, reason: 'workspace already holds a station' };
+  if (!opts.workspace && priorStationEvidence(ws, env)) return { wrote: false, refused: true, reason: 'this computer has a station from an earlier StarNet install — open the StarNet app to recover it before setting up a new one' };
   const reg = loadRegistry();
   const profiles = reg ? reg.listProviderProfiles() : [];
   const inferred = core.inferProvider({
@@ -475,6 +494,7 @@ async function resolveStation(opts, env) {
   if (path.resolve(ws) === path.resolve(desktopWs) && desktop.ownerAlive) throw stationError('the desktop app owns ' + ws + ' (pid ' + desktop.ownerPid + '); refusing to boot a second station on it');
   // the dashboard sets a new station up itself (the awakening); a headless run gets the one-agent station it needs
   const boot = opts.cmd === 'dash' ? { wrote: false } : bootstrapWorkspace(ws, opts, env);
+  if (boot.refused) throw stationError(boot.reason);
   if (boot.wrote) log('· bootstrapped ' + ws + ' — agent ' + opts.name + ' (full power)' + (boot.provider ? ' · provider ' + boot.provider + ' from ' + boot.providerSource : ' · no provider credential found in the environment') + (boot.model ? ' · model ' + boot.model : ' · no model (pass --model or set STARNET_DEFAULT_MODEL)'));
   log('· booting a station on ' + ws);
   const sp = await spawnSidecar(ws, env, null);
@@ -486,7 +506,7 @@ async function main() {
   let opts;
   try { opts = core.parseArgs(process.argv.slice(2), process.env, { tty: !!(process.stdin.isTTY && process.stdout.isTTY) }); }
   catch (e) { log('starnet: ' + e.message + '\n'); log(core.USAGE); return core.EXIT.USAGE; }
-  if (opts.version) { let v = 'dev'; try { v = require(path.join(REPO, 'package.json')).version; } catch (_) {} process.stdout.write('starnet ' + v + '\n'); return 0; }
+  if (opts.version) { process.stdout.write('starnet ' + require('./lib/version.js').cliVersion(REPO) + '\n'); return 0; }
   if (opts.help) { process.stdout.write(core.USAGE + '\n'); return 0; }
   if (opts.promptFromStdin) {
     opts.prompt = await new Promise(r => { let s = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', d => { s += d; }); process.stdin.on('end', () => r(s)); });
@@ -499,7 +519,7 @@ async function main() {
     const desktop = discoverDesktop(desktopWorkspaces(process.env));
     if (path.resolve(ws) === path.resolve(desktop.workspace) && desktop.ownerAlive) { log('starnet: the desktop app is running on ' + ws + ' — nothing to bootstrap'); return 0; }
     const r = bootstrapWorkspace(ws, opts, process.env);
-    if (!r.wrote) { log('starnet: ' + ws + ' — ' + r.reason); return 0; }
+    if (!r.wrote) { log('starnet: ' + ws + ' — ' + r.reason); return r.refused ? core.EXIT.STATION : 0; }
     log('starnet: bootstrapped ' + ws + '\n  agent    ' + opts.name + ' (approvalMode full)\n  provider ' + (r.provider || 'openrouter (no credential found in the environment yet)') + (r.providerSource ? ' — from ' + r.providerSource : '') + '\n  model    ' + (r.model || '(none — pass --model or set STARNET_DEFAULT_MODEL)'));
     return 0;
   }
@@ -527,7 +547,7 @@ async function main() {
     const code = (e && e.exitCode) || core.EXIT.RUN_FAILED;
     if (opts.json) process.stdout.write(JSON.stringify({ ok: false, reason: 'error', proven: false, exitCode: code, error: String((e && e.message) || e) }) + '\n');
     log('starnet: ' + String((e && e.message) || e));
-    if (opts.cmd === 'status' && code === core.EXIT.STATION && !opts.json) log('(no station reachable — run `starnet -p "…"` to boot one, or start the desktop app)');
+    if (opts.cmd === 'status' && code === core.EXIT.STATION && !opts.json && String(e && e.message) !== core.DESKTOP_CLOSED) log('(no station reachable — run `starnet -p "…"` to boot one, or start the desktop app)');
     return code;
   } finally {
     if (station && station.child) await stopChild(station.child, station.workspace);

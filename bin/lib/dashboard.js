@@ -18,6 +18,7 @@
    stops it, and the quit key says so first. */
 'use strict';
 
+const os = require('node:os');
 const http = require('node:http');
 const readline = require('node:readline');
 const core = require('./cli-core.js');
@@ -715,8 +716,7 @@ function runDashboard(station, opts) {
     paint();
   }
   async function showVersion() {
-    let cli = 'dev';
-    try { cli = require('../../package.json').version; } catch (_) {}
+    const cli = require('./version.js').cliVersion(require('node:path').join(__dirname, '..', '..'));
     const r = await get('/api/version');
     const v = (r.ok && r.status === 200 && r.json) || {};
     ui.overlay = { title: 'VERSION', items: [['starnet', cli], ['station', v.harness ? 'harness ' + v.harness + (v.app ? ' · app ' + v.app : '') : 'did not say (' + (r.error || 'HTTP ' + r.status) + ')'], ['node', (v.node ? v.node + ' (station) · ' : '') + process.version + ' (here)']], foot: 'any key closes this' };
@@ -1010,6 +1010,11 @@ function runDashboard(station, opts) {
     try { out.write((mouseOn ? mouse.DISABLE : '') + '\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1049l'); } catch (_) {}
   }
   const onExit = () => { if (!stopped) leaveScreen(); };
+  /* A SIGTERM (the desktop app's boot reaper on macOS, a `kill`, an update) or a SIGHUP kills node WITHOUT 'exit', so
+     onExit never ran and the terminal stayed on the alternate screen with mouse reporting on. Give it back, then end
+     with the signal's conventional code (128 + its number); starnet.js still stops a station it booted. */
+  const SIGNALS = ['SIGTERM', 'SIGHUP'];
+  const onSignal = sig => stop(128 + ((os.constants.signals && os.constants.signals[sig]) || 15));
   function stop(code) {
     if (stopped) return;
     stopped = true;
@@ -1020,24 +1025,30 @@ function runDashboard(station, opts) {
     for (const m of mine.values()) { try { if (m.req) m.req.destroy(); } catch (_) {} }
     leaveScreen();
     process.removeListener('exit', onExit);
+    for (const s of SIGNALS) process.removeListener(s, onSignal);
     resolveExit(code || 0);
   }
 
   // ---- go ----------------------------------------------------------------------------------------------------
   (async () => {
     process.on('exit', onExit);
+    for (const s of SIGNALS) process.on(s, onSignal);
     term = await probeTerminal(400);
+    if (stopped) return;   // a signal during the probe: never take the screen back after giving it back
     buildImage();
     enterScreen();
     paint();
     const rt = await loadRoster();
+    if (stopped) return;
     if (!(rt.ok && rt.status === 200)) {
       stop(core.EXIT.STATION);
       process.stderr.write('starnet: could not read the station roster (' + (rt.error || 'HTTP ' + rt.status) + ')\n');
       return;
     }
     await Promise.all([loadSnapshot(), loadBudget(), loadLines().catch(() => {}), locateFolder().catch(() => {})]);
+    if (stopped) return;
     await loadHistory().catch(() => {});
+    if (stopped) return;   // …and no feed or refresh timers armed after a stop
     loadSkins().then(paint, () => {});
     loadStats().then(paint, () => {});
     ui.focus = pickFocus() || ui.focus;

@@ -173,6 +173,9 @@ FunctionEnd
 ; - The broadcast (WM_SETTINGCHANGE "Environment") is what makes Explorer, and every terminal opened after it, see it.
 ; Same 64-bit PowerShell as above; NSIS expands `$`, so every PowerShell variable below is written `$$`, and `$\'` is a
 ; PowerShell single quote. test/cli-path-hook.test.js runs these exact lines against a scratch registry key.
+; - The folder reaches PowerShell through the ENVIRONMENT (STARNET_PATH_DIR, set in this installer process and inherited
+;   by nsExec's child), never pasted into the command: a profile path with an apostrophe (C:\Users\O'Brien\...) broke the
+;   quoted literal, PowerShell refused to parse, and fail-open meant `starnet` silently never reached PATH.
 !macro STARNET_RESOLVE_POWERSHELL
   StrCpy $R9 "$WINDIR\SysNative\WindowsPowerShell\v1.0\powershell.exe"
   IfFileExists "$R9" +2 0
@@ -184,8 +187,9 @@ FunctionEnd
   Push $R9
   !insertmacro STARNET_RESOLVE_POWERSHELL
   DetailPrint "Putting the starnet command on your PATH ($INSTDIR\bin)..."
+  System::Call 'Kernel32::SetEnvironmentVariable(t "STARNET_PATH_DIR", t "$INSTDIR\bin")'
   ; STARNET_PATH_ADD
-  nsExec::ExecToLog '"$R9" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d=$\'$INSTDIR\bin$\'; $$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($\'Environment$\'); $$p=[string]$$k.GetValue($\'Path$\',$\'$\',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $$a=@($$p -split $\';$\' | Where-Object { $$_ -ne $\'$\' }); if (-not ($$a | Where-Object { $$_.TrimEnd($\'\$\') -eq $$d.TrimEnd($\'\$\') })) { $$k.SetValue($\'Path$\', (@($$a) + $$d) -join $\';$\', [Microsoft.Win32.RegistryValueKind]::ExpandString) }"'
+  nsExec::ExecToLog '"$R9" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d=$$env:STARNET_PATH_DIR; if (-not $$d) { exit }; $$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($\'Environment$\'); $$p=[string]$$k.GetValue($\'Path$\',$\'$\',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $$a=@($$p -split $\';$\' | Where-Object { $$_ -ne $\'$\' }); if (-not ($$a | Where-Object { $$_.TrimEnd($\'\$\') -eq $$d.TrimEnd($\'\$\') })) { $$k.SetValue($\'Path$\', (@($$a) + $$d) -join $\';$\', [Microsoft.Win32.RegistryValueKind]::ExpandString) }"'
   Pop $0
   SendMessage 0xFFFF 0x001A 0 "STR:Environment" /TIMEOUT=5000
   Pop $R9
@@ -196,8 +200,9 @@ FunctionEnd
   Push $0
   Push $R9
   !insertmacro STARNET_RESOLVE_POWERSHELL
+  System::Call 'Kernel32::SetEnvironmentVariable(t "STARNET_PATH_DIR", t "$INSTDIR\bin")'
   ; STARNET_PATH_REMOVE
-  nsExec::ExecToLog '"$R9" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d=$\'$INSTDIR\bin$\'; $$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($\'Environment$\'); $$p=[string]$$k.GetValue($\'Path$\',$\'$\',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $$a=@($$p -split $\';$\' | Where-Object { $$_ -ne $\'$\' }); $$keep=@($$a | Where-Object { $$_.TrimEnd($\'\$\') -ne $$d.TrimEnd($\'\$\') }); if ($$keep.Count -ne $$a.Count) { $$k.SetValue($\'Path$\', $$keep -join $\';$\', [Microsoft.Win32.RegistryValueKind]::ExpandString) }"'
+  nsExec::ExecToLog '"$R9" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d=$$env:STARNET_PATH_DIR; if (-not $$d) { exit }; $$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($\'Environment$\'); $$p=[string]$$k.GetValue($\'Path$\',$\'$\',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $$a=@($$p -split $\';$\' | Where-Object { $$_ -ne $\'$\' }); $$keep=@($$a | Where-Object { $$_.TrimEnd($\'\$\') -ne $$d.TrimEnd($\'\$\') }); if ($$keep.Count -ne $$a.Count) { $$k.SetValue($\'Path$\', $$keep -join $\';$\', [Microsoft.Win32.RegistryValueKind]::ExpandString) }"'
   Pop $0
   SendMessage 0xFFFF 0x001A 0 "STR:Environment" /TIMEOUT=5000
   Pop $R9
