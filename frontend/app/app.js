@@ -2039,15 +2039,20 @@ const App = (() => {
     syncModelPicks();   // keep the recommended-chip highlight in lockstep with whatever's in the field
     if (isOAuthProviderId(pickedProvider)) { hint.textContent = 'included in your ' + OAUTH_GENESIS[pickedProvider].sub.replace(/ subscription$/, '') + ' subscription'; return; }
     if (!id) { hint.textContent = 'pick or type a model slug'; return; }
-    const limit = Harness.contextLimitOf ? Harness.contextLimitOf(id) : 0;
+    // the PICKED card's own catalog row (genesisModels = Harness.listModels(pickedProvider)): the Harness lookups prefer
+    // the station's stored provider, which only WAKE sets, and two routes can list one id with different run windows
+    // (StarNet credits work in a 200k tier, OpenRouter in the whole window) — final-polish 10-23
+    const row = genesisModels.find(m => m && m.id === id) || null;
+    const limit = (row && +row.context_length) || (Harness.contextLimitOf ? Harness.contextLimitOf(id) : 0);
     const price = Harness.priceOf ? Harness.priceOf(id) : null;
     if (limit || price) {
       // the catalog knows this model — surface BOTH context window and $/M in/out (previously ctx only)
       const fmt = (typeof CtxGauge !== 'undefined' && CtxGauge.fmtTokens) ? CtxGauge.fmtTokens : (n => String(n || 0));
       const bits = [];
-      // a route that bills a dearer rate past a prompt size runs in a window stopped at it (Harness.runWindowOf, the
-      // sidecar's runWindow): name THAT window and why, never the 1M a 200k-tier run folds inside (final-polish 10-23)
-      const run = Harness.runWindowOf ? (Number(Harness.runWindowOf(id)) || 0) : 0;
+      // a route that bills a dearer rate past a prompt size runs in a window stopped at it (the picked row's runWindow, the
+      // sidecar's runWindow): name THAT window and why, never the 1M a 200k-tier run folds inside (final-polish 10-23). The
+      // tier belongs to the ROUTE: an id the picked catalog does not list names none (only another route's catalog has it)
+      const run = row ? (Number(row.runWindow) || 0) : 0;
       if (limit && run > 0 && run < limit) bits.push('remembers up to ' + fmt(run) + ' tokens of chat (the model can hold ' + fmt(limit) + ', but it bills a higher rate for a prompt over ' + fmt(run) + ')');
       else if (limit) bits.push('remembers up to ' + fmt(limit) + ' tokens of chat');
       if (price) bits.push('costs ' + usdPerM(price.in) + ' in · ' + usdPerM(price.out) + ' out per million tokens (a token ≈ ¾ of a word)');

@@ -97,21 +97,73 @@ function gauge(cs) {
   const app = read('frontend/app/app.js');
   const hintSrc = fnBody(app, '  function updateHint() {');
   A.ok(hintSrc && hintSrc.length < 4000, 'app.js updateHint is sliced');
-  function hint(id, runWindowOf) {
+  // genesisModels = what loadModels got from Harness.listModels(pickedProvider): normalized rows carrying runWindow
+  const GEMINI_ROWS = [PRO, FLASH].map(id => ({ id, name: id, context_length: LIMITS[id], runWindow: RUNS[id], pricing: null }));
+  function hint(id, rows) {
     const nodes = { 'in-model': { value: id }, 'model-hint': { textContent: '' }, 'in-key': { value: '' } };
-    const Harness = { contextLimitOf: m => LIMITS[m] || 0, priceOf: () => null };
-    if (runWindowOf) Harness.runWindowOf = runWindowOf;
+    // the Harness lookups answer as a station on ANOTHER route would (a tier everywhere): the hint must not read them for the tier
+    const Harness = { contextLimitOf: m => LIMITS[m] || 0, priceOf: () => null, runWindowOf: () => 200000 };
     vm.runInNewContext(hintSrc + '\nupdateHint();', {
-      el: k => nodes[k], window: {}, genesisModels: [], pickedProvider: 'gemini', codexConnected: false, syncModelPicks() {},
+      el: k => nodes[k], window: {}, genesisModels: rows, pickedProvider: 'gemini', codexConnected: false, syncModelPicks() {},
       isOAuthProviderId: () => false, OAUTH_GENESIS: {}, Harness, CtxGauge, usdPerM: String, genesisOffline: false
     }, { filename: 'app.js#updateHint' });
     return nodes['model-hint'].textContent;
   }
-  const pro = hint(PRO, m => RUNS[m] || 0);
+  const pro = hint(PRO, GEMINI_ROWS);
   A.eq(pro, 'remembers up to 200k tokens of chat (the model can hold 1M, but it bills a higher rate for a prompt over 200k)',
     'Gemini 2.5 Pro on a key: the setup hint names the 200k a run works in and why: ' + pro);
-  A.eq(hint(FLASH, m => RUNS[m] || 0), 'remembers up to 1M tokens of chat', 'no price tier: the whole window, as before');
-  A.eq(hint(PRO, null), 'remembers up to 1M tokens of chat', 'no runWindowOf (an older harness): the model window, as before');
+  A.eq(hint(FLASH, GEMINI_ROWS), 'remembers up to 1M tokens of chat', 'no price tier: the whole window, as before');
+  A.eq(hint(PRO, GEMINI_ROWS.map(r => ({ id: r.id, name: r.name, context_length: r.context_length }))), 'remembers up to 1M tokens of chat',
+    'a picked row without runWindow (an older sidecar): the model window, as before');
+  A.eq(hint(PRO, [{ id: FLASH, name: FLASH, context_length: LIMITS[FLASH], runWindow: RUNS[FLASH] }]), 'remembers up to 1M tokens of chat',
+    'an id the picked catalog does not list: the window is the model’s (any catalog), but no tier is borrowed from another route');
+
+  // THE CARD PICKED ON THIS SCREEN decides the route, not the station's stored provider. The REAL harness lookups
+  // (catalogModel prefers getProv(), which selectProviderUI never sets: only WAKE does) answer for the STATION's
+  // route. StarNet credits and OpenRouter list the same id, but the sidecar's /api/models gives them different
+  // runWindow: starnet is metered (the 200k tier), openrouter books the billed cost (BILLED_COST_ROUTES, the whole
+  // window). genesisModels is what Harness.listModels(pickedProvider) returned (normalized rows carry runWindow).
+  const harness = read('frontend/app/harness.js');
+  const lookups = ['  function catalogModel(id) {', '  function contextLimitOf(id) {', '  function runWindowOf(id) {', '  function priceOf(id) {']
+    .map(sig => { const b = fnBody(harness, sig); A.ok(b && b.length < 2000, 'harness.js ' + sig.trim() + ' is sliced'); return b; }).join('\n');
+  const OR_ID = 'google/gemini-2.5-pro';
+  const ROWS = {
+    openrouter: [{ id: OR_ID, name: OR_ID, context_length: 1048576, runWindow: 1048576, pricing: null }],
+    starnet: [{ id: OR_ID, name: OR_ID, context_length: 1048576, runWindow: 200000, pricing: null }]
+  };
+  function routedHint(stationProv, picked) {
+    const modelsByProv = {};
+    for (const p in ROWS) { modelsByProv[p] = {}; for (const m of ROWS[p]) modelsByProv[p][m.id] = m; }
+    const Harness = vm.runInNewContext(lookups + '\n({ catalogModel, contextLimitOf, runWindowOf, priceOf });',
+      { modelsByProv, getProv: () => stationProv, normalizeProviderId: p => String(p || '').toLowerCase() });
+    const nodes = { 'in-model': { value: OR_ID }, 'model-hint': { textContent: '' }, 'in-key': { value: '' } };
+    vm.runInNewContext(hintSrc + '\nupdateHint();', {
+      el: k => nodes[k], window: {}, genesisModels: ROWS[picked].slice(), pickedProvider: picked, codexConnected: false, syncModelPicks() {},
+      isOAuthProviderId: () => false, OAUTH_GENESIS: {}, Harness, CtxGauge, usdPerM: String, genesisOffline: false
+    }, { filename: 'app.js#updateHint' });
+    return nodes['model-hint'].textContent;
+  }
+  const TIER = 'remembers up to 200k tokens of chat (the model can hold 1M, but it bills a higher rate for a prompt over 200k)';
+  const WHOLE = 'remembers up to 1M tokens of chat';
+  A.eq(routedHint('starnet', 'openrouter'), WHOLE,
+    'a StarNet-credits station picking the OPENROUTER card: an OpenRouter run keeps the whole window, so no 200k tier is named');
+  A.eq(routedHint('openrouter', 'starnet'), TIER,
+    'an OpenRouter station (the default) picking the STARNET card: a StarNet run works in 200k, so the hint names it');
+  A.eq([routedHint('starnet', 'starnet'), routedHint('openrouter', 'openrouter')], [TIER, WHOLE], 'the station and the card agree: unchanged');
+  // a picked catalog row with no runWindow (the codex sign-in list on the OPENAI card: rows are { id, name }) names no
+  // tier from ANOTHER route's catalog (illustrative numbers: the rule, not a real gpt-5.5 tier)
+  {
+    const modelsByProv = { openai: { 'gpt-5.5': { id: 'gpt-5.5', context_length: 400000, runWindow: 272000 } } };
+    const Harness = vm.runInNewContext(lookups + '\n({ catalogModel, contextLimitOf, runWindowOf, priceOf });',
+      { modelsByProv, getProv: () => 'openai', normalizeProviderId: p => String(p || '').toLowerCase() });
+    const nodes = { 'in-model': { value: 'gpt-5.5' }, 'model-hint': { textContent: '' }, 'in-key': { value: '' } };
+    vm.runInNewContext(hintSrc + '\nupdateHint();', {
+      el: k => nodes[k], window: {}, genesisModels: [{ id: 'gpt-5.5', name: 'gpt-5.5' }], pickedProvider: 'openai', codexConnected: true, syncModelPicks() {},
+      isOAuthProviderId: () => false, OAUTH_GENESIS: {}, Harness, CtxGauge, usdPerM: String, genesisOffline: false
+    }, { filename: 'app.js#updateHint' });
+    A.eq(nodes['model-hint'].textContent, 'remembers up to 400k tokens of chat',
+      'a picked row that carries no runWindow borrows no tier from another route’s catalog: ' + nodes['model-hint'].textContent);
+  }
 }
 
 // ---- 5. the website app ships the same ----
@@ -119,7 +171,7 @@ function gauge(cs) {
   const web = rel => read('website/app/app/' + rel);
   A.ok(web('harness.js').indexOf('runWindow: (run > 0 && limit > 0 && run < limit) ? run : limit') >= 0, 'the website harness.js mirror carries contextState.runWindow');
   A.ok(web('stationui.js').indexOf('tier ? cs.runWindow : cs.limit') >= 0, 'the website stationui.js mirror measures the gauge against it');
-  A.ok(web('app.js').indexOf('Harness.runWindowOf(id)') >= 0, 'the website app.js mirror carries the setup hint');
+  A.ok(web('app.js').indexOf('const run = row ? (Number(row.runWindow) || 0) : 0;') >= 0, 'the website app.js mirror carries the setup hint (the picked row’s runWindow)');
 }
 
 A.report('ctx-gauge-run-window');
