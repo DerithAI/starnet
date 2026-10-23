@@ -16064,8 +16064,10 @@ function lifecycleArmedSnapshot(now) {
   // scheduler (or an armed one with zero jobs) is honestly not armed: nothing would tick after window close.
   let routines = { armed: false, count: 0, healthy: false, halted: false };
   try {
-    // Completed/paused routines need a live ticker only while a result still awaits delivery.
-    const jobs = Array.isArray(cronJobs) ? cronJobs.filter(job => job && (job.enabled !== false || cronStore.pendingDeliveries(job).length > 0)) : [];
+    // Completed/auto-paused routines need a live ticker only while a result still awaits delivery. A routine the
+    // Commander PAUSED holds its results until resumed (cronStore.deliveriesHeld), so nothing of it would run.
+    const jobs = Array.isArray(cronJobs) ? cronJobs.filter(job => job && (job.enabled !== false ||
+      (!cronStore.deliveriesHeld(job) && cronStore.pendingDeliveries(job).length > 0))) : [];
     // A durable E-STOP halt (cron.halt.json) freezes the timer — a halted scheduler is NOT doing background
     // work, so it must not hold the process alive after window close (same truthfulness rule as night shift).
     const armed = !!cronArmed && !cronHalted && jobs.length > 0;
