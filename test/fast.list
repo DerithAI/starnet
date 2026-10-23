@@ -543,6 +543,7 @@ test/bottle-wiring.test.js
 test/resummonstore.test.js
 test/pitch.test.js
 test/pitchstore.test.js
+test/first-task-recall.test.js
 test/suggeststore.test.js
 test/beat-coordination.test.js
 test/beatcard.test.js
