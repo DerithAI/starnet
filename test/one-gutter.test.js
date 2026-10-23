@@ -102,4 +102,24 @@ A.eq([decl(rule(glass, W + '.term.dossier .con-toptab'), 'padding-top'), decl(ru
 A.ok(!/\[data-provider="starnet"\] :is\(\.prov-addkey,\s*\.prov-stat\) \{[^}]*padding-left:\s*0/.test(settings) && /\[data-provider="starnet"\] \.prov-addkey \{ margin-left:0; \}/.test(settings),
   'the StarNet card drops the 42px indent but not the key\'s padding (↗ LINK STATION sat against its left edge)');
 
+/* ---- 6. the SESSIONS / PROJECTS switch (Andrew 10-23: "i saw a UI glitch in sessions and projects") ---- */
+A.ok(/#screen-game #left \.ws-head :is\(#ws-new, #ws-addproject\)\[hidden\] \{ display: none !important; \}/.test(glass),
+  'a hidden + key stays hidden (the 1440px rule\'s display: inline-flex drew + NEW over the PROJECTS tab)');
+A.eq(decl(rule(glass, P + '#left .ws-head .ws-tab'), 'transition'), 'none', 'the tabs switch at once: no crossfade where both read as open');
+A.eq(decl(rule(glass, P + '#left .ws-head #ws-addproject'), 'font-size'), '16px', '+ ADD\'s label is + NEW\'s size, so the key keeps its size across tabs');
+A.ok(/@media \(max-width: 1440px\) \{[\s\S]*?body\.glass-demo:not\(\.hud-mode\) #left \.ws-head #ws-addproject:not\(\[hidden\]\) \{\s*font-size: 0 !important/.test(glass),
+  'on a laptop window + ADD becomes the same square + key as + NEW, at + NEW\'s own specificity (the narrow strip\'s key still wins)');
+const proj = rule(glass, P + '#left #projects > .ws-row.proj-row');
+A.eq([decl(proj, 'margin'), decl(proj, 'background'), decl(proj, 'border')], ['0 2px 0 6px', 'transparent', '1px solid transparent'],
+  'project rows rest quiet on the rail gutter (the oldest base row box and its 2px left bar are gone)');
+A.ok(/#projects > \.ws-row\.proj-row \+ \.ws-row\.proj-row::before \{\s*content: ''/.test(glass), 'a hairline between project rows, as between session rows');
+A.ok(/#projects > \.ws-row\.proj-row:is\(\.project-selected, \[aria-current="page"\]\) \{ background: var\(--pip-fill\); \}/.test(glass), 'the entered project wears the selection mesh');
+A.eq(decl(rule(glass, P + '#left #projects :is(.proj-path, .proj-sess-n)'), 'font-size'), '15px', 'the folder path reads at the rail\'s meta size (it was 10px)');
+A.ok(/@supports \(animation-timeline: scroll\(\)\) \{\s*body[^{]*#projects :is\(\.proj-row \.ws-title, \.proj-path\) \{ text-overflow: clip; animation: sn-cut-line/.test(glass),
+  'a long name or path fades where it runs out, never VT323\'s flat "…" bar');
+A.ok(/@container rail-search \(max-width: 250px\) \{[\s\S]*?#ws-search::placeholder \{ color: transparent !important; \}[\s\S]*?content: 'search sessions'/.test(glass),
+  'a narrow rail\'s empty search reads "search sessions", not "search sessions + tra" and a flat bar');
+A.ok(!/placeholder="Find an agent…"/.test(read('frontend/index.html')) && !/placeholder="Find an agent…"/.test(read('frontend/app/workflowpanel.js')),
+  'no placeholder ends on "…" (VT323 draws it as one flat bar)');
+
 A.report('one-gutter.test');
