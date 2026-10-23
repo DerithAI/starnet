@@ -1065,31 +1065,33 @@ body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.working .crew-prog::
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row.asking .crew-prog { display: none; }
 @keyframes pip-meter { from { transform: translateX(-45px); } to { transform: translateX(297px); } }
 
-/* ---- SESSIONS / PROJECTS: the Pip-Boy tab strip. One rule runs across the rail on its gutter (end ticks at both ends); the
-   open tab is boxed above it, open at the bottom; + NEW / + ADD is a key the tabs' own height standing on the rule, its top
-   and bottom on theirs (Andrew 10-21 circled the old shorter key floating 6px above the line). The first tab and the key
-   sit on the rail's content line, 10px in from the rule's ends (ONE RAIL GUTTER, below) ---- */
+/* ---- SESSIONS / PROJECTS: the Pip-Boy tab strip. One plain rule runs across the rail on its gutter; the open tab is
+   boxed above it, open at the bottom; + NEW / + ADD is a key the tabs' own height standing on the rule, its top and bottom
+   on theirs (Andrew 10-21 circled the old shorter key floating 6px above the line). The first tab starts and the key ends
+   on the cards' edges, the key on the CREW keys' edge too; no end ticks (Andrew 10-23 circled the stub-and-tick at each
+   end and the key stopping short of them: "needs to look and appear cleaner") ---- */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head {
   background: none; border: 0; box-shadow: none; padding: 14px var(--rail-gut-u, 10px) 0; gap: 0; align-items: flex-end; flex-wrap: nowrap;
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view { display: flex; flex: 1 1 auto; gap: 0; align-items: flex-end; min-width: 0; }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before {
-  content: ''; flex: 0 0 var(--rail-gut-u, 10px); align-self: stretch; border-bottom: 1px solid var(--pip-line);
-  background: linear-gradient(var(--pip-line), var(--pip-line)) left bottom / 1px 7px no-repeat;
-}
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { content: none; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::after { content: ''; flex: 1 1 auto; align-self: stretch; border-bottom: 1px solid var(--pip-line); }
+/* a resting tab draws its stretch of the rule as a 1px background line across its whole border box: a bottom border
+   beside transparent side borders splits its corners diagonally, so each stretch began and ended on a half-faded pixel (a
+   notch in the line at every tab edge). No bottom border on any tab, 1px of padding in its place, so a tab is the same box
+   selected or not */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab {
-  min-height: 0; height: 32px; padding: 0 14px; border: 1px solid transparent; border-bottom-color: var(--pip-line); border-radius: 0;
-  background: none; box-shadow: none; text-shadow: none; letter-spacing: 2px;
+  --tab-rule: linear-gradient(var(--pip-line), var(--pip-line)) left bottom / 100% 1px no-repeat border-box;
+  min-height: 0; height: 32px; padding: 0 14px 1px; border: 1px solid transparent; border-bottom-width: 0; border-radius: 0;
+  background: var(--tab-rule); box-shadow: none; text-shadow: none; letter-spacing: 2px;
 }
-body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab:not(.on):is(:hover, :focus-visible) { opacity: 1; background: rgba(var(--ph-rgb), .05); border-color: transparent; border-bottom-color: var(--pip-line); }
+body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab:not(.on):is(:hover, :focus-visible) { opacity: 1; background: var(--tab-rule), rgba(var(--ph-rgb), .05); border-color: transparent; }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab.on {
-  border-color: var(--ph); border-bottom-color: transparent; color: var(--ph-bright);
+  border-color: var(--ph); color: var(--ph-bright); box-shadow: none;
   background: linear-gradient(rgba(var(--ph-rgb), .13), rgba(var(--ph-rgb), .02)); text-shadow: 0 0 6px rgba(var(--ph-rgb), .45);
 }
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts {
-  display: flex; align-items: flex-end; align-self: stretch; gap: 6px; padding: 0 var(--rail-gut-u, 10px) 0 10px; border-bottom: 1px solid var(--pip-line);
-  background: linear-gradient(var(--pip-line), var(--pip-line)) right bottom / 1px 7px no-repeat;
+  display: flex; align-items: flex-end; align-self: stretch; gap: 6px; padding: 0 0 0 10px; border-bottom: 1px solid var(--pip-line); background: none;
 }
 /* 32px like the tabs; the -1px lays the key's bottom edge ON the rule (the acts' border) instead of a second line above it */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject) {
@@ -1101,7 +1103,7 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addp
    not the window's: tighter tabs and + NEW / + ADD as the square + key, and on the narrowest tighter still */
 body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs / inline-size; }
 @container pip-tabs (max-width: 330px) {
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 7px; letter-spacing: .6px; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 7px 1px; letter-spacing: .6px; }
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding-left: 6px; }
   /* letter-spacing 0: the hidden "+ NEW" label's 1.6px spacing still took 8px beside the drawn +, pushing it 4px off centre */
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject):not([hidden]) {
@@ -1109,12 +1111,8 @@ body.glass-demo:not(.hud-mode) #screen-game #left .ws-head { container: pip-tabs
   }
   body.glass-demo:not(.hud-mode) #screen-game #left .ws-head :is(#ws-new, #ws-addproject)::before { content: '+'; font-size: 20px; line-height: 1; }
 }
-/* the narrowest strip has no room for the content line's 10px: the first tab and the key go flush to the rule's ends,
-   on the edge the cards below share */
 @container pip-tabs (max-width: 205px) {
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 5px; letter-spacing: .2px; }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-view::before { flex-basis: 0; }
-  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-head-acts { padding-right: 0; }
+  body.glass-demo:not(.hud-mode) #screen-game #left .ws-head .ws-tab { padding: 0 5px 1px; letter-spacing: .2px; }
 }
 /* a laptop window draws + NEW as the + key at every rail width (the 1440px rule above): its hidden label spaces nothing.
    + ADD takes the same key there, so the key keeps its size when the tab changes */
@@ -1146,12 +1144,24 @@ body.glass-demo:not(.hud-mode) #screen-game #crew { scrollbar-gutter: stable; }
 body.glass-demo:not(.hud-mode) #screen-game #crew .crew-row { margin-right: 0; }
 body.glass-demo:not(.hud-mode) #screen-game #left :is(#workstreams, #projects) { padding-left: 4px; padding-right: 0; scrollbar-gutter: stable; }
 body.glass-demo:not(.hud-mode) #screen-game #left :is(#workstreams, #projects) > .ws-row { margin-right: 2px; }
+/* the CREW head (Andrew 10-23: "needs to look and appear cleaner"): its rule plain from edge to edge, no end ticks; the two
+   keys square and in the + key's own box. Where the head has room the keys sit centred beside the title and the count line;
+   on a narrower rail they keep the title's row and the count line takes the full width under them (beside the keys it ran
+   under them) */
 body.glass-demo:not(.hud-mode) #screen-game #left > h3 {
   padding-left: calc(20px / var(--sn-unzoom, 1)); padding-right: var(--rail-gut-u);
-  background:
-    linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / calc(100% - 2 * var(--rail-gut-u)) 1px no-repeat,
-    linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / 1px 8px no-repeat,
-    linear-gradient(var(--pg-line), var(--pg-line)) right var(--rail-gut-u) bottom 0 / 1px 8px no-repeat;
+  background: linear-gradient(var(--pg-line), var(--pg-line)) left var(--rail-gut-u) bottom 0 / calc(100% - 2 * var(--rail-gut-u)) 1px no-repeat;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; row-gap: 1px; align-items: center;
+  container: crew-head / inline-size;
+}
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-h3-right { grid-column: 2; grid-row: 1; margin-left: 0; }
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-sum { grid-column: 1 / -1; grid-row: 2; }
+@container crew-head (min-width: 340px) {
+  body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-h3-right { grid-row: 1 / span 2; }
+  body.glass-demo:not(.hud-mode) #screen-game #left > h3 #crew-sum { grid-column: 1; }
+}
+body.glass-demo:not(.hud-mode) #screen-game #left > h3 .crew-hide {
+  width: 28px; height: 28px; border-color: rgba(var(--ph-rgb), .45); border-radius: 2px; background: rgba(var(--ph-rgb), .06);
 }
 
 /* ---- PROJECTS in the session rows' language (Andrew 10-23: "i saw a UI glitch in sessions and projects"). The project
