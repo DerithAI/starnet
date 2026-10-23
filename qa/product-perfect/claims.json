@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "b6d06f6ee25748b79f4c6ea0ea0e0a6a4aeef8e9",
+    "sourceCommit": "2a14a713280d9d4931b4a726eabaa319bf6242d4",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -1548,8 +1548,8 @@
       },
       {
         "path": "frontend/css/app.css",
-        "bytes": 431203,
-        "sha256": "a742902548b8814f59ce7233205778e5aef001cdb31c6e75c6cd83de79e876cc"
+        "bytes": 431434,
+        "sha256": "e41c8a40a560e6f3ee4aac2a5a768311f291c4281b9ef82c74f2372b8996ac3c"
       },
       {
         "path": "frontend/css/asciifx.css",
@@ -1558,8 +1558,8 @@
       },
       {
         "path": "frontend/css/beat-cards.css",
-        "bytes": 40040,
-        "sha256": "6036edae4e90da867584e76191ff9b38d8b80b16bf516823f6a43a6f237d5758"
+        "bytes": 40048,
+        "sha256": "85b65356d0f065cfdcd3574d81dc2d8d3d9358fc715e752b2637493f8a892674"
       },
       {
         "path": "frontend/css/cabinet-clean.css",
@@ -1588,8 +1588,8 @@
       },
       {
         "path": "frontend/css/comms.css",
-        "bytes": 57137,
-        "sha256": "c5dc134fb4daa5d9c091afc195eb5c476a1adbae5ceb32070f7aacf8c0205f1b"
+        "bytes": 57140,
+        "sha256": "e2133d0076ca11861bce4d920e442898ef7c5ae4630f8538ea2a0def28540399"
       },
       {
         "path": "frontend/css/crew-glass.css",
@@ -1613,8 +1613,8 @@
       },
       {
         "path": "frontend/css/glass-demo.css",
-        "bytes": 37080,
-        "sha256": "4d3069f39a94700a693a55f0a64874a4cc81b09acbb637ebab52a905cf7fc27d"
+        "bytes": 37104,
+        "sha256": "4fba9dcc07fd9fcfc75cd2f41824916430eeab2c05a555476f24624183b61a30"
       },
       {
         "path": "frontend/css/hudmode.css",
@@ -1633,8 +1633,8 @@
       },
       {
         "path": "frontend/css/marketplace.css",
-        "bytes": 95234,
-        "sha256": "cd70c5e746039d76a797b8c76271cb10e4359040e51dfd4d357c46d8b49fcda6"
+        "bytes": 95242,
+        "sha256": "dbe6f78c120eb1d8b5b1c97a88e81e2624ab3006cc8ec73885a1ca9264ff9120"
       },
       {
         "path": "frontend/css/menu-glass.css",
@@ -1643,8 +1643,8 @@
       },
       {
         "path": "frontend/css/motion.css",
-        "bytes": 56784,
-        "sha256": "3ddada96465b79a083f34a116dddc695f92ee9a0d021a9d15a1835706a2b0a45"
+        "bytes": 57247,
+        "sha256": "fa5a43b15968244adde7cedabe1ef890d889b5e4406389604370056c5e9924f2"
       },
       {
         "path": "frontend/css/onboarding.css",
@@ -1658,8 +1658,8 @@
       },
       {
         "path": "frontend/css/overseer-setup.css",
-        "bytes": 24692,
-        "sha256": "da1b230dff7a8ea453ddd976c51e973f0a8f1c1ad666cdca8f6099fdb535e19f"
+        "bytes": 24705,
+        "sha256": "41cd40182fdbb7083a6e93d6e21fbca2622f5bfd9b6e6d7302c16d4c378865a4"
       },
       {
         "path": "frontend/css/panelchrome.css",
@@ -1683,8 +1683,8 @@
       },
       {
         "path": "frontend/css/quests.css",
-        "bytes": 26317,
-        "sha256": "24eda6b2f04ae048daf9496409f312fadd64b3c76c7163b91ba99abaaad1f51d"
+        "bytes": 26325,
+        "sha256": "0d89eefd924947bdc8cabb4fa38f867af515e3a034f5b0f6be6be25f52e96edf"
       },
       {
         "path": "frontend/css/readability.css",
@@ -1718,8 +1718,8 @@
       },
       {
         "path": "frontend/css/settings.css",
-        "bytes": 22152,
-        "sha256": "490b56bb4c3855824f4b345a488614387136e37b4bca491e4b56814e8c7a58a7"
+        "bytes": 22165,
+        "sha256": "dffe5a981660ac7057d28cd982c911523d1bfd1b86cb3bc09db255c4c51776ab"
       },
       {
         "path": "frontend/css/stepin.css",
@@ -1728,8 +1728,8 @@
       },
       {
         "path": "frontend/css/style.css",
-        "bytes": 104395,
-        "sha256": "0929f2a7c58a11c413a9826e61c361d837597fe6e0b1573d644c164e88338326"
+        "bytes": 104681,
+        "sha256": "2843878b1a7f0da50cce04c95475788b79fa41f88ccdfded07ca3a4ed9361f77"
       },
       {
         "path": "frontend/css/tasks.css",
@@ -1748,8 +1748,8 @@
       },
       {
         "path": "frontend/css/tutorial.css",
-        "bytes": 12974,
-        "sha256": "4554122a428e2ae98b1454bf67d44246ef9978274d97db76bce06264c2a5bba7"
+        "bytes": 12990,
+        "sha256": "d1828af04e71e925eb87e7421f3ecd1ab0ea052f7894f7ac9b64c54dc403e4e2"
       },
       {
         "path": "frontend/css/utility-menus.css",
@@ -1758,18 +1758,18 @@
       },
       {
         "path": "frontend/css/warroom.css",
-        "bytes": 4283,
-        "sha256": "a2716f650f27fa7cfd44548bd8243dfb8315c4cedb0d4e01171c348a5f1d5adc"
+        "bytes": 4383,
+        "sha256": "cfd22080740db1256cc3090f344ed7fcd98499c31c98d5cb88778f506f04ad86"
       },
       {
         "path": "frontend/css/widgets.css",
-        "bytes": 21353,
-        "sha256": "fbae1f2caaafdd6c14719466c1de5d2f5fb3b1556d949a0d73c13ffebf085ee5"
+        "bytes": 21361,
+        "sha256": "d394937078bd3206445c7be80427aa3b5d1c631973e36269b7139a81e64ce26e"
       },
       {
         "path": "frontend/css/workflow-panel.css",
-        "bytes": 47506,
-        "sha256": "2bb471553c6ec683af4923773c7ed8d8e557848efa9156282e27eff42f7e068b"
+        "bytes": 47526,
+        "sha256": "80d9026b5539e407690625b73d196205977dca1a5118088ee539c030d99a64c1"
       },
       {
         "path": "frontend/css/workflows-window.css",
