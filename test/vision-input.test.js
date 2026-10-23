@@ -245,8 +245,47 @@ async function drain(p, req) {
     const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
     const aux = idx.slice(idx.indexOf('const auxVisionCall = async (req) => {'), idx.indexOf('const imageTools = makeImageTools('));
     const wire = idx.slice(idx.indexOf('const imageTools = makeImageTools('), idx.indexOf('const imageTools = makeImageTools(') + 2600);
-    A.ok(wire.includes("runModelSeesImages: () => ((auxVisionProvider && typeof auxVisionProvider.supportsImages === 'function') ? auxVisionProvider.supportsImages(model) : null)"),
-      'index.js: makeImageTools reads the RUN adapter\'s supportsImages(model) at tool time');
+    A.ok(wire.includes("runModelSeesImages: (m) => ((auxVisionProvider && typeof auxVisionProvider.supportsImages === 'function') ? auxVisionProvider.supportsImages(m) : null)"),
+      'index.js: makeImageTools asks the RUN adapter\'s supportsImages about the model image.js posts, at tool time');
+    /* Model drift (final review 2026-10-23): index.js hands makeImageTools the run's `model` BY VALUE (the studio route's
+       vision model), but promoteToolCapable and onFallback reassign the run's `let model` afterwards. A capability check
+       that read the LIVE model judged a different model than the one image.js posts: a run that began on a text-only model
+       and moved to a vision model sent the picture to the ORIGINAL text-only model -> 404. The REAL index.js thunk runs
+       here against a mutable `model`, and no image request may name a model the catalog calls text-only. */
+    {
+      const m = /\n\s*runModelSeesImages:\s*(.+),[ \t]*\r?\n/.exec(wire);
+      A.ok(!!m, 'index.js: the runModelSeesImages wiring is found');
+      for (const [label, startModel, driftTo, expectModel] of [
+        ['text-only run moves to a vision model', 'vendor/text-only', 'vendor/sees', 'google/gemini-2.5-flash'],
+        ['vision run moves to a text-only model', 'vendor/sees', 'vendor/text-only', 'vendor/sees']
+      ]) {
+        if (!m) break;
+        const host = vm.createContext({ auxVisionProvider: runAdapter, model: startModel });   // runOnceCore's `let model`
+        const thunk = vm.runInContext('(' + m[1] + ')', host);
+        const posts = [];
+        const fetchImpl = async (url, init) => {
+          const body = JSON.parse(init.body);
+          const hasImage = imagePartsIn(body) > 0;
+          posts.push({ model: body.model, hasImage });
+          if (hasImage && runAdapter.supportsImages(body.model) === false) {
+            const err = { error: { message: 'No endpoints found that support image input' } };
+            return { status: 404, ok: false, json: async () => err, text: async () => JSON.stringify(err), headers: { get: () => 'application/json' } };
+          }
+          return { status: 200, ok: true, json: async () => ({ choices: [{ message: { content: 'a red square' } }] }), headers: { get: () => 'application/json' } };
+        };
+        const T = makeImageTools({ openrouter: { apiKey: 'managed-fixture', model: host.model, baseUrl: 'https://managed.studio.test/v1', provider: 'starnet', protocol: 'openrouter-chat' },
+          fsp, pathMod: path, root: VI_WORKSPACES, fetchImpl, auxVision: async () => { throw new Error('aux must not be needed'); }, runModelSeesImages: thunk });
+        host.model = driftTo;   // promoteToolCapable / onFallback: model = toolModelRoute.model / next.model
+        let a = null, b = null, err = null;
+        try {
+          a = await T.analyzeTool.run({ image: PNG_FULL, prompt: 'what is it?' }, { agentId: 'lead' });
+          b = await T.browserVision({ imageBase64: PNG_B64, question: 'what is on screen?' });
+        } catch (e) { err = e; }
+        A.ok(!err && a && /red square/.test(a.content) && /red square/.test(b), 'model drift (' + label + '): both tools answer (' + (err && err.message) + ')');
+        A.ok(!posts.some(x => x.hasImage && runAdapter.supportsImages(x.model) === false), 'model drift (' + label + '): NO image request names a text-only model (' + JSON.stringify(posts) + ')');
+        A.eq(posts.map(x => x.model), [expectModel, expectModel], 'model drift (' + label + '): the check judges the model image.js posts, so both tools ask ' + expectModel);
+      }
+    }
     A.ok(/no vision route: this agent\\'s model cannot see images — [^']*pick a vision model in the COMMS model dock'/.test(aux) && !/new Error\('no vision route[^\n]*connect an OpenRouter key/.test(aux),
       'index.js: the aux guard names the COMMS model dock, never "connect an OpenRouter key" (a dead end on a credits run)');
   }
