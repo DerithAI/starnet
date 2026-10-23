@@ -19,7 +19,7 @@ const home = path.join(root, 'home');
 fs.mkdirSync(home, { recursive: true });
 // os.homedir() reads these: the legacy-root scan must never see the real profile
 process.env.HOME = home; process.env.USERPROFILE = home;
-const { bootstrapWorkspace } = require('../bin/starnet.js');
+const { bootstrapWorkspace, desktopWorkspaces } = require('../bin/starnet.js');
 
 let n = 0;
 function scratch() {
@@ -80,17 +80,21 @@ try {
     const r = bootstrapWorkspace(named, Object.assign({ workspace: named }, opts), s.env);
     A.ok(r.wrote, 'a workspace the operator named (--workspace) is a separate station by choice: it still boots');
   }
-  // the real command, as a shell runs it: `starnet init` on a machine whose prior station sits in an update snapshot
+  // the real command, as a shell runs it: `starnet init` on a machine whose prior station sits in an update snapshot.
+  // The snapshot goes beside the workspace the CLI itself picks on THIS OS (APPDATA on Windows, XDG_DATA_HOME on Linux,
+  // ~/Library/Application Support on macOS) — the release gate runs this on Linux.
   {
     const s = scratch();
-    const snaps = path.join(path.dirname(s.ws), 'update-snapshots');
+    const cliWs = desktopWorkspaces(s.env);
+    const snaps = path.join(path.dirname(cliWs), 'update-snapshots');
     fs.mkdirSync(snaps, { recursive: true });
     fs.writeFileSync(path.join(snaps, '20261001.starnet-backup.json'), '{}');
     const env = Object.assign({}, process.env, s.env, { HOME: home, USERPROFILE: home, STARNET_WORKSPACES: '', SKYNET_WORKSPACES: '', STARNET_DEV: '', SKYNET_DEV: '' });
     const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'starnet.js'), 'init', '--model', 'test/model'], { env, encoding: 'utf8', timeout: 60000 });
     A.eq(r.status, 3, '`starnet init` over a prior station exits 3 (' + String(r.stderr).trim() + ')');
     A.ok(/open the StarNet app to recover it/.test(r.stderr), 'and says to open the app to recover it');
-    A.eq(wrote(s.ws), [], 'nothing written');
+    A.ok(String(r.stderr).indexOf(cliWs) >= 0, 'about the workspace the app uses on this OS: ' + cliWs);
+    A.eq(wrote(cliWs), [], 'nothing written');
   }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
