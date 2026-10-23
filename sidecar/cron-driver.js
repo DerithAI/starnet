@@ -770,7 +770,8 @@
         const job = cronStore.getJob(getJobs(), f.jobId);
         if (!job) continue;
         if (leases.has(job.id)) continue;                  // already-running: not attempted, not deferred (advances)
-        if (cronStore.pendingDeliveries(job).length >= cronStore.MAX_PENDING_DELIVERIES) {
+        // undelivered results, superseded ones included: one collapsed receipt can stand for a hundred
+        if (cronStore.undeliveredCount(job) >= cronStore.MAX_PENDING_DELIVERIES) {
           deferred.push(job.id); deferredSet.add(job.id);
           try { emit('cron.skipped', { jobId: job.id, reason: 'at-capacity' }); } catch (e) { failNote('cron.delivery.defer', e); }
           skips++; continue;
