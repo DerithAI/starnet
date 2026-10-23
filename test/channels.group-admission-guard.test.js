@@ -69,12 +69,17 @@ const inbound = (userId, text, extra) => Object.assign({ channel: 'telegram', ch
   {
     const t = mkHub();
     t.store.saveChatRecord('-1001', { admittedOn: 'telegram' });
-    await t.hub.onInbound(inbound(OWNER, '/deny @spammer'));
     await t.hub.onInbound(inbound(OWNER, '/allow @newmember'));
     await t.hub.onInbound(inbound('9', '/deny @spammer'));
+    A.eq(t.sends, [], 'a no-op /allow and a member\'s moderation command say nothing into their conversation');
+    // the OWNER's /deny with something after it is not taken as ours — but an ignored close must never pass for one:
+    // the owner is told the room is still open and how to close it
+    await t.hub.onInbound(inbound(OWNER, '/deny @spammer'));
     A.eq(t.store.getChatRecord('-1001').admittedOn, 'telegram', 'the room is still admitted');
-    A.eq(t.sends, [], 'nothing was said into their conversation');
+    A.eq(t.sends.length, 1, 'one line, to the owner\'s /deny only: ' + JSON.stringify(t.sends));
+    A.ok(/still admitted/.test((t.sends[0] || {}).text || '') && /\/deny on its own/.test((t.sends[0] || {}).text || ''), 'it says the room is still open and how to close it: ' + JSON.stringify(t.sends[0]));
     A.eq(t.runs.length, 0, 'and nothing ran');
+    t.sends.length = 0;
     await t.hub.onInbound(inbound(OWNER, '/deny@halcyonbot now'));
     A.eq(t.store.getChatRecord('-1001').admittedOn, '', 'an argument WITH our own @name still works');
     await t.hub.onInbound(inbound(OWNER, '/allow'));
@@ -82,6 +87,42 @@ const inbound = (userId, text, extra) => Object.assign({ channel: 'telegram', ch
     const dm = mkHub();
     await dm.hub.onInbound(inbound(OWNER, '/allow everyone', { chatId: 'c5', chatType: 'dm' }));
     A.ok(/for groups/.test((dm.sends[0] || {}).text || ''), 'a DM keeps its answer: ' + JSON.stringify(dm.sends));
+  }
+
+  // ---- 1c. the adapter: an argument that names THIS bot ("/allow @halcyonbot" — natural in a room with several
+  //          bots) is ours, the same address as "/allow@halcyonbot"; any other name is still someone else's ----
+  {
+    const { ad } = mkAdapter({ allowedChats: () => false });
+    const adm = ad._internals.admission;
+    A.eq(adm(group({ userId: OWNER, text: '/allow @halcyonbot', mentions: ['halcyonbot'] })), 'admit', '"/allow @thisbot" admits');
+    A.eq(adm(group({ userId: OWNER, text: '/allow @HalcyonBot ', mentions: ['halcyonbot'] })), 'admit', 'whatever the case');
+    A.eq(adm(group({ userId: OWNER, text: '/allow @otherbot', mentions: ['otherbot'] })), 'drop', '"/allow @otherbot" is not ours');
+    A.eq(adm(group({ userId: OWNER, text: '/allow @halcyonbot @newmember', mentions: ['halcyonbot', 'newmember'] })), 'drop', 'nor is a list that names someone else too');
+    const anon = mkAdapter({ allowedChats: () => false, botUsername: '' });
+    A.eq(anon.ad._internals.admission(group({ userId: OWNER, text: '/allow @halcyonbot' })), 'drop', 'while our own name is unknown it cannot name us');
+  }
+
+  // ---- 2. END TO END, real adapter feeding the real hub (allow-list read from the hub's own chat record): the owner
+  //         opens and closes a room by naming this bot as the argument ----
+  {
+    const t = mkHub();
+    const { ad } = mkAdapter({
+      allowedChats: (id) => { const r = t.store.getChatRecord(id); return !!(r && r.admittedOn === 'telegram'); },
+      onInbound: (im) => { t.pending = t.hub.onInbound(im); }
+    });
+    const say = async (userId, text, mentions) => {
+      t.pending = null;
+      ad._internals.dispatch({ offset: 1, message: group({ userId, text, mentions }) });
+      if (t.pending) await t.pending;
+      await flush();
+    };
+    await say(OWNER, '/allow @halcyonbot', ['halcyonbot']);
+    A.eq((t.store.getChatRecord('-1001') || {}).admittedOn, 'telegram', '"/allow @halcyonbot" admitted the closed room');
+    A.ok(/This group is admitted/.test((t.sends[0] || {}).text || ''), 'and said so: ' + JSON.stringify(t.sends));
+    await say(OWNER, '/deny @halcyonbot', ['halcyonbot']);
+    A.eq(t.store.getChatRecord('-1001').admittedOn, '', '"/deny @halcyonbot" closed it — the owner\'s close is never ignored');
+    A.ok(/^Removed\./.test((t.sends[1] || {}).text || ''), 'and said so: ' + JSON.stringify(t.sends[1]));
+    A.eq(t.runs.length, 0, 'no run');
   }
 
   A.report('channels.group-admission-guard');

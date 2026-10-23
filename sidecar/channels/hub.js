@@ -1877,10 +1877,17 @@
         if (theirs) parsed = null;
       }
       // "/deny @spammer" in a group is another bot's command (a moderation bot's), never ours: ours takes no argument
-      // unless it names this bot ("/deny@thisbot …", which the adapter has already checked is us). Taken as ours it
-      // admitted or closed the owner's station for a room. Silent — answering would put us in their conversation.
+      // unless it names this bot — "/deny@thisbot …" (the adapter has already checked the suffix is us) or
+      // "/deny @thisbot" (the adapter marks it argNamesUs). Taken as ours it admitted or closed the owner's station for a
+      // room. Silent — answering would put us in their conversation — with ONE exception: the OWNER's /deny in a room
+      // we answer in. An ignored close fails open, so the owner is told the room is still open and how to close it.
       if (parsed && (parsed.cmd === 'allow' || parsed.cmd === 'deny') && parsed.arg && String(msg.chatType || '') === 'group'
-          && !/^\s*\/[A-Za-z]+@/.test(String(msg.text || ''))) return;
+          && !/^\s*\/[A-Za-z]+@/.test(String(msg.text || '')) && msg.argNamesUs !== true) {
+        if (parsed.cmd === 'deny' && senderIsOwner && chatAdmitted(chatId)) {
+          await deliver(chatId, '⚠ That /deny had something after it, so I left it alone — this group is still admitted. Send /deny on its own to remove me.', '', 'command');
+        }
+        return;
+      }
       if (parsed) {
         // OWNER GATE: a non-owner may talk to the agent, never reconfigure the station. Refused for free, before
         // any handler, write or slash-registry call — and said plainly, so the member knows it is a policy.
