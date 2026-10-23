@@ -7,6 +7,52 @@
    does not fit is listed in the bundle (report.skipped) and in the receipt (tooLarge). */
 const SNAPSHOT_BUDGET_BYTES = 256 * 1024 * 1024;
 
+/* PRE-UPDATE RECOVERY POINTS ARE PRUNED (bug 31db37b0). Every INSTALL UPDATE attempt — retries and failed installs too —
+   wrote another whole-station bundle into update-snapshots and nothing ever removed one (670 MB in 7 bundles on one
+   station). After a verified prepare and once at boot, the newest KEEP_SNAPSHOTS bundles (+ their receipts) stay and
+   the older ones go. Only `pre-*.starnet-backup.json` files this module wrote and their `.receipt.json` are ever touched;
+   the bundle a prepare just verified (`protect`) is never removed. They are read-only (0o400), so each is made writable
+   first. A file that cannot be removed is reported and left; pruning never fails the update. */
+const KEEP_SNAPSHOTS = 3;
+const SNAPSHOT_BUNDLE = /^pre-.+\.starnet-backup\.json$/i;
+function pruneSnapshots(o) {
+  const fs = o.fs, path = o.path, dir = o.dir;
+  const keep = Number.isFinite(o.keep) ? Math.max(1, o.keep) : KEEP_SNAPSHOTS;
+  const key = f => path.resolve(f).toLowerCase();
+  const protect = new Set((o.protect || []).filter(Boolean).map(key));
+  const removed = [], errors = [];
+  let names;
+  try { names = fs.readdirSync(dir); }
+  catch (e) { return { removed, errors: e && e.code === 'ENOENT' ? errors : [{ file: dir, code: (e && e.code) || String(e) }] }; }
+  const bundles = [];
+  for (const name of names) {
+    if (!SNAPSHOT_BUNDLE.test(name)) continue;
+    const file = path.join(dir, name);
+    let st = null;
+    try { st = fs.statSync(file); } catch (e) { errors.push({ file, code: (e && e.code) || String(e) }); }
+    if (st && st.isFile()) bundles.push({ file, mtime: Number(st.mtimeMs) || 0, name });
+  }
+  // newest first; the name carries the prepare's clock, so it breaks an mtime tie
+  bundles.sort((a, b) => b.mtime - a.mtime || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+  let slots = keep - bundles.filter(b => protect.has(key(b.file))).length;
+  for (const b of bundles) {
+    if (protect.has(key(b.file))) continue;
+    if (slots > 0) { slots--; continue; }
+    // the receipt first: a bundle left without one is still found (and retried) next time; an orphan receipt never is
+    let ok = true;
+    for (const file of [b.file + '.receipt.json', b.file]) {
+      if (!ok) break;
+      try {
+        if (!fs.existsSync(file)) continue;
+        fs.chmodSync(file, 0o600);
+        fs.unlinkSync(file);
+        removed.push(file);
+      } catch (e) { ok = false; errors.push({ file, code: (e && e.code) || String(e) }); }
+    }
+  }
+  return { removed, errors };
+}
+
 function makeUpdatePreparation(deps) {
   const d = deps || {};
   const fs = d.fs;
@@ -23,6 +69,8 @@ function makeUpdatePreparation(deps) {
   const onFreeze = typeof d.onFreeze === 'function' ? d.onFreeze : function () {};
   const onThaw = typeof d.onThaw === 'function' ? d.onThaw : function () {};
   const snapshotBudget = Number.isFinite(d.snapshotBudgetBytes) && d.snapshotBudgetBytes >= 0 ? d.snapshotBudgetBytes : SNAPSHOT_BUDGET_BYTES;
+  const keepSnapshots = Number.isFinite(d.keepSnapshots) ? Math.max(1, d.keepSnapshots) : KEEP_SNAPSHOTS;
+  const snapshotsDir = path.join(path.dirname(workspaceRoot), 'update-snapshots');
   if (!fs || !path || !recovery || typeof recovery.capture !== 'function' || typeof writeDurable !== 'function') {
     throw new Error('update-preparation: fs, path, recovery, and writeDurable are required');
   }
@@ -145,7 +193,9 @@ function makeUpdatePreparation(deps) {
       try { fs.chmodSync(receiptFile, 0o400); } catch (_) {}
       nextReceipt.receiptFile = receiptFile;
       receipt = nextReceipt;
-      return { ok: true, frozen: true, receipt: nextReceipt };
+      // only now that this recovery point is verified on disk do the older ones go
+      const pruned = pruneSnapshots({ fs: fs, path: path, dir: dir, keep: keepSnapshots, protect: [bundleFile] });
+      return { ok: true, frozen: true, receipt: nextReceipt, pruned: pruned.removed.length };
     } catch (e) {
       // cancelled mid-drain: cancel() already thawed, and the barrier may now belong to a NEWER prepare — never touch it
       if (gen !== generation) return { ok: false, frozen: frozen, code: 'UPDATE_PREPARATION_CANCELLED', error: 'the update was cancelled' };
@@ -159,7 +209,12 @@ function makeUpdatePreparation(deps) {
   function cancel() { generation++; frozen = false; receipt = null; try { onThaw(); } catch (_) {} return { ok: true, frozen: false }; }
   function status() { return { frozen: frozen, activeMutations: activeMutations, completedMutations: completedMutations, receipt: receipt }; }
 
-  return { beginRequest: beginRequest, prepare: prepare, cancel: cancel, status: status, isFrozen: function () { return frozen; } };
+  // the boot-time pass (index.js): the live receipt's bundle, if any, is never a candidate
+  function pruneOld() {
+    return pruneSnapshots({ fs: fs, path: path, dir: snapshotsDir, keep: keepSnapshots, protect: receipt && receipt.snapshot ? [receipt.snapshot.file] : [] });
+  }
+
+  return { beginRequest: beginRequest, prepare: prepare, cancel: cancel, status: status, pruneSnapshots: pruneOld, isFrozen: function () { return frozen; } };
 }
 
-module.exports = { makeUpdatePreparation: makeUpdatePreparation, SNAPSHOT_BUDGET_BYTES: SNAPSHOT_BUDGET_BYTES };
+module.exports = { makeUpdatePreparation: makeUpdatePreparation, SNAPSHOT_BUDGET_BYTES: SNAPSHOT_BUDGET_BYTES, KEEP_SNAPSHOTS: KEEP_SNAPSHOTS, pruneSnapshots: pruneSnapshots };

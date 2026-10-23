@@ -11333,6 +11333,10 @@ updatePreparation = makeUpdatePreparation({
   abortRuns: () => updateAbortLiveRuns(),
   appVersion: () => { try { return computeVersionSurface().appVersion || computeVersionSurface().harness || 'unknown'; } catch (_) { return 'unknown'; } }
 });
+// bug 31db37b0: once per boot, pre-update recovery points beyond the newest three are removed (every install attempt left one)
+try {
+  for (const miss of updatePreparation.pruneSnapshots().errors) failNote('update.snapshots.prune', Object.assign(new Error('could not remove ' + miss.file), { code: miss.code }));
+} catch (e) { failNote('update.snapshots.prune', e); }
 
 const server = http.createServer((req, res) => {
   // DNS-REBINDING FLOOR ON EVERY PATH (2026-09-23 security audit). The Host pin used to guard only /api/* (and
