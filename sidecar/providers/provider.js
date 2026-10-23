@@ -608,15 +608,45 @@
     return null;
   }
   /* Every image part (image_url — the shape attachments, channel photos and tool screenshots all use — or a Responses
-     input_image / Anthropic image block) becomes ONE short text note per run of images, which the model can act on:
-     say so, reach for an image-analysis tool, or send the Commander to a vision model. Never mutates the caller's
-     transcript; a transcript with no image part returns by IDENTITY (request bytes unchanged). */
+     input_image / Anthropic image block) becomes a short text note the model can act on: say so, read the saved file
+     with an image-analysis tool, or send the Commander to a vision model. Never mutates the caller's transcript; a
+     transcript with no image part returns by IDENTITY (request bytes unchanged).
+
+     WHERE THE IMAGE IS. A COMMS or channel attachment rides as a bare data: URL, so the note alone could not say which
+     file it was or where it lives, and "use an image-analysis tool" sent the model guessing paths. attachments.js
+     tags each image part it builds with tagImageSource(part, { name, path }) — the upload's name and the ABSOLUTE path
+     of its saved copy in the agent's own workspace (pathtrust lets any run of that agent read it, project-scoped or
+     not). The tag is a Symbol-keyed property: JSON.stringify and Object.keys never see it, so it never reaches a wire
+     or changes a vision model's request bytes, and a spread copy keeps it. A tagged image gets its own note naming the
+     file and the path; untagged images (a screenshot, an image tool result) share one note per run that offers the
+     image-analysis route only for a saved file the conversation itself names. */
   const IMAGE_PART_TYPES = { image_url: 1, input_image: 1, image: 1 };
-  function imageOmittedNote(count, model) {
+  const IMAGE_SOURCE = Symbol.for('starnet.imageSource');
+  function tagImageSource(part, source) {
+    if (!part || typeof part !== 'object' || !source || typeof source !== 'object') return part;
+    const path = String(source.path || '').trim();
+    if (path) part[IMAGE_SOURCE] = { name: String(source.name || '').trim(), path };
+    return part;
+  }
+  function imageSourceOf(part) {
+    const s = part && typeof part === 'object' ? part[IMAGE_SOURCE] : null;
+    return (s && typeof s === 'object' && typeof s.path === 'string' && s.path) ? s : null;
+  }
+  // the upload's NAME (sender-chosen) goes into a bracketed note: one line, no bracket that could end it early, bounded.
+  // The PATH is host-made and must stay exact to be usable, so it loses only control characters.
+  function noteSafe(text, max) { return String(text || '').replace(/[\u0000-\u001f\u007f\[\]]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max); }
+  function pathSafe(text) { return String(text || '').replace(/[\u0000-\u001f\u007f]+/g, '').trim(); }
+  function imageOmittedNote(count, model, source) {
+    const who = (model ? String(model) : 'this model') + ' cannot take image input, so ';
+    if (source && source.path) {
+      const name = noteSafe(source.name, 120);
+      return '[image omitted' + (name ? ': ' + name : '') + ' — ' + who + 'it was not sent. It is saved at ' + pathSafe(source.path)
+        + ' — to see what it shows, run an image-analysis tool (image_analyze) on that path if you have one, or tell the Commander to pick a vision model in the COMMS model dock.]';
+    }
     const what = count > 1 ? count + ' images omitted' : 'image omitted';
-    return '[' + what + ' — ' + (model ? String(model) : 'this model') + ' cannot take image input, so '
-      + (count > 1 ? 'they were' : 'it was') + ' not sent. If you need what ' + (count > 1 ? 'they show' : 'it shows')
-      + ', use an image-analysis tool if you have one, or tell the Commander to pick a vision model in the COMMS model dock.]';
+    return '[' + what + ' — ' + who + (count > 1 ? 'they were' : 'it was') + ' not sent. If you need what ' + (count > 1 ? 'they show' : 'it shows')
+      + ', tell the Commander to pick a vision model in the COMMS model dock; an image-analysis tool can read ' + (count > 1 ? 'them' : 'it')
+      + ' only from a saved file this conversation names.]';
   }
   function withoutImageParts(messages, model) {
     if (!Array.isArray(messages)) return messages;
@@ -628,7 +658,13 @@
       let run = 0;
       const flush = () => { if (run) { parts.push({ type: 'text', text: imageOmittedNote(run, model) }); run = 0; } };
       for (const p of m.content) {
-        if (p && typeof p === 'object' && IMAGE_PART_TYPES[p.type] === 1) { run++; continue; }
+        if (p && typeof p === 'object' && IMAGE_PART_TYPES[p.type] === 1) {
+          const src = imageSourceOf(p);
+          if (!src) { run++; continue; }
+          flush();
+          parts.push({ type: 'text', text: imageOmittedNote(1, model, src) });
+          continue;
+        }
         flush();
         parts.push(p);
       }
@@ -875,5 +911,5 @@
     RUN_CONTEXT_OPEN, RUN_CONTEXT_CLOSE, runContextNote, isRunContextNote, CREW_CALL_OPEN, CREW_CALL_CLOSE, crewCallFence, isCrewCallNote,
     HOST_NOTE_TAGS, isHostNote, isClaudeModel, userSideHostNotes, chatRoleProjection, inertHostTags, inertHostFences,
     prepareWireMessages, remapToolCallIds, ANTHROPIC_TOOL_ID, chatWireMessages, CHAT_WIRE_KEYS,
-    imageInputOf, withoutImageParts, imageOmittedNote, noteImageRefusal, refusedImages };
+    imageInputOf, withoutImageParts, imageOmittedNote, noteImageRefusal, refusedImages, IMAGE_SOURCE, tagImageSource, imageSourceOf };
 });
