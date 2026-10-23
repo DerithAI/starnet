@@ -721,15 +721,16 @@
       }
       return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, provider: providerFromRaw(raw), raw: raw };
     }
-    /* an UPSTREAM provider's 403 (xai-403-1023): the router took our key and credits, and the provider behind it refused
-       this request (xAI's safety check answers this way; the managed proxy keeps no reason). Say exactly that — the
-       model dock door stays (another model may answer); a region refusal keeps the model-unavailable copy. */
+    /* an UPSTREAM provider's 403 (xai-403-1023): the router (StarNet Cloud or OpenRouter) passed the request on, so the
+       account and credits checks were met, and the provider behind it refused this request (xAI's safety check answers
+       this way; the managed proxy keeps no reason). Say exactly that, never "your key" (a StarNet-credits user has
+       none) — the model dock door stays (another model may answer); a region refusal keeps the model-unavailable copy. */
     if (kind === 'model_not_found') {
       const low = raw.toLowerCase();
       if (/\bhttp 403\b/.test(low) && UPSTREAM_NAMED_RE.test(low) && !REGION_REFUSAL_RE.test(low)) {
         const who = upstreamName(raw);
         const userMessage = (who ? who + ', the provider serving this model,' : 'The provider serving this model')
-          + ' refused this request (HTTP 403), so the model did not answer — your key and credits were accepted. Try rephrasing it, or pick a different model from the model dock in COMMS.';
+          + ' refused this request (HTTP 403), so the model did not answer. This is not a problem with your account or credits. Try rephrasing it, or pick a different model from the model dock in COMMS.';
         return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, raw: raw };
       }
     }
