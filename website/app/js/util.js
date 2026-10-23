@@ -44,6 +44,40 @@ const U = {
     return z > 0 ? z : U.uiZoom();
   },
 
+  /* POINTER RECT — an element's box in the SAME px as a pointer event's clientX/clientY, for every
+     clientX -> canvas mapping. clientX is VISUAL px in every engine, and so is getBoundingClientRect in
+     Chromium/WebView2 — but WebKit (the macOS app window, Safari, WebKitGTK) still returns the rect with
+     the TEXT SIZE body zoom LEFT OUT. (clientX - r.left) * (cv.width / r.width) then lands down-right of
+     the cursor, worse the farther from the canvas origin (09-26: a centre click read 720,484 for
+     600,400 on a 1470pt MacBook Air, whose AUTO text size is 115%). Where the engine's rects already
+     carry the zoom this returns the very rect it read, untouched; where they leave it out, the rect
+     scaled by the zoom the element renders at. Which engine this is gets asked ONCE, by a probe under
+     zoom:2 — never inferred from live layout a transform or a mid-resize read could fool. */
+  _rectsCarryZoom: null,
+  rectsCarryZoom() {
+    if (U._rectsCarryZoom !== null) return U._rectsCarryZoom;
+    const host = (typeof document !== 'undefined' && document) ? document.documentElement : null;
+    if (!host || typeof document.createElement !== 'function') return true;   // no engine to ask: leave rects alone
+    let probe = null;
+    try {
+      probe = document.createElement('div');
+      probe.style.cssText = 'position:absolute;left:-9999px;top:0;width:10px;height:10px;zoom:2;visibility:hidden;pointer-events:none';
+      host.appendChild(probe);
+      const w = probe.getBoundingClientRect().width;
+      if (w > 0) U._rectsCarryZoom = w > 15;   // 20 = the zoom is in the rect; 10 = the engine left it out
+    } catch (_) { /* unanswerable: treat as carrying (the unchanged mapping) */ }
+    finally { if (probe && probe.parentNode) probe.parentNode.removeChild(probe); }
+    return U._rectsCarryZoom !== null ? U._rectsCarryZoom : true;
+  },
+  pointerRect(el) {
+    const r = el.getBoundingClientRect();
+    if (U.rectsCarryZoom()) return r;
+    const z = U.elZoom(el);
+    if (!(z > 0) || z === 1) return r;
+    return { left: r.left * z, top: r.top * z, right: r.right * z, bottom: r.bottom * z,
+      width: r.width * z, height: r.height * z, x: r.left * z, y: r.top * z };
+  },
+
   /* shared window stacking order — every floating window (UI terms + prop
      terminals) pulls from one counter so click-to-front works across both */
   _z: 500,

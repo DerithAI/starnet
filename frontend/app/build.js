@@ -4329,7 +4329,7 @@ const Build = (() => {
     return sendTestBoxes(e);
   }
   // a floor tile's centre in client px (the same mapping the dev hooks' _tileEvent uses) — where a tip about that tile is said
-  const tileClient = (tx, ty) => { const t = T(), r = cv.getBoundingClientRect(); return { clientX: r.left + ((tx + 0.5) * t * zoom + panX) * (r.width / cv.width), clientY: r.top + ((ty + 0.5) * t * zoom + panY) * (r.height / cv.height) }; };
+  const tileClient = (tx, ty) => { const t = T(), r = U.pointerRect(cv); return { clientX: r.left + ((tx + 0.5) * t * zoom + panX) * (r.width / cv.width), clientY: r.top + ((ty + 0.5) * t * zoom + panY) * (r.height / cv.height) }; };
   function sendTestBoxes(ev, auto, agentId) {
     if (!convey) return false;
     // reach-verified mouth first; the doc-order intake only for a MANUAL test on a floor where
@@ -5166,7 +5166,7 @@ const Build = (() => {
   }
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
   function toCanvas(ev) {
-    const r = cv.getBoundingClientRect();
+    const r = U.pointerRect(cv);   // clientX's px, also on WebKit under TEXT SIZE (U.pointerRect)
     return { x: (ev.clientX - r.left) * (cv.width / r.width), y: (ev.clientY - r.top) * (cv.height / r.height) };
   }
   function toWorldTile(ev) {
@@ -9738,7 +9738,7 @@ const Build = (() => {
     // client-pixel for a tile CENTER, inverting the live camera (screen = world*zoom + pan) so a
     // synthetic pointer lands exactly on [tx,ty] — same math toWorldTile uses, run backwards.
     _tileEvent: ([tx, ty], button) => {
-      const t = T(), r = cv.getBoundingClientRect();
+      const t = T(), r = U.pointerRect(cv);
       return { button: button == null ? 0 : button, pointerId: 1,
         clientX: r.left + ((tx + 0.5) * t * zoom + panX) * (r.width / cv.width),
         clientY: r.top + ((ty + 0.5) * t * zoom + panY) * (r.height / cv.height) };
