@@ -132,3 +132,10 @@ f2bc03e7693fca7ac361fef94cc8094f9d12d6b1:test/redact.linear.test.js:private-key:
 d43ab06e62b5b3a51c4a37820477fd7b06a2dc9a:test/onepassword.test.js:stripe-access-token:56
 d43ab06e62b5b3a51c4a37820477fd7b06a2dc9a:test/onepassword.test.js:generic-api-key:50
 d43ab06e62b5b3a51c4a37820477fd7b06a2dc9a:test/onepassword.test.js:generic-api-key:51
+# 0.14.0 night fixes (reviewed 2026-10-23): five hits, all the literal placeholder key 'sk-or-v1-fixture' passed to a mock
+# OpenRouter provider aimed at .test hosts (provider-403-upstream-refusal and vision-input tests).
+5c832f5f82c61b29af8712557b1c5f0338565e37:test/provider-403-upstream-refusal.test.js:generic-api-key:111
+31aedfb9d65e80b5c68218afa4cb7843dbe5ad02:test/provider-403-upstream-refusal.test.js:generic-api-key:44
+9b2b1c9352f0dfb05bce280dc241ebfe2174b637:test/vision-input.test.js:generic-api-key:297
+cff098ae174fb5a68c63e88c2483dbcef4272386:test/vision-input.test.js:generic-api-key:117
+cff098ae174fb5a68c63e88c2483dbcef4272386:test/vision-input.test.js:generic-api-key:153
