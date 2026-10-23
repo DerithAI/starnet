@@ -416,6 +416,11 @@
   const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?|credit balance is too low|key limit exceeded/;
   // mirrored from errorClass.js: an upstream region refusal is the model being unavailable here, not a bad key
   const REGION_REFUSAL_RE = /unsupported_country_region_territory|country,? region,? or territory not supported|not available in your (?:country|region)/;
+  /* mirrored from errorClass.js (IMAGE_INPUT_REFUSED_RE) — keep the two in step: an image sent to a model that cannot see
+     it (OpenRouter 404 "No endpoints found that support image input", 2026-10-23). Not "that model isn't available":
+     the model is fine, the image is what it refused, and a vision model is the fix. */
+  const IMAGE_INPUT_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`/;
+  const IMAGE_INPUT_MSG = "This model can't see images — pick a vision model from the model dock in COMMS, then send again.";
   // a provider adapter's own failure sentence ("openrouter http 403 — …", "openai-compatible http 403 - …")
   const PROVIDER_HTTP_RE = /\b(?:openrouter|anthropic|gemini|codex|openai-compatible|grok \(xai\)|kimi for coding|xai) http \d{3}\b/;
   // the ONE sentence both classifier paths use for "no model is picked": the sidecar guard and the page preflight
@@ -468,6 +473,8 @@
     if (/content[ _]?policy|moderation|flagged|safety|content_filter/.test(low)) return 'content_policy_blocked';
     // HTTP status from "sidecar HTTP <status>" or an explicit status arg
     const s = status || (low.match(/\b(?:http|status)\s+(\d{3})\b/) ? Number(RegExp.$1) : null);
+    // an image refused by a model that cannot see it, whatever status carried it (errorClass.js reads it the same way)
+    if (IMAGE_INPUT_RE.test(low) && !(s === 429 || s === 408 || (s >= 500 && s < 600))) return 'model_not_found';
     if (s) {
       // OUR OWN sidecar's token gate (crash+respawn → stale X-StarNet-Token): a "sidecar HTTP 403" throw or a
       // "forbidden token/origin/host" body means reload for the fresh boot token — never the provider-key door.
@@ -739,6 +746,10 @@
     // arm COMMS's reconnect watch. An unmarked text keeps the network copy but never claims the connection was lost.
     if (kind === 'network') {
       return { userMessage: transportMessage(engineAlive), kind: kind, retryable: k.retryable, action: k.action, raw: raw, engineAlive: engineAlive, transport: transport };
+    }
+    // the model refused an IMAGE, not the request: say so, and the same model-dock door picks a vision model
+    if (kind === 'model_not_found' && IMAGE_INPUT_RE.test(raw.toLowerCase())) {
+      return { userMessage: IMAGE_INPUT_MSG, kind: kind, retryable: k.retryable, action: k.action, raw: raw };
     }
     return { userMessage: k.msg, kind: kind, retryable: k.retryable, action: k.action, raw: raw };
   }
