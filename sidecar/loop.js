@@ -1321,6 +1321,13 @@
        aborted (its phase, how long it had lasted on the injected clock, the adapter's note) is kept here and returned as
        `cancelledWhile`, for the run record. A wait the Commander had already seen output in (paused) is not recorded. */
     let abortedWait = null;
+    /* A STOP THAT CUT A MODEL CALL OFF MID-STREAM (bug 80de2a75). The provider bills a call from its first streamed byte,
+       but the call's full usage arrives only as the stream ends, so a cancel that cut an attempt off after it began
+       streaming leaves that call booked short (nothing, or Anthropic's message_start input only). Returned as
+       `streamCut` on a cancelled result, so the run record says its spend is a floor (or unknown), never a known
+       figure. A cancel before the first byte, between calls, or after a stream had closed does not set it, nor does
+       a cut call its adapter said bills nothing per call ({ type:'billing', perCall:false }: a subscription sign-in). */
+    let streamCut = false;
     function waitClock() {
       try { const t = Number(clock.now()); return isFinite(t) ? t : 0; }
       catch (e) { failNote('loop.wait.clock', e); return 0; }
@@ -1532,6 +1539,7 @@
         out.budgetNote = 'stopped: ' + endPayload.subscriptionTokens.toLocaleString('en-US') + ' subscription tokens on ' + endPayload.subscriptionModel + ' (cache re-reads count 1/10) reached the ' + endPayload.subscriptionCapTokens.toLocaleString('en-US') + '-token per-run ceiling (SETTINGS > APP & BACKUP > Runtime limits, or STARNET_MAX_SUBSCRIPTION_TOKENS)';
       }
       if (reason === 'cancelled' && abortedWait) out.cancelledWhile = Object.assign({}, abortedWait);   // #99: what the cancel interrupted
+      if (reason === 'cancelled' && streamCut) out.streamCut = true;   // 80de2a75: a call's usage never arrived (see streamCut)
       if (extra && extra.failureStage) out.failureStage = String(extra.failureStage).slice(0, 80);
       if (extra && extra.failureCode) out.failureCode = String(extra.failureCode).slice(0, 80);
       if (extra && extra.failureUnsupportedPart === true) out.failureUnsupportedPart = true;
@@ -2030,6 +2038,8 @@
         let streamErr = null;
         let sawTruncation = false;
         let sawStreamEvent = false;   // any event from this attempt's stream: provider.retry `stage` + the waiting phase
+        let streamClosed = false;     // the provider's stream ran to its own end (not cut off by a cancel)
+        let billedPerCall = true;     // false once the adapter says this call bills nothing per call (a subscription sign-in)
         /* The wait this attempt opens ends at the first visible output (a streamed token) or when the attempt
            settles. A retried attempt announces itself with an immediate sinceMs:0 beat, so a "retry in 30s"
            line is replaced the moment the retry actually goes out instead of lingering until the next tick. */
@@ -2046,6 +2056,7 @@
           for await (const ev of provider.stream(req)) {
             if (signal.aborted) break;
             if (ev.type === 'waiting') { waiting.note(ev.phase, ev.note); continue; }   // the adapter's wait facts, not stream output (#99)
+            if (ev.type === 'billing') { if (ev.perCall === false) billedPerCall = false; continue; }   // the adapter's billing fact for this call, not stream output (80de2a75)
             if (!sawStreamEvent) { sawStreamEvent = true; waiting.phase('streaming'); }
             if (ev.type === 'text') {
               const delta = String(ev.delta == null ? '' : ev.delta);
@@ -2072,8 +2083,11 @@
             else if (ev.type === 'done') { lastFinishReason = ev.finishReason; sawTruncation = !!ev.truncated; }   // A3: remember WHY the turn stopped
             // 'tool_done' needs no action here
           }
+          streamClosed = !signal.aborted;
         } catch (e) { streamErr = e; }
         finally { waiting.stop(); }
+        // a call that bills nothing per call (claude-cli on a subscription sign-in) cost nothing when cut: never a floor
+        if (signal.aborted && sawStreamEvent && !streamClosed && billedPerCall) streamCut = true;
         if (!streamErr) {
           // TRUNCATED STREAM (truthful-telemetry law). The response body ended CLEANLY mid-generation: the
           // adapter observed neither its protocol's end-of-stream sentinel nor a finish_reason. There is no

@@ -189,6 +189,7 @@ test/loop.turn-budget.test.js
 test/loop.provider-recovery.test.js
 test/loop.failure-recovery.test.js
 test/loop.stop-means-stop.test.js
+test/loop.stream-cut.test.js
 test/output-continuation.test.js
 test/compaction.test.js
 test/compaction-summarizer.test.js
@@ -429,6 +430,8 @@ test/transcript-history-v2.test.js
 test/transcript-perf-paths.test.js
 test/recall.test.js
 test/session-tombstones.test.js
+test/transcript-selftalk.test.js
+test/transcript-proof-reads.test.js
 test/fs.jail.test.js
 test/fs.search-gitignore.test.js
 test/fs.search-budget.test.js
@@ -548,6 +551,7 @@ test/bottle-wiring.test.js
 test/resummonstore.test.js
 test/pitch.test.js
 test/pitchstore.test.js
+test/first-task-recall.test.js
 test/suggeststore.test.js
 test/beat-coordination.test.js
 test/beatcard.test.js

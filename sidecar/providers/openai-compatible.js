@@ -862,6 +862,7 @@
       // This turn's reasoning_content (replayReasoning endpoints only), parked on the turn as ONE block just before
       // the terminal event, so the next request can hand it back (see replayReasoningContent).
       let reasoningText = '';
+      let reasoningSeen = false;   // this stream already said reasoning is streaming (emitFrom)
       function* flushReasoning() {
         if (!replayReasoning || !reasoningText) return;
         noteEmitter(baseUrl, req.model);
@@ -881,6 +882,12 @@
         if (!choice) return;
         const d = choice.delta || choice.message || {};
         if (replayReasoning && typeof d.reasoning_content === 'string' && d.reasoning_content) reasoningText += d.reasoning_content;
+        /* REASONING IS STREAM OUTPUT (80de2a75 review). A reasoning model (deepseek-reasoner, OpenRouter's reasoning
+           models, Ollama thinking) streams reasoning (billed output) for seconds or minutes before any answer text, and
+           nothing here showed it: a Stop in that phase looked like a Stop before the first byte, a known $0 run. The
+           first reasoning chunk says so once as a blockless { type:'reasoning' } (the loop parks only a block). */
+        if (!reasoningSeen && ((typeof d.reasoning_content === 'string' && d.reasoning_content) || (typeof d.reasoning === 'string' && d.reasoning)
+          || (Array.isArray(d.reasoning_details) && d.reasoning_details.length))) { reasoningSeen = true; yield { type: 'reasoning' }; }
         if (typeof d.content === 'string' && d.content) yield { type: 'text', delta: d.content };
         if (Array.isArray(d.tool_calls)) {
           for (const tc of d.tool_calls) {

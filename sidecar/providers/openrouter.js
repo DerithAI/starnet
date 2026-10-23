@@ -354,6 +354,7 @@
       let buf = '';
       const started = {};   // index -> true once tool_start has been emitted
       let doneEmitted = false;   // exactly one terminal event per stream (see STREAM-END TRUTH below)
+      let reasoningSeen = false;   // this stream already said reasoning is streaming (emitFrom)
 
       // parse ONE raw SSE line into either a control signal or its JSON payload
       function parseLine(line) {
@@ -382,6 +383,10 @@
         const choice = j.choices && j.choices[0];
         if (choice && choice.delta) {
           const d = choice.delta;
+          // reasoning (billed output, not shown) streams before the answer: say so once, so a Stop in that phase is a
+          // cut call, never a known $0 (80de2a75 review; same rule as openai-compatible emitFrom)
+          if (!reasoningSeen && ((typeof d.reasoning === 'string' && d.reasoning) || (typeof d.reasoning_content === 'string' && d.reasoning_content)
+            || (Array.isArray(d.reasoning_details) && d.reasoning_details.length))) { reasoningSeen = true; yield { type: 'reasoning' }; }
           if (typeof d.content === 'string' && d.content) yield { type: 'text', delta: d.content };
           if (Array.isArray(d.tool_calls)) {
             for (const tc of d.tool_calls) {

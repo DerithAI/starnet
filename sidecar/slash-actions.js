@@ -358,6 +358,9 @@ function makeSlashActions(deps) {
     const plural = n => n + ' run' + (n === 1 ? '' : 's');
     const outside = [unpriced ? plural(unpriced) + ' on models with no published price' : '', unmetered ? plural(unmetered) + ' on a subscription' : ''].filter(Boolean);
     if (outside.length) lines.push(outside.join(' and ') + ' — their cost is not in these dollars.');
+    // runs stopped mid-answer: the provider bills the call that was cut off, but its usage never arrived (80de2a75)
+    const cut = Number(s.usageMissingRuns) || 0;
+    if (cut) lines.push(plural(cut) + ' stopped mid-answer before the provider reported usage — the dollars above are at least what was spent.');
     // The point of moving this server-side: say WHOSE numbers these are, so the figure is not read as
     // "what I watched happen in this window".
     lines.push('From the station ledger — includes routines, away shifts and messaging runs, not just this window.');

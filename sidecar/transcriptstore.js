@@ -203,6 +203,40 @@
       return at > 0 && num(r.ts) <= at;
     }
     function keep(list) { return deletedAt ? list.filter(r => !forgotten(r)) : list; }
+    /* THE STATION'S SELF-TALK IS NOT DIALOGUE (bug 4dee26ba). A reason-only internal call with no workstream (the quiet
+       title, the goal judge, pitch, autopilot, …) is filed in 'global'. Its rows are stamped dispatchState 'internal'
+       (runOnce), and the readers that hand rows to a model as conversation (search, around) skip them, so recall never
+       quotes them as the Commander's words — and a deleted session's opening lines never live on there through the
+       title prompt. Rows a station wrote before the stamp existed are recognised by the fixed shapes of those prompts,
+       in 'global' only (the same words in a named session are the Commander's). Nothing is deleted. */
+    function legacyPrompt(r) {
+      if (!r || r.streamId !== 'global' || r.role !== 'user') return false;
+      const c = str(r.content);
+      return c.indexOf('\n\nAssistant reply (context only): ') >= 0 || c.startsWith('INTERNAL —')
+        || (c.startsWith('Goal:\n') && /Is the goal satisfied — done or continue\?$/.test(c));
+    }
+    /* A pre-stamp self-talk REPLY (the title itself, the goal judge's verdict restating the goal) has no shape of its
+       own: it is known by its run, the sourceRunId of a recognised prompt. Learned from every row this store loads,
+       appends or reads back, and once from disk (learnFromDisk) before the first search or scroll that can reach
+       'global' rows RAM never held. */
+    const selfTalkRuns = new Set();
+    function learn(r) { if (r && r.sourceRunId && legacyPrompt(r)) selfTalkRuns.add(str(r.sourceRunId)); }
+    let learnedFromDisk = false;
+    function learnFromDisk() {
+      if (learnedFromDisk || typeof io.search !== 'function') return;
+      learnedFromDisk = true;
+      // the segment index offers every 'global' row holding one of the prompts' fixed words to `exclude` before it
+      // ranks it: exclude learns it and declines it, so nothing is ranked or returned
+      try { io.search('global', 'context internal satisfied', { limit: 1, scope: 'stream', exclude: r => { learn(r); return true; } }); }
+      catch (e) { failNote('transcript.io', e); }
+    }
+    function selfTalk(r) {
+      if (!r) return false;
+      if (r.dispatchState === 'internal') return true;
+      if (r.streamId === 'global' && r.sourceRunId && selfTalkRuns.has(str(r.sourceRunId))) return true;
+      return legacyPrompt(r);
+    }
+    function hidden(r) { return forgotten(r) || selfTalk(r); }
 
     // in-memory mirror loaded once; append keeps RAM + disk in lockstep so history() is O(n) over RAM.
     let rows = [];
@@ -216,6 +250,7 @@
     }
     catch (e) { rows = []; }
     // trim the boot load per-stream too, so a huge bounded-boot load of one stream can't start us over the cap.
+    for (const r of rows) learn(r);   // before the trims: a prompt the boot load held still names its run's reply
     trimStreamRam();   // no arg => sweep every over-cap stream once
     trimGlobalRam();
 
@@ -275,14 +310,15 @@
       const all = o.scope === 'all';
       const want = normStream(streamId);
       if (typeof io.search === 'function') {
-        // the segment index ranks among the rows it may return (exclude), so a deleted session never takes a slot
-        try { return keep(io.search(want, query, { limit: limit, scope: all ? 'all' : 'stream', exclude: deletedAt ? forgotten : undefined }) || []); } catch (e) { failNote('transcript.io', e); }
+        // the segment index ranks among the rows it may return (exclude), so a deleted session or self-talk never takes a slot
+        if (all || want === 'global') learnFromDisk();
+        try { return (io.search(want, query, { limit: limit, scope: all ? 'all' : 'stream', exclude: hidden }) || []).filter(r => !hidden(r)); } catch (e) { failNote('transcript.io', e); }
       }
       const scored = [];
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
         if (!all && r.streamId !== want) continue;
-        if (forgotten(r)) continue;
+        if (hidden(r)) continue;
         // a null-prototype map: `{}`['constructor'] is Object, so that query word "matched" every row with a string score
         const tf = Object.create(null); for (const t of tokenize(r.content)) tf[t] = (tf[t] || 0) + 1;
         let distinct = 0, freq = 0;
@@ -304,7 +340,7 @@
       if (typeof io.streams === 'function') {
         // the segment summaries count and preview every row: a deleted session drops out, and one re-opened after its
         // delete is listed from the rows said since (history() already forgets the rest)
-        try { return deletedAt ? liveStreams(io.streams({ limit: 100, previewChars: previewMax }) || [], previewMax).slice(0, limit) : (io.streams({ limit: limit, previewChars: previewMax }) || []); } catch (e) { failNote('transcript.io', e); }
+        try { return globalPreview(deletedAt ? liveStreams(io.streams({ limit: 100, previewChars: previewMax }) || [], previewMax).slice(0, limit) : (io.streams({ limit: limit, previewChars: previewMax }) || []), previewMax); } catch (e) { failNote('transcript.io', e); }
       }
       const by = new Map();
       for (let i = 0; i < rows.length; i++) {
@@ -314,7 +350,7 @@
         if (!e) { e = { streamId: r.streamId, turns: 0, lastAt: 0, preview: '' }; by.set(r.streamId, e); }
         e.turns++;
         if (r.ts >= e.lastAt) e.lastAt = r.ts;
-        const preview = conversationPreview(r);
+        const preview = selfTalk(r) ? '' : conversationPreview(r);
         if (preview) {
           e.preview = preview.replace(/\s+/g, ' ').trim().slice(0, previewMax);
           e.previewTaint = r.taint || ''; e.previewTaintKnown = r.taintKnown === true || !!r.taint;
@@ -323,6 +359,29 @@
       const out = Array.from(by.values());
       out.sort((a, b) => (b.lastAt - a.lastAt) || (a.streamId < b.streamId ? -1 : a.streamId > b.streamId ? 1 : 0));
       return out.slice(0, limit);
+    }
+    /* 'global' is where the station's self-talk is filed, so its listing preview is never the segment summary's: that
+       keeps the latest user row cut to 160 characters, and a pre-stamp title prompt or goal judge whose opening is a long
+       first message loses the very marker that names it as self-talk — the listing then quoted that session's opening
+       line, even a deleted session's. The preview is re-read from the stream's own newest rows (deletes honoured), the
+       newest that is not self-talk; none among them lists with no preview. */
+    const GLOBAL_PREVIEW_SCAN = 200;
+    function globalPreview(list, previewMax) {
+      return list.map(s => {
+        if (!s || s.streamId !== 'global') return s;
+        const e = Object.assign({}, s, { preview: '', previewTaint: '', previewTaintKnown: false });
+        const recent = history('global', { limit: GLOBAL_PREVIEW_SCAN });
+        for (let i = recent.length - 1; i >= 0; i--) {
+          const r = recent[i];
+          const preview = selfTalk(r) ? '' : conversationPreview(r);
+          if (!preview) continue;
+          // the segment summary's own bound (160), so a listing reads the same as before for every ordinary row
+          e.preview = preview.replace(/\s+/g, ' ').trim().slice(0, Math.min(160, previewMax));
+          e.previewTaint = r.taint || ''; e.previewTaintKnown = r.taintKnown === true || !!r.taint;
+          break;
+        }
+        return e;
+      });
     }
     function liveStreams(list, previewMax) {
       const out = [];
@@ -353,10 +412,11 @@
       const want = normStream(streamId);
       const at = num(ts);
       if (typeof io.around === 'function') {
-        try { return keep(io.around(want, ts, { window: win, rowId: o.rowId }) || []); } catch (e) { failNote('transcript.io', e); }
+        if (want === 'global') learnFromDisk();
+        try { const got = io.around(want, ts, { window: win, rowId: o.rowId }) || []; got.forEach(learn); return got.filter(r => !hidden(r)); } catch (e) { failNote('transcript.io', e); }
       }
       const mine = [];
-      for (let i = 0; i < rows.length; i++) { if (rows[i].streamId === want && !forgotten(rows[i])) mine.push(rows[i]); }
+      for (let i = 0; i < rows.length; i++) { if (rows[i].streamId === want && !hidden(rows[i])) mine.push(rows[i]); }
       if (!mine.length) return [];
       // the row closest to the anchor (mine is append-ordered, so ties resolve to the earliest match — stable).
       let anchor = 0, best = Infinity;
@@ -427,6 +487,7 @@
         /* ordinary transcript writes remain fail-open; recovery-owned finalization uses appendStrict below */
       }
       rows.push(stored);
+      learn(stored);
       trimStreamRam(stored.streamId);   // bound THIS stream's RAM only (per-stream fairness; disk keeps full log)
       trimGlobalRam();                  // and bound the aggregate across thousands of short streams
       return stored;
@@ -592,8 +653,13 @@
 
     // the recent dialogue for ONE workstream, oldest-first (ready to replay back into COMMS). We keep the LAST
     // `limit` turns of that stream (the most recent), then return them in chronological order.
-    function history(streamId, o) { return readHistory(streamId, o, true); }
-    // honorDeletes=false is taintOf's read only: it never leaves this module
+    /* A PROOF READ (o.proof === true) sees a deleted session's rows. It answers only "is this row already durable?" —
+       a dispatch delivery's accepted answer (dispatch-delivery.js), a recovery continuation's source rows (index.js
+       transcriptRecoveryTail → markRecorded) — and never hands a row to a model or the page. Forgetting them there made
+       boot never settle a deleted session's pending delivery, let a second accepted answer be appended after the delete
+       stamp, and made a continuation re-append every source turn: the deleted words came back, duplicated. */
+    function history(streamId, o) { return readHistory(streamId, o, !(o && o.proof === true)); }
+    // honorDeletes=false is taintOf's read and a proof read: neither hands a row on
     function readHistory(streamId, o, honorDeletes) {
       o = o || {};
       const kept = honorDeletes ? keep : (list => list);
