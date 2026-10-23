@@ -1034,17 +1034,21 @@ function runDashboard(station, opts) {
     process.on('exit', onExit);
     for (const s of SIGNALS) process.on(s, onSignal);
     term = await probeTerminal(400);
+    if (stopped) return;   // a signal during the probe: never take the screen back after giving it back
     buildImage();
     enterScreen();
     paint();
     const rt = await loadRoster();
+    if (stopped) return;
     if (!(rt.ok && rt.status === 200)) {
       stop(core.EXIT.STATION);
       process.stderr.write('starnet: could not read the station roster (' + (rt.error || 'HTTP ' + rt.status) + ')\n');
       return;
     }
     await Promise.all([loadSnapshot(), loadBudget(), loadLines().catch(() => {}), locateFolder().catch(() => {})]);
+    if (stopped) return;
     await loadHistory().catch(() => {});
+    if (stopped) return;   // …and no feed or refresh timers armed after a stop
     loadSkins().then(paint, () => {});
     loadStats().then(paint, () => {});
     ui.focus = pickFocus() || ui.focus;
