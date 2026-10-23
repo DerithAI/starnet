@@ -1834,23 +1834,33 @@
        room for, whichever is lower. The window is only one a provider REPORTED for this model (callWindow), never the
        context manager's cold 131072 guess: under a guess, a 400k-window model with a 128k output was reserved below
        what it bills. Nothing known about either — a window nobody reported and no output ceiling (the OpenAI API's
-       /models publishes neither) — reads $0, and so does a model nothing prices: no price. The run's shared spend pool
+       /models publishes neither) — reads $0, and so does a model nothing prices: no price. A model its catalog prices at a
+       KNOWN $0 (an OpenRouter :free row, { in: 0, out: 0 }) is not "no price": it reads a token $0.000000001, so the pool
+       reserves it as a call about $0 and other members' calls go out beside it (counted as a call, a free team took turns,
+       one call at a time, with nothing on screen saying why). The run's shared spend pool
        (run-spend-pool.js) RESERVES this for the call while it is in flight, so calls that go out together pass the
        cap by less than the call sent last; a call with no price is counted as a call instead, and nothing goes out
        beside it. What this cannot cover: a prompt-cache WRITE premium (up to 1.25x input), and a prompt the provider
        counts above the ruler when the output ceiling, not the window, is the bound. Handed over as a function: only a
        pool with workers ever asks. */
+    const KNOWN_FREE_CALL_USD = 1e-9;   // a known-$0 call's price: priced (reserved), never "no price"
+    function knownFreeModel() {
+      const zero = x => x != null && x !== '' && Number(x) === 0;
+      const p = (provider && typeof provider.priceOf === 'function') ? provider.priceOf(model) : null;
+      return !!p && zero(p.in != null ? p.in : p.prompt) && zero(p.out != null ? p.out : p.completion);
+    }
     function nextCallUsd() {
       if (!cost || typeof cost.estimate !== 'function') return 0;
       try {
         const promptTokens = Math.max(rulerTokens(messages), approxTokens);
         const room = callWindow > 0 ? Math.max(0, callWindow - promptTokens) : null;   // null = no window reported
         const ceiling = outputCeilingTokens();
-        if (room === null && !(ceiling > 0)) return 0;   // nothing bounds the output: no price, counted as a call
+        // nothing bounds the output: no price, counted as a call — unless the catalog prices the model at a known $0
+        if (room === null && !(ceiling > 0)) return knownFreeModel() ? KNOWN_FREE_CALL_USD : 0;
         const outTokens = room === null ? ceiling : (ceiling > 0 ? Math.min(room, ceiling) : room);
         const r = cost.estimate({ prompt_tokens: promptTokens, completion_tokens: outTokens }, model);
         const v = r ? Number(r.usd) : 0;
-        return (isFinite(v) && v > 0) ? v : 0;
+        return (isFinite(v) && v > 0) ? v : (knownFreeModel() ? KNOWN_FREE_CALL_USD : 0);
       } catch (e) { failNote('loop.budget.nextCallUsd', e); return 0; }
     }
     emit('agent.run.start', { agentId, runId, trigger, model });
