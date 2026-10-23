@@ -152,14 +152,15 @@ const browserCopy = (over) => Object.assign({
       const root = workspace();
       const host = sidecar(root);
       const sol = browserCopy({ _saveRevision: 0, _saveDirty: false, updatedAt: 100, agent: { id: 'agent', name: 'SOL', createdAt: 4000 } });
-      A.eq(host.saveStore.save('agent', sol, { compareRevision: true }).revision, 1, '2: the station file holds SOL');
+      const solRevision = host.saveStore.save('agent', sol, { compareRevision: true }).revision;
+      A.ok(Number.isInteger(solRevision) && solRevision > 23, '2: the station file holds SOL (a first save on an empty file takes the clock revision: ' + solRevision + ')');
       const before = fs.readFileSync(path.join(root, 'agent.save.json'));
       const cache = new Map([['starnet.save', JSON.stringify(browserCopy())]]);
       const p = page(host, cache);
       await p.reconcile(JSON.parse(cache.get('starnet.save')));
       A.eq(await p.flush({ force: true }), false, '2: a stale copy (revision 23) is refused');
       const c = p.health().conflict;
-      A.ok(c && c.conflict === true && c.revision === 1 && !c.reset && !c.seeded, '2: as an ordinary conflict against revision 1 (' + JSON.stringify(c) + ')');
+      A.ok(c && c.conflict === true && c.revision === solRevision && !c.reset && !c.seeded && !c.reseeded && !c.ownSeed, '2: as an ordinary conflict against the station\'s revision (' + JSON.stringify(c) + ')');
       A.ok(fs.readFileSync(path.join(root, 'agent.save.json')).equals(before), '2: the station file is byte-for-byte unchanged');
       A.eq(conflictFiles(root).length, 1, '2: the refused copy is kept as a conflict snapshot');
       const light = saveLight(p).render();
@@ -322,8 +323,10 @@ const browserCopy = (over) => Object.assign({
       const root = workspace();
       fs.writeFileSync(path.join(root, '.fresh-start.json'), JSON.stringify({ version: 1, erased: true, at: '7000', acknowledgedRoots: [], quarantine: null, moved: [] }));
       const store = makeSaveStore({ fs, pathMod: path, root, clock: { now: () => Date.now() } });
+      const firstClock = Date.now();
       const first = store.save('agent', browserCopy({ _saveRevision: 0, agent: { id: 'agent', name: 'NEW', createdAt: 9000 } }), { compareRevision: true });
-      A.ok(first.ok === true && first.revision === 1 && first.seeded === undefined, '5: a new station\'s first save (revision 0) lands as before and is not called a re-seed (' + JSON.stringify(first) + ')');
+      // review 10-23 #2: at the clock revision (a first save on an empty file), so no stale window of the station from before can match it
+      A.ok(first.ok === true && first.revision >= firstClock && first.seeded === undefined, '5: a new station\'s first save (revision 0) lands at the clock revision and is not called a re-seed (' + JSON.stringify(first) + ')');
     }
   } finally {
     for (const r of roots) fs.rmSync(r, { recursive: true, force: true });

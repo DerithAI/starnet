@@ -64,13 +64,56 @@ assert.deepEqual([again.added, again.extended, again.copied], [[], [], []], 'a s
 assert.equal(restorable(r.doc, windowSave), 0, 'so a notice never offers it again');
 assert.equal(restorable(station, { workstreams: 'not a list' }), 0);
 
+// review 10-23 #3b (proof3): a CLEARED station session is not "behind", and extending a session appends only the missing
+// turns while every station-side field stays the station's ("nothing in the station is removed" holds for metadata too)
+{
+  const st = { generalId: 'g', deletedIds: [], workstreams: [
+    { id: 'g', title: null, history: [turn('user', 'hi')] },
+    { id: 'cleared', title: 'Payroll', history: [], lastActiveAt: 900 },
+    { id: 'renamed', title: 'Q4 plan (final)', archived: true, pinned: false, lane: 'shipped', runIds: ['run-s'], deliverables: ['d.md'], history: [turn('user', 'plan q4')] },
+    { id: 'new-empty', title: 'Fresh', history: [], lastActiveAt: 100 },
+    { id: 'checkpointed', title: 'C', history: [], lastActiveAt: 100 },
+    { id: 'cleared-then-used', title: 'U', history: [turn('user', 'after the clear')] },
+    { id: 'born-empty', title: 'B', history: [], createdAt: 500, lastActiveAt: 500 }
+  ], sessionUndo: { kind: 'clear', at: 950, activeId: 'g', rows: [{ id: 'checkpointed', history: [turn('user', 'secret')] }, { id: 'cleared-then-used', history: [turn('user', 'secret 2')] }] } };
+  const kept = { generalId: 'g', workstreams: [
+    { id: 'g', title: null, history: [turn('user', 'hi')] },
+    { id: 'cleared', title: 'Payroll', history: [turn('user', 'salary of each employee'), turn('assistant', '...')], lastActiveAt: 800 },
+    { id: 'renamed', title: 'Q4 plan', archived: false, pinned: true, lane: 'active', runIds: ['run-w'], deliverables: [], history: [turn('user', 'plan q4'), turn('assistant', 'draft')] },
+    { id: 'new-empty', title: 'Fresh', history: [turn('user', 'typed in the other window')], lastActiveAt: 200 },
+    { id: 'checkpointed', title: 'C', history: [turn('user', 'secret')], lastActiveAt: 999 },
+    { id: 'cleared-then-used', title: 'U', history: [turn('user', 'secret 2')] },
+    { id: 'born-empty', title: 'B', history: [turn('user', 'asked before the run finished')], createdAt: 500, lastActiveAt: 500 }
+  ] };
+  const stBefore = JSON.stringify(st);
+  const p = plan(st, kept);
+  const at = id => p.doc.workstreams.find(w => w.id === id);
+  assert.equal(JSON.stringify(st), stBefore, '3b: the station object is not modified');
+  assert.equal(at('cleared').history.length, 0, '3b: a session cleared after the window last used it stays cleared');
+  const ren = at('renamed');
+  assert.deepEqual(ren.history.map(t => t.content), ['plan q4', 'draft'], '3b: the missing turn is appended');
+  assert.deepEqual({ title: ren.title, archived: ren.archived, pinned: ren.pinned, lane: ren.lane, runIds: ren.runIds, deliverables: ren.deliverables },
+    { title: 'Q4 plan (final)', archived: true, pinned: false, lane: 'shipped', runIds: ['run-s'], deliverables: ['d.md'] }, '3b: every station-side field stays the station\'s');
+  assert.deepEqual(at('new-empty').history.map(t => t.content), ['typed in the other window'], '3b: an empty session the window worked in AFTER the station last did gets its turns');
+  assert.equal(at('checkpointed').history.length, 0, '3b: a session the station\'s clear checkpoint names is never refilled');
+  assert.equal(at('cleared-then-used~restored'), undefined, '3b: nor copied back beside the station\'s new turns');
+  assert.equal(at('born-empty').history.length, 1, '3b: an empty session never active since it was created (so never cleared) gets the turns');
+  assert.deepEqual([p.added, p.extended.sort(), p.copied], [[], ['born-empty', 'new-empty', 'renamed'], []]);
+  assert.equal(restorable(st, kept), 3, '3b: the offer counts exactly what a restore brings back');
+  // 3c: the sidecar's deleted-session ledger (opts.isDeleted) wins like the save's own deletedIds
+  const withDeleted = { generalId: 'g', workstreams: [{ id: 'ledger-deleted', history: [turn('user', 'x')] }, { id: 'renamed~restored', history: [turn('user', 'y')] }] };
+  const del = id => id === 'ledger-deleted';
+  assert.deepEqual(plan(st, withDeleted, { isDeleted: del }).added, ['renamed~restored'], '3c: a ledger-deleted session is never added');
+  assert.equal(restorable(st, withDeleted, { isDeleted: del }), 1, '3c: nor counted');
+}
+
 // the store lists preserved saves newest first and copies the station file aside before a restore
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'save-restore-'));
 try {
   const store = makeSaveStore({ fs, pathMod: path, root, clock: { now: () => 1000 } });
   assert.deepEqual(store.conflicts('agent'), []);
   assert.equal(store.backup('agent', 'restore-1'), null, 'no station file, nothing to copy');
-  assert.equal(store.save('agent', { ...station, _saveRevision: 0 }, { compareRevision: true }).revision, 1);
+  assert.equal(store.save('agent', { ...station, _saveRevision: 0 }, { compareRevision: true }).revision, 1000, 'a first save on an empty file takes the clock revision (review 10-23 #2)');
   const refused = store.save('agent', { ...windowSave, _saveRevision: 0, _saveClient: 'window-a' }, { compareRevision: true });
   assert.equal(refused.recovery, 'agent.save-conflict-window-a.json');
   fs.writeFileSync(path.join(root, 'agent.save-conflict-torn.json'), '{"workstreams":[');

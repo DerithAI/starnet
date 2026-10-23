@@ -38,7 +38,7 @@ try {
   const envelope = (updatedAt, rev, tag, client) => ({ schema: 'skynet.save', version: 9, updatedAt, _saveRevision: rev, _saveClient: client || 'tab1', agent: { id: 'agent', name: tag }, workstreams });
 
   let r = store.save('agent', envelope(100, 0, 'v0'), { compareRevision: true });
-  A.ok(r.ok && r.revision === 1, 'first persist accepted (revision 1)');
+  A.ok(r.ok && r.revision >= 1000, 'first persist accepted (at the clock revision on an empty file, review 10-23 #2)');
 
   // ---- (1) + (2) ----
   let rev = r.revision;

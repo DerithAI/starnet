@@ -27336,23 +27336,46 @@ async function handleSaveRecoveryAck(req, res) {
   try { json(200, { ok: true, cleared: !!saveStore.clearRecoveryNotice(agent) }); }
   catch (e) { json(200, { ok: false, error: (e && e.message) || 'ack failed' }); }
 }
-// GET /api/save/conflicts — the window saves a refused write preserved beside the station file, newest first, each with
-// how many of its sessions a restore would bring back (support report 2026-10-21). Read-only; never the docs themselves.
+// GET /api/save/conflicts[?skip=<file>@<savedAt>,...] — the window saves a refused write preserved beside the station file,
+// for the boot offer (support report 2026-10-21): newest first, each with how many of its sessions a restore would bring
+// back, STOPPING at the first one that would bring any back. Read-only; never the docs themselves.
+// COST (review 10-23 #3d: every boot parsed every snapshot and deep-cloned the station per file, 787 ms of sidecar thread):
+// nothing preserved = one readdir; the station is read only when a snapshot is; a snapshot the page dismissed (skip, same
+// savedAt) or one already found to bring nothing back (unchanged since) is never read again; after the first snapshot, no
+// further one is read once ~30 ms have passed (`more: true`: the next boot carries on past the ones settled here).
+// DELETED sessions: the sidecar's own uncapped ledger (session-tombstones.js) is consulted, not only the save's capped list.
 function serveSaveConflicts(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  const started = Date.now();
   try {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    const skip = new Map();
+    for (const part of String(u.searchParams.get('skip') || '').split(',').slice(0, 200)) {
+      const i = part.lastIndexOf('@');
+      if (i > 0) skip.set(part.slice(0, i), Math.floor(Number(part.slice(i + 1))));
+    }
+    const files = saveStore.conflictFiles('agent').filter(f => !(skip.has(f.name) && skip.get(f.name) >= Math.floor(f.mtimeMs)) && !saveStore.settledConflict(f));
+    if (!files.length) return json(200, { conflicts: [] });
     const state = saveStore.loadState('agent');
     if (state.status === 'unreadable') return json(503, { error: 'Saved station is temporarily unreadable. Retry to recover it.', unreadable: true });
     const restore = require('./save-restore.js');
-    // a copy from before a station RESET is erased work: listed, but never offered back (restorable 0)
-    const conflicts = saveStore.conflicts('agent').map(c => {
-      const predatesReset = saveStore.predatesReset(c.doc);
-      return {
-        file: c.name, savedAt: c.mtimeMs, sessions: Array.isArray(c.doc.workstreams) ? c.doc.workstreams.length : 0,
-        restorable: state.doc && !predatesReset ? restore.restorable(state.doc, c.doc) : 0, ...(predatesReset ? { predatesReset: true } : {})
-      };
-    });
-    json(200, { conflicts });
+    const tombs = (typeof sessionTombstones !== 'undefined' && sessionTombstones && typeof sessionTombstones.deletedAt === 'function') ? sessionTombstones : null;
+    const isDeleted = tombs ? (id => tombs.deletedAt(id) > 0) : null;
+    const conflicts = [];
+    let more = false;
+    for (const f of files) {
+      if (conflicts.length && Date.now() - started > 30) { more = true; break; }
+      const doc = saveStore.readConflict('agent', f.name);
+      if (!doc) continue;
+      // a copy from before a station RESET, while the station is from after it, is erased work: listed, never offered back
+      const predatesReset = saveStore.predatesReset(doc, state.doc);
+      const n = state.doc && !predatesReset ? restore.restorable(state.doc, doc, { isDeleted }) : 0;
+      conflicts.push({ file: f.name, savedAt: f.mtimeMs, sessions: Array.isArray(doc.workstreams) ? doc.workstreams.length : 0,
+        restorable: n, ...(predatesReset ? { predatesReset: true } : {}) });
+      if (n > 0) break;
+      if (state.doc && !predatesReset) saveStore.settleConflict(f);   // nothing to bring back into this station: not read again until it changes
+    }
+    json(200, { conflicts, ...(more ? { more: true } : {}) });
   } catch (e) { json(503, { error: 'Could not read the preserved saves. Retry.', unreadable: true }); }
 }
 // POST /api/save/conflicts/restore { file } — bring that preserved save's sessions into the station. Additive only
@@ -27368,10 +27391,12 @@ async function handleSaveConflictRestore(req, res) {
     const state = saveStore.loadState('agent');
     if (state.status === 'unreadable') return json(200, { ok: false, error: 'the station file is unreadable right now', unreadable: true });
     if (!state.doc) return json(200, { ok: false, error: 'there is no station file to restore into' });
-    const preserved = saveStore.conflicts('agent').find(c => c.name === file);
+    const preserved = saveStore.readConflict('agent', file);
     if (!preserved) return json(200, { ok: false, error: 'that preserved save is gone' });
-    if (saveStore.predatesReset(preserved.doc)) return json(200, { ok: false, error: 'that copy is from before this computer’s station was reset', predatesReset: true });
-    const r = require('./save-restore.js').plan(state.doc, preserved.doc);
+    if (saveStore.predatesReset(preserved, state.doc)) return json(200, { ok: false, error: 'that copy is from before this computer’s station was reset', predatesReset: true });
+    // a session the Commander deleted stays deleted: the sidecar's own uncapped ledger, not only the save's capped list
+    const tombs = (typeof sessionTombstones !== 'undefined' && sessionTombstones && typeof sessionTombstones.deletedAt === 'function') ? sessionTombstones : null;
+    const r = require('./save-restore.js').plan(state.doc, preserved, { isDeleted: tombs ? (id => tombs.deletedAt(id) > 0) : null });
     if (!r.added.length && !r.extended.length && !r.copied.length) return json(200, { ok: true, added: 0, extended: 0, copied: 0, revision: Number(state.doc._saveRevision) || 0 });
     const at = Date.now();
     const backup = saveStore.backup('agent', 'restore-' + at);
