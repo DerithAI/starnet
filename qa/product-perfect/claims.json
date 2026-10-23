@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "a1fd3a76d34cd25d11798f5fe3bd634b6a193743",
+    "sourceCommit": "a74792b93df6b615139b3af797a02bad064370e3",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -173,8 +173,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 455061,
-        "sha256": "778ff317cb13add59854d2e71a6594e63a96bab67e1690f8b7b594ea29a3ae23"
+        "bytes": 455364,
+        "sha256": "f1b487c3cebe01d425e4efc4a7e098d2fff952b2518aa312e13d2cebad6c4c47"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -373,8 +373,8 @@
       },
       {
         "path": "frontend/app/cloudsave.js",
-        "bytes": 38173,
-        "sha256": "43414ca0734c249d96a8b9053790063653e09ad320b43ded815a76b5e9632ff2"
+        "bytes": 39989,
+        "sha256": "c767c6483c95314bd993aa664457a5eeb27cc726f9c7afbe4facea509ae17dcd"
       },
       {
         "path": "frontend/app/cloudsavecore.js",
@@ -1203,8 +1203,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 950099,
-        "sha256": "5fad936dfb6cfa061465f2a36c3ed62ef08acfa72e0213e955262a9a04b022ce"
+        "bytes": 952908,
+        "sha256": "9b848f8a490812325762b2e7e24f356961a41fd06a2bd99920c76551cd69f25b"
       },
       {
         "path": "frontend/app/stepin.js",
