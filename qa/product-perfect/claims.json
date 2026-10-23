@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "52006dd6eae15e1b0574d666098e845fe12e13cf",
+    "sourceCommit": "266623904fe24bbc81fbf7ba0c98496477032856",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -38,8 +38,8 @@
       },
       {
         "path": "RELEASE_NOTES.md",
-        "bytes": 15043,
-        "sha256": "31d5ab77c44ab2958eb9031bd8d502d8c03f7b234ad8f44fa9c1d7747621f547"
+        "bytes": 15546,
+        "sha256": "8dd6d66ad7bc272076a5e4cc46163a49d04e92eb8d669d29dfc489aeaeceb327"
       },
       {
         "path": "TERMS.md",
@@ -173,8 +173,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 455428,
-        "sha256": "3edbc06d8702426a945b981ad7ac5f5eb83f054e8914911131b3409d63136c02"
+        "bytes": 456514,
+        "sha256": "fbc60cf6ef54e5c1009a04457084e44bb929bee7811fac32bf325bd3f06a3854"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -578,8 +578,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 143220,
-        "sha256": "ac2a9433c1d1fc29dab8d2171655b7872bb7b45ab4faa2cf6fe998298766e0d6"
+        "bytes": 143662,
+        "sha256": "02013039044503ba2653505ebb8a5a59aa6083fc210646ece3c8656336d61b87"
       },
       {
         "path": "frontend/app/hint.js",
@@ -1203,8 +1203,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 955443,
-        "sha256": "8aab4c00f8381daa5f114638eb2ce640327ae2f9d9a637d9e5bbc63cea9006b6"
+        "bytes": 956040,
+        "sha256": "407c7c266a59377133e32bb04ea6d3fc98e2222fa0c9b2ba72ebe15bce2d672b"
       },
       {
         "path": "frontend/app/stepin.js",
@@ -1243,8 +1243,8 @@
       },
       {
         "path": "frontend/app/testapi.js",
-        "bytes": 9014,
-        "sha256": "7b20a51c28762244b92f8e2d5044d7331ceee88da787434536191c4d293adb9a"
+        "bytes": 9221,
+        "sha256": "8eed8dc65eaaccfc2bc8d241a5077950904e0bfa15c1b6c3a2ca0f8cac6fbc6a"
       },
       {
         "path": "frontend/app/threadstore.js",
@@ -1318,8 +1318,8 @@
       },
       {
         "path": "frontend/app/updates.js",
-        "bytes": 32483,
-        "sha256": "0648ab73a2be7e290816ab6087a4af1e817ac398dc0089aa477f6fe905b5a815"
+        "bytes": 33128,
+        "sha256": "1edd440802629f7575e941dc74103adb452dc352ea636257aeff5139ae19dbf2"
       },
       {
         "path": "frontend/app/userprops.js",
