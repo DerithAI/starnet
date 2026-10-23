@@ -5,7 +5,9 @@
      - "/routine add" typed on Telegram makes a routine that delivers back to that chat, and says so
      - a closed group's "/allow @someone" (another bot's moderation command) admits nothing
      - /mention observe: what the bot overheard reaches the model on the next addressed message
-     - a group that kicks the bot is no longer admitted: re-added, it stays silent until the owner's fresh /allow */
+     - a group that kicks the bot is no longer admitted: re-added, it stays silent until the owner's fresh /allow
+     - "/deny @thisbot" closes an admitted room; any other /deny argument leaves it open and tells the owner so
+     - "/steer <note>" typed while a task works joins that task, one line, and the phone gets no raw marker */
 'use strict';
 
 const A = require('./_assert.js');
@@ -35,6 +37,9 @@ function readJsonBody(req) {
 
 function startMockOpenRouter() {
   const runs = [];
+  // HOLD: the first call whose prompt carries 'HOLD-ME' waits for release() — a run that is still working
+  let held = null, releaseHeld = null;
+  const hold = new Promise(r => { releaseHeld = r; });
   return new Promise(resolve => {
     const server = http.createServer(async (req, res) => {
       if (req.url.indexOf('/models') >= 0) {
@@ -45,6 +50,7 @@ function startMockOpenRouter() {
       if (req.url.indexOf('/chat/completions') >= 0) {
         const body = await readJsonBody(req);
         runs.push(body);
+        if (!held && JSON.stringify(body.messages || []).indexOf('HOLD-ME') >= 0) { held = body; await hold; }
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
         res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'MODEL ANSWER ' + runs.length } }] }) + '\n\n');
         res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) + '\n\n');
@@ -53,7 +59,7 @@ function startMockOpenRouter() {
       }
       res.writeHead(404); res.end();
     });
-    server.listen(0, HOST, () => resolve({ runs, server, base: 'http://' + HOST + ':' + server.address().port + '/api/v1' }));
+    server.listen(0, HOST, () => resolve({ runs, server, base: 'http://' + HOST + ':' + server.address().port + '/api/v1', isHeld: () => !!held, release: () => releaseHeld() }));
   });
 }
 
@@ -269,6 +275,41 @@ async function waitUntil(fn, ms, label) {
     tg.group(G, OWNER, '/allow@' + BOT);
     await waitUntil(() => sentTo(G, mark).some(s => /admitted/i.test(textOf(s))), 8000, 'the fresh /allow');
     A.ok(true, 'the owner\'s fresh /allow re-admits it');
+
+    // ---- 8. the owner closes the room by NAMING this bot ("/deny @halcyonbot"); a /deny with anything else after it
+    //         is left alone, and the owner is told the room is still open ----
+    mark = tg.sends.length;
+    tg.group(G, OWNER, '/deny @spammer');
+    await waitUntil(() => sentTo(G, mark).length > 0, 8000, 'the still-admitted line');
+    A.ok(/still admitted/.test(textOf(sentTo(G, mark)[0])) && /\/deny on its own/.test(textOf(sentTo(G, mark)[0])), 'an ignored close is never silent to the owner: ' + textOf(sentTo(G, mark)[0]));
+    mark = tg.sends.length;
+    tg.group(G, OWNER, '/deny @' + BOT);
+    await waitUntil(() => sentTo(G, mark).some(s => /^Removed\./.test(textOf(s))), 8000, 'the /deny @bot confirmation');
+    mark = tg.sends.length; runs0 = llm.runs.length;
+    tg.group(G, MEMBER, '@' + BOT + ' still there?');
+    await settled();
+    A.eq(sentTo(G, mark).length, 0, 'the room "/deny @' + BOT + '" closed is closed');
+    A.eq(callsCarrying('still there?', runs0).length, 0, 'and spends nothing');
+
+    // ---- 9. /steer typed while a task is working: the note (two lines, one bubble) joins THAT task — the model's next
+    //         call carries it on one line, the phone gets both answers with the note between them, never the marker ----
+    mark = tg.sends.length; runs0 = llm.runs.length;
+    const callsMark = tg.calls.length;
+    tg.dm(OWNER, 'write a short poem HOLD-ME');
+    await waitUntil(() => llm.isHeld(), 15000, 'the held model call');
+    tg.dm(OWNER, '/steer make it about the sea\nand make it rhyme');
+    await waitUntil(() => sentTo(OWNER, mark).some(s => /^↪ Added to the task/.test(textOf(s))), 8000, 'the steer acknowledgement');
+    llm.release();
+    const answered = () => tg.calls.slice(callsMark).filter(c => (c.method === 'sendMessage' || c.method === 'editMessageText')
+      && String(c.body && c.body.chat_id) === String(OWNER) && /MODEL ANSWER/.test(String(c.body.text || '')));
+    await waitUntil(() => answered().some(c => /↪ make it about the sea/.test(String(c.body.text))), 20000, 'the steered reply');
+    const finalText = String(answered().pop().body.text);
+    A.ok(callsCarrying('<steering_note>make it about the sea and make it rhyme</steering_note>', runs0).length > 0, 'the model got the note, command word stripped, on one line');
+    // ('/steer make' — a bare '/steer' also matches the note's own closing '</steering_note>' tag)
+    A.eq(callsCarrying('/steer make', runs0).length, 0, 'the command word never reached the model');
+    A.ok(!/\[steering\]/.test(finalText), 'no raw marker on the phone: ' + JSON.stringify(finalText));
+    A.ok(/MODEL ANSWER \d+\n\n↪ make it about the sea and make it rhyme\n\nMODEL ANSWER \d+/.test(finalText), 'both answers, the note on its own line between them: ' + JSON.stringify(finalText));
+    A.ok(!sentTo(OWNER, mark).some(s => /only works in the StarNet desktop app/.test(textOf(s))), 'never the desktop-only refusal');
   } finally {
     await stop(child);
     try { tg.close(); } catch (_) {}
