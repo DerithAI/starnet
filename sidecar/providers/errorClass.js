@@ -274,8 +274,11 @@
      that support image input", 14 managed completions in two bursts). Resending the same request repeats the refusal,
      so it is never retryable; another model may see images, so a configured fallback is still worth taking
      (model_not_found). The adapters (openrouter.js, openai-compatible.js) also remember the model as text-only, so the
-     NEXT request to it goes without the image. Mirrored in frontend/app/friendlyerror.js — keep the two in step. */
-  const IMAGE_INPUT_REFUSED_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`/;
+     NEXT request to it goes without the image. Mirrored in frontend/app/friendlyerror.js — keep the two in step.
+     Vendor wordings: OpenRouter/StarNet "no endpoints found that support image input"; DeepSeek "unknown variant
+     `image_url`"; OpenAI's own text-only models (o1-mini, o3-mini, gpt-3.5-turbo, whose /v1/models states no
+     modalities, so the image is sent) 400 "Invalid content type. image_url is only supported by certain models." */
+  const IMAGE_INPUT_REFUSED_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`|image_url is only supported by certain models/;
   function isImageInputRefusal(text) { return IMAGE_INPUT_REFUSED_RE.test(String(text || '').toLowerCase()); }
   const IMAGE_INPUT_FIX = ' — this model cannot take image input: pick a vision model in the COMMS model dock (or remove the image), then send again.';
   const TOOL_GEN_FAILED_RE = /tool_use_failed|failed to call a function|tool call validation failed/;

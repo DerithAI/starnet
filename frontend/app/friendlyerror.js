@@ -418,8 +418,9 @@
   const REGION_REFUSAL_RE = /unsupported_country_region_territory|country,? region,? or territory not supported|not available in your (?:country|region)/;
   /* mirrored from errorClass.js (IMAGE_INPUT_REFUSED_RE) — keep the two in step: an image sent to a model that cannot see
      it (OpenRouter 404 "No endpoints found that support image input", 2026-10-23). Not "that model isn't available":
-     the model is fine, the image is what it refused, and a vision model is the fix. */
-  const IMAGE_INPUT_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`/;
+     the model is fine, the image is what it refused, and a vision model is the fix. OpenAI's own text-only models say
+     "image_url is only supported by certain models" (400). */
+  const IMAGE_INPUT_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`|image_url is only supported by certain models/;
   const IMAGE_INPUT_MSG = "This model can't see images — pick a vision model from the model dock in COMMS, then send again.";
   // a provider adapter's own failure sentence ("openrouter http 403 — …", "openai-compatible http 403 - …")
   const PROVIDER_HTTP_RE = /\b(?:openrouter|anthropic|gemini|codex|openai-compatible|grok \(xai\)|kimi for coding|xai) http \d{3}\b/;
