@@ -941,7 +941,11 @@ const Harness = (() => {
     const hasRec = !!(rec && rec.used > 0 && rec.model);
     const model = (hasRec && rec.model) || getModel() || '';
     const limit = contextLimitOf(model);
-    const base = { agentId: aid, streamId: String(streamId || ''), model, limit };
+    // runWindow: the window a RUN on this route works in, so the place it folds (runWindowOf: the model's window stopped
+    // at a long-context price tier, final-polish 10-23). The gauge measures against it; `limit` stays the model's own
+    // window, which composer fit checks keep using (the sidecar folds a run inside the smaller one)
+    const run = runWindowOf(model);
+    const base = { agentId: aid, streamId: String(streamId || ''), model, limit, runWindow: (run > 0 && limit > 0 && run < limit) ? run : limit };
 
     // 1. in flight — report what the provider says the model is holding this second
     if (hasRec && rec.live) return Object.assign(base, { used: rec.used, measured: true, projected: false });
