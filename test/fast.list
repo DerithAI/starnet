@@ -366,9 +366,13 @@ test/rename-migrate.test.js
 test/update-state-parity.test.js
 test/update-continuity.test.js
 test/update-preparation.test.js
+test/update-snapshot-budget.test.js
+test/update-snapshot-framing.test.js
+test/update-snapshot-prune.test.js
 test/update-drain-wiring.test.js
 test/updates-install.test.js
 test/update-drain-newest-save.test.js
+test/update-drain-conflict.test.js
 test/update-center-truth.test.js
 test/future-gate-update-door.test.js
 test/roster-clause.test.js
