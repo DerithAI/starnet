@@ -719,9 +719,10 @@ const Harness = (() => {
   }
   /* #137 DESKTOP ENDPOINT HAND-OVER. On the desktop app the OS keychain holds provider KEYS only; a provider's endpoint
      (a CUSTOM base URL, an Ollama that is not on this machine) lives in this window's storage, and the station keeps
-     the copy it was last handed (sidecar/index.js DESKTOP_ENDPOINTS_FILE — before 0.14.0 that copy was memory, so every
-     app restart or respawn left routines, Run Now, line hops, channels and phone runs failing "no CUSTOM base URL is
-     saved on this station" while chat kept working). The window is the source: once per page boot (init), after ENGINE
+     the CUSTOM / Ollama copy it was last handed (sidecar/index.js DESKTOP_ENDPOINTS_FILE — before 0.14.0 that copy was
+     memory, so every app restart or respawn left routines, Run Now, line hops, channels and phone runs failing "no
+     CUSTOM base URL is saved on this station" while chat kept working; a cloud provider's override is still held for
+     the session only). The window is the source: once per page boot (init), after ENGINE
      RESTART, and on the first answer after this page saw the station stop answering, the page hands the station every
      endpoint slot it holds — a cleared slot as a clear — so the station's copy matches this window. With NO key, so the
      keychain is never touched (harness_store_provider_key writes the keychain only when a key is given). Never rejects

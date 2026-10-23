@@ -122,14 +122,15 @@ async function waitFor(fn, label) {
       'starnet.byok.prov': 'custom',
       'starnet.byok.baseUrl.custom': endpoint,
       'starnet.byok.baseUrl.ollama': 'http://192.168.1.50:11434',
-      'starnet.byok.baseUrl.openai': '',              // an emptied endpoint is not handed over
+      'starnet.byok.baseUrl.openai': '',              // an emptied endpoint is handed over as a clear
+      'starnet.byok.baseUrl.anthropic': 'https://proxy.invalid/v1',   // a cloud provider's override: handed over, kept for this session only
       'starnet.byok.baseUrl.starnet': 'http://cloud.invalid'   // the linked account's endpoint is the sidecar's own
     };
     const desk = page({ desktop: true, storage, shell });
 
     // boot hand-over
     const out = await desk.api.pushDesktopEndpoints();
-    A.eq(out.map(o => o.provider).sort(), ['custom', 'ollama', 'openai'], 'the boot hand-over pushes every endpoint slot this window holds (never starnet)');
+    A.eq(out.map(o => o.provider).sort(), ['anthropic', 'custom', 'ollama', 'openai'], 'the boot hand-over pushes every endpoint slot this window holds (never starnet)');
     A.ok(out.every(o => o.ok), 'every push landed');
     A.ok(desk.invokes.every(c => c.cmd === 'harness_store_provider_key' && !Object.prototype.hasOwnProperty.call(c.args, 'key')), 'no push carries a key');
     A.eq(keychainWrites.length, 0, 'the keychain is never touched by the hand-over');
@@ -145,7 +146,7 @@ async function waitFor(fn, label) {
     const onDisk = f => { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return ''; } };
     for (const f of [endpointsFile, endpointsFile + '.bak']) {
       const saved = (() => { try { return JSON.parse(onDisk(f)); } catch (_) { return null; } })();
-      A.eq(saved && saved.baseUrls, { custom: endpoint, ollama: 'http://192.168.1.50:11434' }, path.basename(f) + ' holds the handed endpoints (and no cleared one)');
+      A.eq(saved && saved.baseUrls, { custom: endpoint, ollama: 'http://192.168.1.50:11434' }, path.basename(f) + ' holds the CUSTOM and Ollama endpoints (no cleared one, no cloud override)');
     }
 
     // #137 respawn: the respawned sidecar reads its copy back — no page, no refused fetch, no hand-over needed
@@ -191,11 +192,11 @@ async function waitFor(fn, label) {
     desk.api.noteStationReply(false);
     A.eq(desk.invokes.length, pushes, 'nothing is pushed while the station is silent');
     desk.api.noteStationReply(true);
-    await waitFor(() => desk.settled() === pushes + 3, 'the come-back hand-over');
-    A.eq(desk.invokes.length, pushes + 3, 'the first answer after a silence re-syncs each endpoint slot once');
+    await waitFor(() => desk.settled() === pushes + 4, 'the come-back hand-over');
+    A.eq(desk.invokes.length, pushes + 4, 'the first answer after a silence re-syncs each endpoint slot once');
     desk.api.noteStationReply(true);
     await sleep(50);
-    A.eq(desk.invokes.length, pushes + 3, 'later answers do not push again');
+    A.eq(desk.invokes.length, pushes + 4, 'later answers do not push again');
     const back = await runNow();
     A.ok(ranDone(back), 'after the come-back re-sync the CUSTOM routine runs to done again');
     A.eq(keychainWrites.length, 0, 'the keychain is still untouched');
