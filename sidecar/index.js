@@ -20342,7 +20342,7 @@ function transcriptRecoveryTail(recovery, msgs, streamId) {
     const state = runJournal.inspect(src);
     const base = recoveryBase(state, msgs);
     if (!base) return null;
-    const rows = transcriptStore.history(streamId, { sourceRunId: src, limit: 5000 });
+    const rows = transcriptStore.history(streamId, { sourceRunId: src, limit: 5000, proof: true });   // a proof read: a deleted session's source rows still vouch (never handed on)
     return { base, rows, sourceWasContinuation: !!(state.meta && state.meta.recoveryOf) };
   } catch (e) { failNote('transcript.recovery.inspect', e); return null; }
 }

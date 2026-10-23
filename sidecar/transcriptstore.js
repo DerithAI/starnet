@@ -616,8 +616,13 @@
 
     // the recent dialogue for ONE workstream, oldest-first (ready to replay back into COMMS). We keep the LAST
     // `limit` turns of that stream (the most recent), then return them in chronological order.
-    function history(streamId, o) { return readHistory(streamId, o, true); }
-    // honorDeletes=false is taintOf's read only: it never leaves this module
+    /* A PROOF READ (o.proof === true) sees a deleted session's rows. It answers only "is this row already durable?" —
+       a dispatch delivery's accepted answer (dispatch-delivery.js), a recovery continuation's source rows (index.js
+       transcriptRecoveryTail → markRecorded) — and never hands a row to a model or the page. Forgetting them there made
+       boot never settle a deleted session's pending delivery, let a second accepted answer be appended after the delete
+       stamp, and made a continuation re-append every source turn: the deleted words came back, duplicated. */
+    function history(streamId, o) { return readHistory(streamId, o, !(o && o.proof === true)); }
+    // honorDeletes=false is taintOf's read and a proof read: neither hands a row on
     function readHistory(streamId, o, honorDeletes) {
       o = o || {};
       const kept = honorDeletes ? keep : (list => list);
