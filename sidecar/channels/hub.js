@@ -1861,6 +1861,11 @@
       // Telegram/Discord/any future adapter get identical behavior.
       // A FORWARDED "/away on" is a third party's words, not the Commander's command — never parse it as one.
       const parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+      // "/deny @spammer" in a group is another bot's command (a moderation bot's), never ours: ours takes no argument
+      // unless it names this bot ("/deny@thisbot …", which the adapter has already checked is us). Taken as ours it
+      // admitted or closed the owner's station for a room. Silent — answering would put us in their conversation.
+      if (parsed && (parsed.cmd === 'allow' || parsed.cmd === 'deny') && parsed.arg && String(msg.chatType || '') === 'group'
+          && !/^\s*\/[A-Za-z]+@/.test(String(msg.text || ''))) return;
       if (parsed) {
         // OWNER GATE: a non-owner may talk to the agent, never reconfigure the station. Refused for free, before
         // any handler, write or slash-registry call — and said plainly, so the member knows it is a policy.

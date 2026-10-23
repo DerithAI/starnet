@@ -272,10 +272,13 @@
     function admissionCommand(m) {
       if (!m || m.forwarded || m.channelPost || m.edited) return false;
       if (!String(m.userId == null ? '' : m.userId)) return false;
-      const hit = ADMISSION_CMD.exec(String(m.text == null ? '' : m.text).trim());
+      const text = String(m.text == null ? '' : m.text).trim();
+      const hit = ADMISSION_CMD.exec(text);
       if (!hit) return false;
       const suffix = String(hit[2] || '').toLowerCase();
-      if (!suffix) return true;
+      // a bare command with ARGUMENTS ("/allow @newmember") is another bot's — a moderation bot's — never an admission:
+      // ours takes none unless it names us. Taken as ours it admitted the owner's station to a room nobody meant to open.
+      if (!suffix) return !text.slice(hit[0].length).trim();
       const me = botUsernameNow();
       return !!me && suffix === me;
     }
