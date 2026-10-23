@@ -21040,22 +21040,31 @@ async function runOnceCore(o) {
   // them below. skill.view resolves library:<slug> against exactly this list, so a recipe the index did not
   // offer (disabled, or its gear absent) is never served either.
   let runRecipes = [];
-  // #146: the station's OpenRouter key is whichever one the station holds (desktop keychain push, operator env var, or
-  // the key a browser page saved — engine-credential.js), the same resolver the station OpenAI key below uses
-  const stationOpenRouterKey = providerRuntimeKey('openrouter', '');
-  const openrouterToolKey = providerId === 'openrouter' ? runKey : stationOpenRouterKey;
-  const studioRoute = ImageTask.resolveRoute({
+  const openrouterToolKey = providerId === 'openrouter' ? runKey : runtimeKey;
+  const studioInput = {
     providerId: providerUsesCodex(providerId) ? 'codex' : providerId, runKey, providerBaseUrl: baseUrl,
     managedKey: providerRuntimeKey('starnet', ''),
     managedBaseUrl: providerRuntimeBaseUrl('starnet', ''),
-    stationOpenRouterKey,
+    stationOpenRouterKey: runtimeKey,
     stationOpenRouterBaseUrl: providerRuntimeBaseUrl('openrouter', ''),
     stationOpenAIKey: providerRuntimeKey('openai', ''),
     stationOpenAIBaseUrl: providerRuntimeBaseUrl('openai', ''),
     // the station's ChatGPT sign-in renders gpt-image-2 on the plan (image.js codex-responses); a known-dead
     // sign-in is not a route, so the blocker names the real fix instead of a 401 mid-run
     codexSignedIn: !!(codexTokens && codexTokens.access_token) && !codexAuthDead
-  });
+  };
+  let studioRoute = ImageTask.resolveRoute(studioInput);
+  // #146: any OTHER OpenRouter key the station holds (the key a browser page saved in Settings, engine-credential.js;
+  // an OPENROUTER_API_KEY env) fills the gap only when no image route exists at all. The desktop keychain push /
+  // OPENROUTER_KEY above keep their rank, and StarNet credits, an OpenAI key or a ChatGPT sign-in that already rendered
+  // images keep rendering (and billing) exactly where they did.
+  const stationOpenRouterFill = providerRuntimeKey('openrouter', '');
+  if (!studioRoute.ok && stationOpenRouterFill && stationOpenRouterFill !== runtimeKey) {
+    studioRoute = ImageTask.resolveRoute(Object.assign({}, studioInput, {
+      stationOpenRouterKey: stationOpenRouterFill,
+      stationOpenRouterBaseUrl: providerRuntimeBaseUrl('openrouter', '', stationOpenRouterFill)
+    }));
+  }
   // web_search/web_fetch (DDG/Jina, OR fallback) + web_request. `accessSurface` is host authority: it comes
   // from the run host, never from tool args. An authenticated owner DM has the same stored-key reach as the
   // desktop; an ordinary autonomous caller remains restricted to explicitly unattended-approved keys.
