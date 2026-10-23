@@ -20562,6 +20562,7 @@ async function runOnceCore(o) {
   // first and unchanged; with nobody watching the tee is one size() check (sidecar/observer.js)
   const rawEmit = internal ? o.emit : observer.tee(o.emit, {
     runId, agentId, streamId: o.streamId || '', surface: o.surface || '', trigger, lineId: workflowLine || '', dockId: o.dockId || '',
+    projectRoot: o.projectRoot || '',
     prompt: () => require('./observer.js').lastUserText(messages)
   });
   const emit = o.broadcast
