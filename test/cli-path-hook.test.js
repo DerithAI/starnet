@@ -2,7 +2,10 @@
 /* test/cli-path-hook.test.js — the Windows installer puts `starnet` on the user's PATH (src-tauri/installer/hooks.nsh,
    NSIS_HOOK_POSTINSTALL) and the uninstaller takes it off (NSIS_HOOK_POSTUNINSTALL). This runs THOSE EXACT PowerShell
    lines — read out of hooks.nsh, NSIS escapes undone the way NSIS undoes them — against a scratch registry key instead of
-   HKCU\Environment, so the user's real PATH is never touched. Windows only (elsewhere it says so and passes). */
+   HKCU\Environment, so the user's real PATH is never touched. Windows only (elsewhere it says so and passes).
+   The install folder reaches PowerShell through the environment (set by the installer just before), never pasted into
+   the command: a profile path with an apostrophe (C:\Users\O'Brien\...) broke a quoted PowerShell literal, the hook
+   failed open, and `starnet` silently never reached PATH. So the folder here has one. */
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -11,21 +14,27 @@ const A = require('./_assert.js');
 if (process.platform !== 'win32') { console.log('cli-path-hook.test: Windows only — skipped'); process.exit(0); }
 const PS = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const KEY = 'Software\\StarNetPathHookTest' + process.pid;
-const DIR = 'C:\\Users\\ada\\AppData\\Local\\StarNet\\bin';
+const DIR = 'C:\\Users\\O\'Brien\\AppData\\Local\\StarNet\\bin';
+const INSTDIR = DIR.replace(/\\bin$/, '');
 const nsh = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'installer', 'hooks.nsh'), 'utf8').split('\n');
+const hookEnv = {};   // what the installer itself puts in the environment PowerShell inherits (System::Call SetEnvironmentVariable)
 function hookLine(tag) {
   const i = nsh.findIndex(l => l.trim() === '; ' + tag);
   A.ok(i >= 0, 'hooks.nsh carries the ' + tag + ' line');
   const m = /-Command "(.*)"'\s*$/.exec(nsh[i + 1] || '');
   A.ok(!!m, tag + ' runs one PowerShell -Command');
+  for (let j = i - 1; j >= 0 && !/^\s*!macro\s/.test(nsh[j]); j--) {
+    const e = /SetEnvironmentVariable\(t "(\w+)", t "([^"]*)"\)/.exec(nsh[j]);
+    if (e) hookEnv[e[1]] = e[2].replace(/\$INSTDIR/g, () => INSTDIR);
+  }
   // undo NSIS: $INSTDIR expands, $\' is a single quote, $$ is a dollar sign
-  const ps = m[1].replace(/\$INSTDIR/g, DIR.replace(/\\bin$/, '')).replace(/\$\\'/g, "'").replace(/\$\$/g, '$');
+  const ps = m[1].replace(/\$INSTDIR/g, () => INSTDIR).replace(/\$\\'/g, "'").replace(/\$\$/g, '$');
   A.ok(ps.indexOf("CreateSubKey('Environment')") >= 0, tag + ' edits HKCU\\Environment (the user PATH, never the machine one)');
   return ps.replace("CreateSubKey('Environment')", "CreateSubKey('" + KEY + "')");
 }
 const ADD = hookLine('STARNET_PATH_ADD'), REMOVE = hookLine('STARNET_PATH_REMOVE');
 function ps(script) {
-  const r = spawnSync(PS, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8' });
+  const r = spawnSync(PS, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', env: Object.assign({}, process.env, hookEnv) });
   if (r.status !== 0) throw new Error('powershell: ' + (r.stderr || r.stdout));
   return String(r.stdout || '').replace(/\r?\n$/, '');
 }
