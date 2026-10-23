@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "db234f4f69e5c54eac3dabc8d708679e84317518",
+    "sourceCommit": "3ac355b9195217f9b1370284524dcc7d569adb2b",
     "pathSetSha256": "93a6809cb616abda08e0ace8ac71308a79d2a668935dd6695ca7e0ddac84df17",
     "files": [
       {
@@ -478,8 +478,8 @@
       },
       {
         "path": "frontend/app/dockglow.js",
-        "bytes": 4519,
-        "sha256": "c7fb3204260168b80bd4ece91071c1872b7812694f17a96ee399131f34410261"
+        "bytes": 6786,
+        "sha256": "de3ad9bf312913c384a5e6935a7f30270aa2615bbbf6b5d5c9e77937cc04e806"
       },
       {
         "path": "frontend/app/dossier.js",
@@ -1188,8 +1188,8 @@
       },
       {
         "path": "frontend/app/stationquests.js",
-        "bytes": 9559,
-        "sha256": "5a4278f16f44c83077411c9bb965f5a7f4945f1d2156917f05136e088c70e66e"
+        "bytes": 9688,
+        "sha256": "4b5126a9cb52c6baa7580fae91bd1ab52686466bc0b644dd3434d81a46526481"
       },
       {
         "path": "frontend/app/stationqueststore.js",
@@ -1423,8 +1423,8 @@
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 218775,
-        "sha256": "1992f9b8f3219d08ef84650352862de1c0d72f4c69e5ba97dbd73a3f260218fc"
+        "bytes": 218772,
+        "sha256": "9c524a791393a828a64d30ba9386fadff4fdeeb8ed2fd1fc80ac275e264ab5cf"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
@@ -1668,8 +1668,8 @@
       },
       {
         "path": "frontend/css/pipglass.css",
-        "bytes": 176058,
-        "sha256": "f007a47cf07a4379ea7cc4cbeb43b722321d7b41861b7acddc77fad24a40daa5"
+        "bytes": 181247,
+        "sha256": "c72cbea4a82c3b70877b5394bbbe9404c44388ce1fee80a7cf26fd58520fff25"
       },
       {
         "path": "frontend/css/plugins.css",
@@ -1833,8 +1833,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 99698,
-        "sha256": "0e69847ae804e006544510a9c6904c2187e72d87693d1f1ea6da4a924c923a43"
+        "bytes": 99695,
+        "sha256": "dd978c1bee5364801a3d6884a29d0e072ff684188b79c30171a96a3995fa5bd1"
       },
       {
         "path": "frontend/js/arcade.js",
