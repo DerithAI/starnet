@@ -287,13 +287,17 @@
      as its own steer row; buffered raw here it reached the phone as an internal marker glued between the answer before
      the note and the answer after it. joinReplyDelta keeps both answers and every word of the note, but writes the
      note as a readable line of its own ('↪ <note>', the same arrow the steer acknowledgement uses), with one blank line
-     on either side — the model's own paragraph break after it is folded in rather than stacked. */
-  const STEER_ECHO_RE = /^\n\[steering\] ([^\n]*)\n?$/;
+     on either side — the model's own paragraph break after it is folded in rather than stacked.
+     ONE LINE: this hub posts its notes flattened (steerNoteWire, the rule COMMS's steerWire keeps), but a note posted by
+     any other client may still carry a line break — the echo is matched whole and its note drawn on the one line. */
+  const STEER_ECHO_RE = /^\n\[steering\] ([\s\S]*?)\n?$/;
   const AFTER_STEER_RE = /(?:^|\n)↪ [^\n]*\n\n$/;
+  // a steering note as the run gets it: one line, however many bubbles or line breaks it was typed in
+  function steerNoteWire(text) { return String(text == null ? '' : text).replace(/\s*\r?\n\s*/g, ' ').trim(); }
   function joinReplyDelta(buf, delta) {
     const b = String(buf == null ? '' : buf), d = String(delta == null ? '' : delta);
     const m = STEER_ECHO_RE.exec(d);
-    if (m) return (b.trim() ? b.replace(/\s+$/, '') + '\n\n' : '') + '↪ ' + m[1].trim() + '\n\n';
+    if (m) return (b.trim() ? b.replace(/\s+$/, '') + '\n\n' : '') + '↪ ' + steerNoteWire(m[1]) + '\n\n';
     if (AFTER_STEER_RE.test(b)) return b + d.replace(/^\s+/, '');
     return b + d;
   }
@@ -2001,7 +2005,9 @@
           && msg.chatType !== 'group' && !msg.edited && !carriesThirdPartyText(msg)
           && !(Array.isArray(msg.media) && msg.media.length) && !(msg.replyTo && Array.isArray(msg.replyTo.media) && msg.replyTo.media.length)
           && String(msg.text || '').trim() && !STOP_WORDS_RE.test(String(msg.text || ''))) {
-        const note = String(msg.text).trim();
+        // ONE LINE ON THE WIRE: two quick bubbles arrive here joined by a newline (the text batch), and every reader of
+        // the loop's '\n[steering] <note>\n' echo — this hub, COMMS, the phone relay — reads one line
+        const note = steerNoteWire(msg.text);
         let steered = false;
         try { const r = await steerRun(liveRun.runId, note); steered = !!(r && r.ok); letPrevFinish = !steered && !!r && r.status === 409; }
         catch (e) { failNote('channels.hub.steer', e); steered = false; }
