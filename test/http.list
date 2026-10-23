@@ -123,6 +123,7 @@ test/channels.telegram.buttons.e2e.test.js
 test/webhook-replay.e2e.test.js
 test/channels.relay-owner.e2e.test.js
 test/channels.telegram.group-allow.e2e.test.js
+test/channels.telegram.chat-truth.e2e.test.js
 test/cron.arm.test.js
 test/lifecycle-armed.http.test.js
 test/checkpoint-store.test.js

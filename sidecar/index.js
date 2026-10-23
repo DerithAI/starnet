@@ -10586,7 +10586,7 @@ function startTelegram(token, key, model, agentCfg) {
       catch (_) { return false; }
     },
     ownerUserId: (channelSecrets.telegram && channelSecrets.telegram.ownerId) || '',
-    onOwnerClaim: (uid) => { try { persistOwnerClaim('telegram', uid); } catch (_) {} },
+    onOwnerClaim: (uid) => { try { persistOwnerClaim('telegram', uid); } catch (_) {} publishCommandMenu(adapterRef, 'telegram'); },   // the owner's DM gets their own commands' menu
     ownerAdmission: (message) => telegramOwnerAdmission((channelSecrets && channelSecrets.telegram) || {}, message),
     onInbound: (m) => {
       // WORK-ITEM INTERCEPT: an admitted message becomes a box that rides the player-laid belts to the
@@ -10676,12 +10676,21 @@ function startTelegram(token, key, model, agentCfg) {
    reserved — the hub's table AND the slash registry's builtins/aliases — because a built-in always wins its name.
    Read at connect, like the rest of the menu: an edit to usercommands.json runs at once but lists on the next
    connect. Bot API cap: 100 rows. */
-function channelMenuCommands() {
+/* WHO CAN READ WHICH MENU (2026-10-23). A bot's default and all-groups menus are readable by anyone who opens a DM
+   with it or shares a group with it, while the Commander's descriptions are their own notes ("deploy main to
+   10.0.0.5"). So: `publicRows` lists their commands by NAME with one generic line (groups still tap them; they run
+   for the owner only), and the descriptions they wrote are published only into the owner's own DM. The default scope
+   (every DM, a stranger's included) lists the built-ins only — a stranger's DM can run none of the Commander's
+   commands. The owner scope is a 'chat' scope on the owner's id (a private chat's id IS the user's id); an unpaired
+   bot has none yet, and the owner claim republishes (onOwnerClaim). */
+const USER_MENU_PUBLIC_LINE = 'One of the owner\'s own commands (owner only)';
+function channelMenuCommands(opts) {
   const base = menuCommands();
   const reserved = HUB_COMMANDS.map(c => c.command);
   for (const c of slash.BUILTIN_COMMANDS) { reserved.push(c.name); for (const a of (c.aliases || [])) reserved.push(a); }
   let mine = [];
   try { mine = userMenuEntries(userCommandStore.load(), reserved); } catch (_) { mine = []; }
+  if (opts && opts.publicRows) mine = mine.map(r => ({ command: r.command, description: USER_MENU_PUBLIC_LINE }));
   return base.concat(mine).slice(0, 100);
 }
 // Publish the bot's "/" menu from the hub's OWN command table, so Telegram can never offer a command the hub
@@ -10693,11 +10702,15 @@ function publishCommandMenu(adapter, label) {
   // Telegram resolves its most-specific command scope first. Publish the same table for default + all groups so
   // a forum topic never loses the command menu to an older/narrower BotFather scope. Other adapters ignore the
   // optional scope argument and keep their original single publish.
-  const list = channelMenuCommands();
-  Promise.all([
-    Promise.resolve(adapter.setCommands(list)),
-    Promise.resolve(adapter.setCommands(list, { scope: { type: 'all_group_chats' } }))
-  ])
+  const ownerList = channelMenuCommands();   // scopes: see WHO CAN READ WHICH MENU above
+  let ownerId = '';
+  try { ownerId = String((adapter._internals && adapter._internals.owner) || ''); } catch (_) { ownerId = ''; }
+  const publishes = [
+    Promise.resolve(adapter.setCommands(menuCommands().slice(0, 100))),
+    Promise.resolve(adapter.setCommands(channelMenuCommands({ publicRows: true }), { scope: { type: 'all_group_chats' } }))
+  ];
+  if (/^\d{1,20}$/.test(ownerId)) publishes.push(Promise.resolve(adapter.setCommands(ownerList, { scope: { type: 'chat', chatId: ownerId } })));
+  Promise.all(publishes)
     .then((results) => { for (const r of results) if (r && r.ok === false) console.warn('[' + label + '] command menu not published: ' + (r.error || 'unknown')); })
     .catch(swallow('channels.menu'));
 }
@@ -10868,6 +10881,7 @@ function startTelegramBot(botId) {
     onOwnerClaim: (uid) => {
       const ok = persistTelegramBotOwnerClaim(botId, uid);
       console.log('  · telegram bot ' + (rec.username ? '@' + rec.username : botId) + ' owner claimed (userId ' + String(uid) + ')' + (ok ? '' : ' — NOT persisted; re-claims on restart'));
+      publishCommandMenu(adapterRef, 'telegram:' + botId);   // the owner's DM gets their own commands' menu
     },
     ownerAdmission: (message) => telegramOwnerAdmission(recOf(), message),
     onInbound: (m) => { Promise.resolve(hub.onInbound(m)).catch(e => console.warn('[telegram:' + botId + '] inbound error:', (e && e.message) || e)); },
