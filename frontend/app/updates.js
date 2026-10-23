@@ -274,6 +274,11 @@ const Updates = (() => {
     if (c.reset === true) {
       return 'This computer’s station was reset after the station in this window was founded, so this window’s changes were kept separately on the station, not saved to the station file. The update was not installed. In the save notice at the top, press Download this window’s save to keep a copy, then Open the fresh station, and install the update.';
     }
+    // erased work: this window's copy is from before this computer's station was reset and the station is from after it.
+    // The notice shows NO Restore key for it (the station refuses that restore), so the card never names one
+    if (c.predatesReset === true) {
+      return 'This window holds a station from before this computer’s station was reset, so its changes were not saved into the current station; this window’s copy is kept separately on the station. The update was not installed. In the save notice at the top, press Download this window’s save to keep a copy, then Reload current station, and install the update.';
+    }
     return 'Your latest station changes conflict with the station file, so they were not saved to it; this window’s copy is kept separately on the station. The update was not installed. In the save notice at the top, ' +
       (c.recovery ? 'press Restore this window’s sessions (or Reload current station), then install the update.'
         : 'press Download this window’s save to keep a copy, then Reload current station, and install the update.');

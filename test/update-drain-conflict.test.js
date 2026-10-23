@@ -38,6 +38,8 @@ function makeCase(o) {
       const refused = { ok: false, stale: true, conflict: true, revision: 7, updatedAt: 1 };
       if (o.recovery !== false) refused.recovery = 'agent.save-conflict-' + (doc._saveClient || 'x') + '.json';
       if (o.reset) refused.reset = true;
+      // savestore.js erasedWork: a copy from before this computer's station was reset, the station from after it (never with reset)
+      if (o.predatesReset) refused.predatesReset = true;
       return { ok: true, status: 200, json: async () => refused };
     }
     if (u === '/api/update/prepare') return { ok: true, status: 200, json: async () => ({ ok: true, receipt: { id: 'receipt-1' } }) };
@@ -123,6 +125,19 @@ const prepared = c => c.calls.includes('POST /api/update/prepare') || c.calls.in
     const state = await c.updates.install();
     A.ok(/Download this window’s save/.test(state.error) && /Reload current station/.test(state.error), 'without a preserved copy the card names Download then Reload (got: ' + state.error + ')');
     A.eq(/Restore this window/.test(state.error), false, 'and no Restore button');
+  }
+  {
+    // erased work (predatesReset): the copy predates this computer's station reset, so the notice deliberately has NO
+    // Restore button (stationui.js refreshSaveDurability: !erased) and the station refuses that restore. The card names
+    // only the notice's Download + Reload current station buttons (final-polish 10-23)
+    const c = makeCase({ predatesReset: true });
+    await c.ready();
+    const state = await c.updates.install();
+    A.eq(c.installCalls(), 0, 'an erased-work refusal does not install either');
+    A.eq(/Restore this window/.test(state.error), false, 'erased work never names a Restore button the notice does not show (got: ' + state.error + ')');
+    A.ok(/Download this window’s save/.test(state.error) && /Reload current station/.test(state.error), 'it names the notice’s Download then Reload current station buttons');
+    A.ok(/from before this computer’s station was reset/.test(state.error), 'and says the copy is from before the reset, as the notice does');
+    A.ok(/kept separately on the station/i.test(state.error) && /update was not installed/i.test(state.error), 'and that the copy is kept and the update was not installed');
   }
   A.report('update-drain-conflict');
 })().catch(e => { console.log('FAIL: unhandled ' + (e && e.stack || e)); process.exit(1); });
