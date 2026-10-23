@@ -589,6 +589,66 @@
     return changed ? out : messages;
   }
 
+  /* IMAGES ONLY TO A MODEL THAT CAN SEE THEM (2026-10-23, StarNet Cloud proxy logs: 14 managed completions refused by
+     OpenRouter with 404 "No endpoints found that support image input"). A COMMS photo, a channel photo or a browser
+     screenshot rode to a text-only model, and since the image stays in the conversation every later turn failed the
+     same way. imageInputOf(row) reads a catalog row: an explicit boolean supportsImages, else OpenRouter's
+     architecture.input_modalities (the StarNet Cloud /v1/models relays it verbatim), else its older `modality` string
+     ("text+image->text"). true/false only when the catalog SAYS; null when it says nothing — and an adapter strips
+     images only on false, so a model of unknown capability is sent exactly what it was before. */
+  function imageInputOf(row) {
+    if (!row || typeof row !== 'object') return null;
+    if (typeof row.supportsImages === 'boolean') return row.supportsImages;
+    const arch = (row.architecture && typeof row.architecture === 'object') ? row.architecture : null;
+    const mods = Array.isArray(row.input_modalities) ? row.input_modalities : (arch && Array.isArray(arch.input_modalities) ? arch.input_modalities : null);
+    if (mods && mods.length) return mods.some(x => String(x).toLowerCase() === 'image');
+    const modality = arch && typeof arch.modality === 'string' ? arch.modality : '';
+    const arrow = modality.indexOf('->');
+    if (arrow > 0) return modality.slice(0, arrow).split('+').some(x => x.trim().toLowerCase() === 'image');
+    return null;
+  }
+  /* Every image part (image_url — the shape attachments, channel photos and tool screenshots all use — or a Responses
+     input_image / Anthropic image block) becomes ONE short text note per run of images, which the model can act on:
+     say so, reach for an image-analysis tool, or send the Commander to a vision model. Never mutates the caller's
+     transcript; a transcript with no image part returns by IDENTITY (request bytes unchanged). */
+  const IMAGE_PART_TYPES = { image_url: 1, input_image: 1, image: 1 };
+  function imageOmittedNote(count, model) {
+    const what = count > 1 ? count + ' images omitted' : 'image omitted';
+    return '[' + what + ' — ' + (model ? String(model) : 'this model') + ' cannot take image input, so '
+      + (count > 1 ? 'they were' : 'it was') + ' not sent. If you need what ' + (count > 1 ? 'they show' : 'it shows')
+      + ', use an image-analysis tool if you have one, or tell the Commander to pick a vision model in the COMMS model dock.]';
+  }
+  function withoutImageParts(messages, model) {
+    if (!Array.isArray(messages)) return messages;
+    let changed = false;
+    const out = messages.map(m => {
+      if (!m || typeof m !== 'object' || !Array.isArray(m.content)) return m;
+      if (!m.content.some(p => p && typeof p === 'object' && IMAGE_PART_TYPES[p.type] === 1)) return m;
+      const parts = [];
+      let run = 0;
+      const flush = () => { if (run) { parts.push({ type: 'text', text: imageOmittedNote(run, model) }); run = 0; } };
+      for (const p of m.content) {
+        if (p && typeof p === 'object' && IMAGE_PART_TYPES[p.type] === 1) { run++; continue; }
+        flush();
+        parts.push(p);
+      }
+      flush();
+      changed = true;
+      return Object.assign({}, m, { content: parts });
+    });
+    return changed ? out : messages;
+  }
+  /* A model the provider REFUSED for image input (its own words, errorClass isImageInputRefusal) is text-only for this
+     process, whatever the catalog said or did not say: the next request to it goes without the image instead of
+     failing the same way. Keyed by endpoint + model; bounded so a long-lived sidecar cannot grow it without end. */
+  const imageRefusals = new Set();
+  function noteImageRefusal(endpoint, model) {
+    if (!model) return;
+    if (imageRefusals.size >= 500) imageRefusals.clear();
+    imageRefusals.add(String(endpoint || '') + '\u0000' + String(model));
+  }
+  function refusedImages(endpoint, model) { return !!model && imageRefusals.has(String(endpoint || '') + '\u0000' + String(model)); }
+
   /* RUN CONTEXT NOTE (lean-prompt, 2026-10-12). The per-run block (task brief, runtime identity, quests, crew call, the
      run's own skill index) used to ride the END of the system prompt, so the system differed on every message and no
      provider could reuse the conversation behind it from cache. runOnceCore now sends it as ONE fenced system note
@@ -814,5 +874,6 @@
   return { EVENT_TYPES, FINISH, normalizeFinish, timeouts, runtime, repairToolPairs, preserveClaudeContinuations,
     RUN_CONTEXT_OPEN, RUN_CONTEXT_CLOSE, runContextNote, isRunContextNote, CREW_CALL_OPEN, CREW_CALL_CLOSE, crewCallFence, isCrewCallNote,
     HOST_NOTE_TAGS, isHostNote, isClaudeModel, userSideHostNotes, chatRoleProjection, inertHostTags, inertHostFences,
-    prepareWireMessages, remapToolCallIds, ANTHROPIC_TOOL_ID, chatWireMessages, CHAT_WIRE_KEYS };
+    prepareWireMessages, remapToolCallIds, ANTHROPIC_TOOL_ID, chatWireMessages, CHAT_WIRE_KEYS,
+    imageInputOf, withoutImageParts, imageOmittedNote, noteImageRefusal, refusedImages };
 });
