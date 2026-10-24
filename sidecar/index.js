@@ -11751,6 +11751,8 @@ const ROUTES = [
   { m: 'POST', exact: '/api/channels/telegram/owner/revoke', h: handleTelegramOwnerRevoke },
   { m: 'POST', exact: '/api/roster', h: handleRoster },
   { m: 'POST', exact: '/api/agent/model', h: handleAgentModel },   // the terminal's /model: one agent's model + provider (via the page when open)
+  { m: 'POST', exact: '/api/agent/approval', h: handleAgentApproval },   // the terminal's /yolo: one agent's approval mode (via the page when open)
+  { m: 'POST', exact: '/api/agent/personality', h: handleAgentPersonality },   // the terminal's /personality (via the page when open)
   { m: 'POST', exact: '/api/agent/delete', h: handleAgentDelete },
   { m: 'POST', exact: '/api/dossier', h: handleDossier },
   { m: 'POST', exact: '/api/goals', h: handleGoals },   // GROWTH Tier 2: the active goal-arc summary for cron personas
@@ -14537,7 +14539,10 @@ function handleRuntimeAgent(req, res) {
     configured: !!(model && providerHasCredential(provider, key, baseUrl)),
     version: (() => { try { return computeVersionSurface().harness || 'dev'; } catch (_) { return 'dev'; } })(),
     agents: [...agentRoster].map(([agentId, a]) => ({
-      agentId, name: (a && a.name) || agentId, model: (a && a.model) || null, provider: (a && a.provider) || null
+      agentId, name: (a && a.name) || agentId, model: (a && a.model) || null, provider: (a && a.provider) || null,
+      // the settings a run here is held to (additive): its reasoning effort and its approval mode, as the roster has them
+      reasoningEffort: (a && a.reasoningEffort) || null, approvalMode: (a && a.approvalMode) || null,
+      personaId: (a && a.personaId) || ((agentRosterRaw.get(agentId) || {}).personaId) || null
     }))
   }));
 }
@@ -18406,6 +18411,52 @@ async function handleAgentModel(req, res) {
   agentRoster.set(agentId, Object.assign({}, cur, { model, provider }, effort ? { reasoningEffort: effort } : {}));
   if (!saveAgentRoster()) { agentRoster.set(agentId, cur); return json(500, { error: 'could not save the roster' }); }
   return json(200, Object.assign({ ok: true, agentId, model, provider, via: 'roster' }, effort ? { effort } : {}));
+}
+/* POST /api/agent/approval {agentId, mode:'ask'|'full'} and POST /api/agent/personality {agentId, personality, system?} — one
+   agent's approval mode or personality, for a client with no page of its own (the terminal's /yolo and /personality). The
+   same two paths as /api/agent/model: a StarNet page connected → that page's own control (it saves, recomposes and pushes
+   the roster); none → that ONE agent's roster entry, saved (never /api/roster, which replaces every agent; never the
+   station-wide bypass switch). With no page a personality needs its prompt, which only the app's composer writes: the
+   caller composes it with the app's own modules and sends it as `system`, and the roster keeps the personaId beside it. */
+async function handleAgentApproval(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  let body; try { body = JSON.parse(await readBody(req, 1 << 12)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
+  const agentId = String(body.agentId || '');
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });
+  const cur = agentRoster.get(agentId);
+  if (!cur) return json(404, { error: 'no agent "' + agentId + '" on this station' });
+  const mode = body.mode === 'full' ? 'full' : body.mode === 'ask' ? 'ask' : '';
+  if (!mode) return json(400, { error: 'approval is "ask" or "full"' });
+  if (sse.size() > 1) {
+    const out = await stationBridge.request('station.control', { action: 'agent.approval', agent: agentId, mode });
+    if (out && out.ok) return json(200, { ok: true, agentId, mode, via: 'page' });
+    if (!(out && out.unattended)) return json(409, { error: String((out && out.error) || 'the station page refused the change') });
+  }
+  agentRoster.set(agentId, Object.assign({}, cur, { approvalMode: mode }));
+  if (!saveAgentRoster()) { agentRoster.set(agentId, cur); return json(500, { error: 'could not save the roster' }); }
+  return json(200, { ok: true, agentId, mode, via: 'roster' });
+}
+async function handleAgentPersonality(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  let body; try { body = JSON.parse(await readBody(req, 1 << 20)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
+  const agentId = String(body.agentId || '');
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });
+  const cur = agentRoster.get(agentId);
+  if (!cur) return json(404, { error: 'no agent "' + agentId + '" on this station' });
+  const personality = String(body.personality || '').trim().toLowerCase();
+  if (!/^[a-z0-9_-]{1,40}$/.test(personality)) return json(400, { error: 'invalid personality' });
+  if (sse.size() > 1) {
+    const out = await stationBridge.request('station.control', { action: 'agent.personality', agent: agentId, personality });
+    if (out && out.ok) return json(200, { ok: true, agentId, personality, via: 'page' });
+    if (!(out && out.unattended)) return json(409, { error: String((out && out.error) || 'the station page refused the change') });
+  }
+  const system = typeof body.system === 'string' ? body.system : '';
+  if (!system.trim() || system.length > 400000) return json(409, { error: 'no StarNet page is open to compose the new prompt, and none was sent' });
+  const raw = agentRosterRaw.get(agentId);
+  agentRoster.set(agentId, Object.assign({}, cur, { system }));
+  agentRosterRaw.set(agentId, Object.assign({}, raw && typeof raw === 'object' ? raw : {}, { personaId: personality }));
+  if (!saveAgentRoster()) { agentRoster.set(agentId, cur); if (raw) agentRosterRaw.set(agentId, raw); else agentRosterRaw.delete(agentId); return json(500, { error: 'could not save the roster' }); }
+  return json(200, { ok: true, agentId, personality, via: 'roster' });
 }
 async function handleAgentDelete(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };

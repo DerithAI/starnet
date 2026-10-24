@@ -15,8 +15,9 @@ function makeStationIO(client) {
   const post = (p, body, ms) => client.request('POST', p, body || {}, { timeoutMs: ms || 15000 });
   function chat(o) {
     return new Promise(resolve => {
-      const body = { model: o.model, provider: o.provider, agentId: 'agent', system: o.system || '', messages: [{ role: 'user', content: String(o.directive || '') }], isTask: false, placed: [], internal: true };
+      const body = { model: o.model, provider: o.provider, agentId: o.agentId || 'agent', system: o.system || '', messages: [{ role: 'user', content: String(o.directive || '') }], isTask: false, placed: [], internal: true };
       if (o.effort) body.reasoningEffort = o.effort;
+      if (o.keepEffort) body.keepEffort = true;   // a verdict that steers the Commander's work runs on their effort, never the cheap aux one
       const payload = Buffer.from(JSON.stringify(body), 'utf8');
       let text = '', error = '', ended = false, done = false, req = null;
       const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve(error ? { error, text } : text.trim() ? { text } : { error: ended ? 'the provider returned an error' : 'the run ended without a reply' }); };
