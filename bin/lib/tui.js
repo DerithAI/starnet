@@ -575,7 +575,9 @@ function slashMatches(list, word) {
   const scored = [];
   for (const c of list || []) {
     const n = String(c.name || '').toLowerCase(), al = (c.aliases || []).map(a => String(a).toLowerCase());
-    const s = !w ? 0 : n.indexOf(w) === 0 ? 0 : al.some(a => a.indexOf(w) === 0) ? 1 : n.indexOf(w) >= 0 ? 2 : String(c.desc || '').toLowerCase().indexOf(w) >= 0 ? 3 : -1;
+    // the word typed whole (a name or an alias: /stat, /v) first, so enter runs what was typed; then the names it
+    // starts, the aliases it starts, the names it is in, the descriptions
+    const s = !w ? 0 : (n === w || al.indexOf(w) >= 0) ? 0 : n.indexOf(w) === 0 ? 1 : al.some(a => a.indexOf(w) === 0) ? 2 : n.indexOf(w) >= 0 ? 3 : String(c.desc || '').toLowerCase().indexOf(w) >= 0 ? 4 : -1;
     if (s >= 0) scored.push([s, c]);
   }
   return scored.sort((a, b) => a[0] - b[0] || (SOURCE_ORDER[a[1].source] || 0) - (SOURCE_ORDER[b[1].source] || 0)).map(x => x[1]);

@@ -732,6 +732,10 @@ async function awakenRun(o) {
   A.eq(tui.slashMatches(cat, 'go').map(c => c.name), ['goal', 'subgoal'], 'a typed word: the commands it starts first, then the ones it is in');
   A.eq(tui.slashMatches(cat, 'q')[0].name, 'queue', 'an alias counts (/q is /queue)');
   A.ok(tui.slashMatches(cat, '').length === cat.length, 'a lone / lists everything');
+  // the word typed whole is first, so enter runs what was typed (review 10-24: /stat ran /status, /v completed /voice)
+  const withTerm = cat.concat([{ name: 'stat', aliases: [], desc: 'the STAT page', argsHint: '', source: 'terminal', here: true }]);
+  A.eq(tui.slashMatches(withTerm, 'stat')[0].name, 'stat', 'an exact name beats a longer one it starts (/stat, not /status)');
+  A.eq(tui.slashMatches(withTerm, 'v')[0].name, 'version', 'an exact alias beats a name it starts (/v is /version, not /voice)');
   const m = crew();
   const base = { focus: 'agent', slashCatalog: cat };
   const open = screen(m, Object.assign({ input: '/' }, base), 110, 34, T0);
