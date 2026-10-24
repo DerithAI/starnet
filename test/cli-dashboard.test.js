@@ -722,7 +722,31 @@ async function awakenRun(o) {
   A.ok(/^o open chat · m model · n new chat · h history · s stop · esc close/.test(mt[32]), 'the key line says its letters');
   const idle = screen(m, { agentMenu: 'astra' }, 110, 34, T0).map(tui.toPlain);
   A.ok(!idle.some(l => /\[S\] STOP/.test(l)), 'an agent with nothing running is offered no STOP');
-  A.ok(tui.HELP.some(([k]) => k === 'right-click') && tui.HELP.some(([k]) => k === 'f1 – f5') && tui.HELP.length <= 23, '/help says the mouse and the pages, in no more rows than before');
+  A.ok(tui.HELP.some(([k]) => k === 'right-click') && tui.HELP.some(([k]) => k === 'f1 – f5') && tui.HELP.some(([k, d]) => k === '/' && /\/goal/.test(d)), '/help says the mouse, the pages and the "/" menu (the list scrolls, so it can say all of it)');
+}
+// ---- THE "/" MENU (Andrew 10-24: "when users type / it should pop up with the suggestion menu") ------------------------------
+{
+  const mouse = require('../bin/lib/mouse.js');
+  const cat = require('../sidecar/slash.js').catalog({}).commands.map(c => ({ name: c.name, aliases: c.aliases, desc: c.desc, argsHint: c.argsHint, source: c.source, here: c.dispatch === 'server' || c.name === 'model' }))
+    .concat([{ name: 'plan', aliases: [], desc: 'Think through the approach and write a short plan', argsHint: '', source: 'skill', here: true }]);
+  A.eq(tui.slashMatches(cat, 'go').map(c => c.name), ['goal', 'subgoal'], 'a typed word: the commands it starts first, then the ones it is in');
+  A.eq(tui.slashMatches(cat, 'q')[0].name, 'queue', 'an alias counts (/q is /queue)');
+  A.ok(tui.slashMatches(cat, '').length === cat.length, 'a lone / lists everything');
+  const m = crew();
+  const base = { focus: 'agent', slashCatalog: cat };
+  const open = screen(m, Object.assign({ input: '/' }, base), 110, 34, T0);
+  const ot = open.map(tui.toPlain);
+  const top = ot.findIndex(l => /┌─ \/ \d+ COMMANDS ─/.test(l));
+  A.ok(top > 0 && /│▌\/retry +re-run the last turn/.test(ot[top + 1]) && /└─ \[TAB\] COMPLETE {3}\[ENTER\] RUN {3}\[↑↓\] PICK {3}\[ESC\] HIDE ─+ \+\d+ more ┘/.test(ot[top + 9]), 'typing / pops the menu above the prompt: the commands, the picked one on the bar, its keys');
+  A.ok(/^tab completes \/retry · enter runs it/.test(ot[32]), 'the key line says what tab and enter do with the one picked');
+  A.eq((mouse.hitAt(open.hits, 50, top + 3) || {}).act, { t: 'slash', name: 'copy' }, 'a click on a command is that command');
+  const go = screen(m, Object.assign({ input: '/go', slashSel: 1 }, base), 110, 34, T0).map(tui.toPlain);
+  A.ok(go.some(l => /│▌\/subgoal/.test(l)) && go.some(l => /│ \/goal +set a goal/.test(l)), 'it narrows as you type, and ↑ ↓ move the bar');
+  A.ok(go.some(l => /· in the app/.test(l)), 'a command only the app runs yet is marked so (never offered as if it worked here)');
+  A.ok(!screen(m, Object.assign({ input: '/goal ' }, base), 110, 34, T0).map(tui.toPlain).some(l => /COMMANDS ─/.test(l)), 'a space ends the menu (the command is chosen)');
+  A.ok(/^\/goal \[text\|status\|pause\|resume\|clear\] — set a goal/.test(screen(m, Object.assign({ input: '/goal ship it' }, base), 110, 34, T0).map(tui.toPlain)[32]), 'then the key line says what it takes');
+  A.ok(!screen(m, Object.assign({ input: '/go', slashHidden: '/go' }, base), 110, 34, T0).map(tui.toPlain).some(l => /COMMANDS ─/.test(l)), 'esc hides it for what is typed (typing on brings it back)');
+  A.ok(!screen(m, Object.assign({ input: '/zzz' }, base), 110, 34, T0).map(tui.toPlain).some(l => /COMMANDS ─/.test(l)), 'nothing matches: no empty menu');
 }
 const awakenTests = (async () => {
   const opt = re => ({ re }), typed = t => ({ type: t });
