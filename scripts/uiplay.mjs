@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { materializeSeedWorkspace, bootSeededSidecar } from './lib/seed.mjs';
+import { findChrome } from './lib/cdp.mjs';
 
 const APP_PORT = process.env.SKYNET_SHOT_PORT || '8920';
 const APP_URL = `http://127.0.0.1:${APP_PORT}/`;
@@ -30,12 +31,12 @@ const MSG = (() => { const i = process.argv.indexOf('--msg'); return i > -1 ? pr
 const TICKS = Number(process.env.SKYNET_PLAY_TICKS || 12);
 const TICK_MS = Number(process.env.SKYNET_PLAY_TICK_MS || 1600);
 
-const CHROME = [
-  process.env.SKYNET_CHROME,
-  'C:/Users/andro/AppData/Local/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-win64/chrome-headless-shell.exe',
-  'C:/Users/andro/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe',
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-].filter(Boolean).find((c) => existsSync(c));
+// Chrome discovery lives in one place. This list used to be hardcoded to
+// another developer's home directory, so the harness could not start a
+// browser on any other machine.
+const CHROME = (() => {
+  try { return findChrome(); } catch (_) { return null; }
+})();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

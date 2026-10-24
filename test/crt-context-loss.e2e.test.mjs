@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findChrome, connectCDP, evalJS, collectDiagnostics, sleep } from '../scripts/lib/cdp.mjs';
+import { findChrome, connectCDP, evalJS, collectDiagnostics, sleep, killChromeForProfile } from '../scripts/lib/cdp.mjs';
 import { materializeSeedWorkspace, bootSeededSidecar, waitUp, waitDevReady } from '../scripts/lib/seed.mjs';
 
 const failures = [];
@@ -97,11 +97,22 @@ try {
   try { if (cdp) await Promise.race([cdp.send('Browser.close'), sleep(2000)]); } catch {}
   try { cdp?.ws.close(); } catch {}
   await Promise.all([stopChild(chrome, true), stopChild(sidecar)]);
+  // Chrome's crashpad handler detaches on purpose - it has to outlive the
+  // browser so it can report the crash - so taskkill /T on the browser never
+  // reaches it, and it keeps a handle on CrashpadMetrics-active.pma inside
+  // the profile. Reach it by profile path before removing the tree.
+  killChromeForProfile(profile);
+  await sleep(300);
   const resolvedRoot = root.replace(/\\/g, '/');
   if (resolvedRoot.startsWith(tmpdir().replace(/\\/g, '/') + '/') && /starnet-crt-loss-/.test(resolvedRoot)) {
     for (let attempt = 0; attempt < 10; attempt++) {
       try { rmSync(root, { recursive: true, force: true }); break; }
-      catch (error) { if (attempt === 9) throw error; await sleep(200); }
+      catch (error) {
+            // A locked temp directory must not discard a real result. The
+            // directory is under TEMP and the OS reclaims it.
+            if (attempt === 9) { console.log('WARN cleanup: ' + error.message); break; }
+            await sleep(300);
+          }
     }
   }
 }

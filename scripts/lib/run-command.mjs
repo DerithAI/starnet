@@ -20,7 +20,7 @@ export function normalizeCommand(cmd) {
   return cmd;
 }
 
-function killProcessTree(pid) {
+export function killProcessTree(pid) {
   return new Promise(resolve => {
     if (!pid) return resolve();
     if (process.platform === 'win32') {

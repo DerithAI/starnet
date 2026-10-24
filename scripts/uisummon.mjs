@@ -6,11 +6,12 @@
 import { spawn } from 'node:child_process';
 import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { findChrome } from './lib/cdp.mjs';
 const PORT = process.env.SKYNET_SHOT_PORT || '8921';
 const URL = `http://127.0.0.1:${PORT}/`;
 const CDP = Number(process.env.SKYNET_CDP_PORT || 9335);
 const OUT = process.env.SKYNET_SHOT_DIR || join(process.cwd(), '.uisummon');
-const CH = ['C:/Users/andro/AppData/Local/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-win64/chrome-headless-shell.exe','C:/Program Files/Google/Chrome/Application/chrome.exe'].find(existsSync);
+const CH = findChrome();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 class C { constructor(w){this.w=w;this.i=0;this.p=new Map();this.h=new Map();w.addEventListener('message',e=>{const m=JSON.parse(e.data);if(m.id&&this.p.has(m.id)){const{res,rej}=this.p.get(m.id);this.p.delete(m.id);m.error?rej(new Error(m.error.message)):res(m.result);}else if(m.method)(this.h.get(m.method)||[]).forEach(f=>f(m.params));});} s(me,pa={}){const id=++this.i;return new Promise((res,rej)=>{this.p.set(id,{res,rej});this.w.send(JSON.stringify({id,method:me,params:pa}));setTimeout(()=>rej(new Error('to '+me)),30000);});} on(m,f){if(!this.h.has(m))this.h.set(m,[]);this.h.get(m).push(f);}}
 async function conn(){for(let i=0;i<40;i++){try{const r=await fetch(`http://127.0.0.1:${CDP}/json/list`);const t=await r.json();const pg=t.find(x=>x.type==='page');if(pg?.webSocketDebuggerUrl){const w=new WebSocket(pg.webSocketDebuggerUrl);await new Promise((a,b)=>{w.addEventListener('open',a,{once:1});w.addEventListener('error',b,{once:1});});return new C(w);}}catch{}await sleep(250);}throw new Error('no cdp');}

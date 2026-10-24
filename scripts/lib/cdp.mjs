@@ -9,21 +9,92 @@
 //
 // Zero dependencies: Node 22 has global fetch + global WebSocket.
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Chrome discovery has to work on whatever machine this runs on.
+//
+// The candidate list used to be two absolute paths into another developer's
+// home directory plus one Program Files path. On a machine where Chrome
+// installs to "Program Files (x86)" - which is where it landed on this box -
+// and where Playwright keeps its browsers under the current user's profile,
+// every candidate missed and the e2e harness died with "No Chrome/Chromium
+// binary found".
+//
+// Order, and why:
+//   1. an explicit override
+//   2. a real Chrome or Edge - best fidelity, and it accepts --headless=new
+//   3. Playwright's headless shell - measured working over CDP
+//   4. Playwright's full chromium build - LAST, because measured on
+//      2026-10-24 it exits immediately with code 0 when launched directly
+//      and never opens the debug port. Playwright drives that build over its
+//      own pipe transport, not over --remote-debugging-port.
+function playwrightChromiumCandidates() {
+  const roots = [
+    process.env.SKYNET_PLAYWRIGHT_ROOT,
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : null,
+    process.env.HOME ? join(process.env.HOME, '.cache', 'ms-playwright') : null,
+  ].filter(Boolean);
+  const out = [];
+  for (const root of roots) {
+    let entries;
+    try { entries = readdirSync(root, { withFileTypes: true }); } catch (_) { continue; }
+    const dirs = entries
+      .filter((e) => e.isDirectory() && /^chromium/i.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+    const shell = dirs.filter((d) => /headless_shell/i.test(d));
+    const full = dirs.filter((d) => !/headless_shell/i.test(d));
+    for (const dir of shell) out.push(join(root, dir, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'));
+    for (const dir of full) out.push(join(root, dir, 'chrome-win64', 'chrome.exe'));
+  }
+  return [...new Set(out)];
+}
+
 const CHROME_CANDIDATES = [
   process.env.SKYNET_CHROME,
-  'C:/Users/andro/AppData/Local/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-win64/chrome-headless-shell.exe',
-  'C:/Users/andro/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe',
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+  ...playwrightChromiumCandidates(),
 ].filter(Boolean);
 
 export function findChrome() {
   for (const c of CHROME_CANDIDATES) if (existsSync(c)) return c;
   throw new Error('No Chrome/Chromium binary found. Set SKYNET_CHROME.');
+}
+
+// Kill any Chrome process that was started against a given profile.
+//
+// Chrome's crashpad handler detaches on purpose - it has to survive the
+// browser so it can report the crash - which means taskkill /T on the
+// browser does not reach it. The handler keeps a handle on
+// CrashpadMetrics-active.pma inside the profile, and the profile can then
+// not be deleted on Windows.
+//
+// Measured 2026-10-24: 62 chrome processes were alive across three days of
+// test runs, and every e2e run failed its cleanup with EBUSY.
+export function killChromeForProfile(profileDir) {
+  if (process.platform !== 'win32' || !profileDir) return;
+  const needle = profileDir.replace(/\\/g, '\\\\');
+  try {
+    spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" ` +
+          `| Where-Object { $_.CommandLine -like '*${needle}*' } ` +
+          `| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ],
+      { stdio: 'ignore', windowsHide: true },
+    );
+  } catch (_) {}
 }
 
 // Launch a headless Chrome with the CDP endpoint open. Returns the child process.
