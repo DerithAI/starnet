@@ -18,6 +18,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
+const apitickets = require('../sidecar/apitickets.js');
+// the bus as a StarNet PAGE joins it: a single-use SSE ticket, no header (ApiTicket.sseUrl) — a header-token listener is a
+// node client (the MCP bridge), never counted as an open app (review 10-24)
+const pageFeed = fixture => '/api/channels/events?ticket=' + encodeURIComponent(apitickets.mint(fixture.token, 'sse', apitickets.SCOPE_SSE, { now: Date.now() }));
 
 const HOST = '127.0.0.1';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -227,7 +231,7 @@ async function until(fn, ms, label) {
       A.eq((await rosterOf('rook')).model, 'test/other-model', 'the refused calls changed nothing');
       // a StarNet page connected: the PAGE applies it (it owns the crew; a roster-only write would be undone by its next push)
       const asked = [];
-      const page = watch(fixture, { 'X-StarNet-Token': fixture.token }, '/api/channels/events');
+      const page = watch(fixture, {}, pageFeed(fixture));
       const answering = setInterval(() => {
         for (const e of page.events.splice(0)) {
           if (e.name !== 'station.command' || !e.payload) continue;
@@ -263,7 +267,7 @@ async function until(fn, ms, label) {
       A.eq((await fixture.json('POST', '/api/agent/personality', { agentId: 'rook', personality: 'Not A Persona!' })).status, 400, 'a malformed personality id is refused');
       // a StarNet page connected: the page applies both (its own controls save and recompose)
       const asked = [];
-      const page = watch(fixture, { 'X-StarNet-Token': fixture.token }, '/api/channels/events');
+      const page = watch(fixture, {}, pageFeed(fixture));
       const answering = setInterval(() => {
         for (const e of page.events.splice(0)) {
           if (e.name !== 'station.command' || !e.payload) continue;
