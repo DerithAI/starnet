@@ -248,12 +248,16 @@ function runDashboard(station, opts) {
 
   // ---- doing things ---------------------------------------------------------------------------------------
   // shown: what COMMS says you sent, when it is not the text itself (a skill goes as its whole recipe, shown as /skill task)
-  function send(agentId, text, shown, streamOverride) {
+  // sendOpts.onFail(why): the station never started it (no model, refused, connection lost) — a goal's step pauses on it.
+  // sendOpts.retry: a message of yours sent on a conversation it was typed in (a queued one): /retry sends it again
+  function send(agentId, text, shown, streamOverride, sendOpts) {
+    const so = sendOpts || {};
+    const fail = why => { if (typeof so.onFail === 'function') { try { so.onFail(why); } catch (_) {} } };
     const a = model.state.agents.get(agentId);
-    if (!a) return flash('no agent named ' + agentId);
-    if (!a.model) return flash(a.name + ' has no model set — pick one in the app first');
+    if (!a) { fail('no agent named ' + agentId); return flash('no agent named ' + agentId); }
+    if (!a.model) { fail(a.name + ' has no model set'); return flash(a.name + ' has no model set — pick one in the app first'); }
     const streamId = streamOverride || streamOf(agentId);
-    if (!streamOverride) ui.lastSent[agentId] = { text, shown };
+    if (!streamOverride || so.retry) ui.lastSent[agentId] = { text, shown };
     model.noteSent(agentId, shown || text, streamId, now());
     ui.scroll = 0;
     // tools only for a task, decided the way the page decides it (the agent's last reply lets a bare "yes" to its offer count)
@@ -270,7 +274,14 @@ function runDashboard(station, opts) {
         if (res.statusCode !== 200) {
           const chunks = [];
           res.on('data', d => chunks.push(d));
-          res.on('end', () => { mine.delete(id); model.sendFailed(agentId, streamId, Buffer.concat(chunks).toString('utf8').slice(0, 200) || 'HTTP ' + res.statusCode, now()); paint(); });
+          res.on('end', () => {
+            mine.delete(id);
+            const why = Buffer.concat(chunks).toString('utf8').slice(0, 200) || 'HTTP ' + res.statusCode;
+            model.sendFailed(agentId, streamId, why, now());
+            let said = why; try { const j = JSON.parse(why); if (j && (j.error || j.reason)) said = String(j.error || j.reason); } catch (_) {}
+            fail('HTTP ' + res.statusCode + (said && said !== 'HTTP ' + res.statusCode ? ': ' + said : ''));
+            paint();
+          });
           return;
         }
         res.setEncoding('utf8');
@@ -286,8 +297,8 @@ function runDashboard(station, opts) {
         const done = () => { mine.delete(id); paint(); };
         res.on('end', done); res.on('close', done); res.on('error', done);
       });
-    } catch (e) { model.sendFailed(agentId, streamId, (e && e.message) || String(e), now()); return paint(); }
-    req.on('error', e => { mine.delete(id); if (!stopped) { model.sendFailed(agentId, streamId, (e && e.message) || 'connection failed', now()); paint(); } });
+    } catch (e) { model.sendFailed(agentId, streamId, (e && e.message) || String(e), now()); fail((e && e.message) || String(e)); return paint(); }
+    req.on('error', e => { mine.delete(id); if (!stopped) { model.sendFailed(agentId, streamId, (e && e.message) || 'connection failed', now()); fail((e && e.message) || 'connection failed'); paint(); } });
     req.end(payload);
     mine.set(id, { req, agentId, kind: 'run', streamId });
     paint();
@@ -366,7 +377,9 @@ function runDashboard(station, opts) {
       return { p, models: (r.ok && r.status === 200 && r.json && Array.isArray(r.json.models)) ? r.json.models : [] };
     }));
     const items = [];
-    for (const { p, models } of lists) for (const m of models) if (m && m.id) items.push({ provider: p.id, id: String(m.id), name: String(m.displayName || m.name || ''), tools: m.supportsTools !== false, ctx: Number(m.context_length) || 0 });
+    for (const { p, models } of lists) for (const m of models) if (m && m.id) items.push({ provider: p.id, id: String(m.id), name: String(m.displayName || m.name || ''), tools: m.supportsTools !== false, ctx: Number(m.context_length) || 0,
+      // the window a run works in when the model bills a dearer rate past a prompt size (the station's runWindow)
+      runWindow: Number(m.runWindow) > 0 ? Number(m.runWindow) : 0 });
     modelsCache = { at: now(), items };
     return items;
   }
@@ -466,7 +479,7 @@ function runDashboard(station, opts) {
   // tab (or a click on its line) puts the command in the prompt, ready for what it takes
   function completeSlash(name) {
     ui.input = '/' + name + ' ';
-    ui.slashSel = 0;
+    ui.slashSel = 0; ui.slashPicked = false;
     paint();
   }
 
@@ -648,12 +661,13 @@ function runDashboard(station, opts) {
     const i = Math.max(0, Math.min(h.length, ui.histAt + d));
     ui.input = i === h.length ? ui.histDraft : h[i];
     ui.histAt = i === h.length ? null : i;
+    ui.histEdited = false;
   }
   function submit(raw) {
     const text = String(raw || '').trim();
     ui.overlay = null;
     if (text) ui.page = '';   // what you send is answered in COMMS: the page gives way to it
-    ui.histAt = null; ui.histDraft = '';
+    ui.histAt = null; ui.histDraft = ''; ui.histEdited = false;
     if (!text) return;
     if (ui.history[ui.history.length - 1] !== text) { ui.history.push(text); if (ui.history.length > 200) ui.history.shift(); }
     const q = model.front();
@@ -708,6 +722,13 @@ function runDashboard(station, opts) {
       const a = parts[1] ? model.findAgent(parts[1]) : model.state.agents.get(ui.focus);
       if (!a) return flash('no agent named ' + parts[1]);
       if (loops.has(a.id)) loopStop(a.id, '/stop ends it');   // as in the app: /stop also ends a /loop
+      // …and pauses the goal on the conversation shown: a stopped step is never followed by the next one
+      const g = GoalLoop && goals.get(streamOf(a.id));
+      if (g && GoalLoop.isActive(g.s)) {
+        const stepRunning = busyOn(a.id, streamOf(a.id)) || g.expectCont;
+        GoalLoop.pause(g.s, 'you stopped it');
+        sayGoal(a.id, '⏸ session goal paused — ' + (stepRunning ? '/stop ended its step and' : '/stop:') + ' no next step starts. /goal resume to continue.');
+      }
       return stopAgent(a.id);
     }
     if (cmd === '/flow' || cmd === '/flows') {
@@ -786,8 +807,14 @@ function runDashboard(station, opts) {
     const r = await get('/api/insights?agent=' + encodeURIComponent(id), 15000);
     const j = r.ok && r.status === 200 && r.json;
     if (!(j && j.totalRuns != null)) return sayHere('/insights', ['The run history could not be read (' + (r.error || 'HTTP ' + r.status) + ').'], false);
-    const models = Array.isArray(j.byModel) ? j.byModel.slice(0, 3).map(m => (m.model || '?') + ' (' + usd2(m.usd) + ')') : [];
-    sayHere('/insights', ['Insights (run history for ' + ((model.state.agents.get(id) || {}).name || id) + '): ' + (j.totalRuns || 0) + ' run' + (j.totalRuns === 1 ? '' : 's') + ', ' + usd2(j.totalUsd) + ', ' + (j.totalTokens || 0) + ' tokens'
+    // a subscription or unpriced model has no proven $: its fold label, never a bare "$0.00" (the app's /insights)
+    const models = Array.isArray(j.byModel) ? j.byModel.slice(0, 3).map(m => (m.model || '?') + ' (' + (m.spendLabel && !(m.usd > 0) ? m.spendLabel : usd2(m.usd) + (m.spendLabel ? ', ' + m.spendLabel : '')) + ')') : [];
+    const runsOf = n => n + ' run' + (n === 1 ? '' : 's');
+    sayHere('/insights', ['Insights (run history for ' + ((model.state.agents.get(id) || {}).name || id) + '): ' + runsOf(j.totalRuns || 0) + ', '
+      + (j.usageMissingRuns ? 'at least ' : '') + usd2(j.totalUsd)
+      + (j.unpricedRuns ? ' (+ ' + runsOf(j.unpricedRuns) + ' with no published price)' : '')
+      + (j.usageMissingRuns ? ' (' + runsOf(j.usageMissingRuns) + ' stopped mid-answer before usage arrived)' : '')
+      + (j.spendUnknownRuns ? ' (+ ' + runsOf(j.spendUnknownRuns) + ' with spend unknown)' : '') + ', ' + (j.totalTokens || 0) + ' tokens'
       + (j.avgUsdPerRun ? ', ' + usd2(j.avgUsdPerRun) + '/run' : '') + (j.successPct == null ? '' : ', ' + j.successPct + '% completed') + (models.length ? '. Top models: ' + models.join(', ') : '') + '.']);
   }
   async function memoryCommand(args) {
@@ -881,11 +908,16 @@ function runDashboard(station, opts) {
   async function compressCommand() {
     const a = model.state.agents.get(ui.focus);
     const used = a && a.lastTokensIn;
-    let limit = 0;
-    if (used && a.model) { try { const m = (await loadModels()).find(x => x.id === a.model && (!a.provider || x.provider === a.provider)); limit = (m && m.ctx) || 0; } catch (_) { limit = 0; } }
-    sayHere('/compress', [used && limit
-      ? 'Chat memory: ' + used + ' / ' + limit + ' tokens on its last step (' + Math.round(used / limit * 100) + '% — a token is roughly ¾ of a word). When it nears full, older turns are folded into a summary automatically during the next run; there is nothing you need to do.'
-      : used ? 'Chat memory: its last step sent ' + used + ' tokens. When a conversation grows past what the model can hold, older turns are folded into a summary automatically during the next run.'
+    let limit = 0, run = 0;
+    if (used && a.model) { try { const m = (await loadModels()).find(x => x.id === a.model && (!a.provider || x.provider === a.provider)); limit = (m && m.ctx) || 0; run = (m && m.runWindow) || 0; } catch (_) { limit = 0; } }
+    // measured against the window a run folds in (the app's /compress, context-cost-1023), never a 1M one it bills more past
+    const tier = run > 0 && limit > 0 && run < limit, win = tier ? run : limit;
+    // the reading is the agent's latest model call on this station (any conversation, the app's included): said as such
+    sayHere('/compress', [used && win
+      ? 'Chat memory: ' + used + ' / ' + win + ' tokens on ' + a.name + '\'s latest model call (' + Math.round(used / win * 100) + '% — a token is roughly ¾ of a word). '
+        + (tier ? 'The model can hold ' + limit + ', but it bills a higher rate for a prompt over ' + run + ' tokens, so a run works in ' + run + '. ' : '')
+        + 'When it nears full, older turns are folded into a summary automatically during the next run; there is nothing you need to do.'
+      : used ? 'Chat memory: ' + a.name + '\'s latest model call sent ' + used + ' tokens. When a conversation grows past what the model can hold, older turns are folded into a summary automatically during the next run.'
         : 'Chat memory is managed automatically: when a conversation grows past what the model can hold, older turns are folded into a summary during the next run. There is nothing you need to do.']);
   }
   // /reasoning, /fast: the agent's effort dial, saved on the station (POST /api/agent/model: the app's own page when one is
@@ -927,10 +959,12 @@ function runDashboard(station, opts) {
   }
   /* /queue: text held for the conversation shown, sent the moment its turn ends — the app's own queue. A message typed while
      that conversation is still running is queued the same way (two runs racing on one conversation garble its history). */
-  const queued = new Map();   // agentId -> [text]
+  /* Each queued message keeps the conversation it was typed in (the app keys its queue by workstream): after /new or
+     /resume it still goes to that conversation once ITS turn ends, never into the one shown now. */
+  const queued = new Map();   // agentId -> [{ text, sid }]
   // the conversation shown is busy: a run on its stream, or a send from here still opening
-  const busy = id => !!liveRunOf(id) || [...mine.values()].some(m => m.kind === 'run' && m.agentId === id && m.streamId === streamOf(id));
-  function queueText(id, text) { const q = queued.get(id) || []; q.push(String(text)); queued.set(id, q); }
+  const busy = id => busyOn(id, streamOf(id));
+  function queueText(id, text) { const q = queued.get(id) || []; q.push({ text: String(text), sid: streamOf(id) }); queued.set(id, q); }
   function queueCommand(args) {
     const id = ui.focus, text = String(args || '').trim();
     const name = (model.state.agents.get(id) || {}).name || 'this agent';
@@ -940,15 +974,17 @@ function runDashboard(station, opts) {
       return sayHere('/queue', ['Queued for ' + name + ' — it goes the moment the running turn ends (' + queued.get(id).length + ' waiting).']);
     }
     const q = queued.get(id) || [];
-    sayHere('/queue', q.length ? ['Queue: ' + q.length + ' waiting for ' + name + ':'].concat(q.map((t, i) => (i + 1) + '. ' + String(t).slice(0, 160))) : ['Nothing queued for ' + name + '. /queue <text> stages a message for when its turn ends.']);
+    const cur = streamOf(id);
+    sayHere('/queue', q.length ? ['Queue: ' + q.length + ' waiting for ' + name + ':'].concat(q.map((t, i) => (i + 1) + '. ' + t.text.slice(0, 160) + (t.sid === cur ? '' : ' (for an earlier conversation — it goes there)'))) : ['Nothing queued for ' + name + '. /queue <text> stages a message for when its turn ends.']);
   }
   function flushQueued() {
     for (const [id, q] of queued) {
       if (!q.length) { queued.delete(id); continue; }
-      if (busy(id) || model.front()) continue;   // a turn running, or an ask waiting on you: not yet
-      const t = q.shift();
+      const t = q[0];
+      if (busyOn(id, t.sid) || model.front()) continue;   // its conversation's turn still running, or an ask waiting on you: not yet
+      q.shift();
       if (!q.length) queued.delete(id);
-      send(id, t);
+      send(id, t.text, null, t.sid, { retry: t.sid === streamOf(id) });
     }
   }
   // /background <prompt>: the agent works on it in a new conversation of its own; this one stays where it is
@@ -963,25 +999,36 @@ function runDashboard(station, opts) {
   }
   /* /loop <interval> <prompt> | status | off: the same prompt on a clock, in this conversation (the app's rules: a minute at
      the least — every tick is a real model turn — 20 runs at most, gone when starnet quits; /routine is the lasting form) */
-  const LOOP_MIN_MS = 60 * 1000, LOOP_MAX_ITERS = 20;
-  const loops = new Map();   // agentId -> { ms, label, prompt, fired, skipped, timer }
+  /* A loop belongs to the conversation it was set in (its stream, as the app keys its loops by workstream): it fires only
+     while that conversation is the one shown, and into it. Off it (/new, /resume, another agent shown) a tick is skipped,
+     and 20 such ticks in a row end the loop — the app's own rule. */
+  const LOOP_MIN_MS = 60 * 1000, LOOP_MAX_ITERS = 20, LOOP_MAX_SKIPS = 20;
+  const loops = new Map();   // agentId -> { ms, label, prompt, sid, fired, skipped, skipStreak, timer }
   function loopLabel(ms) { return ms % 3600000 === 0 ? (ms / 3600000) + 'h' : ms % 60000 === 0 ? (ms / 60000) + 'm' : Math.round(ms / 1000) + 's'; }
   function loopStop(id, why) {
     const rec = loops.get(id);
     if (!rec) return false;
     clearTimeout(rec.timer);
     loops.delete(id);
-    sayHere('/loop', ['Loop stopped — ' + why + ' (ran ' + rec.fired + ' time' + (rec.fired === 1 ? '' : 's') + ').']);
+    // said in the loop's own agent's pane, whichever agent is shown
+    model.noteSaid(id, '/loop', '', ['Loop stopped — ' + why + ' (ran ' + rec.fired + ' time' + (rec.fired === 1 ? '' : 's') + ').'], true, now());
+    if (ui.focus === id) ui.scroll = 0;
+    paint();
     return true;
   }
-  function loopArm(id, rec) { clearTimeout(rec.timer); rec.timer = setTimeout(() => loopTick(id, rec), rec.ms); timers.push(rec.timer); }
+  function loopArm(id, rec) { clearTimeout(rec.timer); rec.timer = setTimeout(() => loopTick(id, rec), rec.ms); }   // stop() clears it
   function loopTick(id, rec) {
     if (stopped || loops.get(id) !== rec) return;
+    const shown = ui.focus === id && streamOf(id) === rec.sid;
     if (rec.fired >= LOOP_MAX_ITERS) return void loopStop(id, 'it hit its ' + LOOP_MAX_ITERS + '-run budget');
-    if (busy(id) || model.front()) { rec.skipped++; return void loopArm(id, rec); }   // a run or an ask has the floor: next tick
-    rec.fired++;
+    if (!shown || busyOn(id, rec.sid) || model.front()) {   // its conversation not shown, or a run or an ask has the floor: next tick
+      rec.skipped++;
+      if (!shown && ++rec.skipStreak >= LOOP_MAX_SKIPS) return void loopStop(id, 'it went ' + LOOP_MAX_SKIPS + ' ticks without its conversation being shown');
+      return void loopArm(id, rec);
+    }
+    rec.fired++; rec.skipStreak = 0;
     loopArm(id, rec);
-    send(id, rec.prompt, '/loop · ' + rec.prompt);
+    send(id, rec.prompt, '/loop · ' + rec.prompt, rec.sid);
   }
   function loopCommand(args) {
     const id = ui.focus, raw = String(args || '').trim(), low = raw.toLowerCase();
@@ -990,7 +1037,7 @@ function runDashboard(station, opts) {
     if (low === 'off' || low === 'stop' || low === 'clear') { if (!loopStop(id, 'you stopped it')) sayHere('/loop', ['No loop is running in this conversation.']); return; }
     if (!raw || low === 'status') {
       if (!cur) return sayHere('/loop', ['No loop in this conversation. /loop <interval> <prompt> — e.g. /loop 5m check whether the build went green.']);
-      return sayHere('/loop', ['Loop: every ' + cur.label + ', ' + cur.fired + '/' + LOOP_MAX_ITERS + ' runs done' + (cur.skipped ? ', ' + cur.skipped + ' tick' + (cur.skipped === 1 ? '' : 's') + ' skipped (a run or an ask had the floor)' : '') + ' — "' + cur.prompt.slice(0, 60) + '". It stops if you quit starnet; /routine makes it permanent.']);
+      return sayHere('/loop', ['Loop: every ' + cur.label + ', ' + cur.fired + '/' + LOOP_MAX_ITERS + ' runs done' + (cur.skipped ? ', ' + cur.skipped + ' tick' + (cur.skipped === 1 ? '' : 's') + ' skipped (a run or an ask had the floor)' : '') + ' — "' + cur.prompt.slice(0, 60) + '".' + (cur.sid === streamOf(id) ? '' : ' It belongs to an earlier conversation and fires only while that one is shown (/resume opens it).') + ' It stops if you quit starnet; /routine makes it permanent.']);
     }
     const sp = raw.search(/\s/);
     const m = sp > 0 ? /^(\d+)\s*(s|sec|secs|m|min|mins|h|hr|hrs)?$/.exec(raw.slice(0, sp).toLowerCase()) : null;
@@ -999,7 +1046,7 @@ function runDashboard(station, opts) {
     if (ms == null || !prompt) return sayHere('/loop', ['Usage: /loop <interval> <prompt> — e.g. /loop 5m check whether the deploy went green. Also: /loop status, /loop off.'], false);
     if (ms < LOOP_MIN_MS) return sayHere('/loop', ['Minimum loop interval is 1 minute — every run costs a real model turn.'], false);
     if (cur) { clearTimeout(cur.timer); loops.delete(id); }   // replace, never stack two loops on one conversation
-    const rec = { ms, label: loopLabel(ms), prompt, fired: 0, skipped: 0, timer: null };
+    const rec = { ms, label: loopLabel(ms), prompt, sid: streamOf(id), fired: 0, skipped: 0, skipStreak: 0, timer: null };
     loops.set(id, rec);
     loopArm(id, rec);
     sayHere('/loop', ['Looping every ' + rec.label + ' (up to ' + LOOP_MAX_ITERS + ' runs): "' + prompt.slice(0, 60) + '". First run in ' + rec.label + '. Each run costs a real model turn — /loop off stops it, and so does quitting starnet.']);
@@ -1022,7 +1069,8 @@ function runDashboard(station, opts) {
   function kickGoal(sid) {
     const g = goals.get(sid);
     if (!g || stopped || !GoalLoop || !GoalLoop.isActive(g.s) || g.judging) return;
-    const retry = ms => { if (!g.retry) { g.retry = setTimeout(() => { g.retry = null; kickGoal(sid); }, ms); timers.push(g.retry); } };
+    // one retry timer per goal at a time (stop() clears it): never a timer kept per retry for the life of the terminal
+    const retry = ms => { if (!g.retry) g.retry = setTimeout(() => { g.retry = null; kickGoal(sid); }, ms); };
     if (busyOn(g.agentId, sid) || g.expectCont || g.contRun) return retry(1500);   // a step still running: the next waits for it
     const q = model.front();
     if (q && q.agentId === g.agentId) {
@@ -1033,7 +1081,16 @@ function runDashboard(station, opts) {
     const prompt = GoalLoop.continuationPrompt(g.s);
     if (!prompt) return;
     g.expectCont = true;
-    send(g.agentId, prompt, '/goal · step ' + (g.s.turnsUsed + 1) + ' of ' + g.s.maxTurns, sid);
+    send(g.agentId, prompt, '/goal · step ' + (g.s.turnsUsed + 1) + ' of ' + g.s.maxTurns, sid, { onFail: why => goalStepRefused(sid, g, why) });
+  }
+  // the station never started a step (no model, a refusal such as a spend cap, the connection lost): the goal pauses and
+  // says why — the app's goalStall — never "active" with nothing coming
+  function goalStepRefused(sid, g, why) {
+    if (goals.get(sid) !== g) return;
+    g.expectCont = false;
+    if (!GoalLoop || !GoalLoop.isActive(g.s)) return;
+    GoalLoop.pause(g.s, 'the last step was refused: ' + why);
+    sayGoal(g.agentId, '⏸ session goal paused: the last step was refused (' + why + ') — /goal resume to try again.', false);
   }
   async function judgeGoalTurn(sid, reply) {
     const g = goals.get(sid);
@@ -1070,9 +1127,19 @@ function runDashboard(station, opts) {
     if (name === 'agent.run.end' && p.runId && GoalLoop) {
       const sid = runStream.get(String(p.runId));
       const g = sid != null ? goals.get(sid) : null;
-      if (!g || !GoalLoop.isActive(g.s)) return;
-      if (String(p.runId) === g.contRun) {
-        g.contRun = '';
+      if (!g) return;
+      // the step's run is over whatever the goal's state (a pause during the step must not leave it marked running)
+      const wasStep = String(p.runId) === g.contRun;
+      if (wasStep) g.contRun = '';
+      if (!GoalLoop.isActive(g.s)) return;
+      if (wasStep) {
+        // only a step that ended cleanly is judged (the app's rule): a stopped, failed, budget-cut or step-limited one
+        // pauses and says why — never judged on its partial text, never followed by another paid step
+        const reason = String(p.reason || '');
+        if (reason && reason !== 'done') {
+          GoalLoop.pause(g.s, 'the step stopped (' + reason + ')');
+          return sayGoal(g.agentId, '⏸ session goal paused: the step stopped (' + reason + ') — /goal resume to continue.', false);
+        }
         const reply = model.logOf(g.agentId).filter(e => e.k === 'agent' && e.runId === String(p.runId)).map(e => e.text).join('\n');
         setTimeout(() => { judgeGoalTurn(sid, reply).catch(() => {}); }, 0);
       } else if (!g.expectCont && !g.judging) setTimeout(() => kickGoal(sid), 0);   // the turn that was running when the goal was set: now the loop starts
@@ -1100,7 +1167,9 @@ function runDashboard(station, opts) {
     if (low === 'resume') {
       if (!cur || cur.status !== 'paused') return sayHere('/goal', ['No paused session goal to resume.']);
       GoalLoop.resume(cur); g.waitSaid.clear();
-      sayHere('/goal', ['▶ session goal resumed (' + cur.turnsUsed + '/' + cur.maxTurns + '). Kicking off the next step…']);
+      // nothing running on this conversation: no step is still owed an end (one that ended unseen, or never started)
+      if (!busyOn(id, sid)) { g.expectCont = false; g.contRun = ''; }
+      sayHere('/goal', ['▶ session goal resumed (' + cur.turnsUsed + '/' + cur.maxTurns + '). ' + (busyOn(id, sid) ? 'The next step starts when the turn running now ends…' : 'Kicking off the next step…')]);
       return kickGoal(sid);
     }
     if (low === 'clear') {
@@ -1135,7 +1204,15 @@ function runDashboard(station, opts) {
   /* /yolo, /personality: the agent's approval mode and personality, on the station's own routes (POST /api/agent/approval,
      /api/agent/personality): through the StarNet app when it is open (its own controls save them), else that agent's roster
      entry alone — and then the app's own setting applies again the next time it opens, which the reply says. */
-  const viaRoster = r => r && r.json && r.json.via === 'roster' ? ' (No StarNet app is open, so the station\'s roster holds this; the app\'s own setting applies again when it opens.)' : '';
+  /* with no app open: a change that GIVES power holds on the roster until the app opens with its own setting (said so); one
+     that takes it away the station also writes into the app's save (or refuses), so it holds when the app opens */
+  const viaRoster = r => {
+    const j = r && r.json;
+    if (!(j && j.via === 'roster')) return '';
+    if (j.save === 'patched' || j.save === 'agrees') return ' (No StarNet app is open: the station\'s roster and the app\'s save both hold this, so it stays when the app opens.)';
+    if (j.save === 'none') return ' (No StarNet app is open: the station\'s roster holds this.)';
+    return ' (No StarNet app is open, so the station\'s roster holds this; the app\'s own setting applies again when it opens.)';
+  };
   const refused = r => (r.json && r.json.error) || r.error || (r.status === 404 ? 'this station is older than this command' : 'HTTP ' + r.status);
   async function yoloCommand(args) {
     const a = model.state.agents.get(ui.focus);
@@ -1398,19 +1475,25 @@ function runDashboard(station, opts) {
     if (ui.wake && wakeKey(str, k)) return paint();
     // the "/" menu, while it shows: ↑ ↓ pick · tab completes · enter runs the one picked (a command that takes something is
     // completed first, so what it takes can be typed)
+    // ↑ ↓ stay your history while you step through it (a recalled "/model" is a line to go past, not a menu to pick in)
+    // until you type into the recalled line
     const sm = tui.slashMenu(ui);
     if (sm) {
       const n = sm.items.length;
-      if (k.name === 'up' || k.name === 'down') { ui.slashSel = (sm.sel + (k.name === 'up' ? n - 1 : 1)) % n; return paint(); }
+      if ((k.name === 'up' || k.name === 'down') && (ui.histAt == null || ui.histEdited)) { ui.slashSel = (sm.sel + (k.name === 'up' ? n - 1 : 1)) % n; ui.slashPicked = true; return paint(); }
       if (k.name === 'tab') return completeSlash(sm.items[sm.sel].name);
       if (k.name === 'return' || k.name === 'enter') {
-        const c = sm.items[sm.sel];
         const typed = ui.input.slice(1).toLowerCase();
-        if (typed !== c.name.toLowerCase() && !(c.aliases || []).some(a => a.toLowerCase() === typed)) {
+        // a lone "/" runs nothing until a command is picked with ↑ ↓ (its top row is only the first of the list)
+        if (!typed && !ui.slashPicked) { flash('pick a command with ↑ ↓ then enter, or type its name', 'dim', 4000); return paint(); }
+        const c = sm.items[sm.sel];
+        const exact = ui.slashCatalog.some(x => x.name.toLowerCase() === typed || (x.aliases || []).some(a => a.toLowerCase() === typed));
+        // the command typed whole runs as typed, unless you picked another row; a part-word runs the row picked
+        if ((ui.slashPicked || !exact) && typed !== c.name.toLowerCase() && !(c.aliases || []).some(a => a.toLowerCase() === typed)) {
           if (c.argsHint) return completeSlash(c.name);
           ui.input = '/' + c.name;
         }
-        ui.slashSel = 0;
+        ui.slashSel = 0; ui.slashPicked = false;
         const t = ui.input; ui.input = ''; submit(t); return paint();
       }
     }
@@ -1427,7 +1510,7 @@ function runDashboard(station, opts) {
       return paint();
     }
     if (k.name === 'return' || k.name === 'enter') { const t = ui.input; ui.input = ''; submit(t); return paint(); }
-    if (k.name === 'backspace') { ui.input = ui.input.slice(0, -1); ui.slashSel = 0; return paint(); }
+    if (k.name === 'backspace') { ui.input = ui.input.slice(0, -1); ui.slashSel = 0; ui.slashPicked = false; if (ui.histAt != null) ui.histEdited = true; return paint(); }
     if (k.sequence && /^\x1b\[[?\d;]*[ct]$/.test(k.sequence)) return;   // a late reply to the startup probe
     if (typeof str !== 'string' || !str || k.ctrl || k.meta || str.charCodeAt(0) === 27) return;
     const ch = str.replace(/[\x00-\x1f\x7f]/g, '');
@@ -1437,7 +1520,8 @@ function runDashboard(station, opts) {
     if (!ui.input && /^[ynva]$/i.test(ch) && answerKey(ch.toLowerCase())) return;
     if (!ui.input && q && q.question && /^[1-6]$/.test(ch) && q.question.options[Number(ch) - 1]) { answerQuestion(q.question.options[Number(ch) - 1]); return; }
     if (ui.input.length < 4000) ui.input += ch;
-    ui.slashSel = 0;
+    ui.slashSel = 0; ui.slashPicked = false;
+    if (ui.histAt != null) ui.histEdited = true;
     // a "/" for an agent whose commands are not read yet (its skills are its own): read them now
     if (ui.input === '/' && ui.slashFor !== ui.focus) loadCatalog().then(paint, () => {});
     paint();
@@ -1541,6 +1625,8 @@ function runDashboard(station, opts) {
     if (stopped) return;
     stopped = true;
     for (const t of timers) clearInterval(t);
+    for (const rec of loops.values()) clearTimeout(rec.timer);
+    for (const g of goals.values()) if (g.retry) clearTimeout(g.retry);
     if (feedRetry) clearTimeout(feedRetry);
     if (paintTimer) clearTimeout(paintTimer);
     try { if (feedReq) feedReq.destroy(); } catch (_) {}

@@ -150,7 +150,9 @@ function makeStation() {
       a.name = String(r.name || r.agentId).toUpperCase().slice(0, 24);   // whole up to 24; each screen shortens it with …
       a.model = String(r.model || ''); a.provider = String(r.provider || ''); a.inRoster = true;
       // what its runs are held to, when the station says (an older station does not: the app's save is read instead)
-      if (typeof r.reasoningEffort === 'string' && r.reasoningEffort) { a.reasoningEffort = r.reasoningEffort; a.rosterSettings = true; }
+      // a station that says the field says it whole: null is the Commander clearing it (the provider's default), never
+      // "keep what the terminal last heard" — a cleared effort is not sent on the terminal's runs
+      if (Object.prototype.hasOwnProperty.call(r, 'reasoningEffort')) { a.reasoningEffort = typeof r.reasoningEffort === 'string' && r.reasoningEffort ? r.reasoningEffort : null; a.rosterSettings = true; }
       if (typeof r.approvalMode === 'string' && r.approvalMode) { a.approvalMode = r.approvalMode; a.rosterSettings = true; }
       if (typeof r.personaId === 'string' && r.personaId) a.personaId = r.personaId;
     }
