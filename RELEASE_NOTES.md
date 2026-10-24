@@ -47,6 +47,7 @@ The lighter, sharper update. StarNet does far less work you never see: the backg
 - **The QUEST LOG is a battle pass:** an ASCII tier track, rank titles, a daily streak, a season and weekly challenges aimed at your real goal.
 - **StarNet in the terminal.** `starnet` opens a dashboard of your station: your crew, live runs, approvals with an always-allow key, slash commands and your skills, and it works in the folder you launched it from (asking first if that folder isn't trusted). `starnet -p "…"` runs one task headlessly, now with tools (files, terminal, web, memory) when you give it a task. It works alongside the app: with StarNet closed, `starnet` asks you to open it first, because your keys live in the app (pass `--workspace <dir>` for a separate terminal-only station; a script that ran `starnet -p` with the app closed needs that flag now).
 - **The CLI works with your mouse:** click an agent to open its chat, and move between STAT, CREW, COMMS, WORK and SKILLS from the tab line.
+- **Type "/" in the CLI for a command menu:** your station's commands plus the terminal's own. Twenty of the app's commands now work there too, including /goal, /queue, /loop, /steer, /personality, /reasoning and /insights, and a message you type while a conversation is still running waits its turn.
 - **The CLI has the station's terminal look:** a tab line under the logo that shows where you are, your crew grouped as NEEDS YOU, WORKING and STANDING BY, and a stat bar along the bottom with your station's level and XP, the crew, spend and the clock.
 - **Getting `starnet` on your PATH:** on Windows the installer adds it to your user PATH. On macOS the app links it into ~/.local/bin the first time it opens, and adds a PATH line to ~/.zprofile if none of your shell profiles has one. Open a new terminal to use it.
 - **Agents can show you pictures in COMMS.** An image an agent made or found appears as the picture, not a link.
@@ -96,5 +97,5 @@ The lighter, sharper update. StarNet does far less work you never see: the backg
 - A cut voice stream is a failure, never a half clip saved forever.
 - The workflow reader loads on older Mac Safari (before 16.4).
 - A refused or interrupted update now says nothing was installed, and an update refused because of a save conflict says so instead of "try again in a moment".
-- `starnet --version` names the installed build, `starnet` reaches your PATH even when your Windows profile folder has an apostrophe, and the dashboard gives your terminal back when it is closed.
+- Runs started from the CLI use the agent's reasoning setting instead of the provider default. `starnet --version` names the installed build, `starnet` reaches your PATH even when your Windows profile folder has an apostrophe, and the dashboard gives your terminal back when it is closed.
 - Many smaller wording and layout fixes across COMMS, SESSIONS, onboarding and the dossier.
