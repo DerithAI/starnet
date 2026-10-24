@@ -10,6 +10,15 @@
      6. a reasoning effort the station clears is no longer sent on the terminal's runs
      7. the "/" menu: a whole word typed runs as typed (/stat), a lone "/" + enter runs nothing, ↑ stays history
      8. /compress measures against the run window; /insights keeps the fold's labels and "at least"
+   …and what the review of that fix proved (review 10-24, second pass):
+     9. a row picked in a "/" menu given up (esc) never runs on a recalled line: enter runs the recalled command
+    10. a queued message waits only for ITS conversation (never behind one for an earlier conversation), and one sent to
+        an earlier conversation is shown as such
+    11. a /goal steps only while its conversation is shown: after /new no paid step goes where /goal cannot see it, /goal
+        status says it waits, and /resume back to it sends the next step
+    12. a /loop that replaces one running says so (the replaced one was ended with no line)
+    13. /yolo when the app did not confirm in time: the terminal says what the station holds now (never "still will
+        ask first" while the roster says full), and a /yolo off the app's save did not take says so
    Timers: the dashboard's 1-minute loop clock and 20 s roster refresh are shortened here (setTimeout/setInterval for
    exactly those delays), so the test runs in seconds. */
 const os = require('os');
@@ -30,6 +39,7 @@ function fakeStation(opts) {
   const runs = [];            // every POST /api/run: { runId, body }
   const live = new Map();     // runId -> { body, res }
   const hits = [];            // every request: { method, path, body }
+  const ended = [];           // every run that ended (GET /api/runs lists them: the /resume picker reads conversations there)
   const roster = { agents: [{ agentId: 'agent', name: 'ULTRON', model: 'test/m', provider: 'openrouter', reasoningEffort: o.effort === undefined ? null : o.effort, approvalMode: 'ask', personaId: null }] };
   let feed = null, evId = 0, seq = 0;
   const emit = (name, payload) => { if (feed) feed.write('id: ' + (++evId) + '\ndata: ' + JSON.stringify({ name, payload }) + '\n\n'); };
@@ -44,7 +54,8 @@ function fakeStation(opts) {
       hits.push({ method: req.method, path: p + u.search, body: b });
       if (p === '/api/runtime/agent') return json(res, 200, Object.assign({ configured: true, version: 'dev' }, roster));
       if (p === '/api/state/snapshot') return json(res, 200, { runs: [...live.values()].filter(r => !r.body.internal).map(r => ({ runId: r.runId, agentId: r.body.agentId, streamId: r.body.streamId, startedAt: r.at })), prompts: [] });
-      if (p === '/api/runs') return json(res, 200, { runs: [] });
+      if (p === '/api/runs') return json(res, 200, { runs: ended });
+      if (p === '/api/agent/approval' && o.approval) { const r = o.approval(b, roster); return json(res, r.status, r.body); }
       if (p === '/api/transcript') return json(res, 200, { turns: [] });
       if (p === '/api/save') return json(res, 200, { save: { agent: { id: 'agent', name: 'ULTRON', onboarded: true, purpose: 'p' } } });
       if (p === '/api/slash/catalog') return json(res, 200, slash.catalog({}));
@@ -91,6 +102,7 @@ function fakeStation(opts) {
     const r = live.get(runId);
     if (!r) return;
     live.delete(runId);
+    ended.push({ runId, agentId: r.body.agentId, streamId: r.body.streamId, startedAt: r.at });
     if (text) emit('agent.token', { runId, agentId: r.body.agentId, delta: text });
     emit('agent.run.end', { runId, agentId: r.body.agentId, reason: reason || 'done', turns: 1, usd: 0 });
     r.res.end();
@@ -137,7 +149,7 @@ async function boot(opts) {
   const done = async () => { process.emit('SIGTERM', 'SIGTERM'); await Promise.race([exited, sleep(2000)]); for (const r of st.live.values()) { try { r.res.end(); } catch (_) {} } if (st.srv.closeAllConnections) st.srv.closeAllConnections(); st.srv.close(); };
   return { st, keys, key, userRuns, judges, screen, mark, since, done };
 }
-const UP = '\x1b[A';
+const UP = '\x1b[A', DOWN = '\x1b[B', ESC = '\x1b';
 
 (async () => {
   process.chdir(os.homedir());   // a home folder: no TRUST THIS FOLDER card in the way
@@ -324,6 +336,106 @@ const UP = '\x1b[A';
     A.ok(/at least \$0\.05/.test(s), '/insights: a run stopped mid-answer makes the total "at least"');
     A.ok(/sub\/model \(subscription \/ unmetered\)/.test(s) && !/sub\/model \(\$0\.00\)/.test(s), '/insights: a subscription model shows its label, never a bare $0.00');
     A.ok(/1 run with no published price/.test(s) && /1 run with spend unknown/.test(s), '/insights: the unpriced and spend-unknown runs are counted');
+    await d.done();
+  }
+
+  /* 9. a row picked in a "/" menu you gave up (esc) does not run on a recalled line */
+  {
+    const d = await boot();
+    await sleep(300);
+    await d.keys('/status\r', 500);   // history holds /status (it opens the STATUS overlay)
+    await d.key(ESC, 800);            // close the overlay
+    await d.keys('/', 300);           // the "/" menu…
+    await d.key(DOWN, 150);           // …one row down…
+    await d.key(ESC, 800);            // …given up: esc hides the menu
+    await d.key(ESC, 800);            // esc clears the line
+    const at = d.mark();
+    await d.key(UP, 200);             // recall /status
+    await d.key('\r', 900);
+    const out = d.since(at);
+    A.ok(/STATUS · ULTRON/.test(out) && !/Chat memory/.test(out), 'enter on a recalled /status runs /status (it ran /compress, the row picked on the line given up)');
+    await d.done();
+  }
+
+  /* 10. a queued message waits only for its own conversation; one for an earlier conversation is shown as such */
+  {
+    const d = await boot();
+    await d.keys('long task in A\r', 400);
+    const r1 = d.userRuns()[0];
+    await d.keys('A2 follow-up\r', 300);   // queued for A (r1 runs)
+    await d.keys('/new\r', 900);            // conversation B
+    await d.keys('hi in B\r', 500);         // B is free: sent now
+    const r2 = d.userRuns()[1];
+    A.ok(!!r2 && r2.body.streamId !== r1.body.streamId, 'queue: B\'s first message goes at once, on B');
+    await d.keys('B2 follow-up\r', 300);   // queued for B (r2 runs)
+    d.st.end(r2.runId, 'hello from B');
+    await sleep(1500);
+    const b2 = d.userRuns().find(r => r.body.messages[0].content === 'B2 follow-up');
+    A.ok(!!b2 && b2.body.streamId === r2.body.streamId, 'queue: B\'s follow-up goes once B\'s turn ends, while A\'s still runs (it waited behind A\'s queued one)');
+    A.ok(!d.userRuns().some(r => r.body.messages[0].content === 'A2 follow-up'), 'queue: A\'s follow-up still waits for A\'s turn');
+    const at = d.mark();
+    d.st.end(r1.runId, 'A done');
+    await sleep(1500);
+    const a2 = d.userRuns().find(r => r.body.messages[0].content === 'A2 follow-up');
+    A.eq(a2 && a2.body.streamId, r1.body.streamId, 'queue: A\'s follow-up goes to A once A\'s turn ends');
+    A.ok(/\(to an earlier conversation\) A2 follow-up/.test(d.since(at)), 'queue: and the pane (showing B) says it went to an earlier conversation');
+    await d.done();
+  }
+
+  /* 11. a goal waits while its conversation is not shown; /resume back to it goes on */
+  {
+    const d = await boot();
+    await d.keys('/goal ship the thing\r', 500);
+    const s1 = d.userRuns()[0];
+    await d.keys('/new\r', 900);
+    const at = d.mark();
+    await d.keys('/goal status\r', 300);
+    A.ok(/session goal set in an earlier conversation waits/.test(d.since(at)), 'goal: /goal status in the new conversation says the earlier one\'s goal waits (it said only "No session goal")');
+    d.st.end(s1.runId, 'I did part of it.');
+    await sleep(1500);
+    A.eq([d.judges().length, d.userRuns().length], [1, 1], 'goal: its step is judged, but no next paid step goes while another conversation is shown');
+    A.ok(/its next step waits until that conversation is shown again/.test(d.since(at).replace(/\s+/g, ' ')), 'goal: the judge\'s line says the next step waits');
+    await d.keys('/resume\r', 900);   // the picker: this conversation first, then the goal's
+    await d.key(DOWN, 200);
+    await d.key('\r', 2000);
+    const s2 = d.userRuns()[1];
+    A.ok(!!s2 && /session goal/i.test(s2.body.messages[0].content) && s2.body.streamId === s1.body.streamId, 'goal: back on its conversation, the next step goes there: ' + JSON.stringify(s2 && s2.body.streamId));
+    await d.done();
+  }
+
+  /* 12. a /loop that replaces one running says so */
+  {
+    const d = await boot();
+    await d.keys('/loop 5m watch the A build\r', 300);
+    await d.keys('/new\r', 900);
+    const at = d.mark();
+    await d.keys('/loop 5m watch the B deploy\r', 400);
+    A.ok(/Loop stopped — the new \/loop replaces it \(it was set in an earlier conversation: "watch the A build"\)/.test(d.since(at).replace(/\s+/g, ' ')), 'loop: the loop it replaces is said to have stopped (it went with no line)');
+    await d.keys('/loop off\r', 200);
+    await d.done();
+  }
+
+  /* 13. /yolo: the app did not confirm in time; a /yolo off the app's save did not take */
+  {
+    let mode = 'unconfirmed';
+    const d = await boot({ approval: (b, roster) => {
+      if (mode === 'unconfirmed') {   // the page applied it (its roster push landed) but did not confirm within the 6 s
+        roster.agents[0].approvalMode = 'full';
+        return { status: 409, body: { error: 'the StarNet app did not confirm in time — it may still be applying the change', pageOpen: true, unanswered: true, station: { approvalMode: 'full' } } };
+      }
+      roster.agents[0].approvalMode = b.mode;
+      return { status: 200, body: { ok: true, agentId: b.agentId, mode: b.mode, via: 'roster', save: 'not-saved', saveError: 'the station save is damaged' } };
+    } });
+    const at = d.mark();
+    await d.keys('/yolo\r', 600);
+    const said = d.since(at).replace(/\s+/g, ' ');
+    A.ok(/did not confirm in time/.test(said) && /The station's roster says ULTRON will run without prompts right now/.test(said), 'yolo: unconfirmed, it says what the station holds now: ' + (said.match(/The StarNet app.{0,200}/) || [''])[0]);
+    A.ok(!/still will ask first/.test(said), 'yolo: never "still will ask first" while the roster says full');
+    mode = 'roster';
+    const at2 = d.mark();
+    await d.keys('/yolo off\r', 600);
+    const said2 = d.since(at2).replace(/\s+/g, ' ');
+    A.ok(/the app's save did not take it \(the station save is damaged\), so the app may give ULTRON its own saved setting back when it opens/.test(said2), 'yolo off: a save that did not take it is said, never "it stays when the app opens": ' + (said2.match(/Approval mode.{0,300}/) || [''])[0]);
     await d.done();
   }
 

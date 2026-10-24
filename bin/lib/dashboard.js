@@ -201,6 +201,8 @@ function runDashboard(station, opts) {
     ui.scroll = 0;
     await loadStream(agentId, sid);
     flash('back in the conversation from ' + when + ' with ' + a.name, 'ok');
+    // its session goal (if one waits here) goes on now that its conversation is shown again — the app's own return rule
+    if (goals.has(sid) && streamOf(agentId) === sid) setTimeout(() => kickGoal(sid), 0);
   }
   function pickFocus() {
     const rows = model.rows(now());
@@ -414,7 +416,14 @@ function runDashboard(station, opts) {
     if (!a) return;
     flash('switching ' + a.name + ' to ' + provider + ' · ' + modelId + '…', 'am', 15000);
     const r = await client.request('POST', '/api/agent/model', { agentId, model: modelId, provider }, { timeoutMs: 15000 });
-    if (r.ok && r.status === 200 && r.json && r.json.ok) {
+    const u = unconfirmed(r, a);
+    if (u) {
+      if (u.gone) flash(u.line, 'bad', 9000);
+      else {
+        a.model = String(u.st.model || ''); a.provider = String(u.st.provider || '');   // what the station holds, as it says it
+        flash(u.lead + ' The station has ' + a.name + (a.model ? ' on ' + a.provider + ' · ' + a.model : ' with no model') + ' right now.', 'am', 12000);
+      }
+    } else if (r.ok && r.status === 200 && r.json && r.json.ok) {
       a.model = String(r.json.model); a.provider = String(r.json.provider);
       flash(a.name + ' now runs on ' + a.provider + ' · ' + a.model + ' (from its next message)', 'ok', 6000);
     } else flash('the model did not change: ' + ((r.json && r.json.error) || r.error || (r.status === 404 ? 'this station is older than /model' : 'HTTP ' + r.status)), 'bad', 9000);
@@ -479,9 +488,12 @@ function runDashboard(station, opts) {
   // tab (or a click on its line) puts the command in the prompt, ready for what it takes
   function completeSlash(name) {
     ui.input = '/' + name + ' ';
-    ui.slashSel = 0; ui.slashPicked = false;
+    slashReset();
     paint();
   }
+  // a row picked with ↑ ↓ belongs to the line it was picked on: a line put in whole (history, esc, a completion, a
+  // blueprint) starts unpicked at the top row, so enter never runs a row picked on a line given up (review 10-24)
+  function slashReset() { ui.slashSel = 0; ui.slashPicked = false; ui.slashPickedOn = null; }
 
   // ---- THE PAGES: STAT · CREW · COMMS · WORK · SKILLS (the tab rule, f1-f5, /stat /crew /work) ---------------------------
   // what a page shows that the live feed does not carry is read when it opens, and again while it stays open
@@ -662,12 +674,14 @@ function runDashboard(station, opts) {
     ui.input = i === h.length ? ui.histDraft : h[i];
     ui.histAt = i === h.length ? null : i;
     ui.histEdited = false;
+    slashReset();
   }
   function submit(raw) {
     const text = String(raw || '').trim();
     ui.overlay = null;
     if (text) ui.page = '';   // what you send is answered in COMMS: the page gives way to it
     ui.histAt = null; ui.histDraft = ''; ui.histEdited = false;
+    slashReset();
     if (!text) return;
     if (ui.history[ui.history.length - 1] !== text) { ui.history.push(text); if (ui.history.length > 200) ui.history.shift(); }
     const q = model.front();
@@ -847,6 +861,7 @@ function runDashboard(station, opts) {
     const d = r.ok && r.status === 200 && r.json && r.json.ok && r.json.directive;
     if (!(d && d.type === 'insert' && d.text)) return sayHere('/blueprint', ['The station did not hand back /' + c.name + '\'s text (' + ((r.json && r.json.error) || r.error || 'HTTP ' + r.status) + ').'], false);
     ui.input = String(d.text).slice(0, 4000);
+    slashReset();
     flash('loaded blueprint /' + c.name + ' into the prompt — fill in its blanks, then press enter', 'ok', 8000);
   }
   async function reloadMcpCommand(args) {
@@ -930,6 +945,12 @@ function runDashboard(station, opts) {
     const cur = a.reasoningEffort || 'the provider\'s default';
     if (want === a.reasoningEffort) return sayHere(cmd, ['Reasoning effort is already ' + want + '.']);
     const r = await client.request('POST', '/api/agent/model', { agentId: a.id, model: a.model, provider: a.provider, effort: want }, { timeoutMs: 15000 });
+    const u = unconfirmed(r, a);
+    if (u) {
+      if (u.gone) return sayHere(cmd, [u.line], false);
+      a.reasoningEffort = u.st.reasoningEffort || null;
+      return sayHere(cmd, [u.lead + ' The station has ' + a.name + '\'s reasoning effort at ' + (a.reasoningEffort || 'the provider\'s default') + ' right now' + (a.reasoningEffort === want ? '.' : '; if the app applies it, it becomes ' + want + '.')], false);
+    }
     if (!(r.ok && r.status === 200 && r.json && r.json.ok)) return sayHere(cmd, ['Could not set reasoning effort to ' + want + ' (' + ((r.json && r.json.error) || r.error || 'HTTP ' + r.status) + ') — it is still ' + cur + '.'], false);
     a.reasoningEffort = want;
     sayHere(cmd, ['Reasoning effort: ' + cur + ' → ' + want + ' for ' + a.name + '. Takes effect on your next message.' + (cmd === '/fast' ? ' /reasoning ' + (REASONING_LEVELS.indexOf(cur) >= 0 ? cur : 'medium') + ' puts it back.' : '')]);
@@ -977,14 +998,24 @@ function runDashboard(station, opts) {
     const cur = streamOf(id);
     sayHere('/queue', q.length ? ['Queue: ' + q.length + ' waiting for ' + name + ':'].concat(q.map((t, i) => (i + 1) + '. ' + t.text.slice(0, 160) + (t.sid === cur ? '' : ' (for an earlier conversation — it goes there)'))) : ['Nothing queued for ' + name + '. /queue <text> stages a message for when its turn ends.']);
   }
+  /* Each conversation's messages go in the order typed, and each waits only for ITS conversation's turn (the app keys its
+     queue per workstream): a message for the conversation shown never waits behind one for an earlier conversation whose
+     turn still runs (review 10-24). One sent to an earlier conversation is shown as such: the pane shows this agent's
+     work whichever conversation it is in, and a line of yours is never passed off as part of the one shown. */
   function flushQueued() {
+    if (model.front()) return;   // an ask waiting on you: nothing goes until it is answered
     for (const [id, q] of queued) {
-      if (!q.length) { queued.delete(id); continue; }
-      const t = q[0];
-      if (busyOn(id, t.sid) || model.front()) continue;   // its conversation's turn still running, or an ask waiting on you: not yet
-      q.shift();
+      const seen = new Set();
+      for (let i = 0; i < q.length; i++) {
+        const t = q[i];
+        if (seen.has(t.sid)) continue;   // a later message of a conversation already looked at: after the one before it
+        seen.add(t.sid);
+        if (busyOn(id, t.sid)) continue;   // its conversation's turn still running: not yet
+        q.splice(i--, 1);
+        const here = t.sid === streamOf(id);
+        send(id, t.text, here ? null : '(to an earlier conversation) ' + t.text, t.sid, { retry: here });
+      }
       if (!q.length) queued.delete(id);
-      send(id, t.text, null, t.sid, { retry: t.sid === streamOf(id) });
     }
   }
   // /background <prompt>: the agent works on it in a new conversation of its own; this one stays where it is
@@ -1045,7 +1076,9 @@ function runDashboard(station, opts) {
     const prompt = sp > 0 ? raw.slice(sp + 1).trim() : '';
     if (ms == null || !prompt) return sayHere('/loop', ['Usage: /loop <interval> <prompt> — e.g. /loop 5m check whether the deploy went green. Also: /loop status, /loop off.'], false);
     if (ms < LOOP_MIN_MS) return sayHere('/loop', ['Minimum loop interval is 1 minute — every run costs a real model turn.'], false);
-    if (cur) { clearTimeout(cur.timer); loops.delete(id); }   // replace, never stack two loops on one conversation
+    // one loop per agent: a new one replaces the one running — said, never a loop ended silently (review 10-24: one set in
+    // an earlier conversation went with no line)
+    if (cur) loopStop(id, 'the new /loop replaces it' + (cur.sid === streamOf(id) ? '' : ' (it was set in an earlier conversation: "' + cur.prompt.slice(0, 60) + '")'));
     const rec = { ms, label: loopLabel(ms), prompt, sid: streamOf(id), fired: 0, skipped: 0, skipStreak: 0, timer: null };
     loops.set(id, rec);
     loopArm(id, rec);
@@ -1069,6 +1102,10 @@ function runDashboard(station, opts) {
   function kickGoal(sid) {
     const g = goals.get(sid);
     if (!g || stopped || !GoalLoop || !GoalLoop.isActive(g.s) || g.judging) return;
+    // a goal steps only the conversation it was set in while that is the one its agent shows (the app steps a goal only on
+    // the displayed stream): after /new or /resume no paid step goes where /goal cannot see or pause it — it waits, and
+    // going back to that conversation (/resume) picks it up (review 10-24)
+    if (streamOf(g.agentId) !== sid) return;
     // one retry timer per goal at a time (stop() clears it): never a timer kept per retry for the life of the terminal
     const retry = ms => { if (!g.retry) g.retry = setTimeout(() => { g.retry = null; kickGoal(sid); }, ms); };
     if (busyOn(g.agentId, sid) || g.expectCont || g.contRun) return retry(1500);   // a step still running: the next waits for it
@@ -1111,7 +1148,8 @@ function runDashboard(station, opts) {
     const g2 = goals.get(sid);
     if (!g2 || !GoalLoop.isActive(g2.s)) return;
     const d = GoalLoop.evaluate(g2.s, GoalLoop.parseVerdict(raw), { now: now() });
-    if (d.message) sayGoal(g2.agentId, d.message, d.verdict !== 'paused');
+    const away = d.shouldContinue && streamOf(g2.agentId) !== sid;   // judged while another conversation is shown
+    if (d.message) sayGoal(g2.agentId, d.message + (away ? ' (an earlier conversation\'s goal: its next step waits until that conversation is shown again — /resume opens it)' : ''), d.verdict !== 'paused');
     if (d.shouldContinue) kickGoal(sid);
   }
   // every run event, after the model has it: which conversation a run is on, and the end of a goal's step
@@ -1158,9 +1196,13 @@ function runDashboard(station, opts) {
     if (!a) return sayHere('/goal', ['No agent shown.'], false);
     const sid = streamOf(id), g = goals.get(sid), cur = g && g.s;
     const raw = String(args || '').trim(), low = raw.toLowerCase();
-    if (!raw || low === 'status') return sayHere('/goal', [GoalLoop.statusLine(cur)]);
+    // a goal set in an earlier conversation of this agent's is not this one's: it waits (no step goes) until that
+    // conversation is shown again — said, so "no goal here" never hides one that is still set
+    const waiting = [...goals.entries()].filter(([s, x]) => s !== sid && x.agentId === id && GoalLoop.isActive(x.s)).length;
+    const elsewhere = waiting ? ' (' + (waiting === 1 ? 'A session goal set in an earlier conversation waits' : waiting + ' session goals set in earlier conversations wait') + ' — no step goes until that conversation is shown again; /resume opens it.)' : '';
+    if (!raw || low === 'status') return sayHere('/goal', [GoalLoop.statusLine(cur) + (cur ? '' : elsewhere)]);
     if (low === 'pause') {
-      if (!cur || cur.status === 'cleared') return sayHere('/goal', ['No session goal to pause.']);
+      if (!cur || cur.status === 'cleared') return sayHere('/goal', ['No session goal to pause in this conversation.' + elsewhere]);
       GoalLoop.pause(cur, 'you paused it');
       return sayHere('/goal', [busyOn(id, sid) ? '⏸ session goal paused — the step already running finishes, and no next step starts. /goal resume to continue.' : '⏸ session goal paused. /goal resume to continue.']);
     }
@@ -1181,7 +1223,7 @@ function runDashboard(station, opts) {
     if (!s) return sayHere('/goal', ['Usage: /goal <what you want done> · /goal status · pause · resume · clear'], false);
     if (g && g.retry) clearTimeout(g.retry);
     goals.set(sid, { agentId: id, s, expectCont: false, contRun: '', judging: false, waitSaid: new Set(), retry: null });
-    sayHere('/goal', ['⊙ goal set for this conversation: ' + s.goal + ' (budget ' + s.maxTurns + ' turns). After each step a judge decides whether it is done; it keeps going until it is, you type, or /goal pause. It works while this terminal is open. Working toward it…']);
+    sayHere('/goal', ['⊙ goal set for this conversation: ' + s.goal + ' (budget ' + s.maxTurns + ' turns). After each step a judge decides whether it is done; it keeps going until it is, you type, or /goal pause. It works while this terminal is open and this conversation is shown (after /new it waits; /resume back to it goes on). Working toward it…']);
     kickGoal(sid);
   }
   function subgoalCommand(args) {
@@ -1205,15 +1247,26 @@ function runDashboard(station, opts) {
      /api/agent/personality): through the StarNet app when it is open (its own controls save them), else that agent's roster
      entry alone — and then the app's own setting applies again the next time it opens, which the reply says. */
   /* with no app open: a change that GIVES power holds on the roster until the app opens with its own setting (said so); one
-     that takes it away the station also writes into the app's save (or refuses), so it holds when the app opens */
-  const viaRoster = r => {
+     that takes it away the station also writes into the app's save — the reply says only what the station says took it
+     (the roster, the save, or the roster alone and why), never a promise about what the app does when it opens */
+  const viaRoster = (r, name) => {
     const j = r && r.json;
     if (!(j && j.via === 'roster')) return '';
-    if (j.save === 'patched' || j.save === 'agrees') return ' (No StarNet app is open: the station\'s roster and the app\'s save both hold this, so it stays when the app opens.)';
-    if (j.save === 'none') return ' (No StarNet app is open: the station\'s roster holds this.)';
+    if (j.save === 'patched' || j.save === 'agrees') return ' (No StarNet app is open: the station\'s roster and the app\'s save both hold this now.)';
+    if (j.save === 'no-record') return ' (No StarNet app is open: the station\'s roster holds this; the app\'s save has no record of ' + name + '.)';
+    if (j.save === 'not-saved') return ' (No StarNet app is open: the station\'s roster holds this, but the app\'s save did not take it (' + (j.saveError || 'refused') + '), so the app may give ' + name + ' its own saved setting back when it opens — /yolo off again then.)';
     return ' (No StarNet app is open, so the station\'s roster holds this; the app\'s own setting applies again when it opens.)';
   };
   const refused = r => (r.json && r.json.error) || r.error || (r.status === 404 ? 'this station is older than this command' : 'HTTP ' + r.status);
+  /* the app was asked and did not confirm in time (the station's 6 s): it applies a change before it proves its save, so
+     the change may already be in force or still land. Never "unchanged": the station's roster as it is NOW (read after the
+     wait, in the reply) is what the terminal says, and takes. null when this was not that answer. */
+  const unconfirmed = (r, a) => {
+    const j = r && r.json;
+    if (!(r && r.status === 409 && j && j.unanswered)) return null;
+    if (j.gone) return { gone: true, line: 'The StarNet app did not confirm in time, and ' + a.name + ' is no longer on the station\'s roster.' };
+    return { st: j.station || {}, lead: 'The StarNet app did not confirm in time — it may still be applying it.' };
+  };
   async function yoloCommand(args) {
     const a = model.state.agents.get(ui.focus);
     if (!a) return sayHere('/yolo', ['No agent shown.'], false);
@@ -1223,9 +1276,17 @@ function runDashboard(station, opts) {
     const mode = want ? 'full' : 'ask', now2 = want ? 'run without prompts' : 'ask first';
     if ((a.approvalMode === 'full' ? 'full' : 'ask') === mode) return sayHere('/yolo', ['Approval mode unchanged for ' + a.name + ': ' + now2 + '.']);
     const r = await client.request('POST', '/api/agent/approval', { agentId: a.id, mode }, { timeoutMs: 15000 });
+    const u = unconfirmed(r, a);
+    if (u) {
+      if (u.gone) return sayHere('/yolo', [u.line], false);
+      const held = u.st.approvalMode === 'full' ? 'full' : 'ask', words = m => m === 'full' ? 'run without prompts' : 'ask first';
+      a.approvalMode = held;
+      return sayHere('/yolo', [u.lead + ' The station\'s roster says ' + a.name + ' will ' + words(held) + ' right now'
+        + (held !== mode ? '; if the app applies it, ' + a.name + ' will ' + words(mode) : '') + '.'], false);
+    }
     if (!(r.ok && r.status === 200 && r.json && r.json.ok)) return sayHere('/yolo', ['Could not change approval mode (' + refused(r) + ') — ' + a.name + ' still will ' + was + '.'], false);
     a.approvalMode = mode;
-    sayHere('/yolo', ['Approval mode: ' + was + ' → ' + now2 + ' for ' + a.name + '. ' + (want ? 'It will NOT pause for approval prompts — /yolo off restores them.' : 'It will pause before gated actions.') + viaRoster(r)]);
+    sayHere('/yolo', ['Approval mode: ' + was + ' → ' + now2 + ' for ' + a.name + '. ' + (want ? 'It will NOT pause for approval prompts — /yolo off restores them.' : 'It will pause before gated actions.') + viaRoster(r, a.name)]);
   }
   async function personalityCommand(args) {
     const a = model.state.agents.get(ui.focus);
@@ -1250,10 +1311,17 @@ function runDashboard(station, opts) {
         }
       } catch (_) { system = ''; }   // with the app open its own composer does it; with none, the station says it needs the prompt
       const r = await client.request('POST', '/api/agent/personality', Object.assign({ agentId: a.id, personality: id }, system ? { system } : {}), { timeoutMs: 20000 });
+      const u = unconfirmed(r, a);
+      if (u) {
+        if (u.gone) return sayHere('/personality', [u.line], false);
+        a.personaId = u.st.personaId || null;
+        const held = a.personaId && P.get ? P.get(a.personaId) : null;
+        return sayHere('/personality', [u.lead + ' The station\'s roster has ' + a.name + '\'s personality as ' + ((held && held.name) || a.personaId || 'the default') + ' right now' + (a.personaId === id ? '.' : '; if the app applies it, it becomes ' + P.get(id).name + '.')], false);
+      }
       if (!(r.ok && r.status === 200 && r.json && r.json.ok)) return sayHere('/personality', ['Could not set the personality (' + refused(r) + ').'], false);
       a.personaId = id;
       const swears = id === 'unhinged' && P.effective && (P.effective(id, null) || {}).profanity > 0;
-      return sayHere('/personality', ['Personality set to ' + P.get(id).name + ' for ' + a.name + '.' + (swears ? ' Heads up: this one swears — for real.' : '') + viaRoster(r)]);
+      return sayHere('/personality', ['Personality set to ' + P.get(id).name + ' for ' + a.name + '.' + (swears ? ' Heads up: this one swears — for real.' : '') + viaRoster(r, a.name)]);
     }
     const list = P.list ? P.list() : [];
     const cur = a.personaId && P.get ? P.get(a.personaId) : null;
@@ -1414,7 +1482,7 @@ function runDashboard(station, opts) {
       await loadRoster().catch(() => {});
       ui.focus = 'agent';
       if (last) model.noteAgentLine('agent', last.text, now());
-      if (res && res.firstMove) ui.input = String(res.firstMove);
+      if (res && res.firstMove) { ui.input = String(res.firstMove); slashReset(); }
       loadSkins().then(paint, () => {});
       flash(((res && res.agent && res.agent.name) || 'your agent') + ' is awake — and it knows why.', 'ok', 7000);
     }, e => {
@@ -1461,8 +1529,8 @@ function runDashboard(station, opts) {
       ui.agentMenu = '';
     }
     if (k.name === 'escape') {
-      if (tui.slashMenu(ui)) { ui.slashHidden = ui.input; return paint(); }   // esc hides the "/" menu first (what you typed stays)
-      ui.input = ''; ui.overlay = null; ui.scroll = 0; ui.page = ''; return paint();
+      if (tui.slashMenu(ui)) { ui.slashHidden = ui.input; slashReset(); return paint(); }   // esc hides the "/" menu first (what you typed stays)
+      ui.input = ''; slashReset(); ui.overlay = null; ui.scroll = 0; ui.page = ''; return paint();
     }
     // a PASTE is text (bracketed paste, ESC[?2004h): its newlines stay in the message — nothing is sent or answered mid-paste
     if (k.name === 'paste-start') { ui.pasting = true; return; }
@@ -1480,20 +1548,21 @@ function runDashboard(station, opts) {
     const sm = tui.slashMenu(ui);
     if (sm) {
       const n = sm.items.length;
-      if ((k.name === 'up' || k.name === 'down') && (ui.histAt == null || ui.histEdited)) { ui.slashSel = (sm.sel + (k.name === 'up' ? n - 1 : 1)) % n; ui.slashPicked = true; return paint(); }
+      if ((k.name === 'up' || k.name === 'down') && (ui.histAt == null || ui.histEdited)) { ui.slashSel = (sm.sel + (k.name === 'up' ? n - 1 : 1)) % n; ui.slashPicked = true; ui.slashPickedOn = ui.input; return paint(); }
       if (k.name === 'tab') return completeSlash(sm.items[sm.sel].name);
       if (k.name === 'return' || k.name === 'enter') {
         const typed = ui.input.slice(1).toLowerCase();
         // a lone "/" runs nothing until a command is picked with ↑ ↓ (its top row is only the first of the list)
-        if (!typed && !ui.slashPicked) { flash('pick a command with ↑ ↓ then enter, or type its name', 'dim', 4000); return paint(); }
+        const picked = ui.slashPicked && ui.slashPickedOn === ui.input;   // picked on THIS line
+        if (!typed && !picked) { flash('pick a command with ↑ ↓ then enter, or type its name', 'dim', 4000); return paint(); }
         const c = sm.items[sm.sel];
         const exact = ui.slashCatalog.some(x => x.name.toLowerCase() === typed || (x.aliases || []).some(a => a.toLowerCase() === typed));
         // the command typed whole runs as typed, unless you picked another row; a part-word runs the row picked
-        if ((ui.slashPicked || !exact) && typed !== c.name.toLowerCase() && !(c.aliases || []).some(a => a.toLowerCase() === typed)) {
+        if ((picked || !exact) && typed !== c.name.toLowerCase() && !(c.aliases || []).some(a => a.toLowerCase() === typed)) {
           if (c.argsHint) return completeSlash(c.name);
           ui.input = '/' + c.name;
         }
-        ui.slashSel = 0; ui.slashPicked = false;
+        slashReset();
         const t = ui.input; ui.input = ''; submit(t); return paint();
       }
     }
@@ -1510,7 +1579,7 @@ function runDashboard(station, opts) {
       return paint();
     }
     if (k.name === 'return' || k.name === 'enter') { const t = ui.input; ui.input = ''; submit(t); return paint(); }
-    if (k.name === 'backspace') { ui.input = ui.input.slice(0, -1); ui.slashSel = 0; ui.slashPicked = false; if (ui.histAt != null) ui.histEdited = true; return paint(); }
+    if (k.name === 'backspace') { ui.input = ui.input.slice(0, -1); slashReset(); if (ui.histAt != null) ui.histEdited = true; return paint(); }
     if (k.sequence && /^\x1b\[[?\d;]*[ct]$/.test(k.sequence)) return;   // a late reply to the startup probe
     if (typeof str !== 'string' || !str || k.ctrl || k.meta || str.charCodeAt(0) === 27) return;
     const ch = str.replace(/[\x00-\x1f\x7f]/g, '');
@@ -1520,7 +1589,7 @@ function runDashboard(station, opts) {
     if (!ui.input && /^[ynva]$/i.test(ch) && answerKey(ch.toLowerCase())) return;
     if (!ui.input && q && q.question && /^[1-6]$/.test(ch) && q.question.options[Number(ch) - 1]) { answerQuestion(q.question.options[Number(ch) - 1]); return; }
     if (ui.input.length < 4000) ui.input += ch;
-    ui.slashSel = 0; ui.slashPicked = false;
+    slashReset();
     if (ui.histAt != null) ui.histEdited = true;
     // a "/" for an agent whose commands are not read yet (its skills are its own): read them now
     if (ui.input === '/' && ui.slashFor !== ui.focus) loadCatalog().then(paint, () => {});
