@@ -18949,9 +18949,9 @@ async function handleAgentModel(req, res) {
   if (sse.size() > 1) {
     const out = await stationBridge.request('station.control', Object.assign({ action: 'agent.model', agent: agentId, model, provider }, effort ? { effort } : {}));
     if (out && out.ok) return json(200, Object.assign({ ok: true, agentId, model, provider, via: 'page' }, effort ? { effort } : {}));
-    if (!(out && out.unattended)) return json(409, { error: String((out && out.error) || 'the station page refused the change') });
-    // the page never answered (closed between the check and the ask): fall through to the roster
+    return json(409, pageRefusal(out));
   }
+  // no page: nothing was awaited since `cur` was read, so this writes onto the roster as it is now
   agentRoster.set(agentId, Object.assign({}, cur, { model, provider }, effort ? { reasoningEffort: effort } : {}));
   if (!saveAgentRoster()) { agentRoster.set(agentId, cur); return json(500, { error: 'could not save the roster' }); }
   return json(200, Object.assign({ ok: true, agentId, model, provider, via: 'roster' }, effort ? { effort } : {}));
@@ -18962,6 +18962,42 @@ async function handleAgentModel(req, res) {
    the roster); none → that ONE agent's roster entry, saved (never /api/roster, which replaces every agent; never the
    station-wide bypass switch). With no page a personality needs its prompt, which only the app's composer writes: the
    caller composes it with the app's own modules and sends it as `system`, and the roster keeps the personaId beside it. */
+/* A StarNet page was connected but its answer never came (the bridge's 6 s lapsed: a slow save, a busy station, a page
+   closing). Nothing is written here then: the page may still apply the change, push a newer roster or delete the agent
+   meanwhile, and a second write from a snapshot taken before the wait would overwrite that (review 10-24). The caller is
+   told plainly that a page IS open and nothing was changed, never "no app is open". */
+function pageRefusal(out) {
+  if (out && out.unattended) return { error: 'a StarNet page is open but did not answer in time, so nothing was changed here — make the change in the app, or try again', pageOpen: true, unanswered: true };
+  return { error: String((out && out.error) || 'the station page refused the change'), pageOpen: true };
+}
+/* /yolo off with no page open LOWERS an agent's power, so it must hold where the app reads it back: the app hydrates its
+   crew from its save and pushes that roster when it opens, so a roster-only "ask" came back as FULL ACCESS with no prompt
+   (review 10-24). The agent's row in the save takes the same mode (the field the page's proveCrewSaved checks), written
+   the way the save-restore route writes a server-side change: on the save's own revision, a fresh updatedAt (the app
+   adopts the newer copy at boot), never over a save this sidecar cannot read or one a newer StarNet wrote. Answers
+   { ok:true, save:'patched'|'agrees'|'none' } or { ok:false, error }. */
+function saveApprovalMode(agentId, mode) {
+  if (workspaceDegraded) return { ok: false, error: 'the station save was written by a newer StarNet' };
+  let state;
+  try { state = saveStore.loadState('agent'); } catch (e) { return { ok: false, error: 'the station save could not be read (' + ((e && e.message) || e) + ')' }; }
+  if (state.status === 'unreadable') return { ok: false, error: 'the station save is unreadable right now' };
+  const doc = state.doc;
+  if (!doc || typeof doc !== 'object') return { ok: true, save: 'none' };   // no save: the roster is the whole station
+  const rows = [];
+  if (doc.agent && typeof doc.agent === 'object' && String(doc.agent.id || '') === agentId) rows.push(doc.agent);
+  for (const x of (Array.isArray(doc.agents) ? doc.agents : [])) if (x && typeof x === 'object' && String(x.id || '') === agentId) rows.push(x);
+  if (!rows.length) return { ok: true, save: 'none' };
+  const stale = rows.filter(x => (x.approvalMode === 'full' ? 'full' : 'ask') !== mode);
+  if (!stale.length) return { ok: true, save: 'agrees' };
+  for (const x of stale) x.approvalMode = mode;
+  const at = Date.now();
+  Object.assign(doc, { updatedAt: Math.max(at, (Number(doc.updatedAt) || 0) + 1), _saveClient: 'approval-' + at, _saveDirty: false });
+  let result;
+  try { result = saveStore.save('agent', doc, { compareRevision: true }); } catch (e) { return { ok: false, error: 'the station save refused the change (' + ((e && e.message) || e) + ')' }; }
+  if (!result || result.ok !== true) return { ok: false, error: result && result.conflict ? 'the station save changed while it was written' : 'the station save refused the change' };
+  try { seedSaveMemos('agent', doc); } catch (e) { failNote('agent.approval.seed-memos', e); }
+  return { ok: true, save: 'patched' };
+}
 async function handleAgentApproval(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 1 << 12)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
@@ -18974,11 +19010,23 @@ async function handleAgentApproval(req, res) {
   if (sse.size() > 1) {
     const out = await stationBridge.request('station.control', { action: 'agent.approval', agent: agentId, mode });
     if (out && out.ok) return json(200, { ok: true, agentId, mode, via: 'page' });
-    if (!(out && out.unattended)) return json(409, { error: String((out && out.error) || 'the station page refused the change') });
+    return json(409, pageRefusal(out));
   }
+  // no page: nothing was awaited since `cur` was read. Taking power AWAY ('ask') lands in the app's save as well, or not
+  // at all: a change the app would silently undo when it opens is never reported as done
   agentRoster.set(agentId, Object.assign({}, cur, { approvalMode: mode }));
   if (!saveAgentRoster()) { agentRoster.set(agentId, cur); return json(500, { error: 'could not save the roster' }); }
-  return json(200, { ok: true, agentId, mode, via: 'roster' });
+  let save = '';
+  if (mode === 'ask') {
+    const s = saveApprovalMode(agentId, mode);
+    if (!s.ok) {
+      agentRoster.set(agentId, cur);
+      saveAgentRoster();
+      return json(409, { error: s.error + ': the StarNet app would give ' + String(cur.name || agentId) + ' its saved approval back when it opens, so nothing was changed — open the app and change it there' });
+    }
+    save = s.save;
+  }
+  return json(200, Object.assign({ ok: true, agentId, mode, via: 'roster' }, save ? { save } : {}));
 }
 async function handleAgentPersonality(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
@@ -18992,8 +19040,9 @@ async function handleAgentPersonality(req, res) {
   if (sse.size() > 1) {
     const out = await stationBridge.request('station.control', { action: 'agent.personality', agent: agentId, personality });
     if (out && out.ok) return json(200, { ok: true, agentId, personality, via: 'page' });
-    if (!(out && out.unattended)) return json(409, { error: String((out && out.error) || 'the station page refused the change') });
+    return json(409, pageRefusal(out));
   }
+  // no page: nothing was awaited since `cur` was read
   const system = typeof body.system === 'string' ? body.system : '';
   if (!system.trim() || system.length > 400000) return json(409, { error: 'no StarNet page is open to compose the new prompt, and none was sent' });
   const raw = agentRosterRaw.get(agentId);

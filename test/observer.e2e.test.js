@@ -219,6 +219,8 @@ async function until(fn, ms, label) {
       const r1 = await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: 'test/other-model', provider: 'openrouter' });
       A.eq([r1.status, r1.body && r1.body.via], [200, 'roster'], 'headless: the roster takes the new model');
       A.eq((await rosterOf('rook')).model, 'test/other-model', 'and the station reads it back');
+      const r1e = await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: 'test/other-model', provider: 'openrouter', effort: 'high' });
+      A.eq([r1e.status, r1e.body && r1e.body.via, (await rosterOf('rook')).reasoningEffort], [200, 'roster', 'high'], 'headless: an effort set with it lands on the roster, and the runtime roster says it (the terminal reads it there)');
       A.eq((await fixture.json('POST', '/api/agent/model', { agentId: 'ghost', model: 'm', provider: 'openrouter' })).status, 404, 'an unknown agent is refused');
       A.eq((await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: 'claude-x', provider: 'anthropic' })).status, 409, 'a provider with no key or sign-in is refused (its next run would fail)');
       A.eq((await fixture.json('POST', '/api/agent/model', { agentId: 'rook', model: '', provider: 'openrouter' })).status, 400, 'no model named, nothing changes');
@@ -239,7 +241,8 @@ async function until(fn, ms, label) {
       A.eq([r2.status, r2.body && r2.body.via], [200, 'page'], 'with a page connected, the page applies it: ' + JSON.stringify(r2.body));
       const cmd = asked.find(c => c.verb === 'station.control') || {};
       A.eq([cmd.args && cmd.args.action, cmd.args && cmd.args.agent, cmd.args && cmd.args.model, cmd.args && cmd.args.provider, cmd.args && cmd.args.effort], ['agent.model', 'rook', 'test/page-model', 'openrouter', 'high'], 'as the same station.control agent.model the agent tool sends');
-      A.eq((await rosterOf('rook')).reasoningEffort === undefined, false, 'the runtime roster says each agent\'s effort and approval mode (the terminal reads them there)');
+      const rk = await rosterOf('rook');
+      A.eq([rk.reasoningEffort, rk.approvalMode], ['high', 'ask'], 'the runtime roster says each agent\'s effort and approval mode (the terminal reads them there); the page\'s change left the roster to the page');
     }
 
     /* ---- 7. /yolo and /personality from the terminal: POST /api/agent/approval, /api/agent/personality -------------------- */
