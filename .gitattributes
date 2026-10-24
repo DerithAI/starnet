@@ -1,0 +1,31 @@
+# Keep source files LF in the working tree on every platform.
+#
+# The test suite matches source code with regexes anchored on "\n". With CRLF
+# in the working tree those regexes do not match, so the suite failed on
+# Windows while passing on Linux CI. Measured 2026-10-24: 689 fast tests,
+# first failure at step 56 (test/checkpoint-default-on.test.js could not find
+# the function it was asserting existed).
+#
+# Fixing the checkout rather than editing 100 regexes keeps the assertions
+# readable and makes the suite behave identically everywhere.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending translated.
+*.png binary
+*.wav binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
+*.mp4 binary
+*.webm binary
+*.zip binary
+*.pdf binary
+*.exe binary
+*.dll binary
