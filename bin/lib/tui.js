@@ -100,6 +100,7 @@ function makeGrid(cols, rows) {
 // ---- the screen ------------------------------------------------------------------------------------------
 const HELP = [
   ['message', 'talk to the agent shown in COMMS'],
+  ['/', 'every command as you type — the app\'s too: /goal /queue /loop …'],
   ['@name message', 'talk to another agent (it queues if busy)'],
   ['/model [name]', 'show or switch the shown agent\'s model'],
   ['/new  /resume', 'a fresh conversation · back to an earlier one'],
@@ -354,7 +355,9 @@ function render(model, ui, size, now) {
   // `starnet` started in is not trusted
   const menuAgent = !wk && ui.agentMenu ? model.state.agents.get(ui.agentMenu) : null;
   const menuRow = menuAgent ? rows.find(r => r.id === menuAgent.id) : null;
-  const card = wk ? (wk.ask ? wakeCardLines(wk.ask, cw, now, ui.still) : []) : menuRow ? menuLines(menuAgent, menuRow, now, ui.still)
+  // the "/" menu while a command is typed (above everything else at the foot: it goes the moment the word is done)
+  const slash = slashMenu(ui);
+  const card = wk ? (wk.ask ? wakeCardLines(wk.ask, cw, now, ui.still) : []) : slash ? slashLines(slash, iy1 - iy0 - 4, cw) : menuRow ? menuLines(menuAgent, menuRow, now, ui.still)
     : front ? cardLines(front, model, cw, H) : ui.trust ? trustLines(ui.trust, cw) : [];
   const cardTop = iy1 - card.length + 1;
   const paneBot = card.length ? cardTop - 1 : iy1 + 1;
@@ -444,6 +447,8 @@ function render(model, ui, size, now) {
     const t = wk
       ? (wk.ask ? ((wk.ask.options || []).length ? '1-' + wk.ask.options.length + ' pick · ' : '') + (wk.ask.custom ? 'or type your own + enter · ' : '') + 'ctrl+c pauses setup'
         : wk.typing ? 'any key shows the rest' : 'ctrl+c pauses setup')
+      : slash ? 'tab completes /' + slash.items[slash.sel].name + ' · enter runs it · ↑ ↓ pick · esc hides this'
+      : slashCommandOf(ui) ? (c => '/' + c.name + (c.argsHint ? ' ' + c.argsHint : '') + ' — ' + c.desc + (c.here === false ? ' (only in the StarNet app)' : ''))(slashCommandOf(ui))
       : menuRow ? 'o open chat · m model · n new chat · h history' + (menuAgent.runs && menuAgent.runs.size ? ' · s stop' : '') + ' · esc close'
       : front
       ? (front.question ? (front.question.options.length ? '1-' + front.question.options.length + ' pick · ' : '') + 'type an answer + enter · esc clears' : 'y allow once · ' + (canAlways(front) ? 'a always · ' : '') + 'n deny · v ' + (front.view ? 'hide' : 'view') + ' · ' + (narrow ? 'tab agent' : 'tab next agent'))
@@ -560,6 +565,46 @@ function drawWorkPage(g, flows, focusRow, ui, top, bot, x0, x1, now, hit) {
   else if (a.error) L.push({ segs: [[a.error, 'am']] });
   else for (const t of (a.title ? [a.title] : []).concat(a.lines || [])) for (const ln of wrap(String(t), w)) L.push({ segs: [[ln, t === a.title ? 'hi b' : 'fg']] });
   drawPageRows(g, L, ui, top, bot, x0, x1, hit);
+}
+/* THE "/" MENU (Andrew 10-24: "when users type / it should pop up with the suggestion menu"): while the command word is being
+   typed, the commands that match it, from the station's own catalog (the app's 43, the agent's skills, recipes, your own) and
+   the terminal's (/flow, the pages, /quit). Pure: ui.slashCatalog is [{ name, aliases, desc, argsHint, source, here }]. */
+const SOURCE_ORDER = { terminal: 0, builtin: 0, user: 1, skill: 2, recipe: 3 };
+function slashMatches(list, word) {
+  const w = String(word || '').toLowerCase();
+  const scored = [];
+  for (const c of list || []) {
+    const n = String(c.name || '').toLowerCase(), al = (c.aliases || []).map(a => String(a).toLowerCase());
+    const s = !w ? 0 : n.indexOf(w) === 0 ? 0 : al.some(a => a.indexOf(w) === 0) ? 1 : n.indexOf(w) >= 0 ? 2 : String(c.desc || '').toLowerCase().indexOf(w) >= 0 ? 3 : -1;
+    if (s >= 0) scored.push([s, c]);
+  }
+  return scored.sort((a, b) => a[0] - b[0] || (SOURCE_ORDER[a[1].source] || 0) - (SOURCE_ORDER[b[1].source] || 0)).map(x => x[1]);
+}
+// the menu, when one shows: only while the command word is typed (a space ends it), never in the awakening, not after esc
+function slashMenu(ui) {
+  const t = String(ui.input || '');
+  if (ui.wake || !/^\/[^\s]*$/.test(t) || ui.slashHidden === t || !Array.isArray(ui.slashCatalog)) return null;
+  const items = slashMatches(ui.slashCatalog, t.slice(1));
+  if (!items.length) return null;
+  return { items, sel: Math.max(0, Math.min(items.length - 1, ui.slashSel | 0)) };
+}
+// the command a typed line names, once its word is complete (/goal fix it → /goal's entry)
+function slashCommandOf(ui) {
+  const m = /^\/(\S+)\s/.exec(String(ui.input || ''));
+  if (!m || !Array.isArray(ui.slashCatalog)) return null;
+  const w = m[1].toLowerCase();
+  return ui.slashCatalog.find(c => String(c.name).toLowerCase() === w || (c.aliases || []).some(a => String(a).toLowerCase() === w)) || null;
+}
+function slashLines(menu, rows, cw) {
+  const n = Math.max(1, Math.min(8, rows)), start = Math.max(0, Math.min(menu.sel - Math.floor(n / 2), menu.items.length - n));
+  const lines = [{ kind: 'top', title: menu.items.length + ' COMMAND' + (menu.items.length === 1 ? '' : 'S'), glyph: '/ ' }];
+  menu.items.slice(start, start + n).forEach((c, i) => {
+    const on = start + i === menu.sel;
+    const tag = c.here === false ? '  · in the app' : c.source && c.source !== 'builtin' && c.source !== 'terminal' ? '  · ' + (c.source === 'user' ? 'yours' : c.source) : '';
+    lines.push({ kind: 'body', on, act: { t: 'slash', name: c.name }, segs: [[padR('/' + c.name, 20), on ? 'hi b' : c.here === false ? 'dim' : 'ph'], [trunc(String(c.desc || ''), Math.max(8, cw - 25 - width(tag))), on ? 'hi' : c.here === false ? 'dim' : 'fg'], [tag, 'dim']] });
+  });
+  lines.push({ kind: 'bottom', keys: [['[TAB] COMPLETE', 'am b'], ['[ENTER] RUN', 'am b'], ['[↑↓] PICK', 'am b'], ['[ESC] HIDE', 'am b']], more: menu.items.length - n });
+  return lines;
 }
 // THE AGENT MENU (a right-click on an agent, or a click on the one already shown): what you can do with it, a card at the
 // foot of COMMS — each line a click, or the letter in brackets
@@ -898,7 +943,9 @@ function drawCard(g, lines, y0, x0, cw, blink, hit) {
       if (tl) x = g.put(x, y, tl, 'am b');
       g.put(xr, y, '┘', 'am');
     }
-    g.hl(y, x0, xr + 1, 'card');
+    // the line picked (the "/" menu's) sits on the highlight bar, the rest on the card
+    if (l.on) { g.put(x0 + 1, y, '▌', 'ph b'); g.hl(y, x0 + 1, xr, 'sel'); g.hl(y, x0, x0 + 1, 'card'); g.hl(y, xr, xr + 1, 'card'); }
+    else g.hl(y, x0, xr + 1, 'card');
   });
 }
 
@@ -965,4 +1012,4 @@ function colorLevel(env, isTTY) {
   return 2;
 }
 
-module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, trustLines, wakeCardLines, menuLines, pickerView, stateWords, PAGES };
+module.exports = { render, toAnsi, toPlain, sliceSegs, colorLevel, clean, width, wrap, trunc, makeGrid, HELP, cardLines, trustLines, wakeCardLines, menuLines, pickerView, stateWords, PAGES, slashMatches, slashMenu, slashCommandOf };

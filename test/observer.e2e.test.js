@@ -239,6 +239,43 @@ async function until(fn, ms, label) {
       A.eq([r2.status, r2.body && r2.body.via], [200, 'page'], 'with a page connected, the page applies it: ' + JSON.stringify(r2.body));
       const cmd = asked.find(c => c.verb === 'station.control') || {};
       A.eq([cmd.args && cmd.args.action, cmd.args && cmd.args.agent, cmd.args && cmd.args.model, cmd.args && cmd.args.provider, cmd.args && cmd.args.effort], ['agent.model', 'rook', 'test/page-model', 'openrouter', 'high'], 'as the same station.control agent.model the agent tool sends');
+      A.eq((await rosterOf('rook')).reasoningEffort === undefined, false, 'the runtime roster says each agent\'s effort and approval mode (the terminal reads them there)');
+    }
+
+    /* ---- 7. /yolo and /personality from the terminal: POST /api/agent/approval, /api/agent/personality -------------------- */
+    {
+      const rosterOf = async id => ((await fixture.json('GET', '/api/runtime/agent')).body.agents || []).find(a => a.agentId === id) || {};
+      const y1 = await fixture.json('POST', '/api/agent/approval', { agentId: 'rook', mode: 'full' });
+      A.eq([y1.status, y1.body && y1.body.via, (await rosterOf('rook')).approvalMode], [200, 'roster', 'full'], 'headless: /yolo sets that one agent\'s approval mode on the roster, and the station reads it back');
+      A.eq((await fixture.json('POST', '/api/agent/approval', { agentId: 'rook', mode: 'maybe' })).status, 400, 'approval is ask or full, nothing else');
+      A.eq((await fixture.json('POST', '/api/agent/approval', { agentId: 'ghost', mode: 'ask' })).status, 404, 'an unknown agent is refused');
+      await fixture.json('POST', '/api/agent/approval', { agentId: 'rook', mode: 'ask' });
+      A.eq((await rosterOf('rook')).approvalMode, 'ask', 'and back to ask');
+      A.eq((await fixture.json('POST', '/api/agent/personality', { agentId: 'rook', personality: 'blunt' })).status, 409, 'headless, a personality with no composed prompt is refused (only the app\'s composer writes one)');
+      const p1 = await fixture.json('POST', '/api/agent/personality', { agentId: 'rook', personality: 'blunt', system: 'ROOK-BLUNT-PERSONA' });
+      A.eq([p1.status, p1.body && p1.body.via, (await rosterOf('rook')).personaId], [200, 'roster', 'blunt'], 'with the prompt the caller composed: the roster keeps it and the personality');
+      seenSystems.length = 0;
+      await run(fixture, Object.assign({}, base, { agentId: 'rook', rosterSystem: true, client: 'terminal', messages: [{ role: 'user', content: 'hi' }] }));
+      A.ok(seenSystems.some(s => s.indexOf('ROOK-BLUNT-PERSONA') >= 0), 'and the agent\'s next run speaks with it');
+      A.eq((await fixture.json('POST', '/api/agent/personality', { agentId: 'rook', personality: 'Not A Persona!' })).status, 400, 'a malformed personality id is refused');
+      // a StarNet page connected: the page applies both (its own controls save and recompose)
+      const asked = [];
+      const page = watch(fixture, { 'X-StarNet-Token': fixture.token }, '/api/channels/events');
+      const answering = setInterval(() => {
+        for (const e of page.events.splice(0)) {
+          if (e.name !== 'station.command' || !e.payload) continue;
+          asked.push(e.payload);
+          fixture.json('POST', '/api/station/ack', { id: e.payload.id, ok: true, result: { agent: 'ROOK' } });
+        }
+      }, 25);
+      await sleep(400);
+      const y2 = await fixture.json('POST', '/api/agent/approval', { agentId: 'rook', mode: 'full' });
+      const p2 = await fixture.json('POST', '/api/agent/personality', { agentId: 'rook', personality: 'warm' });
+      clearInterval(answering); page.close();
+      A.eq([y2.body && y2.body.via, p2.body && p2.body.via], ['page', 'page'], 'with a page connected, the page applies both');
+      const acts = asked.filter(c => c.verb === 'station.control').map(c => [c.args.action, c.args.agent, c.args.mode || c.args.personality]);
+      A.eq(acts, [['agent.approval', 'rook', 'full'], ['agent.personality', 'rook', 'warm']], 'as the same station.control the agent tool sends');
+      A.eq((await rosterOf('rook')).approvalMode, 'ask', 'and the roster is left to the page (no second writer)');
     }
   } catch (e) {
     A.ok(false, 'observer e2e threw: ' + ((e && e.stack) || e));

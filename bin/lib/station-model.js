@@ -149,6 +149,10 @@ function makeStation() {
       const a = agent(r.agentId);
       a.name = String(r.name || r.agentId).toUpperCase().slice(0, 24);   // whole up to 24; each screen shortens it with …
       a.model = String(r.model || ''); a.provider = String(r.provider || ''); a.inRoster = true;
+      // what its runs are held to, when the station says (an older station does not: the app's save is read instead)
+      if (typeof r.reasoningEffort === 'string' && r.reasoningEffort) { a.reasoningEffort = r.reasoningEffort; a.rosterSettings = true; }
+      if (typeof r.approvalMode === 'string' && r.approvalMode) { a.approvalMode = r.approvalMode; a.rosterSettings = true; }
+      if (typeof r.personaId === 'string' && r.personaId) a.personaId = r.personaId;
     }
     // the hero is always aboard, even on a station whose roster file is empty (a bare `npm start` / headless station)
     if (!sorted.some(r => r && r.agentId === 'agent')) agent('agent');
@@ -274,6 +278,8 @@ function makeStation() {
       case 'agent.cost': {   // spend is read from the budget route (one source for the header, never summed here)
         const run = st.runs.get(String(p.runId));
         if (run && run.text) { run.text.live = false; run.text = null; }
+        // what its latest model call was sent: how full its conversation is (/compress says it)
+        if (run && Number(p.tokensIn) > 0) agent(run.agentId).lastTokensIn = Number(p.tokensIn);
         return;
       }
       case 'agent.run.error': { const a = agent(p.agentId); log(a, { k: 'bad', text: String(p.message || 'run error'), at: now }); return; }
