@@ -4,7 +4,7 @@
 |---|---|
 | Status | HEAD to `d69612912 One Chrome-profile teardown for every browser test`, na `fork/feat/harness-backend` (`DerithAI/starnet`). Working tree: **czyste**. |
 | Gałąź zdalna | `fork/feat/harness-backend` = fork użytkownika, w którym jest v0.12.4 + brief verification tools. `origin` wskazuje na upstream autora (`androoAGI/starnet`) — tam nie ma prawa pushu, i słusznie. |
-| Bramka | `npm run test:fast` — `test/fast.list` ma **841 kroków** (fork dodał ~150 do dawnych 689). Ostatni pomiar: **817/841**. |
+| Bramka | `npm run test:fast` — `test/fast.list` ma **841 kroków** (fork dodał ~150 do dawnych 689). Ostatni pomiar: **841/841 - un-fast-tests: OK - 841 step(s) green**. |
 | Wymagany runtime | **Node 22** (jak CI). Node 24 na Windows wybucha w teardownzie libuv — patrz „Diagnoza awarii". |
 
 ## Co było zepsute i co zrobiłem
