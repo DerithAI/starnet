@@ -7,7 +7,7 @@ import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, isAbsolute } from 'node:path';
-import { findChrome, connectCDP, evalJS, sleep } from '../scripts/lib/cdp.mjs';
+import { findChrome, connectCDP, evalJS, sleep, cleanupChromeProfile } from '../scripts/lib/cdp.mjs';
 
 const sharedSource = ['frontend/js/util.js', 'frontend/app/worldmodel.js', 'frontend/app/worldsurface.js']
   .map(path => readFileSync(new URL('../' + path, import.meta.url), 'utf8')).join('\n');
@@ -152,8 +152,8 @@ finally {
   if (profile) {
     const rel = relative(resolve(tmpdir()), resolve(profile));
     assert.ok(rel && !rel.startsWith('..') && !isAbsolute(rel) && rel.startsWith('starnet-connection-render-'), 'cleanup stays inside unique test temp directory');
-    for (let attempt = 0; attempt < 10; attempt++) try { rmSync(profile, { recursive: true, force: true }); break; }
-    catch (error) { if (attempt === 9) throw error; await sleep(200); }
+    const cleanup = await cleanupChromeProfile(profile, sleep);
+    if (cleanup.warning) console.log('WARN cleanup: ' + cleanup.warning);
   }
 }
 process.exit(failed ? 1 : 0);

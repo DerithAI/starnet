@@ -9,7 +9,7 @@
 //
 // Zero dependencies: Node 22 has global fetch + global WebSocket.
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -99,6 +99,35 @@ export function killChromeForProfile(profileDir) {
       { stdio: 'ignore', windowsHide: true },
     );
   } catch (_) {}
+}
+
+// Remove a Chrome profile directory that a test created under TEMP.
+//
+// Chrome's crashpad handler detaches from the browser on purpose, so the
+// tree kill never reaches it and it keeps a handle on the profile. On
+// Windows that makes the directory undeletable, and a test that already
+// ran every one of its checks still fails the gate over a temporary
+// directory.
+//
+// The directory is under TEMP and the OS reclaims it, so a locked profile
+// is a warning, never a failure.
+//
+// Measured 2026-10-25: before this helper, 27 chrome processes survived
+// the test runs and held three profiles open.
+export async function cleanupChromeProfile(profileDir, sleepFn = sleep) {
+  if (!profileDir) return { removed: false, warning: null };
+  killChromeForProfile(profileDir);
+  await sleepFn(1200);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      rmSync(profileDir, { recursive: true, force: true });
+      return { removed: true, warning: null };
+    } catch (error) {
+      if (attempt === 9) return { removed: false, warning: error.message };
+      await sleepFn(300);
+    }
+  }
+  return { removed: false, warning: 'retry budget exhausted' };
 }
 
 // Launch a headless Chrome with the CDP endpoint open. Returns the child process.
