@@ -22,7 +22,7 @@ const App = (() => {
   let pickedTraits = {};        // the VOICE & MANNER fine-tune dials (warmth/humor/formality/length + emoji/blunt) — only set keys contribute prompt text
   let pickedCustomVoice = '';   // the Commander's free-text "in their own words" voice note (optional)
   let pickedApproval = 'ask';   // the APPROVAL mode — 'ask' (consent-gated) | 'full' (auto-approve). Drives the REAL consent broker (sidecar bypass), not a cosmetic toggle.
-  let pickedProvider = 'openai';   // BEGINNER-FIRST funnel: the STARNET hero is the promoted start, but it only exists once the cloud seam is proven (revealStarnetGenesis auto-picks it on a fresh create). Until then OPENAI leads — its card carries BOTH paths (ChatGPT sign-in or an API key). initConnect() still honours a returning agent's saved provider.
+  let pickedProvider = 'ollama';   // Set directly to local Ollama (127.0.0.1:11434)
   // POWER-USER LOOP PL-03 — entry is a four-surface truth transaction. World opens its EventSource
   // before Chat/StationUI finish mounting, and their independent timers used to expose an impossible
   // mixture during reload: unreachable + STANDBY + ONLINE + "COMMS online". Hold every idle claim at
