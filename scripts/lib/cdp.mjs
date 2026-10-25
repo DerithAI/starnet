@@ -80,7 +80,11 @@ export function findChrome() {
 // test runs, and every e2e run failed its cleanup with EBUSY.
 export function killChromeForProfile(profileDir) {
   if (process.platform !== 'win32' || !profileDir) return;
-  const needle = profileDir.replace(/\\/g, '\\\\');
+  // PowerShell's -like treats a backslash as an ordinary character, so the
+  // path goes in as it is. Doubling the separators - which is what a regex
+  // would need - made the pattern match nothing at all, and the crashpad
+  // handler survived every teardown.
+  const needle = String(profileDir).replace(/'/g, "''");
   try {
     spawn(
       'powershell.exe',

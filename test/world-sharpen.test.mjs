@@ -10,7 +10,8 @@ import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, isAbsolute } from 'node:path';
-import { findChrome, connectCDP, evalJS, sleep } from '../scripts/lib/cdp.mjs';
+import { findChrome, connectCDP, evalJS, sleep, killChromeForProfile } from '../scripts/lib/cdp.mjs';
+import { killProcessTree } from '../scripts/lib/run-command.mjs';
 
 const require = createRequire(import.meta.url);
 const R = require('../frontend/app/worldrenderer.js');
@@ -31,9 +32,11 @@ const freePort = () => new Promise((resolvePort, reject) => {
 });
 const stopChild = child => new Promise(done => {
   if (!child || child.exitCode != null) { done(); return; }
-  const timer = setTimeout(done, 3000);
+  const timer = setTimeout(done, 5000);
   child.once('exit', () => { clearTimeout(timer); done(); });
-  try { child.kill('SIGKILL'); } catch { clearTimeout(timer); done(); }
+  // Kill the whole tree. Chrome spawns children - crashpad, the GPU process,
+  // the utility processes - and killing only the parent leaves them running.
+  killProcessTree(child.pid).then(() => {}, () => {});
 });
 
 function makeFixture(name, width, height, color) {
@@ -158,12 +161,23 @@ try {
 } finally {
   try { cdp?.ws.close(); } catch {}
   await stopChild(chrome);
+  // Chrome's crashpad handler detaches on purpose - it has to outlive the
+  // browser so it can report the crash - so the tree kill never reaches it,
+  // and it keeps a handle on the profile directory. Reach it by profile path
+  // before removing the tree.
+  killChromeForProfile(profile);
+  await sleep(1200);
   if (profile) {
     const rel = relative(resolve(tmpdir()), resolve(profile));
     assert.ok(rel && !rel.startsWith('..') && !isAbsolute(rel) && rel.startsWith('starnet-sharpen-parity-'), 'cleanup stays inside its unique test temp directory');
     for (let attempt = 0; attempt < 10; attempt++) {
       try { rmSync(profile, { recursive: true, force: true }); break; }
-      catch (error) { if (attempt === 9) throw error; await sleep(200); }
+      catch (error) {
+        // A locked temp directory must not discard a real result. The
+        // directory is under TEMP and the OS reclaims it.
+        if (attempt === 9) { console.log('WARN cleanup: ' + error.message); break; }
+        await sleep(300);
+      }
     }
   }
 }
