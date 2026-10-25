@@ -3071,6 +3071,7 @@ const pathTrustCore = makePathTrust({
   fsp, pathMod: path,
   roots: blessedRoots,
   workspaceRoot: WORKSPACES,
+  home: os.homedir(),
   bless: async (rootReal, m) => blessProjectRoot(rootReal, m),
   touch: (rootReal, abs) => { try { projectsStore.touch(rootReal, Date.now()); } catch (_) {} },
   isGitRepoOf: projectIsGitRepo,

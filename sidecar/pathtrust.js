@@ -57,6 +57,13 @@
     const touch = typeof deps.touch === 'function' ? deps.touch : (() => {});
     const isGitRepoOf = typeof deps.isGitRepoOf === 'function' ? deps.isGitRepoOf : (async () => false);
     const workspaceRoot = deps.workspaceRoot ? P.resolve(String(deps.workspaceRoot)) : '';
+    // The user's home directory. It is where the ancestor walk stops: a
+    // project root is never the home directory, and the walk never goes
+    // above it. Measured 2026-10-25: C:\Users\Main is a git repository
+    // (the nexus home repo), so an unbounded walk from any path under it
+    // proposed the whole home directory as the root to bless - which would
+    // grant the station read and write over every file the user owns.
+    const homeRoot = deps.home ? P.resolve(String(deps.home)) : '';
     const now = typeof deps.now === 'function' ? deps.now : (() => null);
     const MAX_WALK = Number(deps.maxWalk) > 0 ? Number(deps.maxWalk) : 40;
 
@@ -65,6 +72,13 @@
       let a = P.resolve(abs), b = P.resolve(base);
       if (winish) { a = a.toLowerCase(); b = b.toLowerCase(); }
       return a === b || a.indexOf(b + P.sep) === 0;
+    }
+
+    function samePath(a, b) {
+      if (!a || !b) return false;
+      let x = P.resolve(a), y = P.resolve(b);
+      if (winish) { x = x.toLowerCase(); y = y.toLowerCase(); }
+      return x === y;
     }
     async function realpathOrSelf(p) { try { return await fsp.realpath(p); } catch (_) { return p; } }
     // realpath the DEEPEST existing ancestor of a (possibly not-yet-created) absolute path, so a symlink
@@ -99,12 +113,17 @@
 
     // propose the project root to bless for a referenced path: the nearest ancestor that is a git repo
     // (natural project boundary), else the directory containing the file. Bounded ancestor walk.
+    //
+    // The walk stops at the user's home directory. The home directory is not a project, and a repository
+    // sitting there is an accident of the machine rather than a boundary around the work. Blessing it
+    // would hand the station the whole home directory.
     async function detectRoot(absPath) {
       const abs = P.resolve(absPath);
       let dir = P.dirname(abs);
       try { const st = await fsp.stat(abs); if (st.isDirectory()) dir = abs; } catch (_) {}
       let cur = dir;
       for (let i = 0; i < MAX_WALK; i++) {
+        if (homeRoot && samePath(cur, homeRoot)) break;
         try { await fsp.stat(P.join(cur, '.git')); return cur; } catch (_) {}
         const parent = P.dirname(cur);
         if (!parent || parent === cur) break;

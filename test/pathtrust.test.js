@@ -28,6 +28,13 @@ function harness(opts) {
     bless: async (rootReal, meta) => { if (!blessOk) return false; roots.add(rootReal); blessed.push({ rootReal, meta }); return true; },
     touch: (rootReal, abs) => touched.push({ rootReal, abs }),
     isGitRepoOf: async (r) => { try { await fsp.stat(path.join(r, '.git')); return true; } catch (_) { return false; } },
+    // The ancestor walk stops at the home directory, and the home directory
+    // is not a project root. The test says so explicitly instead of relying
+    // on the machine it runs on: on a machine whose home directory happens
+    // to be a git repository - C:\Users\Main is, the nexus home repo - the
+    // walk would otherwise find that repository and propose the whole home
+    // directory as the root to bless.
+    home: ROOT,
     now: () => 1700000000000
   });
   return { pt, roots, touched, blessed, setBlessOk(v) { blessOk = v; } };
