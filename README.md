@@ -36,25 +36,26 @@ go through [SECURITY.md](SECURITY.md).
 ### What this line adds
 
 GitHub's default branch is still `feat/harness-backend` (upstream uses that name too).
-`main` is a new branch at `1830c2d6b` — the same commit this note is based on — created
-without a force-push. After this note is on `feat/harness-backend`, fast-forward `main`
-(`git push origin feat/harness-backend:main`) and set the default branch to `main` under
-**Settings → General**. Until that settings change, clones still land on
-`feat/harness-backend`. CI push gates listen to both branch names.
+`main` is a fast-forward of that branch at `5c9a9ed97`, created without a force-push.
+It does not contain this ownership note. After the note lands on
+`feat/harness-backend`, fast-forward again (`git push origin feat/harness-backend:main`)
+and set the default branch to `main` under **Settings → General**. Until that settings
+change, clones still land on `feat/harness-backend`. CI push gates listen to both names.
 
-Before this note, `feat/harness-backend` was upstream `9717b2899` (v0.14.0) plus one Derith commit:
+`feat/harness-backend` at `5c9a9ed97` is upstream `9717b2899` (v0.14.0) plus two Derith commits:
 
 | Path | What it is |
 | --- | --- |
-| [`coding-ecosystem/`](coding-ecosystem/README.md) | Opt-in three-seat coding crew on the Cursor SDK: cartographer, implementer, reviewer. Outside the sidecar install and outside `npm run test:fast`. |
+| [`coding-ecosystem/`](coding-ecosystem/README.md) | Opt-in three-seat coding crew on the Cursor SDK: cartographer, implementer, reviewer ([PR #3](https://github.com/DerithAI/starnet/pull/3)). Outside the sidecar install and outside `npm run test:fast`. |
+| [`sidecar/noetic_bridge.js`](sidecar/noetic_bridge.js) | Localhost station map (Ollama, LUMEN, LUMEN MEGA, Command Center, overseer, specialists, rooms). [`sidecar/noetic-bridge-load.js`](sidecar/noetic-bridge-load.js) loads it only when `STARNET_NOETIC_BRIDGE` is `1`, `true`, `yes`, or `on` (`SKYNET_NOETIC_BRIDGE` is the legacy alias). Default is off, and the default provider stays unchanged ([PR #4](https://github.com/DerithAI/starnet/pull/4)). |
 
-Other Derith work is still on side branches, kept when this line was synced to upstream v0.14.0 on 2026-10-25:
+Derith work that stayed off this tip after the 2026-10-25 sync to upstream v0.14.0:
 
 | Branch | What it holds |
 | --- | --- |
 | `feat/brief-verification-tools` | Zero-dependency `brief.js` and `verify-brief.js` ([PR #1](https://github.com/DerithAI/starnet/pull/1)). |
-| `backup/derith-pre-sync-2026-10-25` | Pre-sync snapshot, including `sidecar/noetic_bridge.js`. |
-| `cursor/derith-noetic-bridge-0da4` | NOETIC bridge config restored onto v0.14.0 ([PR #2](https://github.com/DerithAI/starnet/pull/2)). That file is absent from the default tip. Draft [PR #4](https://github.com/DerithAI/starnet/pull/4) loads it only when opted in. |
+| `backup/derith-pre-sync-2026-10-25` | Pre-sync snapshot of the line before it was reset onto upstream v0.14.0. |
+| `cursor/derith-noetic-bridge-0da4` | Earlier restore of the bridge config ([PR #2](https://github.com/DerithAI/starnet/pull/2)). The opt-in load on the default branch is [PR #4](https://github.com/DerithAI/starnet/pull/4). |
 
 ### Entrypoints
 
