@@ -1,0 +1,25 @@
+{
+  "name": "coding-ecosystem",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A three-seat coding crew on the Cursor SDK: cartographer, implementer, and reviewer.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "coding-ecosystem": "./dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  }
+}
