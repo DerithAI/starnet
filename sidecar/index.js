@@ -478,6 +478,15 @@ const SPECIALIST_CLASSES = (sharedSpecialties.BUILTINS || []).map(s => ({ id: s.
 // still wins over a set SKYNET_X — preserving each downstream var's exact empty-vs-unset semantics.
 function ENV(suffix) { const k = 'STARNET_' + suffix; return (k in process.env) ? process.env[k] : process.env['SKYNET_' + suffix]; }
 
+// NOETIC bridge config (localhost Ollama, LUMEN, LUMEN MEGA, Command Center).
+// Opt-in: STARNET_NOETIC_BRIDGE=1 (SKYNET_NOETIC_BRIDGE is the legacy alias; a set
+// STARNET_ name wins even when empty, same membership rule as ENV()). Off by default.
+// Does not assign a provider, model, or room, and does not start specialists.
+const { loadNoeticBridge, bootLine: noeticBridgeBootLine } = require('./noetic-bridge-load.js');
+let noeticBridge = null;
+try { noeticBridge = loadNoeticBridge({ env: process.env }); }
+catch (e) { console.warn('[noetic] STARNET_NOETIC_BRIDGE is set but the config did not load: ' + ((e && e.message) || e)); }
+
 const PORT = Number(ENV('PORT') || process.env.PORT) || 8787;
 const API_TOKEN = String(ENV('API_TOKEN') || crypto.randomBytes(32).toString('hex'));
 // DEV fast-path (the `npm run dev:seed` launcher sets this): when on, the served index.html carries a small
@@ -12745,6 +12754,7 @@ server.listen(PORT, '127.0.0.1', () => {
   if (DEV_MODE) console.log('     ⚡ DEV SEED MODE — onboarding auto-skipped; the page resumes the seeded agent.');
   console.log(bar + '\n');
   try { openaiCompat.announce(); } catch (_) {}   // one honest boot line: is the /v1 external-harness API live?
+  try { if (noeticBridge) console.log(noeticBridgeBootLine(noeticBridge)); } catch (_) {}   // opt-in: STARNET_NOETIC_BRIDGE=1 loads sidecar/noetic_bridge.js
   // STARNET REMOTE: reopen the phone door only if the Commander left Remote switched on
   try {
     if (remoteDevices.enabled()) remoteStartDoors().then(
