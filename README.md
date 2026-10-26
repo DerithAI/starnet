@@ -19,6 +19,55 @@
 
 </div>
 
+## This repository
+
+**[DerithAI/starnet](https://github.com/DerithAI/starnet)** is DerithAI's maintained line of StarNet.
+The history begins as a fork of [androoAGI/starnet](https://github.com/androoAGI/starnet).
+GitHub still records that parent until an owner detaches the fork (the API cannot; this
+repository is also over the 1 GB limit on **Settings → General → Danger Zone → Leave fork
+network**). The StarNet name, logo, and station artwork stay with Andrew Sims. MIT covers
+the code only — see [License](#license).
+
+The download badges above point at the upstream release train,
+[androoAGI/starnet-releases](https://github.com/androoAGI/starnet-releases/releases/latest).
+This repository does not publish its own desktop installers. Product security reports still
+go through [SECURITY.md](SECURITY.md).
+
+### What this line adds
+
+GitHub's default branch is still `feat/harness-backend` (upstream uses that name too).
+`main` is a new branch at `1830c2d6b` — the same commit this note is based on — created
+without a force-push. After this note is on `feat/harness-backend`, fast-forward `main`
+(`git push origin feat/harness-backend:main`) and set the default branch to `main` under
+**Settings → General**. Until that settings change, clones still land on
+`feat/harness-backend`. CI push gates listen to both branch names.
+
+Before this note, `feat/harness-backend` was upstream `9717b2899` (v0.14.0) plus one Derith commit:
+
+| Path | What it is |
+| --- | --- |
+| [`coding-ecosystem/`](coding-ecosystem/README.md) | Opt-in three-seat coding crew on the Cursor SDK: cartographer, implementer, reviewer. Outside the sidecar install and outside `npm run test:fast`. |
+
+Other Derith work is still on side branches, kept when this line was synced to upstream v0.14.0 on 2026-10-25:
+
+| Branch | What it holds |
+| --- | --- |
+| `feat/brief-verification-tools` | Zero-dependency `brief.js` and `verify-brief.js` ([PR #1](https://github.com/DerithAI/starnet/pull/1)). |
+| `backup/derith-pre-sync-2026-10-25` | Pre-sync snapshot, including `sidecar/noetic_bridge.js`. |
+| `cursor/derith-noetic-bridge-0da4` | NOETIC bridge config restored onto v0.14.0 ([PR #2](https://github.com/DerithAI/starnet/pull/2)). That file is absent from the default tip. Draft [PR #4](https://github.com/DerithAI/starnet/pull/4) loads it only when opted in. |
+
+### Entrypoints
+
+| You want | Start here |
+| --- | --- |
+| Station from source | `npm start` (or `node sidecar/index.js`), then <http://localhost:8787> |
+| Desktop shell | `npm ci`, then `npm run desktop:dev` ([Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)) |
+| Terminal next to a running app | `node bin/starnet.js` |
+| Derith coding crew | [`coding-ecosystem/`](coding-ecosystem/README.md): `npm ci`, `npm test`, then `node dist/src/cli.js` |
+| Docs map | [docs/INDEX.md](docs/INDEX.md) |
+| Merge gate | `npm run test:fast` |
+| Changes on this line | [Pull requests](https://github.com/DerithAI/starnet/pulls). GitHub issues are off (`has_issues` is false) while the fork link remains. |
+
 StarNet is a local-first desktop harness where you create AI agents, organize them into a
 pixel-art space station, and watch them perform real work with real models and tools. The
 station is not decoration — it is a projection of live runtime state, and the product contract
@@ -90,7 +139,7 @@ Requirements: Node.js 18+ (Node.js 22 matches CI), Git. Rust and the
 The sidecar uses Node core modules only, so it runs without installing anything:
 
 ```bash
-git clone https://github.com/androoAGI/starnet.git
+git clone https://github.com/DerithAI/starnet.git
 cd starnet
 node sidecar/index.js
 ```
