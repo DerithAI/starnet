@@ -18,8 +18,8 @@ assert.equal(lock.version, pkg.version, 'package-lock top-level version must agr
 assert.equal(lock.packages[''].version, pkg.version, 'package-lock root package version must agree');
 assert.equal(pkg.license, 'MIT');
 assert.equal(pkg.private, true, 'prevent accidental npm publication; GitHub visibility is independent');
-assert.match(pkg.repository.url, /github\.com\/androoAGI\/starnet(?:\.git)?$/,
-  'repository URL must point at the renamed public source repo (starnet)');
+assert.match(pkg.repository.url, /github\.com\/DerithAI\/starnet(?:\.git)?$/,
+  'repository URL must point at DerithAI/starnet, the maintained public source line');
 
 for (const required of [
   'LICENSE', 'README.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'SECURITY.md',
