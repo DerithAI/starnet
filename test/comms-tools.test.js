@@ -211,7 +211,8 @@ const TARGETS = [
   }
 
   /* ---- the gate: channel.send is capability- AND consent-gated ------------------------------------
-     This is the enforcement that makes the containment story real. channel.targets is read-only and free;
+     This is the enforcement that makes the containment story real. channel.targets sends nothing, but the list is
+     the Commander's chats, so a watched run confirms each listing and an unattended run is never offered it;
      channel.send asks every time until the Commander grants it, so an autonomous run cannot quietly message
      people off a stale grant. */
   {
@@ -221,26 +222,53 @@ const TARGETS = [
       listTargets: () => TARGETS,
       sendTo: () => { sends++; return Promise.resolve({ ok: true }); }
     }).register(reg);
+    /* channel.send DECLARES impact external-unknown (quick win 8 review): a real run's dispatch context always carries its
+       run authority (index.js dctx.authorize), and on a watched run that authority asks the exact per-call confirmation
+       (inputpolicy.js), whose yes covers this one send and skips the standing-grant broker. So the gate is driven here
+       the way a run drives it: with a watched run's authority whose confirmation answers `answer`. */
+    const { makeRunAuthority } = require('../sidecar/inputpolicy.js');
+    let asked = 0;
+    const watched = (answer) => makeRunAuthority({ surface: 'interactive', isTask: true, fullAccess: false, confirm: async () => { asked++; return answer; } }).authorize;
 
-    const noGrant = makeCapCtx({ agentId: 'agent', room: 'office', hasCompute: true, tools: [], approvalRules: {} }, { emit: () => {} });
+    const noGrant = makeCapCtx({ agentId: 'agent', room: 'office', hasCompute: true, tools: [], approvalRules: {} }, { emit: () => {}, authorize: watched('once') });
     const deniedCap = await reg.dispatch(call('channel.send', { target: '99001', text: 'hi' }), noGrant);
     A.ok(deniedCap.isError && /capability denied/.test(deniedCap.content), 'channel.send is dark without a placed dish (comms grant)');
     A.eq(sends, 0, 'capability denial sends nothing');
 
-    const readOnly = await reg.dispatch(call('channel.targets', {}),
-      makeCapCtx({ agentId: 'agent', room: 'office', hasCompute: true, tools: ['channel.targets'], approvalRules: {} }, { emit: () => {} }));
-    A.ok(!readOnly.isError, 'channel.targets needs no consent — listing who you could message is not an act');
+    /* channel.targets DECLARES external-unknown too, the lane it always fell into (B3, release 0.14.2: as impact none
+       every unattended, non-owner chat and tainted run holding the DISH could list the Commander's chats). It needs no
+       consent grant (requiresConsent false); the run authority is what asks. delegated-command-gap.test locks its
+       projection and taint on every lane. */
+    const targetsGrant = { agentId: 'agent', room: 'office', hasCompute: true, tools: ['channel.targets'], approvalRules: {} };
+    asked = 0;
+    const listed = await reg.dispatch(call('channel.targets', {}), makeCapCtx(targetsGrant, { emit: () => {}, authorize: watched('once') }));
+    A.ok(!listed.isError && asked === 1 && JSON.parse(listed.content).targets.length === TARGETS.length, 'a watched run lists the chats after one exact confirmation: ' + listed.content);
+    asked = 0;
+    const refusedList = await reg.dispatch(call('channel.targets', {}), makeCapCtx(targetsGrant, { emit: () => {}, authorize: watched('deny') }));
+    A.ok(refusedList.isError && /confirmation was denied/.test(refusedList.content) && asked === 1 && !/99001/.test(refusedList.content), 'a refused confirmation lists nothing: ' + refusedList.content);
+    const unattendedList = await reg.dispatch(call('channel.targets', {}),
+      makeCapCtx(targetsGrant, { emit: () => {}, authorize: makeRunAuthority({ surface: 'autonomous', isTask: true, fullAccess: false }).authorize }));
+    A.ok(unattendedList.isError && /user-control denied/.test(unattendedList.content) && !/99001/.test(unattendedList.content), 'an unattended ASK run cannot list them: ' + unattendedList.content);
+    const bareList = await reg.dispatch(call('channel.targets', {}), makeCapCtx(targetsGrant, { emit: () => {} }));
+    A.ok(bareList.isError && /no run authority/.test(bareList.content), 'a dispatch with no run authority lists nothing: ' + bareList.content);
 
     const grant = { agentId: 'agent', room: 'office', hasCompute: true, tools: ['channel.send'], approvalRules: {} };
+    const noAuthority = await reg.dispatch(call('channel.send', { target: '99001', text: 'hi' }), makeCapCtx(grant, { emit: () => {}, consent: async () => ({ allow: true }) }));
+    A.ok(noAuthority.isError && /no run authority/.test(noAuthority.content), 'a dispatch with no run authority at all is refused, whatever a consent callback says');
+    asked = 0;
     const deniedConsent = await reg.dispatch(call('channel.send', { target: '99001', text: 'hi' }),
-      makeCapCtx(grant, { emit: () => {}, consent: async () => ({ allow: false, reason: 'no' }) }));
-    A.ok(deniedConsent.isError && /consent denied/.test(deniedConsent.content), 'messaging a real human asks first');
-    A.eq(sends, 0, 'consent denial sends nothing');
+      makeCapCtx(grant, { emit: () => {}, authorize: watched('deny') }));
+    A.ok(deniedConsent.isError && /confirmation was denied/.test(deniedConsent.content) && asked === 1, 'messaging a real human asks first: ' + deniedConsent.content);
+    A.eq(sends, 0, 'a refused confirmation sends nothing');
 
+    asked = 0;
+    const always = watched('always');
     const allowed = await reg.dispatch(call('channel.send', { target: '99001', text: 'hi' }),
-      makeCapCtx(grant, { emit: () => {}, consent: async () => ({ allow: true }) }));
-    A.ok(!allowed.isError, 'an approved send goes out');
+      makeCapCtx(grant, { emit: () => {}, authorize: always, consent: async () => ({ allow: false, reason: 'the standing-grant broker is never asked' }) }));
+    A.ok(!allowed.isError, 'an approved send goes out: ' + allowed.content);
     A.eq(sends, 1, 'and reaches the transport exactly once');
+    await reg.dispatch(call('channel.send', { target: '99001', text: 'again' }), makeCapCtx(grant, { emit: () => {}, authorize: always }));
+    A.eq(asked, 2, 'an "always" answer covers that one send: the next send asks again');
   }
 
   A.report('comms-tools');

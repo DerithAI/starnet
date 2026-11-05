@@ -181,16 +181,36 @@ async function run(provider, extra) {
     A.eq(p.calls.length, 4, 'every attempt went out');
   }
 
-  // ---- 11. a refused / unresolvable endpoint retries as before but reads 'unreachable', never '(timeout)' (bug 8873fd77) ----
+  // ---- 11. a refused / unresolvable endpoint reads 'unreachable', never '(timeout)' (bug 8873fd77), and since quick win 15
+  //      (2026-10-27) it IS its own class: ONE retry rides out a blip, a second refusal ends the turn naming the host — at an
+  //      address on this computer or this network (0.14.2 release review, B5); a public one rides the ladder (below) ----
   {
-    const fetchFailed = code => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ' + code + ' 127.0.0.1:11434'), { code }) });
+    // the address rides on the cause as undici puts it there (cause.address); the class reads where it is from that
+    const fetchFailed = code => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ' + code + ' 127.0.0.1:11434'), { code, address: '127.0.0.1', port: 11434 }) });
     for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']) {
-      const p = scripted(n => (n <= 2 ? { throw: fetchFailed(code) } : { events: answer('ok') }));
+      const p = scripted(n => (n <= 1 ? { throw: fetchFailed(code) } : { events: answer('ok') }));
       const { res, retries, recov, dropped } = await run(p);
-      A.eq(res.reason, 'done', code + ': the ladder still rides it out');
-      A.eq(retries.map(r => r.reason), ['unreachable', 'unreachable'], code + ': the retry line says nothing answered there, not a slow provider');
+      A.eq(res.reason, 'done', code + ': one retry still rides out a blip');
+      A.eq(retries.map(r => r.reason), ['unreachable'], code + ': the retry line says nothing answered there, not a slow provider');
       A.eq(dropped.length, 0, code + ': the payload passes the event contract');
-      A.ok(recov.every(r => r.reason === 'timeout'), code + ': the retry class itself (and the recovery record) is unchanged');
+      A.ok(recov.length > 0 && recov.every(r => r.reason === 'unreachable'), code + ': the retry class (and the recovery record) is unreachable');
+      const twice = scripted(n => (n <= 2 ? { throw: fetchFailed(code) } : { events: answer('ok') }));
+      const second = await run(twice);
+      A.eq(second.res.reason, 'error', code + ': a second refusal ends the turn (no five more rungs)');
+      A.eq(twice.calls.length, 2, code + ': two requests in all');
+      A.ok(second.seq.some(e => e.name === 'agent.run.error' && /127\.0\.0\.1/.test(e.payload.message)), code + ': the end names the host');
+    }
+    // a PUBLIC address (a Wi-Fi drop, a VPN reconnect, sleep/wake): the retry line still says unreachable, but the ladder is
+    // the timeout one it rode in 0.14.1 — three failures in a row are waited out, "n/6", never "1/1"
+    const publicFailed = code => Object.assign(new TypeError('fetch failed'), { cause: code === 'ECONNREFUSED'
+      ? Object.assign(new Error('connect ECONNREFUSED 104.18.1.1:443'), { code, address: '104.18.1.1', port: 443 })
+      : Object.assign(new Error('getaddrinfo ' + code + ' api.example.com'), { code, hostname: 'api.example.com' }) });
+    for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']) {
+      const p = scripted(n => (n <= 3 ? { throw: publicFailed(code) } : { events: answer('ok') }));
+      const { res, retries, dropped } = await run(p);
+      A.eq(res.reason, 'done', code + ' at a public address: the ladder rides out three failures');
+      A.eq(retries.map(r => [r.reason, r.maxAttempts, r.delayMs]), [400, 1200, 4000].map(ms => ['unreachable', Policy.RETRY_DELAYS_MS.length, ms]), code + ' at a public address: unreachable on the ladder\'s own rungs');
+      A.eq(dropped.length, 0, code + ' at a public address: the payload passes the event contract');
     }
     for (const code of ['ETIMEDOUT', 'ECONNRESET']) {
       const p = scripted(n => (n === 1 ? { throw: fetchFailed(code) } : { events: answer('ok') }));

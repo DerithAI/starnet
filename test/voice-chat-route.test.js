@@ -8,6 +8,7 @@
    3) SOURCE GUARD (frontend): COMMS marks a spoken reply (never live-call delegations), the notice reasons match
       the planner's, and the Settings row saves on the change. The live proof is test/voice-chat-model.e2e.test.js. */
 'use strict';
+const { readSidecarSource, sidecarFunctionSource } = require('./helpers/source');
 const fs = require('fs');
 const path = require('path');
 const A = require('./_assert.js');
@@ -73,11 +74,14 @@ const fits = { credentialOk: true, contextLimit: 200000, efforts: null };
 
 // ---------- 2. host source guards ----------
 {
-  const idx = read('sidecar/index.js');
+  const idx = readSidecarSource();
   A.ok(/require\('\.\/voice-chat-route\.js'\)/.test(idx), 'host requires the planner');
   A.ok(/exact: '\/api\/voice\/chat-model', h: handleVoiceChatStatus/.test(idx) && /exact: '\/api\/voice\/chat-model', h: handleVoiceChatSet/.test(idx), 'GET + POST routes registered');
   A.ok(/VOICE_CHAT_FILE = path\.join\(WORKSPACES, 'voice-chat\.json'\)/.test(idx) && /makeDomainStore\(\{\s*fs, path, file: VOICE_CHAT_FILE/.test(idx), 'persisted through the durable domain store');
-  const core = idx.slice(idx.indexOf('async function runOnceCore('), idx.indexOf('const { key, system: rawSystem, messages = [], agentId = \'agent\', signal, runId } = o;'));
+  // the route locals are destructured here (messages became a `let` beside it: the run host expands attachments later)
+  const routeLocals = idx.indexOf('const { key, system: rawSystem, agentId = \'agent\', signal, runId } = o;');
+  A.ok(routeLocals > idx.indexOf('async function runOnceCore('), 'runOnceCore destructures its route locals');
+  const core = idx.slice(idx.indexOf('async function runOnceCore('), routeLocals);
   A.ok(/o\.voiceTurn === true && !o\.voiceRoute && !o\.recovery && !o\.internal/.test(core) && /o = await applyVoiceTurnRoute\(o\)/.test(core), 'runOnceCore resolves the route once, before any route local is read');
   A.ok(/runStartExtra\.voiceRoute = \{/.test(idx), 'the decision rides agent.run.start');
   A.ok(/name === 'agent\.run\.start' && payload && payload\.runId === runId && \([^)]*runStartExtra\.voiceRoute\)\) payload = Object\.assign\(\{\}, payload, runStartExtra\)/.test(idx),
@@ -107,4 +111,39 @@ const fits = { credentialOk: true, contextLimit: 200000, efforts: null };
   A.ok(/modelSel\.addEventListener\('change', post\)/.test(ui) && /effortSel\.addEventListener\('change', post\)/.test(ui), 'saves on the change');
 }
 
-A.report('voice-chat-route');
+// ---------- 4. the turn is sized as the provider will get it (review round 2, F1) ----------
+// The attachment references expand later, in runOnceCore (expandForRun). Sized unexpanded, a 94 KB attached file counted
+// as 8 tokens instead of ~23,700 and a large turn was routed to a small voice model. The host's own applyVoiceTurnRoute
+// runs here over stubbed provider plumbing and the REAL attachments module and context estimator.
+(async () => {
+  const apply = sidecarFunctionSource('applyVoiceTurnRoute');
+  A.ok(apply.length > 0 && apply.length < 9000, 'applyVoiceTurnRoute sliced (' + apply.length + ' chars)');
+  A.ok(/attachments\.expandForRun\(/.test(apply) && /est\.estimateMessages\(sized\)/.test(apply), 'the route estimate expands the attachments before it counts them');
+  const os = require('os'), fsp = require('fs/promises'), crypto = require('crypto');
+  const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-voice-size-'));
+  try {
+    const jail = require('../sidecar/tools/builtin/fs.js').makeFsTools({ fsp, pathMod: path, root: WS })._internals;
+    const attachments = require('../sidecar/attachments.js')({ fsp, path, crypto, workspaces: WS, resolveInside: (a, r) => jail.resolveInside(a, r) });
+    const saved = await attachments.saveAttachment('agent', 'notes.md', 'data:text/markdown;base64,' + Buffer.from('lorem ipsum dolor sit amet '.repeat(3500)).toString('base64'));
+    const { makeContext, RUN_CONTEXT_DEFAULTS } = require('../sidecar/context.js');
+    // this row BUILDS ITS OWN SCOPE for the sliced applyVoiceTurnRoute: every free name it reads must be listed here
+    // (merge note: once agent/run-wire-resolver-1028 lands, RunWire joins this scope)
+    const scope = {
+      effectiveVoiceChat: () => ({ provider: 'openrouter', model: 'x/fast-voice', reasoningEffort: '' }), agentRoster: new Map(),
+      normalizeProvider: p => p || 'openrouter', chatModelId: (p, m) => m, providerUsesCodex: () => false, CODEX_DEFAULT_MODEL: 'c', CRON_DEFAULT_MODEL: 'd',
+      providerRuntimeKey: () => 'k', providerRuntimeBaseUrl: () => '', getProviderProfile: () => ({}), providerHasCredential: () => true,
+      voiceCatalogEntry: async (prov, model) => (model === 'x/fast-voice' ? { id: model, context_length: 40000 } : null), promptTierCeiling: () => 0,
+      makeContext, RUN_CONTEXT_DEFAULTS, attachments, voiceChatRoute: V, console: { warn: () => {} }
+    };
+    const run = new Function(...Object.keys(scope), apply + '\nreturn applyVoiceTurnRoute;')(...Object.values(scope));
+    const base = { agentId: 'agent', provider: 'openrouter', model: 'anthropic/claude-opus-4.8', system: 'persona' };
+    const small = await run(Object.assign({}, base, { messages: [{ role: 'user', content: 'hello there' }] }));
+    A.eq(small.voiceRoute && small.voiceRoute.used, true, 'a small spoken turn takes the voice model');
+    const big = await run(Object.assign({}, base, { messages: [{ role: 'user', content: 'summarize this', attachments: [{ id: saved.id, name: saved.name, path: saved.path, mediaType: saved.mediaType, kind: saved.kind }] }] }));
+    A.eq([big.voiceRoute && big.voiceRoute.used, big.voiceRoute && big.voiceRoute.reason], [false, 'too_large'], 'a turn carrying a 94 KB attached file stays on the agent\'s model (too_large)');
+    A.ok(Array.isArray(big.messages[0].attachments), 'the turn itself still carries its references (runOnceCore expands them once its root is final)');
+  } finally {
+    fs.rmSync(WS, { recursive: true, force: true });
+  }
+  A.report('voice-chat-route');
+})().catch(e => { console.error(e); process.exit(1); });

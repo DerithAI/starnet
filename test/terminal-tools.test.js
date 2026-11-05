@@ -41,7 +41,8 @@ const { makeTerminalTools } = require('../sidecar/tools/builtin/terminal.js');
   const result = await start.run({ name: 'repl', command: 'python -i', cols: 100, rows: 40 }, ctx);
   A.ok(/Started as term_1/.test(result.content), 'start returns the real manager session identity');
   A.eq(checkpoints, 1, 'terminal start checkpoints before process creation');
-  A.eq(calls.find(x => x[0] === 'start')[1].cwd, workspace, 'terminal starts in the agent-owned workspace');
+  // the PTY starts in the REAL folder its proof saw (macOS tmpdir is /var -> /private/var), so compare real paths
+  A.eq(calls.find(x => x[0] === 'start')[1].cwd, fs.realpathSync(workspace), 'terminal starts in the agent-owned workspace');
   A.eq(calls.find(x => x[0] === 'start')[1].env, { PATH: 'safe-path' }, 'host-sanitized child environment is passed to PTY spawn');
 
   let refused = false;
@@ -60,6 +61,57 @@ const { makeTerminalTools } = require('../sidecar/tools/builtin/terminal.js');
   A.ok(/resulting state is not assumed/.test(interrupt.content), 'interrupt copy does not falsely claim the process stopped');
   const stop = family.tools.find(t => t.name === 'terminal.stop').run({ session: 'repl' }, ctx);
   A.ok(/awaiting its exit event/.test(stop.content), 'stop copy waits for observed exit truth');
+
+  /* REVIEW ROUND 2. (m-term-junction) a junction INSIDE the private workspace named as the cwd passed every lexical check
+     and opened the PTY outside; the real cwd must be inside the real workspace (or the real, still-approved root).
+     (m-rootApproved) the host's approval check is an exact key match, so it is asked with the root's REAL path: a root
+     spelled with a trailing separator is the same approved folder. */
+  {
+    const RunPaths = require('../sidecar/run-paths.js');
+    const ext = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-terminal-ext-'));   // beside the workspaces root, never in it
+    const outside = path.join(ext, 'outside'), proj = path.join(ext, 'proj');
+    fs.mkdirSync(outside, { recursive: true }); fs.mkdirSync(path.join(proj, 'src'), { recursive: true });
+    let planted = false;
+    try { fs.symlinkSync(outside, path.join(workspace, 'jx'), process.platform === 'win32' ? 'junction' : 'dir'); planted = true; }
+    catch (e) { console.log('[skip] could not plant a junction: ' + e.message); }
+    const approved = fs.realpathSync(proj);
+    const fam2 = makeTerminalTools({ manager, environment, fs, pathMod: path, root, platform: process.platform, envFor: () => ({}), rootApproved: (r) => r === approved });
+    const start2 = fam2.tools.find(t => t.name === 'terminal.start');
+    const resolver = RunPaths.makeResolver({ pathMod: path, root, environment: Object.assign({}, environment, { workspaceRoot: () => workspace }) });
+    const runIn = (projectRoot) => ({ agentId: 'a1', surface: 'interactive', paths: RunPaths.makeRunPaths(resolver, { agentId: 'a1', projectRoot }) });
+    const before = calls.filter(x => x[0] === 'start').length;
+    if (planted) {
+      let why = '';
+      try { await start2.run({ name: 'jx', command: 'echo hi', cwd: 'jx' }, runIn('')); } catch (e) { why = e.message; }
+      A.ok(/outside your workspace by its real path/.test(why), 'a junction in the workspace pointing out never becomes the terminal folder (' + why + ')');
+      A.eq(calls.filter(x => x[0] === 'start').length, before, 'and nothing reached the manager');
+    }
+    let spelled = null;
+    try { spelled = await start2.run({ name: 'p1', command: 'echo hi', cwd: 'src' }, runIn(proj + path.sep)); } catch (e) { spelled = { content: 'refused: ' + e.message }; }
+    A.ok(/Started/.test(spelled.content), 'a still-approved root spelled with a trailing separator is still approved (' + spelled.content.slice(0, 80) + ')');
+    A.eq(calls.filter(x => x[0] === 'start').pop()[1].cwd, path.join(approved, 'src'), 'and the terminal opens in its real folder');
+    /* REVIEW ROUND 3 (minor-5): a cwd of ".git" inside the project or the private workspace's repo opened the PTY there.
+       The real folder meets the floor; the remote-owner path keeps its own authority. */
+    fs.mkdirSync(path.join(proj, '.git', 'hooks'), { recursive: true });
+    fs.mkdirSync(path.join(workspace, 'repo', '.git'), { recursive: true });
+    const floorBefore = calls.filter(x => x[0] === 'start').length;
+    for (const [label, cwd, ctx2] of [['the project .git', '.git', runIn(proj)], ['a folder inside the project .git', '.git/hooks', runIn(proj)],
+      ['the private workspace repo .git', 'repo/.git', runIn('')], ['the project .git by a case variant', '.GIT', runIn(proj)]]) {
+      if (cwd === '.GIT' && process.platform !== 'win32') continue;
+      let why = '';
+      try { await start2.run({ name: 'g' + floorBefore, command: 'echo hi', cwd }, ctx2); why = 'STARTED'; } catch (e) { why = e.message; }
+      A.ok(/protected folder/.test(why), 'terminal.start in ' + label + ' is refused (' + why + ')');
+    }
+    A.eq(calls.filter(x => x[0] === 'start').length, floorBefore, 'no protected folder reached the manager');
+    let repoOk = null;
+    try { repoOk = await start2.run({ name: 'r1', command: 'echo hi', cwd: 'repo' }, runIn('')); } catch (e) { repoOk = { content: 'refused: ' + e.message }; }
+    A.ok(/Started/.test(repoOk.content), 'the repo folder itself still opens a terminal (' + repoOk.content.slice(0, 80) + ')');
+    if (planted) fs.unlinkSync(path.join(workspace, 'jx'));
+    fs.rmSync(ext, { recursive: true, force: true });
+    // and the run host hands every run's terminal tools that live check (sliced to runOnceCore, where the tools are built)
+    const core = require('./helpers/source').sidecarTopLevelFunction('runOnceCore');
+    A.ok(core.length > 0 && /makeTerminalTools\(\{[\s\S]{0,1500}?rootApproved: \(root\) => isBlessedRoot\(root\)/.test(core), 'runOnceCore wires terminal.start to the live approval check');
+  }
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   A.report('terminal-tools');

@@ -13,6 +13,7 @@
         says where they DO run.
    Fakes only: no network, no sidecar boot (requiring sidecar/index.js would boot a real one). */
 'use strict';
+const { readSidecarSource } = require('./helpers/source');
 const fs = require('fs');
 const path = require('path');
 const A = require('./_assert.js');
@@ -158,9 +159,11 @@ const settle = () => new Promise(r => setTimeout(r, 10));
 
   // ---- 5. wiring: every channel control-surface hub carries the registry + the Commander's names ----
   {
-    const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+    const idx = readSidecarSource();
     const starts = [];
-    const re = /makeChannelHub\(\{|wireChannel\([^\n]*\{\s*\n\s*hub: \{/g;
+    // a construction (`= makeChannelHub({` / `return makeChannelHub({`), never the signature quoted in hub.js's header;
+    // a registry hub's wireChannel deps may lead with the host-path scrub (`outbound: scrubOutbound,`, run-paths lane)
+    const re = /(?:=|\breturn)\s*makeChannelHub\(\{|wireChannel\([^\n]*\{\s*\n(?:\s*outbound: [\w$.]+,[^\n]*\n)?\s*hub: \{/g;
     let m;
     while ((m = re.exec(idx))) starts.push(m.index);
     // every messenger hub — not the sample-crate route or a line trigger, which have no chat senders to type one

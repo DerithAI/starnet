@@ -128,6 +128,24 @@
     const id = String(model || '');
     if (numCtx > (m.get(id) || 0)) m.set(id, numCtx);
   }
+  // ...except when holding that window is what is hurting: a model /api/ps shows spilling to the CPU is let back down
+  // to a smaller window (a 4B model kept at 64k for 16 h sat 50% on the CPU and timed out on a 17k prompt, 10-25).
+  function lowerOllamaWindow(endpoint, model, numCtx) {
+    const m = ollamaWindows.get(endpoint);
+    const id = String(model || '');
+    if (m && numCtx < (m.get(id) || 0)) m.set(id, numCtx);
+  }
+  // The window Ollama's own exceed_context_size refusal proved a task needs, per model (endpoint -> model -> num_ctx).
+  // The step-down sizes from the chars/4 estimate, which a dense prompt (digit-heavy logs, CJK) beats: without this
+  // record every task turn stepped down, was refused and resized back up — two reloads and a lost KV cache a turn.
+  const ollamaProven = new Map();
+  function provenOllamaWindow(endpoint, model) { const m = ollamaProven.get(endpoint); return (m && m.get(String(model || ''))) || 0; }
+  function noteProvenOllamaWindow(endpoint, model, numCtx) {
+    let m = ollamaProven.get(endpoint);
+    if (!m) { m = new Map(); ollamaProven.set(endpoint, m); }
+    const id = String(model || '');
+    if (numCtx > (m.get(id) || 0)) m.set(id, numCtx);
+  }
   /* The native Ollama calls this PROCESS has open, per server (native root -> Set of { background }): open from the moment
      a stream starts until it ends. A local Ollama often serves one request at a time, and the host's own background calls
      (quest refresh at boot, post-task reflection) run with no Commander watching; a Commander turn's wait note says how
@@ -676,14 +694,14 @@
       const sent = supportsImages(req.model) === false ? provider.withoutImageParts(req.messages || [], req.model) : (req.messages || []);
       // ONE pre-send normalization (provider.js prepareWireMessages) — for this wire, exactly repairToolPairs.
       const prepared = provider.prepareWireMessages(sent, 'chat');
-      // Keep the profile's SYSTEM projection even after nativeWire falls back to /v1. Do not
-      // infer this policy from a model name or change generic/hosted Chat Completions requests.
-      // Every other route: ONE role projection (provider.chatRoleProjection) — a Claude model keeps its continuation
-      // placement; any other model gets the host notes (<run_context>, recall, the earlier-conversation summary) as the
-      // fenced leading text of the newest user message, never as a system message after index 0 (#102-class refusals).
-      const messages = opts.nativeOllama === true && ollamaNative
-        ? ollamaNative.leadingSystemMessages(prepared)
-        : provider.chatRoleProjection(prepared, req.model);
+      // ONE role projection (provider.projectRoles): the Ollama profile (native wire and its /v1 fallback alike) and every
+      // non-Claude model get the strict 'chat' shape — one leading system message, the host notes and the loop's mid-run
+      // host messages as fenced user-side text, alternating turns ending on a user or tool turn (#102-class refusals); a
+      // Claude model keeps its continuation placement ('native'). A template this endpoint + model proved has no system
+      // role (requestWithRetry, template_refusal) gets 'chat-nosystem'.
+      const policy = provider.systemlessTemplate(baseUrl, req.model) ? 'chat-nosystem'
+        : (opts.nativeOllama === true ? 'chat' : provider.chatRolePolicy(req.model));
+      const messages = provider.projectRoles(prepared, policy);
       const body = { model: req.model, messages, stream: true };
       if (includeUsage && !skip('stream_options')) body.stream_options = { include_usage: true };
       const explicitMax = Math.floor(Number(req.max_tokens || req.maxTokens || 0)) || 0;
@@ -742,9 +760,23 @@
         const need = ollamaNative.estimateTokens(body) + (Number(body.max_tokens) || 0);
         // First use of this model in this process: if Ollama already holds it loaded at a usable window (StarNet was
         // restarted inside the keep-alive, or the Commander loaded it larger), keep that window rather than reload.
-        if (!pinnedCtx && !ollamaWindow(nativeBase, req.model)) {
-          const loaded = ollamaNative.loadedWindow(await ollamaStatus(), req.model);
-          if (loaded > 0 && loaded <= (usableWindow(modelMax) || ctxCeiling)) noteOllamaWindow(nativeBase, req.model, loaded);
+        // A TASK (it carries tools: the long prompt that times out) keeps a window bigger than it needs only while the model
+        // fits the GPU: one /api/ps shows spilling to the CPU is not adopted, and a held one steps back down to the
+        // smallest rung that holds the prompt. A greeting or background call rides what is held (its prompt is short, so a
+        // spill costs it little, and stepping down for it would reload the model twice: down now, up for the next task).
+        if (!pinnedCtx) {
+          const held = ollamaWindow(nativeBase, req.model);
+          const task = !!(req.tools && req.tools.length);
+          // ...never below a window Ollama has already refused to fit a task in (it counts tokens; the estimate guesses)
+          const fits = task ? Math.max(ollamaNative.pickNumCtx(need, { ceiling: ctxCeiling, modelMax }), provenOllamaWindow(nativeBase, req.model)) : Infinity;
+          if (!held) {
+            const ps = await ollamaStatus();
+            const loaded = ollamaNative.loadedWindow(ps, req.model);
+            if (loaded > 0 && loaded <= (usableWindow(modelMax) || ctxCeiling)
+              && !(loaded > fits && ollamaNative.spillsToCpu(ps, req.model))) noteOllamaWindow(nativeBase, req.model, loaded);
+          } else if (held > fits && ollamaNative.spillsToCpu(await ollamaStatus(), req.model)) {
+            lowerOllamaWindow(nativeBase, req.model, fits);
+          }
         }
         /* BACKGROUND CALLS DO NOT THINK (measured on qwen3:8b, 2026-09-30). After a task the host fires its own
            housekeeping calls (reflection, profile update): no tools, and not a Commander turn (isTask is unset; a
@@ -756,7 +788,11 @@
         // A background call that chose no effort of its own must not inherit the run's default (a CUSTOM endpoint on
         // Ollama carries CUSTOM's 'medium', which maps to think:true). An explicit aux effort still rides.
         if (background && !req.reasoningEffort && facts && facts.supportsReasoning === true) delete body.reasoning_effort;
-        const think =(background && facts && facts.supportsReasoning === true) ? false : undefined;
+        /* REASONING OFF IS SAID OUT LOUD (#116). wireEffort folds 'none' to "send nothing" (the /v1 wire's off), so with
+           Reasoning OFF — Ollama's own default — the native body carried no `think` and qwen3 thought on every Commander
+           turn and task (slow on a CPU). Native Ollama's off is think:false, told only to a model that can think. */
+        const reasoningOff = canonicalEffort(requestedEffort) === 'none';
+        const think =((background || reasoningOff) && facts && facts.supportsReasoning === true) ? false : undefined;
         wire = { native: true, modelMax, think, openCall: openCalls.get(req) || null, numCtx: ollamaNative.pickNumCtx(need, { pinned: pinnedCtx, ceiling: ctxCeiling, modelMax, floor: ollamaWindow(nativeBase, req.model) }) };
       }
       // WAIT TRUTH (#99): while the native request is unanswered, its probe's notes are yielded as { type:'waiting' }
@@ -966,7 +1002,7 @@
       // `waited` is the backoff actually spent; the exhaustion marker reports it so the loop counts it, not repeats it.
       const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
       let waited = 0;
-      let healedEffort = false, healedReasoning = false;   // each request self-heals each of these at most once
+      let healedEffort = false, healedReasoning = false, healedTemplate = false;   // each request self-heals each of these at most once
       for (let attempt = 0; ; attempt++) {
         if (signal && signal.aborted) throw abortError();
         let res;
@@ -1002,8 +1038,9 @@
           }
           // a TLS rejection, a crash in our own request code or a loaded model's silence (above) cannot heal by re-sending:
           // fail fast, unmarked
-          if (!classifyApiError(e, { model: body.model }).retryable) throw e;
-          if (attempt < retries) { waited += RETRY_DELAYS[attempt]; await delay(RETRY_DELAYS[attempt], signal); continue; }
+          const failure = classifyApiError(e, { model: body.model });   // unreachable: one retry (its retryBudget), then name the host
+          if (!failure.retryable) throw e;
+          if (attempt < provider.runtime.retryLimit(failure, retries)) { const wait = provider.runtime.retryDelay(failure, attempt, RETRY_DELAYS); waited += wait; await delay(wait, signal); continue; }
           throw provider.runtime.markPreStreamRetriesExhausted(e, { attempts: attempt + 1, waitedMs: waited });
         } finally {
           guard.disarm();
@@ -1011,6 +1048,7 @@
         }
         if (res.ok && res.body) {
           if (native) noteOllamaWindow(nativeBase, body.model, wire.numCtx);
+          if (healedTemplate) provider.noteSystemlessTemplate(baseUrl, body.model);   // proven: this template takes no system role
           return res;
         }
         const upstreamError = await responseErrorDetail(res, signal, native ? nativeBase + '/api/chat' : baseUrl + chatPath);
@@ -1025,12 +1063,23 @@
           const over = ollamaNative.exceedFrom(detail);
           if (over && !pinnedCtx) {
             const next = ollamaNative.pickNumCtx(over.promptTokens + (Number(body.max_tokens) || 0), { ceiling: ctxCeiling, modelMax: wire.modelMax, floor: wire.numCtx + 1 });
-            if (next > wire.numCtx) { wire.numCtx = next; attempt--; continue; }
+            if (next > wire.numCtx) { noteProvenOllamaWindow(nativeBase, body.model, next); wire.numCtx = next; attempt--; continue; }
           }
           // A model without a thinking mode refuses `think`; the request means the same without it.
           if (body.reasoning_effort !== undefined && /does not support thinking/i.test(String(detail))) {
             delete body.reasoning_effort; rememberDrop(body.model, 'reasoning_effort'); attempt--; continue;
           }
+        }
+        /* THE MODEL'S CHAT TEMPLATE REFUSED THE SHAPE (errorClass template_refusal, #102). The 'chat' projection already
+           sends what a strict template asks for, so what is left is a template with no system role at all (Gemma: "System
+           role not supported"). Resend ONCE with the system message folded into the first user turn, the way such a
+           template folds it itself (projectRoles 'chat-nosystem'); when that goes through, this endpoint + model keeps
+           that shape (above). A refusal of that too goes on as template_refusal, naming the template — never resent as a
+           server error. */
+        if (!healedTemplate && errorClass.isTemplateRefusal(detail) && Array.isArray(body.messages) && body.messages.some(m => m && m.role === 'system')) {
+          healedTemplate = true;
+          body.messages = provider.projectRoles(body.messages, 'chat-nosystem');
+          attempt--; continue;
         }
         // The endpoint NAMED the levels this model takes (or, for gpt-5.6 with tools on Chat Completions, that only
         // 'none' works): learn them for the model and resend a level it accepts. Checked BEFORE the generic drop
@@ -1088,6 +1137,11 @@
            errorClass so. */
         if (upstreamError.body) { err.body = upstreamError.body; err.ownMessage = true; }
         localMemoryError(err);
+        if (errorClass.isTemplateRefusal(detail)) {
+          // the template_refusal sentence names the host and says whether the systemless shape was refused too
+          provider.runtime.stampRequestHost(err, native ? nativeBase : baseUrl);
+          err.templateRetried = healedTemplate || !(Array.isArray(body.messages) && body.messages.some(m => m && m.role === 'system'));
+        }
         const cls = classifyApiError(err, { model: body.model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }

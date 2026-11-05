@@ -22,7 +22,7 @@ const SILENT_CATCH = /\.catch\(\s*\(?\s*_?\w*\s*\)?\s*=>\s*(\{\s*\}|null|undefin
 const BASELINE = {
   'acp/serve.js': 1,                  // run-cancel relay on an already-torn-down session
   'channels/hub.js': 3,               // reaction cosmetics + message delete (documented best-effort)
-  'index.js': 11,                     // shutdown reaps, inputGuard diagnostics, value defaults, 1 comment
+  'index.js': 10,                     // shutdown reaps, inputGuard diagnostics, value defaults, 1 comment (readChannelUpload's stat default left with the egress reader, 2026-10-28)
   'local-voice.js': 2,                // ASR/TTS serialization tails (the queued run carries its own errors)
   'loopjob-driver.js': 1,             // snapshot degrade -> loopcheck already treats null as "cannot prove"
   'lsp-manager.js': 3,                // idle-close / pid-pin / closeAll teardown
@@ -157,7 +157,7 @@ const SYNC_BASELINE = {
   'halt.js': 1,
   'harness-import.js': 1,
   'http-body.js': 2,
-  'index.js': 349,
+  'index.js': 347,
   'ledger.js': 1,
   'logbound.js': 2,
   'loop.js': 2,   // AUDITED — 2 left: aborted sleep() during retry backoff (x2)
@@ -170,7 +170,7 @@ const SYNC_BASELINE = {
   'mcp/translate.js': 1,
   'mcp/transport.http.js': 5,
   'mcp/transport.stdio.js': 5,
-  'media-service.js': 21,
+  'media-service.js': 15,
   'native-stt.js': 1,
   'nightshift-driver.js': 5,
   'openai-compat.js': 18,
@@ -196,7 +196,7 @@ const SYNC_BASELINE = {
   'skillreview.js': 2,
   'skills/catalog.js': 1,
   'skills/metrics.js': 1,
-  'skills/package.js': 3,
+  'skills/package.js': 1,
   'skills/prefs.js': 2,
   'skills/registry.js': 1,
   'skillstore.js': 2,   // AUDITED — 2 left: digest stamp, history view projection (a failed load is now reported + refuses writes)
@@ -210,11 +210,11 @@ const SYNC_BASELINE = {
   'tools/builtin/code.js': 3,
   'tools/builtin/comms.js': 2,
   'tools/builtin/connectors.js': 2,
-  'tools/builtin/fs.js': 3,
+  'tools/builtin/fs.js': 2,
   'tools/builtin/notebook.js': 1,
   'tools/builtin/orchestration.js': 8,
   'tools/builtin/quests.js': 1,
-  'tools/builtin/shell.js': 12,
+  'tools/builtin/shell.js': 10,
   'tools/builtin/skills.js': 4,
   'tools/builtin/spotify.js': 1,
   'tools/builtin/terminal.js': 2,

@@ -14,6 +14,7 @@
 'use strict';
 const { note: failNote } = require('./failopen.js');
 const { tagImageSource } = require('./providers/provider.js');
+const RunPaths = require('./run-paths.js');   // the run's one placement rule (placeJail) names a saved attachment
 
 module.exports = function makeAttachments(deps) {
   const fsp = deps.fsp;
@@ -118,7 +119,10 @@ module.exports = function makeAttachments(deps) {
   // Expand each user message's attachment references into provider content blocks, just before the model call.
   // Bounded by IMAGE_BUDGET so a long photo history can't blow the request/token size. Messages without
   // attachments pass untouched (byte-identical), so this is a no-op for every existing caller.
-  async function expandUserAttachments(messages, agentId) {
+  // opts.place(rel) (run-paths lane): names a saved attachment the way THIS run's file/shell tools resolve it — the
+  // jail-relative path outside a project, the absolute path in a project run (where a relative path means the project).
+  async function expandUserAttachments(messages, agentId, opts) {
+    const place = opts && typeof opts.place === 'function' ? opts.place : (rel => rel);
     if (!Array.isArray(messages)) return messages;
     if (!messages.some(m => m && m.role === 'user' && Array.isArray(m.attachments) && m.attachments.length)) return messages;
     let imageBudget = IMAGE_BUDGET;
@@ -146,14 +150,14 @@ module.exports = function makeAttachments(deps) {
         } else if (looksTextual(name, mime)) {
           let t = buf.toString('utf8'); let note = '';
           if (t.length > TEXT_INLINE_MAX) { t = t.slice(0, TEXT_INLINE_MAX); note = '\n…[truncated]'; }
-          blocks.push({ type: 'text', text: '\n\n[Attached file: ' + name + ']\n```\n' + t + note + '\n```' });
+          blocks.push({ type: 'text', text: '\n\n[Attached file: ' + name + ']\n```\n' + t + note + '\n```\n[saved in your workspace at ' + place(rel) + ']' });
         } else {
           // honest AND actionable: the bytes are real and jailed in the agent's workspace — name the path so the
           // agent can operate on the file with its tools instead of dead-ending on "can't read this".
           const what = /^video\//.test(mime) ? 'a video — you cannot watch it directly, but the file is real'
             : /^audio\//.test(mime) ? 'an audio file — you cannot listen to it directly, but the file is real'
             : 'a file type you cannot view directly';
-          blocks.push({ type: 'text', text: '\n[Attached file: ' + name + ' (' + (mime || 'binary') + ') — ' + what + '; it is saved in your workspace at ' + rel + ' and your file/shell tools can operate on it]' });
+          blocks.push({ type: 'text', text: '\n[Attached file: ' + name + ' (' + (mime || 'binary') + ') — ' + what + '; it is saved in your workspace at ' + place(rel) + ' and your file/shell tools can operate on it]' });
         }
       }
       const clone = Object.assign({}, m, { content: blocks.length ? blocks : '' });
@@ -163,9 +167,58 @@ module.exports = function makeAttachments(deps) {
     return out;
   }
 
+  /* expandForRun(messages, agentId, projectRoot) — the RUN HOST's expansion (run-paths review M3). runOnceCore calls it
+     for every surface once the run's project root is final, so the saved file is named by the same rule the run's
+     ctx.paths applies (placeJail: the jail-relative name in an unscoped run, the absolute path in a project run, where
+     a relative path means the project). The COMMS page and the channel hubs used to expand before runOnce with no root
+     (a line-bound channel run is project-scoped) or with one a queued coordinated turn was later re-scoped away from.
+     A failed expansion strips the references, so no provider ever sees a shape it does not know.
+     STORED NAMES TOO (review round 2): a channel's stored turn names a saved file by its jail-relative name
+     (".attachments/<id>.<ext>", hub.js ingestMedia), and history replays as plain text. A project-scoped run reads every
+     such name in a user turn as the absolute spelling (placeJail), made here and only here, so the stored text that is
+     replayed to the model, in group chats too, never carries a host path, while the run's tools still reach the file.
+     Unscoped, or with no such name, the messages come back untouched. */
+  const SAVED_NAME = /(^|[^\w.\\/-])(\.attachments\/[0-9A-Za-z-]{8,64}\.[A-Za-z0-9]{1,8})(?![\w\\/-]|\.\w)/g;
+  function placeSavedNames(m, place) {
+    if (!m || m.role !== 'user') return m;
+    const fix = t => String(t).replace(SAVED_NAME, (all, lead, rel) => lead + place(rel));
+    if (typeof m.content === 'string') { const t = fix(m.content); return t === m.content ? m : Object.assign({}, m, { content: t }); }
+    if (!Array.isArray(m.content)) return m;
+    let changed = false;
+    const content = m.content.map(b => {
+      if (!b || b.type !== 'text' || typeof b.text !== 'string') return b;
+      const t = fix(b.text);
+      if (t === b.text) return b;
+      changed = true;
+      return Object.assign({}, b, { text: t });
+    });
+    return changed ? Object.assign({}, m, { content }) : m;
+  }
+  async function expandForRun(messages, agentId, projectRoot) {
+    if (!Array.isArray(messages)) return messages;
+    const refs = messages.some(m => m && m.role === 'user' && Array.isArray(m.attachments) && m.attachments.length);
+    const scoped = typeof projectRoot === 'string' && !!projectRoot.trim();
+    const named = scoped && messages.some(m => m && m.role === 'user' && new RegExp(SAVED_NAME.source).test(textOf(m.content)));
+    if (!refs && !named) return messages;
+    let place;
+    try {
+      if (!deps.workspaces) throw new Error('attachments: no workspaces root to name the saved file against');
+      place = RunPaths.makeRunPaths(RunPaths.makeResolver({ pathMod: path, root: deps.workspaces }), { agentId, projectRoot: projectRoot || '' }).placeJail;
+    } catch (e) { failNote('attachments.place', e); }
+    let out = messages;
+    if (refs) {
+      try { out = await expandUserAttachments(messages, agentId, place ? { place } : undefined); }
+      catch (e) {
+        failNote('attachments.expand', e);
+        out = messages.map(m => { if (!m || !Array.isArray(m.attachments)) return m; const c = Object.assign({}, m); delete c.attachments; return c; });
+      }
+    }
+    return (named && place) ? out.map(m => placeSavedNames(m, place)) : out;
+  }
+
   return {
     MAX_BYTES, IMAGE_BUDGET, TEXT_INLINE_MAX,
-    saveAttachment, removeAttachment, expandUserAttachments,
+    saveAttachment, removeAttachment, expandUserAttachments, expandForRun,
     _internals: { parseDataUrl, looksTextual, textOf, IMAGE_MIME }
   };
 };

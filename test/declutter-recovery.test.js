@@ -1,7 +1,8 @@
 'use strict';
+const { readSidecarSource } = require('./helpers/source');
 const A=require('./_assert.js'),fs=require('node:fs'),vm=require('node:vm');
 const read=p=>fs.readFileSync(require('node:path').join(__dirname,'..',p),'utf8');
-const chat=read('frontend/app/chat.js'),gc=read('frontend/app/group-chat.js'),idx=read('sidecar/index.js'),dlv=read('frontend/app/deliverables.js'),out=read('frontend/app/windows/outbox.js');
+const chat=read('frontend/app/chat.js'),gc=read('frontend/app/group-chat.js'),idx=readSidecarSource(),dlv=read('frontend/app/deliverables.js'),out=read('frontend/app/windows/outbox.js');
 function fn(src,name){const m=new RegExp('^( {0,4})(?:async )?function '+name+'\\([^]*?\\n\\1\\}', 'm').exec(src);if(!m)throw Error('missing '+name);return m[0];}
 (async()=>{
   let loads=0,version='v1';
@@ -20,8 +21,8 @@ function fn(src,name){const m=new RegExp('^( {0,4})(?:async )?function '+name+'\
   const visible=new Function('deliverableRows','deliverableStore',fn(idx,'visibleDeliverableRows')+';return visibleDeliverableRows;')(async()=>rows,{clearedIds:()=>new Set(['same','kept'])});
   A.eq((await visible()).map(r=>r.id),['same','open'],'undo KEEP restores pending row even if library id was cleared');
   const ws={id:'build-run',history:[]};let request='';
-  const note=new Function('Workstreams','sessionIdOf','historyTellsTheStory','fetch','App','Chat','RESOLVED_MARK','GONE_MARK',fn(read('frontend/app/workshopstore.js'),'noteResolved')+';return noteResolved;')({get:()=>ws,activeId:()=>null},()=>ws.id,()=>false,async url=>{request=url;return {ok:true,json:async()=>({items:url.includes('includeCleared=1')?[{runId:'run',agentId:'agent',status:'kept'}]:[]})}},{persist:()=>{}},{},'RESOLVED: ','GONE: ');
-  await note('agent','run');A.ok(request.includes('includeCleared=1'),'resolution lookup includes cleared cards');A.ok(ws.history[0].content.startsWith('RESOLVED: ')&&/KEPT/.test(ws.history[0].content),'cleared kept build gets correct durable note');
+  const note=new Function('Workstreams','sessionIdOf','historyTellsTheStory','fetch','App','Chat','RESOLUTION_LINE',fn(read('frontend/app/workshopstore.js'),'noteResolved')+';return noteResolved;')({get:()=>ws,activeId:()=>null},()=>ws.id,()=>false,async url=>{request=url;return {ok:true,json:async()=>({items:url.includes('includeCleared=1')?[{runId:'run',agentId:'agent',status:'kept'}]:[]})}},{persist:()=>{}},{},{kept:'KEPT: kept line',discarded:'DISCARDED: x',failed:'FAILED: x',gone:'GONE: x'});
+  await note('agent','run');A.ok(request.includes('includeCleared=1'),'resolution lookup includes cleared cards');A.ok(ws.history[0].resolution==='kept'&&ws.history[0].content==='KEPT: kept line','cleared kept build gets correct durable note');
   const scroll=chat.match(/log\.addEventListener\('scroll', \(\) => \{([^]*?)\n      \}\);/)[1];
   function scrollState(held,now,near){return new Function('userScrollHeld','Date','nearBottom',`let historyPinPending=0,stick=true,userScrollAt=0;const log={scrollTop:20,scrollHeight:900};const hideNewPill=()=>{},showNewPill=()=>{};${scroll};return {stick,top:log.scrollTop};`)(held,{now:()=>now},()=>near)}
   A.eq(scrollState(true,9000,false),{stick:false,top:20},'holding scrollbar beyond gesture timeout keeps reader position');A.eq(scrollState(false,9000,false),{stick:true,top:900},'unprompted layout movement still follows bottom');
@@ -98,7 +99,7 @@ function fn(src,name){const m=new RegExp('^( {0,4})(?:async )?function '+name+'\
   }
   // seams-07: the sidecar sends the count itself, on the filtered view, by the clear route's own skip rule
   {
-    const idx=require('fs').readFileSync(require('path').join(__dirname,'..','sidecar','index.js'),'utf8');
+    const idx=readSidecarSource();
     const list=idx.slice(idx.indexOf('async function handleDeliverablesList('),idx.indexOf('async function handleDeliverablesClear('));
     A.ok(/items = deliverableFilter\(items, filter\);[\s\S]*clearable: items\.filter\(r => r\.status !== 'pending'\)\.length/.test(list),'the library list answers how many rows CLEAR ALL would take');
     A.ok(/const ids = rows\.filter\(r => r\.status !== 'pending'\)/.test(idx),'with the same rule the clear route applies');

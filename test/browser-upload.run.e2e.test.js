@@ -4,6 +4,7 @@
 const A = require('./_assert.js'), fs = require('node:fs'), http = require('node:http'), path = require('node:path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 const { _internals: T } = require('../sidecar/tools/builtin/browser.js');
+const { defaultStagingRoot } = require('../sidecar/egress-files.js');
 const MODEL = 'test/browser-upload';
 function reply(res, call) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -60,6 +61,8 @@ function reply(res, call) {
     SKYNET_FULL_ACCESS: '', STARNET_FULL_ACCESS: ''
   } });
   const project = path.join(fixture.profile, 'project');
+  // the station staging root this run's uploads make under os.tmpdir(), outside the fixture's profile (removed at the end)
+  const stagingRoot = defaultStagingRoot(path, path.resolve(fixture.workspace));
   try {
     // Same committed onboarding seed as dev/seed.js, in a hermetic profile with no real credentials.
     fs.cpSync(path.join(__dirname, '../dev/fixtures/seed-workspace'), fixture.workspace, { recursive: true });
@@ -87,8 +90,20 @@ function reply(res, call) {
     A.ok(events.some(e => e.name === 'agent.run.end' && e.payload?.reason === 'done'), 'real run emits done');
     const results = requests.flatMap(b => (b.messages || []).filter(m => m.role === 'tool'));
     const result = id => results.find(m => m.tool_call_id === id)?.content || '';
-    A.ok(/File selection verified/.test(result('upload')) && /"size":19/.test(result('upload')), 'production browser deps resolve and select project bytes, not the private decoy');
-    A.ok(/Remote upload\/server acceptance is not verified/.test(result('upload')), 'model receives an honest selection-only receipt');
+    A.ok(/File selected for upload; StarNet re-checks it before each later browser action/.test(result('upload')) && /"size":19/.test(result('upload')), 'production browser deps resolve and select project bytes, not the private decoy');
+    // review round 6: the bytes are read at submit and can still change, so the receipt never says "verified"
+    A.ok(/Remote upload\/server acceptance is not verified/.test(result('upload')) && !/selection verified/i.test(result('upload')), 'model receives an honest selection-only receipt');
+    A.ok(!/"doc"|loader/.test(result('upload')), 'the page bookkeeping (CDP session / loader id) never reaches the model');
+    // review round 4 minor-1 / round 5: the page was handed a staged copy in the STATION staging root OUTSIDE the jail,
+    // and the copy never outlives the run (index.js runOnceCore releases this run's uploads when it ends)
+    const staging = path.join(stagingRoot, 'upload-agent');
+    let leftover = null;
+    for (let i = 0; i < 50; i++) {
+      leftover = fs.existsSync(staging) ? fs.readdirSync(staging) : [];
+      if (!leftover.length) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    A.ok(fs.existsSync(staging) && leftover.length === 0, 'the staged upload copy is gone once the run ends (' + JSON.stringify(leftover) + ')');
     A.ok(/photo.txt/.test(result('readback')) && /size\\?":19/.test(result('readback')), 'local website change handler independently reads project FileList size');
     A.ok(/Killed background process|already exited/i.test(result('stop')), 'owned fixture server is stopped with a receipt');
     const errors = fixture.output().split('\n').filter(s => /uncaught|unhandled|ReferenceError|TypeError:/.test(s));
@@ -97,6 +112,8 @@ function reply(res, call) {
   } finally {
     await fixture.dispose();
     provider.closeAllConnections(); await new Promise(resolve => provider.close(resolve));
+    // only real folders and the run's own copies live there (nothing here plants a link in it)
+    if (/starnet-upload-staging-[0-9a-f]{16}$/.test(stagingRoot)) { try { fs.rmSync(stagingRoot, { recursive: true, force: true }); } catch (e) { console.log('[cleanup] ' + e.message); } }
   }
   A.report('browser-upload.run.e2e');
 })().catch(e => { console.error(e.stack || e); process.exitCode = 1; });

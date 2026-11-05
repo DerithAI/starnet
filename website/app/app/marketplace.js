@@ -226,6 +226,43 @@ const Marketplace = (() => {
     return skillCatalogPending;
   }
 
+  /* ---------- the door's INTENT (wave-1 comms-owner-arbiter, gh#117) ----------
+     The bay is opened by several doors, and each used to pick its own mode from a bag of flags (mode / tab / summon). What the
+     window then offered depended on which flags that door remembered: a classes view in deploy mode (re-spec only) still wore
+     the RECRUITMENT BAY nameplate, so a Commander who opened the Recruitment Bay to grow the crew could read it as "this bay can
+     only re-spec" (gh#117, v0.13.3: "the only available option is DEPLOY TO SKYNET"). Now every door names its intent and ONE
+     table decides the mode, the library tab and the nameplate:
+       recruit                          CREW › RECRUIT and every recruit deep link: RECRUIT <NAME> leads, RE-SPEC … INSTEAD is second
+       recipes / recipe-launch /
+       recipe-mint / first-value        WORK › MY WORK's recipe library (and its deep links)
+       respec                           re-spec the agent on the line (no dock door opens this alone today)
+     A context with no intent (an older caller) is read the old way, then held to the same table. The nameplate follows the
+     view: RECRUITMENT BAY only where the bay can recruit, MY WORK on the recipe library, CLASSES on a re-spec-only class list. */
+  const BAY_INTENTS = Object.freeze({
+    recruit: Object.freeze({ mode: 'pick', tab: 'agents', summon: true }),
+    respec: Object.freeze({ mode: 'deploy', tab: 'agents', summon: false }),
+    recipes: Object.freeze({ mode: 'deploy', tab: 'recipes', summon: false }),
+    'recipe-launch': Object.freeze({ mode: 'deploy', tab: 'recipes', summon: false }),
+    'recipe-mint': Object.freeze({ mode: 'deploy', tab: 'recipes', summon: false }),
+    'first-value': Object.freeze({ mode: 'deploy', tab: 'recipes', summon: false })
+  });
+  // the intent a context asks for: its own, else inferred from the legacy flags (pick → recruit; a recipe seed/tab → recipes)
+  function intentOf(c) {
+    c = c || {};
+    if (typeof c.intent === 'string' && BAY_INTENTS[c.intent]) return c.intent;
+    if (c.mode === 'pick') return 'recruit';
+    if (c.launchSeed) return 'recipe-launch';
+    if (c.recipeMint) return 'recipe-mint';
+    if (c.firstValue) return 'first-value';
+    if (c.tab === 'recipes') return 'recipes';
+    return 'respec';
+  }
+  // the nameplate for a view: what the window can actually do there (LABEL LAW: a dock button's name where one opened it)
+  function titleFor(c, onTab, recipesLoaded) {
+    if (onTab === 'recipes' && recipesLoaded && !(c && c.mode === 'pick')) return 'MY WORK';
+    return (c && c.mode === 'pick' && c.summon) ? 'RECRUITMENT BAY' : 'CLASSES';
+  }
+
   /* ---------- open / close ---------- */
   function open(context) {
     if (!has()) return;
@@ -233,6 +270,12 @@ const Marketplace = (() => {
     close();
     opener = trigger;
     ctx = context || {};
+    // the door's intent decides the mode, the library and whether this bay recruits (one table — see BAY_INTENTS)
+    const named = typeof ctx.intent === 'string' && !!BAY_INTENTS[ctx.intent];
+    const intent = intentOf(ctx), row = BAY_INTENTS[intent];
+    ctx.intent = intent; ctx.mode = row.mode; ctx.tab = row.tab;
+    if (!row.summon) delete ctx.summon;
+    else if (named) ctx.summon = true;   // an older pick-mode caller keeps its own summon flag
     view = ctx.firstValue ? 'firstvalue' : 'grid'; editingId = null; editingRecipeId = null; launchId = null; pendingMintKey = null; pendingMintTemplate = null; pendingScoutRecipeId = null; scoutSeedDraft = null;
     editForkedFrom = null; editSourceRunId = null; launchRunAs = null;
     importStep = 'detect'; importFound = null; importDetecting = false; importScanning = false;
@@ -415,21 +458,22 @@ const Marketplace = (() => {
      recipes tab reads RECIPES — exactly the ❒ RECIPES label. plainTitle() feeds the close button's
      aria-label; title() adds the ▮ nameplate glyph. */
   function plainTitle() {
-    // ONE MENU (2026-10-01): the recipe library is a tab of WORK › MY WORK, so the window wears its dock button's name
-    return (!(ctx && ctx.mode === 'pick') && tab === 'recipes' && hasRecipes()) ? 'MY WORK' : 'RECRUITMENT BAY';
+    // ONE MENU (2026-10-01): the recipe library is a tab of WORK › MY WORK, so the window wears its dock button's name; the
+    // class list wears RECRUITMENT BAY only where it can recruit (gh#117 — titleFor, the door intents above)
+    return titleFor(ctx, tab, hasRecipes());
   }
   function title() { return '▮ ' + plainTitle(); }
 
   function subtitle() {
     // ORG P22 — ONE LANGUAGE: a new agent is RECRUITED from a CLASS; rewriting an existing agent is a RE-SPEC.
     if (ctx && ctx.mode === 'pick') return ctx.summon
-      ? ('recruit a new agent onto your crew — it gets its own session'
+      ? ('Recruit a new agent onto your crew — it gets its own session'
          + (ctx.concurrentCap > 0 ? ' · up to ' + ctx.concurrentCap + ' run at once' : ''))
-      : 'choose a class for your agent';
+      : 'Choose a class for your agent';
     const who = (ctx && ctx.agentName) || 'your agent';
     return tab === 'recipes'
-      ? 'launch a ready-made recipe — ' + who + ' picks it up in a new task conversation'
-      : 're-spec ' + who + ' as a class — or save this one as a template';
+      ? 'Launch a ready-made recipe — ' + who + ' picks it up in a new task conversation'
+      : 'Re-spec ' + who + ' as a class — or save this one as a template';
   }
 
   /* ---------- the bar: tabs + lane filter ---------- */
@@ -1167,7 +1211,7 @@ const Marketplace = (() => {
       '</div><div class="mkt-dos-cta">' + custActs +
         // adopt-voice sits BESIDE the DEPLOY CTA it modifies (audit item 8), not orphaned up in the toolbar.
         (deploy ? '<label class="mkt-adopt mkt-adopt-cta"><input type="checkbox" class="mkt-adopt-cb"> adopt its voice too</label>' : '') +
-        '<button class="mkt-cta-main mkt-deploy" data-id="' + esc(s.id) + '">' + ctaLabel + ' ▸</button>' +
+        '<button class="mkt-cta-main mkt-deploy" data-id="' + esc(s.id) + '">' + ctaLabel + '</button>' +
         '<div class="mkt-cta-sub">' + ctaSub + '</div>' +
       '</div>';
   }
@@ -1279,7 +1323,7 @@ const Marketplace = (() => {
       '<details class="mkt-brief mkt-recipe-details"><summary>Options &amp; recipe details</summary>' +
       '<div class="mkt-recipe-detail-tabs" role="tablist" aria-label="Recipe details">' + tabs + '</div>' +
       panel(0, options) + panel(1, workflow) + panel(2, reuse) + '</details>' +
-      '<button class="mkt-cta-main mkt-do-launch">▸ START SESSION</button>' +
+      '<button class="mkt-cta-main mkt-do-launch">START SESSION</button>' +
       '<div class="mkt-cta-sub">Opens a new session with ' + esc(who) + '.</div></div></div>';
 
   }
@@ -2577,7 +2621,7 @@ const Marketplace = (() => {
      A one-click path for a Commander arriving from OpenClaw or hermes-agent: detect installs (or pick a folder),
      preview exactly what the scan found, then RECRUIT mints a StarNet agent with the persona/orders/memory
      pre-filled. Every field shown comes straight from /api/harness/scan — nothing is invented (truthful telemetry).
-     Keys are NEVER read or transferred; the preview says so and ABILITIES › SAVED API CONNECTIONS is where the Commander re-enters them.
+     Keys are NEVER read or transferred; the preview says so and ABILITIES › CONNECTED › API KEYS is where the Commander re-enters them.
      Backend routes (built in parallel this session): POST /api/harness/detect, POST /api/harness/scan. The folder
      fallback reuses the existing POST /api/projects/pickfolder. If a route is missing the flow degrades to an honest
      empty/error state — it never fakes a detection or a scan. */
@@ -2744,7 +2788,7 @@ const Marketplace = (() => {
     // warnings: render every entry the scan returned verbatim, and ALWAYS state the keys-never-transfer truth
     // (added only if the scan didn't already say it).
     const warns = Array.isArray(s.warnings) ? s.warnings.slice() : [];
-    if (!warns.some(w => /key/i.test(w) && /transfer/i.test(w))) warns.push('keys never transfer — re-enter them in ABILITIES › INSTALLED › SAVED API CONNECTIONS');
+    if (!warns.some(w => /key/i.test(w) && /transfer/i.test(w))) warns.push('keys never transfer — re-enter them in CONNECT › ABILITIES › CONNECTED › API KEYS');
     const warnHTML = warns.map(w => '<div class="mkt-r-warn dim">⚠ ' + esc(w) + '</div>').join('');
     return '<div class="mkt-save mkt-imp mkt-imp-preview">' +
       '<div class="mkt-save-h">⇪ IMPORT — ' + esc(s.name || H) + '</div>' +
@@ -3004,7 +3048,7 @@ const Marketplace = (() => {
           '<button class="bb sm mkt-launch-run-alt">▸ RUN NOW INSTEAD</button>' +
           '<button class="bb sm mkt-do-routine">◷ SCHEDULE IT</button></div>'
       : '<div class="mkt-save-acts"><button class="bb sm mkt-cancel">‹ BACK</button>' +
-          '<button class="bb sm mkt-do-launch">▸ START SESSION</button>' +
+          '<button class="bb sm mkt-do-launch">START SESSION</button>' +
           '<button class="bb sm mkt-do-makeroutine" title="puts this recipe on a schedule — it becomes a ROUTINE you can manage in AUTOMATE › SCHEDULES">◷ MAKE ROUTINE</button></div>';
     const modeNote = (launchMode === 'routine')
       ? '◷ fills the blanks ONCE, then runs the same directive on your chosen cadence as <b class="mkt-runas-name">' + esc(runAsName()) + '</b> — it becomes a ROUTINE (manage or stop it any time in AUTOMATE › SCHEDULES).'
@@ -3774,5 +3818,5 @@ const Marketplace = (() => {
   // not on the grid view — never yanks the user out of the editor).
   function refreshIfOpen() { if (root && view === 'grid') { try { renderStage(); } catch (_) {} } }
   // currentTab: which library the open bay shows ('recipes' | 'agents') — StationUI files the RECIPES library under MY WORK
-  return { open, close, refreshIfOpen, currentTab: () => (root ? tab : null) };
+  return { open, close, refreshIfOpen, currentTab: () => (root ? tab : null), currentIntent: () => (root && ctx ? ctx.intent : null), INTENTS: BAY_INTENTS, intentOf, titleFor };
 })();

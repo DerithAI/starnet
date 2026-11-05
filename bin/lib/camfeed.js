@@ -32,8 +32,19 @@ const RAMPS = {
 };
 const ramp = (R, t) => { const x = Math.max(0, Math.min(1, t)) * (R.length - 1), i = Math.floor(x), f = x - i, a = R[i], b = R[Math.min(R.length - 1, i + 1)]; return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]; };
 const PALETTE = [];
-for (const R of Object.values(RAMPS)) for (let i = 0; i < 24; i++) PALETTE.push(ramp(R, i / 23).map(Math.round));
-let LUT = null;   // 32×32×32 → palette index, built once
+const fillPalette = () => { PALETTE.length = 0; for (const R of Object.values(RAMPS)) for (let i = 0; i < 24; i++) PALETTE.push(ramp(R, i / 23).map(Math.round)); };
+fillPalette();
+let LUT = null;   // 32×32×32 → palette index, built once (again after a theme change)
+// the accent: what lit screens and the working rim glow in — red unless the terminal's /theme picks another
+let ACCENT_RIM = [255, 70, 84], ACCENT_GEN = 0;
+function setAccent(rampSteps, rim, trim) {
+  RAMPS.red.splice(0, RAMPS.red.length, ...rampSteps.map(c => c.slice()));
+  if (rim) ACCENT_RIM = rim.slice();
+  if (trim && !USER_LOOK.trim) LOOK.trim = trim.slice();   // the wall's trim line takes the accent too
+  fillPalette();
+  LUT = null;
+  ACCENT_GEN++;
+}
 function nearest(r, g, b) {
   if (!LUT) {
     LUT = new Uint8Array(32 * 32 * 32);
@@ -50,13 +61,14 @@ function nearest(r, g, b) {
 /* THE LOOK: dark pure ASCII, so the feed sits IN the panel rather than on it — lit characters on black (no picture under
    them), only real light (screens, LEDs) on the red ramp, everything else in deep warm greys, the agent a little brighter
    than its room, and the whole fading into the panel's own black at its edges. Overridable (STARNET_FEED_LOOK as JSON) for tuning. */
+const USER_LOOK = (() => { try { return JSON.parse(process.env.STARNET_FEED_LOOK || '{}') || {}; } catch (_) { return {}; } })();
 const LOOK = Object.assign({
   wall: [15, 11, 12], trim: [60, 15, 21], floorLine: [18, 13, 14],
   redStrict: 2.0, redGamma: 1.15, redMax: 0.75,
   greyFloor: 0.04, bgScale: 0.55, bgGamma: 1.05, agentFloor: 0.16, agentScale: 0.9, agentGamma: 0.55,
   under: 0, skip: 0.14, liftBase: 96, liftSpan: 80, liftMax: 1.45,   // under 0: nothing but the lit characters on black
   vigX: 0.2, vigY: 0.24, rimK: 0.6
-}, (() => { try { return JSON.parse(process.env.STARNET_FEED_LOOK || '{}'); } catch (_) { return {}; } })());
+}, USER_LOOK);
 
 // ---- glyphs ------------------------------------------------------------------------------------------------------
 const CW = G.cw, CH = G.ch;
@@ -99,12 +111,60 @@ const POSES = {
   type: [1, 2, 3, 4].map(n => ['type_north_' + n, 'sit_north_4', 'rot_north', 'rot_south'])
 };
 
+/* THE LOOK, finished: each cell of the picture becomes the glyph whose shape matches its bright pixels, drawn in their colour
+   on black; the edges fade into the panel's black (vig: [x, y] fractions, the feed's own by default; skip: how dark a cell
+   stays empty, the feed's own by default); then StarNet's palette
+   and Sixel. col: r,g,b per pixel; light: 0..1 per pixel. Shared by the camera feed and the FLOOR (bin/lib/floor.js). */
+function asciiSixel(col, light, W, H, vig, skip) {
+  // ---- ASCII: under-layer dimmed, the matched glyph over it in its cell's bright colour ----
+  const out = new Float32Array(W * H * 3);
+  for (let i = 0; i < W * H; i++) for (let q = 0; q < 3; q++) out[i * 3 + q] = 12 + (col[i * 3 + q] - 12) * LOOK.under;
+  const cols = Math.floor(W / CW), rows = Math.floor(H / CH);
+  const mask = new Uint8Array(CW * CH);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    let sum = 0;
+    for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) sum += light[(r * CH + y) * W + c * CW + x];
+    const mean = sum / (CW * CH);
+    if (mean < (skip == null ? LOOK.skip : skip)) continue;
+    let bn = 0, dn = 0; const bc = [0, 0, 0], dc = [0, 0, 0];
+    for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
+      const i = (r * CH + y) * W + c * CW + x, j = y * CW + x;
+      if (light[i] > mean) { mask[j] = 1; bn++; bc[0] += col[i * 3]; bc[1] += col[i * 3 + 1]; bc[2] += col[i * 3 + 2]; }
+      else { mask[j] = 0; dn++; dc[0] += col[i * 3]; dc[1] += col[i * 3 + 1]; dc[2] += col[i * 3 + 2]; }
+    }
+    const bA = bn ? bc.map(v => v / bn) : dc.map(v => v / dn), dA = dn ? dc.map(v => v / dn) : bA;
+    let gl;
+    if ((Math.max(...bA) - Math.max(...dA)) / 255 < 0.1) gl = COV[DENSE[Math.max(1, Math.min(DENSE.length - 1, Math.round(mean * (DENSE.length - 1))))]];
+    else { let bd = Infinity; for (const sh of SHAPES) { let d = 0; for (let j = 0; j < mask.length; j++) if (sh.mask[j] !== mask[j]) d++; if (d < bd) { bd = d; gl = sh.cov; } } }
+    const mx = Math.max(bA[0], bA[1], bA[2], 1), lift = Math.min(LOOK.liftMax, Math.max(1, (LOOK.liftBase + LOOK.liftSpan * mean) / mx));
+    const gc = bA.map(v => Math.min(255, v * lift));
+    for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
+      const a = gl[y * CW + x] / 255; if (!a) continue;
+      const i = (r * CH + y) * W + c * CW + x;
+      for (let q = 0; q < 3; q++) out[i * 3 + q] = out[i * 3 + q] * (1 - a) + gc[q] * a;
+    }
+  }
+  // the edges fade into the panel's own black: no box, the picture just gets darker toward its border
+  const ex = Math.max(1, W * (vig ? vig[0] : LOOK.vigX)), ey = Math.max(1, H * (vig ? vig[1] : LOOK.vigY));
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let v = Math.min(1, Math.min(x + 0.5, W - 0.5 - x) / ex, Math.min(y + 0.5, H - 0.5 - y) / ey);
+    v = v * v * (3 - 2 * v);
+    if (v >= 1) continue;
+    const i = (y * W + x) * 3;
+    for (let q = 0; q < 3; q++) out[i + q] = 12 + (out[i + q] - 12) * v;
+  }
+  const idx = new Int16Array(W * H);
+  for (let i = 0; i < W * H; i++) idx[i] = nearest(Math.round(out[i * 3]), Math.round(out[i * 3 + 1]), Math.round(out[i * 3 + 2]));
+  return encodeSixel(idx, W, H, PALETTE);
+}
+
 function makeCamFeed() {
   const assets = new Map();     // path -> decoded image | null (missing)
   const skins = new Map();      // agent id -> sprite set
   const sims = new Map();       // agent id -> its walk
   const scaled = new Map();     // path@zoom -> { w, h, px }
   const frames = new Map();     // render key -> { key, sixel } (recent)
+  let gen = ACCENT_GEN;
 
   const spritePath = (set, name) => '/assets/sprites/' + set + '/' + name + '.png';
   const furnPath = n => '/assets/furniture/' + n + '.png';
@@ -193,6 +253,7 @@ function makeCamFeed() {
     const camX = Math.round(s.camX * k), camY = Math.round(s.camY * k);
     const ox = Math.round(W / 2 - camX), oy = Math.round(H / 2 - camY);
     const rk = [p.path, Math.round(s.x), Math.round(s.y), camX, camY, rimKey, W, H].join('|');
+    if (gen !== ACCENT_GEN) { frames.clear(); gen = ACCENT_GEN; }   // a /theme change redraws every frame
     if (frames.has(rk)) return frames.get(rk);
 
     // ---- compose the room ----
@@ -237,7 +298,7 @@ function makeCamFeed() {
       }
     }
     // ---- StarNet palette + the agent's rim (none while idle) ----
-    const RIM = rimKey === 'i' ? null : ({ w: [255, 70, 84], n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168] }[rimKey]).map(v => v * LOOK.rimK);
+    const RIM = rimKey === 'i' ? null : ({ w: ACCENT_RIM, n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168] }[rimKey]).map(v => v * LOOK.rimK);
     const col = new Float32Array(W * H * 3), light = new Float32Array(W * H);
     for (let i = 0; i < W * H; i++) {
       const r = buf[i * 4], g = buf[i * 4 + 1], b = buf[i * 4 + 2];
@@ -260,51 +321,13 @@ function makeCamFeed() {
       light[i] = Math.max(c[0], c[1], c[2]) / 255;
     }
 
-    // ---- ASCII: under-layer dimmed, the matched glyph over it in its cell's bright colour ----
-    const out = new Float32Array(W * H * 3);
-    for (let i = 0; i < W * H; i++) for (let q = 0; q < 3; q++) out[i * 3 + q] = 12 + (col[i * 3 + q] - 12) * LOOK.under;
-    const cols = Math.floor(W / CW), rows = Math.floor(H / CH);
-    const mask = new Uint8Array(CW * CH);
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      let sum = 0;
-      for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) sum += light[(r * CH + y) * W + c * CW + x];
-      const mean = sum / (CW * CH);
-      if (mean < LOOK.skip) continue;
-      let bn = 0, dn = 0; const bc = [0, 0, 0], dc = [0, 0, 0];
-      for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
-        const i = (r * CH + y) * W + c * CW + x, j = y * CW + x;
-        if (light[i] > mean) { mask[j] = 1; bn++; bc[0] += col[i * 3]; bc[1] += col[i * 3 + 1]; bc[2] += col[i * 3 + 2]; }
-        else { mask[j] = 0; dn++; dc[0] += col[i * 3]; dc[1] += col[i * 3 + 1]; dc[2] += col[i * 3 + 2]; }
-      }
-      const bA = bn ? bc.map(v => v / bn) : dc.map(v => v / dn), dA = dn ? dc.map(v => v / dn) : bA;
-      let gl;
-      if ((Math.max(...bA) - Math.max(...dA)) / 255 < 0.1) gl = COV[DENSE[Math.max(1, Math.min(DENSE.length - 1, Math.round(mean * (DENSE.length - 1))))]];
-      else { let bd = Infinity; for (const sh of SHAPES) { let d = 0; for (let j = 0; j < mask.length; j++) if (sh.mask[j] !== mask[j]) d++; if (d < bd) { bd = d; gl = sh.cov; } } }
-      const mx = Math.max(bA[0], bA[1], bA[2], 1), lift = Math.min(LOOK.liftMax, Math.max(1, (LOOK.liftBase + LOOK.liftSpan * mean) / mx));
-      const gc = bA.map(v => Math.min(255, v * lift));
-      for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
-        const a = gl[y * CW + x] / 255; if (!a) continue;
-        const i = (r * CH + y) * W + c * CW + x;
-        for (let q = 0; q < 3; q++) out[i * 3 + q] = out[i * 3 + q] * (1 - a) + gc[q] * a;
-      }
-    }
-    // the edges fade into the panel's own black: no box, the picture just gets darker toward its border
-    const ex = Math.max(1, W * LOOK.vigX), ey = Math.max(1, H * LOOK.vigY);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      let v = Math.min(1, Math.min(x + 0.5, W - 0.5 - x) / ex, Math.min(y + 0.5, H - 0.5 - y) / ey);
-      v = v * v * (3 - 2 * v);
-      if (v >= 1) continue;
-      const i = (y * W + x) * 3;
-      for (let q = 0; q < 3; q++) out[i + q] = 12 + (out[i + q] - 12) * v;
-    }
-    const idx = new Int16Array(W * H);
-    for (let i = 0; i < W * H; i++) idx[i] = nearest(Math.round(out[i * 3]), Math.round(out[i * 3 + 1]), Math.round(out[i * 3 + 2]));
-    const res = { key: rk, sixel: encodeSixel(idx, W, H, PALETTE) };
+    const res = { key: rk, sixel: asciiSixel(col, light, W, H) };
     if (frames.size > 48) frames.clear();
     frames.set(rk, res);
     return res;
   }
-  return { setSkin, hasSkin: id => skins.has(id), add, needs, frame, sim };
+  // asset / scaledOf: the FLOOR draws from the same store (one fetch of each sprite and piece of furniture)
+  return { setSkin, hasSkin: id => skins.has(id), skinOf: id => skins.get(id), add, needs, frame, sim, asset: p => assets.get(p), hasAsset: p => assets.has(p), scaledOf: (p, z) => scale(p, assets.get(p), z) };
 }
 
 /* DATA.SKINS from the app's data-shim.js (the station serves it): skin id → sprite set; '' → the default skin's set */
@@ -327,4 +350,4 @@ function setFor(agentId, skin, skins) {
   return skins[skin] || skins[''] || '';
 }
 
-module.exports = { makeCamFeed, parseSkins, setFor, PALETTE, POSES, FURNITURE };
+module.exports = { makeCamFeed, parseSkins, setFor, setAccent, PALETTE, POSES, FURNITURE, RAMPS, ramp, LOOK, asciiSixel, accentRim: () => ACCENT_RIM.slice(), accentGen: () => ACCENT_GEN };

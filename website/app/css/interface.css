@@ -140,9 +140,6 @@ body {
 #crew:has(.crew-row.filtering) .crew-row.selected:not(.filtering):not(:hover) { border-color: transparent; border-bottom-color: rgba(var(--ph-rgb), .08); background: none; box-shadow: none; }
 #crew .crew-row.filtering { border-color: var(--ph-dim); background: var(--ui-face); box-shadow: inset 3px 0 0 var(--ph), inset 0 1px 0 var(--ui-highlight); }
 /* the dossier key: one step from every row, out of the way until the row is pointed at */
-#crew .crew-dossier { position: absolute; bottom: 8px; right: 7px; padding: 2px 6px; font: 12px 'VT323',monospace; letter-spacing: .8px; color: var(--ph-dim); background: rgba(0,0,0,.28); border: 1px solid var(--ui-edge); border-radius: 3px; cursor: pointer; opacity: 0; transition: opacity var(--t-fast) var(--ease-soft); }
-#crew .crew-row:is(:hover,:focus-within,.filtering) .crew-dossier { opacity: 1; }
-#crew .crew-dossier:is(:hover,:focus-visible) { color: var(--ph-bright); border-color: var(--ph); }
 #crew .crew-portrait { width: 35px; height: 43px; }
 #crew .crew-portrait img { width: 27px; height: 33px; object-fit: contain; image-rendering: pixelated; }
 /* SKIN THUMB (AgentPortraits.thumbHTML) — an agent shown by its body wherever a letter used to stand in. The image is
@@ -248,8 +245,13 @@ select.ab-agent-pick:is(:hover,:focus-visible) { border-color: rgba(var(--ph-rgb
 .term .ts-core .ts-desc { margin: 0; }
 .ts-list .ts-row, #ts-list .ts-row { margin-block: 8px; padding: 13px; border: 1px solid var(--ui-edge); background: var(--ui-face); border-radius: 3px; }
 .ts-name { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 17px; }
-.ts-availability { color: var(--ph-dim); border: 1px solid var(--ui-edge); padding: 2px 5px; font-size: 10px; letter-spacing: .6px; }
-.ts-availability.available { color: var(--ok); border-color: color-mix(in srgb,var(--ok) 30%,transparent); }
+.ts-availability { color: var(--ph-dim); border: 0; padding: 0; font-size: 14px; letter-spacing: .6px; }
+.ts-availability.available { color: var(--ok); }
+/* matte (30 Sep): a hovered row lights its edge, it does not glow */
+#ts-list .ts-row:hover { box-shadow: none; }
+/* the switch and the icon sit on the NAME's line in every row (motion.css centres any checkbox row, so a tall row such as
+   JUKEBOX's, with its Spotify panel, dropped them below its name) */
+#ts-list .ts-row { align-items: flex-start; }
 #ts-list .ts-desc { margin-top: 6px; font-size: 13px; }
 #ts-list .ts-tools { margin-top: 9px; }
 .cf-group { margin: 12px 0; border: 1px solid var(--ui-edge); border-radius: 3px; background: var(--panel); }

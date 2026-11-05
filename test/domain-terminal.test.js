@@ -1,5 +1,6 @@
 /* node test/domain-terminal.test.js — bounded one-host checks and host-enforced terminal evidence. */
 'use strict';
+const { readSidecarSource } = require('./helpers/source');
 const A = require('./_assert.js');
 const fs = require('fs');
 const path = require('path');
@@ -72,6 +73,51 @@ for (const [text, host, why] of [
   ['check about.me', 'about.me', 'a bare .me with no workspace file']
 ]) A.eq((DomainTask.classify(text) || {}).host || null, host, 'file names are not hosts: ' + why + ' (' + JSON.stringify(text) + ')');
 A.eq(DomainTask.classify("Hand this to COPY: summarize example.com. I'll check back later."), null, '"check back later" is not an inspect verb');
+/* THE WORKER BOUND IS FOR A PURE READ (starnet-releases#5). The host policy is the same either way; only a pure read
+   carries the 3-turn / 3-tool / 45s worker bound. Every row: [text, pureRead, why]. */
+for (const [text, pure, why] of [
+  ['Review the deployment script for starnet-demo.io, write a unit test for it, and run it.', false, "the reporter's brief"],
+  ['Review the deployment script for starnet-demo.io, write a unit test that covers it, then run the test and report the result.', false, 'review + write a test + run it'],
+  ['Inspect the nginx config for example.com and fix the redirect.', false, 'inspect + fix'],
+  ['Check example.com and save the summary into notes.md', false, 'check + save'],
+  ['Check example.com and build a landing page like it.', false, 'check + build'],
+  ['Review the auth flow for example.com and implement the missing token refresh.', false, 'review + implement'],
+  ['Can you check example.com and fix the broken header?', false, '"and fix" in a question'],
+  ['- review the starnet-demo.io deploy config\n- run the smoke tests', false, 'a bulleted run step'],
+  ["Read example.com's pricing page and write a summary into notes.md", false, 'a summary written into a file'],
+  // F10 (review of 0.14.1): the file a summary goes into, in every form a Commander or a lead names it
+  ['Read the API docs at docs.example.com and write a short summary into C:\\Users\\me\\proj\\notes.md', false, 'a Windows drive-letter path'],
+  ['Read the API docs at docs.example.com and write a short summary into C:/Users/me/proj/notes.md', false, 'a drive-letter path with forward slashes'],
+  ['Read the API docs at docs.example.com and write a short summary into C:\\Users\\me\\My Project\\notes.md', false, 'an unquoted path with a space'],
+  ['Read the API docs at docs.example.com and write a short summary into "C:\\Users\\me\\My Project\\notes.md"', false, 'a double-quoted path with a space'],
+  ["Read the API docs at docs.example.com and write a short summary into 'C:\\Users\\me\\My Project\\notes.md'", false, 'a single-quoted path with a space'],
+  ['Read the API docs at docs.example.com and write a short summary into `C:\\Users\\me\\My Project\\notes.md`', false, 'a backticked path with a space'],
+  ['Read the API docs at docs.example.com and write a short summary into "C:\\Users\\me\\My Project\\notes"', false, 'a quoted path with no extension'],
+  ['Read the API docs at docs.example.com and write a short summary into C:\\Users\\me\\proj\\NOTES', false, 'a drive-letter path with no extension'],
+  ['Read the API docs at docs.example.com and write a short summary to D:\\work\\summary.txt', false, '"to" a drive-letter path'],
+  ['Read the API docs at docs.example.com and write a short summary into \\\\server\\share\\notes.md', false, 'a UNC path'],
+  ['Read the API docs at docs.example.com and write a short summary into ~/proj/notes.md', false, 'a home path'],
+  ['Read the API docs at docs.example.com and write a short summary into /home/me/proj/notes.md', false, 'a POSIX absolute path'],
+  ['Read the API docs at docs.example.com and write a short summary into docs/notes.md', false, 'a relative path with a separator'],
+  ['Read the API docs at docs.example.com and write a short summary into the notes folder', false, '"the notes folder"'],
+  ['Read the docs at docs.example.com/v1/api and write a short summary', true, 'a URL path is not a file destination'],
+  ['Read https://docs.example.com/guide/intro and write a short summary', true, 'an explicit URL is not a file destination'],
+  ['Read the API docs at docs.example.com and write a short summary to the Commander', true, 'a summary "to the Commander" is the answer'],
+  ['Read the API docs at docs.example.com and write a short summary in plain English', true, 'a summary "in plain English" is the answer'],
+  ["Read example.com's pricing page", true, 'a pure read'],
+  ['read the pricing page on example.com', true, 'a pure read'],
+  ['Go ahead, check out starnessos.com and then read the docs.', true, 'a pure docs read'],
+  ['check claude.ai and write a summary', true, 'a summary is the answer, not an artifact'],
+  ["Read example.com's pricing page and write a short summary of the plans.", true, 'a short summary is the answer'],
+  ['check the latest build on ci.example.com', true, '"the latest build" is a noun'],
+  ['check if example.com is up and running', true, '"up and running" is not a run step'],
+  ['Read the docs at bun.sh on how to install it', true, '"how to install" is what the docs say']
+]) {
+  const policy = DomainTask.classify(text);
+  A.ok(!!policy && policy.kind === 'direct-domain', '#5 still one exact host: ' + why + ' (' + JSON.stringify(text) + ')');
+  A.eq(policy && policy.pureRead, pure, '#5 pure read: ' + why + ' (' + JSON.stringify(text) + ')');
+  A.eq(policy && policy.workerMaxTools, pure ? 3 : undefined, '#5 the worker bound rides only a pure read: ' + why);
+}
 /* Review of the soak lane (10-15). Every row: [text, the host it must name or null, why].
    1. A DELEGATION IS NOT A ONE-SITE CHECK FOR THE LEAD. On base a site AND a file read as two "hosts", so the lead kept
       team.dispatch; once the file stopped counting, "Ask COPY to check example.com and save it into notes.md" withheld
@@ -171,7 +217,7 @@ A.ok(!DomainTask.isTargetFetch({ name: 'web_fetch', args: { url: 'https://starne
   A.ok(!DomainTask.isTargetRequest({ name: 'web_request', args: { url: 'https://evil-printify.com/x' } }, shop), 'a look-alike host is not a subdomain');
   A.ok(!DomainTask.isTargetRequest({ name: 'web_request', args: { url: 'https://api.stripe.com/v1' } }, shop), 'web_request to another host stays refused');
   A.ok(!DomainTask.isTargetRequest({ name: 'web_fetch', args: { url: 'https://printify.com' } }, shop), 'only web_request is matched');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const src = readSidecarSource();
   const withheld = (src.match(/const directDomainWithheld = [^\n]+/) || [''])[0];
   A.ok(withheld && withheld.indexOf("'web_request'") < 0, 'the direct-domain policy no longer strips web_request from the advertised tools');
   A.ok(/c\.name === 'web_request' && !DomainTask\.isTargetRequest\(c, directDomainTask\)/.test(src), 'the dispatch guard confines web_request to the named host');
@@ -215,7 +261,7 @@ for (const [text, host, why] of [
   A.ok(!DomainTask.isDomainMissing({ ok: true, isError: false, content: 'Navigated to https://nodejs.org/api/errors.html\nERR_NAME_NOT_RESOLVED and ENOTFOUND are DNS errors.' }), 'a navigated page that mentions ERR_NAME_NOT_RESOLVED is not a missing domain');
   A.ok(DomainTask.isDomainMissing({ ok: false, content: 'tool browser_navigate failed: getaddrinfo ENOTFOUND etsyy.com' }), 'ok:false alone marks the call as failed');
   A.ok(/browser\.navigate/.test(DomainTask.prompt(etsy)), 'the host policy prompt names the browser as a way to read the host');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const src = readSidecarSource();
   const withheld = (src.match(/const directDomainWithheld = [^\n]+/) || [''])[0];
   A.ok(withheld && withheld.indexOf('browser') < 0, 'the direct-domain policy no longer strips the browser from the advertised tools');
   A.ok(/c\.name === 'browser\.navigate' \|\| c\.name === 'browser\.login'\) && !DomainTask\.isTargetNavigate\(c, directDomainTask\)/.test(src), 'the dispatch guard confines browser navigation to the named host');
@@ -226,7 +272,7 @@ for (const [text, host, why] of [
   A.ok(/policyWithheld: directDomainTask \?/.test(src), 'tool.search is told what the direct-domain policy keeps off this run');
 }
 
-const hostSrc = fs.readFileSync(path.join(__dirname, '../sidecar/index.js'), 'utf8');
+const hostSrc = readSidecarSource();
 A.ok(/directDomainWithheld[\s\S]{0,220}team\\\./.test(hostSrc), 'direct-domain host withholds delegation');
 A.ok(/DomainTask\.stopControl\(directDomainTask\)/.test(hostSrc), 'exact fetch missing-domain result receives host stop control');
 A.ok(/const directDomainTask = isTask && !o\.toolsOptional \? DomainTask\.classify\(latestUserText\(messages\), \{ isFile: runFileExists\(agentId, o\.projectRoot\) \}\)/.test(hostSrc),

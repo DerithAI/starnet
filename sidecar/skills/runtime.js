@@ -174,6 +174,25 @@
     return out.filter(Boolean);
   }
 
+  /* A SUPPORT FILE AS THE AGENT READS IT (GitHub #145). An imported skill package stores every file base64-encoded
+     (exchange.js), and skill.view / a preloaded skill printed that blob as the file: references unreadable, a third
+     more context. A base64 file whose bytes are valid UTF-8 text is shown as that text; anything else is NAMED as
+     binary with its size, never pasted. The path leads, as before.
+     Decoded through the canonical-bytes boundary (skills/file-bytes.js), whatever form the file is stored in: the
+     text is the EXACT text (a byte-order mark and CRLF included; the fatal TextDecoder this used dropped a BOM), and
+     NUL means binary for a text-stored entry too. */
+  const FileBytes = (typeof require === 'function') ? require('./file-bytes.js') : null;
+  function supportFileLine(f) {
+    if (!f) return '';
+    const head = '- ' + str(f.path);
+    if (!FileBytes) return head + (f.encoding !== 'base64' && f.content ? '\n' + f.content : (f.encoding === 'base64' ? ' (binary file, not shown as text)' : ''));
+    const bytes = FileBytes.bytesOf(f);
+    if (!bytes.length) return head;
+    const text = FileBytes.readableText(bytes);   // NUL never appears in a text file: a blob that holds one is binary
+    if (text == null) return head + ' (binary file, ' + bytes.length + ' bytes, not shown as text)';
+    return head + '\n' + text;
+  }
+
   /* composeLoaded injects FULL BODIES for skills the Commander named (/skill, preloadSkills), so
      the gate matters here even more than in the index. The caller already filters, and `withheld`
      is checked again here: this is the last seam before the bytes enter the system prompt. */
@@ -184,8 +203,37 @@
       + 'The Commander explicitly loaded these skills for this run. Follow them where applicable.\n\n'
       + live.map(s => '### ' + cleanLine(s.name || s.id || 'Skill') + (s.summary ? ' -- ' + cleanLine(s.summary) : '') + '\n'
         + (s.setup ? 'Setup:\n' + s.setup + '\n\n' : '') + s.body
-        + (s.files && s.files.length ? '\n\nSupport files:\n' + s.files.map(f => '- ' + f.path + (f.content ? '\n' + f.content : '')).join('\n') : '')
+        + (s.files && s.files.length ? '\n\nSupport files:\n' + s.files.map(supportFileLine).join('\n') : '')
       ).join('\n\n');
+  }
+
+  /* scrubSkillText(skill, scrub) -> a copy of a skill whose every text a model can be shown went through `scrub` FIRST:
+     name, summary, description, category, body, setup, platforms, and each file's path and text (read as its bytes; a
+     binary file is left as it is). The composers here and in the review/curator prompts collapse whitespace and clip,
+     and a scrub over their output alone misses a credential the collapse or the clip broke up ('Authorization:
+     Bearer\nX-Api-Key: <value>' reads as a bearer token once its newline is gone). The store used to redact each field
+     before anything read it; the host now scrubs each field before it is composed (and the composed text again).
+     What the gate decides from (stamp, verdict, origin) is untouched, and a field the input lacks stays absent.
+     Never the raw text (review r3), as the export and the evaluation runner: no scrub, or a scrub that returns no
+     string, throws, and the caller withholds what it was composing. */
+  function scrubSkillText(skill, scrub) {
+    if (typeof scrub !== 'function') throw new Error('the skill text has no scrub, so it was not shown');
+    if (!skill || typeof skill !== 'object') return skill;
+    const one = (v) => {
+      const out = scrub(v);
+      if (typeof out !== 'string') throw new Error('the skill text could not be scrubbed, so it was not shown');
+      return out;
+    };
+    const out = Object.assign({}, skill);
+    for (const k of ['name', 'summary', 'description', 'category', 'body', 'setup']) if (typeof out[k] === 'string') out[k] = one(out[k]);
+    if (Array.isArray(out.platforms)) out.platforms = out.platforms.map(p => typeof p === 'string' ? one(p) : p);
+    if (Array.isArray(out.files)) out.files = out.files.map(f => {
+      if (!f || typeof f !== 'object') return f;
+      const g = Object.assign({}, f, typeof f.path === 'string' ? { path: one(f.path) } : {});
+      const text = f.content != null && FileBytes ? FileBytes.textOf(f) : null;
+      return text == null ? g : Object.assign(g, { encoding: 'utf8', content: one(text) });
+    });
+    return out;
   }
 
   function searchIndex(skills, query) {
@@ -194,5 +242,5 @@
     const rel = context.bm25(list.map(s => ({ title: s.name, body: s.summary || s.description || '' })), str(query));
     return orderByQuery(list.filter((s, i) => rel.scores[i] > 0 || cleanLine(s.name).toLowerCase().includes(str(query).toLowerCase())), str(query), context);
   }
-  return { composeIndex, extractInvocations, composeLoaded, searchIndex };
+  return { composeIndex, extractInvocations, composeLoaded, searchIndex, supportFileLine, scrubSkillText };
 });

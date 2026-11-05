@@ -1198,7 +1198,8 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     // the opener did not name its window: find the menu window that just appeared and seat it where the old one was
     if (!toKey) {
       const k = Object.keys(open).find(x => !before.has(x) && familyOf(x) === fam);
-      if (k && open[k] && termPos[fromKey]) { carry(k); placeTerm(open[k], k); }
+      // the sheet was already seated from ITS OWN dock state when it mounted: re-seat it from the carried one
+      if (k && open[k] && termPos[fromKey]) { carry(k); placeTerm(open[k], k); if (typeof open[k]._reseatDock === 'function') open[k]._reseatDock(); }
     }
   }
   // the dock button of a menu: open its last-used tab — or, like every dock button, raise / close what is showing.
@@ -1331,6 +1332,14 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     open[key] = w;
     placeTerm(w, key);   // land in a cascaded slot (or its remembered spot) — never dead-center pile-up
     mountFamilyTabs(w, key);   // ONE MENU: a window that belongs to MY WORK / AUTOMATE / CONNECT carries that menu's tabs
+    // SEAT BEFORE BUILD (10-26 window-open lag): the dock seats a sheet from its own MutationObserver, which runs after this
+    // function returns — after the builder filled the window and w.focus() had laid all of it out at the CSS default width,
+    // so the dock's width then laid it all out a second time. Seated now, while the window is still an empty frame, its
+    // first full layout is at the docked width. (The rAF fit after the first paint re-seats a sheet that sizes to its content.)
+    { const host = $('#terms'); if (host && typeof host._seatSheet === 'function') { try { host._seatSheet(w); } catch (_) {} } }
+    // UI FIRST (world.js): the floor stands aside while this window builds, lays out and rises, so its first paint is not
+    // queued behind a station draw (median click → window on screen 168 → 102 ms on a 26-agent station)
+    if (typeof World !== 'undefined' && typeof World.yieldToUi === 'function') { try { World.yieldToUi(); } catch (_) {} }
     w.addEventListener('mousedown', ev => {
       w.style.zIndex = U.zTop();
       // pull focus into the dialog on a background click so the window-level Esc/Tab handlers keep working —
@@ -1531,6 +1540,8 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     let activeId = consoleSection[key];
     if (key === 'settings' && activeId === 'nightshift') activeId = 'autonomy';   // folded into AUTONOMY (ONE WORD: AUTONOMY)
     if (key === 'settings' && (activeId === 'models' || activeId === 'livevoice')) activeId = activeId === 'models' ? 'providers' : 'appearance';   // the same aliases openTerm applies (a remembered LIVE VOICE reopened on AI & MODELS)
+    const retired = SECTION_ALIAS[key] && SECTION_ALIAS[key][activeId];   // a remembered section that became a block (ONE FLAT LIST)
+    if (retired) activeId = retired[0];
     if (!sections.some(s => s.id === activeId)) activeId = sections[0] && sections[0].id;
 
     // ---- left: optional rail-top slot (e.g. the dossier roster) + optional search + the section rail (role=tablist) ----
@@ -1712,9 +1723,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
 
     // ---- search: filter rows across every section, dim empty sections, group matches ----
     if (searchInput) {
+      let lastQuery = '';
       const doFilter = () => {
         const q = (searchInput.value || '').trim().toLowerCase();
         body.classList.toggle('con-searching', !!q);
+        // new results start at the top: the pane kept the scroll of whatever was read before, so the first hit sat
+        // cut off above the fold ("gmail" in CONNECT, UX night 10-25)
+        if (q !== lastQuery) { lastQuery = q; if (q) host.scrollTop = 0; }
         if (!q) {
           if (searchEmpty) searchEmpty.hidden = true;
           // restore: show the active section only, clear all row dimming + section flags
@@ -1837,8 +1852,6 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // The shimmer (.bar-active) reads as live activity; it's an indeterminate sweep, not a % readout.
       '<div class="crew-prog bar-active" id="cp-' + esc(a.id) + '" aria-hidden="true"><div></div></div>' +
       '</div>' +
-      // the dossier stays one step away: this key (or a right-click) opens it; the row itself shows the sessions
-      (present.length > 1 ? '<button type="button" class="crew-dossier" tabindex="-1" aria-label="Open dossier for ' + esc(a.name || a.id) + '" data-tip="Open ' + esc(a.name || a.id) + '&#39;s dossier">DOSSIER</button>' : '') +
       '</li>').join('');
     // (the head's roster count moved out — #crew-sum below the list already totals the same crew)
     ul.querySelectorAll('.crew-row').forEach(li => {
@@ -1855,8 +1868,6 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         else openAgent(+li.dataset.i);
       });
       li.addEventListener('contextmenu', ev => { ev.preventDefault(); sfx('click'); openAgent(+li.dataset.i); });
-      const dos = li.querySelector('.crew-dossier');
-      if (dos) dos.addEventListener('click', ev => { ev.stopPropagation(); sfx('click'); openAgent(+li.dataset.i); });
       li.addEventListener('keydown', ev => {
         if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); li.click(); }
         // the row advertises Shift+F10 (aria-keyshortcuts); WKWebView (macOS) fires no contextmenu for it, so handle the key
@@ -2085,7 +2096,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       { lbl: 'ACCESS',    val: 'checking effective access…', dim: false, go: 'ag-approval-card',  tip: 'change it in CONFIG › ACCESS' },
       { lbl: 'PROFILE',   val: prof.label.toLowerCase(),  dim: false,               go: 'ag-execution-card', tip: 'change it in CONFIG › ACCESS' },
       { lbl: 'VOICE',     val: voice || 'station default', dim: !voice,             go: 'ag-voice',          tip: 'opens SETTINGS › LOOK & SOUND › VOICE FOR this agent' },
-      { lbl: 'SKILLS',    val: 'its own procedures',       dim: true,               go: 'ag-skills',         tip: 'opens ABILITIES › AGENT SKILLS for this agent' },
+      { lbl: 'SKILLS',    val: 'its own procedures',       dim: true,               go: 'ag-skills',         tip: 'opens ABILITIES › SKILLS › LEARNED SKILLS for this agent' },
       { lbl: 'AWAY WORK', val: (a && a.workshop) ? 'on'  : 'off', dim: !(a && a.workshop), go: 'ag-workshop-card',  tip: 'opens AUTOMATE › AWAY WORK' }
     ];
     return '<div class="ag-setup" role="group" aria-label="How this agent is set up">' +
@@ -2376,9 +2387,12 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
           '<button class="bb sm" data-access-manage>MANAGE ABILITIES</button> <button class="bb sm" data-access-settings>STATION PERMISSIONS</button> <button class="bb sm" data-access-refresh>REFRESH ACCESS</button>';
         // BRIEF's compact line: how many toolsets are ready, which ones, and the approval mode — one jump to the full grid
         const ready = view.toolsets.filter(x => x.available);
-        const compactHtml = '<p class="ag-can-do"><b>' + ready.length + ' of ' + view.toolsets.length + ' toolsets ready</b>'
+        // in the words TOOLS and the ACCESS tile use (UX night 10-26): "7 of 8 tools ready · CHECK WITH ME", never the
+        // sidecar's "ASK — standing grants apply"
+        const postureWord = authority.unrestricted ? 'FULL POWER' : (askingPosture() === 'custom' ? 'custom access' : askingPosture());
+        const compactHtml = '<p class="ag-can-do"><b>' + ready.length + ' of ' + view.toolsets.length + ' tools ready</b>'
           + (ready.length ? ' · ' + ready.slice(0, 6).map(x => esc(x.label)).join(', ') + (ready.length > 6 ? ' +' + (ready.length - 6) : '') : '')
-          + ' · ' + esc(authority.approvalLabel) + '</p><button class="bb sm" data-access-full>SEE FULL ACCESS</button>';
+          + ' · ' + esc(postureWord) + '</p><button class="bb sm" data-access-full>SEE FULL ACCESS</button>';
         targets.forEach(target => {
           if (typeof target.hasAttribute === 'function' && target.hasAttribute('data-access-compact')) {
             target.innerHTML = compactHtml;
@@ -2492,6 +2506,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     const head = mkEl('div', 'mc-head');
     const tag = mkEl('span', 'turnin-kind'); tag.textContent = MEM_KIND[p.kind] || 'NOTE'; head.appendChild(tag);
     const org = originChip(p.origin); if (org) head.appendChild(org);
+    // releases#7: a proposal says when the run that raised it FAILED (the sidecar carries the run's outcome). The failure
+    // review's lessons already wear that chip as their origin; anything else a failed run raised gets the same one here.
+    if (p.outcome === 'failed' && p.origin !== 'failure-review') {
+      const f = mkEl('span', 'mc-scope'); f.textContent = ORIGIN_LABEL['failure-review']; f.title = 'raised by a run that failed'; head.appendChild(f);
+    }
     card.appendChild(head);
     const bodyEl = mkEl('div', 'mc-body'); bodyEl.textContent = p.replaceId ? 'Update remembered preference: “' + p.previousBody + '” → “' + p.content + '”' : (p.content || '(empty)'); card.appendChild(bodyEl);
     const meta = mkEl('div', 'mc-meta');
@@ -2626,6 +2645,16 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     card.appendChild(head);
 
     const bodyEl = mkEl('div', 'mc-body'); bodyEl.textContent = rec.body || '(empty)'; card.appendChild(bodyEl);
+    // memory-truth-1027: what this belief REPLACED. A newer claim on the same subject (or a correction) retires the old
+    // text from recall; it stays visible here, newest first, instead of silently vanishing. The full list is the tip.
+    const hist = Array.isArray(rec.history) ? rec.history : [];
+    if (hist.length) {
+      const was = mkEl('div', 'mc-meta'), line = mkEl('span', 'mc-prov');
+      const h = hist[0];
+      line.textContent = 'replaced: “' + h.body + '”' + (h.replacedAt ? ' · ' + new Date(h.replacedAt).toLocaleDateString() : '') + (hist.length > 1 ? ' · +' + (hist.length - 1) + ' earlier' : '');
+      line.title = hist.map(x => '“' + x.body + '”' + (x.restoredAs ? ' (restored as its own memory)' : '')).join('\n');
+      was.appendChild(line); card.appendChild(was);
+    }
 
     const meta = mkEl('div', 'mc-meta');
     const prov = mkEl('span', 'mc-prov');
@@ -2930,7 +2959,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       '<div class="cf-desc">How this agent communicates in conversation and real work. Every personality keeps the same rigor and honesty. Pick one to apply it immediately. Tune energy and language below; audible voice is configured separately.</div>' +
       '<div class="ov-vchips" id="ag-persona-chips">' + chips + '</div>' +
       // sample-reply preview REMOVED (Andrew, 2026-07-20) — the sel chip + vibe tooltip carry the choice.
-      '<details><summary>FINE-TUNE PERSONALITY' + (Personas.hasTuning(traits, a && a.customVoice) ? ' · CUSTOMIZED' : '') + '</summary>' +
+      '<details><summary>Fine-tune personality' + (Personas.hasTuning(traits, a && a.customVoice) ? ' · customized' : '') + '</summary>' +
       '<p class="cf-desc">Saved tuning stays when you switch presets. RESET TO PRESET clears tuning and custom style.</p>' + tuning + '</details>' +
       '<div id="ag-persona-msg" class="msg" role="status" aria-live="polite"></div>' +
     '</div>';
@@ -2956,7 +2985,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       '<div class="cf-head"><span class="cf-file">▣ model</span></div>' +
       '<div class="cf-desc">What this agent runs on. Pick a model to run this agent on it everywhere — chat, delegated work, scheduled routines — independent of the station default in the COMMS dock. “Follow station default” clears the pin. Choose SAVE MODEL to apply your selection.</div>' +
       picker +
-      '<details class="mc-adv"' + ((pinned && !hasPicker) ? ' open' : '') + '><summary>advanced — type a model id</summary>' +
+      '<details class="mc-adv"' + ((pinned && !hasPicker) ? ' open' : '') + '><summary>Advanced — type a model id</summary>' +
         '<div class="set-row"><label for="ag-model-in">MODEL</label><input id="ag-model-in" class="key-input" type="text" spellcheck="false" autocomplete="off" placeholder="e.g. anthropic/claude-sonnet-4-5" value="' + esc(model) + '"></div>' +
         '<div class="set-row"><label for="ag-prov-in">PROVIDER</label><input id="ag-prov-in" class="key-input" type="text" spellcheck="false" autocomplete="off" placeholder="e.g. openrouter · anthropic · codex" value="' + esc(prov) + '"></div>' +
       '</details>' +
@@ -3275,9 +3304,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         : (j.granted && j.shiftsPaused) ? 'shifts paused — scheduling is OFF (AUTOMATE › SCHEDULES › TURN SCHEDULING ON)'
         : (j.granted && nextAt)
         ? (due <= 60000 ? 'next shift: due now' : 'next shift in ' + rel(due))
-        : (j.granted ? 'shift not scheduled yet' : 'shifts are off (grant above)');
+        : (j.granted ? 'shift not scheduled yet' : 'shifts are off — switch on the queue above');
+      // the station's cadence is minutes ('every 360m'); a whole number of hours reads as hours (UX night 10-25)
+      const every = String(j.shiftEvery || '').replace(/(\d+)m\b/, (m, n) => (+n >= 60 && +n % 60 === 0) ? (+n / 60) + 'h' : m);
       h += '<div class="ws-bl-foot">' +
-        '<span class="dim" style="font-size:11px;">' + esc(next) + (j.shiftEvery ? ' · repeats ' + esc(String(j.shiftEvery).replace(/^every /, 'every ')) : '') + '</span>' +
+        '<span class="dim" style="font-size:11px;">' + esc(next) + (every ? ' · repeats ' + esc(every) : '') + '</span>' +
         (j.granted && items.some(it => it.state === 'queued') ? '<button class="bb sm" id="ag-ws-now">⚒ build now</button>' : '') +
         '</div>';
       const ls = lastShiftLine(j.lastShift);
@@ -3802,28 +3833,31 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       ? '<label class="mc-hint" for="sk-agent-pick">Skills of</label><select id="sk-agent-pick" class="ab-agent-pick" aria-label="Show the skills of agent">' +
         present.map(x => '<option value="' + esc(x.id) + '"' + (x.id === agentId ? ' selected' : '') + '>' + esc(x.name || x.id) + '</option>').join('') + '</select>'
       : '';
+    // "recipes" here collided with the ❒ RECIPES dock feature (audit finding 2) — these are PROCEDURES: how-to
+    // guides an agent follows mid-task, not launchable jobs. The intro that restated the desc folded into it (UX night 10-25).
     const secLibrary =
-      // "recipes" here collided with the ❒ RECIPES dock feature (audit finding 2) — these are PROCEDURES: how-to
-      // guides an agent follows mid-task, not launchable jobs.
-      '<p class="sk-note sk-lib-intro">Enable skills for the whole station. Agents use them when relevant, with the tools and service access they already have.</p>' +
       '<div id="sk-lib" class="sk-lib"><div class="sk-loading"><span class="loading pulse">loading the skill library…</span></div></div>';
-    const secAgent =
-      agentPicker +
+    const secAgent =   // the agent picker leads the whole SKILLS section now: it steers the library, these skills and the market
       '<p class="sk-note sk-lib-intro" id="sk-agent-intro">' + skillsIntro(a) + '</p>' +
       '<div id="sk-agent" class="sk-lib"><div class="sk-loading">loading agent skills…</div></div>';
+    // ONE FIELD, ONE BUTTON (UX night 10-26, Andrew: "pretend these users are like 5"): a link and INSPECT are the whole
+    // job, and what INSPECT finds shows right under them. An exported package file and skill registries ("taps") are
+    // power tools: folded under MORE WAYS, every id unchanged, so wireSkillExchange() is untouched.
     const secExchange =
-      '<p class="sk-note sk-lib-intro">Install a complete open skill package from a public HTTPS or GitHub <b>SKILL.md</b>. StarNet freezes the instructions and support files under one SHA-256 before review. Missing, oversized, unsafe, or partial packages are refused.</p>' +
-      '<div class="sk-exchange-form"><label for="sk-exchange-url">SKILL.MD SOURCE</label>' +
+      '<p class="sk-note sk-lib-intro">Paste a link to a skill’s <b>SKILL.md</b> file, for example on GitHub. StarNet checks the whole package and shows you what it does before anything installs; unsafe or broken packages are refused.</p>' +
+      '<div class="sk-exchange-form"><label for="sk-exchange-url">LINK TO A SKILL.md</label>' +
         '<div class="sk-exchange-row"><input id="sk-exchange-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repo/blob/main/SKILL.md">' +
-        '<button id="sk-exchange-inspect" class="consent-btn" type="button">INSPECT</button></div>' +
-        '<label class="consent-btn" for="sk-exchange-import">IMPORT EXPORTED PACKAGE</label><input id="sk-exchange-import" type="file" accept=".json,.starnet-skill.json,application/json" hidden></div>' +
-      '<div class="sk-exchange-form"><label for="sk-registry-url">REGISTRY / TEAM TAP</label>' +
-        '<div class="sk-exchange-row"><input id="sk-registry-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/skills/index.json">' +
-        '<input id="sk-registry-query" type="search" autocomplete="off" placeholder="search or browse all">' +
-        '<button id="sk-registry-search" class="consent-btn" type="button">BROWSE</button>' +
-        '<button id="sk-registry-discover" class="consent-btn" type="button">DISCOVER SITE</button>' +
-        '<button id="sk-registry-save" class="consent-btn" type="button">SAVE TAP</button></div><div id="sk-registry-sources"></div><div id="sk-registry-results"></div></div>' +
-      '<div id="sk-exchange-preview" class="sk-exchange-preview" role="status" aria-live="polite"><div class="sk-loading">Paste a source to inspect its instructions, provenance, and guard verdict.</div></div>';
+        '<button id="sk-exchange-inspect" class="consent-btn" type="button">INSPECT</button></div></div>' +
+      '<div id="sk-exchange-preview" class="sk-exchange-preview" role="status" aria-live="polite"><div class="sk-loading">Paste a link, then INSPECT. You see what the skill does, and whether it is safe, before anything installs.</div></div>' +
+      '<details class="mc-add-fold sk-more-ways"><summary>More ways to add a skill <span class="dim">(advanced)</span></summary>' +
+        '<div class="sk-exchange-form"><label class="consent-btn" for="sk-exchange-import">IMPORT EXPORTED PACKAGE</label><input id="sk-exchange-import" type="file" accept=".json,.starnet-skill.json,application/json" hidden></div>' +
+        '<div class="sk-exchange-form"><label for="sk-registry-url">REGISTRY / TEAM TAP</label>' +
+          '<div class="sk-exchange-row"><input id="sk-registry-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/skills/index.json">' +
+          '<input id="sk-registry-query" type="search" autocomplete="off" placeholder="search or browse all">' +
+          '<button id="sk-registry-search" class="consent-btn" type="button">BROWSE</button>' +
+          '<button id="sk-registry-discover" class="consent-btn" type="button">DISCOVER SITE</button>' +
+          '<button id="sk-registry-save" class="consent-btn" type="button">SAVE TAP</button></div><div id="sk-registry-sources"></div><div id="sk-registry-results"></div></div>' +
+      '</details>';
     /* Fill the LIVE VOICE section from the sidecar's real voice list and persist the pick.
        Truthful by construction: if the provider has no native voice endpoint we say so rather than
        offering choices that would do nothing, and the note about WHEN a change takes effect is shown
@@ -3831,8 +3865,8 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
 
     // SKILL MARKET (2026-09-29): the curated StarNet catalog, browsed as the same glass card grid the connectors
     // CATALOG uses. The catalog is fetched when this section loads, never in the background.
+    // the second intro paragraph restated the desc and the shelves' own notes; its one new fact moved into the desc
     const secMarket =
-      '<p class="set-about"><b>Add skills to your whole crew.</b> StarNet Originals are written by StarNet for your station; community picks are credited to their authors. Installing adds the skill to your SKILL LIBRARY and switches it on.</p>' +
       '<div class="cc-filters" id="skm-filters" role="group" aria-label="Filter the skill market">' +
         '<button type="button" class="cc-filter active" data-skm-filter="all" aria-pressed="true">ALL</button>' +
         '<button type="button" class="cc-filter" data-skm-filter="originals" aria-pressed="false">STARNET ORIGINALS</button>' +
@@ -3845,11 +3879,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       '<div id="skm-list" class="cc-list"><span class="loading pulse">loading the skill market…</span></div>';
 
     const frag = html => (el => { el.innerHTML = html; });
+    // ONE FLAT LIST (UX night 10-26, Andrew: "more like the settings menu where u can see all the different options"):
+    // SKILL EXCHANGE is SKILL MARKET's FROM A LINK block and AGENT SKILLS is the LEARNED block of SKILLS. Every element id
+    // is unchanged, so wire() below runs as before, and the retired section ids land here via SECTION_ALIAS.
+    const block = (id, label) => '<div class="sec" id="' + id + '"><span class="sec-l">' + label + '</span><span class="sec-r"></span><span class="sec-nd"></span></div>';
     const sections = [
-      { id: 'market', label: 'SKILL MARKET', glyph: '▦', desc: 'Browse StarNet Originals and credited community skills, and install one for the whole crew in one click.', build: frag(secMarket) },
-      { id: 'library', label: 'SKILL LIBRARY', glyph: '▤', desc: 'The procedures your agents follow when a task matches: the ones built into StarNet and the ones you installed from the market.', build: frag(secLibrary) },
-      { id: 'agent', label: 'AGENT SKILLS', glyph: '✎', desc: 'Each agent keeps its own skill library. Pick whose to see.', build: frag(secAgent) },
-      { id: 'exchange', label: 'SKILL EXCHANGE', glyph: '⇩', desc: 'Inspect and install open SKILL.md procedures with provenance and guard review.', build: frag(secExchange) }
+      { id: 'market', label: 'SKILL MARKET', glyph: '▦', desc: 'New skills for your crew, from StarNet and the community. Installing one switches it on for every agent.', build: frag(secMarket + block('ab-exchange', 'ADD FROM A LINK') + secExchange) },
+      { id: 'library', label: 'SKILLS', glyph: '▤', desc: 'What your crew knows how to do. Switch a skill on or off; agents use it when a task needs it, with the tools they already have.', build: frag(agentPicker + secLibrary + block('ab-agent-skills', 'LEARNED SKILLS') + secAgent) }
     ];
     function wire() {
       loadSkillMarket(agentId);
@@ -3880,6 +3916,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // names an object the Commander can't find
   const skmGear = g => SK_OBJ_NAME[g] || String(g).toUpperCase();
   let skmFilter = 'all';
+  // CATEGORY FOLDS (UX night 10-25): each shelf lists its categories as one-line folds (102 cards were one ~20,000px
+  // scroll). A fold the Commander opens stays open across the market's re-renders (an install repaints every card).
+  const skmFoldOpen = new Set();
   const skmBusy = new Map();   // slug -> 'install' | 'uninstall' while a request is in flight (survives re-renders)
   let skmResult = null;        // { slug, text, ok } — the last install/remove result, shown on that card
   let skmFocus = '';           // slug whose action button takes focus after the next render
@@ -3921,7 +3960,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       action = btn('uninstall', 'REMOVE'); hint = 'Installed · v' + esc(e.installedVersion || e.version) + '.' + needs;
     } else if (e.status === 'bundled') {
       action = '<span class="cc-badge cc-official">BUILT IN</span>';
-      hint = 'Came with StarNet (v' + esc(e.builtInVersion || e.version) + '). Switch it on or off in SKILL LIBRARY.';
+      hint = 'Came with StarNet (v' + esc(e.builtInVersion || e.version) + '). Switch it on or off in SKILLS.';
     } else if (e.status === 'update') {
       action = btn('install', 'UPDATE');
       hint = e.builtIn && !e.delisted && e.installedVersion === e.builtInVersion
@@ -3966,6 +4005,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // ones with a newer version waiting. A pulled or tampered skill shows under INSTALLED with its warning.
   function skmApplyFilter(list) {
     if (!list || list.dataset.skmOk !== '1') return;   // a failed/refused load has no cards: no filter claims about it
+    const searching = !!list.closest('.con-searching');   // while searching, the console search owns the folds
     list.querySelectorAll('.cc-group').forEach(g => {
       let vis = 0;
       g.querySelectorAll('.cc-card').forEach(c => {
@@ -3977,6 +4017,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       });
       g.hidden = vis === 0;
       const tag = g.querySelector('.sec-tag'); if (tag) tag.textContent = String(vis);
+      // INSTALLED / UPDATES are already the short list: their categories show their cards; ALL is the index again
+      if (!searching && g.matches('details')) g.open = (skmFilter === 'installed' || skmFilter === 'update') || skmFoldOpen.has(g.dataset.fold);
+    });
+    list.querySelectorAll('.skm-shelf').forEach(s => {
+      const n = s.querySelectorAll('.cc-card:not([hidden])').length;
+      s.hidden = n === 0;
+      const tag = s.querySelector(':scope > .sec .sec-tag'); if (tag) tag.textContent = String(n);
     });
     let none = list.querySelector('.cc-nores');
     const shown = list.querySelectorAll('.cc-card:not([hidden])').length;
@@ -4005,11 +4052,18 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       return;
     }
     const shelves = [['originals', 'StarNet Originals', 'Written by StarNet for your station\'s gear and tools.'], ['community', 'Community picks', 'Open skills by other authors, adapted for StarNet and credited.']];
+    // Originals still lead (DECISIONS: the Skill Market); inside a shelf, its categories in A-Z order, one fold each
     const html = shelves.map(([id, label, note]) => {
       const rows = d.entries.filter(e => e.shelf === id);
       if (!rows.length) return '';
-      return '<div class="cc-group"><div class="sec"><span class="sec-l">' + esc(label) + '</span><span class="sec-tag">' + rows.length + '</span><span class="sec-r"></span><span class="sec-nd"></span></div>' +
-        '<p class="mc-hint">' + esc(note) + '</p><div class="cc-grid">' + rows.map(skmCard).join('') + '</div></div>';
+      const cats = [...new Set(rows.map(e => String(e.category || 'Other')))].sort((a, b) => a.localeCompare(b));
+      return '<div class="skm-shelf" data-shelf="' + esc(id) + '"><div class="sec"><span class="sec-l">' + esc(label) + '</span><span class="sec-tag">' + rows.length + '</span><span class="sec-r"></span><span class="sec-nd"></span></div>' +
+        '<p class="mc-hint">' + esc(note) + '</p>' + cats.map(cat => {
+          const inCat = rows.filter(e => String(e.category || 'Other') === cat), key = id + '/' + cat;
+          return '<details class="cc-group" data-fold="' + esc(key) + '"' + (skmFoldOpen.has(key) ? ' open' : '') + '>' +
+            '<summary class="sec"><span class="sec-l">' + esc(cat) + '</span><span class="sec-tag">' + inCat.length + '</span><span class="sec-r"></span><span class="sec-nd"></span></summary>' +
+            '<div class="cc-grid">' + inCat.map(skmCard).join('') + '</div></details>';
+        }).join('') + '</div>';
     }).join('');
     const pulled = d.entries.filter(e => e.status === 'pulled');
     const banner = pulled.length
@@ -4022,7 +4076,13 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     if (skmFocus) {
       const f = host.querySelector('[data-skm="' + CSS.escape(skmFocus) + '"] .cc-acts button:not([disabled])') || host.querySelector('[data-skm="' + CSS.escape(skmFocus) + '"] .cc-acts');
       skmFocus = '';
-      if (f && f.focus) { if (!f.matches('button')) f.setAttribute('tabindex', '-1'); f.focus({ preventScroll: false }); }
+      // the card's category may have folded in this repaint (a search opened it): open it again before focusing, as the
+      // search's own fold when searching, else as the Commander's (they just acted inside it)
+      const fold = f && f.closest('details.cc-group');
+      if (fold && !fold.open) { fold.open = true; if (host.closest('.con-searching')) fold.dataset.searchOpened = '1'; else skmFoldOpen.add(fold.dataset.fold); }
+      // focus a tick later: while searching, a repainted card's group stays display:none until the caller re-applies the
+      // search (loadSkillMarket, right after this render), and focusing a hidden button silently drops to <body>
+      if (f && f.focus) setTimeout(() => { if (!f.isConnected) return; if (!f.matches('button')) f.setAttribute('tabindex', '-1'); f.focus({ preventScroll: false }); }, 0);
     }
   }
   function loadSkillMarket(agentId, refresh) {
@@ -4049,6 +4109,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       skmApplyFilter($('#skm-list'));
     });
     host.addEventListener('click', async ev => {
+      // the Commander's own fold choice (the click lands before the fold toggles)
+      const head = ev.target.closest('summary'), fold = head && head.parentElement;
+      if (fold && fold.matches('details.cc-group') && fold.dataset.fold) { if (fold.open) skmFoldOpen.delete(fold.dataset.fold); else skmFoldOpen.add(fold.dataset.fold); return; }
       const place = ev.target.closest('[data-place]');
       const shownId = host.dataset.agent || agentId;
       if (place) { sfx('click'); placeGearForSkill(place.dataset.place, (typeof App !== 'undefined' && App.agentName) ? App.agentName(shownId) : ''); return; }
@@ -4191,6 +4254,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     return { ready: ready, needsGear: needsGear, off: off };
   }
 
+  let skLibOffOpen = false;   // the TURNED OFF fold, as the Commander last left it
   function renderSkillLibrary(host, skills, agentId, placed) {
     if (!skills.length) { host.innerHTML = '<div class="sk-loading">No skills in the library yet.</div>'; return; }
     const placedSet = {}; (placed || []).forEach(p => placedSet[p] = true);
@@ -4240,13 +4304,16 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
           '</div>' +
         '</div>';
     };
-    const section = (label, list) => list.length
-      ? '<div class="sec sk-state-sec"><span class="sec-l">' + label + '</span><span class="sec-tag">' + list.length + '</span><span class="sec-r"></span><span class="sec-nd"></span></div>' + list.map(card).join('')
-      : '';
+    const head = (label, list) => '<span class="sec-l">' + label + '</span><span class="sec-tag">' + list.length + '</span><span class="sec-r"></span><span class="sec-nd"></span>';
+    const section = (label, list) => list.length ? '<div class="sec sk-state-sec">' + head(label, list) + '</div>' + list.map(card).join('') : '';
     html += section('READY TO USE', groups.ready);
     html += section('NEEDS GEAR', groups.needsGear);
-    html += section('TURNED OFF', groups.off);
+    // TURNED OFF is one line (UX night 10-25): the library opened on 5 skills in use and then a wall of the 69 that are
+    // not. Opened, it stays open while the Commander switches skills on (every switch repaints the library).
+    if (groups.off.length) html += '<details class="sk-fold"' + (skLibOffOpen ? ' open' : '') + '><summary class="sec sk-state-sec">' + head('TURNED OFF', groups.off) + '</summary>' + groups.off.map(card).join('') + '</details>';
     host.innerHTML = html;
+    const offFold = host.querySelector('details.sk-fold');
+    if (offFold) offFold.querySelector('summary').addEventListener('click', () => { skLibOffOpen = !offFold.open; });
     host.querySelectorAll('[data-toggle]').forEach(btn => btn.addEventListener('click', () => {
       const slug = btn.dataset.toggle, next = btn.dataset.enabled !== 'true';
       btn.classList.add('busy');
@@ -4337,9 +4404,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     if (!input || !button || !host || !Harness.skillExchangeInspect) return;
     const inspect = async () => {
       const url = String(input.value || '').trim();
-      if (!url) { host.innerHTML = '<div class="sk-loading">Enter a public HTTPS URL to a SKILL.md file.</div>'; return; }
+      if (!url) { host.innerHTML = '<div class="sk-loading">Paste a link first: a public https:// address of a SKILL.md file.</div>'; return; }
       button.classList.add('busy'); button.textContent = 'INSPECTING…';
-      host.innerHTML = '<div class="sk-loading"><span class="loading pulse">fetching and scanning exact source bytes…</span></div>';
+      host.innerHTML = '<div class="sk-loading"><span class="loading pulse">downloading the skill and checking it…</span></div>';
       const r = await Harness.skillExchangeInspect(url);
       button.classList.remove('busy'); button.textContent = 'INSPECT';
       if (r && r.ok && r.preview) renderSkillExchangePreview(host, r.preview, shownAgent());
@@ -4349,7 +4416,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     input.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); inspect(); } });
     if (importer && Harness.skillExchangeImport) importer.addEventListener('change', async () => {
       const file = importer.files && importer.files[0]; if (!file) return;
-      host.innerHTML = '<div class="sk-loading"><span class="loading pulse">verifying exported package bytes…</span></div>';
+      host.innerHTML = '<div class="sk-loading"><span class="loading pulse">checking the package file…</span></div>';
       let envelope = ''; try { envelope = await file.text(); } catch (_) {}
       const r = envelope ? await Harness.skillExchangeImport(envelope) : { ok: false, error: 'That file could not be read.' };
       importer.value = '';
@@ -4511,8 +4578,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         // skills-eval-07: a curator archive moves its steps into another skill, and the station holds it until that skill
         // carries them, so the card names it
         (skill.state === 'archived' && skill.absorbedInto ? '<div class="sk-attr">Archives into: ' + esc(skill.absorbedInto) + '</div>' : '') +
-        '<pre>' + esc(skill.body || '') + '</pre>' +
-        '<details><summary>Proposed metadata and package files</summary><pre>' + esc(JSON.stringify({ candidateDigest: candidate.candidateDigest, baseDigest: candidate.baseDigest, summary: skill.summary, description: skill.description, setup: skill.setup, category: skill.category, requires: skill.requires, platforms: skill.platforms, state: skill.state, absorbedInto: skill.absorbedInto, scope: skill.scope, projectRoot: skill.projectRoot, packageFiles: skill.packageFiles }, null, 2)) + '</pre></details>' +
+        // the proposed body behind one fold and the metadata as a short labelled list (old-UI review 10-26 #1): the card
+        // used to print the whole body inline and then a raw JSON blob
+        '<details class="sk-read"><summary>Read the proposed instructions</summary>' + skillInstructions(skill.body) + '</details>' +
+        proposalDetails(candidate, skill) +
         (skill.files || []).map(f => '<details><summary>' + esc(f.path) + '</summary><pre>' + esc(f.content || '') + '</pre></details>').join('') +
         (outdated ? '<div class="sk-attr" data-evaluation-result></div><div class="consent-btns mc-acts"><button class="consent-btn" data-candidate-reject>Reject proposal</button></div></div>' :
         '<div class="sk-attr">Evaluation checks only the selected task family. A passing result does not prove improvement for every use.</div><div data-evaluation-suites></div>' +
@@ -4601,10 +4670,35 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // Share to market is a door to the community cloud: it is on the card only while communitymaps.js says sharing is
   // open (CommunityMaps.live, its COMMUNITY_LIVE switch). Until then the key is not drawn at all.
   const communityLive = () => typeof CommunityMaps !== 'undefined' && CommunityMaps.live === true;
+  // the learned card's pin, drawn on the 16px icon grid the row menus use (a bookmark), never an ASCII * or +
+  const SK_PIN_ICON = '<svg class="sk-pin-i" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2h8v12l-4-3-4 3z"/></svg>';
+  // a skill's instructions read like the library's: safe markdown, never a raw <pre> (the edit path swaps this block)
+  const skillInstructions = body => '<div class="sk-instructions">' + (typeof Deliverables !== 'undefined' && Deliverables.safeMarkdown
+    ? Deliverables.safeMarkdown(body || '') : '<pre>' + esc(body || '') + '</pre>') + '</div>';
+  // a proposal's metadata as a short labelled list, never a raw JSON blob; digests short, like the package line's
+  const proposalDetails = (candidate, skill) => {
+    const words = v => Array.isArray(v) ? v.filter(Boolean).join(', ') : (v == null ? '' : String(v));
+    const files = (skill.packageFiles || []).map(f => typeof f === 'string' ? f : (f && f.path) || '').filter(Boolean).join(', ');
+    const rows = [['Category', words(skill.category)], ['Summary', words(skill.summary)], ['Description', words(skill.description)],
+      ['Setup', words(skill.setup)], ['Needs', words(skill.requires)], ['Platforms', words(skill.platforms)], ['State', words(skill.state)],
+      ['Archives into', words(skill.absorbedInto)],
+      ['Package files', files], ['Proposal', words(candidate.candidateDigest).slice(0, 12)], ['Based on', words(candidate.baseDigest).slice(0, 12)]]
+      .filter(r => r[1].trim());
+    return rows.length ? '<details class="sk-meta"><summary>Proposed details</summary><dl class="sk-dl">' +
+      rows.map(r => '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>').join('') + '</dl></details>' : '';
+  };
+  // a date as the station prints one (old-UI review 10-26 #12): "Oct 13", the year only when it is not this one
+  const skillDate = t => {
+    const d = new Date(t); if (isNaN(d.getTime())) return 'unknown';
+    const o = { month: 'short', day: 'numeric' }; if (d.getFullYear() !== new Date().getFullYear()) o.year = 'numeric';
+    return d.toLocaleDateString('en-US', o);
+  };
   function renderAgentSkills(host, skills, agentId, review) {
     review = review || {};
     if (!skills.length && !(review.candidates || []).length && !review.error) {
-      host.innerHTML = '<div class="sk-loading">No agent-created skills yet.</div>'; return;
+      // the agent by name, like the line above it (UX night 10-26)
+      const who = (present.find(x => x && x.id === agentId) || {}).name || 'This agent';
+      host.innerHTML = '<div class="sk-loading">' + esc(who) + ' has not learned any skills yet. Skills it writes or learns while working show up here.</div>'; return;
     }
     const active = skills.filter(s => s.state !== 'archived').length;
     const archived = skills.length - active;
@@ -4612,10 +4706,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     skills.forEach(s => { byId[s.id] = s; });
     const sorted = skills.slice().sort((a, b) =>
       (!!b.pinned - !!a.pinned) || ((a.state === 'archived') - (b.state === 'archived')) || ((b.updatedAt || 0) - (a.updatedAt || 0)));
-    let html = (review.error ? '<div class="sk-attr sk-held">Proposed revisions unavailable: ' + esc(review.error) + '</div>' : '') + '<div class="sk-lib-sum">' + active + ' active' + (archived ? ' - ' + archived + ' archived' : '') + '</div>';
+    let html = (review.error ? '<div class="sk-attr sk-held">Proposed revisions unavailable: ' + esc(review.error) + '</div>' : '') + '<div class="sk-lib-sum">' + active + ' active' + (archived ? ' · ' + archived + ' archived' : '') + '</div>';
     for (const s of sorted) {
       const state = s.state === 'archived' ? 'off' : (s.state === 'stale' ? 'want' : 'on');
-      const when = s.updatedAt ? new Date(s.updatedAt).toLocaleDateString() : 'unknown';
+      const when = s.updatedAt ? skillDate(s.updatedAt) : 'unknown';
       const files = (s.files || []).length ? '<div class="sk-attr">Support files: ' + esc((s.files || []).map(f => f.path).join(', ')) + '</div>' : '';
       /* WITHHELD IS THE ONE THING THIS CARD MUST NOT HIDE. The skill guard can keep a saved skill
          out of the agent's prompt entirely; a card that looks identical either way would have the
@@ -4643,21 +4737,28 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
           '<button class="consent-btn" data-ag-act="export"' + (s.packageDiverged ? ' disabled' : '') + '>Export</button>' +
           '<button class="consent-btn" data-ag-act="publish"' + (s.packageDiverged ? ' disabled' : '') + '>Share handoff</button>' +
           '<button class="consent-btn" data-ag-act="generations">Generations</button>' : '';
+      /* THE LEARNED-SKILL CARD is the library's glass card (old-UI review 10-26 #1, Andrew's screenshot): name, ONE tag line,
+         the summary, plain counts, and a footer with "Read instructions" and a drawn pin — not the June CRT card with ASCII
+         * / + / > / v keys, three badge styles side by side, a hyphen-joined stats line and the body as a raw <pre>. */
+      const tags = [s.category ? '<span class="sk-tag">' + esc(String(s.category).toUpperCase()) + '</span>' : '',
+        '<span class="sk-tag ' + state + '">' + esc((s.state || 'active').toUpperCase()) + '</span>',
+        held ? '<span class="sk-tag held">WITHHELD</span>' : ''].filter(Boolean).join('<span class="sk-tag-sep"> · </span>');
+      const times = n => (n || 0) + ' time' + ((n || 0) === 1 ? '' : 's');
       html +=
-        '<div class="sk-card ' + state + (held ? ' held' : '') + '" data-agent-skill="' + esc(s.id) + '">' +
+        '<div class="sk-card ' + state + (held ? ' held' : '') + (s.pinned ? ' pinned' : '') + '" data-agent-skill="' + esc(s.id) + '">' +
           '<div class="sk-card-head">' +
-            '<button class="sk-toggle" data-ag-act="pin" title="' + (s.pinned ? 'Unpin' : 'Pin') + ' this skill">' + (s.pinned ? '*' : '+') + '</button>' +
             '<div class="sk-card-main">' +
-              '<div class="sk-name-row"><span class="sk-name">' + esc(s.name) + '</span>' +
-                (s.category ? '<span class="sk-badge cat">' + esc(String(s.category).toUpperCase()) + '</span>' : '') +
-                (held ? '<span class="sk-badge want">WITHHELD</span>' : '') +
-                '<span class="sk-badge free">' + esc((s.state || 'active').toUpperCase()) + '</span></div>' +
+              '<div class="sk-name-row"><span class="sk-name">' + esc(s.name) + '</span></div>' +
+              '<div class="sk-tags">' + tags + '</div>' +
               '<div class="sk-desc">' + esc(s.summary || '') + '</div>' +
-              '<div class="sk-stat ' + state + '">used ' + (s.useCount || 0) + 'x - viewed ' + (s.viewCount || 0) + 'x - patched ' + (s.patchCount || 0) + 'x - updated ' + esc(when) + '</div>' +
+              '<div class="sk-stat ' + state + '">Used ' + times(s.useCount) + ' · viewed ' + (s.viewCount || 0) + ' · patched ' + (s.patchCount || 0) + ' · updated ' + esc(when) + '</div>' +
             '</div>' +
-            '<button class="sk-expand" data-ag-act="expand" title="Read the skill">&gt;</button>' +
           '</div>' +
-          '<div class="sk-body">' + heldBlock + '<div class="sk-attr">Shared with: ' + esc(skillScopeText(s.scope, s.projectRoot)) + '</div><pre>' + esc(s.body || '') + '</pre>' + files + absorbed + packageState +
+          '<div class="sk-card-actions">' +
+            '<button class="sk-expand" data-ag-act="expand" aria-expanded="false" aria-label="Read instructions for ' + esc(s.name) + '">Read instructions</button>' +
+            '<button class="sk-pin' + (s.pinned ? ' on' : '') + '" data-ag-act="pin" aria-pressed="' + (s.pinned ? 'true' : 'false') + '" title="' + (s.pinned ? 'Unpin' : 'Pin') + ' this skill">' + SK_PIN_ICON + '<span>' + (s.pinned ? 'Pinned' : 'Pin') + '</span></button>' +
+          '</div>' +
+          '<div class="sk-body">' + heldBlock + '<div class="sk-attr">Shared with: ' + esc(skillScopeText(s.scope, s.projectRoot)) + '</div>' + skillInstructions(s.body) + files + absorbed + packageState +
             '<div class="consent-btns mc-acts">' +
               heldBtn +
               packageButtons +
@@ -4675,7 +4776,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       const skill = byId[card.dataset.agentSkill]; if (!skill) return;
       const act = btn.dataset.agAct;
       if (act === 'expand') {
-        const opened = card.classList.toggle('open'); btn.textContent = opened ? 'v' : '>'; sfx('click'); return;
+        const opened = card.classList.toggle('open'); btn.textContent = opened ? 'Hide instructions' : 'Read instructions'; btn.setAttribute('aria-expanded', String(opened)); sfx('click'); return;
       }
       if (act === 'edit') { editAgentSkill(card, skill, agentId); return; }
       if (act === 'market') { shareSkillToMarket(card, skill, agentId); return; }
@@ -4846,11 +4947,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     const body = card.querySelector('.sk-body'); if (!body || body.dataset.editing === '1') return;
     body.dataset.editing = '1';
     if (!card.classList.contains('open')) card.classList.add('open');
-    const pre = body.querySelector('pre');
+    const pre = body.querySelector('.sk-instructions') || body.querySelector('pre');   // the rendered instructions block (or an older raw <pre>)
     const actions = body.querySelector('.consent-btns');
     if (!actions) return;
     const ta = mkEl('textarea', 'cf-ta mc-edit'); ta.value = skill.body || ''; ta.spellcheck = false;
-    if (pre) body.replaceChild(ta, pre);
+    if (pre) pre.replaceWith(ta);
     if (actions) actions.innerHTML = '';
     const save = mkEl('button', 'consent-btn'); save.textContent = 'Save'; actions.appendChild(save);
     const cancel = mkEl('button', 'consent-btn'); cancel.textContent = 'Cancel'; actions.appendChild(cancel);
@@ -5099,8 +5200,8 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         const items = streams.filter(s => s.lane === lane);
         return '<div class="kb-col"><h4>' + label + ' <i>' + items.length + '</i>' +
           (lane === 'active' ? activeAggregate(items) : '') + '</h4>' +
-          '<p class="kb-lane-note">' + ({todo:'Planned tasks, ready when you are.',active:'Ongoing work and results to open.',shipped:'Tasks you marked complete.'}[lane]) + '</p>' +
-          (items.length ? items.map(card).join('') : kbEmpty(lane)) + '</div>';
+          // an empty lane's own empty card already says what goes there; the note above it said it twice (UX night 10-25)
+          (items.length ? '<p class="kb-lane-note">' + ({todo:'Planned tasks, ready when you are.',active:'Ongoing work and results to open.',shipped:'Tasks you marked complete.'}[lane]) + '</p>' + items.map(card).join('') : kbEmpty(lane)) + '</div>';
       }).join('') +
       '</div>' +
       // the dead-end this footnote kills (2026-07-16): "a run finished while you were away" sent users
@@ -5560,8 +5661,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     const st = oauthAcctState(pid);
     if (st.pending || (!force && st.list !== undefined && Date.now() - st.at < 5000)) return;
     st.pending = true;
+    // repaint only on a REAL change (10-26 window-open lag): every reopen of SETTINGS past the 5s mark re-reads the three
+    // lists, and an unchanged answer rebuilt the whole window anyway — the one data repaint left on a second open
+    const was = st.list === undefined ? undefined : JSON.stringify(st.list);
     OAuthAccounts.for(pid).accounts().then(j => { st.list = j; }).catch(() => { st.list = null; })
-      .finally(() => { st.pending = false; st.at = Date.now(); scheduleSettingsRepaint(); });
+      .finally(() => { st.pending = false; st.at = Date.now(); if (JSON.stringify(st.list) !== was) scheduleSettingsRepaint(); });
   }
   if (typeof U !== 'undefined' && U.bus && U.bus.on) U.bus.on('provider.fallback', p => { if (p && p.toAccount) STACKABLE_OAUTH.forEach(pid => refreshOAuthAccounts(pid, true)); });
   function stackClock(ms) { try { return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (_) { return ''; } }
@@ -5774,9 +5878,34 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     return '<span class="prov-logo' + (id === 'starnet' ? ' prov-logo-starnet' : '') + '" aria-hidden="true" style="--provider-icon:url(&quot;' + esc(new URL('assets/brand/' + asset, document.baseURI).href) + '&quot;)"></span>';
   }
 
+  /* AI & MODELS IN FOUR PLAIN GROUPS (UX night 10-26, Andrew: "pretend these users are like 5"). Nineteen cards stood in
+     one column, each led by an API address ("generativelanguage.googleapis.com/v1beta"). They are the same cards, every
+     one still drawn (the visibleProviders law) and in PROVIDERS order inside its group, under the one question a newcomer
+     can answer: do you have StarNet credits, a subscription, an API key, or your own model server? A card leads with
+     what you need; its address rides the tip. The group with no id list takes every provider the others do not name. */
+  const PROVIDER_GROUPS = [
+    { id: 'credits', label: 'STARNET CREDITS', note: 'link this station once, nothing to paste', ids: ['starnet'] },
+    { id: 'subscription', label: 'A SUBSCRIPTION YOU HAVE', note: 'sign in, no API key', ids: ['codex', 'grok', 'kimi', 'claude-cli'] },
+    { id: 'key', label: 'AN API KEY', note: 'paste a key from the service’s website' },
+    { id: 'own', label: 'YOUR OWN MODELS', note: 'on this computer, or a server you run', ids: ['ollama', 'custom'] }
+  ];
+  const providerGroupOf = id => PROVIDER_GROUPS.find(g => g.ids && g.ids.indexOf(id) >= 0) || PROVIDER_GROUPS.find(g => !g.ids);
+  function groupedProviders() {
+    const shown = visibleProviders();
+    return PROVIDER_GROUPS.reduce((out, g) => out.concat(shown.filter(p => providerGroupOf(p.id) === g)), []);
+  }
+  function providerGroupHead(cards, i) {
+    const g = providerGroupOf(cards[i].id);
+    if (i > 0 && providerGroupOf(cards[i - 1].id) === g) return '';
+    return '<div class="set-sub prov-group" data-group="' + esc(g.id) + '"><span class="set-sub-k">' + esc(g.label) + '</span><span class="set-sub-d">' + esc(g.note) + '</span></div>';
+  }
+  // what the card says under its name: the subscription for a sign-in provider ("ChatGPT subscription"), else the blurb
+  const providerNeed = p => /^OAuth · /.test(p.endpoint) ? p.endpoint.slice('OAuth · '.length) : p.blurb;
   function providersHtml() {
     const active = activeProv();
-    return visibleProviders().map((p, pi) => {
+    const cards = groupedProviders();
+    return cards.map((p, pi) => providerGroupHead(cards, pi) + providerCardHtml(p, pi)).join('');
+    function providerCardHtml(p, pi) {
       // The credits provider has its own card: no key to paste, no sign-in, and a status line that
       // states the BALANCE, because a paid provider reading "connected" at $0.00 would be a lie of
       // exactly the kind this panel exists to avoid.
@@ -5845,7 +5974,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
           providerLogoHtml(p.id) +
           '<span class="prov-main">' +
             '<span class="prov-name">' + esc(p.name) + (runnable ? '<span class="prov-badge">ACTIVE</span>' : '') + '</span>' +
-            '<span class="prov-ep">' + esc(p.endpoint) + ' · ' + esc(p.blurb) + '</span>' +
+            '<span class="prov-ep" data-tip="' + esc(p.endpoint + ' · ' + p.blurb) + '">' + esc(providerNeed(p)) + '</span>' +
           '</span>' +
         '</button>' +
           '<span class="prov-stat"><span class="prov-stat-t">' + stat + statWhy + (credentialSaved && !isOAuthProvider(p.id) ? '<i>' + n + (n === 1 ? ' key' : ' keys') + '</i>' : '') + '</span></span>' +   // org P03: the reason sits right under the verdict it explains, above the key count
@@ -5874,7 +6003,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
             '</div>'
           : '') +
         '</div>';
-    }).join('');
+    }
   }
   // The STARNET MANAGED card. Same shape as every other provider row so it reads as one of them, but its
   // action routes to the STORE rather than owning a second copy of the pairing flow.
@@ -5892,7 +6021,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         providerLogoHtml(p.id) +
         '<span class="prov-main">' +
           '<span class="prov-name">' + esc(p.name) + (runnable ? '<span class="prov-badge">ACTIVE</span>' : '') + '</span>' +
-          '<span class="prov-ep">' + esc(p.endpoint) + ' · ' + esc(p.blurb) + '</span>' +
+          '<span class="prov-ep" data-tip="' + esc(p.endpoint) + '">' + esc(providerNeed(p)) + '</span>' +
         '</span>' +
       '</button>' +
         '<span class="prov-stat"><span class="prov-stat-t">' + stat + '</span></span>' +
@@ -7494,9 +7623,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // saved overrides. Precedence (env > saved > default) is enforced + reported by the sidecar; the UI just shows
   // whether a field is env-locked (read-only + a note) or a saved override.
   const ADV_FIELDS = [
-    { key: 'maxIters', label: 'MAX ITERATIONS', hint: 'optional tool-turn ceiling for one run. 0 = unlimited (default).', min: 0, max: 200, step: 1 },
-    { key: 'maxConcurrentAgents', label: 'MAX CONCURRENT AGENTS', hint: 'optional simultaneous-agent ceiling. 0 = unlimited (default).', min: 0, max: 32, step: 1 },
-    { key: 'consentTimeoutMs', label: 'CONSENT TIMEOUT (MS)', hint: 'how long a permission prompt waits for your answer before auto-denying (so a run never hangs).', min: 5000, max: 600000, step: 1000 },
+    { key: 'maxIters', label: 'MAX ITERATIONS', hint: 'the most tool steps one run may take. 0 = no limit (default).', min: 0, max: 200, step: 1 },
+    { key: 'maxConcurrentAgents', label: 'MAX CONCURRENT AGENTS', hint: 'the most agents working at the same time. 0 = no limit (default).', min: 0, max: 32, step: 1 },
+    { key: 'consentTimeoutMs', label: 'CONSENT TIMEOUT (MS)', hint: 'how long an approval card waits for your answer before it says no for you (so a run never hangs).', min: 5000, max: 600000, step: 1000 },
     { key: 'cronTickMs', label: 'ROUTINE TICK (MS)', hint: 'how often the scheduler checks for due routines.', min: 5000, max: 600000, step: 1000 },
     { key: 'maxSubscriptionTokens', label: 'CLAUDE CODE TOKEN CEILING', hint: 'tokens one run may use on a Claude subscription sign-in (cache re-reads count 1/10). 0 = no ceiling. Applies from the next run.', min: 0, max: 100000000, step: 100000 },
     // issue #135: the ceiling on a model StarNet can't price (a custom provider's model) was env-only. Both token ceilings
@@ -7536,8 +7665,8 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         const d = fields[f.key] || {};
         const envLocked = !!d.envLocked;
         const val = (d.effective != null) ? d.effective : (d.default != null ? d.default : '');
-        const note = envLocked ? '<span class="dim"> — locked by an environment variable</span>'
-          : (d.saved != null ? '<span class="dim"> — saved override</span>' : '<span class="dim"> — default</span>');
+        const note = envLocked ? '<span class="dim"> · locked by an environment variable</span>'
+          : (d.saved != null ? '<span class="dim"> · saved override</span>' : '<span class="dim"> · default</span>');
         return '<div class="set-row"><label for="adv-' + f.key + '">' + f.label + note + '</label>' +
           '<input id="adv-' + f.key + '" class="key-input adv-in" data-key="' + f.key + '" type="number" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '" value="' + esc(String(val)) + '"' + (envLocked ? ' disabled' : '') + '></div>' +
           '<div class="mc-hint">' + esc(f.hint) + '</div>';
@@ -7755,15 +7884,14 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       '<div class="prov-list">' + providersHtml() + '</div>' +
       '<h4 class="ms-h">API KEYS</h4>' +
       '<div class="key-list">' + keysHtml() + '</div>' +
-      '<p class="set-about">Credentials are saved locally and used to authenticate with the selected service. Saved keys stay masked. Desktop storage uses the OS keychain when available.</p>' +
-      // org P05: model keys live here; a SERVICE key lives in CONNECT › ABILITIES › SAVED API CONNECTIONS — one door, the
-      // places.js api-connections target (live walk 10-14: the door used to open CATALOG, so no key reached the place the
-      // sentence named). Gmail and Notion are SIGN IN catalog connectors (sidecar/mcp/catalog.js authType 'oauth') that
-      // SAVED API CONNECTIONS cannot connect, so the line says they connect from CATALOG — the neighbouring tab of the
-      // window this key opens. The key sits OUTSIDE the .set-about prose: that paragraph's 0.55 reading-dim greyed it into a
-      // disabled-looking key.
-      '<p class="set-about">A key for any other service goes in CONNECT › ABILITIES › SAVED API CONNECTIONS; Gmail, Notion and other sign-in services connect from CATALOG beside it.</p>' +
-      '<div class="mc-acts"><button type="button" class="bb sm" data-act="to-service-keys">▸ SAVED API CONNECTIONS</button></div>' +
+      '<p class="set-about">Your keys stay on this computer, always masked; the desktop app keeps them in the system keychain when it can.</p>' +
+      // org P05: model keys live here; a SERVICE key lives in CONNECT › ABILITIES › CONNECTED › API KEYS — one door, the
+      // places.js api-connections target (live walk 10-14: the door used to open the catalog, so no key reached the place the
+      // sentence named). Gmail and Notion are SIGN IN catalog connectors (sidecar/mcp/catalog.js authType 'oauth') that an
+      // API key cannot connect, so the line says they connect from APPS — the neighbouring section of the window this key
+      // opens. The key sits OUTSIDE the .set-about prose: that paragraph's 0.55 reading-dim greyed it into a disabled-looking key.
+      '<p class="set-about">A key for any other service goes in CONNECT › ABILITIES › CONNECTED › API KEYS; Gmail, Notion and other sign-in services connect from APPS beside it.</p>' +
+      '<div class="mc-acts"><button type="button" class="bb sm" data-act="to-service-keys">▸ CONNECT › API KEYS</button></div>' +
       // STORE / MANAGED CREDITS — rendered ONLY when the sidecar reports a configured credits backend (/api/credits).
       // When credits aren't wired this stays an empty node (no dead card, no fake balance — the honesty law). wireCredits
       // fetches the real balance + history and the external purchase link; buying opens a browser tab, never an in-app form.
@@ -7910,7 +8038,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     const secBudget =
       // BUDGET — the four real USD spend caps the sidecar enforces over the ledger (perRun hard stop + soft
       // per-agent / per-day / global pools). Persisted server-side + applied live; a live spend readout below.
-      '<h4 class="ms-h">Spending limits <span class="dim">— in USD</span></h4>' +
+      '<h4 class="ms-h">Spending limits <span class="dim">· USD</span></h4>' +
       '<p class="set-about">Limits apply to recorded agent spending. <b>Blank or 0 means no cap.</b> Changes take effect when you save; unsaved limits follow their environment defaults.</p>' +
       '<div id="budget-spend" class="set-row dim">reading spend…</div>' +
       '<div id="budget-unsettled"></div>' +   // interrupted runs whose charge is unknown + their SETTLE (only rendered when one exists)
@@ -7936,11 +8064,14 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // sets what the loop tries NEXT if that model fails mid-run. Persisted server-side + applied live to every run
       // path (browser, cron, channels); env SKYNET_FALLBACK_MODELS is the default until you save one here.
       '<h4 class="ms-h">FALLBACK MODELS <span class="dim">— tried in order if your primary model fails</span></h4>' +
-      '<p class="set-about">Choose your primary model in COMMS. If it fails mid-run because of availability, authentication, billing, or rate limits, StarNet tries this list from top to bottom. Saved models use your OpenRouter connection, or your StarNet connection when StarNet is the primary provider. <b>An empty list disables fallback.</b> Model changes appear in COMMS and the logbook.</p>' +
+      // plain first (UX night 10-26): what it is for, then the one rule; which connection runs a fallback model stays said;
+      // the four real trigger classes stay named (errorClass: availability, authentication, billing, rate limits), and the word
+      // is FALLBACK, never "backup" (org P04: STATION BACKUP is a different thing)
+      '<p class="set-about">If your model fails mid-run because it is unavailable, its key or sign-in is refused, it is out of credit, or it hits rate limits, StarNet tries these models, top to bottom. You pick your main model in COMMS. <b>An empty list means no fallback.</b> Fallback models run on your OpenRouter key, or on StarNet credits when StarNet is your provider; COMMS and the logbook say when one takes over.</p>' +
       '<div class="mc-form" id="fbc-form">' +
         '<div id="fbc-list" class="mc-list-fb"><div class="dim">reading chain…</div></div>' +
         '<div class="set-row"><select id="fbc-add" class="fbc-sel"><option value="">＋ add a model from the catalog…</option></select></div>' +
-        '<div class="mc-hint">Order is the retry order — the loop walks it top-to-bottom. Up to <span id="fbc-max">8</span> models. Unknown ids are allowed (the catalog can be stale) but flagged.</div>' +
+        '<div class="mc-hint">Up to <span id="fbc-max">8</span> models. A model id the catalog does not know still saves, marked unknown.</div>' +
         '<div class="mc-acts">' +
           '<button class="bb sm" id="fbc-save">SAVE CHAIN</button>' +
           '<button class="bb xs" id="fbc-reset" title="clear the saved chain so it follows the environment default again" style="display:none">RESET TO DEFAULT</button>' +
@@ -7952,18 +8083,18 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // at "(station default)" a tier inherits the model dock's primary, so this is purely opt-in. Saved per-machine
       // (localStorage) and read live by the summon path (app.resolveTierModel) — no rerun/rebuild needed.
       '<h4 class="ms-h">New agent defaults <span class="dim">— model choice by class tier</span></h4>' +
-      '<p class="set-about">Choose the model used when recruiting each class tier. <b>Station default</b> follows your primary model in COMMS. Existing agents keep their model; you can change an individual agent in its dossier.</p>' +
+      '<p class="set-about">The model a NEW agent starts with, by its class tier. <b>(station default)</b> uses your main model from COMMS. Agents you already have keep theirs; change one in its dossier.</p>' +
       '<div class="mc-form" id="tm-form">' +
         '<div class="set-row"><label for="tm-reasoning">◆◆◆ DEEP</label><select id="tm-reasoning" class="fbc-sel" data-tier="reasoning"><option value="">(station default)</option></select></div>' +
         '<div class="set-row"><label for="tm-balanced">◆◆ BALANCED</label><select id="tm-balanced" class="fbc-sel" data-tier="balanced"><option value="">(station default)</option></select></div>' +
         '<div class="set-row"><label for="tm-fast">◆ FAST</label><select id="tm-fast" class="fbc-sel" data-tier="fast"><option value="">(station default)</option></select></div>' +
-        '<div class="mc-hint">A pin applies to the next agent you summon of that tier. Empty = follow the model dock. This never overrides a model you set on a specific agent.</div>' +
+        '<div class="mc-hint">A pick here never changes a model you set on one agent.</div>' +
       '</div>' +
       '<div id="tm-msg" class="msg"></div>' +
       // VOICE CHAT MODEL (Hermes parity auxiliary.voice_chat) — the model a SPOKEN reply runs on. Server-persisted
       // (/api/voice/chat-model) and read by the sidecar per voice turn; only that turn moves (sidecar/voice-chat-route.js).
       '<h4 class="ms-h">Voice chat model <span class="dim">— answers spoken replies</span></h4>' +
-      '<p class="set-about">With the speaker on, spoken replies and Telegram voice notes can use a faster model. Only that reply moves: typed messages and the agent’s saved model stay as they are. If the voice model can’t answer, the agent’s own model does.</p>' +
+      '<p class="set-about">A faster model just for spoken replies (with the speaker on, or to a Telegram voice note). Typed chat keeps the agent’s own model, and so does any spoken reply this model can’t give.</p>' +
       '<div class="mc-form" id="vcm-form">' +
         '<div class="set-row"><label for="vcm-model">MODEL</label><select id="vcm-model" class="fbc-sel"><option value="">(same as the agent)</option></select></div>' +
         '<div class="set-row"><label for="vcm-effort">REASONING</label><select id="vcm-effort" class="fbc-sel">' +
@@ -8080,7 +8211,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     const secNotifs =
       // NOTIFICATIONS — per-category on/off + a notification sound toggle (P1-8). Each is HONORED at emit time in
       // notify(): a muted category is dropped before it ever reaches the panel/toast (not decorative).
-      '<h4 class="ms-h">NOTIFICATIONS <span class="dim">— what pings you, and whether it chimes</span></h4>' +
+      '<h4 class="ms-h">NOTIFICATIONS</h4>' +
       '<p class="set-about">Choose which events appear in the notification panel and as pop-up alerts. Changes save immediately.</p>' +
       '<label class="set-row"><input type="checkbox" id="ntp-runComplete"' + (npf('runComplete') ? ' checked' : '') + '> RUN COMPLETE <span class="dim">— a run saved or made something</span></label>' +
       '<label class="set-row"><input type="checkbox" id="ntp-needsApproval"' + (npf('needsApproval') ? ' checked' : '') + '> NEEDS APPROVAL <span class="dim">— an agent is waiting on your yes/no</span></label>' +
@@ -8104,8 +8235,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       '<p class="set-about" id="lifecycle-desc">' + (lifecycleDesktop ? 'Checking what runs in the background…' : 'The desktop app can stay supervised in the system tray. This browser tab has no background process.') + '</p>' +
       // ADVANCED — env-only runtime knobs, now editable + persisted server-side (P1-9). PRECEDENCE is spelled out
       // in the card: an explicit environment variable ALWAYS wins over a value saved here (a deploy stays in control).
-      '<h4 class="ms-h">Runtime limits <span class="dim">— optional ceilings and timeouts</span></h4>' +
-      '<p class="set-about">StarNet does not limit agent concurrency or run iterations by default. Set a positive value only when you want a ceiling. Saved here on this machine and read by the sidecar at boot. <b>An environment variable always overrides a value saved here</b>. Blank a field to clear the override.</p>' +
+      '<h4 class="ms-h">Runtime limits <span class="dim">· optional ceilings and timeouts</span></h4>' +
+      // R30 (0.14.1 readiness review): say what the code does. Some fields HAVE defaults (CONSENT TIMEOUT 120000, ROUTINE TICK
+      // 60000, both token ceilings 2,000,000 in index.js resolveKnob), and a cleared box saves null = back to that default,
+      // never "no limit" (0 is what switches a ceiling off).
+      '<p class="set-about">Optional. Each box shows the value in use, marked default until you save your own; type a number to change it, or clear the box to go back to its default. By default nothing caps the steps in a run or the agents working at once, and the two token ceilings stop a run at 2,000,000 tokens (0 switches one off). Most take effect after a restart; each line says when it differs. <b>An environment variable always overrides a value saved here</b>.</p>' +
       '<div class="mc-form" id="adv-form"><div class="dim" id="adv-loading">reading runtime settings…</div></div>' +
       '<div id="adv-msg" class="msg"></div>' +
       // DATA / STATION BACKUP — export the whole station config to one JSON file, import it back, reset a section.
@@ -8139,8 +8273,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // fail-open pressure: per-tag swallowed-error counts since boot, from report.swallowed. Painted in wireDiagnostics().
       '<div id="diag-swallowed" class="dim" style="margin-top:6px;font-size:11px">swallowed errors: reading…</div>' +
       '<h4 class="ms-h">LIVE DOCTOR <span class="dim">— opt-in runtime proof</span></h4>' +
-      '<p class="set-about">Runs one tiny response through the selected model, a harmless sentinel through the effective execution profile, an initialize/list round-trip for each enabled MCP server, and safe authentication/status checks for messaging channels. It sends no channel messages and exports no secrets.</p>' +
-      '<label class="set-check"><input type="checkbox" id="diag-live-consent"> I understand this performs real network and execution probes and may spend one tiny model response.</label>' +
+      // plain first (UX night 10-26); every probe it runs is still named
+      '<p class="set-about">Checks, for real, that StarNet works: one tiny reply from your model, one harmless test command, a hello to each connected service, and a status check of each chat channel. It sends no chat messages and shares no secrets.</p>' +
+      '<label class="set-check"><input type="checkbox" id="diag-live-consent"> I understand this makes real requests and may spend one tiny model reply.</label>' +
       '<div class="set-save"><button class="bb sm" id="diag-live-run">RUN LIVE DOCTOR</button><button class="bb sm" id="diag-live-copy" hidden>⧉ COPY RECEIPT</button></div>' +
       '<div id="diag-live-msg" class="msg"></div>' +
       '<pre id="diag-live-out" class="diag-pre" tabindex="0" hidden style="white-space:pre-wrap;overflow:auto;max-height:40vh"></pre>' +
@@ -8275,7 +8410,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     let paintBackdropSwatches = () => {};
 
     const sections = [
-      { id: 'providers', label: 'AI & MODELS', glyph: '⌁', desc: 'Connect an AI service, manage its saved keys, and choose fallback models and agent defaults.', build: frag(secProviders + secModels) },
+      { id: 'providers', label: 'AI & MODELS', glyph: '⌁', desc: 'The AI your agents think with. Connect one below: StarNet credits, a subscription you have, an API key, or your own models. Everything under API KEYS is optional.', build: frag(secProviders + secModels) },
       // ONE WORD: AUTONOMY — the dial and what it did while you were away are one section (the old NIGHT SHIFT
       // section folded in; openTerm maps its id here so an old deep link still lands).
       { id: 'autonomy', label: 'AUTONOMY', glyph: '◈', desc: 'Choose when agents work on their own, where that work goes, and see what they did while you were away.', build: frag(secAutonomy + secAwayActivity) },
@@ -8318,7 +8453,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     (() => {
       const was = creditsProv.state + ':' + creditsProv.balanceUsd + ':' + creditsProv.tier;
       refreshCreditsProvider().then(() => {
-        if (was !== creditsProv.state + ':' + creditsProv.balanceUsd + ':' + creditsProv.tier) rerender('settings');
+        // through the coalescer (10-26): two builds in flight (the open + a status repaint) both saw the old balance and
+        // each rebuilt the whole window when the one shared answer landed — twice, 70 ms apart, at the reader's scroll 0
+        if (was !== creditsProv.state + ':' + creditsProv.balanceUsd + ':' + creditsProv.tier) scheduleSettingsRepaint();
       }).catch(() => {});
     })();
     wireCredits(host);
@@ -8599,7 +8736,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(x => x.classList.toggle('sel', sync.loaded && x.dataset.reach === a.reach));
         if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(x => x.classList.toggle('sel', sync.loaded && Number(x.dataset.pace) === a.leashPerDay));
         for (const wrap of [initWrap, reachWrap, paceWrap]) if (wrap) wrap.querySelectorAll('button').forEach(x => { x.disabled = sync.pending; });
-        if (autoDesc) { autoDesc.setAttribute('role', 'status'); autoDesc.textContent = sync.pending ? 'Confirming autonomy settings…' : (sync.error ? sync.error + (sync.loaded ? ' Current setting: ' + AutonomyStore.describe() : ' Reopen this panel to retry.') : sync.loaded ? AutonomyStore.describe() : 'Autonomy settings have not been confirmed.'); }
+        if (autoDesc) { autoDesc.setAttribute('role', 'status'); autoDesc.textContent = sync.pending ? 'Confirming autonomy settings…' : (sync.error ? sync.error.replace(/([^.!?…])s*$/, '$1.') + (sync.loaded ? ' Current setting: ' + AutonomyStore.describe() : ' Reopen this panel to retry.') : sync.loaded ? AutonomyStore.describe() : 'Autonomy settings have not been confirmed.'); }
         try { paintEarned(a); } catch (_) {}   // GROWTH Tier 3: the EARNED badge on an earned rung
         try { syncPerm(); } catch (_) {}   // keep the permissions level highlight + blurb in step with the dial
       };
@@ -9855,7 +9992,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       '<button type="button" data-nf-view="all" aria-pressed="' + (notifView === 'all') + '">All · ' + (rest.length + nWaiting) + '</button>' +
       '<button type="button" data-nf-view="unread" aria-pressed="' + (notifView === 'unread') + '">New · ' + (unread + nWaiting) + '</button></div>' +
       '<button class="bb sm" id="nf-clear"' + (!unread ? ' disabled' : '') + '>MARK ALL READ</button></div>' +
-      '<div class="nf-list">' + (rows.length ? rows.map(row).join('') : '<div class="empty-state"><span class="es-glyph">▮</span><b>' + (notifView === 'unread' ? 'You’re all caught up' : 'Nothing yet') + '</b><span>' + (notifView === 'unread' ? 'Switch to All to see earlier ones.' : 'When an agent needs your OK, or work finishes while you’re elsewhere, it lands here.') + '</span></div>') + '</div>';
+      '<div class="nf-list">' + (rows.length ? rows.map(row).join('') : '<div class="empty-state"><span class="es-glyph" aria-hidden="true"><svg viewBox="0 0 16 16" focusable="false"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11zM6.5 14.5h3"/></svg></span><b>' + (notifView === 'unread' ? 'You’re all caught up' : 'Nothing yet') + '</b><span>' + (notifView === 'unread' ? 'Switch to All to see earlier ones.' : 'When an agent needs your OK, or work finishes while you’re elsewhere, it lands here.') + '</span></div>') + '</div>';
     body.querySelectorAll('[data-nf-view]').forEach(b => b.addEventListener('click', () => {
       notifView = b.dataset.nfView; buildNotifs(body);
       const selected = body.querySelector('[data-nf-view="' + notifView + '"]'); if (selected) selected.focus();
@@ -10095,7 +10232,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       offer = list.find(c => c && c.file && Number(c.restorable) > 0) || null;
       if (!list.more) break;
     }
-    if (!offer || document.getElementById('save-conflict-notice') || document.getElementById('save-preserved-notice')) return;
+    // a live conflict is offered on its own banner (Restore this window's sessions), even before that banner is drawn
+    const live = (() => { try { const h = CloudSave.health && CloudSave.health(); return !!(h && h.conflict); } catch (_) { return false; } })();
+    if (!offer || live || document.getElementById('save-conflict-notice') || document.getElementById('save-preserved-notice')) return;
     const n = Number(offer.restorable);
     const when = offer.savedAt ? new Date(offer.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'earlier';
     const banner = document.createElement('div'); banner.id = 'save-preserved-notice'; banner.setAttribute('role', 'alert');
@@ -10106,6 +10245,14 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     restore.onclick = async () => { restore.disabled = true; try { await CloudSave.restoreConflict(offer.file); } catch (e) { label.textContent = e.message; restore.disabled = false; } };
     const later = document.createElement('button'); later.className = 'bb'; later.textContent = 'Not now'; later.onclick = () => { dismissPreserved(offer); banner.remove(); };
     banner.append(label, restore, later); document.body.append(banner);
+  }
+  /* WHY the newest save is not in the station file, from the cause CloudSave recorded for the last failed attempt
+     (CloudSaveCore.causeOf: what the station answered, or that it did not answer). The disk is named ONLY when the station
+     said ENOSPC (diskFull) or EPERM/EACCES (diskDenied) — every failure streak used to read "check disk space / folder
+     permissions" on machines with plenty of disk (10-26 audit, gh#121). */
+  function saveCauseWords(h) {
+    // one table (CloudSaveCore.describeCause), shared with the update drain's words
+    return (typeof CloudSaveCore !== 'undefined' && CloudSaveCore.describeCause) ? CloudSaveCore.describeCause(h && h.cause) : 'the station file has not confirmed it';
   }
   function refreshSaveDurability(d) {
     d = d || $('#save-dot'); if (!d) return;
@@ -10166,6 +10313,14 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         degradedNotified = true;
         try { notify('This station’s data was written by a newer StarNet — update the app. Until you do, your changes are NOT being backed up.', 'bad'); } catch (_) {}
       }
+    } else if (h && h.cause === 'tooLarge' && (h.consecutiveFailures || 0) > 0) {
+      // a save over the station file's 16 MiB cap (a named 413): retrying cannot land it, so it says so on the FIRST refusal,
+      // never "check disk space"
+      d.classList.add('degraded');
+      // a station over 16 MiB is over the browser cache's cap too: then the latest change is held ONLY in this window's memory,
+      // and closing it loses it (the cacheFailed warning, review 10-27) — never "local play continues" alone
+      d.title = 'too large to save — this station is larger than the 16 MiB the station file takes, so your latest change is NOT saved.'
+        + (h.cacheFailed ? ' The browser cache could not hold it either: it is only in this window, and closing this window loses it.' : ' Local play continues; retrying will not land it.');
     } else if (h && h.cacheFailed) {
       // #121: the browser cache is full (its per-site cap), so every change rides on the station file alone. The words
       // follow the station file's confirmation of the NEWEST save, never the cache: amber while it is confirmed or on
@@ -10177,7 +10332,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         d.title = cache + ' — saving to the station file only. Your latest change is confirmed in the station file.';
       } else if ((h.consecutiveFailures || 0) > 0) {
         d.classList.add('degraded');
-        d.title = cache + ' and the station file has not confirmed your latest change — it is NOT saved. Keep StarNet open; it keeps retrying.';
+        d.title = cache + ' and the station file has not confirmed your latest change (' + saveCauseWords(h) + ') — it is NOT saved. Keep StarNet open; it keeps retrying.';
       } else {
         d.classList.add('stale');
         d.title = cache + ' — your latest change is NOT saved yet; it is on its way to the station file.';
@@ -10185,12 +10340,16 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     } else if (h && h.stale) {
       d.classList.add('stale');
       const since = h.lastPushOkAt ? new Date(h.lastPushOkAt).toLocaleString() : 'never';
-      d.title = 'world is saved locally; the durable backup copy hasn’t synced since ' + since;
+      d.title = 'world is saved locally; the durable backup copy hasn’t synced since ' + since + ' (' + saveCauseWords(h) + ')';
     } else if (h && h.warn) {
       // EL-11 FIX 4: a live streak of failed pushes (3+) warns IMMEDIATELY — no 60-minute blind window while
-      // POST /api/save errors (disk full / EPERM / refused). Same amber vocabulary as stale, advising title.
+      // POST /api/save errors. Same amber vocabulary as stale; the words name the cause the station gave (saveCauseWords).
       d.classList.add('stale');
-      d.title = 'saves are failing — check disk space / folder permissions (' + (h.consecutiveFailures || 0) + ' failed attempts in a row). Local play continues; the durable backup is not confirming writes.';
+      d.title = 'saves are failing — ' + saveCauseWords(h) + ' (' + (h.consecutiveFailures || 0) + ' failed attempts in a row). Local play continues; the durable backup is not confirming writes.';
+    } else if (h && h.merging) {
+      // another window saved past this one: this window's saves are merged into the station file (cloudsave `merging`), and its
+      // view does not show the other window's changes until it is reloaded — said, never implied by a plain "autosave"
+      d.title = 'autosave — merged into the station file with another window’s changes; reload this window to see them';
     } else {
       d.title = 'autosave';
     }
@@ -11933,7 +12092,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       b.disabled = true;
       const text = q.title + (q.desc ? ' — ' + q.desc : '');
       WorkshopStore.queue({ agentId: (heroAgent() && heroAgent().id) || 'agent', text: text, sourceType: 'quest', sourceId: q.id }).then(res => {
-        if (res && res.ok) { sfx('click'); notify('◈ queued for the away workshop — it’ll be built in the sandbox while you’re away', 'good'); }
+        if (res && res.ok) { sfx('click'); notify('Queued for the away workshop — it’ll be built in the sandbox while you’re away.', 'good'); }
         else { b.disabled = false; notify('could not queue: ' + ((res && res.error) || 'refused'), 'bad'); }
       });
     }));
@@ -12085,6 +12244,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     get present() { return present; },
     get sel() { return sel; },
     skillsAgentId,   // ORG P21: the agent the ABILITIES skills lane shows — the BUILT-IN ABILITIES picker opens on the same one
+    agentPostureOf,  // a pure read (no state): the ONE ACCESS posture an agent's saved answer matches — TOOLS names it in those words
     get deskAgentId() { return deskAgentId; },
     get store() { return store; }
   };
@@ -12152,11 +12312,35 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     logbook:  { term: 'agents',     section: 'record', map: { runs: 'record', slag: 'record', insights: 'record' } },
     rewind:   { term: 'agents',     section: 'record', map: { restore: 'record' } }
   };
+  /* ONE FLAT LIST (UX night 10-26): CONNECT › ABILITIES lost its INSTALLED / DISCOVER / CREATE switch and four
+     sections became blocks of their neighbours. Their ids are named all over the app (places, error doors, the
+     dossier, SETTINGS), so each retired id still opens: on the section that absorbed it, scrolled to its block. */
+  const SECTION_ALIAS = {
+    connectors: { keys: ['mcp', '#ab-keys'], computer: ['toolsets', '#ab-computer'], agent: ['library', '#ab-agent-skills'], exchange: ['market', '#ab-exchange'] }
+  };
+  // a door to a merged block lands ON it: opens every fold on the way down, then scrolls (setTimeout, never rAF — a
+  // hidden or non-compositing tab never fires rAF). The window may still be swapping in, so it waits for the block;
+  // rows that load late above it (the services list) push it down, so it lands once more unless the Commander scrolled.
+  function revealInTerm(key, anchor) {
+    let tries = 0, landed = -1, pane = null;
+    const land = () => {
+      const w = open[key], el = w && w.querySelector(anchor);
+      if (!el) { if (++tries < 25) setTimeout(land, 60); return; }
+      for (let p = el.parentElement; p && p !== w; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true;
+      pane = el.closest('.con-pane');
+      if (!pane) { try { el.scrollIntoView({ block: 'start' }); } catch (_) {} return; }
+      pane.scrollTop = Math.max(0, el.offsetTop - pane.offsetTop - 8); landed = pane.scrollTop;
+    };
+    setTimeout(land, 0);
+    setTimeout(() => { if (pane && pane.isConnected && pane.scrollTop === landed) land(); }, 700);
+  }
   function openTerm(key, section) {
     if (key === 'work') key = 'tasks'; // compatibility for old saved links; the station remains home
     const al = TERM_ALIAS[key];
     if (al) { section = (section && al.map[section]) || al.section; key = al.term; }
     const def = BUILDERS[key]; if (!def) return;
+    const sal = section && SECTION_ALIAS[key] && SECTION_ALIAS[key][section];
+    if (sal) { section = sal[0]; revealInTerm(key, sal[1]); }   // the scroll runs after this open/rerender below
     // the old NIGHT SHIFT settings section is part of AUTONOMY now (ONE WORD: AUTONOMY) — an old link still lands.
     if (key === 'settings' && section === 'nightshift') section = 'autonomy';
     // ONE PLAIN LIST (10-02): MODEL DEFAULTS lives on AI & MODELS, LIVE VOICE on LOOK & SOUND
@@ -12171,7 +12355,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
     // CHANNELS, a schedule draft while WORKFLOWS is up) switches that window's tab in place — never a second window
     const fam = familyOf(key);
     const sib = fam && Object.keys(open).find(k => k !== key && open[k] && !minimized[k] && !open[k]._closing && familyOf(k) === fam);
-    if (sib && !windowDirty(open[sib])) { swapInPlace(sib, () => toggleTerm(key, def[0], def[1], def[2])); return; }
+    // name the window (toKey): the sheet is seated the moment its frame mounts (SEAT BEFORE BUILD), so the source's spot,
+    // size and docked height must be carried BEFORE it opens — carried after, a deep link (TASKS' ▸ DELIVERABLES) opened
+    // at the sibling's own dock height and the tab switch snapped (0.14.1 review)
+    if (sib && !windowDirty(open[sib])) { swapInPlace(sib, () => toggleTerm(key, def[0], def[1], def[2]), key); return; }
     toggleTerm(key, def[0], def[1], def[2]);
   }
   /* org P03 — an error door lands ON the provider's card, not at the top of a long AI & MODELS page. Opens the

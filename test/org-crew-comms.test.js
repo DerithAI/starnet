@@ -8,6 +8,7 @@
      P25 — fewer empty sessions: a background hire mints none, a starter fills a blank open session, the busy row names who.
      P33 — starter-room machines show what they are: a capability prop raises a GLANCE nameplate on hover (no pointer until a click exists). */
 'use strict';
+const { readSidecarSource } = require('./helpers/source');
 const A = require('./_assert.js');
 const fs = require('fs');
 const path = require('path');
@@ -19,19 +20,18 @@ A.ok(/desc: n => 'What ' \+ n \+ ' is for\. It rides only ' \+ n \+ '’s prompt
 A.ok(/desc: n => 'House rules only ' \+ n \+ ' follows: tone, format, the do-nots\. Rules for every agent live in YOU › PREFERENCES\.'/.test(SUI), 'P23: the house-rules card says only this agent follows it and where every-agent rules live');
 A.ok(SUI.includes("typeof f.desc === 'function' ? f.desc(esc((a && a.name) || 'this agent'))"), 'P23: fileCard renders the reach with the agent name escaped');
 A.ok(SUI.includes('your standing orders (every agent follows these)'), 'P23: YOU › PREFERENCES says every agent follows the standing orders');
-A.ok(read('frontend/app/app.js').includes('DossierStore.composeBlock()') && read('sidecar/index.js').includes('withDossier(CRON_PERSONA'), 'P23: the "every agent" claim stays true — the dossier rides every browser prompt and cron runs');
+A.ok(read('frontend/app/app.js').includes('DossierStore.composeBlock()') && readSidecarSource().includes('withDossier(CRON_PERSONA'), 'P23: the "every agent" claim stays true — the dossier rides every browser prompt and cron runs');
 
 /* ---------- P20 STRUCK (Andrew 10-14: "hell no … insanely ugly"): the crew row's DOSSIER key is the candidate's again —
    rendered only with 2+ agents and shown only while the row is pointed at (test/agent-threads-rail, test/crew-card-fit).
    What stays is the manual's truth: a crew-row click never focuses an agent, and it says what the click does at each size. */
 const ICSS = read('frontend/css/interface.css');
-const keyRule = (ICSS.match(/#crew \.crew-dossier \{[^}]*\}/) || [''])[0];
-A.ok(/opacity:\s*0/.test(keyRule) && /#crew \.crew-row:is\(:hover,:focus-within,\.filtering\) \.crew-dossier \{ opacity: 1; \}/.test(ICSS), 'P20 struck: the DOSSIER key shows only while its row is pointed at, as the candidate had it');
+A.ok(!/\.crew-dossier/.test(ICSS), 'the hover DOSSIER key is gone too (Andrew 10-26: "unaligned, looks terrible"): right-click / Shift+F10 on the row open the dossier');
 const MAN = require('../sidecar/manual.js').starnetManual();
 A.ok(!/focuses it/.test(MAN) && !/click the row to focus/.test(MAN) && !/intended agent is focused/.test(MAN), 'the manual never says a crew-row click focuses an agent');
 A.ok(/None of these changes who COMMS talks to/.test(MAN) && /agent ON THE LINE/.test(MAN), 'the manual says messages go to the agent ON THE LINE and a row click does not change that');
-A.ok(/With one agent a crew-manifest row click opens its dossier; with 2\+ it shows that agent's sessions, and the DOSSIER key on the pointed-at row opens the dossier\./.test(MAN) && !/its DOSSIER key opens its file/.test(MAN),
-  'the manual names the row click at each crew size and never promises a DOSSIER key on every row');
+A.ok(/With one agent a crew-manifest row click opens its dossier; with 2\+ it shows that agent's sessions\. A right-click on the row or its sprite opens the dossier/.test(MAN) && !/DOSSIER key/.test(MAN),
+  'the manual names the row click at each crew size and never promises a DOSSIER key');
 
 /* ---------- P21: the dossier says where each per-agent setting lives ---------- */
 const CONN = read('frontend/app/windows/connectors.js');
@@ -48,9 +48,9 @@ A.ok(/'Reusable procedures ' \+ n \+ ' created or learned\./.test(SUI) && SUI.in
 A.ok(/const shownId = skillsAgentId\(\);\n\s+if \(\(p\.agentId \|\| 'agent'\) !== shownId\) return;/.test(SUI), 'P21: the live skills refresh follows the agent the lane shows (one-shot pick behaviour in test/abilities.skills-lane.test.js)');
 A.ok(SUI.includes("return (AP && AP.approval === 'ask') ? AP.label : 'custom'; };") && SUI.includes("authority.unrestricted ? 'FULL POWER' : askingPosture()") && SUI.includes("'FULL POWER — on for every agent by ' + overrideBy") && SUI.includes('data-tip-below>'), 'P21: the ACCESS summary speaks the posture words, gated on the live authority');
 A.ok(CONN.includes('id="ts-agent" class="ab-agent-pick"') && /select\.ab-agent-pick \{[^}]*appearance: none/.test(read('frontend/css/interface.css')), 'P21: the ABILITIES agent pickers are glass fields with a drawn chevron, not key-input/OS paint');
-A.ok(/each switch turns a built-in ability on or off for every agent; CHECK WITH ME and LET IT WORK obey the switches, FULL POWER overrides them/i.test(CONN), 'P21: BUILT-IN ABILITIES says its switches are for every agent, in ONE ACCESS words');
+A.ok(/each switch turns a tool on or off for every agent; CHECK WITH ME and LET IT WORK obey the switches, FULL POWER overrides them/i.test(CONN), 'P21: TOOLS (was BUILT-IN ABILITIES) says its switches are for every agent, in ONE ACCESS words');
 A.ok(CONN.includes("data-tip=\"Turns ' + esc(t.label) + ' on or off for every agent\"") && CONN.includes("notify((tsLabels[id] || id) + (enabled ? ' on' : ' off') + ' for every agent'"),'P21: the switch tip and toast name the ability and say every agent');
-A.ok(/toolsetDisabled/.test(read('sidecar/index.js')), 'P21: "for every agent" stays true — the toggle writes the station-wide toolsetDisabled map');
+A.ok(/toolsetDisabled/.test(readSidecarSource()), 'P21: "for every agent" stays true — the toggle writes the station-wide toolsetDisabled map');
 
 /* ---------- P22: RECRUIT speaks one language ---------- */
 const MKT = read('frontend/app/marketplace.js');
@@ -61,7 +61,8 @@ A.ok(/armCta\(deployCurBtn, 'RE-SPEC ' \+/.test(MKT), 'P22: the re-spec keeps it
 A.ok(!MKT.includes("'⏼ DEPLOY TO ") && !MKT.includes("'\">⏼ DEPLOY TO ") && !MKT.includes("' deployed to '") && /' re-specced as ' \+ s\.name/.test(MKT), 'P22: no DEPLOY verb or "deployed to" toast is left; toasts say re-specced');
 A.ok(!MKT.includes("sectH('▮ YOUR SPECIALISTS')") && !MKT.includes('SPECIALIST ARCHIVE — deep cuts') && !MKT.includes("SPECIALIST ARCHIVE (' +") &&
   MKT.includes("sectH('▮ YOUR CLASSES')") && MKT.includes("sectH('▮ CLASS ARCHIVE — deep cuts')"), 'P22: the nouns are CLASS / YOUR CLASSES / CLASS ARCHIVE');
-A.ok(/'recruit a new agent onto your crew — it gets its own session'/.test(MKT) && /'choose a class for your agent'/.test(MKT), 'P22: the subtitles say recruit / choose a class');
+// sentence case since the old-UI review (10-26 #8: the leads were lowercase); the words are P22's
+A.ok(/'Recruit a new agent onto your crew — it gets its own session'/.test(MKT) && /'Choose a class for your agent'/.test(MKT), 'P22: the subtitles say recruit / choose a class');
 A.ok(!/Same as the orchestrator|Inherits your orchestrator/.test(MKT) && !/inheritLabel: 'Same as the station default'/.test(MKT) && /Copies the model of the agent on the line now/.test(MKT),
   'P22: the model copy says an unpinned recruit copies the on-the-line agent\'s model (it does not track the station default)');
 A.ok(/model:\s*\(pin && pin\.model\)\s*\|\|\s*agent\.model/.test(read('frontend/app/app.js')), 'P22: …which stays true: summonAgent copies the focused agent\'s model');

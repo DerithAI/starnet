@@ -30,6 +30,9 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (hubMod, tgMod, dcMod, slMod, mxMod, sgMod) {
   'use strict';
   const makeChannelHubDefault = hubMod && hubMod.makeChannelHub;
+  const HostPathScrub = (typeof require === 'function') ? require('../host-path-scrub.js') : null;   // node only (the host scrub)
+  // failopen.note — a teardown fault is never invisible (the per-tag count + throttled warn), as in hub.js
+  const failNote = (typeof require === 'function') ? require('../failopen.js').note : function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); };
 
   // the SUPPORTED channels. env names mirror index.js's existing auto-start (token + shared key/model).
   // `auth` declares what a connect needs beyond provider config, so the host/UI stay data-driven:
@@ -80,8 +83,14 @@
     deps = deps || {};
     const makeHub = deps.makeHub || makeChannelHubDefault;
     if (typeof makeHub !== 'function') throw new Error('wireChannel: makeChannelHub unavailable');
+    /* OUTBOUND HOST-PATH SCRUB (run-paths review round 3): deps.outbound is the host's ONE scrub (host-path-scrub.js). The
+       hub runs it on the WHOLE text before it chunks, and the adapter's own send / editMessage / answerCallback are
+       wrapped in place, so a send that never passes the hub (channel.send, a routine delivery, the notifier, a loop
+       notice) reaches the wire through it too. */
+    const outbound = typeof deps.outbound === 'function' ? deps.outbound : null;
+    if (outbound && !(HostPathScrub && typeof HostPathScrub.guardOutbound === 'function')) throw new Error('wireChannel: the outbound scrub needs host-path-scrub.js');
     let adapterRef = null;
-    const hub = makeHub(Object.assign({
+    const hub = makeHub(Object.assign(outbound ? { scrubOutbound: outbound } : {}, {
       channel: descriptor.id,
       maxMessageLength: descriptor.maxMessageLength,
       send: (chatId, text, o) => adapterRef ? adapterRef.send(chatId, text, o) : Promise.resolve({ ok: false, error: 'no adapter' }),
@@ -99,14 +108,33 @@
       onInbound: (deps.adapter && deps.adapter.onInbound) || hub.onInbound,
       onCallback: (deps.adapter && deps.adapter.onCallback) || hub.onCallback,
       onStatus: (deps.adapter && deps.adapter.onStatus) || hub.onStatus,
+      // OUR OWN membership changed (blocked / kicked): the hub marks the chat unreachable and drops its backlog. Only
+      // the bespoke station-Telegram wiring passed this (quick win 21). PLUMBING ONLY today: the platforms wired here
+      // (Discord, Slack, Matrix, Signal) pass onMembership through, but none of their normalizers emits a `membership`
+      // update yet (telegram.js is the only one), so in production it fires for no chat until one does. What stops a
+      // registry hub retrying a chat that removed the bot today is deliver()'s undeliverable rule (quick win 22).
+      // onDelivery is the caller's per-send outcome hook (delivery health).
+      onMembership: (deps.adapter && deps.adapter.onMembership) || (typeof hub.onMembership === 'function' ? hub.onMembership : undefined),
+      onDelivery: (deps.adapter && deps.adapter.onDelivery) || undefined,
       // the groups the paired owner admitted with /allow, read live off the hub's chat records (a caller's own
       // list still wins). Absent, every group/guild/room message was dropped on every platform (2026-10-19).
       allowedChats: (deps.adapter && deps.adapter.allowedChats) || (typeof hub.chatAdmitted === 'function' ? hub.chatAdmitted : undefined)
     });
     const adapter = descriptor.makeAdapter(adapterOpts);
+    if (outbound) HostPathScrub.guardOutbound(adapter, outbound);
     adapterRef = adapter;
     return { hub, adapter };
   }
 
-  return { makeChannelRegistry, wireChannel, _internals: { defaultDescriptors } };
+  /* unwireChannel({ hub, adapter }) — the ONE teardown for a wired channel: close the hub FIRST (stops its outbox retry
+     timer and any flush/recovery it would start), then disconnect the adapter. Dropping only the adapter left the old
+     hub's timer redelivering the shared outbox beside the reconnected hub's (quick win 21). Never throws; false = nothing. */
+  function unwireChannel(wired) {
+    if (!wired) return false;
+    if (wired.hub && typeof wired.hub.close === 'function') { try { wired.hub.close(); } catch (e) { failNote('channels.registry.unwire.hub', e); } }
+    if (wired.adapter && typeof wired.adapter.disconnect === 'function') { try { wired.adapter.disconnect(); } catch (e) { failNote('channels.registry.unwire.adapter', e); } }
+    return true;
+  }
+
+  return { makeChannelRegistry, wireChannel, unwireChannel, _internals: { defaultDescriptors } };
 });

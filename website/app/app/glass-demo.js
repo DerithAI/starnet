@@ -121,7 +121,11 @@
     // its own overflow says they need (review 10-14: DONE sat 18px under the fold at 1366x768) — still capped by the band.
     const roster = w.classList.contains('gc-picker-win'), rosterBody = roster && w.querySelector('.term-body');
     const rosterNeed = rosterBody ? w.offsetHeight - rosterBody.clientHeight + rosterBody.scrollHeight : 0;
-    const preferred = catalog ? Math.max(available * .75, w.offsetHeight - catalog.offsetHeight + 260) : page ? available * .82 : work ? available * .8 : roster ? Math.max(available * .8, rosterNeed) : available * .56;
+    // The rail windows (CONNECT, SETTINGS, the dossiers, MY WORK, AUTOMATE …) are pages you read and pick from: at 56% a
+    // newcomer met a ~470px porthole onto thousands of px, and CONNECT showed its intro but not one service (UX night 10-25).
+    // NOTIFICATIONS stays a short sheet: it is a log you glance at.
+    const reading = w.classList.contains('console') && !w.classList.contains('notifs-win');
+    const preferred = catalog ? Math.max(available * .75, w.offsetHeight - catalog.offsetHeight + 260) : page ? available * .82 : work ? available * .8 : roster ? Math.max(available * .8, rosterNeed) : reading ? available * .8 : available * .56;
     const h = s.expanded ? available : Math.min(available, Math.max(220, s.height || preferred));
     w.style.animation = 'none'; w.style.transform = 'none';
     const geometry = {left:b.x+'px',top:(b.bottom-h)+'px',width:b.width+'px',height:h+'px',maxWidth:b.width+'px',maxHeight:available+'px'};
@@ -140,6 +144,12 @@
     const remember = () => { if (w._saveDockState) w._saveDockState(s); };
     w.classList.add('gd-sheet');
     w._fitDockedSheet = () => { if (!s.docked) return false; seat(w,s); return true; };
+    // a tab swap that carried another window's docked height in AFTER this sheet mounted: take it and re-seat
+    w._reseatDock = () => {
+      const d = w._readDockState ? w._readDockState() : {};
+      s.docked = true; s.expanded = d.expanded === true; s.height = Number.isFinite(d.height) && d.height > 0 ? d.height : null;
+      seat(w,s);
+    };
     w._animateSheet = (phase, done) => moveSheet(w,s,phase === 'restore',done);
     const controls = document.createElement('span'); controls.className = 'gd-controls';
     const button = (label, action) => {
@@ -213,6 +223,9 @@
     seat(w,s,true);
   }
   const host=document.querySelector('#terms'); if(!host)return;
+  // stationui seats a new window through this the moment its empty frame mounts, before the builder fills it (one full layout
+  // of the content, at the docked width); the observer below still catches any window added some other way
+  host._seatSheet = w => { if (!states.has(w)) attach(w); };
   const update=()=>{
     states.forEach((s,w)=>{if(!w.isConnected){cancelMotion(w,s);states.delete(w);}});
     host.querySelectorAll('.term').forEach(w=>{if(!states.has(w))attach(w);});

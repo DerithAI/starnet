@@ -12,6 +12,7 @@
                   while waiting and a burst past MAX_PENDING are each refused AND said on the target line's job record.
      THE RECORD — linejobs keeps from / sentTo through normalize, finish and the window's summary. */
 'use strict';
+const { readSidecarSource } = require('./helpers/source');
 const A = require('./_assert.js');
 const P = require('../frontend/app/pipeline.js');
 const WM = require('../frontend/app/worldmodel.js');
@@ -331,7 +332,9 @@ function station(n) {
       { agentId: 'private-agent', reason: 'done', startedAt: 10, artifacts: [{ path: 'result.md' }] },
       { agentId: 'windows-agent', projectRoot: 'D:\\project', reason: 'done', startedAt: 10,
         artifacts: [{ path: 'notes\\result.md' }, { path: 'C:/already/absolute.md' }, { path: '\\\\server\\share\\result.md' }] },
-      { agentId: 'unknown-agent', reason: 'done', startedAt: 10, artifacts: [{ path: 'missing-root.md' }] }
+      { agentId: 'unknown-agent', reason: 'done', startedAt: 10, artifacts: [{ path: 'missing-root.md' }] },
+      // (run-paths review) one base rule for every reader of a finished run's file: a name that climbs out of its base is omitted
+      { agentId: 'climbing-agent', projectRoot: '/projects/source', reason: 'done', startedAt: 10, artifacts: [{ path: '../neighbour/secret.md' }] }
     ];
     const runner = makeHandoffRunner({
       makeHub: () => ({ onInbound(msg) { handed.push(msg.text); return Promise.resolve(); } }),
@@ -348,6 +351,8 @@ function station(n) {
     A.eq(paths, ['/projects/source/result.md', '/shared/absolute.md', '/workspaces/private-agent/result.md',
       'D:\\project\\notes\\result.md', 'C:/already/absolute.md', '\\\\server\\share\\result.md'],
       'handoff files resolve per producing run, dedupe exact pointers, and preserve absolute POSIX/Windows/UNC paths');
+    A.ok(warnings.some(msg => /leaves its source folder: \.\.\/neighbour\/secret\.md/.test(msg)) && !(handed[0] || '').includes('neighbour'),
+      'a produced name that climbs out of its run\'s base is omitted and said (run-paths producedPath), never resolved next door');
     A.ok(warnings.some(msg => /unknown source folder: missing-root\.md/.test(msg))
       && !(handed[0] || '').includes('missing-root.md'),
       'an unknown origin is reported, never fabricated from the sidecar or receiving working directory');
@@ -533,7 +538,7 @@ function station(n) {
     RO.haltAll();
     A.ok(RO.onShipped(fresh('sample-after-estop', LA, lastA)).ok, 'an E-STOP drain alone leaves admission open');
     // the host's graceful shutdown is what closes it (sidecar/index.js gracefulShutdown — never require it: it boots a sidecar)
-    const shut = A.fnBody(require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8'), 'function gracefulShutdown(signal)');
+    const shut = A.fnBody(readSidecarSource(), 'function gracefulShutdown(signal)');
     A.ok(/handoffRunner\.haltAll\('the station stopped before this hand-off ran — send the job again', \{ close: true \}\)/.test(shut), 'gracefulShutdown drains AND closes SEND TO admission');
   }
 

@@ -54,18 +54,29 @@ const USAGE = [
   '  starnet watch                        print the live events of the station, one line each (--json: one object each)',
   '  starnet flow                         list workflows; flow run <name> "<text>" sends one job and waits',
   '',
+  'StarNet app closed? starnet starts its station in the background: the app\'s keys, no window (the tray shows it runs).',
+  '  When the last starnet session ends it closes again, unless routines are armed or StarNet is set to stay in the tray',
+  '  (the same as closing its window). Opening StarNet while it runs shows that same station (on macOS: its',
+  '  menu-bar icon\'s Open StarNet — a Dock click does not bring that window back yet).',
+  '',
   'Folder: starnet works in the trusted project you start it in. Started in one not trusted yet, the dashboard asks',
   '  TRUST THIS FOLDER? (y trusts it, the same as adding it under PROJECTS in the app); your home folder is never asked',
   'Dashboard keys: tab switch agent · ↑↓ your earlier messages · @name message · y/n/v answer an ask · ctrl+c quit',
-  'Dashboard pages: f1 STAT · f2 CREW · f3 COMMS · f4 WORK · f5 SKILLS (or /stat /crew /work) · esc back to COMMS',
+  'Dashboard pages: f1 STAT · f2 CREW · f3 COMMS · f4 WORK · f5 SKILLS · f6 FLOOR (or /stat /crew /work /floor) · esc back',
+  '  FLOOR: the whole crew in one room, made of ASCII where the terminal draws images — each at its desk while it works, a',
+  '  handoff flying from the lead to a worker and its result flying back; a text tree of the same where it does not',
   'Dashboard mouse: click an agent to open its chat, a tab for its page, a card\'s key to answer · right-click an agent',
   '  for its menu · ctrl+click opens a link or a file an agent wrote · STARNET_MOUSE=0 keeps the terminal\'s own selection',
   'Dashboard commands: /model [name] · /new · /resume · /stop · /retry · /status · /flow · /flow run <name> <text> · /help',
+  '  /connect [provider] adds a provider from the app\'s AI & MODELS list: sign in (ChatGPT, Grok, Kimi, Claude Code),',
+  '  link StarNet credits, use Ollama, or paste an API key (typed hidden, checked first, kept where the app keeps keys)',
   '  and the station\'s own: /usage · /tools · /routine · /away · your own commands · each skill as /<skill> <task> (/skills)',
   'Dashboard look: the StarNet logo as an image where the terminal draws Sixel (Windows Terminal, WezTerm, iTerm2), braille',
   '  dots elsewhere · STARNET_LOGO=dots|ascii|plain picks one · NO_COLOR=1 drops color · needs at least 46×16',
+  '  /theme picks the colors: red (the default), amber, green, blue, purple, white — the app colors; kept for the next',
+  '  starnet (STARNET_THEME=<name> overrides it)',
   '  where images draw, the foot of CREW is the station camera on the agent you talk to, in ASCII: it wanders, walks to',
-  '  its desk and types while it works; its rim is red working, amber when it needs you, green when done',
+  '  its desk and types while it works; its rim glows in the theme color working, amber when it needs you, green when done',
   '',
   'Run options:',
   '  --agent <id>       roster agent to run (default: "agent", else the first roster entry)',
@@ -84,14 +95,14 @@ const USAGE = [
   '  --workspace <dir>  workspace to boot when no station is reachable (env STARNET_WORKSPACES)',
   '  --name <NAME>      agent name used by a first-time bootstrap (default OVERSEER)',
   '  --no-spawn         never boot a station; fail (exit 3) if none is reachable',
-  '  --spawn            always boot a station for this run (never attach to a running one); the desktop app\'s own',
-  '                     station is never booted from here while the app is closed: add --workspace <dir> for a separate one',
+  '  --spawn            always boot a station for this run (never attach to a running one); StarNet\'s own station is',
+  '                     never booted without its keys: plain starnet starts it, add --workspace <dir> for a separate one',
   '',
   'Exit codes: 0 done · 1 run failed · 2 usage · 3 no station / not configured · 4 cancelled · 5 stopped early · 6 nothing to answer',
   '',
   'Credentials are never taken on the command line. A spawned station reads them from the environment',
   '(STARNET_OPENROUTER_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, …) or from a ChatGPT/Codex sign-in already',
-  'stored in the workspace; an attached station uses whatever it already has.'
+  'stored in the workspace; an attached station uses whatever it already has, plus what /connect adds.'
 ].join('\n');
 
 const STATION_COMMANDS = ['dash', 'ls', 'approve', 'deny', 'watch', 'flow'];
@@ -196,14 +207,17 @@ function parseArgs(argv, env, ctx) {
      3. a live desktop owner whose port we could not resolve → refuse to spawn INTO that workspace (one
         sidecar per WORKSPACES dir is a hard invariant) — unless the operator picked another workspace;
      4. the desktop app's station (desktop.station: it holds a save; desktop.appRan: the app has run there) with
-        the app CLOSED → refuse, unless the operator picked another workspace. The app keeps
-        that station's keys, key pools, bot tokens and credits token in the OS keychain and gives them only to
-        the sidecar it spawns: a terminal-booted one would be a keyless copy of the real station (agents fail,
-        bots stay offline, routines fire and fail). --spawn alone gets the same refusal: with no --workspace it
-        boots the default workspace, which IS that station (it holds a save), so the reason names --workspace;
+        the app CLOSED → START THE APP in the background (launch-app: desktop.appExe `--background`, window
+        parked, no window opens), unless the operator picked another workspace. The app keeps that station's keys,
+        key pools, bot tokens and credits token in the OS keychain and gives them only to the sidecar it spawns,
+        so the terminal never boots that station itself — that would be a keyless copy of the real station (agents
+        fail, bots stay offline, routines fire and fail). No app to start (desktop.appExe '') → refuse and say so.
+        --no-spawn (a question: status, ls, …) → refuse, saying `starnet` starts it. --spawn alone refuses too:
+        with no --workspace it boots the default workspace, which IS that station, so the reason names both ways;
      5. --no-spawn → refuse; otherwise → spawn. */
-const DESKTOP_CLOSED = 'StarNet isn\'t running — open the StarNet app first (it holds your keys), then run starnet again';
-const DESKTOP_CLOSED_SPAWN = DESKTOP_CLOSED + ' (--spawn would boot that same station without them; add --workspace <dir> for a separate terminal-only station)';
+const DESKTOP_CLOSED = 'StarNet isn\'t running — run `starnet` to start it (in the background: your keys stay in the app, no window opens)';
+const DESKTOP_CLOSED_SPAWN = '--spawn would boot StarNet\'s own station without the keys the app keeps — run plain `starnet` to start it with them (no window opens), or add --workspace <dir> for a separate terminal-only station';
+const DESKTOP_NO_APP = 'StarNet\'s station keeps its keys in the StarNet app, and the app was not found on this computer — reinstall StarNet, set STARNET_APP_EXE to the app, or add --workspace <dir> for a separate terminal-only station';
 function chooseStation(input) {
   const o = input || {};
   const d = o.desktop || {};
@@ -220,7 +234,11 @@ function chooseStation(input) {
   if (d.ownerAlive && !d.port && !o.workspaceOverride) {
     return { mode: 'refuse', reason: 'the desktop app owns the default workspace (pid ' + d.ownerPid + ') but its port could not be discovered — pass --port <n> to attach, or --workspace <dir> to boot a separate station' };
   }
-  if (desktopClosed) return { mode: 'refuse', reason: DESKTOP_CLOSED };
+  if (desktopClosed) {
+    if (o.noSpawn) return { mode: 'refuse', reason: DESKTOP_CLOSED };
+    if (!d.appExe) return { mode: 'refuse', reason: DESKTOP_NO_APP };
+    return { mode: 'launch-app', exe: d.appExe };
+  }
   if (o.noSpawn) return { mode: 'refuse', reason: 'no station reachable and --no-spawn was given' };
   return { mode: 'spawn' };
 }
@@ -258,6 +276,40 @@ function parseStartupLog(text) {
   }
   return out;
 }
+/* The app's own path, from the line it writes at every start: `startup exe=Ok("C:\\Users\\…\\skynet-desktop.exe") …`
+   (Rust's Debug of current_exe(): \\ \" \' \n \t \r and \u{…} escaped). The LAST start wins; '' when there is none. */
+function parseStartupExe(text) {
+  let raw = null;
+  const re = /startup exe=Ok\("((?:[^"\\]|\\.)*)"\)/g;
+  let m;
+  while ((m = re.exec(String(text || '')))) raw = m[1];
+  if (raw === null) return '';
+  return raw.replace(/\\u\{([0-9a-fA-F]{1,6})\}|\\(.)/g, (all, hex, ch) => {
+    if (hex) { const n = parseInt(hex, 16); return n <= 0x10ffff ? String.fromCodePoint(n) : ''; }
+    return ch === 'n' ? '\n' : ch === 't' ? '\t' : ch === 'r' ? '\r' : ch === '0' ? '\0' : ch;
+  });
+}
+/* What StarNet's startup.log says about ONE terminal session (src-tauri main.rs logs its --background start and every
+   join outcome with the session's pid): 'started-for' (it was started for this pid), 'joined', 'starting' (it asked
+   before setup was done; tracked once it is), 'closing' (its sessions ended and it is closing: start it again once it
+   has quit), 'not-tracked' (a person's StarNet, or one staying in the tray: a terminal ending never closes it), or
+   null (nothing about this pid). The LAST line about the pid wins. */
+function joinOutcome(text, pid) {
+  const want = String(pid);
+  let out = null;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    let m = /started by starnet \(--background, terminal pid (\d+)\)/.exec(line);
+    if (m && m[1] === want) { out = 'started-for'; continue; }
+    m = /starnet session pid (\d+)[: ]\s*(.*)$/.exec(line);
+    if (!m || m[1] !== want) continue;
+    out = /^joins the station/.test(m[2]) ? 'joined' : /^joins once StarNet has started/.test(m[2]) ? 'starting'
+      : /^arrived while StarNet is closing/.test(m[2]) ? 'closing' : 'not-tracked';
+  }
+  return out;
+}
+// the exit code of a terminal-started StarNet whose engine failed and whose startup dialog was cancelled
+// (src-tauri terminal_session.rs EXIT_START_CANCELLED): a 0 would read as a hand-off to a StarNet already starting
+const APP_EXIT_START_CANCELLED = 3;
 
 // ---- agent selection ---------------------------------------------------------------------------
 /* GET /api/runtime/agent lists the roster ({agentId, name, model, provider}). Pick the run target:
@@ -329,7 +381,9 @@ function makeRunTracker() {
     st.events++;
     switch (ev.name) {
       case 'agent.run.start':
-        st.started = true; st.runId = String(p.runId || st.runId); if (p.model) st.model = String(p.model);
+        // the LEAD's run is the first run.start: a delegated worker's run.start rides this stream too, and must never
+        // become the run Ctrl-C / --timeout cancels or the receipt reports
+        st.started = true; if (!st.runId) st.runId = String(p.runId || ''); if (p.model && !st.model) st.model = String(p.model);
         break;
       case 'agent.token':
         if (typeof p.delta === 'string' && p.delta) { st.text += p.delta; actions.push({ kind: 'text', delta: p.delta }); }
@@ -552,7 +606,7 @@ function splitSse(buf) {
 function cliStreamId(agentId) { return ('cli-' + String(agentId || 'agent').replace(/[^A-Za-z0-9_-]/g, '')).slice(0, 64); }
 
 module.exports = {
-  EXIT, USAGE, DEFAULT_PORT, DEFAULT_AGENT_ID, DESKTOP_CLOSED, DESKTOP_CLOSED_SPAWN,HEADLESS_PLACED, RUN_STOP_REASONS,
-  parseArgs, chooseStation, parseListeningPort, parseStartupLog, pickAgent, buildRunBody,
+  EXIT, USAGE, DEFAULT_PORT, DEFAULT_AGENT_ID, DESKTOP_CLOSED, DESKTOP_CLOSED_SPAWN, DESKTOP_NO_APP, HEADLESS_PLACED, RUN_STOP_REASONS,
+  APP_EXIT_START_CANCELLED, parseArgs, chooseStation, parseListeningPort, parseStartupLog, parseStartupExe, joinOutcome, pickAgent, buildRunBody,
   makeRunTracker, exitCodeForReason, bootstrapDocs, inferProvider, jsonResult, splitNdjson, splitSse, cliStreamId, isTaskText
 };

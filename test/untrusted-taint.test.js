@@ -14,6 +14,7 @@
    The behavioral end-to-end proof (hostile MCP text -> model obeys -> host blocks the shell anyway) is the
    scratchpad repro; this suite locks the LAW and the wiring, which is where a defence silently dies. */
 'use strict';
+const { readSidecarSource, sidecarTopLevelFunction } = require('./helpers/source');
 
 const A = require('./_assert.js');
 const fs = require('fs');
@@ -121,7 +122,7 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
 
 // ---- 5. wiring: the law is actually enforced, in both places that must agree ----
 {
-  const src = fs.readFileSync(path.join(root, 'sidecar', 'index.js'), 'utf8');
+  const src = readSidecarSource();
   A.ok(/const taintPolicy = require\('\.\/taint\.js'\)/.test(src), 'index.js uses the shared taint policy (no second copy)');
   A.ok(/initialTaint: o\.initialTaint \? String\(/.test(src), 'the run tracks and names initial untrusted provenance');
   // Execute the host's attachment classification. Only real outside bytes (an attachment) taint the run: text the
@@ -130,10 +131,14 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
   const attachmentStart = src.indexOf('// USER ATTACHMENTS:');
   const attachmentEntry = src.slice(attachmentStart, src.indexOf('retryUserRunId:', attachmentStart));
   const captureStart = attachmentEntry.indexOf('const hasUserAttachments =');
-  const captureEnd = attachmentEntry.indexOf('let runMessages =');
+  const captureEnd = attachmentEntry.indexOf('const runMessages =');
   const initialTaint = attachmentEntry.match(/initialTaint: ([^\r\n]+),/);
   A.ok(attachmentStart > 0 && captureStart >= 0 && captureEnd > captureStart && !!initialTaint, 'attachment entry classification exists');
-  A.ok(attachmentEntry.indexOf('TrustedLearning.capture(') >= 0 && attachmentEntry.indexOf('TrustedLearning.capture(') < attachmentEntry.indexOf('await attachments.expandUserAttachments('), 'owner words are captured before files expand');
+  // the files expand in the run host (runOnceCore expandForRun, run-paths review M3), after this entry captured the words:
+  // nothing in the entry expands them first, and the expansion lives inside runOnceCore itself (sliced, never an offset
+  // compared across functions: that ordering held vacuously once either anchor moved, review round 2 F6)
+  A.ok(attachmentEntry.indexOf('TrustedLearning.capture(') >= 0 && attachmentEntry.indexOf('expandUserAttachments(') < 0 && attachmentEntry.indexOf('expandForRun(') < 0, 'owner words are captured before files expand (the entry never expands them)');
+  A.ok(sidecarTopLevelFunction('runOnceCore').indexOf('messages = await attachments.expandForRun(messages, agentId') >= 0, 'the run host expands the files, inside runOnceCore');
   A.ok(/\n\s*learningInput,/.test(attachmentEntry) && !/body\.learningInput/.test(attachmentEntry), 'run receives host-captured input rather than request metadata');
   A.ok(/\n\s*quotedOwnerInput,/.test(attachmentEntry) && !/body\.quotedOwnerInput/.test(attachmentEntry), 'the quoted-material learning flag is host-computed, never request metadata');
   A.ok(/const quotedLearning = o\.quotedOwnerInput === true \|\| replayedQuoted;/.test(src) &&
@@ -335,7 +340,7 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
 {
   const hub = fs.readFileSync(path.join(root, 'sidecar', 'channels', 'hub.js'), 'utf8');
   A.ok(/initialTaint: entryTaint \|\| \(mediaIngest\.attachments\.length \? 'channel attachment' : \(carriesThirdPartyText\(msg\) \? 'forwarded message' : null\)\)/.test(hub), 'channel attachments and forwarded messages begin tainted (a hub entryTaint wins when set)');
-  const idx = fs.readFileSync(path.join(root, 'sidecar', 'index.js'), 'utf8');
+  const idx = readSidecarSource();
   // (a caller may name its own taint — never clear it: the trigger's own is the fallback)
   A.ok(/function makeTriggerHub\(hooks\) \{[\s\S]{0,4000}entryTaint: hooks\.entryTaint \|\| 'line trigger payload'/.test(idx), 'line-trigger runs (webhook bodies, watched files) begin tainted');
   // SEND TO (2026-10-10): a hand-off's entry run reads another line's OUTPUT — it begins tainted like any chain hop
@@ -377,7 +382,7 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
   A.eq(taint.scopeAfterSource(broad, wr, call(P, key), { wasTainted: true }), broad, 'broad never narrows again');
   A.ok(!taint.sameOriginContinuation(broad, wr, call(P, key)), 'a broad scope never continues');
   // wiring: one gate, before the boundary; the scope follows every source and relayed taint
-  const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const idx = readSidecarSource();
   A.ok(/const sameOriginApi = !!taintSource && !inheritedTaint && taintSource === execution\.taintedBy\(\)\s*&& taintPolicy\.sameOriginContinuation\(taintScope, liveTool, c, \{ untrustedEntry: untrustedEntryRun \}\);\s*let postTaint = sameOriginApi \?/.test(idx), 'the dispatch gate consults the scope (never for an inherited taint)');
   A.ok(/taintScope = taintPolicy\.scopeAfterSource\(taintScope, liveTool, c, \{ wasTainted: !!execution\.taintedBy\(\), runId, responseOrigin: responseProvenance\.originOf\(r\) \}\);/.test(idx), 'every untrusted result updates the scope, not only the first');
   A.ok(/if \(relayed\) \{ latchRunTaint\(relayed\); taintScope = \{ broad: true \}; \}/.test(idx), 'relayed worker taint makes the scope broad');

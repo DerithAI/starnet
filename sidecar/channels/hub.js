@@ -118,12 +118,14 @@
      ("use ```js to fence it") is not a block delimiter and must not flip the state. The reserve below is why
      the split is given less room: the two markers we add have to fit under the same limit. */
   const FENCE_RESERVE = 8;   // '\n```' opening + '```\n' closing, with slack
-  function reopenFences(chunks) {
+  // reopened (optional out-array): reopened[i] === true when chunk i begins INSIDE a block (it got the synthetic opener)
+  function reopenFences(chunks, reopened) {
     let open = false;
     const out = [];
     for (let i = 0; i < chunks.length; i++) {
       let c = chunks[i];
-      if (open) c = '```\n' + c;                          // continue the block this chunk starts inside
+      if (reopened) reopened.push(open);
+      if (open) c = '```\n' + c;                        // continue the block this chunk starts inside
       const fences = (c.match(/^[ \t]{0,3}```/gm) || []).length;
       if (fences % 2 === 1) { c = c.replace(/\s*$/, '') + '\n```'; open = true; }
       else open = false;
@@ -135,15 +137,15 @@
   /* split text into <=max-length pieces, preferring to break at the last newline/space so words/lines stay
      whole. chunkTextParts returns BOTH views, aligned 1:1: `send` carries the fence-doctored chunks the wire
      wants (reopenFences injects synthetic ``` markers), `raw` the undecorated splits of the original text.
-     Anyone persisting an undelivered REMAINDER must rebuild it from `raw` — joining decorated chunks bakes
-     the synthetic fences into the stored text, and the next pass re-fences them (stray ``` lines per retry). */
+     Anyone persisting an undelivered REMAINDER must rebuild it with remainderOf(parts, at) — joining decorated chunks
+     bakes the synthetic fences into the stored text, and the next pass re-fences them (stray ``` lines per retry). */
   function chunkTextParts(text, max) {
     const s = String(text == null ? '' : text);
     // A non-positive `max` makes `end === i` below, so the loop pushes '' forever without advancing. No
     // caller passes one today (adapters default to 4096), but an unbounded loop is not a thing to leave
     // one bad config away.
     max = (typeof max === 'number' && isFinite(max) && max > 0) ? Math.floor(max) : 4096;
-    if (s.length <= max) { const one = s.length ? [s] : []; return { raw: one, send: one }; }
+    if (s.length <= max) { const one = s.length ? [s] : []; return { raw: one, send: one, reopened: one.map(() => false) }; }
     // Leave room for the fence markers reopenFences may add, but ONLY when there is a fence to worry about —
     // an ordinary long reply keeps the exact old boundaries.
     const fenced = /^[ \t]{0,3}```/m.test(s);
@@ -162,9 +164,21 @@
       out.push(s.slice(i, end));
       i = end;
     }
-    return { raw: out, send: fenced ? reopenFences(out) : out };
+    const reopened = [];
+    const send = fenced ? reopenFences(out, reopened) : out;
+    return { raw: out, send: send, reopened: fenced ? reopened : out.map(() => false) };
   }
   function chunkText(text, max) { return chunkTextParts(text, max).send; }
+  /* remainderOf(parts, at) -> the chunks from `at` on that did NOT go out, as ONE new message: the RAW splits (never the
+     decorated ones) plus a real opening fence when chunk `at` begins inside a code block. The raw tail alone lost that
+     opener — the redelivered code read as prose and its closing ``` became a dangling opener the formatter refuses
+     (review of quick win 20). The ONE rebuild for every undelivered remainder: deliver()'s outbox text and heldText,
+     and a flush pass's progress. */
+  function remainderOf(parts, at) {
+    const i = Math.max(0, Number(at) || 0);
+    const tail = (parts && Array.isArray(parts.raw) ? parts.raw : []).slice(i).join('');
+    return (tail && parts && Array.isArray(parts.reopened) && parts.reopened[i] === true) ? '```\n' + tail : tail;
+  }
 
   /* Render an inbound message's `replyTo` as the preamble that goes ABOVE the member's own words in the turn.
 
@@ -371,7 +385,17 @@
     const channel = o.channel || 'telegram';
     const runOnce = o.runOnce;
     const store = o.store;
-    const send = o.send;
+    /* OUTBOUND HOST-PATH GUARD (run-paths review rounds 2 + 3). A project-scoped run is told where a saved file is by its
+       absolute path in the agent's private workspace (attachments.js expandForRun), and a model will echo it. A chat is
+       never shown an absolute host path: o.scrubOutbound (the host's ONE scrub, sidecar/host-path-scrub.js) runs on the
+       WHOLE text before deliver() or the outbox chunks it (a path cut at a chunk boundary went out in two halves), and
+       again on every send / edit, so "<workspaces>\alpha\x.png" reads "[workspace]\alpha\x.png". A rig may pass
+       hostPathPrefixes() instead and gets the same scrub over those prefixes. Absent both, the text goes as written. */
+    const HostPathScrub = (typeof require === 'function') ? require('../host-path-scrub.js') : null;
+    const scrubHostPaths = typeof o.scrubOutbound === 'function' ? o.scrubOutbound
+      : (typeof o.hostPathPrefixes === 'function' && HostPathScrub ? HostPathScrub.makeHostPathScrub({ prefixes: o.hostPathPrefixes }) : (t) => t);
+    const rawSend = o.send;
+    const send = typeof rawSend === 'function' ? (chatId, text, sendOpts) => rawSend(chatId, scrubHostPaths(text), sendOpts) : rawSend;
     const secrets = typeof o.secrets === 'function' ? o.secrets : () => ({});
     const classify = typeof o.classify === 'function' ? o.classify : () => true;
     const redact = typeof o.redact === 'function' ? o.redact : (p) => p;
@@ -530,8 +554,9 @@
     //   fetchMedia(item)                   -> { ok, buffer?, error? }   (adapter.getFile — platform download)
     //   saveAttachment(agentId, name, url) -> { ok, id, name, path, mediaType, kind } (the SAME workspace
     //                                         .attachments/ store the browser COMMS composer uses)
-    //   expandAttachments(messages, agentId) -> messages with refs expanded into provider content blocks (the
-    //                                         SAME expandUserAttachments the interactive run host calls)
+    //   expandAttachments(messages, agentId) -> the references as runOnce should get them. The host passes them through
+    //                                         unexpanded: runOnceCore expands every surface's references once the run's
+    //                                         root is final (attachments.js expandForRun, run-paths review M3)
     const fetchMedia = typeof o.fetchMedia === 'function' ? o.fetchMedia : null;
     // INJECTED STT (2026-07-29). transcribe(buffer, mime, name) -> { ok, text } | { ok:false, reason }. Absent,
     // a voice note degrades to exactly the old behaviour (saved file + a note naming its path) — the feature is
@@ -560,7 +585,7 @@
     //   resolveConsent(runId, promptId, decision)   -> bool (the host's finisher lookup)
     const prompts = o.prompts && typeof o.prompts.create === 'function' ? o.prompts : null;
     const answerCallback = typeof o.answerCallback === 'function' ? o.answerCallback : null;
-    const editMessage = typeof o.editMessage === 'function' ? o.editMessage : null;
+    const editMessage = typeof o.editMessage === 'function' ? (chatId, messageId, text, eo) => o.editMessage(chatId, messageId, scrubHostPaths(text), eo) : null;
     const askConsent = typeof o.askConsent === 'function' ? o.askConsent : null;
     const resolveConsent = typeof o.resolveConsent === 'function' ? o.resolveConsent : null;
     //   consentOutcome(runId, promptId) -> how an already-settled prompt really ended ('once'|'session'|'always'|'full'|
@@ -590,7 +615,7 @@
     // fail-closed deny timer is ALREADY running. So this must never throw back into that path and never be
     // awaited by it. If the keyboard fails to send, the prompt simply goes unanswered and the host denies it on
     // schedule — the safe direction, and the same outcome as a Commander who never looks at their phone.
-    function sendConsentPrompt(chatId, runId, promptId, fields) {
+    function sendConsentPrompt(chatId, runId, promptId, fields, ask) {
       (async () => {
         const f = fields || {};
         const entry = prompts.create({
@@ -605,6 +630,7 @@
           meta: { runId: runId, promptId: promptId }
         });
         if (!entry) return;
+        if (ask) ask.entry = entry;
         // argsSummary is the WHOLE request now (consentSummary): fit it under a chat message's limit, and say when it
         // doesn't fit — a silent cut would ask for an approval of words the Commander never saw
         const ARGS_MAX = 3000;
@@ -616,8 +642,12 @@
           + '\n\nIf you don\'t answer, this is denied and the run moves on.';
         entry.meta.text = body;
         const r = await deliver(chatId, body, runId, 'prompt', '', { reply_markup: keyboardFor(entry) });
-        // Only a message that actually LANDED can be edited when tapped.
-        if (r && r.ok) { if (r.messageId) prompts.attach(entry.token, r.messageId); return; }
+        // Only a message that actually LANDED can be edited when tapped — or stamped when the ask settles. An ask that
+        // settled while this keyboard was still on its way is stamped the moment it lands.
+        if (r && r.ok) {
+          if (r.messageId) { prompts.attach(entry.token, r.messageId); if (ask) { ask.messageId = String(r.messageId); stampConsent(chatId, ask); } }
+          return;
+        }
         // THE KEYBOARD NEVER LANDED. Retire the token, then DENY IMMEDIATELY instead of letting the host's
         // fail-closed timer run its full course. The Commander was never actually asked, so making them wait out
         // CONSENT_TIMEOUT_MS for the answer that is already certain would turn an undeliverable prompt into a
@@ -626,6 +656,29 @@
         prompts.take(entry.token);
         try { if (resolveConsent) resolveConsent(runId, promptId, 'deny'); } catch (e) { failNote('channels.hub.consent.deny', e); }
       })().catch(function () {});
+    }
+    /* THE SETTLE STAMPS THE KEYBOARD (quick win 24). The broker's decision is the only truth about a permission ask, and it
+       can come from a tap here, from STARNET REMOTE answering the same finisher, from the fail-closed timer, or from the run
+       ending (a superseding message, E-STOP — an abort settles as deny). Stamping only on a TAP left every other ending with
+       four live-looking buttons under it, and a late tap then had to guess what had happened. So the hub .then()s the ask
+       and edits the keyboard message ONCE with the decision the broker applied, stripping the buttons (an edit with no
+       reply_markup). A tap only acknowledges; it records which button won so the stamp can name it.
+       `ask` = { entry, messageId, decision, stamped }: messageId arrives when the keyboard lands, decision when the ask
+       settles — whichever comes second stamps. Cosmetic in effect (the decision is applied either way) and never awaited. */
+    function consentStampLine(decision, tapped) {
+      const d = String(decision || '');
+      if (tapped) return '▸ ' + String(tapped);
+      if (/^(once|session|always|full)$/.test(d)) return '▸ already answered in StarNet — ALLOWED (' + d + ')';
+      if (d === 'timeout') return '▸ ⌛ no answer in time — DENIED, the action did not run';
+      return '▸ ❌ DENIED — the action did not run';
+    }
+    function stampConsent(chatId, ask) {
+      if (!ask || ask.stamped || ask.decision === undefined || !ask.messageId || !ask.entry) return;
+      ask.stamped = true;
+      if (!editMessage) return;
+      const tapped = ask.entry.meta && ask.entry.meta.tapped ? ask.entry.meta.tapped : '';
+      const text = String((ask.entry.meta && ask.entry.meta.text) || '') + '\n\n' + consentStampLine(ask.decision, tapped);
+      try { Promise.resolve(editMessage(chatId, ask.messageId, text, {})).catch(swallow('channels.hub.consent.stamp')); } catch (e) { failNote('channels.hub.consent.stamp', e); }
     }
     /* AN UNANSWERED APPROVAL EXPIRED (2026-10-11). It fail-closes (the action does not run), but it used to do so in
        silence and the agent then told the user "you declined". Tell the chat what actually happened and how to retry;
@@ -920,8 +973,12 @@
     // reads, and Telegram would otherwise render one set of buttons per chunk of a long reply. Returns the final
     // chunk's messageId too, which is what a keyboard needs in order to be edited/stripped once it is tapped.
     async function deliver(chatId, text, runId, reason, agentId, sendOpts, seedId) {
-      const chunks = chunkText(text, maxMessageLength);
-      let ok = true, failedAt = -1, messageId = '';
+      // `send` is what goes on the wire; remainderOf(parts, at) rebuilds any undelivered REMAINDER from `raw` (see chunkTextParts — joining the
+      // fence-doctored chunks bakes synthetic ``` markers into the stored text, re-fenced on every redelivery). The host
+      // path scrub runs on the WHOLE text first: chunked, a path cut at the boundary would go out as two halves.
+      const parts = chunkTextParts(scrubHostPaths(text), maxMessageLength);
+      const chunks = parts.send;
+      let ok = true, failedAt = -1, messageId = '', lastFail = null;
       // A message the stream already put in the chat. Chunk 0 REPLACES it rather than being sent again — that
       // replacement is the whole difference between "streamed" and "streamed, then repeated".
       let seed = (seedId && editMessage) ? String(seedId) : '';
@@ -953,9 +1010,18 @@
           try { r = await send(chatId, chunks[i], opts); } catch (e) { r = { ok: false, error: (e && e.message) || 'send threw' }; }
         }
         if (r && r.threadGone) forgetThread(chatId);   // the topic is gone; stop aiming at it
-        if (!r || r.ok === false) { ok = false; failedAt = i; break; }
+        if (!r || r.ok === false) { ok = false; failedAt = i; lastFail = r || null; break; }
         if (last && r.messageId) messageId = String(r.messageId);
       }
+      /* UNDELIVERABLE (quick win 22): the transport said this send can NEVER succeed (retryable:false — a 4xx such as
+         "chat not found", "message is too long", "bot was blocked"). Queued, it failed identically on every flush and,
+         sitting at the head of the outbox, stopped every pass before the replies queued behind it; held for an inbox
+         replay, it would re-run the message only to fail again. It is parked: said once, never retried. An ABORTED
+         send is our own transport being torn down, not the chat refusing — that one still queues. So does a refused
+         CREDENTIAL (auth:true — every transport marks a 401 / revoked token): it is the whole channel failing, not this
+         chat, every chat fails alike until the Commander re-pairs, and the re-paired hub's 'up' flushes the outbox to
+         the same chats. Parking it would drop the one reply the outbox can still save (review of quick win 22). */
+      const undeliverable = !ok && !!lastFail && lastFail.retryable === false && lastFail.auth !== true && String(lastFail.error || '') !== 'aborted';
       // DURABLE OUTBOX: a reply that failed to send used to be recorded (channel.delivery ok:false) and then
       // LOST — the agent did the work and the Commander never saw the result. Queue the undelivered remainder
       // (only the chunks that did NOT go out) in the store's bounded outbox; flushOutbox redelivers it when the
@@ -975,19 +1041,21 @@
       }
       if (!ok && unreachable) {
         try { console.error('[' + channel + '] reply for chat ' + chatId + ' NOT queued — this chat has blocked or removed the bot'); } catch (_) {}
+      } else if (undeliverable) {
+        try { console.error('[' + channel + '] reply for chat ' + chatId + ' is undeliverable and was NOT queued: ' + String(lastFail.error || 'refused').slice(0, 200)); } catch (_) {}
       }
-      const mustPersistFailure = !ok && !unreachable && reason !== 'command' && reason !== 'prompt' && typeof store.pushOutbox === 'function';
+      const mustPersistFailure = !ok && !unreachable && !undeliverable && reason !== 'command' && reason !== 'prompt' && typeof store.pushOutbox === 'function';
       let failurePersisted = false;
       let failurePersistError = null;
       if (mustPersistFailure) {
         try {
-          const remainder = '⌛ delayed reply — the channel was unreachable when this was first sent:\n' + chunks.slice(failedAt).join('');
+          const remainder = '⌛ delayed reply — the channel was unreachable when this was first sent:\n' + remainderOf(parts, failedAt);
           store.pushOutbox({ channel: channel, chatId: String(chatId), text: remainder, runId: runId || '', agentId: agentId ? String(agentId) : '', reason: reason || '' });
           failurePersisted = true;
           scheduleOutboxRetry();
         } catch (e) { failurePersistError = e; }
       }
-      const ev = { channel, chatId: String(chatId), runId: runId || '', ok, chunks: chunks.length, reason: reason || '' };
+      const ev = { channel, chatId: String(chatId), runId: runId || '', ok, chunks: chunks.length, reason: undeliverable ? 'undeliverable' : (reason || '') };
       if (agentId) ev.agentId = String(agentId);   // additive/optional — attribute the dish to the acting agent
       try { emit('channel.delivery', ev); } catch (_) {}
       if (ok) { try { kickOutbox(); } catch (_) {} }   // a proven-healthy send is the cue to drain any backlog
@@ -997,7 +1065,7 @@
       // replay sends this finished answer instead of running the message a second time.
       if (mustPersistFailure && !failurePersisted) {
         const err = new Error('failed reply could not be persisted: ' + ((failurePersistError && failurePersistError.message) || 'outbox unavailable'));
-        err.heldText = chunks.slice(failedAt).join('');
+        err.heldText = remainderOf(parts, failedAt);
         throw err;
       }
       // `text` is the FINAL chunk's text — the one a keyboard was attached to, and therefore the exact string a
@@ -1048,7 +1116,7 @@
           let dead = false;
           try { const r0 = typeof store.getChatRecord === 'function' ? store.getChatRecord(String(it.chatId)) : null; dead = !!(r0 && r0.unreachable); } catch (_) {}
           if (dead) { try { store.removeOutbox(it.id); } catch (e) { failNote('channels.hub.outbox.remove', e); } continue; }
-          const parts = chunkTextParts(it.text, maxMessageLength);
+          const parts = chunkTextParts(scrubHostPaths(it.text), maxMessageLength);   // whole text first, as deliver() does
           const chunks = parts.send;
           let ok = true, sentUpTo = 0;
           for (let ci = 0; ci < chunks.length; ci++) {
@@ -1072,7 +1140,7 @@
           // synthetic ``` markers into the stored text, which the next pass re-fenced — stray fence lines
           // growing per retry on every long code-bearing reply.
           if (sentUpTo > 0 && typeof store.replaceOutboxText === 'function') {
-            try { store.replaceOutboxText(it.id, parts.raw.slice(sentUpTo).join('')); } catch (e) { failNote('channels.hub.outbox.progress', e); }
+            try { store.replaceOutboxText(it.id, remainderOf(parts, sentUpTo)); } catch (e) { failNote('channels.hub.outbox.progress', e); }
           }
           // A pass that delivered real chunks is PROGRESS, not another failed attempt — it must not count
           // toward the escalation ceiling, or a long message advancing one chunk per pass reads as failing.
@@ -1260,8 +1328,14 @@
         } else bits.push('Idle — nothing running.');
         const me = (roster || []).find(x => String(x.agentId) === String(boundId));
         bits.push('Agent: ' + (me ? (me.name || me.agentId) : boundId) + (me && me.model ? ' (' + me.model + ')' : ''));
+        // count what the NEXT RUN replays: the canonical stream when the host wires historyFor (the run reads THAT, and /new
+        // moves the chat onto a fresh one), else the legacy store file — never a number the run would not see (quick win 23)
         let turns = 0;
-        try { turns = (store && typeof store.loadHistory === 'function') ? store.loadHistory(boundId).length : 0; } catch (_) { turns = 0; }
+        try {
+          const sid = historyFor ? resolvedStreamId(chatId) : null;
+          const h = sid ? historyFor(sid, boundId) : ((store && typeof store.loadHistory === 'function') ? store.loadHistory(boundId) : []);
+          turns = Array.isArray(h) ? h.length : 0;
+        } catch (_) { turns = 0; }
         bits.push('History: ' + turns + ' message' + (turns === 1 ? '' : 's') + ' remembered.');
         bits.push('Approve/deny buttons: ' + ((boundRec && boundRec.approvals) ? 'ON' : 'OFF') + '.');
         await deliver(chatId, bits.join('\n'), '', 'command');
@@ -1466,7 +1540,11 @@
         let saved; try { saved = await saveAttachmentFn(agentId, name, dataUrl); } catch (e) { saved = { ok: false, error: (e && e.message) || 'save threw' }; }
         if (!saved || saved.ok === false) { notes.push('[could not store the ' + kind + ' "' + name + '"' + from + ': ' + ((saved && saved.error) || 'unknown error') + ']'); continue; }
         refs.push({ id: saved.id, name: saved.name, path: saved.path, mediaType: saved.mediaType, kind: saved.kind, srcKind: kind });
-        if (saved.kind !== 'image') notes.push('[' + kind + ' "' + name + '"' + from + ' received and saved to ' + saved.path + ' in your workspace]');
+        // the stored turn names the file by its jail-relative name (".attachments/<id>.<ext>"): that text is replayed to the
+        // model in later turns and in group chats, so it never carries a host path. A project-scoped run reads it as the
+        // absolute spelling, made only at the model-facing expansion (attachments.js expandForRun, review round 2)
+        const savedAt = String(saved.path || '');
+        if (saved.kind !== 'image') notes.push('[' + kind + ' "' + name + '"' + from + ' received and saved to ' + savedAt + ' in your workspace]');
         else if (from) notes.push('[the image "' + name + '"' + from + ' is attached to this turn]');
 
         /* VOICE NOTES WERE DEAD INPUT. We saved the .ogg and told the model "saved to <path>" — a path it
@@ -1483,7 +1561,7 @@
           catch (e) { tr = { ok: false, reason: (e && e.message) || 'transcribe threw' }; }
           if (tr && tr.ok && String(tr.text || '').trim()) transcripts.push(String(tr.text).trim());
           else if (tr && tr.ok) notes.push('[the voice message "' + name + '" contained no speech we could make out — ask them to resend it]');
-          else notes.push('[the voice message "' + name + '" could not be transcribed (' + ((tr && tr.reason) || 'no transcription engine configured') + ') — the audio file is saved at ' + saved.path + ', and you can ask them to type it instead]');
+          else notes.push('[the voice message "' + name + '" could not be transcribed (' + ((tr && tr.reason) || 'no transcription engine configured') + ') — the audio file is saved at ' + savedAt + ', and you can ask them to type it instead]');
         }
       }
       // truthful cross-reference: only claim a visible video still when BOTH the clip and its frame actually saved
@@ -2194,8 +2272,9 @@
       const turnText = (editLead ? editLead + '\n' : '') + lineAsk;
 
       // durable transcript: load prior turns, persist the new user turn, build the replay messages. The persisted
-      // turn carries the media notes (with saved .attachments/ paths), so an agent in a LATER turn can still reach
-      // the files through its workspace tools even though history replays as plain text.
+      // turn carries the media notes with the saved jail-relative .attachments/ names, so an agent in a LATER turn can
+      // still reach the files through its workspace tools even though history replays as plain text (a project-scoped
+      // run sees them placed absolutely by runOnceCore's expandForRun; the stored text never holds a host path).
       let history = [];
       try {
         history = canonicalStreamId && historyFor ? historyFor(canonicalStreamId, agentId) : store.loadHistory(agentId);
@@ -2220,9 +2299,9 @@
       const userTurn = { role: 'user', content: turnText };
       if (mediaIngest.attachments.length) userTurn.attachments = mediaIngest.attachments;
       let messages = history.map(m => ({ role: m.role, content: m.content })).concat([userTurn]);
-      // Expand the attachment refs into provider content blocks (base64 image blocks / inlined text) through the
-      // SAME expandUserAttachments seam the interactive run host uses. Absent/failed expansion falls back to the
-      // note-only turn (the refs are stripped so no provider ever sees a shape it doesn't know).
+      // The attachment refs ride to runOnce as they are: runOnceCore expands them (attachments.js expandForRun) once the
+      // run's root is final, for every surface. A host that still wires an expansion here gets it applied; a failed one
+      // falls back to the note-only turn (the refs are stripped so no provider ever sees a shape it doesn't know).
       if (userTurn.attachments) {
         let expanded = null;
         if (expandAttachments) { try { expanded = await expandAttachments(messages, agentId); } catch (_) { expanded = null; } }
@@ -2336,16 +2415,18 @@
           // typed follow-up can say the run is paused on this keyboard (LIVE STEER above)
           myRec.awaitingConsent = (myRec.awaitingConsent || 0) + 1;
           const release = function () { myRec.awaitingConsent = Math.max(0, (myRec.awaitingConsent || 1) - 1); };
+          const ask = { entry: null, messageId: '', decision: undefined, stamped: false };   // stampConsent's record of this one ask
           let asked;
           try {
             asked = askConsent({
             agentId: agentId, runId: runId, signal: ac.signal, call: call, tool: tool,
-            onPrompt: function (promptId, fields) { sendConsentPrompt(chatId, runId, promptId, fields); },
+            onPrompt: function (promptId, fields) { sendConsentPrompt(chatId, runId, promptId, fields, ask); },
             // the fail-closed timer fired with no tap: SAY so, or the chat sees the run carry on as if they had refused
             onTimeout: function (promptId, fields) { notifyConsentTimeout(chatId, runId, fields); }
             });
           } catch (e) { release(); throw e; }
-          return Promise.resolve(asked).finally(release);
+          // the broker's decision, whoever made it, stamps the keyboard (stampConsent) — then the run gets it unchanged
+          return Promise.resolve(asked).then(function (d) { ask.decision = d; stampConsent(chatId, ask); return d; }).finally(release);
         } : undefined;
 
         // the receipt now names the run that is about to start (written AFTER the user turn was filed above)
@@ -2474,7 +2555,7 @@
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
                 baseUrl: hopConfig.baseUrl || hopConfig.base_url || '', reasoningEffort: hopConfig.reasoningEffort || hopConfig.reasoning_effort,
                 system: hopConfig.system || personaFor(h.agentId, rec), messages: hist.map(m => ({ role: m.role, content: m.content })).concat([{ role: 'user', content: h.text }]),
-                agentId: h.agentId, lineId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
+                agentId: h.agentId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
                 ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
                 streamId: canonicalStreamId || undefined, parallelBranch: !!h.parallel,   // the whole line shares one canonical transcript; a PARALLEL branch hop skips its one-turn-at-a-time queue (chain.js runBatch)
                 resumeSeed: false,   // THIS dock's own history rides `hist` above; never the whole line stream's transcript (runOnceCore seed)
@@ -2642,6 +2723,9 @@
         let done = false;
         try { done = !!resolveConsent(entry.meta.runId, entry.meta.promptId, opt.value); } catch (_) { done = false; }
         lostRace = !done;
+        // THIS button settled it: the settle's stamp (stampConsent, a microtask away) names it. Set synchronously, before
+        // any await, so the stamp can never run first.
+        if (done) entry.meta.tapped = String(opt.display || opt.value);
       }
       // A lost race is not always a denial: the same ask may have been ALLOWED on another surface (STARNET REMOTE) a moment
       // before this tap — stamping that "expired — DENIED" contradicted an action that ran (2026-10-20).
@@ -2651,24 +2735,16 @@
       }
       await ack(allowedAs ? '✓ Already answered elsewhere — allowed' : lostRace ? '⚠ Already expired — denied' : ((/^[\p{L}\p{N}]/u.test(shown) ? '✓ ' : '') + shown));
 
-      // Stamp the OUTCOME into the original message and strip the spent buttons. Cosmetic ONLY in the sense
-      // that the decision is already recorded whether or not this edit lands (Telegram 400s a no-op edit, and
-      // the message may have been deleted by the user) — which is why it is fired inside its own guard and its
-      // result is not read. What it must never be is a different answer from the one the broker applied.
-      if (editMessage && entry.messageId) {
-        const outcome = allowedAs
-          ? '▸ already answered in StarNet — ALLOWED (' + allowedAs + ')'
-          : lostRace
-          ? '▸ ⚠ expired — DENIED, the run moved on'
-          : '▸ ' + String(opt.display || opt.value);
-        try { await editMessage(chatId, entry.messageId, String(entry.meta.text || '') + '\n\n' + outcome, {}); } catch (_) {}
-      }
+      // A CONSENT tap only acknowledges (quick win 24): the ask's own settle stamps the permission message with the
+      // decision the broker applied, whoever settled it (stampConsent) — a tap that lost the race finds it already
+      // stamped, and the toast above says what happened. A second edit here could only disagree with that stamp.
+      if (entry.kind === 'consent') return;
 
-      if (entry.kind === 'consent') {
-        // The host had already settled it — the fail-closed timer fired, the run was superseded, or E-STOP hit.
-        // Telling the user their tap landed would be a lie about what the harness actually did.
-        if (lostRace && !allowedAs) { try { await deliver(chatId, '⚠ That permission request had already expired — the action was denied and the run moved on.', entry.meta.runId || '', 'prompt'); } catch (_) {} }
-        return;
+      // Stamp the CHOICE into the original message and strip the spent buttons. Cosmetic ONLY in the sense that the
+      // answer is already taken whether or not this edit lands (Telegram 400s a no-op edit, and the message may have
+      // been deleted by the user) — which is why it is fired inside its own guard and its result is not read.
+      if (editMessage && entry.messageId) {
+        try { await editMessage(chatId, entry.messageId, String(entry.meta.text || '') + '\n\n▸ ' + String(opt.display || opt.value), {}); } catch (_) {}
       }
 
       // A CHOICE tap re-enters the NORMAL inbound path carrying the option's own text — byte-identical to the
@@ -2740,5 +2816,5 @@
     };
   }
 
-  return { makeChannelHub, dockSystem, joinReplyDelta, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, NOTE_CMDS, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, joinReplyDelta, chunkText, chunkTextParts, remainderOf, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, NOTE_CMDS, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

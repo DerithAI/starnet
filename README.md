@@ -126,6 +126,12 @@ the chosen agent's conversation beside it, and every approval as a card you answ
 (`v` shows the full request first). It reads the same state the app does, so it never shows work the
 station cannot prove.
 
+StarNet doesn't have to be open. With it closed, `starnet` starts it in the background: the same station
+with your keys (they stay in the app's keychain), and no window opens; the tray icon shows it's running.
+When the last `starnet` session ends it closes again, unless routines are armed or StarNet is set to stay
+in the tray (the same as closing its window). Opening StarNet while it runs shows that same station; on
+macOS, open it from its menu-bar icon (Open StarNet), since a Dock click doesn't bring that window back yet.
+
 | Platform | The command |
 | --- | --- |
 | **Windows** | `%LOCALAPPDATA%\StarNet\bin\starnet.cmd` |
@@ -143,7 +149,7 @@ each), `starnet flow` (workflows) and `starnet -p "<task>"` (one run, answer on 
 
 StarNet can import an existing agent: point it at your on-disk OpenClaw or Hermes home and it
 mints a StarNet agent from the persona, instructions, memory, and model it finds. API keys
-never transfer — you re-enter those in the KEYS tab.
+never transfer — you re-enter those in CONNECT › ABILITIES › CONNECTED › API KEYS.
 
 ## Architecture
 

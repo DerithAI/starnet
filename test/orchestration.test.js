@@ -3,12 +3,14 @@
    identity, threads the parent signal + per-worker cost cap, forwards ONLY lifecycle/cost to the lead bus,
    rejects self/unknown targets without a run, null-guards a refused child, and is capability-gated. */
 'use strict';
+const { readSidecarSource } = require('./helpers/source');
 const A = require('./_assert.js');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { getEventListeners } = require('events');
 const { makeOrchestrationTools } = require('../sidecar/tools/builtin/orchestration.js');
+const RunPaths = require('../sidecar/run-paths.js');
 const { makeSubagentManager } = require('../sidecar/subagents.js');
 const { makeRegistry } = require('../sidecar/tools/registry.js');
 const { makeCapCtx } = require('../sidecar/capability/capGate.js');
@@ -36,12 +38,14 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   const signal = { aborted: false };
   const emitted = [];
   const leadBroker = { _isLeadConsent: true };   // stand-in for the lead's consent broker (ctx.consent)
-  const ctx = { agentId: 'agent', projectRoot: '/selected/project', projectCwd: '/selected/project/package', signal, emit: (name, p) => emitted.push({ name, p }), consent: leadBroker };
+  // the lead's scope rides its host-minted run path object (sidecar/run-paths.js ctx.paths), never a loose ctx field
+  const leadPaths = RunPaths.makeRunPaths(RunPaths.makeResolver({ pathMod: path, root: path.resolve('orch-ws') }), { agentId: 'agent', projectRoot: '/selected/project', workdir: '/selected/project/package' });
+  const ctx = { agentId: 'agent', projectRoot: '/selected/project', paths: leadPaths, signal, emit: (name, p) => emitted.push({ name, p }), consent: leadBroker };
   const out = await dispatchTool.run({ workers: [{ agentId: 'researcher', prompt: 'find X' }, { agentId: 'analyst', prompt: 'analyze Y' }] }, ctx);
 
   A.eq(ro.calls.length, 2, 'two child runs dispatched (one per worker)');
   A.eq(ro.calls[0].projectRoot, ctx.projectRoot, 'worker inherits the host-selected project for file tools');
-  A.eq(ro.calls[0].workdir, ctx.projectCwd, 'worker inherits the execution cwd');
+  A.eq(ro.calls[0].workdir, '/selected/project/package', 'worker inherits the execution cwd');
   A.eq(ro.calls[0].agentId, 'researcher', 'first child is the researcher');
   A.eq(ro.calls[0].system, 'R-SYS', "child runs with the worker's composed system prompt");
   A.eq(ro.calls[0].model, 'm1', 'child uses the worker model when set');
@@ -143,6 +147,61 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   await dispatchTool.run({ workers: [{ agentId: 'coder', prompt: 'Review main.py and fix the bug' }] }, { agentId: 'lead', runId: 'lead-run', emit: () => {} });
   A.eq(ro.calls[0].maxIters, 16, 'a worker asked to fix main.py keeps the ordinary worker turn cap (not the 3-turn one-host cap)');
   A.eq(ro.calls[0].maxToolCalls, undefined, 'a worker asked to fix main.py has no 3-tool one-host cap');
+}
+
+/* ---- THE ONE-HOST BOUND IS FOR A PURE READ (starnet-releases#5): a worker brief that named one host beside "review"
+   was cut to 3 turns / 3 tools / 45s even when it also asked for engineering work — "Review the deployment script for
+   starnet-demo.io, write a unit test for it, and run it" stopped after three tools and read as a broken worker. Both
+   ways, on all three dimensions: the worker's slice is the setTimeout the dispatcher arms (no injected clock). ---- */
+{
+  const realSetTimeout = global.setTimeout;
+  const slices = [];
+  global.setTimeout = function (fn, ms) { slices.push(ms); return realSetTimeout.apply(this, arguments); };
+  try {
+    const briefs = [
+      ['Review the deployment script for starnet-demo.io, write a unit test for it, and run it.', false, 'the reporter\'s review + write + run brief'],
+      ['Review the deployment script for starnet-demo.io, write a unit test that covers it, then run the test and report the result.', false, 'review, write a test, run it'],
+      ['Inspect the nginx config for example.com and fix the redirect.', false, 'inspect + fix'],
+      ['Check example.com and save the summary into notes.md', false, 'check + save'],
+      ['Review the auth flow for example.com and implement the missing token refresh.', false, 'review + implement'],
+      ['Check example.com and build a landing page like it.', false, 'check + build'],
+      ["Read example.com's pricing page", true, 'a pure one-host read'],
+      ['Check starnessos.com and read its docs.', true, 'a pure one-host docs read'],
+      ["Read example.com's pricing page and write a short summary of the plans.", true, 'a summary is the answer, not an artifact'],
+      ['check if example.com is up and running', true, '"up and running" is not a run step'],
+      ['check the latest build on ci.example.com', true, '"the latest build" is not a build step'],
+      ['Read the API docs at docs.example.com and write a short summary into C:\\Users\\me\\My Project\\notes.md', false, 'F10: a summary into a Windows path with a space']
+    ];
+    for (const [prompt, capped, why] of briefs) {
+      slices.length = 0;
+      const ro = fakeRunOnce();
+      const roster = new Map([['eng', { system: 'E' }]]);
+      const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), workerMaxIters: 16 });
+      await dispatchTool.run({ workers: [{ agentId: 'eng', prompt }] }, { agentId: 'lead', runId: 'lead-run', emit: () => {} });
+      const c = ro.calls[0];
+      A.eq(c.maxIters, capped ? 3 : 16, '#5 dispatch turns: ' + why);
+      A.eq(c.maxToolCalls, capped ? 3 : undefined, '#5 dispatch tools: ' + why);
+      A.eq(slices.includes(45000), capped, '#5 dispatch 45s wall clock: ' + why);
+      if (!capped) A.ok(slices.includes(600000), '#5 an uncapped worker keeps its share of the dispatch wall clock: ' + why);
+    }
+  } finally {
+    global.setTimeout = realSetTimeout;
+  }
+  // team.spawn's clones ask the same question
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-spawn-pureread-'));
+  try {
+    const subagents = makeSubagentManager({ fs, pathMod: path, file: path.join(root, 'sub.json'), clock: { now: () => 1000 }, emit: () => {}, newId: counter() });
+    const ro = fakeRunOnce();
+    const { spawnTool } = makeOrchestrationTools({ runOnce: ro, roster: () => new Map(), key: 'k', model: 'm', selfSystem: 'S', newId: counter(), workerMaxIters: 9, subagents });
+    await spawnTool.run({ tasks: [{ prompt: 'Review the deployment script for starnet-demo.io, write a unit test for it, and run it.' }, { prompt: "Read example.com's pricing page" }] }, { agentId: 'lead', emit: () => {} });
+    const work = ro.calls.find(c => /starnet-demo\.io/.test(JSON.stringify(c.messages)));
+    const read = ro.calls.find(c => /example\.com/.test(JSON.stringify(c.messages)));
+    A.eq(work && work.maxIters, 9, '#5 spawn: a review + write + run clone keeps the ordinary turn cap');
+    A.eq(work && work.maxToolCalls, undefined, '#5 spawn: a review + write + run clone has no 3-tool cap');
+    A.eq(read && read.maxToolCalls, 3, '#5 spawn: a pure one-host read clone is still capped');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 /* ---- ONE BRIEF, ONE ANSWER (review 10-15): the dispatcher classifies a worker's brief with the SAME file probe the
@@ -789,7 +848,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // the host's own posture thunk must be wired at the call site (the tool cannot read the roster itself)
 {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const src = readSidecarSource();
   A.ok(/approvalPosture: \(\) => \(!hostPowerWithheldFor\(o\) && \(FULL_ACCESS \|\| \(\(agentRoster\.get\(agentId\) \|\| \{\}\)\.approvalMode === 'full'\)\)\) \? 'full' : 'ask'/.test(src),
     'the run host wires the EFFECTIVE (lead) approval posture into makeOrchestrationTools');
 }
@@ -943,7 +1002,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // the host must wire the gate's live free capacity (the tool cannot see the gate itself)
 {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const src = readSidecarSource();
   A.ok(/freeSlots: \(\) => \{ const m = concurrencyGate\.max\(\); return m > 0 \? Math\.max\(0, m - concurrencyGate\.active\(\)\) : null; \}/.test(src),
     'the run host wires concurrencyGate free capacity into makeOrchestrationTools');
   A.ok(/now: \(\) => Date\.now\(\)/.test(src.slice(src.indexOf('makeOrchestrationTools({'), src.indexOf('}).register(registry);', src.indexOf('makeOrchestrationTools({')))),
@@ -1115,7 +1174,7 @@ for (const reason of ['done', 'budget', 'max_iters', 'aborted']) {
 
 // the run host wires the bridge in (the tool cannot reach the page by itself)
 {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const src = readSidecarSource();
   const block = src.slice(src.indexOf('makeOrchestrationTools({'), src.indexOf('}).register(registry);', src.indexOf('makeOrchestrationTools({')));
   A.ok(/station: require\('\.\/overseer.js'\)\.isCoordinatorRun\([\s\S]*?\? overseerStation\(o.streamId, runId\) : stationBridge/.test(block), 'only coordinator runs receive durable session operations; other leads retain the visual bridge');
 }

@@ -19,8 +19,9 @@ const RETRY_JITTER = 0.2;
 /* Classes a loop may keep retrying AFTER an adapter exhausted its own pre-stream ladder. Deliberately the
    genuinely transient ones only: auth / billing / quota_exhausted / content-policy / format / output_cap are
    non-retryable anyway, and `unknown` is excluded because "the same unrecognized refusal three times in a row"
-   is evidence, not a blip. */
-const PRESTREAM_CONTINUABLE = { overloaded: 1, server_error: 1, timeout: 1, rate_limit: 1 };
+   is evidence, not a blip. `unreachable` continues as `timeout` did in 0.14.1: a public host rides the ladder, and a local
+   one is held to its retryBudget of one (errorClass unreachableIsLocal), which the adapter has already spent. */
+const PRESTREAM_CONTINUABLE = { overloaded: 1, server_error: 1, timeout: 1, rate_limit: 1, unreachable: 1 };
 
 function finite(v, fallback) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
 
@@ -91,14 +92,19 @@ function providerFailure(input) {
     return { action: 'fallback', reason: String(cls.reason || 'provider_failure'), retryable: true, delayMs: 0, rotate: !!cls.shouldRotateCredential };
   }
   const retriesUsed = Math.max(0, finite(i.retriesUsed, 0));
-  const maxRetries = Math.max(0, finite(i.maxRetries, RETRY_DELAYS_MS.length));
+  // a class that names a smaller budget (errorClass unreachable: ONE retry) caps the ladder; the adapters cap their own
+  // pre-stream ladders the same way (provider.runtime.retryLimit), so the two together still make one retry
+  const budget = typeof cls.retryBudget === 'number' && cls.retryBudget >= 0 ? cls.retryBudget : Infinity;
+  const maxRetries = Math.min(budget, Math.max(0, finite(i.maxRetries, RETRY_DELAYS_MS.length)));
   const fallbackUnavailable = !cls.shouldFallback || !i.hasFallback;
   /* An adapter-exhausted pre-stream failure used to end the run outright (a 4x503 blip killed a single-provider
      run in 1.6s). It now CONTINUES the same bounded ladder for the transient classes — the caller has already
      advanced retriesUsed/waitedMs by the adapter's spend (preStreamSpend), so nothing is multiplied. */
   const ladderOpen = !i.preStreamRetriesExhausted || PRESTREAM_CONTINUABLE[cls.reason] === 1;
   if (ladderOpen && cls.retryable && fallbackUnavailable && retriesUsed < maxRetries) {
-    const local = jitteredDelay(RETRY_DELAYS_MS[Math.min(retriesUsed, RETRY_DELAYS_MS.length - 1)], i.jitterSample);
+    // a class that names a floor for its wait (errorClass retryDelayMs: a failed name lookup waits out a blip) waits at least that
+    const floorMs = Math.max(0, finite(cls.retryDelayMs, 0));
+    const local = Math.max(floorMs, jitteredDelay(RETRY_DELAYS_MS[Math.min(retriesUsed, RETRY_DELAYS_MS.length - 1)], i.jitterSample));
     const stated = Math.min(MAX_SERVER_WAIT_MS, Math.max(0, finite(cls.retryAfterMs, 0)));
     if (stated > 0 && stated >= local) {
       // The server named its wait: honor it (never earlier), capped, with UPWARD-only jitter so agents sharing a

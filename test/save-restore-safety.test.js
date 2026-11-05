@@ -18,6 +18,7 @@
      6.  a window's own late-acknowledged re-seed, after a restart, is never blamed on another window;
      7.  restore backups keep the newest three. */
 'use strict';
+const { readSidecarSource } = require('./helpers/source');
 const A = require('./_assert.js');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -29,9 +30,10 @@ const { plan } = require('../sidecar/save-restore.js');
 
 const repo = path.join(__dirname, '..');
 const read = rel => fs.readFileSync(path.join(repo, rel), 'utf8');
-const indexSrc = read('sidecar/index.js');
+const indexSrc = readSidecarSource();
 const handlers = ['function crewLooksOf(save)', 'function seedSaveMemos(agentId, doc)', 'function serveSaveLoad(req, res)', 'async function handleSaveWrite(req, res)',
-  'function serveSaveConflicts(req, res)', 'async function handleSaveConflictRestore(req, res)']
+  'function serveSaveConflicts(req, res)', 'async function handleSaveConflictRestore(req, res)',
+  'function keepStationGrowth(doc, station)', 'function keepTerminalApprovals(doc, station)', 'async function handleSaveAdopt(req, res)']
   .map(h => { const b = fnBody(indexSrc, h); A.ok(b.startsWith(h) && b.length < 6000, 'sliced exactly ' + h); return b; });
 const cloudsaveSrc = read('frontend/app/cloudsave.js');
 const ui = read('frontend/app/stationui.js');
@@ -56,12 +58,12 @@ function sidecar(root, o) {
   const store = makeSaveStore({ fs: o.fs || fs, pathMod: path, root, clock: { now: () => Date.now() } });
   let latestRatingAt = 0;
   const sandbox = { saveStore: store, workspaceDegraded: false, growthRatings: { latestTs: () => latestRatingAt }, readBody: async req => req.body, failNote: () => {},
-    observeDeletedSessions: () => [], Date,
+    observeDeletedSessions: () => [], Date, Buffer, SaveWire: require('../sidecar/save-wire.js'), SaveMerge: require('../sidecar/save-merge.js'),
     require: m => { if (m === './save-restore.js') return require('../sidecar/save-restore.js'); throw new Error('unexpected require ' + m); },
     publicWorkspaceLineage: () => ({ version: 1 }), URL };
   if (o.tombstones) sandbox.sessionTombstones = o.tombstones;
   const api = vm.runInNewContext("let _remoteLooksMemo = { stamp: '', looks: null };\nlet _stationEpochMemo = { stamp: '', epoch: 1 };\n" + handlers.join('\n') +
-    '\n({ serveSaveLoad, handleSaveWrite, serveSaveConflicts, handleSaveConflictRestore })', sandbox);
+    '\n({ serveSaveLoad, handleSaveWrite, serveSaveConflicts, handleSaveConflictRestore, handleSaveAdopt })', sandbox);
   async function call(fn, req) {
     let code = 0, text = '';
     await fn(req, { writeHead: c => { code = c; }, end: b => { text = b; } });
@@ -75,6 +77,12 @@ function sidecar(root, o) {
       const u = String(url);
       if (u.indexOf('/api/save/conflicts/restore') === 0) return call(api.handleSaveConflictRestore, { body: opts.body });
       if (u.indexOf('/api/save/conflicts') === 0) return call(api.serveSaveConflicts, { url: u });
+      // o.noMerge: the station refuses every merge — a case about a conflict that STANDS (since save-latch-kill a refused save is
+      // merged in-session, so only a refused merge leaves the conflict, its banner and its restore in place)
+      if (u.indexOf('/api/save/adopt') === 0) return o.noMerge ? Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false, mergeRefused: true, error: 'merge refused: this case keeps its conflict standing' }) }) : call(api.handleSaveAdopt, { body: opts.body });   // a reopening window's unprovable save, merged
+      // ...and a merging window's save (POST /api/save with _saveMerge) is refused for good too: its conflict stands, as before
+      if (o.noMerge && opts && opts.method === 'POST' && typeof opts.body === 'string' && opts.body.indexOf('"_saveMerge"') >= 0)
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false, mergeRefused: true, error: 'merge refused: this case keeps its conflict standing' }) });
       return (opts && opts.method === 'POST') ? call(api.handleSaveWrite, { body: opts.body }) : call(api.serveSaveLoad, { url: u });
     }
   };
@@ -138,8 +146,9 @@ function stationUi(cloudSave, uiStore) {
     }
     {
       // proof1b (revision-agnostic): this window's save after its conflict is refused growth-stale, which preserves nothing
+      // (a station that refuses the merge: the conflict stands, so its restore is what is tested)
       const root = workspace();
-      const host = sidecar(root);
+      const host = sidecar(root, { noMerge: true });
       host.saveStore.save('agent', stationDoc(), { compareRevision: true });
       const cacheA = new Map();
       let newest = null, cs = null;
@@ -314,6 +323,32 @@ function stationUi(cloudSave, uiStore) {
       A.ok(pr.doc.workstreams[5] === st.workstreams[5] && pr.doc !== st && pr.doc.workstreams !== st.workstreams, '3d: plan copies the station shallowly');
     }
     {
+      // 3e. (why the 0.14.0 boot offer was held) a copy the station could not READ this instant — locked by an antivirus scan
+      // or a backup tool: EBUSY/EACCES — still holds the lost work. It used to be settled as "nothing to bring back" and was
+      // never offered again while it stayed unchanged.
+      const root = workspace();
+      let locked = true;
+      const lfs = new Proxy(fs, { get(t, k) {
+        if (k === 'readFileSync') return function (f) {
+          if (locked && /^agent\.save-conflict-/.test(path.basename(String(f)))) { const e = new Error('EBUSY: resource busy or locked'); e.code = 'EBUSY'; throw e; }
+          return t.readFileSync.apply(t, arguments);
+        };
+        const v = t[k]; return typeof v === 'function' ? v.bind(t) : v;
+      } });
+      const host = sidecar(root, { fs: lfs });
+      const st = stationDoc();
+      host.saveStore.save('agent', st, { compareRevision: true });
+      const copy = Object.assign(JSON.parse(JSON.stringify(st)), { _saveRevision: 0, _saveClient: 'closed-window', updatedAt: 3000 });
+      copy.workstreams.push({ id: 'lost-work', title: 'L', history: [turn('user', 'l')] });
+      const r = host.saveStore.save('agent', copy, { compareRevision: true });
+      A.ok(r.conflict === true, 'fixture: a closed window\'s save is preserved beside the station');
+      const busy = await host.conflicts();
+      A.ok(busy.conflicts.length === 0 && !busy.more, '3e: an unreadable copy offers nothing this boot, and does not make the page ask again and again (' + JSON.stringify(busy) + ')');
+      locked = false;
+      const later = await host.conflicts();
+      A.ok(later.conflicts.some(c => c.file === r.recovery && c.restorable === 1), '3e: once it can be read, it is offered — it was never settled (' + JSON.stringify(later) + ')');
+    }
+    {
       // the review's scenario: a 3.2 MiB station and 20 whole-station snapshots (it held the sidecar thread for 787 ms)
       const root = workspace();
       const host = sidecar(root);
@@ -336,7 +371,7 @@ function stationUi(cloudSave, uiStore) {
     {
       const root = workspace();
       receipt(root, 7000);
-      const host = sidecar(root);
+      const host = sidecar(root, { noMerge: true });   // a station that refuses the merge: window C's conflict stands, with its banner
       // a fresh station founded after the reset, then the Commander restores the old station's backup into it
       host.saveStore.save('agent', stationDoc({ agent: { id: 'agent', name: 'VEGA', createdAt: 8000 } }), { compareRevision: true });
       const imp = host.saveStore.save('agent', stationDoc({ _saveRevision: host.saveStore.load('agent')._saveRevision, updatedAt: 9000, _saveClient: 'import-page' }), { compareRevision: true });
@@ -384,13 +419,22 @@ function stationUi(cloudSave, uiStore) {
       const seed = store.save('agent', stationDoc({ _saveRevision: 23, updatedAt: 9000, _saveClient: 'window-a' }), { compareRevision: true });
       A.ok(seed.ok === true && seed.seeded === true, '6: window A\'s copy re-seeds the empty file (its ACK is lost)');
       store = makeSaveStore({ fs, pathMod: path, root, clock: { now: () => Date.now() } });   // sidecar restart
+      // the station file's own wrapper names the window and revision of that seed (0.14.1): after the restart the store still
+      // proves the head is window A's own write, so its newer save LANDS — never a conflict that freezes the station
+      const own = store.save('agent', stationDoc({ _saveRevision: 23, updatedAt: 9050, _saveClient: 'window-a',
+        workstreams: [{ id: 'general', title: null, history: [turn('user', 'hi'), turn('assistant', 'own')] }] }), { compareRevision: true });
+      A.ok(own.ok === true && own.revision === seed.revision + 1, '6: after the restart window A\'s newer save lands on its own seed (' + JSON.stringify(own) + ')');
+      // a station file written before 0.14.1 names no writer in its wrapper: there, after a restart, the store cannot vouch
+      const main = path.join(root, 'agent.save.json'), legacy = JSON.parse(fs.readFileSync(main, 'utf8'));
+      delete legacy.revision; delete legacy.client; fs.writeFileSync(main, JSON.stringify(legacy));
+      store = makeSaveStore({ fs, pathMod: path, root, clock: { now: () => Date.now() } });   // sidecar restart
       const next = store.save('agent', stationDoc({ _saveRevision: 23, updatedAt: 9100, _saveClient: 'window-a',
         workstreams: [{ id: 'general', title: null, history: [turn('user', 'hi'), turn('assistant', 'more')] }] }), { compareRevision: true });
       A.ok(next.ok === false && next.conflict === true && next.ownSeed === true && !next.reseeded, '6: its next save after the restart is preserved as its OWN seed, not another window\'s (' + JSON.stringify(next) + ')');
       const other = store.save('agent', stationDoc({ _saveRevision: 5, updatedAt: 9200, _saveClient: 'window-b' }), { compareRevision: true });
       A.ok(other.conflict === true && other.reseeded === true && !other.ownSeed, '6: a different window is still told another copy was saved back first');
-      // the banner wording, through the real page + save light
-      const host = sidecar(root);
+      // the banner wording, through the real page + save light (a station that refuses the merge: the conflict stands)
+      const host = sidecar(root, { noMerge: true });
       // window A's page, stamping what that window holds: its id and the pre-seed revision 23 it never heard past
       const host2 = { fetch: (url, opts) => host.fetch(url, opts && opts.body ? Object.assign({}, opts, { body: opts.body.replace(/"_saveClient":"[^"]*"/, '"_saveClient":"window-a"').replace(/"_saveRevision":\d+/, '"_saveRevision":23') }) : opts) };
       const pa = page(host2, new Map());

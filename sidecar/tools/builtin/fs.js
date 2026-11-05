@@ -22,6 +22,7 @@ const { note: failNote } = require('../../failopen');
   const { fuzzyFindAndReplace } = require('./fuzzymatch.js');
   const crypto = require('node:crypto');
   const { assertWorkspaceId } = require('../../workspace-reserved.js');
+  const RunPaths = require('../../run-paths.js');
 
   /* ONE WRITER PER FILE, PROCESS-WIDE (2026-10-20, lost-update fix). Every fs mutation is read -> (await the LSP
      baseline, up to ~10 s) -> writeFile of a whole file computed from that read. makeFsTools is built PER RUN
@@ -133,7 +134,7 @@ const { note: failNote } = require('../../failopen');
     function locationLine(rel, abs, ctx) {
       const r = String(rel == null ? '' : rel);
       if (P.win32.isAbsolute(r) || P.posix.isAbsolute(r) || /^[A-Za-z]:/.test(r)) return '';
-      const scoped = !!(ctx && typeof ctx.projectRoot === 'string' && ctx.projectRoot.trim());
+      const scoped = !!RunPaths.rootOf(ctx);   // the run's own path decision (ctx.paths), never a second reading of ctx
       // the private case names the way into a project, like outputPlacement (#77): the bare fact left the agent stuck
       return '\n[location: ' + abs + (scoped ? '' : ' (your private workspace, not a project folder; a shell working in a project '
         + 'will not find it here. To write into a project folder, give "path" as an absolute path inside it, or work from a '
@@ -215,89 +216,25 @@ const { note: failNote } = require('../../failopen');
       }
     }
 
-    async function workspaceRoot(agentId) {
-      if (environment && typeof environment.ensureWorkspace === 'function') return environment.ensureWorkspace(safeAgentId(agentId || 'agent'));
-      const dir = P.join(ROOT, safeAgentId(agentId || 'agent'));
-      await fsp.mkdir(dir, { recursive: true });
-      return dir;
-    }
-    function pathInside(abs, base) {
-      let a = P.resolve(abs), b = P.resolve(base);
-      if (P.sep === '\\') { a = a.toLowerCase(); b = b.toLowerCase(); }
-      return a === b || a.indexOf(b + P.sep) === 0;
-    }
+    /* ONE RESOLVER (run-paths lane, 2026-10-28). The containment proof lives in sidecar/run-paths.js, unchanged, and a
+       relative path is decided by the RUN's path object (ctx.paths) — the same object every other tool reads — so fs.*,
+       shell, terminal, verify, media and browser.upload cannot disagree about which folder a relative path means. A
+       resolver built WITHOUT the trust guard (the /api/file jail helper, the one-off route registry, tests) never
+       borrows a run's authority: it stays on the legacy jail, where an absolute or project path is refused as before. */
+    const resolver = RunPaths.makeResolver({ fsp, pathMod: P, root: ROOT, environment, pathTrust });
+    const workspaceRoot = resolver.workspaceRoot, pathInside = resolver.pathInside;
     async function realpathOrSelf(p) {
       try { return await fsp.realpath(p); } catch (_) { return p; }
     }
-    async function realpathExisting(p) {
-      try { return await fsp.realpath(p); }
-      catch (e) { throw new Error('cannot resolve filesystem path (possibly a dangling symlink): ' + p + ': ' + ((e && e.message) || e)); }
-    }
-    async function deepestExisting(abs, base) {
-      let cur = abs;
-      for (;;) {
-        try { await fsp.lstat(cur); return cur; }
-        catch (e) {
-          // ENOTDIR = a path THROUGH a file (docs/guide.md/inner) on macOS/Linux; Windows says ENOENT. Both mean "not
-          // there": walk up to the real ancestor, so the caller's own missing-path answer runs (fs.search's "(no such path)").
-          if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) throw e;
-          const parent = P.dirname(cur);
-          if (!parent || parent === cur) return base;
-          cur = parent;
-        }
-      }
-    }
-    async function checkpointResolvedRoot(base, opts) {
-      const ctx = opts && opts.ctx;
-      if (!ctx || typeof ctx.checkpointMutation !== 'function' || (opts && opts.scope) !== 'write') return;
-      try { await ctx.checkpointMutation(base, 'fs mutation', { resolvedRoot: true }); } catch (_) {}
-    }
-    // Resolve a path and PROVE it is reachable. A relative path in a host-validated project session is rooted
-    // at that exact project, not at the agent's private deliverables workspace. It still passes through the
-    // same path-trust guard as an absolute project path and gets a second symlink-containment proof, so a
-    // model cannot manufacture ctx.projectRoot or escape it through a link. Unscoped relative paths retain the
-    // historic per-agent jail. Absolute paths always use pathTrust. opts.scope ('read' | 'write') is threaded
+    // Resolve a path and PROVE it is reachable (run-paths.js resolveFor). opts.scope ('read' | 'write') is threaded
     // to the guard so writes can stay consent-gated; opts.ctx is passed through.
+    // Only the run's ROOT (and its agent binding) comes from ctx.paths: the containment proof runs with THIS tool's own
+    // resolver and trust guard, so a tool built with a narrower guard is never widened by the run's (review minor).
     async function resolveInside(agentId, rel, opts) {
       opts = opts || {};
-      rel = String(rel == null ? '' : rel);
-      if (rel.indexOf('\0') >= 0) throw new Error('illegal path: ' + rel);
-      // Absolute on EITHER platform: posix "/abs", win32 "C:\..." AND UNC "\\server\share" (host
-      // P.isAbsolute alone misses UNC when running on Linux). Routed to path-trust when wired, else illegal.
-      const isAbs = P.win32.isAbsolute(rel) || P.posix.isAbsolute(rel) || /^[A-Za-z]:/.test(rel);
-      if (isAbs) {
-        if (!pathTrust) throw new Error('illegal path: ' + rel);
-        const resolved = await pathTrust(rel, { scope: opts.scope === 'write' ? 'write' : 'read', agentId: agentId, ctx: opts.ctx });
-        await checkpointResolvedRoot(resolved && resolved.base, opts);
-        return resolved;
-      }
-      if (/(^|[\\/])\.\.([\\/]|$)/.test(rel)) throw new Error('illegal path: ' + rel);
-      const projectRoot = opts.ctx && typeof opts.ctx.projectRoot === 'string'
-        ? String(opts.ctx.projectRoot).trim() : '';
-      if (projectRoot) {
-        if (!pathTrust) throw new Error('project-relative path requires the project trust guard');
-        const base = P.resolve(projectRoot);
-        const abs = P.resolve(base, rel || '.');
-        if (!pathInside(abs, base)) throw new Error('path escapes project root');
-        // Selecting a relative base is not authority: re-run the station grant and protected-file floor for
-        // every resolved target, just as an explicit absolute path would.
-        await pathTrust(abs, { scope: opts.scope === 'write' ? 'write' : 'read', agentId: agentId, ctx: opts.ctx });
-        const baseReal = await realpathExisting(base);
-        const existing = await deepestExisting(abs, base);
-        const existingReal = await realpathExisting(existing);
-        if (!pathInside(existingReal, baseReal)) throw new Error('path escapes project root via symlink');
-        await checkpointResolvedRoot(base, opts);
-        return { base, abs };
-      }
-      const base = await workspaceRoot(agentId);
-      const abs = P.resolve(base, rel || '.');
-      if (!pathInside(abs, base)) throw new Error('path escapes workspace');
-      const baseReal = await realpathExisting(base);
-      const existing = await deepestExisting(abs, base);
-      const existingReal = await realpathExisting(existing);
-      if (!pathInside(existingReal, baseReal)) throw new Error('path escapes workspace via symlink');
-      await checkpointResolvedRoot(base, opts);
-      return { base, abs };
+      if (!pathTrust) return resolver.resolveFor(agentId, rel, Object.assign({}, opts, { projectRoot: RunPaths.rootOf(opts.ctx) }));
+      const paths = RunPaths.pathsFor(opts.ctx, resolver, agentId || 'agent');   // throws when ctx.paths is another agent's
+      return resolver.resolveFor(agentId || 'agent', rel, Object.assign({}, opts, { projectRoot: paths.root || '' }));
     }
 
     async function beginEditDiagnostics(aid, files, ctx) {
@@ -670,7 +607,7 @@ const { note: failNote } = require('../../failopen');
 
     const readTool = {
       name: 'fs.read', capability: 'cabinet', scope: 'read', requiresConsent: false, timeoutMs: 10000,
-      description: 'Read a file from the current project folder when this session is project-scoped, otherwise from your private workspace. Text files come back as text; for large text use offset and limit to page character ranges without rerunning the command that produced the file. For source code pass { "numbered": true }: every line is prefixed "<line number><TAB>" (cat -n style) so you can cite exact lines, and offset/limit then mean the 1-based START LINE and the NUMBER OF LINES (e.g. offset:120, limit:40). Without "numbered" (or with "raw": true) the text is returned exactly as stored. Word (.docx), Excel (.xlsx) and Jupyter (.ipynb) files are extracted to readable text automatically; PNG/JPEG/GIF/WEBP images are shown to you as actual pixels so you can look at them directly.',
+      description: 'Read a file by its full path, or by a path relative to the project folder (in a project session) or else your private workspace. Text comes back as text; page large text with offset and limit (character ranges) instead of rerunning the command that produced it. For source code pass numbered:true: each line is prefixed "<line number><TAB>" (cat -n style) so you can cite exact lines, and offset/limit then mean the 1-based START LINE and the NUMBER OF LINES (e.g. offset:120, limit:40). Without numbered (or with raw:true) the text is returned exactly as stored. Word (.docx), Excel (.xlsx) and Jupyter (.ipynb) files are extracted to readable text; PNG/JPEG/GIF/WEBP images are shown to you as actual pixels.',
       schema: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, numbered: { type: 'boolean' }, raw: { type: 'boolean' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
@@ -797,7 +734,7 @@ const { note: failNote } = require('../../failopen');
 
     const listTool = {
       name: 'fs.list', capability: 'cabinet', scope: 'read', requiresConsent: false, timeoutMs: 8000,
-      description: 'List files in your workspace. Pass { "recursive": true } to see the whole tree (directories end with "/"); optional "path" lists one subdirectory.',
+      description: 'List files in your workspace. recursive:true shows the whole tree (directories end with /); path lists one folder, full paths too.',
       schema: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean' } } },
       run: async (args, ctx) => {
         const { abs } = await resolveInside((ctx && ctx.agentId) || 'agent', (args && args.path) || '.', { scope: 'read', ctx });
@@ -882,7 +819,7 @@ const { note: failNote } = require('../../failopen');
 
     const editTool = {
       name: 'fs.edit', capability: 'cabinet', scope: 'write', requiresConsent: true, timeoutMs: 10000,
-      description: 'Edit a workspace file by exact text replacement of "find" with "replace". "find" must match EXACTLY ONE place in the file — if it matches more than once the edit is refused and the count is reported; include more surrounding lines to make it unique, or pass { "replace_all": true } to change every occurrence, or { "expected_count": N } to assert exactly N replacements. Requires that you fs.read the file first (in this run). Prefer fs.patch for multi-line source edits.',
+      description: 'Edit a workspace file by exact text replacement of find with replace. find must match EXACTLY ONE place in the file; if it matches more, the edit is refused and the count reported: include more surrounding lines to make it unique, or pass replace_all:true to change every occurrence, or expected_count:N to assert exactly N replacements. Requires that you fs.read the file first (in this run). Prefer fs.patch for multi-line source edits.',
       schema: { type: 'object', required: ['path', 'find', 'replace'], properties: { path: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' }, replace_all: { type: 'boolean' }, expected_count: { type: 'number' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
@@ -1489,7 +1426,7 @@ const { note: failNote } = require('../../failopen');
 
     const searchTool = {
       name: 'fs.search', capability: 'cabinet', scope: 'read', requiresConsent: false, timeoutMs: 20000,
-      description: 'Search your workspace — use this instead of grep/find/ls. Two modes via "target":\n• target:"content" (default) — find TEXT inside files. Substring by default; { "regex": true } treats "query" as a regex, { "ignoreCase": true } ignores case. "file_glob" limits which files are searched (e.g. "*.md"); "context" adds N lines around each hit; "output_mode" is "content" (matching lines, default), "files_only" (just the file paths), or "count" (matches per file).\n• target:"files" — find FILES by glob ("query" like "*.md" or "report"); newest first.\nResults are paths relative to your workspace (ready for fs.read). Use "limit"/"offset" to page; a truncation hint tells you the next offset. Hidden entries, node_modules and anything matched by .gitignore files are skipped (pass { "gitignore": false } to search ignored files too); "max_files" raises the scan cap for a big tree.',
+      description: 'Search your workspace; use this instead of grep/find/ls. Two modes via target:\n• target:content (default) finds TEXT inside files. Substring by default; regex:true treats query as a regex, ignoreCase:true ignores case. file_glob limits which files are searched (e.g. *.md); context adds N lines around each hit; output_mode is content (matching lines, default), files_only (just the paths) or count (matches per file).\n• target:files finds FILES by glob (query like *.md or report); newest first.\nResults are paths relative to your workspace (ready for fs.read). Page with limit/offset; a truncation hint gives the next offset. Hidden entries, node_modules and anything .gitignore matches are skipped (gitignore:false searches ignored files too); max_files raises the scan cap for a big tree.',
       schema: { type: 'object', required: ['query'], properties: {
         query: { type: 'string' },
         target: { type: 'string', enum: ['content', 'files'] },

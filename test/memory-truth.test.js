@@ -13,6 +13,7 @@
      8. an "unhelpful" rating trust cannot absorb becomes bounded distrust that really demotes the memory
    (6 = the dossier seed and 9 = backup import live in test/dossier.test.js and test/notebookrestore.test.js.) */
 'use strict';
+const { readSidecarSource, sidecarTopLevelFunction } = require('./helpers/source');
 const A = require('./_assert.js');
 const fs = require('fs');
 const path = require('path');
@@ -163,28 +164,29 @@ function harness(at, extra) {
     A.eq(h2.notes()[0].statedBy, undefined, 'the archived text\'s proof does not carry over to new text');
   }
 
-  // ---- 3. same subject, different claim: saved, the old note named, and the correction folds the fresh copy ----
+  // ---- 3. a pair the subject key cannot read: saved, the old note named, and the correction folds the fresh copy ----
+  //      (a pair it CAN read — "prefers tabs" then "prefers spaces" — supersedes at write time: test/memory-truth.table.test.js)
   {
     const h = harness(T0);
-    await h.t.writeTool.run({ title: 'Indentation', body: 'User prefers tabs' }, { agentId: 'agent', runId: 'r1' });
+    await h.t.writeTool.run({ title: 'Drafting', body: 'User drafts posts in Notion' }, { agentId: 'agent', runId: 'r1' });
     h.tick(DAY);
-    const r = await h.t.writeTool.run({ title: 'Indentation', body: 'User now prefers spaces' }, { agentId: 'agent', runId: 'r2' });
-    A.ok(/^Saved note "Indentation" \(note_2\)/.test(r.content), 'a 0.3–0.6 overlap is still SAVED (it may be a separate fact)');
-    A.ok(r.content.includes('Similar notes you already hold:\n[note_1] Indentation: User prefers tabs'), 'the result names the note it may contradict, with its exact text');
+    const r = await h.t.writeTool.run({ title: 'Drafting', body: 'User now drafts posts in Obsidian' }, { agentId: 'agent', runId: 'r2' });
+    A.ok(/^Saved note "Drafting" \(note_2\)/.test(r.content), 'a 0.3–0.6 overlap is still SAVED (it may be a separate fact)');
+    A.ok(r.content.includes('Similar notes you already hold:\n[note_1] Drafting: User drafts posts in Notion'), 'the result names the note it may contradict, with its exact text');
     A.ok(/replaceId/.test(r.content) && /folds note_2 into it/.test(r.content), 'and tells the model the supersede path');
     A.eq(h.notes().length, 2, 'nothing was deleted on the model\'s behalf');
-    const f = await h.t.writeTool.run({ title: 'Indentation', body: 'User now prefers spaces', replaceId: 'note_1', previousBody: 'User prefers tabs' }, { agentId: 'agent', runId: 'r2' });
+    const f = await h.t.writeTool.run({ title: 'Drafting', body: 'User now drafts posts in Obsidian', replaceId: 'note_1', previousBody: 'User drafts posts in Notion' }, { agentId: 'agent', runId: 'r2' });
     A.eq(h.notes().length, 1, 'retiring the old note folds this run\'s fresh copy: ONE active belief');
-    A.ok(h.notes()[0].id === 'note_1' && h.notes()[0].body === 'User now prefers spaces' && h.notes()[0].history[0].body === 'User prefers tabs', 'the survivor holds the new text with the old one archived');
+    A.ok(h.notes()[0].id === 'note_1' && h.notes()[0].body === 'User now drafts posts in Obsidian' && h.notes()[0].history[0].body === 'User drafts posts in Notion', 'the survivor holds the new text with the old one archived');
     A.ok(/Folded note_2/.test(f.content), 'the result reports the fold');
     const u = await h.t.writeTool.run({ title: 'Deploy', body: 'staging deploys from the release branch' }, { agentId: 'agent', runId: 'r3' });
     A.ok(!/Similar notes/.test(u.content), 'negative: an unrelated save lists nothing');
   }
   {
     const h = harness(T0);
-    await h.t.writeTool.run({ title: 'Indentation', body: 'User prefers tabs' }, { agentId: 'agent', runId: 'r1' });
-    await h.t.writeTool.run({ title: 'Indentation', body: 'User now prefers spaces' }, { agentId: 'agent', runId: 'r2' });
-    await h.t.writeTool.run({ title: 'Indentation', body: 'User now prefers spaces', replaceId: 'note_1', previousBody: 'User prefers tabs' }, { agentId: 'agent', runId: 'r3' });
+    await h.t.writeTool.run({ title: 'Drafting', body: 'User drafts posts in Notion' }, { agentId: 'agent', runId: 'r1' });
+    await h.t.writeTool.run({ title: 'Drafting', body: 'User now drafts posts in Obsidian' }, { agentId: 'agent', runId: 'r2' });
+    await h.t.writeTool.run({ title: 'Drafting', body: 'User now drafts posts in Obsidian', replaceId: 'note_1', previousBody: 'User drafts posts in Notion' }, { agentId: 'agent', runId: 'r3' });
     A.eq(h.notes().length, 2, 'negative: only a copy made by the SAME run is folded — another run\'s note is never deleted');
   }
 
@@ -212,15 +214,20 @@ function harness(at, extra) {
   }
   {
     // source locks: the host wires the seams (idiom of beat-coordination.test)
-    const idx = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+    const idx = readSidecarSource();
     A.ok(/memcore\.receiptBatchFor\(proposalsByRun, latestProposalRun, agent, runId\)/.test(idx), 'serveProposals resolves a run\'s batch through receiptBatchFor');
     A.ok(!/const lr = latestProposalRun\.get\(agent\); batch = lr/.test(idx), 'the cross-run fallback is gone');
     A.ok(/onSaved: recordRunReceipt/.test(idx), 'notebook.write reports its saves as this run\'s receipts');
     A.ok(/memcore\.mergeReceipts\(prev && prev\.agentId === agentId \? prev\.proposals : \[\], items\)/.test(idx), 'a later stash MERGES into the run\'s batch instead of overwriting it');
     // both anchors must exist: a renamed capture call (indexOf -1) must not pass the ordering check (review tests-09)
     const captureAt = idx.indexOf("TrustedLearning.capture(messages, 'interactive-owner')");
-    const expandAt = idx.indexOf('await attachments.expandUserAttachments(messages, agentId)');
-    A.ok(idx.includes('TrustedLearning.eligible(') && idx.includes('const commanderWords = trustedLearningInput ? trustedLearningInput.content') && captureAt >= 0 && expandAt > captureAt && /ownerTrusted, commanderWords,/.test(idx),
+    // the files expand in the run host (runOnceCore, run-paths review M3), which runs after handleRun captured the words:
+    // handleRun captures and never expands, and the expansion lives inside runOnceCore (sliced per function, never an
+    // offset compared across functions, review round 2 F6)
+    const entry = sidecarTopLevelFunction('handleRun');
+    const expands = sidecarTopLevelFunction('runOnceCore').indexOf('messages = await attachments.expandForRun(messages, agentId') >= 0;
+    A.ok(entry.indexOf("TrustedLearning.capture(messages, 'interactive-owner')") >= 0 && entry.indexOf('expandForRun(') < 0 && entry.indexOf('expandUserAttachments(') < 0 && expands, 'handleRun captures the owner words and never expands; runOnceCore expands');
+    A.ok(idx.includes('TrustedLearning.eligible(') && idx.includes('const commanderWords = trustedLearningInput ? trustedLearningInput.content') && captureAt >= 0 && /ownerTrusted, commanderWords,/.test(idx),
       'commanderWords reach the tool ctx only from the owner\'s own surfaces (never a worker, a group transcript or a guest)');
     // COMMS: each save renders once per run, and a later save of the same run is not swallowed
     const chat = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'chat.js'), 'utf8');

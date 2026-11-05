@@ -68,6 +68,32 @@
   // no crate, no notify — because the event died here. The payload already carries the OWNING agentId and its
   // jail-relative path, and the frontend card opens /api/file?agent=<owner>, so forwarding is the whole fix.
   const FORWARD = { 'agent.run.start': 1, 'agent.run.end': 1, 'agent.run.error': 1, 'agent.cost': 1, 'deliverable': 1 };
+  /* A worker's TOOL STEPS reach the lead's stream too (SUMMON LINES, 2026-10-19) — the floor's activity tag, the CREW
+     card's step and the DELEGATED row read them — but ONLY as the additive crew.tool_step event (2026-10-26 fix), never
+     under agent.tool_call/tool_result: every lead-side sink (CLI tracker + receipt, /api/observe, Telegram/routine/
+     line-hop reply buffers, phone remote, ACP, /v1) keys on those names and took a worker's step for the lead's own
+     (doubled dashboard rows, wiped replies, miscounted receipts). Those sinks ignore an unknown name; the page's
+     harness translates crew.tool_step back for the floor. */
+  function makeChildEmit(ctx) {
+    const names = new Map();   // callId -> tool name, so a result step carries the name its call had
+    return (name, payload) => {
+      if (!ctx || typeof ctx.emit !== 'function') return;
+      if (FORWARD[name]) { try { ctx.emit(name, payload); } catch (_) {} return; }
+      if (name !== 'agent.tool_call' && name !== 'agent.tool_result') return;
+      const p = payload || {}, callId = String(p.callId == null ? '' : p.callId);
+      const step = { agentId: String(p.agentId || ''), runId: String(p.runId || ''), parentRunId: String(ctx.runId || ''), callId, phase: name === 'agent.tool_call' ? 'call' : 'result' };
+      if (step.phase === 'call') {
+        step.name = String(p.name || ''); if (callId) names.set(callId, step.name);
+        if (typeof p.argsSummary === 'string') step.argsSummary = p.argsSummary;
+      } else {
+        step.name = names.get(callId) || ''; names.delete(callId);
+        if (typeof p.ok === 'boolean') step.ok = p.ok;
+        if (typeof p.isError === 'boolean') step.isError = p.isError;
+        if (typeof p.ms === 'number' && isFinite(p.ms)) step.ms = p.ms;
+      }
+      try { ctx.emit('crew.tool_step', step); } catch (_) {}
+    };
+  }
   // a delegated worker's added kit, on top of the autonomous full office (compute/web/files/memory/studio/jukebox):
   // the WORKBENCH (terminal). Paired with the SHARED lead consent broker, writes follow the lead's APPROVAL posture.
   // Commands do NOT in ASK mode: a worker runs surface:'autonomous', so the run authority withholds shell.exec /
@@ -82,10 +108,14 @@
   const BUILDER_KIT = [{ instanceId: 'builder_lent', objectType: 'builder' }];
   const kitFor = lent => (lent ? WORKER_KIT.concat(BUILDER_KIT) : WORKER_KIT);
   const canLendBuilder = ctx => { try { const r = ctx && typeof ctx.canUse === 'function' ? ctx.canUse({ name: 'station.build' }) : null; return !!(r && r.ok); } catch (_) { return false; } };
-  // isFile: the worker run's own file probe (deps.fileProbe) — the dispatcher and the worker's run answer ONE way
+  // isFile: the worker run's own file probe (deps.fileProbe) — the dispatcher and the worker's run answer ONE way.
+  // Only a PURE one-host read is bounded (starnet-releases#5): a brief that also asks the worker to write, fix, test,
+  // run, save, build or implement keeps the ordinary worker budgets — 3 tools and 45s cut engineering work off mid-job.
   const boundedDomainTask = (text, isFile) => {
-    try { return domainTask && typeof domainTask.classify === 'function' ? domainTask.classify(text, isFile ? { isFile } : undefined) : null; }
-    catch (_) { return null; }
+    try {
+      const policy = domainTask && typeof domainTask.classify === 'function' ? domainTask.classify(text, isFile ? { isFile } : undefined) : null;
+      return policy && policy.pureRead ? policy : null;
+    } catch (_) { return null; }
   };
 
   // abort without ever throwing out of a timer callback (AbortController.abort(reason) is not universal).
@@ -135,6 +165,7 @@
   const AGG_DEFAULT_BUDGET = 80000;   // tools/registry.js OUTPUT_MAX's default: the budget when no host figure arrives
   const AGG_SHORT_ROOM = 200;         // below this much kept text a shortened row carries the SHORT marker
   const { note: failNote } = (typeof require === 'function') ? require('../../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
+  const RunPaths = (typeof require === 'function') ? require('../../run-paths.js') : null;
   function aggregateBudget(ctx) {
     const n = Number(ctx && ctx.outputMax);
     return (Number.isFinite(n) && n > 0) ? Math.floor(n) : AGG_DEFAULT_BUDGET;
@@ -167,13 +198,24 @@
     for (const k of ['events', 'steerHistory']) if (Array.isArray(c[k]) && c[k].length > 5) c[k] = c[k].slice(-5);
     return c;
   }
-  // rows -> { rows, cut, saved }. opts: { budget, what(row) -> label, park(text, row) -> Promise<path|null> }.
+  // rows -> { rows, cut, saved }. opts: { budget, what(row) -> label, park(text, row) -> Promise<path|null>,
+  // scrub(text) -> text (the registry's stored-text scrub for this call, ctx.scrubText; absent = none) }.
+  /* SCRUBBED BEFORE IT IS CUT OR PARKED (review r3). A result that fits rides on untouched and the registry scrubs the
+     JSON it returns. A row that does not fit is parked whole first, and the parker (ctx.parkOutput) writes into the
+     lead's own workspace, where fs.read hands the file back unscrubbed: a worker's raw vendor key sat in
+     .output/team.dispatch-<worker>.txt while the row the lead saw had it redacted. So with the registry's scrub each
+     row's text is scrubbed here, before it is measured, cut or parked: the visible row, the spilled file and
+     resultChars are the same text. The registry's scrub fails closed itself (a throw withholds the text). */
+  const AGG_SCRUB_WITHHELD = '[worker result withheld: its secret scrub failed]';
   async function fitAggregate(rows, opts) {
     const o = opts || {};
     const budget = Number(o.budget) > 0 ? Math.floor(Number(o.budget)) : AGG_DEFAULT_BUDGET;
     if (!Array.isArray(rows) || !rows.length || JSON.stringify(rows).length <= budget) return { rows: rows, cut: 0, saved: 0 };
     const isRow = r => r && typeof r === 'object';
-    let work = rows.map(r => isRow(r) ? Object.assign({}, r) : r);
+    const scrub = typeof o.scrub === 'function' ? o.scrub : null;
+    const scrubbed = (t) => { const s = scrub(t); return typeof s === 'string' ? s : AGG_SCRUB_WITHHELD; };
+    let work = rows.map(r => !isRow(r) ? r : Object.assign({}, r, (scrub && typeof r.result === 'string' && r.result) ? { result: scrubbed(r.result) } : null));
+    if (scrub && JSON.stringify(work).length <= budget) return { rows: work, cut: 0, saved: 0 };
     const texts = work.map(r => (isRow(r) && typeof r.result === 'string') ? r.result : null);
     const emptied = () => work.map((r, i) => texts[i] != null ? Object.assign({}, r, { result: '' }) : r);
     let overhead = JSON.stringify(emptied()).length;
@@ -254,6 +296,7 @@
       return path;
     };
   }
+  function scrubTextOf(ctx) { return ctx && typeof ctx.scrubText === 'function' ? ctx.scrubText : null; }
   function fitNote(fit) {
     return fit && fit.cut ? ' — ' + fit.cut + ' result(s) shortened to fit (' + fit.saved + ' saved in full, see resultPath)' : '';
   }
@@ -325,9 +368,13 @@
 
   // Only host context or a durable host-created worker record supplies project scope.
   // Tool arguments cannot choose a new filesystem root.
+  // A live lead's scope comes from its run's path object (ctx.paths, sidecar/run-paths.js): the same root its fs.* and
+  // shell resolve against, so a worker inherits exactly the folder the lead works in.
   function projectOptions(ctx, record) {
-    const source = record && Object.prototype.hasOwnProperty.call(record, 'projectRoot') ? record : (ctx || {});
-    return { projectRoot: source.projectRoot || undefined, workdir: source.workdir || source.projectCwd || undefined };
+    const runPaths = RunPaths && ctx && RunPaths.isRunPaths(ctx.paths) ? ctx.paths : null;
+    const source = record && Object.prototype.hasOwnProperty.call(record, 'projectRoot') ? record
+      : runPaths ? { projectRoot: runPaths.root, workdir: runPaths.workdir } : (ctx || {});
+    return { projectRoot: source.projectRoot || undefined, workdir: source.workdir || undefined };
   }
 
   // the host-minted restrictions a worker starts under, saved on its durable record (subagents originLimits)
@@ -479,9 +526,21 @@
     const userTextOf = (row) => shownText.has(row) ? shownText.get(row) : String((row && row.result) || '');
     const workerName = (aid) => { const id = (crewNow && crewNow.get && crewNow.get(aid)) || null; return String((id && id.name) || aid || 'worker').toUpperCase(); };
     let crewNow = null;
-    async function resolveHandoffFiles(aid, artifacts) {
+    /* A WORKER'S FILES ARE WHERE ITS RUN PUT THEM (run-paths review M2). A worker names a saved file relative to ITS run's
+       base, so the hand-off resolves it against that ONE base: the worker run's own row (its host-recorded project root,
+       '' = its private workspace), else the root this dispatch handed it. The host used to probe [the worker's private
+       workspace, the LEAD's project] in turn, so a stale private report.md beat the project file the worker just wrote,
+       and the second folder was not even the worker's. deps.handoffFiles(aid, artifacts, { projectRoot }) resolves
+       (sidecar/run-paths.js locateProduced). */
+    const handedRoot = new WeakMap();   // row -> the project root this dispatch handed that worker's run
+    function workerRoot(aid, runId, handed) {
+      const rec = runId && runRecord ? runRecord(String(runId)) : null;
+      if (rec && String(rec.agentId || '') === String(aid || '')) return String(rec.projectRoot || '');
+      return typeof handed === 'string' ? handed : '';
+    }
+    async function resolveHandoffFiles(aid, artifacts, runId, handed) {
       if (typeof deps.handoffFiles !== 'function' || !Array.isArray(artifacts) || !artifacts.length) return [];
-      try { const got = await deps.handoffFiles(aid, artifacts); return Array.isArray(got) ? got.filter(f => f && f.abs) : []; }
+      try { const got = await deps.handoffFiles(aid, artifacts, { projectRoot: workerRoot(aid, runId, handed) }); return Array.isArray(got) ? got.filter(f => f && f.abs) : []; }
       catch (e) { failNote('dispatch.handoff-files', e); return []; }
     }
     async function earlierHandoff(rows) {
@@ -489,7 +548,7 @@
       if (!usable.length) return null;
       const reads = [], blocks = [];
       for (const r of usable) {
-        const files = await resolveHandoffFiles(r.agentId, r.artifacts);
+        const files = await resolveHandoffFiles(r.agentId, r.artifacts, r.runId, handedRoot.get(r));
         for (const f of files) reads.push(String(f.abs));
         const text = userTextOf(r).trim();
         const clipped = text.length > EARLIER_EACH_MAX ? text.slice(0, EARLIER_EACH_MAX) + ' …(cut — read the file for the rest)' : text;
@@ -789,7 +848,7 @@
          chat" while dispatching. This is the description the model reads when it picks; it now says where a worker works and
          names the one call that seats crew in this chat (station.control group.add, deferred). Tightened elsewhere to pay
          for it (payload.budget: lead-with-crew tool bytes), nothing dropped. */
-      description: 'Delegate subtasks to your specialist crew, each worker in its own thread (never in this chat). Each runs its OWN real agent loop (web, files, memory) and returns its result for you to synthesize. To bring crew INTO this chat to work with the Commander, use station.control group.add instead (tool_search "group add"). Address workers by the agentId listed under YOUR TEAM. background:true starts watchable workers while you keep working. SESSIONS: a worker\'s `session` (the session\'s NAME, as the Commander says it) runs and files that subtask in that session; without it, its work is filed on this conversation\'s card. A name not on this station is REFUSED, not guessed, and that worker does not run. FILES: in a conversation scoped to a trusted project, a worker\'s RELATIVE paths (fs_write, image_generate, voice_generate) land in that project folder, where fs_read finds them by the same path; otherwise each worker saves into its OWN private workspace. After the dispatch you may fs_read EXACTLY the files a worker\'s row lists (artifacts[].abs) — never guess another path. That list proves what each worker saved; the Commander sees those files as cards. ORDER: workers run one after another, each handed the earlier ones\' results and files — list a worker that needs another\'s output AFTER it; parallel:true only for independent subtasks. COMMANDS: in ASK mode a delegated worker cannot run shell commands (shell_exec / verify_run are withheld unless that worker has Full Access, WORKBENCH or not); run them here yourself, or have the worker return the exact commands. BUILDER: builder:true lends that worker your station.map/plan/build for this job; builds follow your approval setting.',
+      description: 'Delegate subtasks to your specialist crew, each worker in its own thread (never in this chat). Each runs its OWN real agent loop (web, files, memory) and returns its result for you to synthesize. To bring crew INTO this chat to work with the Commander, use station.control group.add instead (tool_search "group add"). Address workers by the agentId listed under YOUR TEAM. background:true starts watchable workers while you keep working. SESSIONS: a worker\'s `session` (the session\'s NAME, as the Commander says it) runs and files that subtask in that session; without it, its work is filed on this conversation\'s card. A name not on this station is REFUSED, not guessed, and that worker does not run. FILES: in a conversation scoped to a trusted project, a worker\'s RELATIVE paths (fs_write, image_generate, voice_generate) land in that project folder, where fs_read finds them by the same path; otherwise each worker saves into its OWN private workspace. After the dispatch you may fs_read EXACTLY the files a worker\'s row lists (artifacts[].abs); never guess another path. That list proves what each worker saved; the Commander sees those files as cards. ORDER: workers run one after another, each handed the earlier ones\' results and files; list a worker that needs another\'s output AFTER it; parallel:true only for independent subtasks. COMMANDS: in ASK mode a delegated worker cannot run shell commands (shell_exec / verify_run are withheld unless that worker has Full Access, WORKBENCH or not); run them here yourself, or have the worker return the exact commands. BUILDER: builder:true lends that worker your station.map/plan/build for this job; builds follow your approval setting.',
       schema: {
         type: 'object', required: ['workers'], properties: {
           workers: {
@@ -797,8 +856,8 @@
               type: 'object', required: ['agentId', 'prompt'],
               properties: {
                 agentId: { type: 'string' }, prompt: { type: 'string' },
-                resultSchema: { type: 'object', description: 'Optional strict JSON result contract. The host validates the final result and allows one bounded repair; invalid output is never accepted as done.' },
-                context: { type: 'string', description: 'Optional handoff of what YOU already established that this worker needs: discovered file paths, findings, constraints, decisions. It is placed before the prompt as settled starting knowledge, so the worker does not re-derive it. Do not restate the subtask here.' },
+                resultSchema: { type: 'object', description: 'Strict JSON result contract: the host validates the final result and allows one bounded repair; invalid output is never accepted as done.' },
+                context: { type: 'string', description: 'What YOU already established that this worker needs (file paths, findings, constraints, decisions), placed before the prompt as settled knowledge so it is not re-derived. Do not restate the subtask.' },
                 // WHERE the work lands. A session NAME (what the Commander calls it) or its exact id. Omit to run
                 // in the current session — see resolveSessions for why an unmatched name never falls back to that.
                 session: { type: 'string' },
@@ -837,8 +896,8 @@
         }));
         const overflowNote = overflow.length ? ' — ' + overflow.length + ' NOT dispatched (max ' + maxWorkers + ' per call; dispatch the rest in a follow-up call)' : '';
 
-        // forward ONLY lifecycle/cost from children onto the lead's bus (the floor animation reads agent.run.start).
-        const childEmit = (name, payload) => { if (FORWARD[name] && ctx && typeof ctx.emit === 'function') { try { ctx.emit(name, payload); } catch (_) {} } };
+        // forward lifecycle/cost from children onto the lead's bus, and their tool steps as crew.tool_step (see makeChildEmit; never tokens)
+        const childEmit = makeChildEmit(ctx);
 
         // validate every target up front: a real, live, OTHER worker (never self, never an unknown agentId).
         const jobs = reqs.map(w => {
@@ -885,6 +944,7 @@
           const workerRunId = o2.runId || newId();
           const finish = async (row, deliver) => {
             row.runId = workerRunId;
+            handedRoot.set(row, projectOptions(job.sessionContext || ctx).projectRoot || '');   // a later worker reads this one's files from ITS base
             const envelope = await finalizeWorkerDelivery(workerRunId, row);
             // The execution loop ending is not completion: validation and any bounded repair finish first.
             noteSessionActivity('station.dispatch_end', job, workerRunId, envelope);
@@ -1057,14 +1117,14 @@
           if (rowTaint) row.taintedBy = rowTaint;
           if (wire.note) row.note = wire.note;   // honest credential-fallback disclosure (never silent)
           // WORK VISIBILITY (ghost-file fix): what the worker PROVABLY produced (its runOnce artifact ledger),
-          // stamped with the OWNING agentId. Files live in the WORKER's private workspace — the lead cannot
-          // fs.read them and must reference them as the worker's (they are already shown to the Commander as
-          // cards via the forwarded deliverable events). Never invent paths beyond this list.
+          // stamped with the OWNING agentId. Each name is relative to the WORKER's run base (its project, else its
+          // private workspace) — the lead reads them only at the host-resolved real paths below (they are already shown
+          // to the Commander as cards via the forwarded deliverable events). Never invent paths beyond this list.
           if (artifacts.length) {
             row.artifacts = artifacts.map(a => Object.assign({}, a, { agentId: job.agentId, workspace: job.agentId }));
-            // the REAL location of each saved file (host-resolved, existing files only), and the lead may now read
-            // exactly those — it used to guess "/tmp/<worker>/…" paths and ask the Commander to approve them
-            const files = await resolveHandoffFiles(job.agentId, row.artifacts);
+            // the REAL location of each saved file (host-resolved against the worker run's own base, existing files only),
+            // and the lead may now read exactly those — it used to guess "/tmp/<worker>/…" paths and ask to approve them
+            const files = await resolveHandoffFiles(job.agentId, row.artifacts, workerRunId, projectOptions(job.sessionContext || ctx).projectRoot || '');
             for (const f of files) {
               const a = row.artifacts.find(x => x && x.path === f.path);
               if (a) a.abs = f.abs;
@@ -1145,7 +1205,7 @@
         const late = out.filter(r => r.reason === 'timeout').length;
         const unrun = out.filter(r => r.reason === 'not-dispatched').length - overflow.length;
         // every worker's row survives the result cap: fair-share its text, spill the whole text per worker
-        const fit = await fitAggregate(out, { budget: aggregateBudget(ctx), what: r => 'worker ' + r.agentId + '\'s result', park: workerParker(ctx, 'team.dispatch') });
+        const fit = await fitAggregate(out, { budget: aggregateBudget(ctx), what: r => 'worker ' + r.agentId + '\'s result', park: workerParker(ctx, 'team.dispatch'), scrub: scrubTextOf(ctx) });
         return withTaint({
           content: JSON.stringify(fit.rows),
           summary: 'dispatched ' + jobs.length + ' worker(s), ' + ok + ' done'
@@ -1174,7 +1234,7 @@
       // CONSENT-GATED like team.dispatch (see its note): spawning clones fans out autonomous budget-spending
       // loops off text in the lead's context — 'ask' mode gets the APPROVAL beat, Full Access bypasses.
       name: 'team.spawn', capability: 'orchestrator', scope: 'execute', requiresConsent: true,
-      description: 'Spawn EPHEMERAL sub-agents — clones of yourself — to work subtasks in parallel. Each runs its OWN agent loop on the one subtask you give it, returns its result, then vanishes (it is NOT added to your roster, and it cannot spawn its own sub-agents). Use this to decompose a task or fan out parallel work without summoning named crew first. Each task takes a prompt (the focused subtask) and an optional label. Pass background:true to spawn watchable workers and keep working while they run.',
+      description: 'Spawn EPHEMERAL sub-agents (clones of yourself) to work subtasks in parallel. Each runs its OWN agent loop on the one subtask you give it, returns its result, then vanishes (it is NOT added to your roster and cannot spawn sub-agents). Use it to decompose a task or fan out parallel work without summoning named crew first. Each task takes a prompt (the focused subtask) and an optional label. background:true spawns watchable workers while you keep working.',
       schema: {
         type: 'object', required: ['tasks'], properties: {
           tasks: {
@@ -1182,8 +1242,8 @@
               type: 'object', required: ['prompt'],
               properties: {
                 prompt: { type: 'string' }, label: { type: 'string' },
-                resultSchema: { type: 'object', description: 'Optional strict JSON result contract. Invalid output gets one bounded repair and is never accepted as done.' },
-                context: { type: 'string', description: 'Optional handoff of what YOU already established that this clone needs: discovered file paths, findings, constraints, decisions. Placed before the prompt as settled starting knowledge. Do not restate the subtask here.' }
+                resultSchema: { type: 'object', description: 'Strict JSON result contract: invalid output gets one bounded repair and is never accepted as done.' },
+                context: { type: 'string', description: 'What YOU already established that this clone needs (file paths, findings, constraints, decisions), placed before the prompt as settled knowledge. Do not restate the subtask.' }
               }
             }
           },
@@ -1218,9 +1278,9 @@
         }));
         const overflowNote = overflow.length ? ' — ' + overflow.length + ' NOT spawned (max ' + maxWorkers + ' per call; spawn the rest in a follow-up call)' : '';
 
-        // forward ONLY lifecycle/cost onto the lead's bus so the floor materializes/pops the Meeseeks live; the
-        // durable record (via h.emit) keeps the full watch tail for team.subagents/interrupt/resume.
-        const childEmit = (name, payload) => { if (FORWARD[name] && ctx && typeof ctx.emit === 'function') { try { ctx.emit(name, payload); } catch (_) {} } };
+        // forward lifecycle/cost onto the lead's bus so the floor materializes/pops the Meeseeks live (tool steps only as
+        // crew.tool_step — see makeChildEmit); the durable record (via h.emit) keeps the full watch tail for team.subagents.
+        const childEmit = makeChildEmit(ctx);
         // this call's timeout pauses while the run's spend pool holds a foreground clone's call (poolHoldClock), and every
         // clone's stall clock (its handle h) stops while its own call is held
         const family = args.background ? null : poolHoldClock(ctx);
@@ -1338,7 +1398,7 @@
         }
         const results = (await Promise.all(spawned.map(s => s.done))).concat(overflowRows());
         const ok = results.filter(r => r.reason === 'done').length;
-        const fit = await fitAggregate(results, { budget: aggregateBudget(ctx), what: r => 'subagent ' + (r.label || r.agentId) + '\'s result', park: workerParker(ctx, 'team.spawn') });
+        const fit = await fitAggregate(results, { budget: aggregateBudget(ctx), what: r => 'subagent ' + (r.label || r.agentId) + '\'s result', park: workerParker(ctx, 'team.spawn'), scrub: scrubTextOf(ctx) });
         return withTaint({ content: JSON.stringify(fit.rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s), ' + ok + ' done' + overflowNote + fitNote(fit) }, taintOfRows(results));
       }
     };
@@ -1364,7 +1424,7 @@
       timeoutMs: 180000,
       name: 'team.summon', capability: 'orchestrator', scope: 'write', requiresConsent: true,
       briefExempt: true,   // hiring is station setup, not the deliverable: never held behind the Task Brief (taskbrief-policy canMutate)
-      description: 'Summon a NEW specialist agent onto the crew for the Commander, live — as the Recruitment Bay does. Use it when the specialist you need does not exist yet; one already under YOUR TEAM takes work through team.dispatch. Pick a class with specId (one of: ' + SPEC_IDS + ') or describe a custom one with name + purpose. The station places the new agent\'s workstation with it, so never tell the Commander to go build it a desk. Returns the new agentId: bring it INTO this chat with station.control group.add, or hand it work with team.dispatch. In APPROVAL mode the Commander confirms the summon first.',
+      description: 'Summon a NEW specialist agent onto the crew for the Commander, live, as the Recruitment Bay does. Use it when the specialist you need does not exist yet; one already under YOUR TEAM takes work through team.dispatch. Pick a class with specId (one of: ' + SPEC_IDS + ') or describe a custom one with name + purpose. The station places the new agent\'s workstation with it, so never tell the Commander to go build it a desk. Returns the new agentId: bring it INTO this chat with station.control group.add, or hand it work with team.dispatch. In APPROVAL mode the Commander confirms the summon first.',
       schema: {
         type: 'object', required: ['name'], properties: {
           name: { type: 'string' },        // the new agent's display name (e.g. "RESEARCHER")
@@ -1440,7 +1500,7 @@
 
     const subagentsTool = {
       name: 'team.subagents', capability: 'orchestrator', scope: 'read', requiresConsent: false,
-      description: 'List or inspect your BACKGROUND subagents (team.dispatch with background:true, and team.spawn). Pass id for one worker, or omit id to list recent workers for this lead. Returned records include the current generation, status, event tail, result, steering history, and whether they can be interrupted or resumed. Use the returned id + generation for team.steer. A normal (foreground) team.dispatch is NEVER in this list — to confirm one really ran, pass runId (from its dispatch result) and the station\'s run history answers.',
+      description: 'List or inspect your BACKGROUND subagents (team.dispatch with background:true, and team.spawn). Pass id for one worker, or omit id to list recent workers for this lead. Returned records include the current generation, status, event tail, result, steering history, and whether they can be interrupted or resumed. Use the returned id + generation for team.steer. A normal (foreground) team.dispatch is NEVER in this list; to confirm one really ran, pass runId (from its dispatch result) and the station\'s run history answers.',
       schema: { type: 'object', properties: { id: { type: 'string' }, agentId: { type: 'string' }, status: { type: 'string' }, runId: { type: 'string', description: 'A worker runId from a team.dispatch result: look it up in the station\'s durable run history.' } } },
       run: async (args, ctx) => {
         const leadId = (ctx && ctx.agentId) || 'agent';
@@ -1460,7 +1520,7 @@
             + ' worker really ran, call team.subagents with runId set to the runId from that dispatch result.',
           summary: '0 background subagent(s)'
         };
-        const fit = await fitAggregate(rows, { budget: aggregateBudget(ctx), what: r => (r.agentId || 'subagent') + ' (' + (r.id || '') + ')\'s result', park: workerParker(ctx, 'team.subagents') });
+        const fit = await fitAggregate(rows, { budget: aggregateBudget(ctx), what: r => (r.agentId || 'subagent') + ' (' + (r.id || '') + ')\'s result', park: workerParker(ctx, 'team.subagents'), scrub: scrubTextOf(ctx) });
         return withTaint({ content: JSON.stringify(fit.rows), summary: rows.length + ' background subagent(s)' + fitNote(fit) }, taintOfRows(rows));
       }
     };

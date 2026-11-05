@@ -89,6 +89,10 @@ const Harness = (() => {
   // side prompts on the SAME agentId — their prompt_tokens must never overwrite the agent's real
   // context occupancy (they made the gauge snap back to ~1% right after every real turn).
   const internalRuns = new Set();   // runIds whose cost events are gauge-invisible
+  // runIds of delegated WORKER runs seen on a lead's stream (orchestration FORWARD). Their tool steps reach U.bus for
+  // the floor, but a worker's kit is the sidecar's autonomous office — not its room — so room-gap readers (the
+  // station-quest generator) must not read a worker's web/files call as a missing prop. Bounded: oldest drop first.
+  const delegatedRuns = new Set();
 
   // Composite map keys join on U+0000, built with String.fromCharCode so no raw NUL byte ever lands in
   // this source file (a literal one makes the whole file invisible to grep). No id can contain it.
@@ -292,6 +296,36 @@ const Harness = (() => {
       });
     }
     return { settle, isStaleReply, refresh };
+  }
+  /* ONE reading of a refused /api/* reply, for every surface that must say WHY a call failed: voice synthesis, the
+     push-to-talk transcript and the Live Voice probe each used to decide on their own that any 403 meant "the station
+     restarted". A 403 is a restart only when the stale-token recovery below PROVED it (state.sessionStale: the station
+     rotated its key and this page could not adopt it). A page the station kept its key from (state.tokenWithheld) is
+     never "restarted" — a reload only re-runs the same ownership check — and any other 403 is the route's own
+     refusal. state.sessionStale undefined = a caller with no recovery state, read as before (a stale session).
+     Pure over its two arguments: Harness.classifyApiFailure binds the live state, and tests lift it by source.
+     → null for a reply that is not a failure, else { code, status, terminal, staleSession, tokenWithheld, message }. */
+  function classifyApiFailure(response, state) {
+    if (!response || response.ok !== false) return null;
+    const s = state || {};
+    const status = Number(response.status) || 0;
+    if (status === 403 && s.tokenWithheld) {
+      return { code: 'token_withheld', status, terminal: true, staleSession: false,
+        tokenWithheld: s.withheldNotice || 'StarNet could not confirm this browser is yours — see the station notice.',
+        message: 'this browser was not verified as your own account — see the station notice' };
+    }
+    if (status === 403 && s.sessionStale !== false) {
+      return { code: 'stale_session', status, terminal: true, staleSession: true, tokenWithheld: '',
+        message: 'the station restarted — reload the page to reconnect' };
+    }
+    if (status === 403) {
+      return { code: 'forbidden', status, terminal: true, staleSession: false, tokenWithheld: '',
+        message: 'the station refused this request (HTTP 403)' };
+    }
+    // no answer, a timeout, a rate limit or a server fault may clear on its own; any other status will not
+    const transient = status === 0 || status === 408 || status === 429 || status >= 500;
+    return { code: transient ? 'station_unavailable' : 'http_error', status, terminal: !transient, staleSession: false, tokenWithheld: '',
+      message: 'unreachable (HTTP ' + status + ')' };
   }
   // Set when a stale-token 403 could NOT be recovered in place — the one state where the honest answer is
   // "reload this page". Surfaces read it (Harness.sessionStale) so they stop blaming the network or the catalog.
@@ -1515,13 +1549,29 @@ const Harness = (() => {
             // bus fold below always finds the registration.
             if (payload.runId && !internal) registerRun(payload.runId, agentId || 'agent', streamId, messages);
             if (!runId) { runId = payload.runId; onRunId && onRunId(runId); }
+            else if (payload.runId && payload.runId !== runId) { delegatedRuns.add(payload.runId); if (delegatedRuns.size > 400) delegatedRuns.delete(delegatedRuns.values().next().value); }
             break;
           case 'agent.token': full += payload.delta; onToken && onToken(payload.delta); break;
           // Any prose before a tool call was an in-progress narration segment, not the terminal answer. Keep it
           // visible in the chronological live transcript, but reset every final-output accumulator at this
           // authoritative boundary so returned/persisted/delivered text contains exactly the last assistant turn.
-          case 'agent.tool_call': full = ''; onTerminalReset && onTerminalReset(); onToolCall && onToolCall(payload); break;
-          case 'agent.tool_result': onToolResult && onToolResult(payload); break;
+          // a delegated WORKER's tool steps ride this stream too (orchestration FORWARD) for the floor + CREW + DELEGATED
+          // readers on U.bus above; they are not the lead's steps, so they never reset its answer or render as its rows.
+          /* a delegated WORKER's tool step arrives under its own name (crew.tool_step, see orchestration makeChildEmit): it is
+             never the lead's step, so it never touches this run's answer or rows. The page is the one place it turns back into
+             agent.tool_call / agent.tool_result — on U.bus only — for the floor tag, the CREW card and the DELEGATED row, which
+             key on the WORKER's agentId/runId. The run is recorded as delegated FIRST, so the room-gap quest guard sees it. */
+          case 'crew.tool_step': {
+            if (payload.runId) { delegatedRuns.add(String(payload.runId)); if (delegatedRuns.size > 400) delegatedRuns.delete(delegatedRuns.values().next().value); }
+            if (typeof U === 'undefined' || !U.bus) break;
+            const step = { agentId: payload.agentId, runId: payload.runId, callId: payload.callId };
+            if (payload.phase === 'call') { step.name = payload.name; if (payload.argsSummary != null) step.argsSummary = payload.argsSummary; }
+            else { step.ok = payload.ok !== false; step.isError = payload.isError === true; if (payload.ms != null) step.ms = payload.ms; }
+            try { U.bus.emit(payload.phase === 'call' ? 'agent.tool_call' : 'agent.tool_result', step); } catch (e) { console.warn('[harness] crew.tool_step', e); }
+            break;
+          }
+          case 'agent.tool_call': if (runId && payload.runId && payload.runId !== runId) break; full = ''; onTerminalReset && onTerminalReset(); onToolCall && onToolCall(payload); break;
+          case 'agent.tool_result': if (runId && payload.runId && payload.runId !== runId) break; onToolResult && onToolResult(payload); break;
           case 'deliverable': onDeliverable && onDeliverable(payload); break;
           // the run is PAUSED on the sidecar awaiting this; the UI shows approve/always/full/deny and answers
           // via Harness.consent(). No more events arrive on this stream until the answer is POSTed.
@@ -2072,6 +2122,7 @@ const Harness = (() => {
   }
 
   return {
+    isDelegatedRun: (id) => delegatedRuns.has(String(id || '')),
     pingEngine, engineState, restartEngine,
     canRestartEngine: () => !!tauriCoreNow(),
     isDesktop: () => DESKTOP,   // lets the UI tell a desktop keychain-store failure (token saved locally) from a browser no-op
@@ -2092,6 +2143,9 @@ const Harness = (() => {
     tokenWithheld: () => tokenWithheld,   // the station kept its key from this page (peerowner reason) — never "restarted"; '' = it has its key
     tokenWithheldNotice: () => tokenWithheldNotice(tokenWithheld),   // the full withheld sentence ('' = not withheld)
     tokenWithheldRetryable: () => withheldRetryable(tokenWithheld),   // a transient reason: a reload re-runs the check and may pass
+    // the ONE reading of a refused /api/* reply (voice synthesis, push-to-talk, the Live Voice probe): a 403 is a restart only when
+    // the stale-token recovery proved it (sessionStale), never for a withheld page, else the route's own refusal
+    classifyApiFailure: response => classifyApiFailure(response, { sessionStale, tokenWithheld, withheldNotice: tokenWithheldNotice(tokenWithheld) }),
     apiFetch: (u, init) => ensureApiToken().then(t => fetch(u, withApiToken(init, t))),
     totals: () => totals,
     setTotals: t => { totals = { tokens: t.tokens || 0, cost: t.cost || 0, calls: t.calls || 0 }; },

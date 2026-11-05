@@ -565,9 +565,9 @@ const Chat = (() => {
     // TWO-TIER TRANSCRIPT: the run's tool rails FOLD under this resolved line so the machinery recedes
     // and the speech stays contiguous. The rails are MOVED, never deleted — the full work log is one
     // click away (truthful telemetry intact, just collapsed).
-    const rails = runRails.filter(r => r && r.isConnected && r.childElementCount > 0);
+    const rails = runRails.filter(r => r && r.isConnected && railChips(r).length > 0);
     runRails = [];
-    const tools = rails.reduce((n, r) => n + r.childElementCount, 0);
+    const tools = rails.reduce((n, r) => n + railChips(r).length, 0);   // the chips only: a folded rail's summary row is not a tool
     if (tools > 0) bits.push(tools + (tools === 1 ? ' tool' : ' tools'));
     card.textContent = '';
     const sum = document.createElement('span'); sum.className = 'cp-sum';
@@ -600,18 +600,24 @@ const Chat = (() => {
     const fold = card.nextElementSibling && card.nextElementSibling.classList.contains('run-fold') ? card.nextElementSibling : null;
     let anchor = null;
     for (let n = (fold || card).nextElementSibling; n; n = n.nextElementSibling) {
-      if (n.classList.contains('user')) break;
+      // a note the Commander sent mid-run belongs to this run's stretch; only their next real turn ends it
+      if (!n.classList.contains('steer-echo') && n.classList.contains('user')) break;
       if (n.classList.contains('cmsg') && n.classList.contains('agent') && !n.matches('.nudge,.consent,.turnin,.tool,.deliverable')) anchor = n;
     }
-    if (!anchor) return;
-    anchor.after(card);
-    if (fold) card.after(fold);
+    if (anchor) {
+      anchor.after(card);
+      if (fold) card.after(fold);
+    }
     // the rails that split the answer into paragraphs just folded away, so its rows are ADJACENT now — a follow-up row
-    // stamped the same minute as the one above becomes one message (same rule row() applies at creation)
-    for (let n = anchor, p = anchor.previousElementSibling; p && n.classList.contains('agent'); n = p, p = p.previousElementSibling) {
-      if (!p.classList.contains('agent') || !p.classList.contains('cmsg') || p.matches('.nudge,.consent,.turnin,.tool,.deliverable')) break;
-      const a = n.querySelector(':scope > .cmsg-head > .cmsg-ts'), b = p.querySelector(':scope > .cmsg-head > .cmsg-ts');
-      if (a && b && a.textContent === b.textContent) n.classList.add('ts-repeat');
+    // stamped the same minute as the one above becomes one message (same rule row() applies at creation). Every pair in
+    // this run's stretch, back to the turn that started it: a mid-run note or a station line between two paragraphs no
+    // longer ends the walk (10-26: "8:23 PM" stood alone between two paragraphs of one reply). Same speaker only.
+    const prose = n => !!(n && n.classList && n.classList.contains('agent') && n.classList.contains('cmsg') && !n.matches('.nudge,.consent,.turnin,.tool,.deliverable'));
+    const headOf = n => { const w = n.querySelector(':scope > .cmsg-head > .who'), t = n.querySelector(':scope > .cmsg-head > .cmsg-ts'); return w && t ? w.textContent + '|' + t.textContent : ''; };
+    for (let n = anchor || card.previousElementSibling; n; n = n.previousElementSibling) {
+      if (!n.classList.contains('steer-echo') && n.classList.contains('user')) break;
+      const p = n.previousElementSibling;
+      if (prose(n) && prose(p) && headOf(n) && headOf(n) === headOf(p)) n.classList.add('ts-repeat');
     }
   }
   // POST-RUN DEDUPE: when a recap card is about to render (it owns cost · duration · model + the artifact list),
@@ -1357,7 +1363,8 @@ const Chat = (() => {
     wireCrewCapture(); // P3.2: record each dispatched worker's forwarded run-end spend so a 👍 on a crew run splits XP honestly (registers once)
     wireCuriosity();   // Commander Dossier: one gentle "tell me about X" nudge after a clean run (registers once)
     wireConnectorRequired();   // beginner seam Lane 1: a run that hit an unwired connector earns the ⇄ CONNECT chip
-    wireBgExit();      // E6: surface shell.bg.exit (a background dev-server/watcher ended) as a terse COMMS system line — was a zero-listener event (registers once)
+    wireKeySaved();    // keys.save: a key pasted into chat now lives in KEYS — its bubble + saved history show the placeholder (registers once)
+    wireBgExit();     // E6: surface shell.bg.exit (a background dev-server/watcher ended) as a terse COMMS system line — was a zero-listener event (registers once)
     wireSkillAside();  // A2: after a background review distills a skill, ONE quiet "distilled this run…" aside (registers once)
     wireIdBar();       // COMMS agent selector: a change switches to (or mints) a workstream bound to that agent (registers once)
     load(opts.ws);
@@ -1468,7 +1475,9 @@ const Chat = (() => {
       if (hasStaged) await settleAttachments();
       if (activeWs?.id !== ws.id) return;   // you moved on while the files uploaded: the message stays in the box
       const atts = pendingAtts.filter(entry => entry.status === 'ready' && entry.ref).map(entry => entry.ref);
+      stepOfferAside('turn');   // a turn typed here never reaches send(): it steps an offer aside the same way (review 10-27)
       const sent = await GroupChat.sendText(t, { attachments: atts, attachmentAgent: ws.agentId });
+      if (sent) typedTaskCompletesHandoff(t, ws);
       if (sent && activeWs?.id === ws.id) { takeAttachments(); if (input.value.trim() === t) input.value = ''; closeSlash(); autoGrowInput(); }
       return;
     }
@@ -1477,7 +1486,9 @@ const Chat = (() => {
       if (hasStaged) await settleAttachments();
       if (activeWs?.id !== ws.id || focusVersion !== submissionFocusVersion) return;
       const atts = pendingAtts.filter(entry => entry.status === 'ready' && entry.ref).map(entry => entry.ref);
+      stepOfferAside('turn');   // a group turn never reaches send(): it steps an offer aside the same way (review 10-27)
       const sent = await GroupChat.sendText(t, { attachments: atts, attachmentAgent: ws.agentId });
+      if (sent) typedTaskCompletesHandoff(t, ws);
       if (sent && activeWs?.id === ws.id) { takeAttachments(); if (input.value.trim() === t) input.value = ''; closeSlash(); autoGrowInput(); }
       return;
     }
@@ -1490,7 +1501,9 @@ const Chat = (() => {
       return;
     }
     // BUSY: type-ahead queues TEXT; staged files wait in the strip for the next idle send (one run per stream).
-    if (isBusy()) { if (t) { input.value = ''; closeSlash(); autoGrowInput(); enqueue(t); } return; }
+    // a typed task queued here is the Commander's all the same: it completes a pending first-task hand-off now (the queue later
+    // sends it with no composer mark, so send() could not tell it was typed)
+    if (isBusy()) { if (t) { input.value = ''; closeSlash(); autoGrowInput(); enqueue(t); stepOfferAside('turn'); typedTaskCompletesHandoff(t, activeWs); } return; }
     // SETTLE UPLOADS: a staged attachment still uploading must not be silently dropped — uploads to the local
     // sidecar are near-instant, so we AWAIT them before snapshotting. A failed one already notified per-file.
     if (hasStaged) await settleAttachments();
@@ -1498,7 +1511,7 @@ const Chat = (() => {
     const atts = takeAttachments();   // snapshot the READY refs + clear the composer strip
     if (!t && !atts.length) return;   // everything failed to upload and there's no text → nothing to send
     input.value = ''; closeSlash(); autoGrowInput();   // COMPOSER: collapse back to one line after a send
-    send(t, { attachments: atts });
+    send(t, { attachments: atts, composer: true });   // composer: the Commander typed this turn (a pending first task reads it)
   }
 
   /* ── ATTACHMENTS ────────────────────────────────────────────────────────────────────────────────────
@@ -2105,16 +2118,51 @@ const Chat = (() => {
     return read;
   }
 
+  /* THE DESK REDACTS ITS COPY BEFORE IT MERGES, as the phone does (remote/host.js mergedTurns; wave 1 qw18, 10-27). The
+     save is raw and the station redacts each row it writes, so a turn holding a secret never keyed equal: it showed twice,
+     raw copy kept. When the station's rows carry a redaction, the station redacts this copy's turn texts with the store's
+     own redact (the page has none). A row it holds then merges as ONE turn, redacted; a row it does not hold (this send's
+     own turn) stays as typed.
+     TYPED FIRST (review, 10-27): a station row keeps the redaction of its day, so a value held only later is raw there
+     and today's redaction of the copy missed it (twice, then once more per open). The copy merges as typed first; only
+     rows left unmatched are asked and keyed redacted, so a row that matched as typed (a steered reply holding its parts
+     included) is never re-keyed. At most REDACT_ASK_MAX texts go, newest first, within REDACT_ASK_CHARS of JSON (the
+     route takes 500 and 8 MB); a row past that merges as typed. THE RETRY TARGET (the newest directive with no answer
+     after it) keeps the Commander's words, as one row, since retryLast re-sends it; the next open after an answer
+     redacts it. */
+  const REDACT_ASK_MAX = 400;          // a station read returns at most 200 turns
+  const REDACT_ASK_CHARS = 2000000;    // at most 6 MB of UTF-8
+  function redactAsk(rows) {
+    const texts = [], seen = new Set();
+    let chars = 0;
+    for (let i = rows.length - 1; i >= 0 && texts.length < REDACT_ASK_MAX; i--) {
+      const t = rows[i].content, size = JSON.stringify(t).length + 1;
+      if (seen.has(t) || chars + size > REDACT_ASK_CHARS) continue;
+      seen.add(t); chars += size; texts.push(t);
+    }
+    return texts;
+  }
+  // -> Map(raw -> redacted), or false (no answer in the window: the merge runs on the raw copy, as before)
+  async function redactedTexts(texts, ms) {
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), ms);
+    try {
+      const r = await fetch('/api/transcript/redact', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ texts }), cache: 'no-store', signal: controller.signal });
+      const j = r.ok ? await r.json() : null;
+      return !!j && Array.isArray(j.texts) && j.texts.length === texts.length && new Map(texts.map((t, i) => [t, String(j.texts[i])]));
+    } catch (_) { return false; } finally { clearTimeout(timeout); }
+  }
+
   async function reconcileServerHistory(ws, loadToken, read) {
     if (!ws || !ws.id) return;
     const cronSession = String(ws.id).indexOf('cron-') === 0;
+    const startedAt = Date.now(), windowMs = read.timeoutMs > 0 ? read.timeoutMs : 8000;   // a send's read may wait longer (ensureHistoryReady)
     let busy = false;
     try { busy = typeof Channels !== 'undefined' && Channels.isBusy && Channels.isBusy(ws.id); } catch (_) {}
     const waits = cronSession && !busy ? [120, 400] : [];
     let turns = [], reachable = false, refused = false, failed = false;
     for (let attempt = 0; attempt <= waits.length; attempt++) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), read.timeoutMs > 0 ? read.timeoutMs : 8000);   // a send's read may wait longer (ensureHistoryReady)
+      const timeout = setTimeout(() => controller.abort(), windowMs);
       try {
         const r = await fetch('/api/transcript?agent=' + encodeURIComponent(ws.agentId || 'agent') + '&stream=' + encodeURIComponent(ws.id) + '&limit=200', { cache: 'no-store', signal: controller.signal });
         refused = !r.ok && r.status >= 400 && r.status < 500;   // the station answered "no": asking again cannot change it
@@ -2133,11 +2181,44 @@ const Chat = (() => {
     read.retryable = !reachable && !refused && !failed;   // unanswered (or unreadable) — a send may keep asking (ensureHistoryReady)
     read.serverFailed = !reachable && failed;              // answered 5xx — a send asks once more, then refuses (ensureHistoryReady)
     // A superseded read, removed session or deliberate clear cannot write back.
-    if (historyLoads.get(ws) !== read || (typeof Workstreams !== 'undefined' && Workstreams.get(ws.id) !== ws)
-      || (read.history.length && !ws.history.length)) { noteContinuity(ws, 'history-stale-discarded'); return false; }
+    const stale = () => historyLoads.get(ws) !== read || (typeof Workstreams !== 'undefined' && Workstreams.get(ws.id) !== ws)
+      || (read.history.length && !ws.history.length);
+    if (stale()) { noteContinuity(ws, 'history-stale-discarded'); return false; }
     noteContinuity(ws, reachable ? 'history-loaded' : 'history-unavailable');
     if (!reachable && !cronSession) return false;
-    const next = mergeCanonicalHistory(ws.history, turns);
+    // the typed merge, and the turn rows it left unmatched (a row that comes back as itself matched nothing)
+    const typedMerge = () => { const merged = mergeCanonicalHistory(ws.history, turns), out = new Set(merged);
+      return { merged, left: ws.history.filter(r => out.has(r) && r && !r.sys && (r.role === 'user' || r.role === 'assistant') && typeof r.content === 'string') }; };
+    const ask = turns.some(t => t && /\[redacted-/.test(String(t.content))) ? redactAsk(typedMerge().left) : [];
+    // what is left of this read's own window, never a fresh one: a send's wait stays bounded
+    const clean = ask.length ? await redactedTexts(ask, Math.max(1000, windowMs - (Date.now() - startedAt))) : null;
+    if (clean !== null && stale()) { noteContinuity(ws, 'history-stale-discarded'); return false; }
+    if (clean === false) noteContinuity(ws, 'history-redact-unavailable');
+    const first = typedMerge();   // again: the copy may have grown while the redaction was out
+    let merged = first.merged;
+    if (clean) {
+      // TYPED: the row as typed (the merge carries a matched copy's own fields, this one too)
+      const TYPED = Symbol('typed'), left = new Set(first.left), copies = new Set();
+      const local = ws.history.map(r => {
+        const t = left.has(r) ? clean.get(r.content) : undefined;
+        if (t === undefined || t === r.content) return r;
+        const copy = Object.assign({}, r, { content: t, [TYPED]: r }); copies.add(copy); return copy;
+      });
+      if (copies.size) {
+        const keyed = mergeCanonicalHistory(local, turns);
+        const lastUser = keyed.map(m => m && m.role).lastIndexOf('user');
+        const answered = keyed.slice(lastUser + 1).some(m => m && m.role === 'assistant' && !m.error && !m.stopped && String(m.content == null ? '' : m.content).trim());
+        merged = keyed.map((m, i) => {
+          const row = m && m[TYPED];
+          if (!row) return m;
+          if (copies.has(m)) return row;   // a copy the station did not match goes back as it was
+          const out = Object.assign({}, m, i === lastUser && !answered && m.role === 'user' ? { content: row.content } : null);   // the retry target
+          delete out[TYPED];
+          return out;
+        });
+      }
+    }
+    const next = placeSteerNotes(merged);
     const readable = next.some(m => m && (
       (m.role === 'assistant' && String(m.content == null ? '' : m.content).trim()) ||
       (m.sys && !m.transcriptPending && String(m.content == null ? '' : m.content).trim())
@@ -2218,9 +2299,13 @@ const Chat = (() => {
     historyPinPending = historyPin;
     revealKey = '';   // a reveal into this conversation runs after load(); this only drops a stale one
     const nextWs = ws || (typeof Workstreams !== 'undefined' ? Workstreams.active() : null);
+    const prevWs = activeWs;
     if (activeWs?.id !== nextWs?.id) focusVersion++;
     activeWs = nextWs;
     paintTitle();
+    // ANOTHER CONVERSATION IS ON SCREEN (gh#158): an offer panel over COMMS (the first-task hand-off included) steps aside,
+    // unanswered, so COMMS shows the conversation now open and its message box. A re-sync of the same one never does.
+    if (prevWs && nextWs && prevWs.id !== nextWs.id) stepOfferAside('session');
     noteContinuity(activeWs, 'session-selected');
     heldCard = null; heldQueue.length = 0;
     if (activeWs && activeWs.conversationMode === 'group' && typeof GroupChat !== 'undefined') {
@@ -2754,7 +2839,7 @@ const Chat = (() => {
     if (typeof App === 'undefined' || !App.needsWorkstation || !App.needsWorkstation(id)) return;
     const who = (App.agentName && App.agentName(id)) || name;
     const prompt = row('system'); prompt.d.classList.add('comms-desk-prompt');
-    prompt.body.textContent = who + ' has nowhere to sit yet — it needs a desk of its own before it can take floor work. want to place one?';
+    prompt.body.textContent = who + ' has nowhere to sit yet — it needs a desk of its own before it can take floor work. Want to place one?';
     autoscroll();
     // the chip is the whole point: it opens BUILD MODE already armed on the WORKSTATIONS palette, so the next floor
     // click drops the desk. 'later' just dismisses this view of it — the step is still owed, so the next open
@@ -2902,6 +2987,15 @@ const Chat = (() => {
     const nm = (typeof App !== 'undefined' && App.agentName && App.agentName(id)) || String(id || 'agent').toUpperCase();
     return String(nm).toUpperCase() + ' · BRIEF';
   }
+  /* A NOTE SENT MID-RUN IS THE COMMANDER'S OWN MESSAGE (Andrew 10-26: "[steering] u seem to be adding just new rooms…" sat
+     under ULTRON's name, so the agent read as saying it). The run's '[steering] …' echo is drawn on the Commander's side,
+     labelled MID-RUN, the wire marker stripped. One row for the live echo and every replay of it. */
+  function steerRow(text, stamp) {
+    const r = row('user', { stamp: stamp, brief: 'COMMANDER · MID-RUN' });
+    r.d.classList.add('steer-echo');
+    r.body.textContent = String(text == null ? '' : text).replace(/^\[steering\] /, '');
+    return r;
+  }
   // render a SENT user turn's attachments: images as clickable thumbnails, other files as openable chips — both
   // served by the sidecar's jailed /api/file route (so they survive a reload, exactly like agent deliverables).
   function renderUserAttachments(rowEl, atts) {
@@ -2941,6 +3035,17 @@ const Chat = (() => {
   function localLine(t) {
     const r = row('system'); r.body.textContent = t; autoscroll();
     if (typeof Systems !== 'undefined' && Systems.noticeReply) { try { Systems.noticeReply(t); } catch (_) {} }   // door law: a station line naming a system brings it online
+    return r.d;
+  }
+  /* A SAVED station line (a history `sys` turn) replays in the same SYSTEM register the live line drew, so a note reads
+     the same before and after a reload. It used to replay through toolLine — an agent row — and came back as a block of
+     the agent's prose (old-UI review 10-26 #3, Andrew's "built while you were away" screenshot). A build session's older
+     saves are re-worded on the way to the screen (WorkshopStore.sessionLine). */
+  function sysLine(text, isErr) {
+    const workshop = activeWs && String(activeWs.id || '').indexOf('workshop-') === 0;
+    const shown = workshop && typeof WorkshopStore !== 'undefined' && WorkshopStore.sessionLine ? WorkshopStore.sessionLine(text) : text;
+    const r = row('system'); r.body.textContent = shown; if (isErr) r.d.classList.add('err');
+    autoscroll();
     return r.d;
   }
   /* A GOAL STEP IS THE STATION'S WORDS (org P29-sys, 2026-10-14). The goal loop sends each continuation as a user-role turn
@@ -3014,6 +3119,13 @@ const Chat = (() => {
   const BROADCAST_QUEUE_CAP = 8;   // bounded FIFO: a celebration flood drops the OLDEST queued line, never grows unbounded
   let lastBroadcastAt = 0;
   let lastTrophyLine = null, lastTrophyAt = 0;   // the moment's trophy line (see ONE MOMENT, ONE TROPHY LINE)
+  let lastQuestLine = null, lastQuestAt = 0;     // the moment's quest line (see ONE MOMENT, ONE QUEST LINE)
+  const QUEST_DONE = 'QUEST COMPLETE · ';
+  // the quest line a new QUEST COMPLETE folds into: one that landed in the last 10s (a different moment opens a new line)
+  function questMoment(raw) {
+    const l = lastQuestLine;
+    return String(raw).indexOf(QUEST_DONE) === 0 && l && l.isConnected && l.dataset && l.dataset.quests && Date.now() - lastQuestAt < 10000 ? l : null;
+  }
   const broadcastQueue = [];       // {text, opts} coalesced inside the window — drained in order, one per window slot
   let broadcastDrainTimer = null;
   function broadcastBlocked() {
@@ -3040,6 +3152,7 @@ const Chat = (() => {
     if (!log) return false;
     opts = opts || {};
     if (broadcastBlocked()) return false;   // blocked (onboarding/interview/offscreen) → dropped, never queued
+    if (questMoment(text)) return renderBroadcast(text, opts);   // it folds into a line already there: no new row to rate-limit
     const now = Date.now();
     // inside the rate-limit window, OR a drain is already in flight: QUEUE (preserving order) rather than drop.
     // Bounded — at the cap the oldest queued line is discarded so the queue can never grow without limit.
@@ -3086,10 +3199,37 @@ const Chat = (() => {
       autoscroll();
       return true;
     }
+    /* ONE MOMENT, ONE QUEST LINE (Andrew 10-26: five "QUEST COMPLETE · … CAN REACH … NOW" rows stacked mid-run). Placing gear
+       finishes several reach quests at once; they fold into the moment's line the way trophies do — "3 QUESTS COMPLETE ·
+       NOVA CAN REACH WEB NOW · SAM ALTMAN CAN REACH WEB NOW +1 (see QUEST LOG)". Two titles show, the rest are counted; the
+       QUEST LOG lists every one. */
+    const qLine = questMoment(raw);
+    if (qLine) {
+      let names = [];
+      try { names = JSON.parse(qLine.dataset.quests) || []; } catch (_) { names = []; }
+      const nm = raw.slice(QUEST_DONE.length).trim();
+      if (nm && names.indexOf(nm) < 0) names.push(nm);
+      qLine.dataset.quests = JSON.stringify(names);
+      qLine.textContent = '';
+      const g = document.createElement('span'); g.className = 'bc-glyph'; g.textContent = '▸ ';
+      const em = document.createElement('span'); em.className = 'bc-name'; em.textContent = names.slice(0, 2).join(' · ');
+      qLine.appendChild(g);
+      qLine.appendChild(document.createTextNode(names.length + ' QUESTS COMPLETE · '));
+      qLine.appendChild(em);
+      qLine.appendChild(document.createTextNode((names.length > 2 ? ' +' + (names.length - 2) : '') + ' (see QUEST LOG)'));
+      lastQuestAt = Date.now();
+      autoscroll();
+      return true;
+    }
     // the block is only opened once we KNOW a new line will land in it. It used to be appended before the trophy fold
     // above, so a second trophy folding into an earlier block left an EMPTY block behind — a blank box in the transcript.
+    // THE LIVE CARD IS NOT A ROW (10-26): while a run is live its working card is pinned as the log's last child, so "the last
+    // row" was always the card and no line ever joined the block above it. Look past the live card, and open a new block
+    // ABOVE it so the card stays pinned at the bottom.
     let d = null, stack = null;
-    const last = log.lastElementChild;
+    const liveCard = log.querySelector('#comms-presence:not(.resolved)');
+    let last = log.lastElementChild;
+    if (last && last === liveCard) last = last.previousElementSibling;
     if (last && last.classList && last.classList.contains('broadcast')) { d = last; stack = d.querySelector('.bc-stack'); }
     if (!d || !stack) {
       d = document.createElement('div');
@@ -3097,11 +3237,12 @@ const Chat = (() => {
       d.setAttribute('role', 'status');   // a live-region system line for AT (it renders no speaker chip)
       stack = document.createElement('span'); stack.className = 'bc-stack';
       d.appendChild(stack);
-      log.appendChild(d);
+      if (liveCard && liveCard === log.lastElementChild) log.insertBefore(d, liveCard); else log.appendChild(d);
     }
     const line = document.createElement('span');
     line.className = 'bc-line' + (opts.tone === 'gold' ? ' bc-gold' : '');   // tone rides the LINE (a shared block can mix tones)
     if (raw.indexOf(TROPHY) === 0) { line.dataset.trophies = JSON.stringify([raw.slice(TROPHY.length).trim()]); lastTrophyLine = line; lastTrophyAt = Date.now(); }
+    if (raw.indexOf(QUEST_DONE) === 0) { line.dataset.quests = JSON.stringify([raw.slice(QUEST_DONE.length).trim()]); lastQuestLine = line; lastQuestAt = Date.now(); }
     const hi = opts.highlight ? String(opts.highlight) : '';
     const ix = hi ? raw.indexOf(hi) : -1;
     // prefix glyph
@@ -3235,6 +3376,51 @@ const Chat = (() => {
     log.appendChild(toolRail); autoscroll();
     return toolRail;
   }
+  /* ONE LINE PER BURST OF WORK (Andrew 10-26: "SO many tool calls clutter up the chat and they never disappear"). A rail of
+     two or more calls shows ONE summary row until it is opened: the call it is on while it runs ("▸ 4 steps · fs.read
+     notes.md"), what it used once it is done ("✓ 5 steps · fs.list, fs.read  0.2s"). A single call keeps its own row. Every
+     chip stays in its rail, unchanged: one click on the summary lists them all, and the run-end fold still moves the
+     rails under RUN COMPLETE. Nothing is hidden that a click cannot show; the summary only reads the chips' own state. */
+  function railChips(rail) { return rail ? Array.from(rail.children).filter(n => n.classList && n.classList.contains('tool-chip')) : []; }
+  function syncRail(rail) {
+    if (!rail || !rail.classList || !rail.classList.contains('tool-rail')) return;
+    const chips = railChips(rail);
+    let sum = rail.querySelector(':scope > .tr-sum');
+    if (chips.length < 2) { if (sum) sum.hidden = true; rail.classList.remove('tr-multi'); return; }
+    if (!sum) {
+      sum = document.createElement('button'); sum.type = 'button'; sum.className = 'tr-sum';
+      sum.setAttribute('aria-expanded', 'false');
+      for (const c of ['tr-glyph', 'tr-count', 'tr-names', 'tr-stat', 'tr-exp']) { const s = document.createElement('span'); s.className = c; sum.appendChild(s); }
+      sum.querySelector('.tr-exp').setAttribute('aria-hidden', 'true');
+      sum.addEventListener('click', () => { const open = rail.classList.toggle('open'); sum.setAttribute('aria-expanded', open ? 'true' : 'false'); });
+      rail.insertBefore(sum, rail.firstChild);
+    }
+    sum.hidden = false; rail.classList.add('tr-multi');
+    const text = (c, sel) => { const n = c.querySelector(sel); return n ? n.textContent : ''; };
+    const live = chips.filter(c => c.classList.contains('pending')).pop();
+    const errs = chips.filter(c => c.classList.contains('err')).length;
+    // a burst where SOME steps failed finished all the same: a plain check, and the stat says how many failed. Only a burst
+    // where every step failed wears the red ✗ (an agent probing for a missing file is ordinary work, not an alarm)
+    const allFailed = !live && errs === chips.length;
+    sum.classList.toggle('pending', !!live); sum.classList.toggle('err', allFailed); sum.classList.toggle('mixed', !live && errs > 0 && !allFailed);
+    sum.classList.toggle('ok', !live && !errs);
+    sum.querySelector('.tr-glyph').textContent = live ? '▸' : allFailed ? '✗' : '✓';
+    sum.querySelector('.tr-count').textContent = chips.length + ' steps';
+    let names = '', stat = '';
+    if (live) {
+      names = text(live, '.tc-name') + (text(live, '.tc-args') ? ' ' + text(live, '.tc-args') : '');
+      stat = text(live, '.tc-stat');   // a browser call's "Waiting for browser session…" still shows while the rail is folded
+    } else {
+      const seen = [];
+      for (const c of chips) { const n = text(c, '.tc-name'); if (n && seen.indexOf(n) < 0) seen.push(n); }
+      names = seen.join(', ');
+      const ms = chips.reduce((t, c) => t + (Number(c.dataset && c.dataset.ms) || 0), 0);
+      stat = errs ? errs + ' failed' : ms ? fmtMs(ms) : '';
+    }
+    sum.querySelector('.tr-names').textContent = names;
+    sum.querySelector('.tr-stat').textContent = stat;
+    sum.setAttribute('aria-label', chips.length + ' steps' + (names ? ': ' + names : '') + (stat ? ', ' + stat : ''));
+  }
   /* A BREAK CLOSES THE RAIL, IT DOES NOT ORPHAN THE CALLS IN FLIGHT (fixed 2026-08-05).
      This used to also `pendingChips.clear()`, and that quietly double-listed the work trail of every run
      that wrote a file. Order of events for one `fs.write`: the CALL opens a rail and registers its chip →
@@ -3305,12 +3491,14 @@ const Chat = (() => {
           const j = await Harness.api.get('/api/connectors');
           if (!chip.isConnected || !chip.classList.contains('pending')) return;
           stat.textContent = (j.browserSession?.waitingRunIds || []).includes(ev.runId) ? 'Waiting for browser session…' : '';
+          syncRail(chip.parentElement);
         } catch (_) { if (chip.classList.contains('pending')) stat.textContent = ''; }
         if (chip.isConnected && chip.classList.contains('pending')) setTimeout(checkWait, 1000);
       };
       setTimeout(checkWait, 500);
     }
     rail.appendChild(chip);
+    syncRail(rail);
     if (ev.callId != null) { pendingChips.set(ev.callId, chip); if (pendingChips.size > 200) pendingChips.delete(pendingChips.keys().next().value); }
     autoscroll();
     return chip;
@@ -3331,6 +3519,7 @@ const Chat = (() => {
     const glyph = chip.querySelector('.tc-glyph'); if (glyph) glyph.textContent = (heldCall || deniedCall) ? '▸' : ev.isError ? '✗' : '✓';
     const stat = chip.querySelector('.tc-stat');
     if (stat) stat.textContent = heldCall ? 'not run yet' : deniedCall ? 'denied' : ev.ms ? fmtMs(ev.ms) : (ev.isError ? 'failed' : '');
+    if (chip.dataset && ev.ms > 0) chip.dataset.ms = String(ev.ms);   // the rail's folded summary adds these up
     const detail = chip.querySelector('.tc-detail');
     if (detail) {
       const dRes = document.createElement('div'); dRes.className = 'tc-d-res' + (heldCall ? ' held' : deniedCall ? ' denied' : ev.isError ? ' err' : '');
@@ -3348,6 +3537,7 @@ const Chat = (() => {
       chip = toolChip({ callId: null, name: fallbackName || 'tool', argsSummary: '' });
     }
     foldChipResult(chip, ev);
+    syncRail(chip.parentElement);
     autoscroll();
     return chip;
   }
@@ -3364,6 +3554,7 @@ const Chat = (() => {
       if (head) head.addEventListener('click', () => toggleChip(head));
       rail.appendChild(chip);
     }
+    syncRail(rail);   // the group chat folds a burst to one line too
     return rail;
   }
   // a clickable COMMS row for a file the agent produced — opens it via the sidecar's jailed /api/file route
@@ -5408,16 +5599,16 @@ const Chat = (() => {
       // lock / fullscreen, i.e. opening it will capture the Commander's REAL mouse. Say so BEFORE the click.
       if (m.capturesInput) {
         const warn = document.createElement('div'); warn.className = 'ws-line ws-capture-warn';
-        warn.textContent = '⚠ captures your mouse/keyboard when opened (pointer lock) — press Esc to release it';
+        warn.textContent = 'Heads up: it captures your mouse and keyboard when opened (pointer lock). Press Esc to release it.';
         r.body.appendChild(warn);
       }
       if (m.usesMedia) {
         const warn = document.createElement('div'); warn.className = 'ws-line ws-capture-warn';
-        warn.textContent = '⚠ may ask to use your camera, microphone, or screen when opened';
+        warn.textContent = 'Heads up: it may ask to use your camera, microphone, or screen when opened.';
         r.body.appendChild(warn);
       }
       const tryRow = document.createElement('div'); tryRow.className = 'turnin-rate ws-try';
-      const openItBtn = document.createElement('button'); openItBtn.className = 'consent-btn ws-openit'; openItBtn.textContent = '▶ Open it — try it in a tab';
+      const openItBtn = document.createElement('button'); openItBtn.className = 'consent-btn ws-openit'; openItBtn.textContent = 'Open it — try it in a tab';
       openItBtn.title = m.capturesInput
         ? 'run this tool in a new browser tab — it will capture your mouse; Esc releases it'
         : 'run this tool in a new browser tab';
@@ -5567,8 +5758,8 @@ const Chat = (() => {
       r.body.appendChild(pl);
     } else if (plan && m.kind === 'patch') {
       const pl = document.createElement('div'); pl.className = 'ws-line ws-capture-warn';
-      pl.textContent = '⚠ this patch can’t be auto-applied (' + (plan.patchRefused || 'no valid target') + '). '
-        + 'The button below only SAVES the .patch file — bless the target project in PROJECTS to enable auto-apply.';
+      pl.textContent = 'This patch can’t be applied automatically (' + (plan.patchRefused || 'no valid target') + '). '
+        + 'The button below only saves the .patch file — add the target project in PROJECTS to enable auto-apply.';
       r.body.appendChild(pl);
     } else if (buildable) {
       // A PLAN is not the deliverable — copying its .md into a folder is the "regular save button" outcome this
@@ -5656,9 +5847,9 @@ const Chat = (() => {
             // honest resulting state, straight from server truth.
             const nRemoved = (j.removed || []).length, nMissing = (j.missing || []).length;
             let done;
-            if (nRemoved && !nMissing) done = '↩ keep undone — removed ' + nRemoved + ' file' + (nRemoved === 1 ? '' : 's') + ' from ' + (j.destPath || destPath) + '. This build is pending again.';
-            else if (nRemoved && nMissing) done = '↩ keep undone — removed ' + nRemoved + ', but ' + nMissing + ' file' + (nMissing === 1 ? ' was' : 's were') + ' already moved or gone. This build is pending again.';
-            else done = '↩ nothing to remove — those files were already moved or deleted' + (j.restored ? '. This build is pending again.' : '.');
+            if (nRemoved && !nMissing) done = 'Keep undone — removed ' + nRemoved + ' file' + (nRemoved === 1 ? '' : 's') + ' from ' + (j.destPath || destPath) + '. This build is pending again.';
+            else if (nRemoved && nMissing) done = 'Keep undone — removed ' + nRemoved + ', but ' + nMissing + ' file' + (nMissing === 1 ? ' was' : 's were') + ' already moved or gone. This build is pending again.';
+            else done = 'Nothing to remove — those files were already moved or deleted' + (j.restored ? '. This build is pending again.' : '.');
             lr.body.textContent = done;   // replaces the label + chips (the destPath is gone, so its chips are moot)
             try { decideNote(done); } catch (_) {}
             autoscroll();
@@ -5678,7 +5869,8 @@ const Chat = (() => {
       if (!msg || !inOwnSession()) return;
       send('About the “' + String(m.title || 'away build') + '” build you delivered: ' + msg);
     };
-    const decideNote = (label) => { try { if (opts.noteDecision) opts.noteDecision(label); } catch (_) {} };
+    // final = the line is the build's outcome (kept, saved, built, discarded): it tells the session's story from here on
+    const decideNote = (label, final) => { try { if (opts.noteDecision) opts.noteDecision(label, { decided: !!final }); } catch (_) {} };
 
     // IMPLEMENT — decide keep. The label states the plan's REAL consequence (apply vs save), and the outcome
     // line is driven by the server's response: an apply says branch+repo; a patch that could only be SAVED
@@ -5723,7 +5915,7 @@ const Chat = (() => {
       if (buildable) {
         // the typed text is this build's INSTRUCTION, not a chat message — it rides into the prompt (see msgInput).
         const steer = String(msgInput.value || '').trim();
-        const starting = '▶ ' + who + ' is building ' + (steer ? '“' + steer + '”' : 'this') + ' now. The finished build arrives as its own card.';
+        const starting = who + ' is building ' + (steer ? '“' + steer + '”' : 'this') + ' now. The finished build arrives as its own card.';
         decideNote(starting);
         // start the build IMMEDIATELY, but only report its outcome after the card has settled into its feed line —
         // otherwise an instant refusal (no key, discarded) prints its "didn't finish" line ABOVE the line it answers.
@@ -5731,8 +5923,8 @@ const Chat = (() => {
         await settle(starting, false, '');
         const br = await buildP;
         if (br && br.reason === 'built') {
-          const okLine = '✓ built — “' + String((br.manifest && br.manifest.title) || 'the build') + '” is waiting in your rail.';
-          decideNote(okLine); localLine(okLine);
+          const okLine = 'Built — “' + String((br.manifest && br.manifest.title) || 'the build') + '” is waiting in your rail.';
+          decideNote(okLine, true); localLine(okLine);
         } else {
           const bad = 'The build didn’t finish: ' + implFailCopy(br && br.reason)
             + '. This plan is still waiting — reopen this session to try again.';
@@ -5749,17 +5941,17 @@ const Chat = (() => {
         return;
       }
       const saved = res.applied
-        ? ('✓ implemented — applied to branch ' + (res.branch || '?') + (res.root ? (' in ' + res.root) : ''))
+        ? ('Implemented — applied to branch ' + (res.branch || '?') + (res.root ? (' in ' + res.root) : '') + '.')
         : res.savedOnly
-          ? ('⚠ patch file saved to ' + (res.destPath || 'your StarNet deliverables folder') + ' — NOT applied to your project')
-          : ('✓ implemented — files saved to ' + (res.destPath || 'your StarNet deliverables folder'));
-      decideNote(saved); sendNote(); settle(saved, false, res.applied ? '' : (res.destPath || ''));
+          ? ('Patch file saved to ' + (res.destPath || 'your StarNet deliverables folder') + ' — not applied to your project.')
+          : ('Implemented — files saved to ' + (res.destPath || 'your StarNet deliverables folder') + '.');
+      decideNote(saved, true); sendNote(); settle(saved, false, res.applied ? '' : (res.destPath || ''));
     };
     acts.appendChild(implBtn);
 
     // LATER — dismiss; the session stays in the rail and the card returns next time this session opens.
     const laterBtn = document.createElement('button'); laterBtn.className = 'consent-btn'; laterBtn.textContent = 'Later';
-    laterBtn.onclick = async () => { try { await onDecide('later'); } catch (_) {} sendNote(); settle('↩ left in the workshop — reopen this session any time to decide', false); };
+    laterBtn.onclick = async () => { try { await onDecide('later'); } catch (_) {} sendNote(); settle('Left in the workshop — reopen this session any time to decide.', false); };
     acts.appendChild(laterBtn);
 
     // DISCARD — the ONE confirm (single click to arm, second to confirm). Honest about its weight: discard
@@ -5772,7 +5964,7 @@ const Chat = (() => {
       if (!armed) { armed = true; discardBtn.textContent = 'Discard forever?'; setTimeout(() => { if (!settled) { armed = false; discardBtn.textContent = 'Discard'; } }, 4000); return; }
       discardBtn.disabled = true;
       let res = null; try { res = await onDecide('discard'); } catch (_) { res = { ok: false }; }
-      if (res && res.ok) { const done = '✕ discarded — this idea won’t be rebuilt or re-proposed'; decideNote(done); sendNote(); settle(done, true); }
+      if (res && res.ok) { const done = 'Discarded — this idea won’t be rebuilt or re-proposed.'; decideNote(done, true); sendNote(); settle(done, true); }
       else { discardBtn.disabled = false; armed = false; discardBtn.textContent = 'Discard'; localLine('Could not discard this: ' + ((res && res.error) || 'the station kept it') + '.'); }
     };
     acts.appendChild(discardBtn);
@@ -5891,7 +6083,11 @@ const Chat = (() => {
       const text = document.createElement('span'); text.className = 'turnin-text';
       text.textContent = prop.replaceId ? 'Update remembered preference: “' + prop.previousBody + '” → “' + prop.content + '”' : prop.content;
       const btns = document.createElement('span'); btns.className = 'consent-btns';
-      item.appendChild(kind); item.appendChild(text); item.appendChild(btns);
+      item.appendChild(kind); item.appendChild(text);
+      // releases#7: a proposal says when the run that raised it FAILED (the sidecar carries the run's outcome). The deck's own
+      // evidence line (a full grid row under the belief), never a third pill in the kind/text grid: that crushes the text column
+      if (prop.outcome === 'failed') { const f = document.createElement('div'); f.className = 'turnin-evidence'; f.textContent = '↳ ⚠ from a failed run'; item.appendChild(f); }
+      item.appendChild(btns);
       slot.appendChild(item);
 
       let decided = false;
@@ -6039,7 +6235,12 @@ const Chat = (() => {
       const text = document.createElement('span'); text.className = 'receipt-text'; text.textContent = prop.content;
       // an UPDATE replaced an existing memory's text (its old text is archived): say so, and offer no ✕ — forgetting
       // would delete the whole memory, not undo the update (Memory Core edits it)
-      if (prop.revised) { text.textContent = 'updated: ' + prop.content; item.appendChild(kind); item.appendChild(text); list.appendChild(item); continue; }
+      // a SUPERSESSION names what it retired (memory-truth-1027): the older belief left active recall, so the receipt says which
+      if (prop.revised) {
+        const was = (Array.isArray(prop.superseded) ? prop.superseded : []).map(s => '“' + String((s && s.previous) || '').replace(/\s+/g, ' ').slice(0, 120) + '”').filter(t => t.length > 2);
+        text.textContent = 'updated: ' + prop.content + (was.length ? ' (replaced ' + was.join(', ') + ')' : '');
+        item.appendChild(kind); item.appendChild(text); list.appendChild(item); continue;
+      }
       const veto = document.createElement('button'); veto.className = 'receipt-veto'; veto.type = 'button';
       veto.textContent = '✕'; veto.title = 'forget this — undo the save';
       veto.setAttribute('aria-label', 'forget this memory');
@@ -6681,8 +6882,25 @@ const Chat = (() => {
      UNDER the panel — 19 approve clicks hit the panel's line. An offer panel (Dialogue.open({ offer })) now steps aside,
      unanswered, the moment an approval or question reaches the Commander — asked-for or not, since a paused run is waiting on
      them — and when they send a turn of their own (its reply would stream under it). Never a decline: it is offered again. */
-  function stepOfferAside(why) { return !!(typeof Dialogue !== 'undefined' && Dialogue.stepAside && Dialogue.stepAside(why)); }
+  // the arbiter (Dialogue.preempt / OWNER_RULES) decides who yields: an offer always does, the quick tour yields a session pick,
+  // the awakening never — COMMS never decides that per call site
+  function stepOfferAside(why) {
+    if (typeof Dialogue === 'undefined') return false;
+    if (Dialogue.preempt) return !!Dialogue.preempt(why);
+    return !!(Dialogue.stepAside && Dialogue.stepAside(why));
+  }
   function noteAskLanding() { return stepOfferAside('ask'); }
+  /* A TASK THE COMMANDER TYPED COMPLETES A PENDING FIRST-TASK HAND-OFF (gh#158), on the composer paths that never reach send()'s
+     own check: a group conversation (GroupChat.sendText) and the busy type-ahead queue. Same classifier as send() (the agent's
+     last reply as context), and PitchStore.noteCommsTask keeps the first task pending on a station that cannot run it. */
+  function typedTaskCompletesHandoff(t, ws) {
+    if (!t || typeof PitchStore === 'undefined' || !PitchStore.noteCommsTask || !PitchStore.handoffPending || !PitchStore.handoffPending()) return false;
+    const h = (ws && Array.isArray(ws.history)) ? ws.history : [];
+    let prior = '';
+    for (let i = h.length - 1; i >= 0; i--) { const m = h[i]; if (m && m.role === 'assistant') { prior = typeof m.content === 'string' ? m.content : ''; break; } if (m && m.role === 'user') break; }
+    if (!(typeof Classify !== 'undefined' && Classify.isTaskDirective && Classify.isTaskDirective(t, { priorAgentTurn: prior }))) return false;
+    try { return !!PitchStore.noteCommsTask(t); } catch (_) { return false; }
+  }
   // ANY approval or question raised for the Commander (a run's own, a delegated worker's, a group's, a background one) steps an
   // offer panel aside before its card draws: "defer while an ask waits" (askWaiting keeps it from re-opening meanwhile)
   if (typeof U !== 'undefined' && U.bus && U.bus.on) U.bus.on('permission.prompt', noteAskLanding);
@@ -7392,7 +7610,8 @@ const Chat = (() => {
           if (item.value === 'read') { try { if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('skills'); } catch (_) {} return; }   // 'skills' aliases into ABILITIES ▸ SKILL LIBRARY, where the body + approve controls live
           decided = true;
           let ok = false, flash = '';
-          if (item.value === 'allow') { const res = await Harness.agentSkillAllow({ agentId: agentId || 'agent', id: skillId, allow: true }); ok = !!(res && res.ok); flash = ok ? '✔ in every briefing from now on' : 'could not approve — open ABILITIES › SKILLS'; }
+          // the digest of the version this card announced: a package changed on disk since then is refused (409), and approved only in the panel, which shows its bytes
+          if (item.value === 'allow') { const res = await Harness.agentSkillAllow({ agentId: agentId || 'agent', id: skillId, digest: String(sk.contentDigest || ''), allow: true }); ok = !!(res && res.ok); flash = ok ? '✔ in every briefing from now on' : 'could not approve — open ABILITIES › SKILLS'; }
           else { const res = Harness.agentSkillManage ? await Harness.agentSkillManage({ agentId: agentId || 'agent', action: 'archive', target: skillId, force: true }) : null; ok = !!(res && res.ok); flash = ok ? 'discarded' : 'could not discard — open ABILITIES › SKILLS'; }
           r.body.textContent = '◈ skill “' + brief(String(sk.name || skillName)) + '” — ' + flash;
           if (!ok) { try { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(flash, 'warn'); } catch (_) {} }
@@ -8311,9 +8530,9 @@ const Chat = (() => {
       // a SYSTEM STATUS marker (sys — e.g. an autosessions run-outcome framing line) renders as a system-styled
       // line, NOT as agent speech; it never seeds the model (historyWindow drops it) and it stays visible in-thread.
       // a SEND NOW line the station says its run read, filed after a reload lost the reply that showed it (showSentNowRead):
-      // the same dim steer-echo row the live stream drew
-      if (m && m.sys && m.steerEcho) { const s = row('agent', { stamp: stamp }); s.d.classList.add('tool', 'steer-echo'); s.body.textContent = String(m.content || ''); continue; }
-      if (m && m.sys) { if ((m.content || '').trim()) toolLine(m.content, !!m.error); continue; }
+      // the same mid-run Commander row the live stream drew
+      if (m && m.sys && m.steerEcho) { steerRow(m.content, stamp); continue; }
+      if (m && m.sys) { if ((m.content || '').trim()) sysLine(m.content, !!m.error); continue; }
       if (m.role !== 'assistant') continue;   // only dialogue turns render (a stray system marker never shows as an agent reply)
       if (!(m.content || '').trim()) { if (m.stopped) { lastReal = m; if (m.stopNote) toolLine('⏹ ' + m.stopNote); } continue; }   // zero-token stop: durable recovery truth, never a blank speech row (its reason line survives the reload)
       // rows re-synced from the server transcript still carry their FORK:/TASK_QUESTION: machine lines — they are
@@ -8325,11 +8544,11 @@ const Chat = (() => {
       const spoke = (m && m.agentId && typeof App !== 'undefined' && App.agentName) ? App.agentName(m.agentId) : null;
       if (stamp !== false) flushDeliverablesBefore(stamp);   // the files this reply's run produced were shown BEFORE the reply landed
       // a steering note folded mid-run is saved inside the reply as a '[steering] …' line (the token stream carried it):
-      // replay it as the same dim note row the live stream drew, never as a line of the agent's own prose
+      // replay it as the same mid-run Commander row the live stream drew, never as a line of the agent's own prose
       const parts = /(^|\n)\[steering\] /.test(shownText) ? shownText.split(/(?:^|\n)\[steering\] ([^\n]*)\n?/) : [shownText];
       const files = turnFileRefs(m);   // one resolver per reply, like the live stream: every paragraph came from the same run
       for (let pi = 0; pi < parts.length; pi++) {
-        if (pi % 2 === 1) { const s = row('agent', { stamp: stamp, who: spoke }); s.d.classList.add('tool', 'steer-echo'); s.body.textContent = '[steering] ' + parts[pi]; continue; }
+        if (pi % 2 === 1) { steerRow(parts[pi], stamp); continue; }
         if (!parts[pi].trim()) continue;
         const r = row('agent', { stamp: stamp, who: spoke });   // past turns render as plain GROUPED messages; only the LIVE reply is the lit headline
         if (m.error) r.d.classList.add('err');
@@ -8477,13 +8696,11 @@ const Chat = (() => {
       seg = null; raw = '';
     }
     // A folded /steer note echoes back from the sidecar as a '\n[steering] …\n' token delta. It is the
-    // Commander's note, not agent prose — render it as its own dim note row and CLOSE the paragraph around
-    // it, so it never sits in a caret'd row that reads as the agent typing it.
+    // Commander's note, not agent prose — render it as the Commander's own mid-run row and CLOSE the paragraph
+    // around it, so it never sits in a caret'd row that reads as the agent typing it.
     function steerNote(text) {
       endToolRail();
-      const r = row('agent', { stamp: true, who: whoName || null });
-      r.d.classList.add('tool', 'steer-echo');
-      r.body.textContent = '[steering] ' + text;
+      steerRow(text, true);
       autoscroll();
     }
     function plain(t) { if (!t) return; if (!seg) open(); raw += t; queueProse(); }
@@ -8702,9 +8919,24 @@ const Chat = (() => {
       const now = document.createElement('button'); now.className = 'queued-now'; now.type = 'button'; now.textContent = 'send now';
       now.setAttribute('data-tip', 'Hand this to the run that is working now: the agent reads it before its next step, instead of after the run finishes');
       now.onclick = () => sendQueuedNow(activeWs.id, i, t);
-      pill.appendChild(document.createTextNode('⤷ ')); pill.appendChild(label); pill.appendChild(now); pill.appendChild(x);
+      const tag = document.createElement('span'); tag.className = 'queued-tag'; tag.textContent = 'next';
+      pill.appendChild(tag); pill.appendChild(label); pill.appendChild(now); pill.appendChild(x);
       strip.appendChild(pill);
     });
+    /* SENT, NOT READ YET (Andrew 10-26: a SYSTEM line announced every send-now, then the note showed up under the agent's
+       name). A line the run holds stays in the strip, keyless, until the run's echo shows the agent read it; the transcript
+       then shows it as the Commander's own MID-RUN message. A 200 proves only that the run holds it, so that is all it says. */
+    const held = (typeof sentNow !== 'undefined' && activeWs && sentNow.get(activeWs.id)) || [];
+    for (const n of held) {
+      if (!n.accepted || n.landed) continue;
+      const pill = document.createElement('span'); pill.className = 'queued-pill sent';
+      pill.setAttribute('data-tip', 'Sent into the live run — the agent reads it before its next step');
+      const tag = document.createElement('span'); tag.className = 'queued-tag'; tag.textContent = 'sent';
+      const label = document.createElement('span'); label.className = 'queued-text'; label.textContent = n.text;
+      const when = document.createElement('span'); when.className = 'queued-when'; when.textContent = 'read at its next step';
+      pill.appendChild(tag); pill.appendChild(label); pill.appendChild(when);
+      strip.appendChild(pill);
+    }
     const grew = strip.offsetHeight - h0;
     if (atEnd && grew > 0) log.scrollTop += (heldCard && log.contains(heldCard)) ? Math.min(grew, Math.max(0, topInLog(heldCard) - 8)) : grew;
   }
@@ -8712,7 +8944,8 @@ const Chat = (() => {
      pill leaves the queue while the POST is in flight (so flushQueued can't also send it as a new turn); it goes
      back to the FRONT of the queue on any refusal — run not confirmed yet (no runId), the loop already closed its
      buffer (409), buffer full (429), network — and the line says why. A 200 only means the sidecar holds it: the
-     transcript's own '[steering] …' row is the proof it landed, so the success line promises the next step, nothing more.
+     transcript's own '[steering] …' row is the proof it landed, so the strip shows it SENT ("read at its next step") and
+     nothing more — no SYSTEM line (Andrew 10-26: the success line cluttered the chat above a note it then repeated).
      STOP OUTRANKS IT (0.13.5 merge): the line stays in sentNow until its run ends; a STOP the station confirms gives back
      every one the transcript never showed landing (restoreSentNow), and an answer arriving after that changes nothing —
      no "sent" line, and never a re-queue that would auto-send it behind the stop.
@@ -8753,7 +8986,7 @@ const Chat = (() => {
         if (j && j.ok) {
           if (!(sentNow.get(id) || []).includes(note)) return;   // a STOP already gave it back to the message box
           note.accepted = true;
-          if (Channels.runIdOf(id) === rid) return say('Sent into the live run — the agent reads it before its next step.');
+          if (Channels.runIdOf(id) === rid) return renderQueued();   // the strip shows it SENT until the run reads it — no SYSTEM line
           // its run ended while we asked: read = settled; never read = it goes as the next message (the loop said NOT applied)
           forgetSentNow(id, note);
           if (note.landed) return;
@@ -8834,18 +9067,65 @@ const Chat = (() => {
     const list = sentNow.get(id) || [], ran = String(acc || '');
     const mine = list.filter(n => runId == null || n.runId === runId), rest = list.filter(n => mine.indexOf(n) < 0);
     rest.length ? sentNow.set(id, rest) : sentNow.delete(id);
+    if (mine.length && activeWs && activeWs.id === id) renderQueued();   // the page let go of them: no SENT pill stays behind
     dropSentNow(id, mine.filter(n => n.landed || ran.indexOf('[steering] ' + n.wire + '\n') >= 0).map(n => n.id));
   }
   // the note as the run gets it: one line (the loop echoes it as '\n[steering] <note>\n' and the page reads one line back)
   function steerWire(text) { return String(text == null ? '' : text).replace(/\s*\r?\n\s*/g, ' ').trim(); }
+  // every steering line a token delta carries ('\n[steering] <note>\n' → '<note>')
+  function steerEchoesOf(delta) {
+    const out = [], re = /(?:^|\n)\[steering\] ([^\n]*)/g;
+    let m;
+    while ((m = re.exec(String(delta || '')))) if (m[1].trim()) out.push(m[1]);
+    return out;
+  }
+  /* A NOTE THE RUN READ STAYS IN THE CONVERSATION (Andrew 10-26: the MID-RUN line was gone after a reload). Its echo rides
+     the token stream, but the page saves only the reply's last stretch (every tool call starts it over) and the station's
+     transcript never records the note (the loop hands it to the model as a system line). So when the run ends, each note it
+     streamed is filed as ONE station row — the shape showSentNowRead files after a reload, which never seeds the model —
+     unless the saved reply already shows it. placeSteerNotes puts it back after the turn it followed, by time. */
+  function fileRunSteers(ws, notes, runId, savedText) {
+    if (!ws || !runId || !Array.isArray(notes) || !notes.length) return 0;
+    const h = Array.isArray(ws.history) ? ws.history : (ws.history = []);
+    const shown = '\n' + String(savedText || '') + '\n';
+    let added = 0;
+    for (const n of notes) {
+      const echo = '[steering] ' + n.text;
+      if (shown.indexOf('\n' + echo + '\n') >= 0) continue;   // the saved reply shows it: renderHistory draws it from there
+      if (h.some(m => m && m.steerEcho && String(m.sourceRunId || '') === String(runId) && String(m.content || '') === echo)) continue;
+      h.push({ role: 'system', sys: true, steerEcho: true, content: echo, sourceRunId: runId, ts: n.ts });
+      added++;
+    }
+    return added;
+  }
+  /* A NOTE SITS WHERE THE AGENT READ IT. A filed note lands at its run's end, ahead of the turns the station's transcript
+     adds when the conversation is read back, so the merge leaves it after the agent's reply to it. Each note moves to just
+     after the last row of its own run stamped no later than the note (the run's middle turns carry the station's time of
+     writing, the note the time it was read). A run with no stamped row before it leaves it where it is. Pure. */
+  function placeSteerNotes(rows) {
+    const list = Array.isArray(rows) ? rows.slice() : [];
+    const tsOf = r => Number(r && r.ts) || 0;
+    for (const note of list.filter(r => r && r.steerEcho && r.sourceRunId && tsOf(r) > 0)) {
+      const from = list.indexOf(note);
+      list.splice(from, 1);
+      let at = -1;
+      for (let j = 0; j < list.length; j++) {
+        const r = list[j];
+        if (r && String(r.sourceRunId || '') === String(note.sourceRunId) && tsOf(r) > 0 && tsOf(r) <= tsOf(note)) at = j;
+      }
+      list.splice(at >= 0 ? at + 1 : from, 0, note);
+    }
+    return list;
+  }
   // that echo on this stream's own run is the proof the agent has it — a STOP no longer gives it back
   function markSentNowLanded(id, runId, delta) {
     const list = sentNow.get(id); if (!list || !list.length) return;
-    const re = /(?:^|\n)\[steering\] ([^\n]*)/g; let m;
+    const re = /(?:^|\n)\[steering\] ([^\n]*)/g; let m, read = false;
     while ((m = re.exec(String(delta || '')))) {
       const n = list.find(x => !x.landed && x.runId === runId && x.wire === m[1]);
-      if (n) n.landed = true;
+      if (n) { n.landed = true; read = true; }
     }
+    if (read && activeWs && activeWs.id === id) renderQueued();   // its SENT pill leaves: the transcript shows it now
   }
   /* A SENT-NOW LINE IS NEVER LOST ON STOP EITHER. The station took it (200) but the run was stopped before its next step
      folded it in: the note died with the run. Once the stop is CONFIRMED, every sent-now line of that run whose
@@ -8857,6 +9137,7 @@ const Chat = (() => {
     const lost = mine.filter(n => !n.landed && acc.indexOf('[steering] ' + n.wire + '\n') < 0);
     const rest = list.filter(n => n.runId !== runId);
     rest.length ? sentNow.set(id, rest) : sentNow.delete(id);
+    if (activeWs && activeWs.id === id) renderQueued();   // its SENT pills leave the strip with the run
     dropSentNow(id, mine.filter(n => lost.indexOf(n) < 0).map(n => n.id));   // read: settled with the stopped turn
     if (!lost.length) return;
     giveBack(id, lost.map(n => n.text), lost.length === 1 ? 'The run stopped before the agent read your send-now message — it is back in the message box.'
@@ -8889,6 +9170,7 @@ const Chat = (() => {
     const rest = list.filter(n => n.runId !== runId || !n.accepted);
     rest.length ? sentNow.set(id, rest) : sentNow.delete(id);
     dropSentNow(id, list.filter(n => rest.indexOf(n) < 0).map(n => n.id));   // settled here: read, or a queued pill again
+    if (activeWs && activeWs.id === id) renderQueued();   // a SENT pill of the ended run never outlives it
     if (!unread.length) return;
     queued.set(id, unread.map(n => n.text).concat(queued.get(id) || []));
     renderQueued();
@@ -9080,6 +9362,97 @@ const Chat = (() => {
       CONNECTOR_NEEDED.set(p.runId, p);
       if (CONNECTOR_NEEDED.size > 40) CONNECTOR_NEEDED.delete(CONNECTOR_NEEDED.keys().next().value);
     });
+  }
+  /* A KEY PASTED INTO CHAT, SAVED (keys.save, 2026-10-25). The agent stored a key the Commander pasted here in KEYS. The
+     page holds the paste in two places the sidecar's redaction never reaches: the bubble on screen and this
+     workstream's history (the desk save, and what the next turn re-sends to the model). On keys.save's OK result (the
+     contract's own agent.tool_call + agent.tool_result, paired by callId — no new event) the sidecar swaps every saved
+     key for its placeholder (POST /api/servicekeys/scrub), and only a turn that came back changed is rewritten, so
+     nothing is claimed for a paste the sidecar did not find. */
+  const KEY_SAVE_CALLS = new Map();   // callId -> runId of an in-flight keys.save (bounded)
+  let keySavedWired = false;
+  function wireKeySaved() {
+    if (keySavedWired || typeof U === 'undefined' || !U.bus) return;
+    keySavedWired = true;
+    U.bus.on('agent.tool_call', p => {
+      if (!p || !p.callId || !p.runId || !/^keys[._]save$/.test(String(p.name || ''))) return;
+      KEY_SAVE_CALLS.set(p.callId, p.runId);
+      if (KEY_SAVE_CALLS.size > 40) KEY_SAVE_CALLS.delete(KEY_SAVE_CALLS.keys().next().value);
+    });
+    U.bus.on('agent.tool_result', p => {
+      const runId = p && p.callId ? KEY_SAVE_CALLS.get(p.callId) : null;
+      if (!runId) return;
+      KEY_SAVE_CALLS.delete(p.callId);
+      if (p.ok && !p.isError) scrubSavedKeys(runId).catch(() => {});
+    });
+  }
+  // returns how many of the Commander's turns now show the placeholder (the number aids testing)
+  async function scrubSavedKeys(runId) {
+    let ws = null;
+    if (typeof Workstreams !== 'undefined' && Workstreams.all) { try { ws = Workstreams.all().find(w => (w.runIds || []).indexOf(runId) >= 0) || null; } catch (_) {} }
+    ws = ws || activeWs;
+    const turns = ws && Array.isArray(ws.history) ? ws.history.filter(m => m && m.role === 'user' && typeof m.content === 'string' && m.content) : [];
+    if (!turns.length || typeof Harness === 'undefined' || !Harness.api) return 0;
+    const raw = turns.map(m => m.content);
+    const r = await Harness.api.post('/api/servicekeys/scrub', { texts: raw });
+    const out = r && r.ok && r.j && Array.isArray(r.j.texts) && r.j.texts.length === raw.length ? r.j.texts : null;
+    if (!out) return 0;
+    const keys = [];
+    out.forEach((t, i) => {
+      if (typeof t !== 'string' || t === raw[i]) return;
+      turns[i].content = t;
+      for (const k of swappedKeys(raw[i], t)) if (!keys.some(x => x.value === k.value)) keys.push(k);
+    });
+    if (!keys.length) return 0;
+    // the run's directive also rides RUN_META (the rate card's reference line) and may have titled the thread
+    for (const meta of RUN_META.values()) { if (meta && typeof meta.directive === 'string') meta.directive = nameKeys(meta.directive, keys); }
+    if (typeof ws.title === 'string') ws.title = nameKeys(ws.title, keys);
+    try { App.persist(); } catch (_) {}
+    if (log && isActiveWs(ws)) {
+      const walker = document.createTreeWalker(log, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (n.nodeType === 3) { const v = nameKeys(n.nodeValue, keys); if (v !== n.nodeValue) n.nodeValue = v; continue; }
+        for (const a of ['title', 'data-tip', 'aria-label']) {
+          const v = n.getAttribute(a);
+          if (v) { const s = nameKeys(v, keys); if (s !== v) n.setAttribute(a, s); }
+        }
+      }
+    }
+    return keys.length;
+  }
+  // The values the sidecar swapped, read back out of one (raw, scrubbed) pair: the scrubbed text is the raw text with
+  // each saved key replaced by its placeholder, so the raw text between the literal pieces IS the key. The page
+  // already held these values (the Commander typed them); nothing secret comes back from the sidecar. [] on any doubt.
+  function swappedKeys(raw, scrubbed) {
+    const re = /\[[A-Z][A-Z0-9_]* saved in (?:API )?KEYS\]/g;   // "API KEYS" since R15; the older "KEYS" still reads back
+    const names = scrubbed.match(re) || [], parts = scrubbed.split(re), out = [];
+    let at = 0;
+    for (let i = 0; i < names.length; i++) {
+      const s = raw.indexOf(parts[i], at); if (s < 0) return [];
+      const start = s + parts[i].length;
+      const last = i === names.length - 1;
+      if (!last && !parts[i + 1]) return [];   // two placeholders side by side: no seam to cut at
+      const end = last && !parts[i + 1] ? raw.length : raw.indexOf(parts[i + 1], start);
+      if (end <= start) return [];
+      out.push({ value: raw.slice(start, end), placeholder: names[i] });
+      at = end;
+    }
+    return out;
+  }
+  // every whole saved key -> its placeholder; a key cut short by a clipped label ("4e7b2c9d1a0f…") too
+  function nameKeys(text, keys) {
+    let s = String(text == null ? '' : text);
+    for (const k of keys) {
+      if (k.value.length < 16) continue;
+      if (s.indexOf(k.value) >= 0) s = s.split(k.value).join(k.placeholder);
+      const head = k.value.slice(0, 12);
+      for (let at = s.indexOf(head); at >= 0; at = s.indexOf(head, at + 1)) {
+        let end = at + head.length;
+        while (end < s.length && k.value.charAt(end - at) === s.charAt(end)) end++;
+        if (s.charAt(end) === '…') { s = s.slice(0, at) + k.placeholder + s.slice(end); }
+      }
+    }
+    return s;
   }
   // returns true iff a chip was rendered (the bool aids testing)
   function offerConnectorDoor(runId, originWs) {
@@ -10945,6 +11318,9 @@ const Chat = (() => {
     // tools, but never feeds what reads the Commander's own wording (the profile, the recurring-job miner, the intent
     // offer) — two "yes please" acceptances must not look like a recurring job called "yes please".
     const acceptedOffer = !!(isTask && Classify.isAffirmation && Classify.isAffirmation(text));
+    // a task the Commander typed into the message box completes a pending first-task hand-off (gh#158). Never a retry, a goal
+    // step, or a send made for them (the tour's file example, a recipe launch, a hand-off Start): those carry no `composer`.
+    if (opts && opts.composer && isTask && !retry && !goalContinuation && typeof PitchStore !== 'undefined' && PitchStore.noteCommsTask) { try { PitchStore.noteCommsTask(text); } catch (_) {} }
     // INTENT OFFER: a real, fresh directive is the one moment the Commander has stated what they want in their
     // own words — the only honest place to say "there is a class built for exactly this". Gated to genuine new
     // work: never a retry (already offered on the original), never a recipe launch (they came FROM the library),
@@ -11047,6 +11423,7 @@ const Chat = (() => {
     liveRunRoots.set(ws.id, runRoot);
     activeLiveRow = streamingAgent(undefined, undefined, runRoot);
     let acc = '';
+    const runSteers = [];   // every '[steering] …' note this run streamed, with when it arrived (fileRunSteers)
     // the model the SIDECAR reported for this run's usage — captured from the usage payload rather than
     // read off the agent's config, so the SESSIONS rail's INBOX receipt names what actually answered.
     // Last write wins: a run that hopped models is honestly labelled by the one that finished it.
@@ -11151,7 +11528,7 @@ const Chat = (() => {
         placed: (typeof World !== 'undefined' && World.heroCaps) ? World.heroCaps(ws.agentId || 'agent') : [],   // THE MOAT: this run's TOOL reach = the agent's REAL placed props (dish→web · cabinet→files · workbench→terminal · …); compute is the freebie
         stationPlaced: (typeof World !== 'undefined' && World.stationCaps) ? World.stationCaps() : [],   // Class Loadouts (shared-gear): station-wide gear for SKILL availability — a desk-only specialist still gets its class skills when the STATION has the gear (tools stay room-scoped via `placed`)
         onRunId: id => { retirePriorRatings(ws.id); thisRunId = id; if (retryDirectiveTurn && !retryDirectiveTurn.sourceRunId) retryDirectiveTurn.sourceRunId = id; if (starterId) StarterStore.started(starterId, id); runStartedAt = Date.now(); try { RUN_META.set(id, { streamId: ws.id, focusVersion: runFocusVersion, isTask: !!isTask, title: (ws && ws.title) || '', directive: String(text || ''), correctionOf: correctionOf, intentOfferText: intentOfferText, fromRecipe: fromRecipe, recipeId: recipeId, agentId: ws.agentId || 'agent', rec: recClaimRun(id, ws.agentId || 'agent') }); if (RUN_META.size > 60) RUN_META.delete(RUN_META.keys().next().value); } catch (_) {} Channels.setRunId(ws.id, id, Date.now()); if (walkedToDesk && Channels.setStatus) Channels.setStatus(ws.id, 'working…'); if (isActiveWs(ws)) { syncStatus(); renderPresence(); } if (typeof Workstreams !== 'undefined') { Workstreams.appendRun(ws.id, id); if (typeof App !== 'undefined' && App.refreshRail) App.refreshRail(); } },
-        onToken: d => { acc += d; Channels.appendToken(ws.id, d); if (thisRunId && d && d.indexOf('[steering] ') >= 0) markSentNowLanded(ws.id, thisRunId, d); if (isActiveWs(ws)) { if (activeLiveRow) activeLiveRow.append(d); if (!isTask) World.say(acc); } if (willSpeak) pushSpeech(false); App.refreshUsage(); },
+        onToken: d => { acc += d; Channels.appendToken(ws.id, d); if (d && d.indexOf('[steering] ') >= 0) { for (const t of steerEchoesOf(d)) runSteers.push({ text: t, ts: Date.now() }); if (thisRunId) markSentNowLanded(ws.id, thisRunId, d); } if (isActiveWs(ws)) { if (activeLiveRow) activeLiveRow.append(d); if (!isTask) World.say(acc); } if (willSpeak) pushSpeech(false); App.refreshUsage(); },
         onTerminalReset: () => { clearTimeout(speechTimer); speechTimer = null; speechPendingSince = 0; acc = ''; spokenIdx = 0; Channels.setAcc(ws.id, ''); },
         onUsage: (u) => { if (u && u.model) ranModel = u.model; App.refreshUsage(); },
         // COMMS-PREMIUM: the Channels store still records the pre-formatted STRING (replay/switch-survival is
@@ -11216,6 +11593,8 @@ const Chat = (() => {
             .catch(() => Harness.summonAck(rid, ev.requestId, null));
         }
       });
+      // the run is over: every note it read is filed before its reply (a note the saved reply already shows stays in it)
+      fileRunSteers(ws, runSteers, thisRunId, error ? '' : (reply || acc));
       if (error) {
         // PLAIN-LANGUAGE: lead with the beginner-facing message, keep the raw error as a dim sub-line; persist
         // the friendly text (not the plumbing) so a switch-back / replay shows the same readable failure.
@@ -11278,7 +11657,9 @@ const Chat = (() => {
           }
         }
         finalReply = replyText;
-        titleOk = !!replyText.trim();   // a real, non-empty reply landed → this stream is eligible for a summary title
+        // a real, non-empty reply landed → this stream is eligible for a summary title. Never a cancelled run's partial reply:
+        // its own run.end can beat Stop's local abort here, and an E-STOP / HALT ALL cancel never marks the stream stopped
+        titleOk = !!replyText.trim() && endReason !== 'cancelled';
         if (replyText.trim()) ws.history.push({ role: 'assistant', content: replyText, ts: Date.now(), sourceRunId: thisRunId || undefined, projectRoot: runRoot });   // never persist an empty turn
         // Lane 5 (truthful telemetry): a reply the PROVIDER cut off — finishReason 'length' (hit max_tokens
         // mid-thought) or 'content_filter' (output filtered) — is an AMPUTATED turn even though endReason==='done'.
@@ -11544,7 +11925,9 @@ const Chat = (() => {
       // (internal call, off the floor/telemetry) and fire-and-forget so it never delays this turn's teardown.
       // Not first-turn-only: a stream still wearing its machine placeholder (first attempt hiccuped, or the
       // session was saved by a pre-upgrade build) retries on this completed turn (needsModelTitle gates it).
-      if (titleOk && (firstTurn || (typeof Workstreams !== 'undefined' && Workstreams.needsModelTitle && Workstreams.needsModelTitle(ws.id)))) maybeRetitle(ws, text, finalReply);
+      // A turn the Commander stopped makes no title call (the conversation's Stop could not reach it); the next
+      // completed turn upgrades the placeholder instead.
+      if (!stoppedHere && titleOk && (firstTurn || (typeof Workstreams !== 'undefined' && Workstreams.needsModelTitle && Workstreams.needsModelTitle(ws.id)))) maybeRetitle(ws, text, finalReply);
       // flush any trailing spoken text and CLOSE the speech stream — the last chunk's end re-arms the
       // hands-free mic (this is the heartbeat for spoken turns; onTurnEnd covers silent/no-speech turns).
       clearTimeout(speechTimer); speechTimer = null;

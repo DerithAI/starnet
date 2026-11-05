@@ -125,6 +125,16 @@
     user_abort:    { retryable: false, action: null,       msg: 'Stopped.' },
     context_overflow: { retryable: false, action: null,    msg: 'This conversation got too long for the model — start a fresh chat or shorten it.' },
     model_not_found:  { retryable: false, action: 'settings', msg: "That model isn't available — pick a different one from the model dock in COMMS." },
+    /* The StarNet credit relay refused this call's price: its ESTIMATE for the prompt ALONE is over its per-call ceiling
+       ($10 by default at starnet-cloud b5582dd, and configurable there — sidecar/providers/errorClass.js
+       call_too_expensive), and a resend is refused the same way. The relay says the call "could cost more", so the copy
+       says "could", never that it does. The copy is REBUILT per error in friendlyError() to quote the ceiling the relay
+       named; this is the fallback.
+       NO "nothing was charged" (0.14.2 review): the station knows only that the relay refused THIS call. A run's later
+       call can be the refused one after its earlier calls were billed (sidecar/loop.js books each turn's usage), and the
+       relay's own code (starnet-cloud src/app.js, outside this repo) may auto-reload a zero balance before it prices the
+       call. The relay refusing the call is all the copy says. */
+    call_too_expensive: { retryable: false, action: 'settings', msg: "This conversation could now cost more per message than StarNet allows for one call on this model, so StarNet refused the call. Start a fresh chat, or pick a cheaper model from the model dock in COMMS." },
     content_policy_blocked: { retryable: false, action: null, msg: 'The model declined that request on safety grounds — try rephrasing it.' },
     // JUKEBOX is placed (the Spotify tools ARE granted) but Spotify's OAuth session isn't connected yet — the
     // real second half of the unlock chain. The door is TOOLSETS (its JUKEBOX row carries ▶ CONNECT SPOTIFY —
@@ -173,7 +183,7 @@
   const REASON_TO_KIND = {
     auth: 'auth', billing: 'billing', rate_limit: 'rate_limit', quota_exhausted: 'quota_exhausted', overloaded: 'provider_server_error',
     server_error: 'provider_server_error', timeout: 'timeout', context_overflow: 'context_overflow',
-    model_not_found: 'model_not_found', content_policy_blocked: 'content_policy_blocked',
+    model_not_found: 'model_not_found', call_too_expensive: 'call_too_expensive', content_policy_blocked: 'content_policy_blocked',
     format_error: 'unknown', endpoint_mismatch: 'endpoint_mismatch', unknown: 'unknown'
   };
 
@@ -431,10 +441,27 @@
      "image_url is only supported by certain models" (400). */
   const IMAGE_INPUT_RE = /no endpoints found that support image input|(?:does not|doesn'?t|cannot|can'?t) (?:support|accept|take|handle) (?:image|vision)|image input (?:is )?(?:not supported|unsupported)|(?:images?|vision) (?:input )?(?:is |are )?not supported (?:by|for|on) (?:this|the) model|unknown variant `image_url`|image_url is only supported by certain models/;
   const IMAGE_INPUT_MSG = "This model can't see images — pick a vision model from the model dock in COMMS, then send again.";
+  /* mirrored from errorClass.js (ACCOUNT_MODEL_REFUSED_RE) — keep the two in step: the ChatGPT Codex backend refuses a model
+     this account may not run ("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.", 2026-10-27),
+     and every retry is refused the same way. It read "Something went wrong — try again"; another model is the fix. */
+  const ACCOUNT_MODEL_RE = /model is not supported when using codex with a chatgpt account/;
+  function accountModelMessage(raw) {
+    const m = /the (['"])([a-z0-9][a-z0-9._/-]{0,119})\1 model is not supported when using codex/i.exec(String(raw || ''));
+    return "ChatGPT won't run " + (m ? m[2] : 'this model') + ' on your account — pick a different model from the model dock in COMMS.';
+  }
   /* mirrored from errorClass.js (namesUpstream): a 403 that names the UPSTREAM provider ("[…; provider xAI]" from the
      openai-compatible adapter, or OpenRouter's "Provider returned error") is that provider refusing this request — the
      router accepted our key (a rejected key is a 401 naming nobody). xai-403-1023. */
   const UPSTREAM_NAMED_RE = /provider returned error|[\[;] ?provider [^\];]+\]/;
+  // the StarNet credit relay's per-call price ceiling (sidecar/providers/errorClass.js — keep the two in step)
+  const CALL_TOO_EXPENSIVE_RE = /could cost more than the \$\d+(?:\.\d+)? starnet allows for one call|\bcall_too_expensive\b/;
+  // quote the ceiling the relay named (it is configurable there), never a number of our own; claim nothing about what
+  // the run cost (KINDS.call_too_expensive says why)
+  function callTooExpensiveMessage(raw) {
+    const m = /more than the (\$\d+(?:\.\d+)?) starnet allows/i.exec(String(raw || ''));
+    if (!m) return KINDS.call_too_expensive.msg;
+    return 'This conversation could now cost more per message than the ' + m[1] + ' StarNet allows for one call on this model, so StarNet refused the call. Start a fresh chat, or pick a cheaper model from the model dock in COMMS.';
+  }
   // the upstream's name as the adapter's own allowlisted fact carries it — a plain brand name or nothing
   function upstreamName(raw) {
     const m = String(raw || '').match(/[\[;] ?provider ([^\];]+)\]/i);
@@ -495,6 +522,8 @@
     const s = status || (low.match(/\b(?:http|status)\s+(\d{3})\b/) ? Number(RegExp.$1) : null);
     // an image refused by a model that cannot see it, whatever status carried it (errorClass.js reads it the same way)
     if (IMAGE_INPUT_RE.test(low) && s !== 401 && !(s === 429 || s === 408 || (s >= 500 && s < 600))) return 'model_not_found';
+    // a model this ChatGPT account may not run (errorClass.js ACCOUNT_MODEL_REFUSED_RE): a resend is refused again
+    if (ACCOUNT_MODEL_RE.test(low) && s !== 401 && !(s === 429 || s === 408 || (s >= 500 && s < 600))) return 'model_not_found';
     if (s) {
       // OUR OWN sidecar's token gate (crash+respawn → stale X-StarNet-Token): a "sidecar HTTP 403" throw or a
       // "forbidden token/origin/host" body means reload for the fresh boot token — never the provider-key door.
@@ -527,6 +556,8 @@
         if (/\b(anthropic|openai|openrouter|google|gemini|grok|xai|kimi|codex|deepseek|mistral|groq|ollama)\b/.test(low)) return 'provider_server_error';
         return /sidecar http/.test(low) ? 'server_error' : 'provider_server_error';
       }
+      // the StarNet relay's per-call price ceiling (mirrors errorClass.js CALL_TOO_EXPENSIVE_RE — keep the two in step)
+      if (s === 400 && CALL_TOO_EXPENSIVE_RE.test(low)) return 'call_too_expensive';
       if (s === 400 && REJECTED_KEY_RE.test(low)) return 'auth';
       // Anthropic's empty wallet is a 400 ("Your credit balance is too low … purchase credits"), not a bad request:
       // it read as `unknown` → "Something went wrong — try again" + report it (2026-10-07). Mirrors classify400.
@@ -534,6 +565,7 @@
       if (s === 400 || s === 413 || s === 422) return /context length|maximum context|context window|too many tokens|reduce the length/.test(low) ? 'context_overflow' : 'unknown';
     }
     // message patterns (no status / in-band error text)
+    if (CALL_TOO_EXPENSIVE_RE.test(low)) return 'call_too_expensive';
     // in-band provider overload phrasing, mirrored from sidecar/providers/errorClass.js — keep the two in step
     if (/overloaded|over capacity|temporarily unavailable|try again later/.test(low)) return 'provider_server_error';
     if (quotaSpent(low)) return 'quota_exhausted';
@@ -774,6 +806,9 @@
     if (kind === 'spend_unknown') {
       return { userMessage: spendUnknownMessage(raw), kind: kind, retryable: k.retryable, action: k.action, raw: raw };
     }
+    if (kind === 'call_too_expensive') {
+      return { userMessage: callTooExpensiveMessage(raw), kind: kind, retryable: k.retryable, action: k.action, raw: raw };
+    }
     // transport loss: the ONE kind whose copy names a component, so it is the one kind that owes proof. The
     // measured verdict rides along on `engineAlive` so a diagnostic report can state what was actually probed.
     // `transport` says whether THIS PAGE's connection provably dropped (a marked throw) — the only thing that may
@@ -784,6 +819,10 @@
     // the model refused an IMAGE, not the request: say so, and the same model-dock door picks a vision model
     if (kind === 'model_not_found' && IMAGE_INPUT_RE.test(raw.toLowerCase())) {
       return { userMessage: IMAGE_INPUT_MSG, kind: kind, retryable: k.retryable, action: k.action, raw: raw };
+    }
+    // ChatGPT refused the model for this account: name it, so the dock pick is obvious
+    if (kind === 'model_not_found' && ACCOUNT_MODEL_RE.test(raw.toLowerCase())) {
+      return { userMessage: accountModelMessage(raw), kind: kind, retryable: k.retryable, action: k.action, raw: raw };
     }
     return { userMessage: k.msg, kind: kind, retryable: k.retryable, action: k.action, raw: raw };
   }
@@ -934,7 +973,7 @@
         // NOT Settings→MODELS (that section is the fallback chain + class tiers and cannot change the primary;
         // sending users there was a door onto a room without the lever). Fall back to Settings only when the
         // dock isn't mounted (headless/tests).
-        if (verdict.kind === 'model_not_found') return pickModelDoor();
+        if (verdict.kind === 'model_not_found' || verdict.kind === 'call_too_expensive') return pickModelDoor();   // call_too_expensive's copy says pick a cheaper model in the dock
         // auth (add / fix a key), billing, quota: AI & MODELS, on the named provider's card when the error names one
         return { label: '▸ OPEN AI & MODELS', run: () => openSettings('providers', verdict.provider || null) };
       }
@@ -951,7 +990,7 @@
         // only surface that clears the refusal. No retry chip rides with it: a retry hits the same refusal.
         return { label: '$ OPEN SPENDING LIMITS', run: () => openSettings('budget') };
       case 'skills':
-        return { label: '✦ OPEN SKILL LIBRARY', run: () => { try { if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('skills'); } catch (_) {} } };   // 'skills' aliases into ABILITIES ▸ SKILL LIBRARY (NAV CONDENSE 2)
+        return { label: '✦ OPEN SKILLS', run: () => { try { if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('skills'); } catch (_) {} } };   // 'skills' aliases into ABILITIES ▸ SKILLS (NAV CONDENSE 2)
       default:
         return null;
     }

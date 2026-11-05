@@ -357,12 +357,15 @@ function world(opts) {
   // src/cart.js". The loop knew its workdir and the path grant allowed it; the agent was simply never told the
   // path existed, and relative paths resolve inside its own jail.
   {
+    // (run-paths review) the folder rides as the run's WORKDIR: runOnceCore re-proves it by real path, makes it the run's
+    // root, and writes the project anchor line itself (as for a routine), so the persona carries no second copy of it
     const w = world({ projectLine: (l) => l.workdir ? '\n\nPROJECT FOLDER: ' + l.workdir : '' });
     w.seed({ workdir: 'C:/proj/cart', checkCmd: 'node test/run.js' });
     w.tick(T0);
     const sys = w.calls[0].system;
-    A.ok(/PROJECT FOLDER: C:\/proj\/cart/.test(sys), 'the project folder is injected into the system prompt');
-    A.ok(/STATION PERSONA/.test(sys), 'and it is APPENDED to the persona, never replacing it');
+    A.eq(w.calls[0].workdir, 'C:/proj/cart', 'the project folder is handed to the run as its workdir (the run host anchors the prompt to it)');
+    A.eq(w.calls[0].projectRoot, undefined, 'never as a raw projectRoot: the run host derives the root from the re-proven workdir');
+    A.ok(/STATION PERSONA/.test(sys) && !/PROJECT FOLDER/.test(sys), 'the persona stays intact and carries no duplicate of the anchor');
 
     // a loop with no folder must inject nothing — never assert access we cannot prove
     const w2 = world({ projectLine: (l) => l.workdir ? '\n\nPROJECT FOLDER: ' + l.workdir : '' });
@@ -374,6 +377,11 @@ function world(opts) {
     const w3 = world(); w3.seed({ workdir: 'C:/proj' });
     w3.tick(T0);
     A.eq(w3.calls[0].system, 'STATION PERSONA', 'the dep is optional');
+    A.ok(w3.calls[0].workdir === undefined && w3.calls[0].projectRoot === undefined, 'but a host that cannot re-prove the folder hands the run NO folder (fail closed)');
+    // and a host whose check says the folder lapsed hands none either
+    const w4 = world({ projectLine: () => '' }); w4.seed({ workdir: 'C:/revoked' });
+    w4.tick(T0);
+    A.ok(w4.calls[0].workdir === undefined && w4.calls[0].projectRoot === undefined, 'a folder whose approval lapsed is never handed to the run');
   }
 
   /* ---- 13. THE PROJECT SNAPSHOT: anchor the agent, and NEVER converge on a project we could not read ------
@@ -719,6 +727,27 @@ function world(opts) {
     w2.replace(S.removeLoop(w2.loops, 'l1'));
     w2.tick(T0 + TICK);
     A.eq(w2.drv._internals.standDownRuns(), 0, 'a deleted loop\'s run is pruned — the memory stays bounded');
+  }
+
+  // ---- (run-paths review round 2, F8) a loop whose folder lapsed says so: the LOOP's folder, gone or no longer approved,
+  // never the routine's wording and never a raw ENOENT naming the host path. The host's own helper, run as it ships, over
+  // the real errors cronCanonicalWorkdir raises; and runOnceCore raises it for the run's workdir.
+  {
+    const { sidecarFunctionSource, sidecarTopLevelFunction } = require('./helpers/source');
+    const helper = sidecarFunctionSource('workdirLapsedError');
+    A.ok(helper.length > 0 && helper.length < 2000, 'the host defines workdirLapsedError');
+    const lapsed = new Function(helper + '\nreturn workdirLapsedError;')();
+    const fsx = require('fs'), osx = require('os'), px = require('path');
+    let enoent = null;
+    try { fsx.realpathSync(px.join(osx.tmpdir(), 'starnet-no-such-loop-folder-' + process.pid)); } catch (e) { enoent = e; }
+    const gone = lapsed('loop', enoent);
+    A.ok(/^This loop's folder no longer exists/.test(gone.message) && /resume the loop/.test(gone.message) && gone.code === 'WORKDIR_GONE', 'a deleted loop folder: ' + gone.message);
+    A.ok(gone.message.indexOf(osx.tmpdir()) < 0 && !/ENOENT|routine/.test(gone.message), 'no raw ENOENT, no host path, no routine wording');
+    const revoked = lapsed('loop', new Error('routine workdir must be a currently approved project folder'));
+    A.ok(/^This loop's folder is no longer an approved project folder/.test(revoked.message) && !/routine/.test(revoked.message) && revoked.code === 'WORKDIR_UNAPPROVED', 'a revoked loop folder: ' + revoked.message);
+    A.ok(/^This routine's folder is no longer an approved/.test(lapsed('schedule', new Error('x')).message), 'a routine still says routine');
+    const core = sidecarTopLevelFunction('runOnceCore');
+    A.ok(/try \{ cronRoot = cronCanonicalWorkdir\(o\.workdir\); \}[^\n]*\n\s*catch \(e\) \{ throw workdirLapsedError\(o\.trigger, e\); \}/.test(core), 'runOnceCore raises it when the run\'s workdir lapsed');
   }
 
   A.report('loopjob-driver (LOOP tick driver)');

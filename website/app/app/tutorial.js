@@ -212,6 +212,7 @@ const Tutorial = (() => {
       ]
     }).then(res => {
       if (!active) return;
+      if (res.preempted) return tourSteppedAside();   // the Commander put another conversation on screen (Dialogue.preempt)
       if (res.value === 'platforms') {
         finishOrientation(true);
         showPlatformConnections();
@@ -232,6 +233,9 @@ const Tutorial = (() => {
     const result = await PitchStore.offerHandoff({ tour });
     if (!result) { if (active) finishUp(true, true); return; }
     if (result.action === 'tour') { resumeFirstTask = true; beatShowAround(); return; }
+    // the hand-off stepped aside (gh#158): the Commander picked a conversation or sent a turn. Its panel is already gone and the
+    // first task stays pending (offered again at the next boot); nothing is said over the conversation they chose.
+    if (result.action === 'aside') { if (active) finishUp(true, true); return; }
     if (active) finishUp(true, true);
     else { state.firstCommandDone = true; state.briefDismissed = true; save(); if (hasDialogue() && Dialogue.isOpen()) Dialogue.close(); }
     if (result.action === 'start') {
@@ -272,7 +276,7 @@ const Tutorial = (() => {
     Dialogue.node({
       lines: [seg(summary + '\n' + placed.map(c => purposes[c]).join('\n') + '\n\nEquipment supports these tools. Connected services and your access settings determine what can run.', 64, 0)],
       options: [{ label: 'NEXT · USING YOUR STATION', value: 'next' }, { label: resumeFirstTask ? 'Back to my first task' : 'Finish tour', value: 'done', skip: true }]
-    }).then(res => { if (!active) return; if (res.skip) return finishOrientation(); beatStationUse(); });
+    }).then(res => { if (!active) return; if (res.preempted) return tourSteppedAside(); if (res.skip) return finishOrientation(); beatStationUse(); });
   }
   function beatStationUse() {
     if (!active || !hasDialogue()) return;
@@ -288,10 +292,19 @@ const Tutorial = (() => {
       ]
     }).then(res => {
       if (!active) return;
+      if (res.preempted) return tourSteppedAside();   // the Commander put another conversation on screen (Dialogue.preempt)
       if (res.value === 'demo') return beatCommand();
       finishOrientation(res.value === 'value');
       if (res.value === 'value' && FirstValue.open() === false && hasChat()) Chat.localLine('type your first task in COMMS whenever you’re ready.');
     });
+  }
+  /* THE TOUR YIELDS TO THE COMMANDER (comms-owner arbiter). Another conversation went on screen while a tour beat stood over
+     COMMS: Dialogue.preempt answered the beat's own way out and marked it `preempted`. The tour ends quietly: no first-task
+     re-offer and no line over the conversation they chose. A pending first task is offered again at the next boot, and the
+     tour stays in SYSTEM › FIELD MANUAL. */
+  function tourSteppedAside() {
+    resumeFirstTask = false;
+    finishUp(true, true);
   }
   function finishOrientation(quiet) {
     // A finished orientation must not spawn a placement checklist, connector pitch and coachmark.
@@ -449,7 +462,7 @@ const Tutorial = (() => {
     const have = placed.length ? 'you’ve placed equipment for ' + listWords(placed) + '. ' : 'no equipment placed in this tour yet. you can still talk to me in COMMS. ';
     const dark = left.length ? 'remaining tour examples: ' + listWords(left) + '.' : '';
     if (!hasDialogue()) return placed.length ? beatEquippedPartial() : finishUp(true);
-    Dialogue.open({ name: agentName });
+    Dialogue.open({ name: agentName, owner: 'tour' });
     Dialogue.node({
       lines: [seg(have + dark + ' continue the optional tour?', 44, 0)],
       options: [
@@ -458,6 +471,7 @@ const Tutorial = (() => {
       ]
     }).then(res => {
       if (!active) return;
+      if (res.preempted) return tourSteppedAside();   // the Commander put another conversation on screen (Dialogue.preempt)
       if (res.skip) return placed.length ? beatEquippedPartial() : finishUp(true);
       if (hasDialogue()) Dialogue.close();
       kitMode = true; kitWasOpen = false; kitHold = false; kitFocusKey = null;   // re-arm; the tick re-lights the path back in
@@ -487,14 +501,14 @@ const Tutorial = (() => {
     if (!active) return;
     sfx('level');
     if (!hasDialogue()) return beatCommand();
-    Dialogue.open({ name: agentName });
+    Dialogue.open({ name: agentName, owner: 'tour' });
     Dialogue.node({
       lines: [seg('you’ve tried equipment for files, web, terminal and memory. that’s the placement loop. ABILITIES shows which tools i can use with my current settings. choose what your real tasks need.', 44, 460)],
       options: [
         { label: '▸ Watch me use it on a real job', value: 'demo' },
         { label: 'I’ve got it from here', value: 'done', skip: true }
       ]
-    }).then(res => { if (!active) return; if (res.value === 'demo') return beatCommand(); finishUp(false); });
+    }).then(res => { if (!active) return; if (res.preempted) return tourSteppedAside(); if (res.value === 'demo') return beatCommand(); finishUp(false); });
   }
   // they stopped with SOME gear placed — a real, partial agent. Acknowledge honestly and bow out (no nag).
   function beatEquippedPartial() {
@@ -792,7 +806,7 @@ const Tutorial = (() => {
     const ids = connectOffers(goalTexts());
     const items = ids.map(id => ({ label: '⧉ ' + (CONNECT_LABEL[id] || id), value: id }))
       .concat([{ label: 'Show me how to connect platforms', value: 'guide' }, { label: 'not now', value: 'skip', skip: true, quiet: true }]);
-    say([seg('want to connect an app you already use? choose one below, or open the connection guide. you can find apps in BUILD › CONNECT › ABILITIES › CATALOG, and messaging platforms in BUILD › CONNECT › CHANNELS.', 44, 0)], () => {
+    say([seg('want to connect an app you already use? choose one below, or open the connection guide. you can find apps in BUILD › CONNECT › ABILITIES › APPS, and messaging platforms in BUILD › CONNECT › CHANNELS.', 44, 0)], () => {
       const row = Chat.choices(items, item => {
         if (!item || item.skip) return done();
         if (item.value === 'guide') { showPlatformConnections(); return; }
@@ -977,7 +991,7 @@ const Tutorial = (() => {
     tickBrief('build');
     watchConnectors(1);
     showCoach('connector', '#refit-palette',
-      'that’s a connector portal. connect the service in BUILD › CONNECT › ABILITIES › CATALOG first; placing a portal does not sign you in. the connection guide is in SYSTEM › FIELD MANUAL › CONNECT PLATFORMS.');
+      'that’s a connector portal. connect the service in BUILD › CONNECT › ABILITIES › APPS first; placing a portal does not sign you in. the connection guide is in SYSTEM › FIELD MANUAL › CONNECT PLATFORMS.');
   }
   function onLevelUp() {
     tickBrief('level');
@@ -1141,7 +1155,7 @@ const Tutorial = (() => {
     const apps = kind === 'apps';
     return '<details class="platform-guide" data-platform-guide="' + kind + '"' + (guidedPlatform === kind ? ' open' : '') + '>'
       + '<summary>' + (apps ? 'Connect a work app — step by step' : 'Chat from another platform — step by step') + '</summary>'
-      + '<p class="fm-note">Find this again: <b>BUILD › CONNECT › ' + (apps ? 'ABILITIES › CATALOG' : 'CHANNELS') + '</b>.</p>'
+      + '<p class="fm-note">Find this again: <b>BUILD › CONNECT › ' + (apps ? 'ABILITIES › APPS' : 'CHANNELS') + '</b>.</p>'
       + '<ol><li>' + (apps ? 'Use Search abilities above to find your app. Its card shows the setup it needs.' : 'Choose your platform in the list. Its setup guide explains where to get the details it needs.') + '</li>'
       + '<li>' + (apps ? 'Use the card’s action. SIGN IN opens account authorization; API key asks for a key from that service. Follow any setup instructions and review the access requested.' : 'Follow that platform’s setup instructions, then use its CONNECT action. Complete pairing if the platform asks for it.') + '</li>'
       + '<li>' + (apps ? 'Check the status beside the service. A saved key is not a tested connection. If setup fails, read the message there before retrying.' : 'Check the platform’s status, then send your agent a message there. Seeing the reply is your end-to-end check.') + '</li></ol>'
@@ -1164,7 +1178,7 @@ const Tutorial = (() => {
     if (tab === 'CONNECT PLATFORMS') {
       return '<p class="fm-lead">Bring the apps you already use into your station. What would you like to connect?</p>'
         + '<div class="fm-map">'
-        + fmEntry('WORK APPS', 'Let your agent work with your apps', 'Use your mail, calendar, documents and other services from COMMS. Browse the current catalog to see what is available.<br><b>BUILD › CONNECT › ABILITIES › CATALOG</b><div class="fm-actions"><button type="button" class="fm-action" data-platform-start="apps">SHOW ME WHERE TO CONNECT APPS ↗</button></div>')
+        + fmEntry('WORK APPS', 'Let your agent work with your apps', 'Use your mail, calendar, documents and other services from COMMS. Browse the current catalog to see what is available.<br><b>BUILD › CONNECT › ABILITIES › APPS</b><div class="fm-actions"><button type="button" class="fm-action" data-platform-start="apps">SHOW ME WHERE TO CONNECT APPS ↗</button></div>')
         + fmEntry('MESSAGING', 'Talk to your agent from another platform', 'Connect a messaging platform so you can chat with your agent there. Each platform has its own setup guide.<br><b>BUILD › CONNECT › CHANNELS</b><div class="fm-actions"><button type="button" class="fm-action" data-platform-start="messaging">SHOW ME WHERE TO CONNECT MESSAGING ↗</button></div>')
         + '</div><p class="fm-note">For example, using Slack as a work tool and chatting with your agent from Slack are different connections. Choose the path for what you want to do.</p>'
         + '<p class="fm-note">You can connect one now or return whenever you need it: <b>SYSTEM › FIELD MANUAL › CONNECT PLATFORMS</b>. Connecting accounts is optional.</p>'
