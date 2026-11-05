@@ -30,6 +30,8 @@ durable structure rather than a one-time task.
   tools off, how Stop/timeouts work, and how its cost is booked.
 - **MEMORY_AND_CONTEXT_PLAN.md** — the layered design of Cortex, the agent memory + context
   engine (plan, but the reference for how memory is shaped).
+- **FRONTIER_DESIGN_COMPILER.md** — canonical capability contract for turning product intent
+  and current references into rendered, quality-gated design through evidence-backed feedback.
 - **v7-subsystem-analysis.md** — auto-generated audit of the v7 codebase to decide what to
   reuse vs rebuild (dated 2026-06-13); explains the lineage of the ported engine.
 - **NEXT.md** — the living task queue, reconciled against trunk (updated as items land or are
