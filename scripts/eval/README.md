@@ -10,7 +10,7 @@ the pre-version-bump 0.9.0 integration candidate while `package.json` still repo
 | Surface | What runs | Trigger |
 | --- | --- | --- |
 | `test/fast.list` (release gate) | 8 eval unit suites incl. `test/agent-eval.test.js` (spawns the real runner) and `test/eval-parity-offline.test.js` (offline-driver guards + full 32+4 run) | `npm run test:fast`; release train on `v*` tag/dispatch |
-| `.github/workflows/eval-gates.yml` (NEW) | `npm run eval:gate` — the whole credential-free slice below | every PR + every push to `feat/harness-backend` |
+| `.github/workflows/eval-gates.yml` (NEW) | `npm run eval:gate` — the whole credential-free slice below | every PR + every push to `feat/harness-backend` or `main` |
 | `npm run eval:gate` | `eval:contract` → `eval:agent-quality` → fault capture ×100 (1000 rows) → fault gauntlet grade → `eval:parity:offline` (32 scenarios + 4 violation probes), then writes ONE durable receipt | local + CI (~30 s total measured; fault capture ~15 s at the frozen 100 repeats — the runner refuses any other repeat count, so there is no reduced CI mode) |
 | Live campaigns (`campaign-runner.mjs`, soak, installed performance) | provider-backed, installed-candidate, Hermes-referenced | manual only; never CI |
 

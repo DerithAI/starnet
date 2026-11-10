@@ -3,6 +3,10 @@
 Thanks for helping improve StarNet. Bug fixes, tests, documentation, accessibility work, and
 carefully scoped features are welcome.
 
+This tree is [DerithAI/starnet](https://github.com/DerithAI/starnet), DerithAI's maintained
+line. The current default branch is `feat/harness-backend`. GitHub issues are off on this
+repository; open a pull request here. Product security reports still use [SECURITY.md](SECURITY.md).
+
 ## Before you start
 
 - Search existing issues and pull requests before opening a duplicate.
@@ -17,7 +21,7 @@ carefully scoped features are welcome.
 Node.js 22 is recommended because it matches CI and the release train.
 
 ```bash
-git clone https://github.com/androoAGI/starnet.git
+git clone https://github.com/DerithAI/starnet.git
 cd starnet
 npm ci
 npm run test:fast

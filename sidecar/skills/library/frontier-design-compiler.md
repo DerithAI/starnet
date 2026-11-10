@@ -9,63 +9,35 @@ version: 1.0.0
 default: false
 ---
 
-Use when the Commander asks for a high-quality interface, website, visual experience, design
-system, motion experience, or a faithful implementation from references. This governs a real
-build. For disposable alternatives only, use UI Sketch.
+Use for a real interface, site, motion experience, design system, or reference-based build.
 
-Operate as a design compiler:
+Compile rather than decorate:
 
 ```text
 intent + evidence + constraints -> design language -> artifact -> observed render -> correction
 ```
 
-Do not reduce the task to a list of trendy effects, named brands, file types, frameworks, or
-model features. Treat those as replaceable adapters. Work through these capabilities:
+Treat brands, trends, frameworks, formats, and models as replaceable adapters:
 
-- **intent-modeling** — user, job, primary action, desired perception, surfaces, constraints;
-- **reference-grounding** — transferable principles from supplied or current evidence;
-- **design-language-synthesis** — one system for type, color, space, shape, imagery, and depth;
-- **motion-language-synthesis** — motion with a narrative or functional job, including reduced motion;
-- **artifact-completion** — a working target with realistic content and primary interactions;
-- **perceptual-verification** — render and inspect the actual result;
-- **quality-gating** — reject generic or incoherent output and repair the weakest dimension;
-- **evidence-learning** — learn only from explicit verdicts, corrections, and accepted goldens.
+1. **Frame** the user, job, primary action, desired perception, target surfaces, and constraints.
+2. **Ground** decisions in references and current primary evidence; extract reusable principles.
+3. **Direct** with one thesis and a coherent visual and motion system.
+4. **Build** the smallest complete artifact with realistic content and working primary flows.
+5. **Observe** target viewports and states: overflow, console, interaction, focus, contrast,
+   reduced motion, and performance.
+6. **Judge** 0-4 using visible evidence: intent fit, coherence, hierarchy, distinctiveness,
+   interaction, motion, responsiveness, accessibility, performance.
+7. **Repair** the lowest blocker and render again. Pass only when every applicable dimension is
+   at least 3 and no broken primary flow or accessibility blocker remains.
+8. **Deliver** the artifact, inspected states, scores, evidence, and material limits.
 
-## Compile loop
+Reject the first technically valid result when it is generic, incoherent, flat, decorative,
+unresponsive, or unobserved. Code correctness is not visual quality.
 
-1. **Frame.** Establish the product, audience, primary action, desired perception, target
-   viewports, and non-negotiable constraints. Ask only if a wrong assumption would be costly.
-2. **Ground.** Inspect supplied references. When freshness matters, research current primary
-   evidence. Extract rules, not decorations; distinguish durable principles from a passing trend.
-3. **Direct.** State one design thesis and a small set of strong decisions. Define hierarchy,
-   typography, palette, spacing, shape, imagery, depth, density, and the purpose of motion.
-4. **Build.** Produce the smallest complete artifact that proves the intended experience. Use
-   realistic content and implement the primary interaction. A hero screenshot is not completion.
-5. **Observe.** Open the artifact and inspect every target viewport and important state. Check
-   hierarchy, overflow, interaction, motion, reduced motion, keyboard/focus, contrast, console
-   errors, and credible performance on the target class of device.
-6. **Judge.** Score 0-4: intent fit, coherence, hierarchy, distinctiveness, interaction, motion,
-   responsiveness, accessibility, and performance. Cite visible evidence. Technical validity
-   alone does not raise the visual score.
-7. **Repair.** Fix the lowest blocking dimension, render again, and repeat. Every applicable
-   dimension must reach 3; never average away a blocker.
-8. **Deliver.** Give the artifact path, inspected viewports/states, final gate, material limits,
-   and the strongest design decisions. Claim completion only from the observed final artifact.
+Learn only from explicit evidence. Store rules with conditions, constraints, provenance,
+freshness, and goldens. A `miss` plus correction may propose a guarded skill revision;
+a `great` governed result may mint a golden. Self-evaluation and silence never verify a lesson.
 
-## Rejection rules
-
-Reject and iterate when the result is a default SaaS composition, has flat hierarchy, mixes
-visual languages, uses decorative motion without purpose, breaks on a target viewport, hides a
-primary action, or has not been rendered. Do not accept the first technically valid generation.
-
-## Learning contract
-
-Store lessons as decision rules with `use_when`, `avoid_when`, constraints, provenance,
-`observed_at`, and evidence. Self-evaluation may propose a lesson but never verify it. A `miss`
-plus the Commander's correction should revise the governing procedure through StarNet's skill
-review and approval flow. A `great` governed result may become a golden. Never infer approval
-from silence and never silently rewrite active canon.
-
-For the full ontology, quality rubric, refresh loop, and acceptance scenarios, read
-`docs/FRONTIER_DESIGN_COMPILER.md` when it is present in the workspace.
+The full ontology and refresh protocol live in `docs/FRONTIER_DESIGN_COMPILER.md`; load them only
+when the task needs deeper authoring or maintenance.
 

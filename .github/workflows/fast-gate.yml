@@ -12,7 +12,7 @@ name: fast-gate
 on:
   pull_request:
   push:
-    branches: [feat/harness-backend]
+    branches: [feat/harness-backend, main]
   workflow_dispatch:
 
 permissions:
